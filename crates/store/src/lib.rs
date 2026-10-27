@@ -36,6 +36,10 @@ mod read;
 pub use read::{JournalTask, read_journal};
 mod retention;
 pub use retention::EvidenceRetention;
+mod task_context;
+mod context_handoff;
+pub use context_handoff::{HANDOFF_TOKEN_CAP, HandoffBudget, HandoffError, PreparedHandoff, estimated_tokens, prepare_context_handoff};
+pub use task_context::{native_context_id, ContextEntry, ContextPage, ContextRef, ContextSource, HistoryCoverage, TaskContextItem, CONTEXT_ITEM_BYTES, TASK_CONTEXT_BYTES, TASK_CONTEXT_ITEMS, TOOL_EXCERPT_BYTES};
 
 use alondra_domain::{
     CLAUDE_BG_HOST, Event, ExecutionStamp, InputId, Refusal, ResourceEvidence, TaskLifecycle, TaskPhase,
@@ -467,6 +471,11 @@ impl<'connection> LifecycleTransaction<'connection> {
         savepoint.commit()?;
         Ok(())
     }
+    pub fn verify(connection: &Connection) -> Result<()> {
+        require_foreign_keys(connection)?;
+        journal_format::verify(connection)
+    }
+
     /// Dropping the journal always rolls back, whatever drop behaviour the caller chose.
     pub fn attach(transaction: Transaction<'connection>, scope: AuthorityScope) -> Result<Self> {
         Self::attach_with(transaction, scope, None)
@@ -1378,8 +1387,13 @@ impl<'connection> LifecycleTransaction<'connection> {
             if kind == "input" && !binding.permits(Capability::OfferInput) {
                 return Err(Error::UnsupportedCapability);
             }
+            let rejected_restart = kind == "input" && aggregate.resource() == Some(ResourceEvidence::Reserved)
+                && aggregate.pending_inputs().first().is_some_and(|input|input.as_str()==permit.input.as_str())
+                && self.transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events e JOIN lifecycle_dispatches d ON d.task_id=e.task_id AND d.input_id=json_extract(e.event,'$.data.input') WHERE e.task_id=?1 AND json_extract(e.event,'$.kind')='resend_untaken' AND json_extract(e.event,'$.data.resend')=?2 AND d.generation=?3 AND d.status='rejected')",
+                    params![permit.stamp.task().0,permit.input.as_str(),sql_number(permit.stamp.generation())?],|row|row.get::<_,bool>(0))?;
             if status != "prepared"
-                || (kind == "input" && aggregate.resource() != Some(ResourceEvidence::Available))
+                || (kind == "input" && aggregate.resource() != Some(ResourceEvidence::Available) && !rejected_restart)
             {
                 return Err(Error::StalePermit);
             }

@@ -199,7 +199,7 @@ public struct MacPresentationFeature: Sendable {
                 state.actionTarget = nil
                 state.actionPresented = true
                 let requiresAttachments = form.fields.contains { if case .attachments = $0.kind { true } else { false } }
-                return .send(.action(.presentForm(form.submit, Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) }), requiresAttachments: requiresAttachments)))
+                return .send(.action(.presentForm(form.submit, form.initialValues, requiresAttachments: requiresAttachments, modelFields: form.modelFields)))
             case .reloadForm(let fieldID, let value):
                 guard fieldID == "project", case let .string(project) = value,
                       let key = state.selectedViewKey else { return .none }
@@ -489,11 +489,20 @@ public struct MacPresentationFeature: Sendable {
                            let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> AlondraContract.Form? in
                                if case let .form(form) = item { form } else { nil }
                            }).first {
+                            if let original = state.activeForm, ["model_profile", "task_selection"].contains(original.id), original.submit.id != updated.submit.id {
+                                if !state.actionFeature.inFlight, let id = updated.submit.id {
+                                    state.actionFeature.formReplacement = ActionFeature.ChangedNotice(title: String(localized: "This selection changed"), body: String(localized: "Your draft is retained. Save these choices against the current selection?"), actionId: id, button: String(localized: "Save retained choices"))
+                                }
+                                return .none
+                            }
                             state.activeForm = updated
                             state.actionFeature.action = updated.submit
+                            let edited = state.actionFeature.fields["substitution_was_edited"]
+                            state.actionFeature.modelFields = updated.modelFields; state.actionFeature.modelFormAvailable = true
                             state.actionFeature.fields = Dictionary(uniqueKeysWithValues: updated.fields.map {
                                 ($0.id, state.actionFeature.fields[$0.id] ?? $0.value)
                             })
+                            if let edited = edited ?? updated.initialValues["substitution_was_edited"] { state.actionFeature.fields["substitution_was_edited"] = edited }
                         }
                         return .merge(reopen.compactMap { section in
                             section.more.map { loadSection(section.id, key: $0.key, appending: false) }

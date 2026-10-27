@@ -8,7 +8,8 @@ public struct ViewFeed: Codable, Equatable, Sendable {
     public let stale: [String]
     public let reset: Bool
     public let superseded: Bool
-    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol"; case cursor, dataEpoch = "data_epoch", status, stale, reset, superseded }
+    public let service: ViewService?
+    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol"; case cursor, dataEpoch = "data_epoch", status, stale, reset, superseded, service }
 }
 
 public struct OpenViewVersion: Codable, Equatable, Sendable {

@@ -91,6 +91,7 @@ impl World {
         w.must(user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         w.must(orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         w.must(Actor::System, Command::CreateSchedule { schedule: Schedule {
+            paid_account_grant: None,
             id: "weekly".into(), title: "BlurCamera · weekly improvement".into(), text: "Improve BlurCamera".into(), project: Some("BlurCamera".into()),
             options: BTreeMap::new(), disallowed_tools: vec![], frequency: ScheduleFrequency::Daily, hour: 9, minute: 0, weekday: None,
             interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
@@ -104,7 +105,7 @@ impl World {
             id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
             revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
             documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
+            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
         };
         let options = crate::options::OptionsFile::default().resolve(Some("BlurCamera"), &BTreeMap::new()).unwrap();
         w.must(Actor::System, Command::RecordScheduleRunSent {

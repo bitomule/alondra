@@ -13,6 +13,8 @@ mod decisions;
 mod mcp;
 #[path = "account_settings.rs"]
 mod account_settings;
+#[path = "task_selection.rs"]
+mod task_selection;
 #[path = "mcp_wait.rs"]
 mod mcp_wait;
 pub use mcp::{MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
@@ -2199,6 +2201,7 @@ impl DomainState {
         let interaction =
             |id: &InteractionId| Some(self.interactions.get(id).map_or(0, |i| i.revision));
         match c {
+            Command::RequestTaskSelection { .. } => Some(0),
             Command::AssignTask { task_id, .. }
             | Command::RetitleTask { task_id, .. }
             | Command::SetDependencies { task_id, .. }
@@ -2301,6 +2304,7 @@ impl DomainState {
             // A Schedule's own revision is its subject: Update carries the next
             // one, Delete and Claim the one they read. The rule checks it.
             Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
+            Command::SetAccountOrder { .. } | Command::SetModelProfile { .. } | Command::ReplaceAccountConfiguration { .. } => Some(0),
             // Clearing takes only what the user saw at `seen`, so any snapshot may ask for it.
             Command::ClearCompleted { .. } => Some(0),
             // A setting of this Mac's, not of anything the client read: any snapshot may change it.
@@ -2699,6 +2703,92 @@ impl DomainState {
                 self.accounts_guard(actor, *provider, change)?;
                 self.change_accounts(*provider, change);
             }
+            Command::SetAccountOrder { order, expected_config_version } => {
+                self.account_order_guard(actor, order, expected_config_version)?;
+                self.account_order.clone_from(order);
+                self.account_policy = crate::accounts::Policy::Chain;
+            }
+            Command::ReplaceAccountConfiguration { accounts, expected_config_version } => {
+                let accounts = crate::options::OptionsFile::parse(accounts).map_err(|why| DomainError::new("invalid_input", why))?.accounts;
+                self.replace_account_configuration(actor, &accounts, expected_config_version)?;
+            }
+            Command::RecordAccountConfiguration { order, version } => {
+                system(actor)?;
+                self.validate_account_order(order)?;
+                nonempty(version)?;
+                self.account_order.clone_from(order);
+                self.account_config_version.clone_from(version);
+            }
+            Command::RecordModelCatalog { catalog } => {
+                system(actor)?;
+                nonempty(&catalog.revision)?;
+                if !self.accounts.iter().any(|account| account.provider == catalog.account.provider && account.id == catalog.account.account) {
+                    return fail("not_found", "The model catalog belongs to an unknown account");
+                }
+                if let Some(at) = self.model_catalogs.iter().position(|known| known.account == catalog.account) {
+                    if self.model_catalogs[at].measured_at > catalog.measured_at { return fail("stale_revision", "A newer model catalog is already recorded"); }
+                    self.model_catalogs[at] = catalog.clone();
+                } else { self.model_catalogs.push(catalog.clone()); }
+                self.model_catalogs.sort_by(|left, right| left.account.cmp(&right.account));
+            }
+            Command::RequestTaskSelection { task_id, expected_selection, selection, pending } => {
+                self.task_selection_guard(actor, task_id, expected_selection, selection, pending)?;
+                let task = self.tasks.get_mut(task_id).expect("checked above");
+                task.selection = Some(selection.clone());
+                task.pending_selection = Some(pending.clone());
+            }
+            Command::RecordTaskSelection { task_id, selection, pending } => {
+                system(actor)?;
+                self.not_ending(task_id)?;
+                self.active(task_id)?;
+                if let Some(original) = &self.task(task_id)?.selection
+                    && (selection.requested != original.requested
+                        || selection.requested_reasoning_effort != original.requested_reasoning_effort
+                        || selection.account != original.account
+                        || selection.paid_account_grant != original.paid_account_grant
+                        || selection.allow_model_substitution != original.allow_model_substitution
+                        || selection.substitution_was_edited != original.substitution_was_edited)
+                {
+                    return fail("invalid_input", "An execution cannot rewrite the user's model, account, reasoning effort or substitution permission");
+                }
+                if let Some(effective) = &selection.effective {
+                    let account = self.task(task_id)?.account_key();
+                    if effective.model.provider != account.provider { return fail("invalid_input", "The effective model does not match the admitted provider"); }
+                    let clearing_unchanged = pending.is_none() && self.task(task_id)?.pending_selection.is_some()
+                        && self.task(task_id)?.selection.as_ref() == Some(selection);
+                    if !clearing_unchanged {
+                        let catalog = self.model_catalogs.iter().find(|catalog| catalog.account == account)
+                            .ok_or_else(|| DomainError::new("model_catalog_unavailable", "Refresh the admitted account's model catalog before recording its effective model"))?;
+                        catalog.validate(effective).map_err(|why| DomainError::new("model_catalog_changed", why))?;
+                    }
+                }
+                if let (Some(account), Some(effective)) = (&selection.account, &selection.effective)
+                    && account.provider != effective.model.provider
+                {
+                    return fail("invalid_input", "The effective model belongs to another provider than the selected account");
+                }
+                if let Some(pending) = pending {
+                    nonempty(&pending.reason)?;
+                    if pending.account.provider != pending.model.model.provider {
+                        return fail("invalid_input", "The pending model belongs to another provider");
+                    }
+                }
+                let task = self.tasks.get_mut(task_id).expect("checked above");
+                task.selection = Some(selection.clone());
+                task.pending_selection = pending.clone();
+            }
+            Command::RecordModelProfiles { profiles, version } => {
+                system(actor)?;
+                nonempty(version)?;
+                crate::model_selection::validate_profiles(profiles).map_err(|why| DomainError::new("invalid_input", why))?;
+                self.model_profiles.clone_from(profiles);
+                self.model_profiles_version.clone_from(version);
+            }
+            Command::SetModelProfile { provider, profile, policy, expected_config_version } => {
+                self.model_profile_guard(actor, *provider, *profile, policy, expected_config_version)?;
+                self.model_profiles.entry(*provider).or_default().insert(*profile, policy.clone());
+                self.model_profiles_version = crate::model_selection::profiles_version(&self.model_profiles);
+            }
             Command::RecordAccountUsage { provider, account, reading, at, day } => {
                 system(actor)?;
                 reading.check().map_err(|why| DomainError::new("invalid_input", why))?;
@@ -2890,7 +2980,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -4418,7 +4508,7 @@ impl DomainState {
                 }
                 self.release(task_id, lifecycles)?;
             }
-            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model, account, leaves_limit } => {
+            Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model, account, provider, leaves_limit } => {
                 system(actor)?;
                 self.not_held_for_plan_review(task_id)?;
                 self.not_ending(task_id)?;
@@ -4430,10 +4520,16 @@ impl DomainState {
                     self.used_by_other(agent_id, task_id)?;
                     self.free(agent_id, task_id)?;
                 }
+                let task=self.task(task_id)?;
+                let previously_admitted=self.lifecycle_journal.get(task_id).is_some_and(|records|records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{execution:Some(_),..}|LifecycleRecord::ResourceAvailable)));
+                if previously_admitted || task.started {
+                    let target=crate::accounts::AccountKey::new(*provider,account.clone().unwrap_or_else(crate::accounts::AccountId::default_account));
+                    if target!=task.account_key(){return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
+                }
                 self.invalidate(task_id);
                 if let Some(card) = leaves_limit {
                     let to = account.clone().unwrap_or_else(crate::accounts::AccountId::default_account);
-                    self.leave_limit(task_id, card, &to, lifecycles)?;
+                    self.leave_limit(task_id, card, *provider, &to, lifecycles)?;
                 }
                 let identity = ExecutionIdentity { conversation: conversation.clone(), instance: instance.clone(), host: host.clone() };
                 self.admit_execution(task_id, agent_id, identity, lifecycles)?;
@@ -4442,6 +4538,7 @@ impl DomainState {
                     task.model = model.clone();
                 }
                 task.account = account.clone().filter(|account| !account.is_default());
+                task.provider = *provider;
             }
             Command::RecordRuntimeFacts { task_id, generation, facts } => {
                 system(actor)?;
@@ -4489,12 +4586,12 @@ impl DomainState {
                 nonempty(text)?;
                 self.resend_untaken(task_id, *generation, input, text, lifecycles)?;
             }
-            Command::ProbeClaudeAccess { hold, account } => {
+            Command::ProbeClaudeAccess { provider, hold, account } => {
                 system(actor)?;
                 if *hold == ClaudeHold::SignedOut {
                     return fail("invalid_input", "Only the user's answer probes Claude's sign-in");
                 }
-                if self.probe_claude(*hold, account.as_ref(), lifecycles)?.is_none() {
+                if self.probe_claude(*provider, *hold, account.as_ref(), lifecycles)?.is_none() {
                     return fail("not_found", "No task waits for Claude");
                 }
             }

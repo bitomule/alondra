@@ -66,7 +66,7 @@ final class FixtureContractTests: XCTestCase {
 
     func testEveryLinkedViewKeyIsOneTheAppKnowsHowToOpen() throws {
         let known = [
-            "card:", "task:", "request:", "node:", "pull_request:", "document:", "schedule:",
+            "card:", "task:", "request:", "node:", "pull_request:", "document:", "schedule:", "model_profile:", "task_selection:",
             "home", "tasks", "machine", "schedules", "new_request", "sidebar", "issue_picker",
         ]
         var seen = Set<String>()

@@ -1,0 +1,677 @@
+{
+  "account_configuration": {
+    "version": "54438a7517194c98"
+  },
+  "protocol": 1,
+  "data_epoch": "78f6072ee3eccdafc695b1e2728213edd0fee66cdd7b5d25a188044e87ed9098",
+  "view": "accounts",
+  "key": "accounts",
+  "client": "mac",
+  "version": "v067bba6bab1ea35c",
+  "cursor": "c1.WyI3OGY2MDcyZWUzZWNjZGFmYzY5NWIxZTI3MjgyMTNlZGQwZmVlNjZjZGQ3YjVkMjVhMTg4MDQ0ZTg3ZWQ5MDk4Iiw2LCJhZTM4NThlMjY1ZmJkNDFhIiwidjM3OWE0Y2VjZDlkMzY3ZGEiXQ",
+  "title": "Cuentas",
+  "status": {
+    "version": "v379a4cecd9d367da",
+    "summary": "0 nodos trabajando",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 0
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "value": 0.43,
+        "text": "43%",
+        "level": "calm"
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "value": 0.4970399475097656,
+        "text": "50%",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "value": 0.9062775882348545,
+        "text": "46 GB libres (15 GB purgables)",
+        "level": "warm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "accounts",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "account": {
+            "model_catalog": {
+              "account": {
+                "provider": "codex",
+                "account": "default"
+              },
+              "revision": "50a2d6b26014df1981c6eab79f46a0d28276c2d708e3cd43f2cfaa8a2b809f16",
+              "models": [
+                {
+                  "model": "fixture-general",
+                  "display_name": "Fixture general",
+                  "reasoning_efforts": [
+                    "low",
+                    "medium",
+                    "high"
+                  ],
+                  "default_reasoning_effort": "medium",
+                  "context_window": 200000,
+                  "input_modalities": [
+                    "text",
+                    "image"
+                  ],
+                  "is_default": true,
+                  "hidden": false
+                },
+                {
+                  "model": "fixture-review",
+                  "display_name": "Fixture review",
+                  "reasoning_efforts": [
+                    "low",
+                    "medium",
+                    "high"
+                  ],
+                  "default_reasoning_effort": "medium",
+                  "context_window": 200000,
+                  "input_modalities": [
+                    "text",
+                    "image"
+                  ],
+                  "is_default": false,
+                  "hidden": false
+                }
+              ],
+              "native_default": "fixture-general",
+              "measured_at": 1792979342098
+            },
+            "key": {
+              "provider": "codex",
+              "account": "default"
+            },
+            "position": 1,
+            "availability": {
+              "text": "Con sesión",
+              "tone": "success"
+            },
+            "email": "personal@fixture.invalid",
+            "plan": "plus",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Último uso informado",
+              "tone": "neutral"
+            },
+            "windows": [
+              {
+                "kind": "codex:account:primary:300",
+                "label": "Cuenta · Principal · 300 min",
+                "used_percent": 42,
+                "measured_at": 1792979342098,
+                "resets_at": 1792982942000,
+                "stale": false,
+                "exhausted": false
+              },
+              {
+                "kind": "codex:account:secondary:10080",
+                "label": "Cuenta · Secundaria · 10080 min",
+                "used_percent": 18,
+                "measured_at": 1792979342098,
+                "resets_at": 1793065742000,
+                "stale": false,
+                "exhausted": false
+              },
+              {
+                "kind": "codex:limit:supplemental-fixture:primary:90",
+                "label": "Límite supplemental-fixture · Principal · 90 min",
+                "used_percent": 8,
+                "measured_at": 1792979342098,
+                "resets_at": 1792984742000,
+                "stale": false,
+                "exhausted": false
+              }
+            ]
+          },
+          "id": "codex-default",
+          "icon": "machine",
+          "title": "Principal",
+          "subtitle": "Codex · personal@fixture.invalid · plus\nCuenta · Principal · 300 min 42 % · Cuenta · Secundaria · 10080 min 18 % · Límite supplemental-fixture · Principal · 90 min 8 %",
+          "badges": [
+            {
+              "text": "Con sesión",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_rename:default@6~codex",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Principal",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:default@6~codex",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list",
+      "actions": [
+        {
+          "id": "account_check:accounts@6",
+          "label": "Comprobar cuentas",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": false
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "title": "Proveedores",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-connect",
+          "icon": "machine",
+          "title": "Conectar Claude",
+          "subtitle": "Usar el inicio de sesión nativo de este proveedor en el Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Conectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_sign_in",
+                  "account": "default",
+                  "command": "alondra accounts login 'default'"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-add",
+          "icon": "action",
+          "title": "Añadir una cuenta de Codex",
+          "subtitle": "Elige un nombre y completa el inicio de sesión nativo en el Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Añadir",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_add",
+                  "command": "alondra accounts add --provider codex",
+                  "provider": "codex",
+                  "argv": [
+                    "accounts",
+                    "add",
+                    "--provider",
+                    "codex"
+                  ]
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "model_profiles",
+      "title": "Modelos por función",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "codex-implementation",
+          "icon": "machine",
+          "title": "Codex · Implementación",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:codex-implementation@0~44136fa355b3678a",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "Predeterminado nativo",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-general",
+                  "label": "Fixture general",
+                  "description": "fixture-general",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-review",
+                  "label": "Fixture review",
+                  "description": "fixture-review",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:codex-implementation"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-general",
+          "icon": "machine",
+          "title": "Codex · Trabajo general",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:codex-general@0~44136fa355b3678a",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "Predeterminado nativo",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-general",
+                  "label": "Fixture general",
+                  "description": "fixture-general",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-review",
+                  "label": "Fixture review",
+                  "description": "fixture-review",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:codex-general"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-design",
+          "icon": "machine",
+          "title": "Codex · Diseño",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:codex-design@0~44136fa355b3678a",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "Predeterminado nativo",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-general",
+                  "label": "Fixture general",
+                  "description": "fixture-general",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-review",
+                  "label": "Fixture review",
+                  "description": "fixture-review",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:codex-design"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-review",
+          "icon": "machine",
+          "title": "Codex · Revisión",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:codex-review@0~44136fa355b3678a",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "Predeterminado nativo",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-general",
+                  "label": "Fixture general",
+                  "description": "fixture-general",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-review",
+                  "label": "Fixture review",
+                  "description": "fixture-review",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:codex-review"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-orchestrator",
+          "icon": "machine",
+          "title": "Codex · Orquestador",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:codex-orchestrator@0~44136fa355b3678a",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "Predeterminado nativo",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-general",
+                  "label": "Fixture general",
+                  "description": "fixture-general",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "model:codex/fixture-review",
+                  "label": "Fixture review",
+                  "description": "fixture-review",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:codex-orchestrator"
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    }
+  ],
+  "service": {
+    "version": "0.3.7",
+    "views_protocol": {
+      "min": 1,
+      "max": 1
+    },
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ]
+  }
+}

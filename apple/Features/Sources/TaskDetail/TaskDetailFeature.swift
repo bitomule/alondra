@@ -97,6 +97,7 @@ public struct TaskDetailFeature: Sendable {
             case .open(let link):
                 return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none
             case .perform(let action):
+                if let open = ScreenDelegate.opening(action.link) { return .send(.delegate(open)) }
                 return .concatenate(.send(.actions(.present(action))), .send(.actions(.submit)))
             case let .choose(action, option):
                 if let id = action.id { state.choices[id] = option.label }

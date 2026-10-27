@@ -470,6 +470,7 @@ fn shared_business_input_ids_stay_task_scoped_through_remote_service_and_store()
 
 enum Probe {
     Real,
+    PublicContext,
     CatchesMetadataError,
     Refuses,
     Panics,
@@ -483,6 +484,9 @@ impl ObservationNormalizer for ProbeNormalizer {
     ) -> Result<Normalization, AdapterError> {
         match self.0 {
             Probe::Real => RemoteNormalizer.normalize(batch, metadata),
+            Probe::PublicContext => RemoteNormalizer.normalize(batch, metadata)?.with_context(vec![
+                alondra_store::TaskContextItem::text("public-result", alondra_store::ContextSource::Assistant, "A result that must outlive the raw journal").unwrap(),
+            ]),
             Probe::CatchesMetadataError => {
                 assert!(matches!(
                     metadata.lookup_inputs(&vec![b"native".to_vec(); 65]),
@@ -554,6 +558,32 @@ fn real_normalizer_commits_the_staged_observation() {
     assert!(accepted);
     assert!(committed.is_ok(), "{committed:?}");
     assert_eq!(rows, 2, "raw observation and its head are durable");
+}
+
+#[test]
+fn portable_context_is_captured_by_the_common_checkpoint_transaction() {
+    let directory = test_support::Directory::new();
+    let mut controller = WorkerController::open(database(&directory), scope(), RemoteAdapter::new(Arc::new(Mutex::new(RemoteService::default())))).unwrap();
+    launch(&mut controller);
+    let mut connection = Connection::open(directory.join("domain.db")).unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    let raw = connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+    let mut transaction = LifecycleTransaction::attach(raw, scope()).unwrap();
+    let execution = transaction.load(&"task".into()).unwrap().execution().unwrap().clone();
+    let binding = transaction.execution_binding(&execution).unwrap();
+    let batch = OrderedObservation { owner_generation: 1, execution: execution.clone(), cursor: 1, evidence: br#"{"event":{"status":"workspace_ready"}}"#.to_vec() };
+    let pending = stage_observation(&mut transaction, &binding, 1, &batch, &ProbeNormalizer(Probe::PublicContext)).unwrap();
+    fixture_controller::record_facts(&mut transaction, pending).unwrap();
+    transaction.commit().unwrap();
+    let raw = connection.transaction_with_behavior(TransactionBehavior::Deferred).unwrap();
+    let transaction = LifecycleTransaction::attach(raw, scope()).unwrap();
+    let page = transaction.context_page(&"task".into(), None, 10).unwrap();
+    assert_eq!(page.entries.len(), 1, "normalization retained the public result before its raw evidence can be released");
+    assert_eq!(page.entries[0].item.content, "A result that must outlive the raw journal");
+    assert_eq!(transaction.normalization_checkpoint(&execution).unwrap().unwrap().cursor(), 1);
+    drop(transaction);
+    drop(connection);
+    drop(controller);
 }
 #[test]
 fn normalizer_that_catches_a_metadata_error_and_returns_ok_poisons_the_commit() {

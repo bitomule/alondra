@@ -1,0 +1,307 @@
+{
+  "protocol": 1,
+  "data_epoch": "78f6072ee3eccdafc695b1e2728213edd0fee66cdd7b5d25a188044e87ed9098",
+  "view": "new_request",
+  "key": "new_request",
+  "client": "ios",
+  "version": "v909818310a9caa40",
+  "cursor": "c1.WyI3OGY2MDcyZWUzZWNjZGFmYzY5NWIxZTI3MjgyMTNlZGQwZmVlNjZjZGQ3YjVkMjVhMTg4MDQ0ZTg3ZWQ5MDk4Iiw2LCI5NDk4ZTAyMDEyZjcwNjdkIiwidmM0ZDQ2OTE4M2NlOWU0ZjUiXQ",
+  "title": "Ask for Something New",
+  "status": {
+    "version": "vc4d469183ce9e4f5",
+    "summary": "0 nodes working",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 0
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "value": 0.43,
+        "text": "43%",
+        "level": "calm"
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "value": 0.4970399475097656,
+        "text": "50%",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "value": 0.9062775882348545,
+        "text": "46 GB free (15 GB purgeable)",
+        "level": "warm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "new_request",
+          "fields": [
+            {
+              "id": "text",
+              "label": "What do you want done?",
+              "kind": {
+                "kind": "multiline",
+                "placeholder": null
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "attachments",
+              "label": "Attachments",
+              "kind": {
+                "kind": "attachments"
+              },
+              "value": [],
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "project",
+              "label": "Project",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "Alondra picks the project"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": true
+            },
+            {
+              "id": "pr",
+              "label": "PRs",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "review",
+                    "label": "Review each one",
+                    "description": "Each PR the node opens is a card for you; Alondra merges it when you accept it"
+                  },
+                  {
+                    "id": "auto_merge",
+                    "label": "Auto-merge",
+                    "description": "Alondra merges the PR once its checks pass"
+                  }
+                ]
+              },
+              "value": "review",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "model",
+              "label": "Model",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Automatic"
+                  },
+                  {
+                    "group": "Codex",
+                    "id": "codex/fixture-general",
+                    "label": "Fixture general"
+                  },
+                  {
+                    "group": "Codex",
+                    "id": "codex/fixture-review",
+                    "label": "Fixture review"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "account",
+              "label": "Account",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Automatic"
+                  },
+                  {
+                    "group": "Codex",
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "auto",
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "codex/default",
+                    "label": "Default"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "reasoning_effort",
+              "label": "Reasoning effort",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Native default"
+                  },
+                  {
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "high",
+                    "label": "High"
+                  },
+                  {
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "low",
+                    "label": "Low"
+                  },
+                  {
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "medium",
+                    "label": "Medium"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "visible_when": {
+                "field": "model",
+                "any_of": [
+                  "codex/fixture-general",
+                  "codex/fixture-review"
+                ]
+              },
+              "reload_on_change": false
+            },
+            {
+              "id": "allow_model_substitution",
+              "label": "Allow model substitution",
+              "kind": {
+                "kind": "toggle"
+              },
+              "value": true,
+              "required": false,
+              "help": "If the requested model cannot run, continue with another eligible model",
+              "reload_on_change": false
+            },
+            {
+              "id": "issue",
+              "label": "Issue",
+              "kind": {
+                "kind": "picker",
+                "source": "issue_picker"
+              },
+              "value": "",
+              "required": false,
+              "help": "Choose an open issue or paste its GitHub link",
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "new_request_selection:view@6",
+            "label": "Send Request",
+            "style": "primary",
+            "role": "advance",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": true,
+            "enabled": true,
+            "resolves_card": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sent",
+      "title": "Pending Requests",
+      "collapsed": false,
+      "items": []
+    }
+  ],
+  "service": {
+    "version": "0.3.7",
+    "views_protocol": {
+      "min": 1,
+      "max": 1
+    },
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ]
+  }
+}

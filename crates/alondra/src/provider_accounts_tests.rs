@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt as _;
 
 fn row(id: &str, email: Option<&str>, state: AccountState) -> Row {
     Row {
+        provider: Provider::Claude,
         id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), enabled: true, default: id == "default",
         billing: AccountBilling::default(), state, email: email.map(str::to_owned), plan: Some("max".into()),
     }

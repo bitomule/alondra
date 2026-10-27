@@ -13,6 +13,8 @@ public struct OutgoingRequest: Sendable {
     public struct State: Equatable, Identifiable {
         public let id: String
         public let fields: [String: JSONValue]
+        public var submission: ActionRequest?
+        public var wasDispatched: Bool { submission != nil }
         public var attachments: AttachmentFeature.State
 
         public init(id: String, fields: [String: JSONValue], attachments: AttachmentFeature.State) {

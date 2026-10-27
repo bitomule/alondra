@@ -148,7 +148,9 @@ impl System for Fake {
     }
     fn set_projects(&self, folder: &Path) -> Result<()> {
         self.applied.borrow_mut().push(Action::SetProjects);
-        *self.options.borrow_mut() = Some(format!("projects_root = {:?}\n", folder.display().to_string()));
+        let original = self.options.borrow().clone();
+        let text = alondra_core::projects_folder::with_root(original.as_deref().unwrap_or("[accounts]\nconnected = []\n"), folder).map_err(anyhow::Error::msg)?;
+        *self.options.borrow_mut() = Some(text);
         Ok(())
     }
     fn exists(&self, _path: &Path) -> bool {
@@ -204,6 +206,8 @@ impl System for Fake {
     fn fingerprint(&self, _dir: &Path) -> Option<String> {
         self.fingerprint.clone()
     }
+    fn codex_version(&self) -> Option<String> { self.tools.get("codex").cloned() }
+    fn native_accounts(&self) -> Option<Value> { self.health.borrow().as_ref().ok()?.get("provider_accounts").cloned() }
     fn tool(&self, program: &str, _args: &[&str]) -> Option<String> {
         self.tools.get(program).cloned()
     }
@@ -607,7 +611,7 @@ fn yes_accepts_every_question_and_the_proposed_folder_without_asking() {
     let repaired = repair(&yes, &mut ui).unwrap();
     assert!(!ui.lines.iter().any(|l| l.starts_with("ask ") || l.starts_with("select ")), "{:?}", ui.lines);
     assert_eq!(*sys.applied.borrow(), vec![Action::SetProjects, Action::PrepareIdentity, Action::InstallService, Action::EnableRelay]);
-    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.display().to_string())));
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n[accounts]\nconnected = []\n", cwd.display().to_string())));
     assert_eq!(exit_code(&repaired.outcomes), 0);
 }
 
@@ -924,14 +928,11 @@ fn the_wizard_asks_for_the_folder_and_the_relay_in_the_order_of_the_screens() {
     let repaired = repair(&wizard_env(&sys), &mut ui).unwrap();
     in_order(&ui.lines, &[
         "✓ This Mac: macOS 26.1 · Apple Silicon · Homebrew",
-        "✓ Claude Code: 2.1.291",
-        "✓ Claude profile for nodes: default",
-        "✓ Claude Code sign-in: signed in",
+        "! AI providers: No AI provider is connected.",
         "select Projects folder — where your git repos live. You can change it later in the app.",
         "✓ Projects folder: ",
         "progress Starting the background service…",
         "✓ Background service: running on port 47800",
-        "✓ Claude plugin: already set",
         "✓ Ready for your devices",
         "ask Turn on notifications and access away from home? It needs an Alondra account and opens your browser.",
         "✓ Notifications and access away from home: on",
@@ -939,7 +940,10 @@ fn the_wizard_asks_for_the_folder_and_the_relay_in_the_order_of_the_screens() {
     assert!(ui.lines.iter().any(|l| l.contains(&format!("{} · 2 repos", cwd.display()))), "{:?}", ui.lines);
     assert!(!ui.lines.iter().any(|l| l.contains("Devices")), "the wizard waits for a device instead: {:?}", ui.lines);
     assert_eq!(*sys.applied.borrow(), vec![Action::SetProjects, Action::PrepareIdentity, Action::InstallService, Action::EnableRelay]);
-    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.display().to_string())));
+    let options = alondra_core::options::OptionsFile::parse(sys.options.borrow().as_deref().unwrap()).unwrap();
+    assert_eq!(options.projects_root.as_deref(), cwd.to_str());
+    assert!(options.accounts.connected_providers().is_empty());
+    assert!(sys.claude_calls.borrow().is_empty(), "fresh setup must not probe an unselected provider");
     assert_eq!(exit_code(&repaired.outcomes), 0);
     assert_eq!(outro(&wizard_env(&sys), &repaired), "Alondra is running. Open it on your iPhone or on this Mac.");
 }
@@ -975,7 +979,7 @@ fn another_folder_can_be_typed_and_the_root_or_a_file_is_refused() {
     repair(&wizard_env(&sys), &mut ui).unwrap();
     assert!(ui.lines.iter().any(|l| l.starts_with("note / can't be the projects folder")), "{:?}", ui.lines);
     assert!(ui.lines.iter().any(|l| l.contains("notes.txt is not a directory")), "{:?}", ui.lines);
-    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.join("work").display().to_string())));
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n[accounts]\nconnected = []\n", cwd.join("work").display().to_string())));
 }
 
 #[test]
@@ -989,7 +993,7 @@ fn from_the_root_there_is_no_default_and_the_folder_is_typed() {
     repair(&wizard_env(&sys), &mut ui).unwrap();
     assert!(!ui.lines.iter().any(|l| l.starts_with("select Projects folder")), "no list to accept by mistake: {:?}", ui.lines);
     assert!(ui.lines.iter().any(|l| l.starts_with("note / can't be the projects folder")), "{:?}", ui.lines);
-    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", typed.display().to_string())));
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n[accounts]\nconnected = []\n", typed.display().to_string())));
 }
 
 #[test]
@@ -1004,7 +1008,7 @@ fn without_a_terminal_the_cwd_is_used_and_said() {
     repair(&env(&sys), &mut Plain { out: &mut out }).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(&format!("  projects folder: {} (cwd)", cwd.display())), "{text}");
-    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.display().to_string())));
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n[accounts]\nconnected = []\n", cwd.display().to_string())));
 }
 
 #[test]
@@ -1213,4 +1217,36 @@ fn the_direct_connection_check_speaks_spanish() {
     let found = direct_check(&json!({"iroh": {"reachability": {"verdict": "relay_only", "reasons": ["symmetric_nat"], "port": 47811}}})).unwrap();
     assert_eq!(found.detail, "fuera de casa, los dispositivos van por el relay: el router cambia el puerto para cada destino");
     assert_eq!(found.fix, Some(Fix::Manual("activa UPnP o NAT-PMP en los ajustes del router".into())));
+}
+
+#[test]
+fn codex_only_diagnostics_do_not_probe_claude_or_require_its_plugin() {
+    english(); let mut sys = Fake::healthy();
+    *sys.options.borrow_mut() = Some("[accounts]\nconnected = [\"codex\"]\n".into());
+    sys.claude.clear(); *sys.signed_in.borrow_mut() = Err("Claude absent".into()); *sys.marketplace.borrow_mut() = false;
+    sys.tools.insert("codex".into(), "codex-cli 0.163.0".into());
+    sys.health.borrow_mut().as_mut().unwrap()["provider_accounts"] = json!([{"provider":"codex","enabled":true,"state":"signed_in"}]);
+    let env = Env { sys: &sys, deep: false, first_run: false, yes: false, select: Selection::All };
+    let outcomes = diagnose(&env);
+    assert!(outcomes.iter().all(|outcome| !outcome.id.starts_with("claude") && !["plugin", "validate", "hooks"].contains(&outcome.id)));
+    assert!(sys.claude_calls.borrow().is_empty());
+    assert_eq!(outcomes.iter().find(|outcome| outcome.id == "codex").unwrap().status, Status::Pass);
+    assert_eq!(outcomes.iter().find(|outcome| outcome.id == "codex.signin").unwrap().status, Status::Pass);
+}
+#[test]
+fn a_fresh_home_can_check_the_service_without_any_provider() {
+    english(); let sys = Fake::healthy(); *sys.options.borrow_mut() = None;
+    let env = Env { sys: &sys, deep: false, first_run: true, yes: false, select: Selection::All };
+    let outcomes = diagnose(&env);
+    assert!(outcomes.iter().any(|outcome| outcome.id == "providers" && outcome.status == Status::Warn));
+    assert!(outcomes.iter().any(|outcome| outcome.id == "alondrad" && outcome.status == Status::Pass));
+    assert!(outcomes.iter().all(|outcome| !outcome.id.starts_with("claude") && !outcome.id.starts_with("codex")));
+    assert!(sys.claude_calls.borrow().is_empty());
+}
+#[test]
+fn provider_onboarding_uses_the_explicit_choice_including_later() {
+    let mut ui = Recorded { choices: vec![Some(0), Some(1), Some(2)], ..Default::default() };
+    assert_eq!(choose_provider(&mut ui).unwrap(), Some(alondra_core::accounts::Provider::Codex));
+    assert_eq!(choose_provider(&mut ui).unwrap(), Some(alondra_core::accounts::Provider::Claude));
+    assert_eq!(choose_provider(&mut ui).unwrap(), None);
 }

@@ -1159,6 +1159,7 @@ impl DomainState {
             t.started = lifecycle.resource().is_some_and(|resource| resource != ResourceEvidence::Reserved);
         }
         t.ending = ending_of(lifecycle);
+        if t.ending.is_some() || matches!(lifecycle.phase(),TaskPhase::Completed|TaskPhase::Cancelled) { t.pending_selection=None; }
         t.state = match phase {
             TaskPhase::Unstarted | TaskPhase::InProgress => if t.started { TaskState::Running } else { TaskState::NotStarted },
             TaskPhase::Delivered => TaskState::ForYourReview,
@@ -1183,6 +1184,7 @@ impl DomainState {
     fn read_ending(&mut self, task: &TaskId, lifecycle: &TaskLifecycle) -> Result<()> {
         let t = self.tasks.get_mut(task).ok_or_else(|| DomainError::new("not_found", format!("Task {task} has a journal and no row")))?;
         t.ending = ending_of(lifecycle);
+        if t.ending.is_some() || matches!(lifecycle.phase(),TaskPhase::Completed|TaskPhase::Cancelled) { t.pending_selection=None; }
         Ok(())
     }
 
@@ -1386,6 +1388,9 @@ impl DomainState {
                 None if interrupted => TurnEnd::Interrupted,
                 None if unexplained => TurnEnd::Twice,
                 None => match failed.filter(|_| failure.is_none()) {
+                    Some("codex_request_rejected") if self.tasks[task].provider == crate::accounts::Provider::Codex => TurnEnd::NativeRequestRejected,
+                    Some("codex_context_exceeded") if self.tasks[task].provider == crate::accounts::Provider::Codex => TurnEnd::NativeContextExceeded,
+                    Some(code) if self.tasks[task].provider == crate::accounts::Provider::Codex => TurnEnd::NativeFailed(code),
                     Some(code) => TurnEnd::Failed(code),
                     None => TurnEnd::Unexplained,
                 },
@@ -1844,8 +1849,8 @@ impl DomainState {
         for fact in facts {
             let record = match fact.clone() {
                 RuntimeObservation::ModelAnswered => {
-                    let account = self.task_account(task);
-                    self.claude_answered(&account, lifecycles)?;
+                    let account = self.task_account_key(task);
+                    self.claude_answered(task, &account, lifecycles)?;
                     continue;
                 }
                 RuntimeObservation::ResourceAvailable => LifecycleRecord::ResourceAvailable,
@@ -2305,6 +2310,9 @@ pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
 pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";
 pub const FAILED_WHY: &str = "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.";
+pub const NATIVE_FAILED_WHY: &str = "Codex ended its turn with an error. Tell it how to continue, write what to do next, or cancel the task.";
+pub const NATIVE_REQUEST_REJECTED_WHY: &str = "Codex rejected this task's request. Check the selected model, reasoning effort and input before explicitly continuing on this account or cancelling. A listed model is not proof that this request will be accepted.";
+pub const NATIVE_CONTEXT_EXCEEDED_WHY: &str = "Codex reports that this request exceeds the model's context window. Compact this session or reduce the next input before explicitly continuing. Model changes use this node's supported controls on the same account.";
 /// The longest error code a card names.
 pub const FAILED_CODE_MAX: usize = 40;
 
@@ -2317,6 +2325,9 @@ enum TurnEnd<'a> {
     Refused(&'a SdkApiFailure),
     /// Claude Code ended it as failed with this code.
     Failed(&'a str),
+    NativeFailed(&'a str),
+    NativeRequestRejected,
+    NativeContextExceeded,
 }
 
 /// Whether the user asked to interrupt `turn` after it started: the journal holds the request.
@@ -2335,6 +2346,9 @@ fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, 
         TurnEnd::Interrupted => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("You interrupted “{title}”: tell it how to go on")), INTERRUPTED_WHY),
         TurnEnd::Unexplained => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without delivering or asking: tell it how to go on")), TURN_ENDED_WHY),
         TurnEnd::Twice => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” ended two turns without delivering or asking: what next?")), TURN_ENDED_TWICE_WHY),
+        TurnEnd::NativeFailed(code) => (format!("Codex's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), NATIVE_FAILED_WHY),
+        TurnEnd::NativeRequestRejected => ("Codex rejected this task's request: check it before continuing".into(), NATIVE_REQUEST_REJECTED_WHY),
+        TurnEnd::NativeContextExceeded => ("This request exceeds the Codex model's context window".into(), NATIVE_CONTEXT_EXCEEDED_WHY),
         TurnEnd::Failed(code) => (format!("Claude's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), FAILED_WHY),
     };
     let need = clip(&need, CardSpec::NEED_MAX);

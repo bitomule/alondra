@@ -1,6 +1,6 @@
 use alondra_core::views::UsageExhausted;
 
-/// The line shown across the top while every Claude account is at its real limit: only then do launches wait.
+/// The line shown across the top during a confirmed usage limit.
 pub(super) fn banner_text(usage: &UsageExhausted, now_millis: i64) -> String {
     if usage.paused_by_user {
         let clock = usage.until.get(11..16).unwrap_or(&usage.until);
@@ -10,23 +10,23 @@ pub(super) fn banner_text(usage: &UsageExhausted, now_millis: i64) -> String {
     let (exhausted, total) = (usage.macs_exhausted, usage.macs_total);
     if total > 1 && exhausted >= total {
         trf!(
-            "No margin on any of your Macs {when} · every Claude account is at its limit",
-            "Ningún Mac tiene margen {when} · todas las cuentas de Claude están en su límite"
+            "Usage limit reached on all your Macs {when}",
+            "Límite de uso alcanzado en todos tus Macs {when}"
         )
     } else if total > 1 {
         trf!(
-            "{exhausted} of {total} Macs with no margin {when} · their Claude accounts are at their limit",
-            "{exhausted} de {total} Macs sin margen {when} · sus cuentas de Claude están en su límite"
+            "Usage limit reached on {exhausted} of {total} Macs {when}",
+            "Límite de uso alcanzado en {exhausted} de {total} Macs {when}"
         )
     } else if usage.scope == "this_mac" {
         trf!(
-            "No margin on this Mac {when} · every Claude account is at its limit",
-            "Sin margen en este Mac {when} · todas las cuentas de Claude están en su límite"
+            "Usage limit reached on this Mac {when}",
+            "Límite de uso alcanzado en este Mac {when}"
         )
     } else {
         trf!(
-            "No margin {when} · every Claude account is at its limit",
-            "Sin margen {when} · todas las cuentas de Claude están en su límite"
+            "Usage limit reached {when}",
+            "Límite de uso alcanzado {when}"
         )
     }
 }
@@ -101,15 +101,15 @@ mod tests {
         let now = parse_millis("2026-10-05T10:00:00.000+02:00").unwrap();
         let single = usage("this_mac", "2026-10-05T14:30:00.000+02:00", 1, 1);
         set_for_this_thread(Lang::En);
-        assert_eq!(banner_text(&single, now), "No margin on this Mac until 14:30 · every Claude account is at its limit");
+        assert_eq!(banner_text(&single, now), "Usage limit reached on this Mac until 14:30");
         set_for_this_thread(Lang::Es);
-        assert_eq!(banner_text(&single, now), "Sin margen en este Mac hasta 14:30 · todas las cuentas de Claude están en su límite");
+        assert_eq!(banner_text(&single, now), "Límite de uso alcanzado en este Mac hasta 14:30");
         let some = usage("all_macs", "2026-10-05T14:30:00.000+02:00", 2, 3);
-        assert_eq!(banner_text(&some, now), "2 de 3 Macs sin margen hasta 14:30 · sus cuentas de Claude están en su límite");
+        assert_eq!(banner_text(&some, now), "Límite de uso alcanzado en 2 de 3 Macs hasta 14:30");
         let all = usage("all_macs", "2026-10-05T14:30:00.000+02:00", 3, 3);
-        assert_eq!(banner_text(&all, now), "Ningún Mac tiene margen hasta 14:30 · todas las cuentas de Claude están en su límite");
+        assert_eq!(banner_text(&all, now), "Límite de uso alcanzado en todos tus Macs hasta 14:30");
         set_for_this_thread(Lang::En);
-        assert_eq!(banner_text(&all, now), "No margin on any of your Macs until 14:30 · every Claude account is at its limit");
+        assert_eq!(banner_text(&all, now), "Usage limit reached on all your Macs until 14:30");
     }
 
     #[test]
@@ -127,6 +127,6 @@ mod tests {
         set_for_this_thread(Lang::En);
         let now = parse_millis("2026-10-05T10:00:00.000+02:00").unwrap();
         let soon = usage("this_mac", "2026-10-05T10:25:00.000+02:00", 1, 1);
-        assert_eq!(banner_text(&soon, now), "No margin on this Mac for 25 more min · every Claude account is at its limit");
+        assert_eq!(banner_text(&soon, now), "Usage limit reached on this Mac for 25 more min");
     }
 }

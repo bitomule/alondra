@@ -750,4 +750,32 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
         assertWindow(size: CGSize(width: 480, height: 420)) { MacRequestOptionsSheet(store: store) }
     }
+    func test_settings_codexAccounts() throws {
+        for spanish in [false, true] {
+            var state = ServerSettingsFeature.State(key: .accounts, client: .mac)
+            state.document = try document(spanish ? "accounts-codex-mac-es" : "accounts-codex-mac")
+            let store = Store(initialState: state) { ServerSettingsFeature() }
+            assertWindow(size: CGSize(width: 640, height: 900), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                Form { ServerSettingsSection(store: store) }.formStyle(.grouped)
+            }
+        }
+    }
+
+    func test_newRequest_codexModelOptions() throws {
+        for spanish in [false, true] {
+            let form = try XCTUnwrap(try document(spanish ? "new-request-codex-mac-es" : "new-request-codex-mac").sections.flatMap(\.items).compactMap { item -> AlondraContract.Form? in
+                if case let .form(form) = item { form } else { nil }
+            }.first)
+            let fields = form.fields.filter { $0.id != "text" && $0.id != "attachments" }
+            var values = Dictionary(uniqueKeysWithValues: fields.map { ($0.id, $0.value) })
+            values["model"] = .string("codex/fixture-general")
+            values["reasoning_effort"] = .string("high")
+            values["allow_model_substitution"] = .bool(false)
+            let store = Store(initialState: RequestOptionsFeature.State(fields: fields, values: values)) { RequestOptionsFeature() }
+            assertWindow(size: CGSize(width: 480, height: 560), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                MacRequestOptionsSheet(store: store)
+            }
+        }
+    }
+
 }

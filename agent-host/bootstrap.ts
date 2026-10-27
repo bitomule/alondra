@@ -10,12 +10,14 @@ const shape = z.strictObject({
   state_dir: absolute, ownership_path: absolute, socket_path: absolute,
   host_instance_id: z.string().min(1).max(256), control_secret: digest,
   fence: z.unknown(), execution: z.unknown(),
-  manifest: z.strictObject({ mode: z.literal('node_bundle'), artifact_path: absolute, host_release: z.string().min(1).max(256), host_sha256: digest, executable_sha256: digest, sdk_version: z.literal(SDK_VERSION) }),
+  manifest: z.strictObject({ mode: z.literal('node_bundle'), artifact_path: absolute, host_release: z.string().min(1).max(256), host_sha256: digest, executable_sha256: digest, sdk_version: z.string().min(1).max(128) }),
   native: z.strictObject({ session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()), resume: z.boolean().optional() }),
   journal_base: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   orchestrator: z.strictObject({
     model: z.string().min(1).max(64),
+    reasoning_effort: z.string().min(1).max(32).optional(),
     tools: z.array(z.string().min(1).max(128)).max(16),
+    handoff_context: z.string().max(1048576).optional(),
     disallowed_tools: z.array(z.string().min(1).max(128)).max(16),
     mcp_servers: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), z.strictObject({ command: absolute, args: z.array(z.string().max(256)).max(16) })),
     plugins: z.array(absolute).max(8),
@@ -26,6 +28,7 @@ const shape = z.strictObject({
     settings: z.record(z.string(), z.json()),
     model: z.string().min(1).max(128).optional(),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    handoff_context: z.string().max(1048576).optional(),
     disallowed_tools: z.array(z.string().min(1).max(128)).max(16).optional(),
   }).optional(),
 }).refine((config) => !(config.orchestrator && config.worker), 'A host runs the orchestrator or a task, never both');
@@ -50,7 +53,7 @@ function privateNode(path: string, kind: 'file' | 'directory' | 'socket'): void 
       || !(kind === 'directory' ? stat.isDirectory() : kind === 'socket' ? stat.isSocket() : stat.isFile())) throw new Error('Private ownership path refused');
 }
 /** The private Rust launcher acquired the flock before transferring this same file as stdin. */
-export function loadBootstrap(actualArtifact: string): Bootstrap {
+export function loadBootstrap(actualArtifact: string, runtimeVersion = SDK_VERSION): Bootstrap {
   const fd = 0;
   const stat = fstatSync(fd);
   if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size < 2 || stat.size > 65536) throw new Error('Private bootstrap refused');
@@ -59,6 +62,7 @@ export function loadBootstrap(actualArtifact: string): Bootstrap {
   const after = fstatSync(fd);
   if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw new Error('Bootstrap changed during read');
   const config = shape.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)));
+  if (config.manifest.sdk_version !== runtimeVersion) throw new Error('Owned runtime manifest mismatch');
   const frame = parsePayload(Buffer.from(JSON.stringify({ protocol_version: PROTOCOL_VERSION, body: { type: 'challenge', fence: config.fence, execution: config.execution, host_instance_id: config.host_instance_id, nonce: '0'.repeat(64), executable_sha256: config.manifest.executable_sha256 } })));
   if (frame.body.type !== 'challenge') throw new Error('Bootstrap identity');
   if (config.ownership_path !== join(config.state_dir, 'host.lock') || config.socket_path !== join(config.state_dir, 's')) throw new Error('Ownership binding paths');

@@ -88,6 +88,8 @@ mod idle_compaction;
 mod notices;
 mod options;
 mod orchestrator_process;
+mod orchestrator_provider;
+mod orchestrator_codex;
 mod orchestrator_sdk;
 mod plugins;
 mod reports;
@@ -104,6 +106,8 @@ mod push_retract;
 mod relaunch;
 mod sdk_handover;
 mod sdk_live;
+mod codex_live;
+mod provider_transition;
 mod sdk_owner;
 #[cfg(target_os = "macos")]
 mod schedule_clock;
@@ -111,6 +115,8 @@ mod schedules;
 mod service;
 mod settings;
 mod service_files;
+mod scoped_reads;
+mod task_context;
 mod start_guard;
 mod updates;
 mod usage_pause;
@@ -513,6 +519,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         log!("the previous daemon stopped in the middle of {actions} local action(s); they are marked interrupted");
     }
     let domain = state.domain();
+    accounts::begin_initial_check(&domain);
     domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     // Before any SDK execution is taken over: a host that replaces one that ended loads this plugin.
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
@@ -522,10 +529,19 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         },
         None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
     }
+    match plugins::orchestrator_source(&watcher::claude_home()).zip(plugins::own_cli()) {
+        Some((source,cli)) => {
+            if let Err(error) = plugins::install_orchestrator(&config.home,&source,&cli) {
+                log!("Could not update Alondra's orchestrator integration assets: {error:#}");
+            }
+        }
+        None => log!("Alondra's orchestrator assets are missing; run alondra doctor --fix"),
+    }
     let environment: std::collections::BTreeMap<String, String> = std::env::vars().collect();
     let daemon = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("alondrad"));
     match sdk_owner::backend::resolve(&config.home, config.sandbox, &options::user_home(), &daemon, &environment) {
-        Ok(backend) => {
+        Ok(mut backend) => {
+            backend.native_environment.insert("ALONDRA_PORT".into(), config.port.to_string());
             log!("the Agent SDK host is {} (configuration {})", backend.host.display(), backend.configuration_digest());
             domain.enable_sdk(backend.clone());
             // Adopt the live host of every task a previous daemon left running, so a restart keeps
@@ -615,7 +631,9 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     tokio::spawn(retention::run(domain.clone()));
     let gate = tokio::spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
-    tokio::spawn(claude_check::run(plugins::node()));
+    if accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
+        tokio::spawn(claude_check::run(plugins::node()));
+    }
     if config.fast_timing {
         domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
         domain.live.gate.ignore_mac();
@@ -627,6 +645,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     tokio::spawn(node_revival::run(state_domain.clone(), revival));
     tokio::spawn(sdk_handover::run(state_domain.clone()));
     tokio::spawn(account_move::run(state_domain.clone()));
+    tokio::spawn(provider_transition::run(state_domain.clone()));
     let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
     tokio::spawn(idle_compaction::run(state_domain.clone(), compaction));
     let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };

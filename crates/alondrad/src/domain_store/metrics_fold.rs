@@ -136,15 +136,15 @@ fn record_usage(tx: &Transaction<'_>, spent: &Spent<'_>, usage: &Usage) -> rusql
     ).optional()?;
     tx.execute(
         "INSERT INTO usage_sessions(session_id,model,provider,task_id,role,cost_micros,input,output,cache_read,cache_write,complete,first_at,last_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11,?11)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?12,?11,?11)
          ON CONFLICT(session_id,model) DO UPDATE SET
-          complete=complete AND excluded.input+excluded.output+excluded.cache_read+excluded.cache_write>=input+output+cache_read+cache_write,
+          complete=complete AND excluded.complete AND excluded.input+excluded.output+excluded.cache_read+excluded.cache_write>=input+output+cache_read+cache_write,
           cost_micros=CASE WHEN cost_micros IS NULL THEN excluded.cost_micros WHEN excluded.cost_micros IS NULL THEN cost_micros ELSE max(cost_micros,excluded.cost_micros) END,
           input=max(input,excluded.input),output=max(output,excluded.output),
           cache_read=max(cache_read,excluded.cache_read),cache_write=max(cache_write,excluded.cache_write),
           folded=0,last_at=excluded.last_at",
         params![spent.session_id, usage.model, spent.provider, spent.task_id, spent.role.as_str(), usage.cost_micros,
-            usage.input, usage.output, usage.cache_read, usage.cache_write, spent.at],
+            usage.input, usage.output, usage.cache_read, usage.cache_write, spent.at, spent.provider != "codex"],
     )?;
     let task = match &known {
         Some((task, ..)) => task.clone(),
@@ -247,13 +247,19 @@ fn fold(tx: &Transaction<'_>, task: &str) -> rusqlite::Result<bool> {
         )?;
     }
     let measured: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_model_usage WHERE task_id=?1)", [task], |row| row.get(0))?;
+    let (provider, kind): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT (SELECT provider FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch') ORDER BY at DESC,id DESC LIMIT 1),
+          (SELECT task_kind FROM model_decisions WHERE task_id=?1 AND task_kind IS NOT NULL ORDER BY at DESC,id DESC LIMIT 1)",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     let flag = i64::from;
     let sampled_values = sampled.as_ref().map(|s| (s.sessions, s.steps));
     tx.execute(
         "INSERT INTO task_metrics(task_id,project,model,effort,approach,role,outcome,started_at,finished_at,clean,change_rounds,reviewer_rounds,
           interventions,reopened,relaunched,work_ms,waiting_user_ms,queued_ms,blocked_ms,measured,sessions,steps,subagent_steps,looks,polls,
-          pr_merged,pr_lines,folded_revision)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,COALESCE(?21,0),COALESCE(?22,0),COALESCE(?23,0),COALESCE(?24,0),COALESCE(?25,0),?26,NULL,?27)
+          pr_merged,pr_lines,folded_revision,provider,kind)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,COALESCE(?21,0),COALESCE(?22,0),COALESCE(?23,0),COALESCE(?24,0),COALESCE(?25,0),?26,NULL,?27,?28,?29)
          ON CONFLICT(task_id) DO UPDATE SET project=excluded.project,model=excluded.model,effort=excluded.effort,approach=excluded.approach,
           role=excluded.role,outcome=excluded.outcome,started_at=excluded.started_at,finished_at=excluded.finished_at,clean=excluded.clean,
           change_rounds=excluded.change_rounds,reviewer_rounds=excluded.reviewer_rounds,interventions=excluded.interventions,
@@ -261,13 +267,13 @@ fn fold(tx: &Transaction<'_>, task: &str) -> rusqlite::Result<bool> {
           queued_ms=excluded.queued_ms,blocked_ms=excluded.blocked_ms,measured=excluded.measured,
           sessions=COALESCE(?21,sessions),steps=COALESCE(?22,steps),subagent_steps=COALESCE(?23,subagent_steps),
           looks=COALESCE(?24,looks),polls=COALESCE(?25,polls),pr_merged=excluded.pr_merged,
-          folded_revision=excluded.folded_revision",
+          folded_revision=excluded.folded_revision,provider=excluded.provider,kind=excluded.kind",
         params![
             task, project, m.model, m.effort, m.approach, role, m.outcome.as_str(), m.started_at, m.finished_at, flag(m.clean),
             m.change_rounds, m.reviewer_rounds, m.interventions, flag(m.reopened), flag(m.relaunched), m.work_ms, m.waiting_user_ms,
             m.queued_ms, m.blocked_ms, flag(measured), sampled_values.map(|(sessions, _)| sessions), sampled_values.map(|(_, s)| s[0]),
             sampled_values.map(|(_, s)| s[1]), sampled_values.map(|(_, s)| s[2]), sampled_values.map(|(_, s)| s[3]),
-            flag(pr_merged), revision,
+            flag(pr_merged), revision, provider, kind,
         ],
     )?;
     tx.execute("UPDATE usage_sessions SET folded=1 WHERE task_id=?1", [task])?;

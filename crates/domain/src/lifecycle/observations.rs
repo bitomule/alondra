@@ -184,12 +184,13 @@ impl TaskLifecycle {
                 };
                 // Claude Code opens the turn of a notification before it reads anything else, and
                 // that turn reads every notification waiting: whatever turn starts takes them up.
-                let continuations: BTreeSet<Wake> = continuations.into_iter().filter(|wake| !matches!(wake, Wake::Owned(_))).collect();
+                let (taken, continuations): (BTreeSet<Wake>, BTreeSet<Wake>) = continuations.into_iter().partition(|wake| matches!(wake, Wake::Owned(_)));
                 unprompted = trigger_unprompted;
                 execution.activity = Activity::Turn {
                     id: turn,
                     work,
                     continuations,
+                    taken,
                     stop: TurnStop::Running,
                 };
             }
@@ -216,8 +217,9 @@ impl TaskLifecycle {
                         id,
                         work,
                         continuations,
+                        taken,
                         stop,
-                    } => (work.clone(), continuations.clone(), Some((id.clone(), *stop))),
+                    } => (work.clone(), continuations.clone(), Some((id.clone(), taken.clone(), *stop))),
                     Activity::OwnWork {
                         work,
                         continuations,
@@ -230,11 +232,12 @@ impl TaskLifecycle {
                 if !continuations.insert(Wake::Owned(continuation)) {
                     return Err(Refusal::DuplicateObligation);
                 }
-                execution.activity = if let Some((id, stop)) = root {
+                execution.activity = if let Some((id, taken, stop)) = root {
                     Activity::Turn {
                         id,
                         work,
                         continuations,
+                        taken,
                         stop,
                     }
                 } else if !work.is_empty() {
@@ -247,11 +250,19 @@ impl TaskLifecycle {
                 };
             }
             RuntimeFact::ContinuationConsumed { continuation } => {
-                let (Activity::Turn { continuations, .. } | Activity::OwnWork { continuations, .. }) = &mut execution.activity else {
-                    return Err(Refusal::InvalidState);
-                };
-                if !continuations.remove(&Wake::Owned(continuation)) {
-                    return Err(Refusal::UnknownObligation);
+                let wake = Wake::Owned(continuation);
+                match &mut execution.activity {
+                    Activity::Turn { continuations, taken, .. } => {
+                        if !continuations.remove(&wake) && !taken.remove(&wake) {
+                            return Err(Refusal::UnknownObligation);
+                        }
+                    }
+                    Activity::OwnWork { continuations, .. } => {
+                        if !continuations.remove(&wake) {
+                            return Err(Refusal::UnknownObligation);
+                        }
+                    }
+                    _ => return Err(Refusal::InvalidState),
                 }
             }
             RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits } => {
@@ -331,6 +342,7 @@ impl TaskLifecycle {
                         id,
                         work,
                         continuations,
+                        taken,
                         stop,
                     } => {
                         let mut continuations = continuations.clone();
@@ -341,6 +353,7 @@ impl TaskLifecycle {
                             id: id.clone(),
                             work: work.clone(),
                             continuations,
+                            taken: taken.clone(),
                             stop: *stop,
                         }
                     }

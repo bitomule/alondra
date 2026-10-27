@@ -11,7 +11,7 @@ pub struct LaunchPlan {
     pub mission: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "reasoning_effort")]
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approach: Option<crate::options::Approach>,
@@ -19,6 +19,8 @@ pub struct LaunchPlan {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<TaskRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<crate::task_tags::TaskTags>,
     /// The project the task belongs to. Alondra sets it from where the task works when the task is
     /// created; whatever its creator sends is replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -27,7 +29,7 @@ pub struct LaunchPlan {
 
 impl LaunchPlan {
     pub fn new(name: impl Into<String>, cwd: impl Into<String>) -> Self {
-        LaunchPlan { name: name.into(), cwd: cwd.into(), mission: None, model: None, effort: None, approach: None, reason: None, role: None, project: None }
+        LaunchPlan { name: name.into(), cwd: cwd.into(), mission: None, model: None, effort: None, approach: None, reason: None, role: None, tags: None, project: None }
     }
 
     /// The required field a plan leaves blank, if any.

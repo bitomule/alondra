@@ -500,6 +500,13 @@ pub fn run(options: Options) -> Result<()> {
     }
 }
 
+fn choose_provider(ui: &mut dyn Ui) -> Result<Option<alondra_core::accounts::Provider>, Cancelled> {
+    let choices = vec!["Codex".into(), "Claude".into(), tr!("Connect later", "Conectar más tarde").into()];
+    Ok(match ui.select(tr!("Which AI provider do you want to connect?", "¿Qué proveedor de IA quieres conectar?"), &choices)? {
+        Some(0) => Some(alondra_core::accounts::Provider::Codex), Some(1) => Some(alondra_core::accounts::Provider::Claude), _ => None,
+    })
+}
+
 /// The wizard (§3.2): `doctor --fix` that also asks for the projects folder and the relay, then
 /// waits for a device to pair. Returns the exit code.
 fn wizard() -> i32 {
@@ -507,13 +514,22 @@ fn wizard() -> i32 {
     let env = Env { sys: &sys, deep: false, first_run: true, yes: false, select: Selection::All };
     let mut ui = ui::Interactive { width: WIDTH };
     ui.intro(&trf!("Alondra {CLI} · setting up this Mac", "Alondra {CLI} · configurando este Mac"));
-    let finished = repair(&env, &mut ui).and_then(|repair| {
-        let code = exit_code(&repair.outcomes);
+    let finished = repair(&env, &mut ui).and_then(|mut repaired| {
+        let mut code = exit_code(&repaired.outcomes);
+        let connected = sys.options_text().and_then(|text| alondra_core::options::OptionsFile::parse(&text).ok()).is_some_and(|options| !options.accounts.connected_providers().is_empty());
+        if code == 0 && !connected && let Some(provider) = choose_provider(&mut ui)? {
+            if let Err(error) = crate::provider_accounts::login_for(provider, "default", false) {
+                ui.step(Status::Fail, tr!("Provider sign-in", "Inicio de sesión del proveedor"), &error.to_string(), Some("alondra doctor --fix"));
+                return Ok((1, repaired));
+            }
+            repaired = repair(&env, &mut ui)?;
+            code = exit_code(&repaired.outcomes);
+        }
         if code == 0 {
             let daemon = devices_wait::Daemon(crate::client::Client::new(std::time::Duration::from_secs(5)));
             devices_wait::wait(&daemon, &mut ui, &devices_wait::Terminal(std::time::Instant::now()))?;
         }
-        Ok((code, repair))
+        Ok((code, repaired))
     });
     match finished {
         Ok((code, repair)) => {

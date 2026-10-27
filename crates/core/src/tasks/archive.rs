@@ -76,7 +76,7 @@ mod tests {
     }
 
     fn sent(id: &str) -> Event {
-        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
+        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None, selection: None };
         Event::RequestSent { request_id: id.into(), options, text: Some("How is it going?".into()), attachments: vec![] }
     }
 

@@ -119,6 +119,7 @@ impl Rig {
             self.domain.record_model_decision(&Decision {
                 task_id: id.clone(), request_id: "r".into(), agent_id: Some(session.clone()), at: 1, kind: DecisionKind::Launch,
                 model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: format!("Task {n}"),
+                provider: None, tags: None,
             }).unwrap();
         }
         match task {

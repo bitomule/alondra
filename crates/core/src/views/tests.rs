@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -533,7 +533,7 @@ fn golden_fixture() -> DomainState {
     }
     state.accounts = golden_accounts().into_iter().map(|account| crate::accounts::AccountStatus {
         provider: crate::accounts::Provider::Claude, id: account.id, name: account.name, state: crate::accounts::AccountState::SignedIn,
-        email: None, plan: None, billing: account.billing, sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0,
     }).collect();
     if let Some(mut agent) = state.agents.remove(&"a-1".into()) {
         agent.id = agent_id.into();
@@ -1690,16 +1690,16 @@ fn without_a_claude_session_the_banner_and_the_queue_say_so_and_never_that_usage
     let waiting = LiveSnapshot { waits_for_session: true, start_waits: [("t-1".into(), LiveStartWait::Room)].into(), ..LiveSnapshot::default() };
     let status = |live: &LiveSnapshot, lang| render(&state, live, Client::Ios, lang, "tasks", "").status;
     assert_eq!(status(&waiting, Lang::Es).session_wait.map(|notice| notice.text).as_deref(),
-        Some("Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude"));
+        Some("No hay ninguna cuenta de proveedor disponible · revisa Cuentas"));
     assert_eq!(status(&waiting, Lang::En).session_wait.map(|notice| notice.text).as_deref(),
-        Some("Waiting for a Claude session · sign in to an account in Claude accounts"));
+        Some("No provider account is available · check Accounts"));
     assert_eq!(status(&waiting, Lang::Es).usage_exhausted, None, "no quota banner");
-    assert_eq!(task_line(&state, &waiting, Lang::Es), "En cola · Esperando una sesión de Claude · arranca cuando una cuenta la tenga");
-    assert_eq!(task_line(&state, &waiting, Lang::En), "Queued · Waiting for a Claude session · starts once an account has one");
+    assert_eq!(task_line(&state, &waiting, Lang::Es), "En cola · Esperando una sesión de proveedor · arranca cuando una cuenta la tenga");
+    assert_eq!(task_line(&state, &waiting, Lang::En), "Queued · Waiting for a provider session · starts once an account has one");
     let mut refused = waiting.clone();
     refused.start_waits.clear();
     refused.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
-    assert_eq!(task_line(&state, &refused, Lang::Es), "No arrancó · Esperando una sesión de Claude");
+    assert_eq!(task_line(&state, &refused, Lang::Es), "No arrancó · Esperando una sesión de proveedor");
 }
 
 #[test]
@@ -1714,7 +1714,7 @@ fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
     let status = render(&state, &out, Client::Ios, Lang::Es, "tasks", "").status;
     assert_eq!(status.usage_exhausted.map(|usage| usage.until).as_deref(), Some("2026-10-24T14:30:00.000+02:00"));
     assert_eq!(status.session_wait, None, "usage that ran out is not a missing session");
-    assert_eq!(task_line(&state, &out, Lang::Es), "En cola · Se acabó el uso de Claude · arranca cuando vuelva");
+    assert_eq!(task_line(&state, &out, Lang::Es), "En cola · Límite de uso alcanzado · arranca cuando vuelva");
 }
 
 #[test]
@@ -1752,7 +1752,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     assert_eq!(task_line(&state, &live, Lang::En), "Didn't start · Claude Code doesn't trust ~/Projects/indie-apps");
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting", "no card asks for it, so it is not «Para ti»");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
-    assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Se acabó el uso de Claude");
+    assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Límite de uso alcanzado");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
         reason: "launch_failed".into(), detail: Some("claude exited with 1\nmore".into()),
     });
@@ -3179,8 +3179,8 @@ fn a_request_not_split_yet_says_it_waits_for_a_claude_sign_in_while_no_account_h
         working: false, summary: None, failure: None, queue_depth: 1, active_run_id: None, can_retry: false, can_cancel: false, waits_for_sign_in,
     }), ..Default::default() };
     let subtitle = |live: &LiveSnapshot, lang| active_row(&state, live, Client::Ios, lang, "r-2").1.subtitle.unwrap();
-    assert_eq!(subtitle(&live(true), Lang::Es), "Esperando una sesión de Claude");
-    assert_eq!(subtitle(&live(true), Lang::En), "Waiting for a Claude session");
+    assert_eq!(subtitle(&live(true), Lang::Es), "Esperando una sesión de proveedor");
+    assert_eq!(subtitle(&live(true), Lang::En), "Waiting for a provider session");
     assert_eq!(subtitle(&live(false), Lang::Es), "Preparando sus tareas", "once an account has a session it says what it does again");
 }
 
@@ -3656,7 +3656,7 @@ fn a_task_detail_names_the_claude_account_its_node_runs_on_once_there_are_severa
     state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(AccountId::default_account());
     assert_eq!(account(&state, Lang::En), None, "with the one default account there is nothing to tell apart");
     let status = |id: &str, name: &str, billing| AccountStatus { provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(),
-        state: AccountState::SignedIn, email: None, plan: None, billing, sign_ins: 0 };
+        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing, sign_ins: 0 };
     state.accounts = vec![status("default", "Principal", AccountBilling::default()), status("work", "Trabajo", AccountBilling::default()),
         status("api", "API", AccountBilling::PayPerUse)];
     assert_eq!(account(&state, Lang::En), Some(("Claude account".into(), "Principal".into())));
@@ -4027,7 +4027,7 @@ fn every_builder_string_has_spanish() {
         "Keep the warmer copy", "Ship the concise copy", "Ship it", "Hold it back", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
         "The simulator pass completed successfully.", "Started", "Waiting for a decision",
-        "Reading the localization catalog", "API",
+        "Reading the localization catalog", "API", "Principal", "Trabajo", "Claude · Principal", "Claude · Trabajo",
     ];
     const FIXTURE_TEXT_PREFIXES: &[&str] = &[
         "## Beta candidate ready", "All required checks passed", "Prepare the next Alondra beta",
@@ -4626,7 +4626,7 @@ fn request_option_values_keep_their_description_in_both_languages() {
     assert!(effort.iter().all(Option::is_some));
     let [pr, effort] = descriptions(Lang::Es);
     assert_eq!(pr[1].as_deref(), Some("Alondra hace merge de la PR cuando pasan sus comprobaciones"));
-    assert_eq!(effort[2].as_deref(), Some("El modelo y el esfuerzo por defecto de Claude"));
+    assert_eq!(effort[2].as_deref(), Some("Trabajo normal con los perfiles de tarea configurados"));
 }
 
 fn held_fixture(hold: crate::domain::Hold, card: crate::domain::CardSpec) -> DomainState {
@@ -5254,6 +5254,7 @@ fn failed_launch_fixture(error: &str) -> DomainState {
         }).unwrap();
     };
     run(&mut state, Command::CreateSchedule { schedule: Schedule {
+        paid_account_grant: None,
         id: "0789f185-0000".into(), title: "Build a feature".into(), text: "Build a feature".into(),
         project: Some("alondra".into()), options: BTreeMap::new(), disallowed_tools: vec![],
         frequency: ScheduleFrequency::Daily, hour: 9, minute: 0, weekday: None, interval: None,
@@ -7563,7 +7564,7 @@ fn accounts_fixture() -> (DomainState, LiveSnapshot) {
     use crate::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
     let (mut state, live) = (golden_fixture(), golden_live());
     let account = |id: &str, name: &str, state, email: Option<&str>, plan: Option<&str>, weight| AccountStatus {
-        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(), state, email: email.map(Into::into),
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: email.map(Into::into),
         plan: plan.map(Into::into), billing: AccountBilling::Subscription { plan: None, weight }, sign_ins: 0,
     };
     state.accounts = vec![
@@ -7611,7 +7612,7 @@ fn accounts_views_match_goldens() {
 fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow() {
     let (state, live) = accounts_fixture();
     let view = render(&state, &live, Client::Tui, Lang::En, "accounts", "");
-    assert_eq!(view.title.as_deref(), Some("Claude accounts"));
+    assert_eq!(view.title.as_deref(), Some("Accounts"));
     assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a screen never shows a folder");
     let rows: Vec<Row> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
         Item::Row(row) => Some(row.clone()),
@@ -7621,13 +7622,13 @@ fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow()
     let labels = |row: &Row| row.actions.iter().map(|action| action.label.clone()).collect::<Vec<_>>();
 
     let default = row("Default");
-    assert_eq!(default.subtitle.as_deref(), Some("someone@example.org · max · weight 5, by plan\n5 h 12 % · week 34 %"));
+    assert_eq!(default.subtitle.as_deref(), Some("Claude · someone@example.org · max · weight 5, by plan\n5 h 12 % · week 34 %"));
     assert_eq!(default.badges[0].text, "Signed in");
-    assert_eq!(labels(&default), ["Weight", "Move down", "Turn off"], "the Mac's own sign-in is never removed, and it is first");
+    assert_eq!(labels(&default), ["Weight", "Move down", "Turn off", "Rename", "Refresh models"], "the Mac's own sign-in is never removed, and it is first");
 
     let work = row("Work");
-    assert_eq!(work.subtitle.as_deref(), Some("someone@work.example · max_20x · weight 8, set by you\n5 h 61 % · week 48 % · 1 node"));
-    assert_eq!(labels(&work), ["Weight", "Move up", "Move down", "Turn off", "Remove"]);
+    assert_eq!(work.subtitle.as_deref(), Some("Claude · someone@work.example · max_20x · weight 8, set by you\n5 h 61 % · week 48 % · 1 node"));
+    assert_eq!(labels(&work), ["Weight", "Move up", "Move down", "Turn off", "Rename", "Refresh models", "Remove"]);
     let remove = work.actions.iter().find(|action| action.label == "Remove").unwrap();
     assert!(!remove.enabled, "a node runs on it");
     assert_eq!(remove.disabled_reason.as_deref(), Some("Open tasks still run on Work: remove it once they are done."));
@@ -7637,22 +7638,22 @@ fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow()
     let personal = row("Personal");
     assert_eq!(personal.badges[0].text, "Signed out");
     assert_eq!(labels(&personal)[0], "Sign in");
-    assert!(matches!(&personal.actions[0].link, Some(Link::Local { local: LocalLink::AccountSignIn { account, command } })
-        if account == "Personal" && command == "alondra accounts login 'Personal'"));
+    assert!(matches!(&personal.actions[0].link, Some(Link::Local { local: LocalLink::AccountSignIn { account, command, .. } })
+        if account == "Personal" && command == "alondra accounts login 'personal'"));
     assert!(labels(&personal).contains(&"Remove".to_owned()));
 
     let old = row("Old");
     assert_eq!(old.badges[0].text, "Off");
-    assert_eq!(labels(&old), ["Weight", "Move up", "Turn on", "Remove"], "the last can't move down");
+    assert_eq!(labels(&old), ["Weight", "Move up", "Turn on", "Rename", "Refresh models", "Remove"], "the last can't move down");
 
-    let add = row("Add an account");
-    assert!(matches!(&add.actions[0].link, Some(Link::Local { local: LocalLink::AccountAdd { command } }) if command == "alondra accounts add"));
+    let add = row("Add a Claude account");
+    assert!(matches!(&add.actions[0].link, Some(Link::Local { local: LocalLink::AccountAdd { command, .. } }) if command == "alondra accounts add"));
     let policy = row("Most room first");
     assert_eq!(labels(&policy), ["Change"]);
     assert_eq!(policy.actions[0].options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["chain"], "only the other way is offered");
     let moves = row("Move a node when its account runs out");
     assert_eq!(moves.badges[0].text, "Off", "off unless the user turns it on");
-    assert_eq!(moves.subtitle.as_deref(), Some("Anthropic doesn't say whether switching accounts when one reaches its limit is allowed."));
+    assert_eq!(moves.subtitle.as_deref(), Some("Continue with the next eligible account in your order when quota runs out"));
     assert_eq!((labels(&moves), moves.actions[0].option_id.as_deref()), (vec!["Turn on".to_owned()], Some("on")));
     assert_eq!(crate::views::accounts::shell_word("Bob's"), r"'Bob'\''s'");
 }
@@ -8172,6 +8173,221 @@ fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_revie
             assert_eq!(shown(&state, client, Lang::En), en, "{client:?}");
             assert_eq!(shown(&state, client, Lang::Es), es, "{client:?}");
         }
+    }
+}
+
+
+#[test]
+fn provider_accounts_share_one_order_without_aliasing_same_slugs_or_native_windows() {
+    use crate::accounts::{AccountKey, Provider};
+    let (mut state, mut live) = accounts_fixture();
+    let work = state.accounts.iter().find(|account| account.id.as_str() == "work").unwrap().clone();
+    let mut codex = work.clone();
+    codex.provider = Provider::Codex;
+    state.accounts.push(codex);
+    let key = |provider| AccountKey { provider, account: work.id.clone() };
+    state.account_order = vec![key(Provider::Codex), key(Provider::Claude)];
+    state.account_usage.push(crate::usage::AccountUsage {
+        provider: Provider::Codex, account: work.id.clone(), plan: None, day_start: None,
+        windows: vec![crate::usage::UsageWindow { reading: crate::usage::WindowReading {
+            kind: crate::usage::WindowKind::named("codex:account:primary:300"), used: crate::usage::Share::of(0.42), resets_at: Some(1_000), exhausted: false,
+        }, measured_at: 10 }],
+    });
+    live.observed_at = Some(2_000);
+    let view = render(&state, &live, Client::Ios, Lang::En, "accounts", "");
+    let rows: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item { Item::Row(row) if row.account.is_some() => Some(row), _ => None }).collect();
+    let codex = rows.iter().find(|row| row.account.as_ref().unwrap().key == key(Provider::Codex)).unwrap();
+    let claude = rows.iter().find(|row| row.account.as_ref().unwrap().key == key(Provider::Claude)).unwrap();
+    assert_ne!(codex.id, claude.id);
+    assert_eq!(codex.account.as_ref().unwrap().position, 1);
+    assert_eq!(claude.account.as_ref().unwrap().position, 2);
+    assert!(codex.subtitle.as_ref().unwrap().starts_with("Codex"));
+    assert!(!codex.subtitle.as_ref().unwrap().contains("weight"));
+    assert!(!codex.actions.iter().any(|action| action.id.starts_with("account_weight:")));
+    let policy = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.id == "claude-policy" => Some(row), _ => None }).unwrap();
+    assert_eq!(policy.title, "In list order"); assert!(policy.actions.is_empty());
+    let window = &codex.account.as_ref().unwrap().windows[0];
+    assert_eq!((window.used_percent, window.measured_at, window.resets_at, window.stale), (42, 10, Some(1_000), true));
+    assert!(window.kind.starts_with("codex:account:"));
+    assert_eq!(window.label, "Account · Primary · 300 min");
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "accounts", "");
+    let metadata = spanish.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.account.as_ref().is_some_and(|metadata| metadata.key == key(Provider::Codex)) => row.account.as_ref(), _ => None }).unwrap();
+    assert_eq!(metadata.windows[0].label, "Cuenta · Principal · 300 min");
+    assert!(!codex.actions.iter().any(|action| action.id.starts_with("account_") && action.id.split('~').next_back() == Some("claude")));
+    assert!(codex.actions.iter().filter(|action| !action.id.is_empty()).all(|action| action.id.ends_with("~codex")));
+}
+
+#[test]
+fn committed_pending_models_never_replace_effective_models_or_positional_task_header_facts() {
+    use crate::accounts::{AccountKey, Provider};
+    use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, PendingTaskSelection, TaskSelection};
+    let mut state = fixture();
+    let id = state.tasks.keys().next().unwrap().clone();
+    let old = ModelSelection { model: ModelKey { provider: Provider::Claude, model: "actual-model".into() }, reasoning_effort: None, catalog_revision: "old-catalog".into() };
+    let next = ModelSelection { model: ModelKey { provider: Provider::Codex, model: "next-model".into() }, reasoning_effort: Some("high".into()), catalog_revision: "next-catalog".into() };
+    let task = state.tasks.get_mut(&id).unwrap();
+    let mut selection = TaskSelection::automatic(ModelProfile::Implementation);
+    selection.effective = Some(old);
+    task.selection = Some(selection);
+    task.pending_selection = Some(PendingTaskSelection { account: AccountKey::native(Provider::Codex), model: next, reason: "The user chose the next model".into() });
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, &format!("task:{id}"), "");
+    let facts = |section: &str| view.sections.iter().filter(|part| part.id == section).flat_map(|part| &part.items).flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect::<Vec<_>>();
+    let header = facts("header");
+    assert_eq!(header[0].label, "State");
+    assert_eq!(header[1].label, "Request", "native readers rely on this established header shape");
+    assert!(!header.iter().any(|fact| matches!(fact.label.as_str(), "Requested model" | "Effective model" | "Pending model")));
+    let readings = facts("readings");
+    assert_eq!(readings.iter().find(|fact| fact.label == "Requested model").unwrap().value, "Automatic");
+    assert_eq!(readings.iter().find(|fact| fact.label == "Effective model").unwrap().value, "Claude · actual-model");
+    assert!(readings.iter().find(|fact| fact.label == "Pending model").unwrap().value.contains("Codex · next-model · high"));
+}
+
+fn advertised_model_controls_fixture() -> (DomainState, LiveSnapshot) {
+    use crate::model_selection::{AccountModelCatalog, CatalogModel, ModelCandidate, ModelProfile, RoleModelPolicy};
+    let (mut state, live) = accounts_fixture();
+    state.orchestrator_session = None;
+    let catalog = AccountModelCatalog { account: crate::accounts::AccountKey::native(crate::accounts::Provider::Claude), revision: "catalog-one".into(), measured_at: 1000,
+        native_default: None, models: ["native-large", "native-fast"].into_iter().map(|name| CatalogModel { model: name.into(), display_name: name.into(), reasoning_efforts: vec!["low".into(), "high".into()], default_reasoning_effort: Some("high".into()), context_window: Some(128000), input_modalities: vec!["text".into()], is_default: false, hidden: false }).collect() };
+    state.model_catalogs = vec![catalog];
+    state.model_profiles.entry(crate::accounts::Provider::Claude).or_default().insert(ModelProfile::Orchestrator, RoleModelPolicy::OrderedCandidates { candidates: vec![
+        ModelCandidate { model: "native-large".into(), reasoning_effort: Some("high".into()) }, ModelCandidate { model: "native-fast".into(), reasoning_effort: Some("low".into()) },
+    ] });
+    state.model_profiles_version = crate::model_selection::profiles_version(&state.model_profiles);
+    assert!(state.journal_every_task());
+    (state, live)
+}
+
+#[test]
+fn provider_model_bootstrap_is_available_without_an_orchestrator_and_never_invents_a_native_default() {
+    let (state, live) = advertised_model_controls_fixture();
+    let accounts = render(&state, &live, Client::Ios, Lang::En, "accounts", "");
+    let role = accounts.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.title == "Claude · Orchestrator" => Some(row), _ => None }).unwrap();
+    let chooser = role.actions.iter().find(|action| action.label == "Choose model").unwrap();
+    assert!(chooser.enabled); assert!(chooser.options.iter().any(|option| option.id == "model:claude/native-large"));
+    assert!(!chooser.options.iter().any(|option| option.id == "auto"), "catalog order does not prove a native default");
+    assert!(chooser.id.contains(&state.model_profiles_version));
+    assert!(role.actions.iter().any(|action| action.label == "Reasoning effort"));
+    let view = render(&state, &live, Client::Tui, Lang::En, "model_profile:claude-orchestrator", "");
+    let form = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Form(form) => Some(form), _ => None }).unwrap();
+    assert!(form.submit.enabled); assert!(form.submit.id.contains(&state.model_profiles_version));
+    for (id, value) in [("model", "claude/native-large"), ("reasoning_effort", "high"), ("candidate_2", "claude/native-fast"), ("reasoning_effort_2", "low"), ("candidate_3", "")] {
+        assert_eq!(form.fields.iter().find(|field| field.id == id).unwrap().value, serde_json::json!(value));
+    }
+    let FieldKind::Choice { items } = &form.fields.iter().find(|field| field.id == "model").unwrap().kind else { panic!("model choice") };
+    assert!(items.iter().find(|item| item.id == "auto").unwrap().disabled_reason.is_some());
+}
+
+#[test]
+fn active_model_editor_keeps_account_read_only_and_uses_selection_stamp_instead_of_progress_revision() {
+    let (mut state, live) = advertised_model_controls_fixture();
+    let task = state.tasks.values().find(|task| !task.state.terminal()).unwrap().id.clone();
+    state.tasks.get_mut(&task).unwrap().selection = Some(crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation));
+    let key = format!("task_selection:{task}");
+    let view = render(&state, &live, Client::Tui, Lang::En, &key, "");
+    let form = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Form(form) => Some(form), _ => None }).unwrap();
+    assert!(form.fields.iter().all(|field| !matches!(field.id.as_str(), "account" | "pin_account" | "reasoning_effort")), "existing-node account and effort selection is read-only");
+    let model = form.fields.iter().find(|field| field.id == "model").unwrap();
+    assert!(model.help.as_ref().unwrap().contains("Create another node"));
+    let FieldKind::Choice { items } = &model.kind else { panic!("model choices") };
+    assert!(items.iter().all(|item| item.id == "auto" || item.id.starts_with("claude/")));
+    assert_eq!(form.substitution_was_edited, Some(false));
+    assert!(form.submit.id.contains("@0~"));
+    assert!(form.submit.id.ends_with(&state.task_selection_stamp(&task).unwrap()));
+    let first = form.submit.id.clone(); state.revision += 100;
+    let view = render(&state, &live, Client::Tui, Lang::En, &key, "");
+    let form = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Form(form) => Some(form), _ => None }).unwrap();
+    assert_eq!(form.submit.id, first, "unrelated progress must not make this input stale");
+}
+
+#[test]
+fn native_limit_errors_show_no_fabricated_usage_percentage() {
+    let (mut state, live) = accounts_fixture();
+    let mut account = state.accounts[0].clone(); account.provider = crate::accounts::Provider::Codex;
+    state.accounts.push(account.clone());
+    state.account_usage.push(crate::usage::AccountUsage { provider: account.provider, account: account.id.clone(), plan: None, day_start: None,
+        windows: vec![crate::usage::UsageWindow { measured_at: 10, reading: crate::usage::WindowReading { kind: crate::usage::WindowKind::Other("codex:account:limit".into()), used: crate::usage::Share::NONE, resets_at: None, exhausted: true } }] });
+    let view = render(&state, &live, Client::Ios, Lang::En, "accounts", "");
+    let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.account.as_ref().is_some_and(|metadata| metadata.key.provider == crate::accounts::Provider::Codex && metadata.key.account == account.id) => Some(row), _ => None }).unwrap();
+    let metadata = row.account.as_ref().unwrap();
+    assert!(metadata.windows.is_empty());
+    assert!(metadata.reason.as_ref().unwrap().contains("no usage percentage was reported"));
+    assert!(row.subtitle.as_ref().unwrap().contains("Provider reported a usage limit"));
+    assert!(!row.subtitle.as_ref().unwrap().contains("0 %"));
+}
+
+#[test]
+fn profile_edit_and_active_model_navigation_use_existing_view_links() {
+    let (state, live) = advertised_model_controls_fixture();
+    let accounts = render(&state, &live, Client::Tui, Lang::En, "accounts", "");
+    let edit = accounts.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.title == "Claude · Orchestrator" => row.actions.iter().find(|action| action.label == "Edit ordered candidates"), _ => None }).unwrap();
+    assert!(edit.id.is_empty(), "navigation must not post an empty profile mutation");
+    assert_eq!(edit.link, Some(Link::View { key: "model_profile:claude-orchestrator".into() }));
+    let task = state.tasks.values().find(|task| !task.state.terminal()).unwrap().id.clone();
+    let detail = render(&state, &live, Client::Tui, Lang::En, &format!("task:{task}"), "");
+    let navigate = detail.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item { Item::Actions(bar) => Some(&bar.actions), _ => None }).flatten().find(|action| action.label == "Change model").unwrap();
+    assert!(navigate.id.is_empty()); assert_eq!(navigate.link, Some(Link::View { key: format!("task_selection:{task}") }));
+}
+
+#[test]
+fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.provider = Provider::Codex;
+    task.account = Some(AccountId::parse("work").unwrap());
+    state.accounts = [
+        (Provider::Claude, "Claude work"), (Provider::Codex, "Codex work"),
+    ].map(|(provider, name)| AccountStatus { provider, id: AccountId::parse("work").unwrap(), name: name.into(), state: AccountState::SignedOut,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).to_vec();
+    let mut interaction = state.interactions[&"i-1".into()].clone();
+    state.interactions.clear();
+    interaction.id = "claude-signed-out-t-1".into();
+    interaction.author = Author::System;
+    state.interactions.insert(interaction.id.clone(), interaction);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            let view = render(&state, &LiveSnapshot::default(), client, lang, "card:claude-signed-out-t-1", "");
+            let card = card_of(&view);
+            assert!(card.need.as_ref().unwrap().contains("Codex work"), "{card:?}");
+            assert!(!card.need.as_ref().unwrap().contains("Claude work"), "{card:?}");
+            let why = card.why.as_ref().unwrap();
+            assert!(why.contains("alondra accounts login --provider codex work"), "{why}");
+            assert!(!why.contains("/login"), "{why}");
+        }
+    }
+}
+
+#[test]
+fn a_committed_pending_model_change_localizes_its_app_owned_reason() {
+    use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, PendingTaskSelection, TaskSelection};
+    let (mut state, live) = advertised_model_controls_fixture();
+    let task = state.tasks.values_mut().find(|task| !task.state.terminal()).unwrap();
+    let id = task.id.clone();
+    let model = ModelSelection { model: ModelKey { provider: task.provider, model: "native-large".into() }, reasoning_effort: Some("high".into()), catalog_revision: "catalog-one".into() };
+    let mut selection = TaskSelection::automatic(ModelProfile::Implementation); selection.effective = Some(model.clone());
+    task.selection = Some(selection);
+    task.pending_selection = Some(PendingTaskSelection { account: task.account_key(), model, reason: "User changed model selection".into() });
+    let view = render(&state, &live, Client::Ios, Lang::Es, &format!("task:{id}"), "");
+    let shown = serde_json::to_string(&view).unwrap();
+    assert!(shown.contains("Cambio de modelo solicitado"), "{shown}");
+    assert!(!shown.contains("User changed model selection"), "{shown}");
+}
+
+#[test]
+fn a_task_account_fact_qualifies_identical_default_slugs_by_provider() {
+    use crate::accounts::{AccountId, Provider};
+    let (mut state, live) = advertised_model_controls_fixture();
+    let account = state.accounts.iter_mut().find(|account| account.provider == Provider::Claude && account.id.is_default()).unwrap();
+    account.name = "Claude owner".into();
+    let mut codex = account.clone(); codex.provider = Provider::Codex; codex.name = "Codex owner".into();
+    state.accounts.push(codex);
+    let task = state.tasks.values_mut().find(|task| !task.state.terminal()).unwrap();
+    task.provider = Provider::Codex; task.account = Some(AccountId::default_account()); let id = task.id.clone();
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &live, client, Lang::En, &format!("task:{id}"), "");
+        let facts = view.sections.iter().find(|section| section.id == "options").unwrap().items.iter().find_map(|item| match item { Item::Facts(facts) => Some(&facts.items), _ => None }).unwrap();
+        let account = facts.iter().find(|fact| fact.label == "Codex account").unwrap();
+        assert_eq!(account.value, "Codex owner", "{client:?}");
     }
 }
 

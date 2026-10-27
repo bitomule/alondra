@@ -399,7 +399,7 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
-        let shown = [detail.interrupt, detail.resume, detail.relaunch, detail.pause, detail.cancel, detail.reopen].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
+        let shown = [detail.interrupt, detail.resume, detail.relaunch, detail.pause, detail.modelSelection, detail.cancel, detail.reopen].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in

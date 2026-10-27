@@ -11,7 +11,7 @@ fn id(text: &str) -> AccountId {
 }
 
 fn status(text: &str, state: AccountState, billing: AccountBilling) -> AccountStatus {
-    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, email: None, plan: None, billing, sign_ins: 0 }
+    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0 }
 }
 
 fn window(kind: WindowKind, used: f64, resets_at: Millis) -> WindowReading {
@@ -73,6 +73,21 @@ fn a_partial_reading_changes_only_its_windows_and_a_complete_one_replaces_them_a
     let probed = record(Some(&limited), Provider::Claude, &id("default"), &probe, NOW + 10, TODAY);
     assert!(probed.window(&WindowKind::Session).is_none(), "the probe lists every window the account has");
     assert_eq!(probed.plan.as_deref(), Some("max"), "a reading without a plan keeps the one reported");
+}
+
+#[test]
+fn a_native_limit_without_reset_requires_fresh_positive_account_capacity_to_clear() {
+    let provider = Provider::Codex; let account = AccountId::default_account();
+    let marker = UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other("codex:account:limit".into()), used: Share::NONE, resets_at: None, exhausted: true }] };
+    let held = record(None, provider, &account, &marker, 100, TODAY);
+    let has_marker = |usage: &AccountUsage| usage.windows.iter().any(|window| window.reading.kind.is_native_limit_marker());
+    let account_windows = vec![window(WindowKind::Other("codex:account:primary:90".into()), 0.1, 10_000), window(WindowKind::Other("codex:account:secondary:1200".into()), 0.2, 20_000)];
+    assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: true, windows: vec![] }, 101, TODAY)), "unknown capacity never releases the marker");
+    assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: vec![account_windows[0].clone()] }, 101, TODAY)), "one partial dimension is not positive account-wide evidence");
+    assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: account_windows.clone() }, 99, TODAY)), "a response older than the limit cannot release it");
+    let cleared = record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: account_windows }, 101, TODAY);
+    assert!(!has_marker(&cleared));
+    assert_eq!(held.windows[0].reading.used, Share::NONE, "the error did not report a measured percentage");
 }
 
 #[test]

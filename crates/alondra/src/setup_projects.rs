@@ -120,7 +120,8 @@ impl Selection {
         }
         fs::create_dir_all(&self.root).with_context(|| format!("Cannot create projects directory {}", self.root.display()))?;
         let canonical = self.root.canonicalize()?;
-        let text = with_root(self.original.as_deref().unwrap_or(""), &canonical)?;
+        let initial = self.original.as_deref().unwrap_or("[accounts]\nconnected = []\n");
+        let text = with_root(initial, &canonical)?;
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new().recursive(true).mode(0o700)
             .create(self.file.parent().context("Options parent")?)?;
@@ -209,4 +210,16 @@ mod tests {
         assert_eq!(fs::read_to_string(f.file()).unwrap(), "# changed\n");
         assert!(!f.0.join("Projects").exists());
     }
+    #[test]
+    fn new_projects_configuration_starts_with_no_connected_provider() {
+        let fixture = Fixture::new(); let projects = fixture.0.join("Projects");
+        fixture.choose(Some(&projects), true, false, "").unwrap().store().unwrap();
+        let options = OptionsFile::parse(&fs::read_to_string(fixture.file()).unwrap()).unwrap();
+        assert!(options.accounts.connected_providers().is_empty());
+        fixture.write("projects_root = '/old'\n");
+        fixture.choose(Some(&projects), true, false, "").unwrap().store().unwrap();
+        let legacy = OptionsFile::parse(&fs::read_to_string(fixture.file()).unwrap()).unwrap();
+        assert!(legacy.accounts.is_connected(alondra_core::accounts::Provider::Claude));
+    }
+
 }

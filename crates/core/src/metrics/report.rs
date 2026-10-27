@@ -33,6 +33,12 @@ pub struct TaskRow {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub approach: Option<String>,
+    /// Of the attempt that ended it; unknown for tasks folded before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The kind the orchestrator tagged it with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub outcome: Outcome,
     pub started_at: Option<Millis>,
     pub finished_at: Millis,
@@ -524,6 +530,63 @@ pub enum Split {
     Model,
     Approach,
     Project,
+    Provider,
+    Kind,
+}
+
+/// The provider a row ran on: the one recorded, else the one its provider-qualified model names.
+/// A bare model was Claude's, the only provider before providers were recorded.
+pub fn provider_of(provider: Option<&str>, model: Option<&str>) -> Option<crate::accounts::Provider> {
+    use crate::accounts::Provider;
+    provider.and_then(|provider| Provider::parse(provider).ok())
+        .or_else(|| model.map(|model| model.split_once('/').and_then(|(provider, _)| Provider::parse(provider).ok()).unwrap_or(Provider::Claude)))
+}
+
+/// What a row is split by.
+#[derive(Clone, Copy)]
+struct Keys<'a> {
+    project: Option<&'a str>,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+    approach: Option<&'a str>,
+    provider: Option<&'static str>,
+    kind: Option<&'a str>,
+}
+
+impl<'a> Keys<'a> {
+    fn of_task(task: &'a TaskRow) -> Self {
+        let model = task.model.as_deref();
+        Keys { project: task.project.as_deref(), model, effort: task.effort.as_deref(), approach: task.approach.as_deref(),
+            provider: provider_of(task.provider.as_deref(), model).map(|provider| provider.as_str()), kind: task.kind.as_deref() }
+    }
+
+    fn of_week(week: &'a WeekRow) -> Self {
+        let model = known(&week.model);
+        Keys { project: known(&week.project), model, effort: known(&week.effort), approach: known(&week.approach),
+            provider: provider_of(None, model).map(|provider| provider.as_str()), kind: None }
+    }
+
+    fn name(&self, split: Split) -> Option<&'a str> {
+        match split {
+            Split::Model => self.model,
+            Split::Approach => self.approach,
+            Split::Project => self.project,
+            Split::Provider => self.provider,
+            Split::Kind => self.kind,
+        }
+    }
+
+    fn in_split(&self, split: Option<(Split, &str, Option<&str>)>) -> bool {
+        match split {
+            None => true,
+            Some((Split::Model, name, effort)) => self.model.unwrap_or("") == name && self.effort == effort,
+            Some((split, name, _)) => self.name(split).unwrap_or("") == name,
+        }
+    }
+
+    fn matches(&self, query: &Query) -> bool {
+        matches(query, self.project, self.model, self.effort)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -564,6 +627,10 @@ pub struct MetricsReport {
     pub by_model: Vec<Group>,
     pub by_approach: Vec<Group>,
     pub by_project: Vec<Group>,
+    #[serde(default)]
+    pub by_provider: Vec<Group>,
+    #[serde(default)]
+    pub by_kind: Vec<Group>,
     /// The releases the period can be set beside, newest first.
     pub releases: Vec<Release>,
 }
@@ -595,25 +662,19 @@ fn median(mut values: Vec<i64>) -> Option<i64> {
 
 /// The figures of a window: of the rows the query lets through and, for a group, of its rows.
 fn figures(inputs: &MetricsInputs, query: &Query, window: Window, split: Option<(Split, &str, Option<&str>)>) -> Figures {
-    let in_split = |model: Option<&str>, effort: Option<&str>, approach: Option<&str>, project: Option<&str>| match split {
-        None => true,
-        Some((Split::Model, name, wanted_effort)) => model.unwrap_or("") == name && effort == wanted_effort,
-        Some((Split::Approach, name, _)) => approach.unwrap_or("") == name,
-        Some((Split::Project, name, _)) => project.unwrap_or("") == name,
-    };
     let mut figures = Figures::default();
     let (mut spans, mut costs, mut steps) = (vec![], vec![], vec![]);
     for task in &inputs.tasks {
-        let (project, model, effort, approach) = (task.project.as_deref(), task.model.as_deref(), task.effort.as_deref(), task.approach.as_deref());
-        if !window.holds(task.finished_at) || !matches(query, project, model, effort) || !in_split(model, effort, approach, project) { continue; }
+        let keys = Keys::of_task(task);
+        if !window.holds(task.finished_at) || !keys.matches(query) || !keys.in_split(split) { continue; }
         figures.sums.add(&Sums::of(task));
         spans.extend(task.started_at.map(|started| (task.finished_at - started).max(0)));
         costs.extend(task.spend.and_then(|spend| spend.cost_micros));
         if task.spend.is_some() { steps.push(task.steps + task.subagent_steps); }
     }
     for week in &inputs.weeks {
-        let (project, model, effort, approach) = (known(&week.project), known(&week.model), known(&week.effort), known(&week.approach));
-        if !window.holds(week.week) || !matches(query, project, model, effort) || !in_split(model, effort, approach, project) { continue; }
+        let keys = Keys::of_week(week);
+        if !window.holds(week.week) || !keys.matches(query) || !keys.in_split(split) { continue; }
         figures.sums.add(&week.sums);
     }
     if split.is_none() && query.project.is_none() && query.effort.is_none() {
@@ -635,23 +696,17 @@ fn figures(inputs: &MetricsInputs, query: &Query, window: Window, split: Option<
 /// The groups of a window, the busiest first.
 fn groups(inputs: &MetricsInputs, query: &Query, window: Window, split: Split) -> Vec<Group> {
     let mut names: BTreeMap<(String, Option<String>), ()> = BTreeMap::new();
-    let mut note = |model: Option<&str>, effort: Option<&str>, approach: Option<&str>, project: Option<&str>| {
-        let key = match split {
-            Split::Model => (model.unwrap_or("").to_owned(), effort.map(str::to_owned)),
-            Split::Approach => (approach.unwrap_or("").to_owned(), None),
-            Split::Project => (project.unwrap_or("").to_owned(), None),
-        };
-        names.insert(key, ());
+    let mut note = |keys: Keys<'_>| {
+        if keys.matches(query) {
+            let effort = (split == Split::Model).then(|| keys.effort.map(str::to_owned)).flatten();
+            names.insert((keys.name(split).unwrap_or("").to_owned(), effort), ());
+        }
     };
     for task in inputs.tasks.iter().filter(|task| window.holds(task.finished_at)) {
-        if matches(query, task.project.as_deref(), task.model.as_deref(), task.effort.as_deref()) {
-            note(task.model.as_deref(), task.effort.as_deref(), task.approach.as_deref(), task.project.as_deref());
-        }
+        note(Keys::of_task(task));
     }
     for week in inputs.weeks.iter().filter(|week| window.holds(week.week)) {
-        if matches(query, known(&week.project), known(&week.model), known(&week.effort)) {
-            note(known(&week.model), known(&week.effort), known(&week.approach), known(&week.project));
-        }
+        note(Keys::of_week(week));
     }
     let mut groups: Vec<Group> = names.into_keys().map(|(name, effort)| {
         let figures = figures(inputs, query, window, Some((split, &name, effort.as_deref())));
@@ -685,6 +740,8 @@ pub fn report(inputs: &MetricsInputs, query: &Query) -> MetricsReport {
         by_model: groups(inputs, query, window, Split::Model),
         by_approach: groups(inputs, query, window, Split::Approach),
         by_project: groups(inputs, query, window, Split::Project),
+        by_provider: groups(inputs, query, window, Split::Provider),
+        by_kind: groups(inputs, query, window, Split::Kind),
         releases: inputs.releases.iter().rev().take(RELEASES_OFFERED).cloned().collect(),
     }
 }

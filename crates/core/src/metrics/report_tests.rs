@@ -9,6 +9,8 @@ fn task(days_ago: i64, model: &str, cost: Option<i64>) -> TaskRow {
         model: Some(model.into()),
         effort: Some("medium".into()),
         approach: Some("solo".into()),
+        provider: None,
+        kind: None,
         outcome: Outcome::Done,
         started_at: Some(finished_at - 3_600_000),
         finished_at,
@@ -93,6 +95,34 @@ fn tasks_and_weeks_add_up_and_split_by_model_approach_and_project() {
     assert_eq!(quill.figures.sums.tasks, 1);
     let sonnet = super::report(&inputs, &query("period=all&model=sonnet&effort=medium"));
     assert_eq!(sonnet.figures.sums.tasks, 2);
+}
+
+#[test]
+fn tasks_split_by_provider_and_by_kind_and_older_rows_still_count() {
+    let mut docs = task(1, "codex/gpt-6.1-sol", Some(1_000_000));
+    docs.kind = Some("docs".into());
+    let mut fix = task(2, "gpt-6.1-sol", Some(2_000_000));
+    fix.provider = Some("codex".into());
+    fix.kind = Some("fix".into());
+    let mut claude_docs = task(3, "sonnet", Some(3_000_000));
+    claude_docs.provider = Some("claude".into());
+    claude_docs.kind = Some("docs".into());
+    let mut unknown = task(4, "opus", None);
+    unknown.model = None;
+    let rows = vec![docs, fix, claude_docs, task(5, "opus", Some(4_000_000)), unknown];
+    let report = report(&inputs(rows, vec![week(150, 6, 6_000_000)]), &query("period=all&compare=none"));
+    let names = |groups: &[Group]| groups.iter().map(|g| (g.name.clone(), g.figures.sums.tasks)).collect::<Vec<_>>();
+    assert_eq!(names(&report.by_provider), [("claude".to_owned(), 8), ("codex".to_owned(), 2), (String::new(), 1)],
+        "a bare model of an older row was Claude's; a row without a model is unknown");
+    assert_eq!(names(&report.by_kind), [(String::new(), 8), ("docs".to_owned(), 2), ("fix".to_owned(), 1)]);
+    let docs = report.by_kind.iter().find(|g| g.name == "docs").unwrap();
+    assert_eq!(docs.figures.sums.cost_micros, 4_000_000);
+    assert!(report.by_kind.iter().all(|g| g.effort.is_none()));
+    let mut older = serde_json::to_value(&report).unwrap();
+    older.as_object_mut().unwrap().remove("by_provider");
+    older.as_object_mut().unwrap().remove("by_kind");
+    let back: MetricsReport = serde_json::from_value(older).unwrap();
+    assert!(back.by_provider.is_empty() && back.by_kind.is_empty(), "a report from an older daemon still reads");
 }
 
 #[test]

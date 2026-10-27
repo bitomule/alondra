@@ -45,8 +45,11 @@ impl DomainDaemon {
 
     /// The daemon over the domain its start already opened, so the journal is replayed once.
     pub(crate) fn over(home: &Path, domain: DomainRuntime) -> Result<Arc<Self>> {
+        Self::over_shared(home,Arc::new(domain))
+    }
+
+    pub(crate) fn over_shared(home: &Path, domain: Arc<DomainRuntime>) -> Result<Arc<Self>> {
         require_database(home)?;
-        let domain = Arc::new(domain);
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),
@@ -145,9 +148,14 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/sandbox/interrupt/{session}", post(sandbox_interrupt))
         .route("/orchestrator/machine", get(orchestrator_machine))
         .route("/orchestrator/log", get(orchestrator_log))
+        .route("/orchestrator/outcomes", post(orchestrator_outcomes))
         .route("/orchestrator/schedules", post(orchestrator_schedule))
         .route("/orchestrator/tasks_in_progress", get(orchestrator_tasks_in_progress))
         .route("/orchestrator/node", get(orchestrator_node))
+        .route("/orchestrator/read", post(orchestrator_read))
+        .route("/tools/read-skill", post(read_role_skill))
+        .route("/agents/context", post(read_task_context))
+        .route("/agents/plan-mode",post(request_plan_mode))
         .route("/agents/waiting-machine", post(agent_waiting_machine))
         .route("/cards/open", get(open_cards))
         .route(crate::settings::PATH, get(settings_read).put(settings_write))
@@ -347,11 +355,23 @@ async fn settings_write(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct AccountsQuery {
+    capabilities: Option<String>,
+}
+
+impl AccountsQuery {
+    fn provider_accounts(&self) -> bool {
+        self.capabilities.as_deref().is_some_and(|caps| caps.split(',').any(|cap| cap.trim() == "provider_accounts"))
+    }
+}
+
 async fn accounts_read(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     signed: Option<Extension<Signed>>,
+    Query(query): Query<AccountsQuery>,
 ) -> Response {
     let lang = match settings_caller(&state, &peer, &headers, &signed) {
         Ok(lang) => lang,
@@ -359,7 +379,7 @@ async fn accounts_read(
     };
     let (domain, home) = (state.domain(), state.home.clone());
     match tokio::task::spawn_blocking(move || crate::accounts::read(&domain, &home, lang)).await {
-        Ok(reply) => reply.into_response(),
+        Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
         Err(_) => storage(),
     }
 }
@@ -369,6 +389,7 @@ async fn accounts_write(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     signed: Option<Extension<Signed>>,
+    Query(query): Query<AccountsQuery>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let lang = match settings_caller(&state, &peer, &headers, &signed) {
@@ -380,7 +401,7 @@ async fn accounts_write(
     };
     let (domain, home) = (state.domain(), state.home.clone());
     match tokio::task::spawn_blocking(move || crate::accounts::write(&domain, &home, &body, lang)).await {
-        Ok(reply) => reply.into_response(),
+        Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
         Err(_) => storage(),
     }
 }
@@ -390,6 +411,7 @@ async fn accounts_check(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     signed: Option<Extension<Signed>>,
+    Query(query): Query<AccountsQuery>,
 ) -> Response {
     let lang = match settings_caller(&state, &peer, &headers, &signed) {
         Ok(lang) => lang,
@@ -400,7 +422,7 @@ async fn accounts_check(
         crate::accounts::check(&domain, &home);
         crate::accounts::read(&domain, &home, lang)
     }).await {
-        Ok(reply) => reply.into_response(),
+        Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
         Err(_) => storage(),
     }
 }
@@ -815,79 +837,162 @@ fn tool_answer(answer: Result<Value, DomainError>) -> Response {
     }
 }
 
-async fn orchestrator_launch(
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchOutcomeQuery {
+    #[serde(default)] list_runs:bool,
+    #[serde(default)] run_id:Option<String>,
+    #[serde(default)] after:String,
+    #[serde(default)] limit:Option<usize>,
+}
+async fn orchestrator_outcomes(
+    State(state):State<Arc<DomainDaemon>>,ConnectInfo(peer):ConnectInfo<SocketAddr>,headers:HeaderMap,
+    body:Result<Json<BatchOutcomeQuery>,JsonRejection>,
+) -> Response {
+    if let Err(refused)=tool_caller(&state,&peer,&headers,None) {return refused;}
+    let Ok(Json(query))=body else {return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid outcome query"));};
+    let bearer=headers.get("authorization").and_then(|header|header.to_str().ok()).and_then(|header|header.strip_prefix("Bearer ")).unwrap_or_default();
+    tool_answer(state.domain.read_batch_outcomes(bearer,query.run_id.as_deref(),query.list_runs,&query.after,query.limit.unwrap_or(32)))
+}
+
+async fn orchestrator_read(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    body: Result<Json<crate::domain_orchestrator_tools::LaunchBody>, JsonRejection>,
+    body: Result<Json<crate::scoped_reads::Query>, JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("launch")) {
-        return refused;
-    }
-    let Ok(Json(body)) = body else {
-        return crate::domain_api::domain_error(DomainError::new(
-            "invalid_input",
-            "invalid launch",
-        ));
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) { return refused; }
+    let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid bounded read request")); };
+    let home = state.home.clone();
+    let result = state.domain.read_work.run(move || {
+        let options = crate::domain_schedule_runner::options_at(&home).map_err(|_| DomainError::new("invalid_input", "Project settings could not be read"))?;
+        let root = options.projects_root(&crate::options::user_home());
+        crate::scoped_reads::execute(&root, query).map_err(|error| DomainError::new("read_unavailable", format!("{error}")))
+    }).await;
+    tool_answer(result.unwrap_or_else(|_| Err(DomainError::new("storage_unavailable", "The bounded read stopped before returning a result"))))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillQuery {
+    name: String,
+    #[serde(default = "skill_start")]
+    start_line: usize,
+}
+fn skill_start() -> usize { 1 }
+
+async fn read_role_skill(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<SkillQuery>, JsonRejection>,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) { return refused; }
+    let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else {
+        return crate::domain_api::domain_error(DomainError::new("forbidden", "A current role capability is required"));
     };
+    let principal = match state.domain.resolve_bearer(bearer) { Ok(principal) => principal, Err(_) => return crate::domain_api::domain_error(DomainError::new("forbidden", "A current role capability is required")) };
+    let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid skill request")); };
+    let (root, name) = match (principal, query.name.as_str()) {
+        (crate::domain_authority::Principal::Agent { .. }, "alondra") => (crate::plugins::node_in(&state.home), "alondra"),
+        (crate::domain_authority::Principal::Orchestrator { .. }, "alondra-orchestrator") => (crate::plugins::orchestrator_in(&state.home), "alondra-orchestrator"),
+        _ => return crate::domain_api::domain_error(DomainError::new("forbidden", "Only the current role's installed skill may be read")),
+    };
+    let Some(root) = root else { return crate::domain_api::domain_error(DomainError::new("not_found", "The role's Alondra integration assets are not installed")); };
+    let result = state.domain.read_work.run(move || {
+        let request = serde_json::from_value(serde_json::json!({"operation":"read_file","arguments":{"path":format!("skills/{name}/SKILL.md"),"start_line":query.start_line,"max_lines":400}}))
+            .map_err(|_| DomainError::new("invalid_input", "Invalid skill page"))?;
+        crate::scoped_reads::execute(&root, request).map_err(|error| DomainError::new("read_unavailable", format!("{error}")))
+    }).await;
+    tool_answer(result.unwrap_or_else(|_| Err(DomainError::new("storage_unavailable", "The role skill could not be read"))))
+}
+
+async fn read_task_context(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<crate::task_context::Query>, JsonRejection>,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) { return refused; }
+    let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else {
+        return crate::domain_api::domain_error(DomainError::new("forbidden", "A current task capability is required"));
+    };
+    let bearer = bearer.to_owned();
+    let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid task context page")); };
     let domain = state.domain();
-    let choices = move |request: &alondra_core::domain::RequestId| {
-        crate::domain_orchestrator_tools::request_choices(&domain, request)
-            .ok()
-            .flatten()
+    let result = state.domain.read_work.run(move || crate::task_context::read(&domain, &bearer, query)).await;
+    tool_answer(result.unwrap_or_else(|_| Err(DomainError::new("storage_unavailable", "The task context could not be read"))))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanModeQuery { task_id: alondra_core::domain::TaskId }
+
+async fn request_plan_mode(
+    State(state): State<Arc<DomainDaemon>>,ConnectInfo(peer): ConnectInfo<SocketAddr>,headers: HeaderMap,
+    body: Result<Json<PlanModeQuery>,JsonRejection>,
+) -> Response {
+    if let Some(refused) = local_only(&peer,&headers) { return refused; }
+    let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else { return forbidden("A current node capability is required"); };
+    let Some(operation) = headers.get("x-alondra-mcp-operation").and_then(|value| value.to_str().ok()) else { return crate::domain_api::domain_error(DomainError::new("incompatible_protocol","Update the node's Alondra MCP integration before requesting plan mode")); };
+    let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid plan mode request")); };
+    let domain = state.domain(); let bearer = bearer.to_owned(); let operation = operation.to_owned();
+    let result = state.domain.command_work.run(move || domain.request_plan_mode(&bearer,&query.task_id,&operation)).await;
+    match result {
+        Ok(Ok(_)) => Json(json!({"pending":true,"instruction":"End this turn now. Alondra applies plan mode before the next turn. Produce the full checklist plan in native planning mode and wait for Alondra approval before implementation."})).into_response(),
+        Ok(Err(crate::domain_store::StoreError::Domain(error))) => crate::domain_api::domain_error(error),
+        _ => storage(),
+    }
+}
+
+async fn tracked_tool(
+    state: &Arc<DomainDaemon>, headers: &HeaderMap, kind: &'static str, request: Value,
+    work: impl std::future::Future<Output=std::result::Result<Value,DomainError>> + Send + 'static,
+) -> std::result::Result<Value,DomainError> {
+    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or_else(|| DomainError::new("forbidden","The orchestrator capability is required"))?;
+    let identity = headers.get("x-alondra-mcp-operation").and_then(|value| value.to_str().ok());
+    crate::domain_runtime::batch_operations::execute(state.domain(),bearer,identity,kind,request,work).await
+}
+
+async fn orchestrator_launch(
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>,JsonRejection>,
+) -> Response {
+    if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
+    let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch")); };
+    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch")) };
+    let domain = state.domain();
+    let home = state.home.clone();
+    let work = async move {
+        let choices_domain = Arc::clone(&domain);
+        crate::domain_orchestrator_tools::launch_replacing(domain,home,body,move |request| crate::domain_orchestrator_tools::request_choices(&choices_domain,request).ok().flatten()).await
     };
-    tool_answer(
-        crate::domain_orchestrator_tools::launch_replacing(
-            state.domain(),
-            state.home.clone(),
-            body,
-            choices,
-        )
-        .await,
-    )
+    tool_answer(tracked_tool(&state,&headers,"launch",request,work).await)
 }
 
 async fn orchestrator_launch_plan(
-    State(state): State<Arc<DomainDaemon>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<crate::domain_orchestrator_tools::LaunchPlanBody>, JsonRejection>,
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>,JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("set_launch_plan")) {
-        return refused;
-    }
-    let body = match body {
-        Ok(Json(body)) => body,
-        Err(rejection) => return crate::domain_api::domain_error(DomainError::new("invalid_input", format!("invalid launch plan: {}", rejection.body_text()))),
-    };
-    tool_answer(crate::domain_orchestrator_tools::set_launch_plan(&state.domain, &state.home, body))
+    if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
+    let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch plan")); };
+    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch plan")) };
+    let domain = state.domain(); let home = state.home.clone();
+    let work = async move { crate::domain_orchestrator_tools::set_launch_plan(&domain,&home,body) };
+    tool_answer(tracked_tool(&state,&headers,"set_launch_plan",request,work).await)
 }
 
 async fn orchestrator_send(
-    State(state): State<Arc<DomainDaemon>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<crate::domain_orchestrator_tools::SendBody>, JsonRejection>,
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>,JsonRejection>,
 ) -> Response {
-    let actor = match tool_caller(&state, &peer, &headers, Some("send")) {
-        Ok(actor) => actor,
-        Err(refused) => return refused,
-    };
-    let Ok(Json(body)) = body else {
-        return crate::domain_api::domain_error(DomainError::new(
-            "invalid_input",
-            "invalid message",
-        ));
-    };
-    tool_answer(
-        crate::domain_orchestrator_tools::send(
-            &state.domain,
-            &state.home,
-            &actor,
-            body,
-        )
-        .await,
-    )
+    let actor = match tool_caller(&state,&peer,&headers,None) { Ok(actor) => actor, Err(refused) => return refused };
+    let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid message")); };
+    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid message")) };
+    let domain = state.domain(); let home = state.home.clone();
+    let work = async move { crate::domain_orchestrator_tools::send(&domain,&home,&actor,body).await };
+    tool_answer(tracked_tool(&state,&headers,"send",request,work).await)
 }
 
 /// Lets a sandbox's operator interrupt a probe node, which has no orchestrator to ask.
@@ -910,63 +1015,43 @@ async fn sandbox_interrupt(
 }
 
 async fn orchestrator_interrupt(
-    State(state): State<Arc<DomainDaemon>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<crate::domain_orchestrator_tools::NodeBody>, JsonRejection>,
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>,JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("interrupt")) {
-        return refused;
-    }
-    let Ok(Json(body)) = body else {
-        return crate::domain_api::domain_error(DomainError::new(
-            "invalid_input",
-            "invalid interrupt",
-        ));
-    };
-    tool_answer(crate::domain_orchestrator_tools::interrupt(&state.domain, body))
+    if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
+    let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid interrupt")); };
+    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid interrupt")) };
+    let domain = state.domain();
+    let work = async move { crate::domain_orchestrator_tools::interrupt(&domain,body) };
+    tool_answer(tracked_tool(&state,&headers,"interrupt",request,work).await)
 }
 
 /// A Schedule the orchestrator creates for the user, materialized as the user's own drafts are.
 async fn orchestrator_schedule(
-    State(state): State<Arc<DomainDaemon>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, JsonRejection>,
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>,JsonRejection>,
 ) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers, Some("schedule_create")) {
-        return refused;
-    }
-    let Ok(Json(body)) = body else {
-        return crate::domain_api::domain_error(DomainError::new(
-            "invalid_input",
-            "invalid Schedule draft",
-        ));
+    if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
+    let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid schedule draft")); };
+    let body = request.clone(); let home = state.home.clone(); let domain = state.domain();
+    let work = async move {
+        let value = tokio::task::spawn_blocking(move || crate::domain_schedule_api::orchestrator_mutation(&domain,&home,"POST","/schedules",Some(&body),None,|| Ok(()))).await
+            .map_err(|_| DomainError::new("operation_uncertain","Schedule creation stopped before returning its result"))?;
+        match value["status"].as_u64() {
+            Some(200..=299) => Ok(value),
+            _ => Err(serde_json::from_value(value["body"].clone()).unwrap_or_else(|_| DomainError::new("storage_unavailable","The schedule result could not be read"))),
+        }
     };
-    let home = state.home.clone();
-    let domain = state.domain();
-    match tokio::task::spawn_blocking(move || {
-        crate::domain_schedule_api::mutation(
-            &domain,
-            &home,
-            "POST",
-            "/schedules",
-            Some(&body),
-            None,
-            || Ok(()),
-        )
-    })
-    .await
-    {
-        Ok(answer) => crate::domain_schedule_api::response(answer),
-        Err(_) => storage(),
+    match tracked_tool(&state,&headers,"schedule_create",request,work).await {
+        Ok(value) => crate::domain_schedule_api::response(value),
+        Err(error) => crate::domain_api::domain_error(error),
     }
 }
 
-fn gauges_json(state: &DomainDaemon) -> (Value, Value) {
-    match &*crate::log::recover(&state.gauges, "the machine gauges") {
-        Some((machine, usage)) => (json!(machine), json!(usage)),
-        None => (Value::Null, Value::Null),
+fn gauges_json(state:&DomainDaemon)->(Value,Value) {
+    match &*crate::log::recover(&state.gauges,"the machine gauges") {
+        Some((machine,usage))=>(json!(machine),json!(usage)),
+        None=>(Value::Null,Value::Null),
     }
 }
 
@@ -1107,7 +1192,41 @@ async fn orchestrator_machine(
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };
-    Json(json!({"machine": machine, "usage": usage})).into_response()
+    let domain = state.domain();
+    let tasks = match tokio::task::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
+        Ok(Ok(inputs)) => inputs.tasks,
+        _ => vec![],
+    };
+    let read = state.domain.read();
+    let (available, evidence) = available_models(read.state(), &tasks, alondra_core::now_millis());
+    Json(json!({"available_models": available, "model_evidence": evidence, "machine": machine, "usage": usage, "account_order":read.state().account_order,
+        "model_profiles":read.state().model_profiles,"model_catalogs":read.state().model_catalogs})).into_response()
+}
+
+/// The models the orchestrator chooses from, as `model_table` writes them, and the public evidence
+/// of each one's sheet. Until the daemon records the accounts, every catalog's account counts.
+pub(crate) fn available_models(state: &alondra_core::domain::DomainState, tasks: &[alondra_core::metrics::report::TaskRow], now: alondra_core::Millis)
+    -> (Option<String>, std::collections::BTreeMap<String, String>) {
+    use alondra_core::accounts::{AccountKey, AccountState};
+    use alondra_core::model_table::AccountRoom;
+    let today = crate::node_reports::local_day(now);
+    let rooms: Vec<AccountRoom> = if state.accounts.is_empty() {
+        state.model_catalogs.iter().map(|catalog| AccountRoom { account: catalog.account.clone(), name: catalog.account.account.as_str().to_owned(), margin: None }).collect()
+    } else {
+        state.accounts.iter().filter(|account| account.state != AccountState::Disabled).map(|account| {
+            let usage = state.account_usage.iter().find(|usage| usage.provider == account.provider && usage.account == account.id);
+            AccountRoom { account: AccountKey::new(account.provider, account.id.clone()), name: account.name.clone(),
+                margin: alondra_core::usage::own_margin(account.state, usage, state.account_reserve, now, &today) }
+        }).collect()
+    };
+    let table = alondra_core::model_table::available_models(&state.model_catalogs, &rooms, tasks);
+    let evidence = state.model_catalogs.iter().filter(|catalog| rooms.iter().any(|room| room.account == catalog.account))
+        .flat_map(|catalog| catalog.models.iter().filter(|entry| !entry.hidden).filter_map(|entry| {
+            let sheet = alondra_core::model_sheets::sheet_for(catalog.account.provider, &entry.model)?;
+            Some((format!("{}/{}", catalog.account.provider.as_str(), entry.model), sheet.evidence.clone()))
+        }))
+        .collect();
+    (table, evidence)
 }
 
 const LOG_LINES: usize = 200;

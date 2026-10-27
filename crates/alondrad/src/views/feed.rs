@@ -1,5 +1,5 @@
 use alondra_core::domain::DomainError;
-use alondra_core::views::{Client, Lang, Transport, VIEWS_PROTOCOL};
+use alondra_core::views::{Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::{
     Json,
     response::{IntoResponse, Response},
@@ -167,7 +167,7 @@ pub(crate) async fn handle(
     query: &str,
     transport: Transport,
 ) -> Response {
-    let (kind, lang, wait, cursor, views) = match parse(query) {
+    let (kind, lang, wait, cursor, views, capabilities) = match parse(query) {
         Ok(parsed) => parsed,
         Err(parse_error) => {
             let lang = query_language(query);
@@ -178,7 +178,7 @@ pub(crate) async fn handle(
         }
     };
     client.remember_language(device, lang);
-    client.feeds.remember_open(device, feed_key(kind, lang, transport, &views));
+    client.feeds.remember_open(device, feed_key(kind, lang, transport, &views, capabilities));
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let generation = client.feeds.next.fetch_add(1, Ordering::Relaxed);
     if let Some((_, old)) = client
@@ -195,7 +195,7 @@ pub(crate) async fn handle(
     let mut live_changes = client.feeds.clock.subscribe();
     let mut previous = None;
     loop {
-        let current = match current(client, kind, lang, transport, &views, previous.as_ref()).await {
+        let current = match current(client, kind, lang, transport, &views, capabilities, previous.as_ref()).await {
             Ok(current) => current,
             Err(response) => {
                 remove_waiter(client, device, generation);
@@ -256,12 +256,13 @@ async fn current(
     lang: Lang,
     transport: Transport,
     views: &[(String, String)],
+    capabilities: ClientCapabilities,
     previous: Option<&Current>,
 ) -> Result<Current, Response> {
     let read = client.domain.read();
     let state = read.state();
     let wake = *client.feeds.clock.borrow();
-    let cache_key = feed_key(kind, lang, transport, views);
+    let cache_key = feed_key(kind, lang, transport, views, capabilities);
     if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake) {
         return Ok(current);
     }
@@ -273,7 +274,7 @@ async fn current(
     keys.push(status_key.to_owned());
     keys.extend(views.iter().filter(|(key, _)| super::routes::valid_open_key(key)).map(|(key, _)| key.clone()));
     let live = super::live::gather(client, &state, lang, &keys, false, false).await;
-    let input = super::cache::Input::of(state, &live);
+    let input = super::cache::Input::of(state, &live).with_capabilities(capabilities);
     let clock = (state.data_epoch.0.clone(), state.revision, input.live_revision().to_owned());
     if let Some(previous) = previous.filter(|previous| previous.clock == clock) {
         let mut current = previous.clone();
@@ -315,8 +316,9 @@ async fn current(
     Ok(current)
 }
 
-fn feed_key(kind: Client, lang: Lang, transport: Transport, views: &[(String, String)]) -> String {
-    format!("{kind:?}/{lang:?}/{transport:?}/{views:?}")
+fn feed_key(kind: Client, lang: Lang, transport: Transport, views: &[(String, String)], capabilities: ClientCapabilities) -> String {
+    let base = format!("{kind:?}/{lang:?}/{transport:?}/{views:?}");
+    if capabilities.is_empty() { base } else { format!("{base}/{}", capabilities.query()) }
 }
 
 fn cache_current(client: &crate::client_routes::Client, key: String, current: &Current) {
@@ -369,13 +371,14 @@ fn query_language(query: &str) -> Lang {
         .unwrap_or(Lang::En)
 }
 
-fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String, String)>), QueryError> {
+fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String, String)>, ClientCapabilities), QueryError> {
     let mut protocol = None;
     let mut client = None;
     let mut lang = None;
     let mut wait = None;
     let mut cursor = None;
     let mut views = None;
+    let mut capabilities = None;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         let value = value.into_owned();
         let slot = match key.as_ref() {
@@ -385,6 +388,7 @@ fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String,
             "wait" => &mut wait,
             "cursor" => &mut cursor,
             "views" => &mut views,
+            "capabilities" => &mut capabilities,
             _ => return Err(QueryError::Invalid),
         };
         if slot.replace(value).is_some() {
@@ -412,6 +416,8 @@ fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String,
     if cursor.as_ref().is_some_and(|c| decode_cursor(c).is_none()) {
         return Err(QueryError::Invalid);
     }
+    let capabilities = ClientCapabilities::parse(capabilities.as_deref().unwrap_or(""))
+        .map_err(|_| QueryError::Invalid)?;
     let mut parsed = Vec::new();
     if let Some(value) = views {
         if !value.is_empty() {
@@ -434,7 +440,7 @@ fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String,
     if incompatible_protocol {
         Err(QueryError::IncompatibleProtocol)
     } else {
-        Ok((kind, lang, wait, cursor, parsed))
+        Ok((kind, lang, wait, cursor, parsed, capabilities))
     }
 }
 
@@ -613,7 +619,7 @@ mod tests {
         }
 
         async fn initial(&self, views: &[(String, String)]) -> Current {
-            current(&self.client, Client::Ios, Lang::En, Transport::Loopback, views, None)
+            current(&self.client, Client::Ios, Lang::En, Transport::Loopback, views, ClientCapabilities::default(), None)
                 .await.unwrap()
         }
     }
@@ -644,6 +650,18 @@ mod tests {
         assert_eq!(status_view_key(Client::Mac), "sidebar");
         assert_eq!(status_view_key(Client::Ios), "home");
         assert_eq!(status_view_key(Client::Tui), "home");
+    }
+
+    #[test]
+    fn feed_capability_sets_are_canonical_and_scoped_to_the_subscriber() {
+        let legacy = ClientCapabilities::default();
+        let modern = ClientCapabilities::parse("provider_accounts").unwrap();
+        assert_ne!(feed_key(Client::Tui, Lang::En, Transport::Relay, &[], legacy),
+            feed_key(Client::Tui, Lang::En, Transport::Relay, &[], modern));
+        let parsed = parse("protocol=1&client=tui&lang=en&wait=0&capabilities=provider_accounts,future_feature").unwrap();
+        assert_eq!(parsed.5, modern);
+        assert!(parse("protocol=1&client=tui&lang=en&wait=0&capabilities=provider_accounts&capabilities=").is_err());
+        assert!(parse("protocol=1&client=tui&lang=en&wait=0&capabilities=../shell").is_err());
     }
 
     #[test]
@@ -951,7 +969,7 @@ mod tests {
         let empty = fixture.initial(&[]).await;
         let _ = response_json(handle(&fixture.client, "device-a", &query(&empty.cursor, 0, &[]), Transport::Loopback).await).await;
         assert_eq!(fixture.client.feeds.live_keys(), vec!["home"], "switching views evicts the previous open key");
-        assert!(!fixture.client.feeds.cache.lock().unwrap().contains_key(&feed_key(Client::Ios, Lang::En, Transport::Loopback, &open)));
+        assert!(!fixture.client.feeds.cache.lock().unwrap().contains_key(&feed_key(Client::Ios, Lang::En, Transport::Loopback, &open, ClientCapabilities::default())));
 
         let _ = response_json(handle(&fixture.client, "device-a", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "task:missing"]);

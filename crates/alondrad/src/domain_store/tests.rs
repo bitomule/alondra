@@ -1767,7 +1767,7 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
 fn plan() -> crate::launch_plans::LaunchPlan {
     crate::launch_plans::LaunchPlan {
         name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation), project: None,
+        approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation), tags: None, project: None,
     }
 }
 

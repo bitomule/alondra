@@ -77,12 +77,14 @@ public struct ViewDocument: Codable, Equatable, Sendable {
     public let sections: [ViewSection]
     public let empty: Notice?
     public let notices: [Notice]
+    public let service: ViewService?
+    public let accountConfiguration: AccountConfigurationPresentation?
     /// The first cards of the queue, each the whole view its `card:<id>` key answers; empty from a
     /// daemon that does not send them.
     public let firstCards: [ViewDocument]
     enum CodingKeys: String, CodingKey {
-        case protocolVersion = "protocol", view, key, client, version, cursor, dataEpoch = "data_epoch", title, summary, status, sections, empty, notices
-        case firstCards = "first_cards"
+        case protocolVersion = "protocol", view, key, client, version, cursor, dataEpoch = "data_epoch", title, summary, status, sections, empty, notices, service
+        case firstCards = "first_cards", accountConfiguration = "account_configuration"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -94,6 +96,8 @@ public struct ViewDocument: Codable, Equatable, Sendable {
         status = try c.decode(ViewStatus.self, forKey: .status); sections = try c.decode([ViewSection].self, forKey: .sections)
         empty = try c.decodeIfPresent(Notice.self, forKey: .empty); notices = try c.decodeIfPresent([Notice].self, forKey: .notices) ?? []
         firstCards = try c.decodeIfPresent([ViewDocument].self, forKey: .firstCards) ?? []
+        service = try c.decodeIfPresent(ViewService.self, forKey: .service)
+        accountConfiguration = try c.decodeIfPresent(AccountConfigurationPresentation.self, forKey: .accountConfiguration)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -102,6 +106,8 @@ public struct ViewDocument: Codable, Equatable, Sendable {
         try c.encodeIfPresent(title, forKey: .title); try c.encodeIfPresent(summary, forKey: .summary); try c.encode(status, forKey: .status); try c.encode(sections, forKey: .sections)
         try c.encodeIfPresent(empty, forKey: .empty); if !notices.isEmpty { try c.encode(notices, forKey: .notices) }
         if !firstCards.isEmpty { try c.encode(firstCards, forKey: .firstCards) }
+        try c.encodeIfPresent(service, forKey: .service)
+        try c.encodeIfPresent(accountConfiguration, forKey: .accountConfiguration)
     }
 }
 
@@ -300,14 +306,16 @@ public struct Card: Codable, Equatable, Sendable {
         try c.encodeIfPresent(reply, forKey: .reply); if !more.isEmpty { try c.encode(more, forKey: .more) }
     }
 }
-public struct Row: Codable, Equatable, Sendable {
+public struct Row: Codable, Equatable, Identifiable, Sendable {
+    public let account: AccountPresentation?
+    public let model: TaskModelPresentation?
     public let id: String; public let link: Link?; public let icon: Icon; public let title: String; public let subtitle: String?; public let badges: [Label]
     public let trailing: Trailing?; public let depth: UInt8; public let struck: Bool; public let children: [Row]; public let actions: [Action]
     /// The kind of the card this row stands for, so a list colours it like the card.
     public let kind: CardKind?
     /// `children` start hidden behind this row; tapping it shows them.
     public let folded: Bool
-    enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions, kind, folded }
+    enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions, kind, folded, account, model }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); link = try c.decodeKnownIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
@@ -317,6 +325,8 @@ public struct Row: Codable, Equatable, Sendable {
         children = try c.decodeIfPresent([Row].self, forKey: .children) ?? []; actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
         kind = (try? c.decodeIfPresent(CardKind.self, forKey: .kind)) ?? nil
         folded = try c.decodeIfPresent(Bool.self, forKey: .folded) ?? false
+        account = try c.decodeKnownIfPresent(AccountPresentation.self, forKey: .account)
+        model = try c.decodeIfPresent(TaskModelPresentation.self, forKey: .model)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -326,6 +336,7 @@ public struct Row: Codable, Equatable, Sendable {
         try c.encode(depth, forKey: .depth); try c.encode(struck, forKey: .struck)
         if !children.isEmpty { try c.encode(children, forKey: .children) }; if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
         try c.encodeIfPresent(kind, forKey: .kind); if folded { try c.encode(folded, forKey: .folded) }
+        try c.encodeIfPresent(account, forKey: .account); try c.encodeIfPresent(model, forKey: .model)
     }
 }
 public struct Markdown: Codable, Equatable, Sendable { public let text: String; public let truncated: Bool; public let more: Link?; public let commentable: Bool }
@@ -458,8 +469,30 @@ public struct Condition: Codable, Equatable, Sendable {
         equals == value || anyOf?.contains(value) == true
     }
 }
-public struct ChoiceItem: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String? }
-public struct Form: Codable, Equatable, Sendable { public let id: String; public let fields: [Field]; public let submit: Action }
+public struct ChoiceItem: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let label: String
+    public let description: String?
+    public let group: String?
+    public let disabledReason: String?
+    public let availableWhen: Condition?
+    enum CodingKeys: String, CodingKey { case id, label, description, group; case disabledReason = "disabled_reason", availableWhen = "available_when" }
+    public init(id: String, label: String, description: String? = nil, group: String? = nil, disabledReason: String? = nil, availableWhen: Condition? = nil) {
+        self.id = id; self.label = label; self.description = description; self.group = group
+        self.disabledReason = disabledReason; self.availableWhen = availableWhen
+    }
+}
+public struct Form: Codable, Equatable, Sendable {
+    public let id: String; public let fields: [Field]; public let submit: Action
+    public let substitutionWasEdited: Bool?
+    enum CodingKeys: String, CodingKey { case id, fields, submit; case substitutionWasEdited = "substitution_was_edited" }
+    public var initialValues: [String: JSONValue] {
+        var values = Dictionary(uniqueKeysWithValues: fields.map { ($0.id, $0.value) })
+        if let substitutionWasEdited { values["substitution_was_edited"] = .bool(substitutionWasEdited) }
+        return values
+    }
+    public var modelFields: [Field] { fields.contains { $0.id == "model" } ? fields : [] }
+}
 public struct Field: Codable, Equatable, Sendable {
     public let id: String; public let label: String; public let kind: FieldKind; public let value: JSONValue; public let required: Bool; public let help: String?
     public let visibleWhen: Condition?; public let reloadOnChange: Bool
@@ -551,10 +584,10 @@ public enum LocalLink: Codable, Equatable, Sendable {
     case mcpReconnect(card: String)
     /// Asks for the new Claude account's name, then signs it in by running `command` with the
     /// shell-quoted name appended in Terminal on the daemon's Mac.
-    case accountAdd(command: String)
+    case accountAdd(command: String, provider: AccountProvider = .claude, argv: [String]? = nil)
     /// Signs `account` in to Claude by running `command`, as is, in Terminal on the daemon's Mac.
-    case accountSignIn(account: String, command: String)
-    private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path, card, server, command, account }
+    case accountSignIn(account: String, command: String, provider: AccountProvider = .claude, argv: [String]? = nil)
+    private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path, card, server, command, account, provider, argv }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -563,8 +596,8 @@ public enum LocalLink: Codable, Equatable, Sendable {
         case "open_path": self = .openPath(path: try c.decode(String.self, forKey: .path))
         case "mcp_sign_in": self = .mcpSignIn(card: try c.decode(String.self, forKey: .card), server: try c.decode(String.self, forKey: .server))
         case "mcp_reconnect": self = .mcpReconnect(card: try c.decode(String.self, forKey: .card))
-        case "account_add": self = .accountAdd(command: try c.decode(String.self, forKey: .command))
-        case "account_sign_in": self = .accountSignIn(account: try c.decode(String.self, forKey: .account), command: try c.decode(String.self, forKey: .command))
+        case "account_add": self = .accountAdd(command: try c.decode(String.self, forKey: .command), provider: try c.decodeIfPresent(AccountProvider.self, forKey: .provider) ?? .claude, argv: try c.decodeIfPresent([String].self, forKey: .argv))
+        case "account_sign_in": self = .accountSignIn(account: try c.decode(String.self, forKey: .account), command: try c.decode(String.self, forKey: .command), provider: try c.decodeIfPresent(AccountProvider.self, forKey: .provider) ?? .claude, argv: try c.decodeIfPresent([String].self, forKey: .argv))
         case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
@@ -576,8 +609,12 @@ public enum LocalLink: Codable, Equatable, Sendable {
         case let .openPath(v): try c.encode("open_path", forKey: .kind); try c.encode(v, forKey: .path)
         case let .mcpSignIn(card, server): try c.encode("mcp_sign_in", forKey: .kind); try c.encode(card, forKey: .card); try c.encode(server, forKey: .server)
         case let .mcpReconnect(card): try c.encode("mcp_reconnect", forKey: .kind); try c.encode(card, forKey: .card)
-        case let .accountAdd(command): try c.encode("account_add", forKey: .kind); try c.encode(command, forKey: .command)
-        case let .accountSignIn(account, command): try c.encode("account_sign_in", forKey: .kind); try c.encode(account, forKey: .account); try c.encode(command, forKey: .command)
+        case let .accountAdd(command, provider, argv):
+            try c.encode("account_add", forKey: .kind); try c.encode(command, forKey: .command)
+            if provider != .claude { try c.encode(provider, forKey: .provider) }; try c.encodeIfPresent(argv, forKey: .argv)
+        case let .accountSignIn(account, command, provider, argv):
+            try c.encode("account_sign_in", forKey: .kind); try c.encode(account, forKey: .account); try c.encode(command, forKey: .command)
+            if provider != .claude { try c.encode(provider, forKey: .provider) }; try c.encodeIfPresent(argv, forKey: .argv)
         }
     }
 }
@@ -653,6 +690,7 @@ extension Form {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        substitutionWasEdited = try c.decodeIfPresent(Bool.self, forKey: .substitutionWasEdited)
         let fields = try c.decode([Known<Field>].self, forKey: .fields)
         let requirements = try c.decode([Requirement].self, forKey: .fields)
         self.fields = fields.compactMap(\.value)

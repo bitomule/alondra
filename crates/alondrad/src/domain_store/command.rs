@@ -86,6 +86,9 @@ pub(super) fn stage(
             .into());
         }
         let outcome = serde_json::from_str(&result)?;
+        if let Attached::Batch(batch) = &attached {
+            batch_effects::record(conn, batch, &actor_key, envelope, digest.as_slice(), &outcome)?;
+        }
         if let Some((sender, id, ciphertext_digest)) = transport {
             repository::exec(
                 conn,
@@ -341,6 +344,9 @@ pub(super) fn stage(
             alondra_core::now_millis()
         ],
     )?;
+    if let Attached::Batch(batch) = &attached {
+        batch_effects::record(conn, batch, &actor_key, envelope, digest.as_slice(), &outcome)?;
+    }
     if let Some((sender, id, ciphertext_digest)) = transport {
         repository::exec(
             conn,

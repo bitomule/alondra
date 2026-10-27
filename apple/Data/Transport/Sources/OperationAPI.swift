@@ -194,7 +194,9 @@ public struct APIRequest: Sendable, Equatable {
               let lang = query.first(where: { $0.0 == "lang" })?.1, ["en", "es"].contains(lang),
               query.allSatisfy({ $0.1.utf8.count <= 256 && !$0.1.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })
         else { return false }
-        let extra = Dictionary(uniqueKeysWithValues: query.filter { !["protocol", "client", "lang", "known"].contains($0.0) })
+        if let capabilities = query.first(where: { $0.0 == "capabilities" })?.1,
+           !validViewCapabilities(capabilities) { return false }
+        let extra = Dictionary(uniqueKeysWithValues: query.filter { !["protocol", "client", "lang", "known", "capabilities"].contains($0.0) })
         if let known = query.first(where: { $0.0 == "known" })?.1, known.isEmpty { return false }
         switch path[1] {
         case "home":
@@ -212,6 +214,14 @@ public struct APIRequest: Sendable, Equatable {
             return extra.isEmpty || (extra.count == 1 && extra["q"] != nil)
         default:
             return extra.isEmpty
+        }
+    }
+
+    static func validViewCapabilities(_ value: String) -> Bool {
+        guard value.utf8.count <= 256 else { return false }
+        if value.isEmpty { return true }
+        return value.split(separator: ",", omittingEmptySubsequences: false).allSatisfy {
+            !$0.isEmpty && $0.utf8.count <= 64 && $0.utf8.allSatisfy { (97...122).contains($0) || $0 == 95 }
         }
     }
 

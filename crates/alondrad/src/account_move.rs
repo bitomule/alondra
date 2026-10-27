@@ -1,18 +1,6 @@
-//! With `move_when_exhausted` on, a task whose account reaches its usage limit goes on with
-//! another account, in the same Claude session. Only between turns: the turn that hit the limit
-//! has ended and the task waits on its account's limit card. The account it goes on with is one
-//! that is not at a limit of its own (signed out, or its session or week used up), the one the
-//! user's distribution prefers; when every account is at its limit, the task waits on its own as
-//! it does with the setting off. A task moves once per limit it hits, and not again until the
-//! limit it left resets. Every account reads the same conversations (`projects/` of `~/.claude`,
-//! which their folders link), so the session resumes as it is: nothing is copied.
-//!
-//! Each move is journaled in domain.db: planned with the session it takes, its old host stopped
-//! and seen gone, the execution on the other account admitted in the transaction that records it,
-//! then the old node closed. A daemon that comes back goes on from the last step recorded, or
-//! undoes a move that can no longer happen before its admission: the task then stays on its
-//! account's limit with its old execution taken over again, as after any restart. The session is
-//! never run by two hosts, and the task never has two live owners.
+//! Reconciles historical account-move journals without selecting another account for a started
+//! node. Pre-admission moves are undone; an already committed destination is recovered only
+//! after positive evidence that its native execution started. The old journal format stays readable.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AccountMove, AccountMovePlan, AccountMoveStep};
 use alondra_core::Millis;
@@ -38,8 +26,8 @@ pub(crate) struct Moves {
     pub(crate) crash_after: std::sync::Mutex<Option<AccountMoveStep>>,
 }
 
-fn enabled(domain: &DomainRuntime) -> bool {
-    crate::accounts::config(domain.home()).is_ok_and(|config| config.distribution.move_when_exhausted)
+fn enabled(_domain: &DomainRuntime) -> bool {
+    false
 }
 
 fn policy(domain: &DomainRuntime) -> Policy {
@@ -120,21 +108,31 @@ fn plan(domain: &DomainRuntime, held: &ClaudeHeld, to: AccountId, now: Millis) -
 }
 
 /// Why the planned move can no longer happen, if it cannot.
-fn refused(domain: &DomainRuntime, moving: &AccountMove) -> Option<String> {
-    if !enabled(domain) {
-        return Some("moving to another account was turned off".into());
+fn refused(_domain: &DomainRuntime, _moving: &AccountMove) -> Option<String> {
+    Some("Accounts and providers are chosen when creating a node. This execution stays on its original account".into())
+}
+
+/// A persisted lock or a preallocated Claude UUID does not prove that the destination native
+/// process ever ran. Available is committed only after native init or positive native consumption.
+pub(crate) fn require_started_destination(domain:&DomainRuntime,task:&TaskId)->Result<(),String>{
+    let moving=domain.store.lock().expect("domain store poisoned").account_moves().map_err(|error|format!("reading historical account moves: {error:#}"))?
+        .into_iter().rev().find(|moving|moving.task==*task);
+    let Some(moving)=moving.filter(|moving|matches!(moving.step,AccountMoveStep::Admitted|AccountMoveStep::Done)) else{return Ok(())};
+    let state=domain.state().map_err(|error|format!("reading the admitted destination: {error:#}"))?;
+    let current=state.tasks.get(task).ok_or("The historical account move has no task")?;
+    if moving.agent.as_ref()!=current.agent_id.as_ref(){
+        return if moving.step==AccountMoveStep::Done{Ok(())}else{Err("The historical destination no longer matches the committed node; no account will be restarted".into())};
     }
-    let Ok(state) = domain.state() else { return Some("the domain could not be read".into()) };
-    if state.tasks.get(&moving.task).and_then(|task| task.agent_id.as_ref()) != Some(&moving.plan.node) {
-        return Some("another node holds the task now".into());
+    if current.provider!=Provider::Claude || current.account_key().account!=moving.plan.to{
+        return Err("The historical destination does not match the committed account; no account will be restarted".into());
     }
-    if state.held_by_limit(&moving.task).is_none_or(|held| held.card != moving.plan.card) {
-        return Some(format!("the task no longer waits on the usage limit of account {}", moving.plan.from));
-    }
-    if !can_take(&state, &moving.plan.to, alondra_core::now_millis()) {
-        return Some(format!("account {} cannot take work now", moving.plan.to));
-    }
-    None
+    let execution=state.lifecycle_of(task).map_err(|error|error.message)?.execution().cloned().ok_or("The historical destination has no current execution")?;
+    let records=state.lifecycle_journal.get(task).ok_or("The historical destination has no lifecycle journal")?;
+    let admitted=records.iter().rposition(|record|matches!(record,LifecycleRecord::Admitted{node,execution:Some(identity)}
+        if Some(node)==moving.agent.as_ref() && identity.instance==execution.instance().as_str()));
+    if admitted.is_some_and(|at|records.iter().skip(at+1).take_while(|record|!matches!(record,LifecycleRecord::Admitted{..}))
+        .any(|record|matches!(record,LifecycleRecord::ResourceAvailable))){return Ok(())}
+    Err("A previous release admitted another account, but its native process was never positively observed starting. Alondra will not start that account or silently return to the old one. Cancel this node and create a new node on the account you choose".into())
 }
 
 /// Takes the task's move as far as it goes: from the step recorded to its end, done or undone.
@@ -237,6 +235,10 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
 /// Makes sure the execution on the other account runs, closes the node that hit the limit and
 /// records the end of the move.
 async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), String> {
+    if let Err(why)=require_started_destination(domain,&moving.task){
+        crate::sdk_owner::lost(domain,&moving.task,&why);
+        return Err(why);
+    }
     let agent = moving.agent.clone().ok_or("the admission names no node")?;
     if !domain.owns_sdk_host(&agent) {
         let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
@@ -244,11 +246,7 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
         let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
         let task = moving.task.clone();
         let driver = tokio::task::spawn_blocking(move || {
-            if crate::sdk_owner::host_started(&backend, &runtime, &task) {
-                crate::sdk_owner::adopt(runtime, &backend, task, Some(&plugin))
-            } else {
-                crate::sdk_owner::launch_admitted(runtime, &backend, task, &plugin)
-            }
+            crate::sdk_owner::adopt(runtime, &backend, task, Some(&plugin))
         })
         .await
         .map_err(|error| format!("starting the SDK node stopped: {error}"))?
@@ -273,6 +271,7 @@ fn plan_held(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
     let (journal, policy, now) = (moves(domain), policy(domain), alondra_core::now_millis());
     for held in state.claude_held().into_iter().filter(|held| held.hold == ClaudeHold::Usage) {
+        if held.provider != Provider::Claude || state.tasks.get(&held.task).is_none_or(|task|task.selection.is_some()){continue;}
         let tried = journal.iter().filter(|moving| moving.task == held.task)
             .any(|moving| !moving.step.ended() || moving.plan.card == held.card || (moving.step == AccountMoveStep::Done && moving.plan.until > now));
         if tried || state.held_by_limit(&held.task).is_none() {

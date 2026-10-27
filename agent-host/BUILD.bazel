@@ -9,7 +9,7 @@ exports_files(["pnpm-lock.yaml", "package.json"])
 
 ts_project(
     name = "host_lib",
-    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts"],
+    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "host-session.ts", "codex-session.ts", "codex-rollout.ts", "codex-main.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
     tsconfig = "tsconfig.json",
     declaration = True,
     transpiler = "tsc",
@@ -205,4 +205,55 @@ js_test(
     name = "probe_test",
     entry_point = "probe.test.mjs",
     data = [":host_lib", "persistent-fake-claude.py", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+
+js_run_binary(
+    name = "codex_bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "codex-main.ts"],
+    outs = ["codex.cjs", "codex.meta.json"],
+    args = ["$(location codex-main.ts)", "$(location codex.cjs)", "$(location codex.meta.json)"],
+)
+js_run_binary(
+    name = "codex_release_host",
+    tool = ":sea_tool",
+    srcs = [":codex.cjs", "host-entitlements.plist"],
+    outs = ["alondra-codex-host", "alondra-codex-host.manifest.json"],
+    args = ["$(location codex.cjs)", "$(location alondra-codex-host)", "$(location alondra-codex-host.manifest.json)", "$(location host-entitlements.plist)", "codex-app-server-0.163.0"],
+)
+
+js_test(
+    name = "codex_session_test",
+    entry_point = "codex-session.test.mjs",
+    data = [":host_lib", "fake-codex.py", ":node_modules/zod"],
+)
+
+js_test(
+    name = "codex_native_test",
+    entry_point = "codex-native.test.mjs",
+    data = [":host_lib", "fake-codex-mcp.py", ":node_modules/zod"],
+    tags = ["manual", "native"],
+    timeout = "short",
+)
+
+js_test(
+    name = "model_probe_test",
+    entry_point = "model-probe.test.mjs",
+    data = [":host_lib", "fake-model-catalog.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/zod"],
+)
+
+exports_files(["fake-codex.py", "fake-codex-mcp.py", "codex-model-double.py"])
+
+js_test(
+    name = "codex_native_cells_test",
+    entry_point = "codex-native-cells.test.mjs",
+    data = [":host_lib", "codex-native-cell-mcp.py", ":node_modules/zod"],
+    tags = ["manual", "native"],
+    timeout = "short",
+)
+
+js_test(
+    name = "codex_rollout_test",
+    entry_point = "codex-rollout.test.mjs",
+    data = [":host_lib", ":node_modules/zod"],
 )

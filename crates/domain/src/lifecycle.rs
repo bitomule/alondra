@@ -855,6 +855,9 @@ enum Activity {
         id: TurnId,
         work: BTreeSet<WorkId>,
         continuations: BTreeSet<Wake>,
+        /// Owned continuations waiting when the turn started: the turn read them, and a provider
+        /// that reports reading one explicitly is told it was already taken.
+        taken: BTreeSet<Wake>,
         stop: TurnStop,
     },
     OwnWork {

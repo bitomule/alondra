@@ -4,6 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library
 rust_library(
     name = "alondra_core",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = ["src/model_sheets.toml"],
     crate_name = "alondra_core",
     edition = "2024",
     version = "0.1.0",
@@ -22,7 +23,7 @@ rust_doc_test(
 
 rust_test(
     name = "alondra_core_test",
-    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics"],
+    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics"],
     crate = ":alondra_core",
     deps = all_crate_deps(normal_dev = True),
     edition = "2024",

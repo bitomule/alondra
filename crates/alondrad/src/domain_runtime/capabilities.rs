@@ -55,7 +55,16 @@ pub(super) fn load(home: &Path, epoch: String) -> Result<Authority> {
         let digest = decode_digest(&entry.digest)?;
         Ok((digest, entry.principal))
     }).collect::<Result<Vec<_>>>()?;
-    Ok(Authority::restore(epoch, entries))
+    let mut authority = Authority::restore(epoch, entries);
+    let batches: Vec<String> = authority.entries().filter_map(|(_, principal)| match principal {
+        Principal::Orchestrator { execution_id, .. } => Some(execution_id.clone()),
+        Principal::Agent { .. } => None,
+    }).collect();
+    if !batches.is_empty() {
+        for execution in batches { authority.revoke_execution(&execution); }
+        persist(home, &authority).context("retiring previous orchestrator batch capabilities before startup")?;
+    }
+    Ok(authority)
 }
 
 /// Written before any new token is exposed and after every revocation, so a
@@ -133,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn issued_capabilities_survive_restart_and_revocation_is_durable() {
+    fn agent_adoption_capabilities_survive_but_orchestrator_batches_get_fresh_authority_after_restart() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         register(&domain, "session-a");
@@ -150,15 +159,18 @@ mod tests {
 
         let reopened = fixture.open();
         assert!(matches!(reopened.resolve_bearer(&a).unwrap(), Principal::Agent { session_id, .. } if session_id == "session-a"));
-        assert!(matches!(reopened.resolve_bearer(&run).unwrap(), Principal::Orchestrator { execution_id, generation: 0 } if execution_id == "run-1"));
+        assert!(reopened.resolve_bearer(&run).is_err(), "a native orchestrator batch never resumes across daemon restart");
+        let fresh = reopened.bind_orchestrator("run-2").unwrap().expose_for_child_environment().to_owned();
+        assert!(reopened.resolve_bearer(&fresh).is_ok());
         reopened.revoke_agent("session-a").unwrap();
-        reopened.end_execution("run-1");
+        reopened.end_execution("run-2");
         assert!(reopened.resolve_bearer(&a).is_err());
         drop(reopened);
 
         let again = fixture.open();
         assert!(again.resolve_bearer(&a).is_err(), "revocation must survive restart");
         assert!(again.resolve_bearer(&run).is_err());
+        assert!(again.resolve_bearer(&fresh).is_err());
         assert!(again.resolve_bearer(&b).is_ok(), "an unrelated capability is kept");
     }
 
@@ -223,4 +235,27 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(DomainRuntime::open(&fixture.0).is_err(), "a world-readable registry stops startup");
     }
+
+    #[test]
+    fn failed_revocation_persistence_cannot_resurrect_handled_or_limited_batch_bearers() {
+        for settled in [false, true] {
+            let fixture = Fixture::new(); let domain = fixture.open();
+            register(&domain, "session-a");
+            let agent = domain.bind_agent("session-a").unwrap().expose_for_child_environment().to_owned();
+            let bearer = domain.bind_orchestrator("old-run").unwrap().expose_for_child_environment().to_owned();
+            std::fs::create_dir(fixture.0.join(format!("{FILE}.next"))).unwrap();
+            domain.end_execution("old-run");
+            assert!(domain.resolve_bearer(&bearer).is_err(), "live authority is retired even when its write fails");
+            if settled { domain.store.lock().unwrap().finish_batch("old-run").unwrap(); }
+            drop(domain);
+            assert!(DomainRuntime::open(&fixture.0).is_err(), "the daemon must not serve until loaded batch retirement is durable");
+            std::fs::remove_dir(fixture.0.join(format!("{FILE}.next"))).unwrap();
+            let reopened = fixture.open();
+            assert!(reopened.resolve_bearer(&bearer).is_err(), "handled and quota-limited batches both need new native authority");
+            assert!(reopened.resolve_bearer(&agent).is_ok(), "same-session node adoption authority survives");
+            drop(reopened);
+            assert!(fixture.open().resolve_bearer(&bearer).is_err(), "retirement was persisted before serving");
+        }
+    }
+
 }

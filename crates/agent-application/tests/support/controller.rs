@@ -33,7 +33,7 @@ pub fn record_facts(
             | ObservedFact::McpSignIn { .. }
             | ObservedFact::McpToolFailed
             | ObservedFact::Usage(_) => continue,
-            ObservedFact::TurnEnded { .. } | ObservedFact::InputDropped { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
+            ObservedFact::ContinuationRequested { .. } | ObservedFact::TurnEnded { .. } | ObservedFact::InputDropped { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
                 return Err(Error::RequiresDomainCommand);
             }
         };

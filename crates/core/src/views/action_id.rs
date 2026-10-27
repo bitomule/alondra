@@ -28,6 +28,8 @@ pub enum Verb {
     SchedDelete,
     SchedSave,
     NewRequest,
+    NewRequestSelection,
+    ScheduleSelection,
     /// Close the delivered PR on GitHub without merging it, and cancel its task.
     CloseUnmerged,
     /// Take back an answer to one of the questions asked together with this one.
@@ -68,9 +70,15 @@ pub enum Verb {
     /// Whether a node whose account reaches its limit goes on with another: `on` or `off`, as
     /// `option_id`.
     AccountMoves,
+    AccountRename,
+    AccountOrder,
+    AccountCheck,
+    AccountModels,
+    ModelProfile,
+    TaskSelection,
 }
 impl Verb {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 55] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -97,6 +105,8 @@ impl Verb {
         Self::SchedDelete,
         Self::SchedSave,
         Self::NewRequest,
+        Self::NewRequestSelection,
+        Self::ScheduleSelection,
         Self::CloseUnmerged,
         Self::Retake,
         Self::Pause,
@@ -118,6 +128,12 @@ impl Verb {
         Self::AccountWeight,
         Self::AccountPolicy,
         Self::AccountMoves,
+        Self::AccountRename,
+        Self::AccountOrder,
+        Self::AccountCheck,
+        Self::AccountModels,
+        Self::ModelProfile,
+        Self::TaskSelection,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -147,6 +163,8 @@ impl Verb {
             Self::SchedDelete => "sched_delete",
             Self::SchedSave => "sched_save",
             Self::NewRequest => "new_request",
+            Self::NewRequestSelection => "new_request_selection",
+            Self::ScheduleSelection => "schedule_selection",
             Self::CloseUnmerged => "close_unmerged",
             Self::Retake => "retake",
             Self::Pause => "pause",
@@ -168,6 +186,12 @@ impl Verb {
             Self::AccountWeight => "account_weight",
             Self::AccountPolicy => "account_policy",
             Self::AccountMoves => "account_moves",
+            Self::AccountRename => "account_rename",
+            Self::AccountOrder => "account_order",
+            Self::AccountCheck => "account_check",
+            Self::AccountModels => "account_models",
+            Self::ModelProfile => "model_profile",
+            Self::TaskSelection => "task_selection",
         }
     }
     fn parse(value: &str) -> Option<Self> {

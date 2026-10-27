@@ -4,6 +4,11 @@
 //! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
 pub(crate) mod backend;
 pub(crate) mod seals;
+mod worker;
+mod account_identity;
+pub(crate) use account_identity::NativeAccountIdentity;
+use worker::{Worker, Found};
+use alondra_core::accounts::{AccountKey, Provider};
 pub(crate) use backend::SdkBackend;
 pub(crate) use seals::Seals;
 
@@ -14,7 +19,7 @@ use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_core::domain::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Found, Retained, WorkerProfile, answered_by_event, answered_control, context_event, native_exited};
+use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Retained, WorkerProfile, answered_by_event, answered_control, context_event, native_exited};
 use alondra_provider_contract::{AdapterError, Capability, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
 use alondra_store::{AuthorityScope, Committed, ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -87,12 +92,23 @@ pub(crate) struct Launch {
 /// resumes the session launches Claude the same way.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LaunchOptions {
+    #[serde(default)]
+    pub(crate) provider: Provider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) selection: Option<alondra_core::model_selection::TaskSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) effort: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) disallowed_tools: Vec<String>,
+}
+
+pub(crate) fn retain_selection_options(directory:&std::path::Path,selection:alondra_core::model_selection::TaskSelection)->Result<(),Failed>{
+    let mut options=LaunchOptions::load(directory)?;
+    let effective=selection.effective.as_ref().ok_or_else(||Failed::new("The effective selection is unknown".into()))?;
+    options.model=Some(effective.model.model.clone());options.effort=effective.reasoning_effort.clone();options.selection=Some(selection);
+    options.save(directory)
 }
 
 const LAUNCH_OPTIONS: &str = "launch-options.json";
@@ -153,19 +169,19 @@ fn adapter(what: &str) -> impl Fn(AdapterError) -> Failed + '_ {
     move |error| Failed::new(format!("{what}: {error:?}"))
 }
 
-impl Preparer for ClaudeWorker {
+impl Preparer for Worker {
     fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
-        ClaudeWorker::stage_input(self, metadata)
+        Worker::stage_input(self, metadata)
     }
     fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> Result<PreparedCommand, AdapterError> {
-        ClaudeWorker::prepare(self, attempt, metadata)
+        Worker::prepare(self, attempt, metadata)
     }
 }
 
 /// One execution's owner: its worker and the task whose dispatches and controls only it claims.
 pub(crate) struct Driver {
     domain: Arc<DomainRuntime>,
-    worker: ClaudeWorker,
+    worker: Worker,
     scope: AuthorityScope,
     task: TaskId,
     agent: AgentId,
@@ -182,6 +198,7 @@ pub(crate) struct Driver {
     host_closed: bool,
     /// A step of this owner failed: its host is stopped and replaced like one that closed.
     owner_failed: bool,
+    native_account_refusal:Option<String>,
     /// The Claude session the host last said it runs, so the log names each one once.
     claude_session: Option<String>,
     /// The node rests on a host a daemon of another release launched: a host of this release that
@@ -194,23 +211,86 @@ pub(crate) struct Driver {
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
 /// runs through the SDK, and any failure before it is the launch's own, never a `claude --bg`.
 pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch) -> Result<Driver, Failed> {
-    start_bound(domain, backend, launch, capabilities(), None)
+    let offered = provider_capabilities(launch.options.provider);
+    start_bound(domain, backend, launch, offered, None)
+}
+
+struct NativeRecovery {
+    admission: ExecutionIdentity,
+    session: String,
+    identity: Option<NativeAccountIdentity>,
+}
+
+pub(crate) fn require_recoverable_session(domain:&DomainRuntime,backend:&SdkBackend,task:&TaskId,provider:Provider,account:&alondra_core::accounts::AccountId,directory:&str)->Result<(),Failed>{
+    native_recovery(domain,backend,task,provider,account,directory).map(drop)
+}
+
+fn native_recovery(domain:&DomainRuntime,backend:&SdkBackend,task:&TaskId,provider:Provider,account:&alondra_core::accounts::AccountId,directory:&str)->Result<Option<NativeRecovery>,Failed>{
+    let state=domain.state().map_err(|error|Failed::new(format!("Reading the original native session: {error:#}")))?;
+    let records=state.lifecycle_journal.get(task).cloned().unwrap_or_default();
+    let Some((at,admission))=records.iter().enumerate().rev().find_map(|(at,record)|match record{
+        LifecycleRecord::Admitted{execution:Some(execution),..} if execution.host==HOST=>Some((at,execution.clone())),_=>None,
+    }) else{
+        if state.tasks.get(task).is_some_and(|task|task.started) || records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{..}|LifecycleRecord::ResourceAvailable)){return Err(Failed::new("This task has legacy native history without a verified SDK continuation. Recover the original legacy session before replacing its node; no fresh session was started".into()))}
+        return Ok(None)
+    };
+    let refuse=||Failed::new("The original native session cannot be proven. Keep this node on its original account and recover its retained native history; create a new node to start a fresh session".into());
+    if records.iter().skip(at+1).any(|record|matches!(record,LifecycleRecord::Admitted{..}))
+        || !records.iter().skip(at+1).any(|record|matches!(record,LifecycleRecord::ResourceAvailable)) {return Err(refuse())}
+    let task_state=state.tasks.get(task).ok_or_else(refuse)?;
+    if task_state.account_key()!=AccountKey::new(provider,account.clone()){return Err(Failed::new("Choose account and provider when creating a node. Recovery must use the original native account".into()))}
+    let (metadata,original_directory)={let store=domain.store.lock().expect("domain store poisoned");
+        (store.conversation_metadata(task,&admission.conversation).map_err(|error|Failed::new(format!("Reading the original native conversation: {error:#}")))?,
+        store.task_worktree(task).map_err(|error|Failed::new(format!("Reading the original native worktree: {error:#}")))?)};
+    if original_directory.as_deref()!=Some(directory){return Err(Failed::new("Native session recovery must use the original task worktree".into()))}
+    let session=metadata.as_deref().and_then(|metadata|match provider{Provider::Claude=>alondra_provider_claude::conversation_session(metadata),Provider::Codex=>alondra_provider_codex::conversation_session(metadata)}).ok_or_else(refuse)?;
+    let selected=backend.for_provider(provider,domain.home()).map_err(|error|Failed::new(format!("Locating the original native account: {error:#}")))?;
+    let selected=on_account_provider(domain,&selected,provider,account)?;
+    let identity=NativeAccountIdentity::load_observed(&selected.state_root.join(&admission.instance),provider)?;
+    if let Some(change)=identity.as_ref().and_then(|identity|state.accounts.iter().find(|actual|actual.provider==provider && actual.id==*account).and_then(|actual|identity.change(actual))){return Err(Failed::new(format!("The original native account {change} changed. Restore it before recovering this session")))}
+    if provider==Provider::Codex{
+        if !identity.as_ref().is_some_and(NativeAccountIdentity::can_resume_managed){return Err(Failed::new("This Codex session has no retained managed-account proof. A fresh native process cannot resume an unverified or API-key identity".into()))}
+        require_native_thread_mapping(&selected,&session,account)?;
+    }
+    if state.lifecycle_of(task).ok().and_then(|lifecycle|lifecycle.execution().cloned()).is_some(){
+        let scope=AuthorityScope::new(state.data_epoch.clone()).map_err(|error|Failed::new(format!("{error:?}")))?;
+        domain.own(scope,|owner|{if owner.source_has_live_code_cells(task)?{return Err(alondra_core::domain::DomainError::new("native_work_pending","Wait for the native code cells to finish before recovering this host; their live process cannot be replaced").into())}Ok(())}).map_err(failed("checking live native work before recovery"))?;
+    }
+    Ok(Some(NativeRecovery{admission,session,identity}))
+}
+
+fn require_native_thread_mapping(backend:&SdkBackend,session:&str,account:&alondra_core::accounts::AccountId)->Result<(),Failed>{
+    use std::os::unix::fs::{MetadataExt,OpenOptionsExt};use std::io::Read;use sha2::Digest;
+    let directory=backend.state_root.join("native-threads");let path=directory.join(session);
+    let fail=||Failed::new("The original private Codex thread mapping is unavailable. Restore the retained session instead of starting another thread".into());
+    let parent=std::fs::symlink_metadata(&directory).map_err(|_|fail())?;let before=std::fs::symlink_metadata(&path).map_err(|_|fail())?;
+    if !parent.is_dir() || parent.file_type().is_symlink() || parent.mode()&0o777!=0o700 || !before.is_file() || before.file_type().is_symlink() || before.mode()&0o777!=0o600 || before.uid()!=parent.uid() || before.nlink()!=1 || before.len()>1024{return Err(fail())}
+    let mut file=std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK|libc::O_CLOEXEC).open(path).map_err(|_|fail())?;
+    let actual=file.metadata().map_err(|_|fail())?;if before.dev()!=actual.dev() || before.ino()!=actual.ino(){return Err(fail())}
+    let mut bytes=Vec::new();file.by_ref().take(1025).read_to_end(&mut bytes).map_err(|_|fail())?;if bytes.len()>1024{return Err(fail())}
+    let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|fail())?;
+    let home=sha2::Sha256::digest(backend.native_environment.get("CODEX_HOME").map(String::as_str).unwrap_or("native_default").as_bytes()).iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+    if value["accountId"].as_str()!=Some(account.as_str()) || value["homeDigest"].as_str()!=Some(home.as_str()) || !value["threadId"].as_str().is_some_and(|id|!id.is_empty() && id.len()<=256){return Err(fail())}Ok(())
 }
 
 /// The existing Claude session an SDK execution continues instead of starting one.
 pub(crate) enum Continuation {
     /// A `claude --bg` node's: its id is the session.
     Node(AgentId),
+    Native { session: String },
     /// The task's own, which its execution on another account takes past `card`, the usage limit
     /// of the account it leaves, as the task's move `number`.
     Moved { session: String, card: InteractionId, number: i64 },
+    Transition { id: String },
 }
 
 impl Continuation {
-    fn session(&self) -> &str {
+    fn session(&self) -> Option<&str> {
         match self {
-            Self::Node(node) => &node.0,
-            Self::Moved { session, .. } => session,
+            Self::Node(node) => Some(&node.0),
+            Self::Native { session } => Some(session),
+            Self::Moved { session, .. } => Some(session),
+            Self::Transition { .. } => None,
         }
     }
 }
@@ -220,15 +300,21 @@ impl Continuation {
 /// of the move it is part of. The launch's prompt is the first input: it opens that session with
 /// `resume`.
 pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, continuation: Continuation) -> Result<Driver, Failed> {
-    start_bound(domain, backend, launch, capabilities(), Some(continuation))
+    let offered = provider_capabilities(launch.options.provider);
+    start_bound(domain, backend, launch, offered, Some(continuation))
 }
 
 fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>) -> Result<Driver, Failed> {
+    crate::accounts::require_initial_check(&domain).map_err(|error| Failed::new(error.message))?;
+    let provider = launch.options.provider;
+    let backend = &backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("{error:#}")))?;
     let backend = &backend.for_start().map_err(|error| Failed::new(format!("{error:#}")))?;
-    let backend = &on_account(&domain, backend, &launch.account)?;
+    let backend = &on_account_provider(&domain, backend, provider, &launch.account)?;
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
+    let recovery=if continuation.is_none(){native_recovery(&domain,backend,&launch.task,provider,&launch.account,&launch.directory)?}else{None};
+    let continuation=continuation.or_else(||recovery.as_ref().map(|recovery|Continuation::Native{session:recovery.session.clone()}));
     let envelope = |name: &str, command: Command| CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -236,8 +322,12 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         expected_revision: 0,
         command,
     };
-    let binding = binding(backend, capabilities, &launch.account, crate::accounts::generation(&state, &launch.account))?;
-    let mut configuration = configuration(backend, &binding, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)))?;
+    let binding = binding_for(provider, backend, capabilities, &launch.account, crate::accounts::generation_provider(&state, &AccountKey { provider, account: launch.account.clone() }))?;
+    let mut configuration = configuration(backend, &binding, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)?))?;
+    if let Some(Continuation::Transition { id }) = &continuation {
+        let prepared = crate::provider_transition::retained_handoff(&domain, &launch.task, id).map_err(|error|Failed::new(error.message))?;
+        configuration.worker.as_mut().ok_or_else(||Failed::new("The transfer has no worker profile".into()))?.handoff_context=Some(prepared.context);
+    }
     launch.options.save(&configuration.state_directory)?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
     domain
@@ -249,9 +339,9 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         .map_err(failed("registering the node"))?;
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
-    let mut worker = ClaudeWorker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
-    if let Some(continuation) = &continuation {
-        worker.continue_session(continuation.session()).map_err(adapter("continuing the node's session"))?;
+    let mut worker = Worker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    if let Some(session) = continuation.as_ref().and_then(Continuation::session) {
+        worker.continue_session(session).map_err(adapter("continuing the node's session"))?;
     }
     let admit = envelope("admit", Command::AdmitExecution {
         task_id: launch.task.clone(),
@@ -259,6 +349,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         conversation: format!("sdk-conversation-{suffix}"),
         instance: agent.0.clone(),
         host: HOST.into(),
+        provider,
         model: launch.model.clone(),
         account: Some(launch.account.clone()),
         leaves_limit: match &continuation {
@@ -268,12 +359,38 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     });
     let (first, _) = domain
         .own(scope.clone(), |owner| {
+            let key=AccountKey::new(provider,launch.account.clone());
+            let actual=owner.state().accounts.iter().find(|account|account.provider==provider && account.id==launch.account);
+            if launch.options.selection.is_some() && actual.is_none_or(|account|account.state!=alondra_core::accounts::AccountState::SignedIn) {
+                return Err(DomainError::new("account_unavailable","The selected provider account is no longer signed in; refresh the account before starting").into());
+            }
+            if actual.is_some_and(|account|matches!(account.billing,alondra_core::accounts::AccountBilling::PayPerUse)) && !launch.options.selection.as_ref().is_some_and(|selection|selection.account.as_ref()==Some(&key) && selection.paid_account_grant.as_ref()==Some(&key)) {
+                return Err(DomainError::new("paid_authorization_required","This account is now paid per use; select it explicitly to authorize billable usage before starting").into());
+            }
+            if binding.credential_generation()!=crate::accounts::generation_provider(owner.state(),&key) {
+                return Err(DomainError::new("account_selection_changed","The selected account credentials changed before admission; refresh the selection").into());
+            }
+            if let Some(recovery)=&recovery{
+                let latest=owner.state().lifecycle_journal.get(&launch.task).and_then(|records|records.iter().rev().find_map(|record|match record{LifecycleRecord::Admitted{execution:Some(execution),..}=>Some(execution),_=>None}));
+                if latest!=Some(&recovery.admission){return Err(DomainError::new("native_session_changed","The original native session changed before recovery; refresh the task").into())}
+                owner.require_native_identity(&binding,recovery.identity.as_ref())?;
+                if let Some(identity)=&recovery.identity{identity.retain(&backend.state_root.join(&agent.0)).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;}
+            }else{NativeAccountIdentity::save(&backend.state_root.join(&agent.0),actual).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;}
             owner.stage_command(&Actor::System, &admit, Attached::None)?;
-            owner.launch(&launch.task, &launch.prompt, &launch.directory, &binding, &mut worker)?;
+            if let Some(selection) = &launch.options.selection {
+                let pending = match &continuation { Some(Continuation::Transition { id }) => Some(owner.pending_transition_selection(id)?), _ => None };
+                let mut selection=selection.clone();selection.native_tool_denials=Some(launch.options.disallowed_tools.clone());
+                owner.stage_command(&Actor::System, &envelope("selection", Command::RecordTaskSelection {
+                    task_id: launch.task.clone(), selection, pending,
+                }), Attached::None)?;
+            }
+            let text = if matches!(continuation,Some(Continuation::Transition { .. })) { owner.transition_launch_text(&launch.task,&launch.prompt)? } else { launch.prompt.clone() };
+            let admitted = owner.launch(&launch.task, &text, &launch.directory, &binding, &mut worker)?;
             match &continuation {
                 Some(Continuation::Node(node)) => owner.record_sdk_admitted(node, &launch.task, &agent)?,
                 Some(Continuation::Moved { number, .. }) => owner.record_move_admitted(&launch.task, *number, &agent)?,
-                None => {}
+                Some(Continuation::Transition { id }) => owner.admit_provider_transition(id, &admitted)?,
+                Some(Continuation::Native { .. }) | None => {}
             }
             let lifecycle = owner.lifecycle(&launch.task)?;
             Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
@@ -283,7 +400,8 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     if match &continuation {
         Some(Continuation::Node(_)) => *domain.handovers.crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
         Some(Continuation::Moved { .. }) => *domain.moves.crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
-        None => false,
+        None => *domain.moves.crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
+        Some(Continuation::Transition { .. }) | Some(Continuation::Native { .. }) => false,
     } {
         return Err(Failed::new("the daemon died after the admission's commit".into()));
     }
@@ -306,11 +424,16 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
 /// account's folder) or an account signed in again binds the next executions while the earlier
 /// ones keep the binding they were admitted under. Its credential is the account.
 fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>, account: &alondra_core::accounts::AccountId, generation: u64) -> Result<ProviderBinding, Failed> {
+    binding_for(Provider::Claude, backend, capabilities, account, generation)
+}
+fn binding_for(provider: Provider, backend: &SdkBackend, capabilities: BTreeSet<Capability>, account: &alondra_core::accounts::AccountId, generation: u64) -> Result<ProviderBinding, Failed> {
     let configuration = backend.configuration_digest();
-    let instance = format!("{HOST}-{}-{account}-{generation}", &configuration[..16]);
+    let instance = if provider == Provider::Claude { format!("{HOST}-{}-{account}-{generation}", &configuration[..16]) }
+        else { format!("{HOST}-codex-{}-{account}-{generation}", &configuration[..16]) };
+    let driver = if provider == Provider::Claude { DRIVER } else { "codex-app-server" };
     ProviderBinding::new(
-        format!("{DRIVER}-{instance}"),
-        DRIVER.into(),
+        format!("{driver}-{instance}"),
+        driver.into(),
         instance,
         configuration,
         1,
@@ -326,6 +449,14 @@ fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>, account: &a
 fn on_account(domain: &DomainRuntime, started: &SdkBackend, account: &alondra_core::accounts::AccountId) -> Result<SdkBackend, Failed> {
     started.for_account(domain.home(), account, &crate::accounts::registered(domain.home())).map_err(|error| Failed::new(format!("{error:#}")))
 }
+fn on_account_provider(domain: &DomainRuntime, started: &SdkBackend, provider: Provider, account: &alondra_core::accounts::AccountId) -> Result<SdkBackend, Failed> {
+    started.for_account_provider(domain.home(), provider, account, &crate::accounts::registered_provider(domain.home(), provider)).map_err(|error| Failed::new(format!("{error:#}")))
+}
+fn provider_capabilities(provider: Provider) -> BTreeSet<Capability> {
+    if provider == Provider::Claude { return capabilities(); }
+    BTreeSet::from([Capability::OfferInput, Capability::Interrupt, Capability::ForceStop, Capability::SetModel, Capability::SetPermissionMode, Capability::McpStatus, Capability::McpSignIn, Capability::Decisions, Capability::BackgroundWork, Capability::DurableResume])
+}
+
 
 /// The account an execution's binding runs it on.
 fn account_of(binding: &ProviderBinding) -> alondra_core::accounts::AccountId {
@@ -357,6 +488,8 @@ pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<ser
 /// the evidence its journal kept is committed, each unresolved dispatch is resolved from it, and a
 /// fresh host is launched that resumes the same native session on the next input. `plugin` is
 /// Alondra's node plugin, which that fresh host's Claude loads.
+pub(crate) fn adopt_for_transition(domain: Arc<DomainRuntime>, backend:&SdkBackend,task:TaskId,plugin:Option<&std::path::Path>)->Result<Option<Driver>,Failed>{take_host(domain,backend,task,plugin,true,false,false)}
+
 pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
     take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed::new("the ended host was not replaced".into()))
 }
@@ -365,8 +498,10 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
 /// admitting it never started (its folder holds no host): the launch it never sent goes now, with
 /// a new owner generation.
 pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: &std::path::Path) -> Result<Driver, Failed> {
-    let backend = &backend.for_start().map_err(|error| Failed::new(format!("{error:#}")))?;
+    crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?;
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
+    let provider = state.tasks.get(&task).map(|task| task.provider).ok_or_else(|| Failed::new("the task is missing".into()))?;
+    let backend = &backend.for_provider(provider, domain.home()).and_then(|selected| selected.for_start()).map_err(|error| Failed::new(format!("{error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed::new("the task has no node".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
     let (adoption, _) = domain
@@ -380,12 +515,15 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let grant = sealed.owners.pop().ok_or_else(|| Failed::new("the reservation issued no owner grant".into()))?;
     let permit = sealed.permits.pop().ok_or_else(|| Failed::new("the reservation issued no launch permit".into()))?;
     let instance = adoption.stamp.instance().as_str().to_owned();
-    let options = LaunchOptions::load(&backend.state_root.join(&instance))?;
-    let backend = &on_account(&domain, backend, &account_of(grant.binding()))?;
-    let mut configuration = configuration(backend, grant.binding(), &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)))?;
+    let mut options = LaunchOptions::load(&backend.state_root.join(&instance))?;
+    options.provider = provider;
+    let backend = &on_account_provider(&domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
+    let mut configuration = configuration(backend, grant.binding(), &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)?))?;
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
-    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    let mut worker = Worker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    let identity=NativeAccountIdentity::load(worker.state_directory())?;
+    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("checking the original native account before adoption"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
@@ -405,7 +543,9 @@ pub(crate) fn host_started(backend: &SdkBackend, domain: &DomainRuntime, task: &
     let read = domain.read();
     let instance = read.state().lifecycle_of(task).ok()
         .and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.instance().as_str().to_owned()));
-    instance.is_none_or(|instance| backend.state_root.join(instance).join("host.lock").exists())
+    let provider = read.state().tasks.get(task).map(|task| task.provider).unwrap_or_default();
+    let selected = backend.for_provider(provider, domain.home());
+    instance.is_none_or(|instance| selected.as_ref().is_ok_and(|backend| backend.state_root.join(instance).join("host.lock").exists()))
 }
 
 /// Ends the task's host, which no owner of this daemon holds (its owner stopped it, or the daemon
@@ -418,16 +558,19 @@ pub(crate) fn end_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 }
 
 fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool) -> Result<Option<Driver>, Failed> {
-    take_host(domain, backend, task, plugin, relaunch, true)
+    take_host(domain, backend, task, plugin, relaunch, true,false)
 }
 
 /// A live host that refuses its adoption (its owner's socket is gone, it runs a release this one
 /// cannot carry on with, its bootstrap no longer matches) can never be reached again: with
 /// `end_refused`, it is ended by the lock it holds and the execution is taken again, now with a
 /// host that ended. A live host of a release this one can carry on with is adopted as it runs.
-fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool) -> Result<Option<Driver>, Failed> {
-    let backend = &backend.for_start().map_err(|error| Failed::new(format!("{error:#}")))?;
+fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool) -> Result<Option<Driver>, Failed> {
+    if relaunch { crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?; }
+    let base_backend = backend;
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
+    let provider = state.tasks.get(&task).map(|task| task.provider).ok_or_else(|| Failed::new("the task is missing".into()))?;
+    let backend = &backend.for_provider(provider, domain.home()).and_then(|selected| selected.for_start()).map_err(|error| Failed::new(format!("{error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed::new("the task has no node to adopt".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
     let (adoption, _) = domain
@@ -443,10 +586,11 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     let grant = reserved.owners.pop().ok_or_else(|| Failed::new("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
     let stamp = adoption.stamp;
-    let options = LaunchOptions::load(&backend.state_root.join(stamp.instance().as_str()))?;
-    let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory));
-    let on_account = &on_account(&domain, backend, &account_of(grant.binding()))?;
-    let mut worker = ClaudeWorker::configured(grant.binding().clone(), configuration(on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
+    let mut options = LaunchOptions::load(&backend.state_root.join(stamp.instance().as_str()))?;
+    options.provider = provider;
+    let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory)).transpose()?;
+    let on_account = &on_account_provider(&domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
+    let mut worker = Worker::configured(grant.binding().clone(), configuration(on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
@@ -463,8 +607,9 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             drop(worker);
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host did not stop: {error}")))?;
-            return take_host(domain, backend, task, plugin, relaunch, false);
+            return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
         }
+        let live_scope=if worker.provider()==Provider::Codex{adapter_state.checkpoint().and_then(|checkpoint|alondra_provider_codex::live_scope(checkpoint.bytes()))}else{None};
         if let Err(error) = worker.adopt_owner(grant, adapter_state) {
             if !end_refused {
                 return Err(adapter("adopting the SDK host")(error));
@@ -473,12 +618,13 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             drop(worker);
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
-            return take_host(domain, backend, task, plugin, relaunch, false);
+            return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
         }
         if worker.runs_another_release() {
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+        if let Some(scope)=live_scope{driver.domain.contexts.forget(&driver.task);driver.domain.live.mods.restore_codex_scope(&driver.agent.0,scope,alondra_core::now_millis());}
         driver.log_host("was adopted");
         driver.permits.extend(reserved.permits);
         for command in adoption.commands {
@@ -500,16 +646,18 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         drop(read);
         return Ok(Some(driver));
     };
+    let relaunch = relaunch && !crate::provider_transition::holds_execution(&domain,&task);
     if relaunch && plugin.is_none() {
         return Err(Failed::new("the host ended and Alondra's node plugin, which its replacement loads, was not found".into()));
     }
+    let identity=NativeAccountIdentity::load_observed(worker.state_directory(),worker.provider())?;
     for event in journal.events() {
         let batch = OrderedObservation { owner_generation, execution: stamp.clone(), cursor: event.cursor, evidence: event.payload.clone() };
         let binding = grant.binding().clone();
         let (normalizer, home) = (worker.normalizer(), domain.home());
-        commit_observation(&domain, &scope, &binding, owner_generation, &batch, normalizer, home)
+        commit_observation(&domain, &scope, &binding, owner_generation, &batch, normalizer, home,identity.as_ref())
             .map_err(failed("committing what the ended host observed"))?;
-        crate::sdk_live::feed(&domain, &agent, &batch);
+        feed(worker.provider(), &domain, &agent, &batch);
     }
     let retained = |command: &[u8]| -> Result<DispatchReceipt, Failed> {
         Ok(match journal.retained(command).map_err(adapter("reading the ended host's receipt"))? {
@@ -528,7 +676,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     }
     let generation = stamp.generation();
     let ended_work = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?.0
-        .checkpoint().map(|checkpoint| alondra_provider_claude::background_left(checkpoint.bytes())).unwrap_or_default();
+        .checkpoint().map(|checkpoint| worker.background_left(checkpoint.bytes())).unwrap_or_default();
     domain.own(scope.clone(), |owner| {
         let envelope = |name: String, command: Command| CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -551,16 +699,20 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         Ok(())
     })
     .map_err(failed("recording the end of the host"))?;
-    if !relaunch {
-        return Ok(None);
-    }
+    if !relaunch{return Ok(None)}
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
+    let refused=adapter_state.checkpoint().and_then(|checkpoint|alondra_provider_codex::blocked_policy(checkpoint.bytes()))
+        .or_else(||journal.events().iter().find_map(|event|alondra_provider_codex::account_refusal(&OrderedObservation{owner_generation,execution:stamp.clone(),cursor:event.cursor,evidence:event.payload.clone()})).map(str::to_owned));
+    if !explicit_account_retry && let Some(reason)=refused{return Err(Failed::new(reason))}
     let base = adapter_state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
     let resume = domain.read().state().lifecycle_of(&task).ok()
         .is_some_and(|lifecycle| lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available));
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
+    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("checking the original native account before relaunch"))?;
     worker.relaunch(grant, adapter_state, base, resume, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
+    // Continued hosts open the native session lazily, on the first input after these files are synced.
+    options.save(worker.state_directory())?;if let Some(identity)=identity.as_ref(){identity.retain(worker.state_directory())?;}
     let mut driver = Driver::new(domain, worker, scope, task, agent);
     driver.replacement = true;
     driver.log_host(if resume { "started anew; its Claude resumes the same session on its next input" } else { "started anew; its Claude starts the session on its next input" });
@@ -627,7 +779,11 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
 
 /// The user chose «Try again» on the card of a task whose execution was lost: it is taken over
 /// again, on a thread of its own, as at the daemon's start; another failure puts a new card.
-pub(crate) fn retake(domain: &DomainRuntime, task: TaskId) {
+pub(crate) fn retake(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,false)}
+pub(crate) fn retake_manually(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,true)}
+fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retry:bool) {
+    if crate::provider_transition::holds_execution(domain,&task){return}
+
     let Some((backend, runtime)) = domain.sdk() else {
         return lost(domain, &task, NO_HOST);
     };
@@ -640,7 +796,7 @@ pub(crate) fn retake(domain: &DomainRuntime, task: TaskId) {
         }
         let plugin = crate::plugins::node_in(runtime.home());
         let taken = if host_started(&backend, &runtime, &task) {
-            adopt(Arc::clone(&runtime), &backend, task.clone(), plugin.as_deref())
+            if explicit_account_retry{take_host(Arc::clone(&runtime),&backend,task.clone(),plugin.as_deref(),true,true,true).and_then(|driver|driver.ok_or_else(||Failed::new("The ended host was not replaced".into())))}else{adopt(Arc::clone(&runtime), &backend, task.clone(), plugin.as_deref())}
         } else {
             plugin.as_deref().ok_or_else(|| Failed::new("Alondra's node plugin, which its host loads, was not found".into()))
                 .and_then(|plugin| launch_admitted(Arc::clone(&runtime), &backend, task.clone(), plugin))
@@ -660,6 +816,7 @@ pub(crate) fn retake(domain: &DomainRuntime, task: TaskId) {
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| !domain.owns_sdk_host(agent))
         && !crate::account_move::holds_execution(domain, task)
+        && !crate::provider_transition::holds_execution(domain, task)
         && state.lifecycle_of(task).ok().is_some_and(|lifecycle| {
             lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
                 && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)
@@ -705,6 +862,13 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
             .create(&state_directory)
             .map_err(|error| Failed::written(format!("creating the host's folder: {error}"), &error))?;
     }
+    let mut native_environment = backend.native_environment.clone();
+    if let Some(provider) = Provider::from_driver(binding.driver()) { native_environment.insert("ALONDRA_PROVIDER".into(), provider.as_str().into()); }
+    if binding.driver() == "codex-app-server" {
+        if let Some(plugin) = worker.as_ref().and_then(|profile| profile.plugins.first()) {
+            native_environment.insert("ALONDRA_NODE_PLUGIN".into(), plugin.display().to_string());
+        }
+    }
     Ok(ClaudeConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)
             .map_err(|error| Failed::new(format!("verifying the SDK host: {error}")))?,
@@ -712,7 +876,7 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
         host_environment: backend.host_environment.clone(),
         native_executable: backend.native.clone(),
         native_directory: directory.into(),
-        native_environment: backend.native_environment.clone(),
+        native_environment,
         profile_id: "alondra".into(),
         account_id: binding.credential().into(),
         host_release: env!("CARGO_PKG_VERSION").into(),
@@ -725,15 +889,29 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
 /// Alondra's node plugin and launch settings, which a task's Claude loads on top of the user's own.
 /// Its Claude runs in the default permission mode, so the settings allow editing inside the node's
 /// own worktree: an edit there never puts a permission card to the user.
-fn worker_profile(plugin: &std::path::Path, options: &LaunchOptions, worktree: &str) -> WorkerProfile {
+fn worker_profile(plugin: &std::path::Path, options: &LaunchOptions, worktree: &str) -> Result<WorkerProfile, Failed> {
+    if options.provider == Provider::Codex {
+        if !options.disallowed_tools.is_empty() { return Err(Failed::new("The selected Codex runtime cannot enforce this task's per-tool deny list; choose a supported task tool policy before launching".into())); }
+        let instructions = std::fs::read_to_string(plugin.join("skills/alondra/SKILL.md")).map_err(|_| Failed::new("Alondra's Codex node mission is missing; run alondra doctor --fix before starting this task".into()))?;
+        if instructions.trim().is_empty() || instructions.len() > 128 * 1024 { return Err(Failed::new("Alondra's Codex node mission is empty or too large; run alondra doctor --fix".into())); }
+        let codex = serde_json::json!({
+            "developerInstructions": instructions,
+            "mcp_servers": {"alondra": {"command": plugin.join("bin/alondra"), "args": ["mcp-node"], "tool_timeout_sec": 3900}},
+            "nativeAccountPolicy": {"paidAccountId": options.selection.as_ref().and_then(|selection|selection.paid_account_grant.as_ref().filter(|grant|grant.provider==Provider::Codex && selection.account.as_ref()==Some(*grant))).map(|grant|grant.account.as_str())},
+            "reasoning_effort": options.effort,
+            "initial_mode": if options.selection.as_ref().is_some_and(|selection| selection.profile == alondra_core::model_selection::ModelProfile::Design) { "plan" } else { "default" },
+        });
+        return Ok(WorkerProfile { plugins: vec![plugin.to_path_buf()], settings: serde_json::Map::from_iter([("codex".into(), codex)]), model: options.model.clone(), effort: None, disallowed_tools: Vec::new(), handoff_context: None });
+    }
     let permissions = serde_json::json!({"allow": own_worktree_edits(std::path::Path::new(worktree))});
-    WorkerProfile {
+    Ok(WorkerProfile {
         plugins: vec![plugin.to_path_buf()],
         settings: crate::plugins::launch_settings_with(Some(permissions)).as_object().cloned().unwrap_or_default(),
         model: options.model.clone(),
         effort: options.effort(),
         disallowed_tools: options.disallowed_tools.clone(),
-    }
+        handoff_context: None,
+    })
 }
 
 /// Claude Code's `Edit` rules cover Edit, Write and NotebookEdit; `//` anchors a rule at the root
@@ -777,8 +955,8 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 }
 
 impl Driver {
-    fn new(domain: Arc<DomainRuntime>, worker: ClaudeWorker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, claude_session: None, moves_to_this_release: false, #[cfg(test)] fail_next_step: false }
+    fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
+        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, #[cfg(test)] fail_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -802,7 +980,8 @@ impl Driver {
     /// no SQL held, and records how the host answered. An interrupt whose turn or work already
     /// ended is revoked by its claim and never sent.
     fn control(&mut self, permit: ControlPermit) -> Result<(), Failed> {
-        match self.domain.own(self.scope.clone(), |owner| owner.claim_control(permit)) {
+        let directory=self.worker.state_directory();
+        match self.domain.own(self.scope.clone(), |owner| owner.claim_control_for_identity(permit,directory)) {
             Ok((true, _)) => {}
             Ok((false, _)) => return Ok(()),
             Err(StoreError::Storage(error)) if stale(&error) => return Ok(()),
@@ -859,8 +1038,16 @@ impl Driver {
     /// with no SQL held, and records how the handoff went.
     fn dispatch(&mut self, permit: DispatchPermit) -> Result<(), Failed> {
         let input = permit.input().clone();
-        match self.domain.own(self.scope.clone(), |owner| owner.claim(permit)) {
-            Ok(_) => {}
+        let mut retained = Some(permit);
+        let identity=NativeAccountIdentity::load(self.worker.state_directory())?;
+        let binding=self.worker.binding().clone();
+        match self.domain.own(self.scope.clone(), |owner| {
+            owner.require_native_identity(&binding,identity.as_ref())?;
+            if owner.provider_transition_blocks(retained.as_ref().unwrap().execution())? { return Ok(false); }
+            owner.claim(retained.take().unwrap())?; Ok(true)
+        }) {
+            Ok((true, _)) => {}
+            Ok((false, _)) => { self.permits.push_front(retained.unwrap()); return Ok(()); }
             Err(StoreError::Storage(error)) if stale(&error) || out_of_turn(&error) => return Ok(()),
             Err(error) => return Err(failed("claiming the dispatch")(error)),
         }
@@ -904,22 +1091,23 @@ impl Driver {
                 return Err(Failed::new(format!("the connection to the SDK host failed: {error:?}")));
             }
         };
-        if native_exited(&batch) {
+        if self.worker.native_exited(&batch) {
             self.host_closed = true;
             return Err(Failed::new("the SDK host's Claude exited".into()));
         }
         let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
         let binding = self.worker.binding().clone();
+        let identity=NativeAccountIdentity::load_observed(self.worker.state_directory(),self.worker.provider())?;
         let (worker, home) = (&self.worker, self.domain.home());
-        let (acceptance, unrecorded) = commit_observation(&self.domain, &self.scope, &binding, generation, &batch, worker.normalizer(), home)
+        let (acceptance, unrecorded) = commit_observation(&self.domain, &self.scope, &binding, generation, &batch, worker.normalizer(), home,identity.as_ref())
             .map_err(failed("committing the observation"))?;
-        if let Some(answered) = answered_control(&batch) {
+        if let Some(answered) = self.worker.answered_control(&batch) {
             self.results.retain(|awaited| *awaited != answered);
         }
-        if let Some(event) = context_event(&batch) {
+        if let Some(event) = self.worker.context_event(&batch) {
             self.domain.contexts.observed(&self.task, event, alondra_core::now_millis());
         }
-        crate::sdk_live::feed(&self.domain, &self.agent, &batch);
+        feed(self.worker.provider(), &self.domain, &self.agent, &batch);
         if let Some(line) = alondra_provider_claude::sdk_message(&batch).and_then(|message| claude_said(&message, &mut self.claude_session)) {
             log!("{line} ({}, task {})", self.agent, self.task);
         }
@@ -928,6 +1116,7 @@ impl Driver {
             self.domain.before_acknowledge();
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
         }
+        if self.worker.provider()==Provider::Codex && let Some(reason)=alondra_provider_codex::account_refusal(&batch){self.native_account_refusal=Some(reason.into());return Err(Failed::new(reason.into()))}
         if !unrecorded.is_empty() {
             // The task's record no longer follows its Claude: only that turn fails, cut by a new
             // host that resumes the same session, as one whose host ended does.
@@ -939,6 +1128,36 @@ impl Driver {
 
     /// Whether the node is paused: what it is told waits for the user to resume it, or for their own
     /// words, which end the pause.
+    fn wake_completed_codex_work(&mut self)->Result<(),Failed>{
+        if self.worker.provider()!=Provider::Codex || self.paused(){return Ok(())}
+        let snapshot=self.domain.read();let lifecycle=snapshot.state().lifecycle_of(&self.task).map_err(|error|Failed::new(error.message))?;
+        if lifecycle.activity()!=ActivityView::Continuation || !lifecycle.pending_inputs().is_empty(){return Ok(())}
+        drop(snapshot);
+        let stamp=self.domain.read().state().lifecycle_of(&self.task).map_err(|error|Failed::new(error.message))?.execution().cloned().ok_or_else(||Failed::new("The native work has no execution".into()))?;
+        self.domain.own(self.scope.clone(),|owner|{
+            let lifecycle=owner.lifecycle(&self.task)?;
+            if lifecycle.execution()!=Some(&stamp) || lifecycle.resource()!=Some(alondra_domain::ResourceEvidence::Available) || lifecycle.activity()!=ActivityView::Continuation || !lifecycle.pending_inputs().is_empty() || !lifecycle.cards().is_empty() || lifecycle.awaits().is_some() || !matches!(lifecycle.phase(),alondra_domain::TaskPhase::InProgress|alondra_domain::TaskPhase::Delivered){return Ok(())}
+            if owner.state().node_pause(&self.agent).is_some_and(|pause|!pause.released){return Ok(())}
+            let mut pending=std::collections::BTreeSet::new();
+            if let Some(journal)=owner.state().lifecycle_journal.get(&self.task){
+                for record in journal{
+                    match record{
+                        LifecycleRecord::Admitted{..}|LifecycleRecord::HostEnded{..}=>pending.clear(),
+                        LifecycleRecord::WorkEnded{continuation,..}=>{pending.insert(continuation.clone());},
+                        LifecycleRecord::WorkContinued{continuation}|LifecycleRecord::TurnResumed{continuation,..}=>{pending.remove(continuation);},
+                        _=>{},
+                    }
+                }
+            }
+            if pending.is_empty(){return Ok(())}
+            use sha2::Digest;
+            let digest=sha2::Sha256::digest(pending.iter().flat_map(|id|id.as_bytes().iter().copied().chain(std::iter::once(0))).collect::<Vec<_>>());
+            let key:String=digest.iter().map(|byte|format!("{byte:02x}")).collect();
+            let command=CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:owner.state().data_epoch.clone(),command_id:format!("codex-work-wake:{}:{}:{key}",self.task,stamp.generation()).as_str().into(),expected_revision:0,command:Command::TellNode{task_id:self.task.clone(),text:"Managed native work finished. Inspect its public result, preserve completed work, and continue this task through Alondra.".into()}};
+            owner.stage_command(&Actor::System,&command,Attached::None)?;Ok(())
+        }).map_err(failed("queuing the completed native work"))?;Ok(())
+    }
+
     fn paused(&self) -> bool {
         self.domain.read().state().node_pause(&self.agent).is_some_and(|pause| !pause.released)
     }
@@ -1006,7 +1225,9 @@ impl Driver {
         if let Some(permit) = self.controls.pop_front() {
             return self.control(permit);
         }
-        let paused = self.paused();
+        self.wake_completed_codex_work()?;
+        self.sealed();
+        let paused = self.paused() || crate::provider_transition::holds_source_inputs(&self.domain,&self.task,&self.agent.0);
         if !paused && let Some(permit) = self.permits.pop_front() {
             return self.dispatch(permit);
         }
@@ -1125,7 +1346,7 @@ impl Driver {
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && !self.replacement
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && !self.replacement && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 
@@ -1136,14 +1357,18 @@ impl Drop for Driver {
     }
 }
 
+fn feed(provider: Provider, domain: &DomainRuntime, agent: &AgentId, batch: &OrderedObservation) {
+    match provider { Provider::Claude => crate::sdk_live::feed(domain, agent, batch), Provider::Codex => crate::codex_live::feed(domain, agent, batch) }
+}
+
 /// Commits what the host observed. What the domain refuses never stops the node: the observation
 /// commits again without it, and the second value says what of the task's lifecycle it left out.
 #[allow(clippy::too_many_arguments)]
 fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domain: &DomainRuntime, scope: &AuthorityScope, binding: &ProviderBinding,
-    generation: u64, batch: &OrderedObservation, normalizer: &N, home: &std::path::Path) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
+    generation: u64, batch: &OrderedObservation, normalizer: &N, home: &std::path::Path,identity:Option<&NativeAccountIdentity>) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
     let stage = |probe: bool| domain
         .own(scope.clone(), |owner| {
-            let acceptance = owner.stage_observation(binding, generation, batch, normalizer, home, probe)?;
+            let acceptance = owner.stage_observation_with_identity(binding, generation, batch, normalizer, home, probe,identity)?;
             Ok((acceptance, owner.unrecorded().to_vec()))
         })
         .map(|(staged, _)| staged);
@@ -1242,7 +1467,7 @@ impl Owner {
                     }
                     let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
                     let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {
-                        lost_because = Some("its new host stopped before it could take the task's next message".to_owned());
+                        lost_because = driver.native_account_refusal.clone().or_else(||Some("its new host stopped before it could take the task's next message".to_owned()));
                         break;
                     };
                     let task = driver.task.clone();

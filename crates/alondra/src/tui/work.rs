@@ -16,7 +16,9 @@ pub struct OptionsForm {
     pub view: String,
     pub fields: Vec<Field>,
     pub values: BTreeMap<String, Value>,
+    retained_labels: BTreeMap<String, String>,
     pub submit: Option<Submit>,
+    pub replacement: Option<Submit>,
     /// The row under the cursor, or `None` while typing the text.
     pub focus: Option<usize>,
     pub error: Option<String>,
@@ -24,11 +26,14 @@ pub struct OptionsForm {
     pub popup: Option<Popup>,
 }
 
+#[derive(Clone)]
 pub struct Submit {
     pub action_id: String,
     pub label: String,
     pub data_epoch: String,
     pub attachments: bool,
+    pub enabled: bool,
+    pub disabled_reason: Option<String>,
 }
 
 pub enum Popup {
@@ -146,26 +151,58 @@ impl OptionsForm {
             Item::Form(form) => Some(form),
             _ => None,
         }) else {
+            self.submit = None;
             self.error = Some(view.title.clone().unwrap_or_default());
             self.loaded = true;
             return;
         };
+        if matches!(form.id.as_str(), "model_profile" | "task_selection") && let Some(original) = &mut self.submit {
+            if original.data_epoch != view.data_epoch {
+                original.enabled = false; original.disabled_reason = Some(tr!("The Mac's data changed. Close this form and open it again.", "Los datos del Mac cambiaron. Cierra este formulario y ábrelo de nuevo.").into());
+                self.error = original.disabled_reason.clone(); self.replacement = None; return;
+            }
+            if original.action_id != form.submit.id {
+                self.replacement = Some(Submit { action_id: form.submit.id.clone(), label: form.submit.label.clone(), data_epoch: view.data_epoch.clone(), attachments: form.submit.attachments, enabled: form.submit.enabled, disabled_reason: form.submit.disabled_reason.clone() });
+                self.error = Some(tr!("The selection changed. Ctrl+R keeps this draft against the current version; Esc cancels.", "La selección cambió. Ctrl+R conserva este borrador con la versión actual; Esc cancela.").into()); return;
+            }
+        }
+        for id in ["model", "account", "reasoning_effort"] {
+            let label = self.fields.iter().find(|field| field.id == id).and_then(|field| {
+                let FieldKind::Choice { items } = &field.kind else { return None; };
+                let item = items.iter().find(|item| self.values.get(id).and_then(Value::as_str) == Some(item.id.as_str()))?;
+                Some(item.group.as_ref().map_or_else(|| item.label.clone(), |group| format!("{group} · {}", item.label)))
+            });
+            if let Some(label) = label { self.retained_labels.insert(id.into(), label); }
+        }
         let previous = std::mem::take(&mut self.values);
         self.values = form
             .fields
             .iter()
             .filter_map(|field| {
-                let kept = previous.get(&field.id).filter(|value| keeps(&field.kind, value));
+                let kept = previous.get(&field.id).filter(|value| keeps(&field.kind, value)
+                    || model_field(&field.id) && value.is_string());
                 let value = kept.unwrap_or(&field.value);
                 (!value.is_null()).then(|| (field.id.clone(), value.clone()))
             })
             .collect();
+        if modern_intent(&previous) {
+            for (id, value) in previous.iter().filter(|(id, _)| model_field(id)) { self.values.entry(id.clone()).or_insert_with(|| value.clone()); }
+        } else if !form.fields.iter().any(|field| field.id == "model") {
+            if let Some(field) = form.fields.iter().find(|field| field.id == "account") && self.values.get("account").and_then(Value::as_str) == Some("auto") { self.values.insert("account".into(), field.value.clone()); }
+        }
+        if let Some(value) = previous.get("effort").filter(|value| value.as_str().is_some_and(|value| !value.is_empty() && value != "auto")) { self.values.entry("effort".into()).or_insert_with(|| value.clone()); }
+        if let Some(edited) = form.substitution_was_edited { self.values.entry("substitution_was_edited".into()).or_insert(json!(edited)); }
+        if let Some(value) = previous.get("substitution_was_edited") { self.values.insert("substitution_was_edited".into(), value.clone()); }
+        let retained: Vec<_> = self.fields.iter().filter(|field| model_field(&field.id) && !form.fields.iter().any(|new| new.id == field.id)).cloned().collect();
         self.fields = form.fields.clone();
+        if form.id == "model_profile" { self.fields.extend(retained); }
         self.submit = Some(Submit {
             action_id: form.submit.id.clone(),
             label: form.submit.label.clone(),
             data_epoch: view.data_epoch.clone(),
             attachments: form.submit.attachments,
+            enabled: form.submit.enabled,
+            disabled_reason: form.submit.disabled_reason.clone(),
         });
         self.error = None;
         self.loaded = true;
@@ -212,12 +249,27 @@ impl OptionsForm {
         let query = query.trim().to_lowercase();
         self.choices(field)
             .iter()
-            .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
+            .filter(|item| query.is_empty() || [item.label.as_str(), item.group.as_deref().unwrap_or_default(), item.description.as_deref().unwrap_or_default()].join(" ").to_lowercase().contains(&query))
             .collect()
     }
 
     fn set(&mut self, field: usize, value: Value) {
         let id = self.fields[field].id.clone();
+        let changed = self.values.get(&id) != Some(&value);
+        if changed && id == "model" {
+            if self.fields.iter().any(|field| field.id == "reasoning_effort") { self.values.insert("reasoning_effort".into(), json!("auto")); }
+            if self.values.get("substitution_was_edited") != Some(&json!(true)) && self.fields.iter().any(|field| field.id == "allow_model_substitution") {
+                self.values.insert("allow_model_substitution".into(), json!(value.as_str() == Some("auto")));
+                self.values.insert("substitution_was_edited".into(), json!(false));
+            }
+        }
+        if changed && let Some(position) = id.strip_prefix("candidate_") { self.values.insert(format!("reasoning_effort_{position}"), json!("auto")); }
+        if changed && id == "account" && self.fields.iter().any(|field| field.id == "pin_account") {
+            self.values.insert("pin_account".into(), json!(value.as_str() != Some("auto")));
+            self.values.insert("account_was_edited".into(), json!(true));
+        }
+        if changed && id == "pin_account" && value == json!(true) && self.values.get("account").and_then(Value::as_str).is_some_and(|account| account != "auto") { self.values.insert("account_was_edited".into(), json!(true)); }
+        if id == "allow_model_substitution" { self.values.insert("substitution_was_edited".into(), json!(true)); }
         if value.is_null() {
             self.values.remove(&id);
         } else {
@@ -235,8 +287,12 @@ impl OptionsForm {
             FieldKind::Choice { items } => items
                 .iter()
                 .find(|item| value.as_str() == Some(item.id.as_str()))
-                .map(|item| item.label.clone())
-                .unwrap_or_else(|| display(&value)),
+                .map(|item| self.choice_label(item))
+                .unwrap_or_else(|| {
+                    let old = self.retained_labels.get(&field.id).cloned().unwrap_or_else(|| display(&value));
+                    if matches!(field.id.as_str(), "model" | "account" | "reasoning_effort") { trf!("{old} · unavailable in the current catalog", "{old} · no disponible en el catálogo actual") }
+                    else { old }
+                }),
             FieldKind::Toggle => match value.as_bool() {
                 Some(true) => tr!("yes", "sí").into(),
                 _ => tr!("no", "no").into(),
@@ -248,7 +304,7 @@ impl OptionsForm {
 
     /// `(label, value, focused)` for each row.
     pub fn rows_shown(&self) -> Vec<(String, String, bool)> {
-        self.rows()
+        let mut rows: Vec<_> = self.rows()
             .into_iter()
             .enumerate()
             .map(|(at, index)| {
@@ -257,7 +313,18 @@ impl OptionsForm {
                 let shown = if shown.is_empty() { tr!("none", "ninguno").to_owned() } else { shown };
                 (field.label.clone(), shown, self.focus == Some(at))
             })
-            .collect()
+            .collect();
+        for (id, label) in [("model", tr!("Model", "Modelo")), ("account", tr!("Account", "Cuenta")), ("reasoning_effort", tr!("Reasoning effort", "Esfuerzo de razonamiento"))] {
+            if !self.fields.iter().any(|field| field.id == id) && let Some(value) = self.values.get(id).and_then(Value::as_str).filter(|value| !value.is_empty() && *value != "auto") {
+                let name = self.retained_labels.get(id).map(String::as_str).unwrap_or(value);
+                rows.push((label.into(), format!("{name} · {}", tr!("Unavailable", "No disponible")), false));
+            }
+        }
+        if !self.fields.iter().any(|field| field.id == "effort") && self.fields.iter().any(|field| field.id == "model")
+            && self.values.get("effort").and_then(Value::as_str).is_some_and(|value| !value.is_empty() && value != "auto") {
+            rows.push((tr!("Previous preset", "Ajuste anterior").into(), tr!("Review Model and Reasoning effort; the previous preset does not choose a native model", "Revisa Modelo y Esfuerzo de razonamiento; el ajuste anterior no elige un modelo nativo").into(), false));
+        }
+        rows
     }
 
     pub fn popup_title(&self) -> String {
@@ -279,7 +346,7 @@ impl OptionsForm {
         let current = self.values.get(&self.fields[field].id).cloned().unwrap_or(Value::Null);
         match self.fields[field].kind.clone() {
             FieldKind::Choice { items } => {
-                if self.fields[field].reload_on_change {
+                if self.fields[field].reload_on_change || matches!(self.fields[field].id.as_str(), "model" | "account") {
                     self.popup = Some(Popup::Filter { field, query: String::new(), sel: 0 });
                 } else {
                     let sel = items
@@ -317,7 +384,22 @@ impl OptionsForm {
         FormKey::Handled
     }
 
+    pub fn choice_reason(&self, item: &ChoiceItem) -> Option<String> {
+        item.disabled_reason.clone().or_else(|| item.available_when.as_ref().and_then(|condition| {
+            let actual = self.values.get(&condition.field);
+            let matches = condition.equals.as_ref().is_some_and(|expected| actual == Some(expected)) || actual.is_some_and(|value| condition.any_of.contains(value));
+            (!matches).then(|| tr!("Unavailable for the selected model", "No disponible para el modelo elegido").into())
+        }))
+    }
+
+    pub fn choice_label(&self, item: &ChoiceItem) -> String {
+        let label = item.group.as_ref().map_or_else(|| item.label.clone(), |group| format!("{group} · {}", item.label));
+        self.choice_reason(item).map_or_else(|| label.clone(), |reason| format!("{label} · {reason}"))
+    }
+
     fn pick_choice(&mut self, field: usize, id: String) -> FormKey {
+        let Some(item) = self.choices(field).iter().find(|item| item.id == id) else { return FormKey::Handled };
+        if let Some(reason) = self.choice_reason(item) { self.error = Some(reason); return FormKey::Handled; }
         let changed = self.values.get(&self.fields[field].id).and_then(Value::as_str) != Some(id.as_str());
         self.set(field, json!(id.clone()));
         if changed && self.fields[field].reload_on_change {
@@ -458,6 +540,9 @@ impl OptionsForm {
     }
 
     pub fn key(&mut self, k: KeyEvent) -> FormKey {
+        if k.code == KeyCode::Char('r') && k.modifiers.contains(KeyModifiers::CONTROL) && self.replacement.is_some() {
+            self.submit = self.replacement.take(); self.error = None; return FormKey::Handled;
+        }
         if self.popup.is_some() {
             return self.popup_key(k);
         }
@@ -500,6 +585,16 @@ impl OptionsForm {
     }
 
     /// The `fields` of the submit: the typed text, the attachments and every visible row.
+    pub fn intent_error(&self) -> Option<String> {
+        if self.replacement.is_some() { return self.error.clone(); }
+        let submit = self.submit.as_ref()?;
+        if !submit.enabled { return Some(submit.disabled_reason.clone().unwrap_or_else(|| tr!("This action is unavailable", "Esta acción no está disponible").into())); }
+        if modern_intent(&self.values) && (!self.fields.iter().any(|field| field.id == "model") || submit.action_id.starts_with("new_request:") || submit.action_id.starts_with("sched_save:")) {
+            return Some(tr!("The connected daemon cannot accept this model selection. Your choices are retained.", "El daemon conectado no admite esta selección de modelo. Tus elecciones se conservan.").into());
+        }
+        None
+    }
+
     pub fn submitted(&self, text: &str, attachments: &[String]) -> Value {
         let mut out = serde_json::Map::new();
         for field in &self.fields {
@@ -517,8 +612,19 @@ impl OptionsForm {
             };
             out.insert(field.id.clone(), value);
         }
+        if self.fields.iter().any(|field| field.id == "allow_model_substitution") {
+            if let Some(edited) = self.values.get("substitution_was_edited") { out.insert("substitution_was_edited".into(), edited.clone()); }
+        }
         Value::Object(out)
     }
+}
+
+fn model_field(id: &str) -> bool { matches!(id, "model" | "account" | "reasoning_effort" | "allow_model_substitution" | "substitution_was_edited" | "account_was_edited" | "pin_account") || id.starts_with("candidate_") || id.starts_with("reasoning_effort_") }
+
+fn modern_intent(values: &BTreeMap<String, Value>) -> bool {
+    ["model", "reasoning_effort"].iter().any(|id| values.get(*id).and_then(Value::as_str).is_some_and(|value| !value.is_empty() && value != "auto"))
+        || values.get("account").and_then(Value::as_str).is_some_and(|value| value.contains('/'))
+        || values.get("substitution_was_edited") == Some(&json!(true))
 }
 
 fn keeps(kind: &FieldKind, value: &Value) -> bool {

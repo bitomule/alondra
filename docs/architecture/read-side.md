@@ -221,7 +221,7 @@ Every commit writes a `command_audit` row (its revision, time, actor, command id
 kind), the whole command in `command_bodies`, and a `semantic_receipts` row (the command's digest
 and outcome, so the same command arriving again returns that outcome instead of running twice).
 The audit row stays for as long as the domain: the time of a revision is what task history,
-`task_state_times`, message and inbox times and `alondra models` read, and `write_mark` reads the
+`task_state_times`, message and inbox times and `alondra metrics` read, and `write_mark` reads the
 newest revision. The audit row keeps all of an `assign_task`: `launched_by_alondra` reads it for
 nodes launched before launches were recorded in `model_decisions`. Nothing reads a body after the
 commit. A receipt is read only while the same command can arrive again: app retries are cut before

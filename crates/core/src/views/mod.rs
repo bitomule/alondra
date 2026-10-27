@@ -1,4 +1,5 @@
 pub mod accounts;
+mod capabilities;
 pub mod action_id;
 pub mod allow_always;
 pub mod allow_for_task;
@@ -29,6 +30,7 @@ mod tests;
 pub mod text;
 
 pub use components::*;
+pub use capabilities::{ClientCapabilities, InvalidCapabilities};
 pub use card::answer_label;
 pub use messages::{Outcome, OutcomeKind, refusal_text, send_anyway, transport_failure};
 pub use resolves::{pr_presentation, resolves_card};
@@ -43,7 +45,7 @@ pub const VIEWS_PROTOCOLS: ProtocolRange = ProtocolRange { min: VIEWS_PROTOCOL_M
 impl Service {
     /// A daemon of `version` serving every protocol this build knows.
     pub fn serving(version: &str) -> Self {
-        Service { version: version.to_owned(), views_protocol: VIEWS_PROTOCOLS }
+        Service { version: version.to_owned(), views_protocol: VIEWS_PROTOCOLS, capabilities: ClientCapabilities::SUPPORTED.iter().map(|name| (*name).to_owned()).collect() }
     }
 }
 
@@ -145,7 +147,7 @@ macro_rules! families {
     };
 }
 families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules, Schedule, NewRequest,
-    IssuePicker, Search, Machine, McpServers, Accounts, Metrics);
+    IssuePicker, Search, Machine, McpServers, Accounts, ModelProfile, TaskSelection, Metrics);
 
 impl Family {
     /// The family a key belongs to, or none for a key no view answers.
@@ -163,6 +165,10 @@ impl Family {
             Family::Sidebar
         } else if listed("tasks") {
             Family::Tasks
+        } else if key.starts_with("task_selection:") {
+            Family::TaskSelection
+        } else if key.starts_with("model_profile:") {
+            Family::ModelProfile
         } else if key.starts_with("task:") {
             Family::Task
         } else if key.starts_with("request:") {
@@ -213,6 +219,8 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::Machine => misc::machine(&context),
         Family::McpServers => mcp_servers::build(&context),
         Family::Accounts => accounts::list(&context),
+        Family::ModelProfile => model_controls::profile(tail(), &context)?,
+        Family::TaskSelection => model_controls::task(tail(), &context)?,
         Family::Metrics => metrics::build(key, &context)?,
     };
     view.version = version(&view);
@@ -377,3 +385,5 @@ pub fn version<T: serde::Serialize>(value: &T) -> String {
         .collect::<String>();
     format!("v{hex}")
 }
+
+pub mod model_controls;

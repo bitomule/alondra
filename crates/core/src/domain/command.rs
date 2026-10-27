@@ -496,6 +496,8 @@ pub enum Command {
     /// `instance` and `host`, with `model` when the launch chose one. Never the `claude --bg`
     /// backend, whose node is assigned.
     AdmitExecution {
+        #[serde(default, skip_serializing_if = "crate::accounts::Provider::is_claude")]
+        provider: crate::accounts::Provider,
         task_id: TaskId,
         agent_id: AgentId,
         conversation: String,
@@ -599,6 +601,42 @@ pub enum Command {
         provider: crate::accounts::Provider,
         change: crate::accounts::AccountChange,
     },
+    SetAccountOrder {
+        order: Vec<crate::accounts::AccountKey>,
+        expected_config_version: String,
+    },
+    RecordAccountConfiguration {
+        order: Vec<crate::accounts::AccountKey>,
+        version: String,
+    },
+    ReplaceAccountConfiguration {
+        accounts: String,
+        expected_config_version: String,
+    },
+    RecordModelCatalog {
+        catalog: crate::model_selection::AccountModelCatalog,
+    },
+    RecordTaskSelection {
+        task_id: TaskId,
+        selection: crate::model_selection::TaskSelection,
+        pending: Option<crate::model_selection::PendingTaskSelection>,
+    },
+    RecordModelProfiles {
+        profiles: crate::model_selection::ModelProfiles,
+        version: String,
+    },
+    SetModelProfile {
+        provider: crate::accounts::Provider,
+        profile: crate::model_selection::ModelProfile,
+        policy: crate::model_selection::RoleModelPolicy,
+        expected_config_version: String,
+    },
+    RequestTaskSelection {
+        task_id: TaskId,
+        expected_selection: String,
+        selection: crate::model_selection::TaskSelection,
+        pending: crate::model_selection::PendingTaskSelection,
+    },
     /// What `account` said of its usage at `at`, on the Mac's local `day`, from a provider event
     /// or a probe.
     RecordAccountUsage {
@@ -611,6 +649,8 @@ pub enum Command {
     /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again;
     /// for a limit, one of `account`'s when it names one.
     ProbeClaudeAccess {
+        #[serde(default, skip_serializing_if = "crate::accounts::Provider::is_claude")]
+        provider: crate::accounts::Provider,
         hold: ClaudeHold,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<crate::accounts::AccountId>,

@@ -16,8 +16,8 @@ public struct RequestOptionsSheet: View {
             Form {
                 if store.state.field("project") != nil { projectSection }
                 if store.state.field("issue") != nil { issueSection }
-                ForEach(["pr", "effort", "account"], id: \.self) { id in
-                    if let field = store.state.field(id) { choiceSection(field) }
+                ForEach(store.state.visibleFields.filter { !["project", "issue"].contains($0.id) }, id: \.id) { field in
+                    fieldSection(field)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -67,26 +67,37 @@ public struct RequestOptionsSheet: View {
         }
     }
 
-    private func choiceSection(_ field: Field) -> some View {
+    @ViewBuilder private func fieldSection(_ field: Field) -> some View {
         Section {
-            Picker(selection: Binding(get: { store.state.selected(field.id) }, set: { store.send(.choose(field.id, $0)) })) {
-                ForEach(store.state.choices(field.id), id: \.id) { item in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(verbatim: item.label)
-                        if let description = item.description {
-                            Text(verbatim: description)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+            switch field.kind {
+            case .choice(let items):
+                if ["model", "reasoning_effort"].contains(field.id) || items.contains(where: { $0.group != nil || $0.disabledReason != nil || $0.availableWhen != nil }) {
+                    NavigationLink {
+                        RequestChoicePicker(store: store, fieldID: field.id)
+                    } label: {
+                        LabeledContent { Text(verbatim: store.state.selectedLabel(field.id)) } label: { Text(verbatim: field.label) }
                     }
-                    .tag(item.id)
+                } else {
+                    Picker(selection: Binding(get: { store.state.selected(field.id) }, set: { store.send(.choose(field.id, $0)) })) {
+                        ForEach(store.state.choicesIncludingSelection(field.id), id: \.id) { item in
+                            VStack(alignment: .leading, spacing: 2) { Text(verbatim: item.label); if let description = item.description { Text(verbatim: description).font(.caption).foregroundStyle(.secondary) } }
+                                .tag(item.id).disabled(!store.state.isAvailable(item))
+                        }
+                    } label: { Text(verbatim: field.label) }
+                    .pickerStyle(.navigationLink)
                 }
-            } label: {
-                Text(verbatim: field.label)
+            case .toggle:
+                Toggle(isOn: Binding(get: { store.state.isOn(field.id) }, set: { store.send(.toggle(field.id, $0)) })) {
+                    Text(verbatim: field.label)
+                }
+            default: EmptyView()
             }
-            .pickerStyle(.navigationLink)
+        } footer: {
+            if let help = field.help { Text(verbatim: help) }
+            else if case .choice(let items) = field.kind, (["model", "reasoning_effort"].contains(field.id) || items.contains(where: { $0.group != nil || $0.disabledReason != nil || $0.availableWhen != nil })), let selected = store.state.choices(field.id).first(where: { $0.id == store.state.selected(field.id) }), let description = selected.description { Text(verbatim: description) }
         }
     }
+
 }
 
 /// The projects, in the order the daemon sent them, filtered as you type.

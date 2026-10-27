@@ -1,6 +1,6 @@
 use alondra_core::domain::{DomainState, ReadSnapshot};
 use alondra_core::views::{
-    self, BuildError, Client, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
+    self, BuildError, Client, ClientCapabilities, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -37,6 +37,7 @@ impl Version {
 pub(crate) struct Input {
     cursor: String,
     live_revision: String,
+    capabilities: ClientCapabilities,
 }
 
 impl Input {
@@ -55,7 +56,17 @@ impl Input {
                 base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, clock,)
             ),
             live_revision: live_hash[..8].iter().map(|byte| format!("{byte:02x}")).collect(),
+            capabilities: ClientCapabilities::default(),
         }
+    }
+
+    pub(crate) fn with_capabilities(mut self, capabilities: ClientCapabilities) -> Self {
+        self.capabilities = capabilities;
+        if !capabilities.is_empty() {
+            let digest = Sha256::digest(format!("{}|{}", self.live_revision, capabilities.query()).as_bytes());
+            self.live_revision = digest[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+        }
+        self
     }
 
     /// The live data's digest, as the changes feed's cursor names it.
@@ -64,7 +75,7 @@ impl Input {
     }
 
     fn key(&self, key: &str, client: Client, lang: Lang, transport: Transport) -> String {
-        format!("{key}|{client:?}|{lang:?}|{transport:?}|{}", self.cursor)
+        format!("{key}|{client:?}|{lang:?}|{transport:?}|{}|{}", self.capabilities.query(), self.cursor)
     }
 }
 
@@ -202,6 +213,7 @@ impl Cache {
                 rendered_at: "",
             },
         )?;
+        input.capabilities.adapt_view(&mut view, lang);
         // The view cursor is a valid feed cursor. Its status version is known only
         // after rendering, while the three-field clock above remains the cache key.
         let feed_clock = serde_json::to_vec(&(
@@ -239,6 +251,23 @@ mod tests {
         assert_eq!(revision, domain.revision);
         assert_eq!(live_revision.len(), 16);
         assert_eq!(status_version, view.status.version);
+    }
+
+    #[test]
+    fn clients_with_different_capabilities_never_share_body_version_or_cursor() {
+        let cache = Cache::default();
+        let domain = DomainState::new("epoch");
+        let read = read(&domain);
+        let live = LiveSnapshot::default();
+        let legacy = Input::of(&domain, &live);
+        let modern = Input::of(&domain, &live).with_capabilities(ClientCapabilities::parse("provider_accounts").unwrap());
+        let first = cache.render_from("accounts", &read, &live, &legacy, Client::Tui, Lang::En, Transport::Loopback).unwrap();
+        let second = cache.render_from("accounts", &read, &live, &modern, Client::Tui, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(first.version, second.version);
+        assert_ne!(first.cursor, second.cursor);
+        assert_eq!(cache.render_from("accounts", &read, &live, &legacy, Client::Tui, Lang::En, Transport::Loopback).unwrap(), first);
+        assert_eq!(cache.render_from("accounts", &read, &live, &modern, Client::Tui, Lang::En, Transport::Loopback).unwrap(), second);
+        assert_eq!(cache.build_count(), 2);
     }
 
     #[test]

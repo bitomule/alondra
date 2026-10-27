@@ -23,6 +23,8 @@ pub struct Step {
 pub fn steps() -> Vec<Step> {
     vec![
         Step { name: tr!("This Mac", "Este Mac"), checks: &["mac"], show: Show::Always },
+        Step { name: tr!("AI providers", "Proveedores de IA"), checks: &["providers"], show: Show::Problems },
+        Step { name: "Codex", checks: &["codex"], show: Show::Always },
         Step { name: "Claude Code", checks: &["claude"], show: Show::Always },
         Step { name: "", checks: &["claude.profile"], show: Show::Wizard },
         Step { name: tr!("Claude Code sign-in", "Sesión de Claude Code"), checks: &["claude.signin"], show: Show::Always },
@@ -32,6 +34,7 @@ pub fn steps() -> Vec<Step> {
             checks: &["config", "service", "alondrad", "state", "startup", "upgrade", "update", "hooks"],
             show: Show::Always,
         },
+        Step { name: tr!("Codex sign-in", "Sesión de Codex"), checks: &["codex.signin"], show: Show::Always },
         Step { name: tr!("Claude plugin", "Plugin de Claude"), checks: &["plugin", "validate"], show: Show::Always },
         Step { name: tr!("Ready for your devices", "Listo para tus dispositivos"), checks: &["identity"], show: Show::Wizard },
         Step {
@@ -56,6 +59,8 @@ fn summary(env: &Env, step: &Step, outcomes: &[&Outcome], touched: bool) -> Stri
     match step.checks[0] {
         "mac" if !env.first_run && !touched => already,
         "mac" => detail("mac"),
+        "codex" => detail("codex"),
+        "codex.signin" => detail("codex.signin"),
         "claude" => detail("claude").trim_end_matches(" (Claude Code)").to_string(),
         "claude.profile" => detail("claude.profile"),
         "claude.signin" => tr!("signed in", "sesión iniciada").into(),

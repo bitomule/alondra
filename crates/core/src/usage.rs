@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Policy, Provider};
+use crate::accounts::{AccountBilling, AccountId, AccountKey, AccountState, AccountStatus, Policy, Provider};
 use crate::model::Millis;
 
 const DAY_MILLIS: f64 = 86_400_000.0;
@@ -82,6 +82,28 @@ pub enum WindowKind {
 }
 
 impl WindowKind {
+    pub fn is_native_limit_marker(&self) -> bool { matches!(self, Self::Other(name) if name == "codex:account:limit") }
+    pub fn duration_minutes(&self) -> Option<u64> {
+        match self { Self::Other(name) if name.starts_with("codex:") => name.rsplit(':').next()?.parse().ok(), _ => None }
+    }
+    pub fn codex_window_label(&self) -> Option<String> {
+        let Self::Other(name) = self else { return None };
+        if !name.starts_with("codex:") { return None; }
+        let parts: Vec<_> = name.split(':').collect();
+        let window = parts.get(parts.len().checked_sub(2)?)?;
+        let window = match *window { "primary" => "Primary", "secondary" => "Secondary", _ => return None };
+        Some(match self.duration_minutes() { Some(minutes) => format!("{window} · {minutes} min"), None => window.into() })
+    }
+    fn account_wide(&self, provider: Provider) -> bool {
+        matches!(self, Self::Session | Self::Weekly) || matches!((provider, self), (Provider::Codex, Self::Other(name)) if name.starts_with("codex:account:"))
+    }
+    fn same_dimension(&self, other: &Self, provider: Provider) -> bool {
+        if self == other { return true; }
+        match (provider, self, other) {
+            (Provider::Codex, Self::Other(left), Self::Other(right)) if left.starts_with("codex:") && right.starts_with("codex:") => left.rsplit_once(':').map(|(scope, _)| scope) == right.rsplit_once(':').map(|(scope, _)| scope),
+            _ => false,
+        }
+    }
     pub fn named(name: &str) -> WindowKind {
         match name {
             "session" => WindowKind::Session,
@@ -221,7 +243,7 @@ impl AccountUsage {
     /// When the account's session or week, which hold back every model, comes back after running
     /// out. A window of one model alone leaves the others working.
     pub fn plan_exhausted_until(&self, now: Millis) -> Option<Millis> {
-        self.ran_out(now, |kind| matches!(kind, WindowKind::Session | WindowKind::Weekly))
+        self.ran_out(now, |kind| kind.account_wide(self.provider))
     }
 
     fn ran_out(&self, now: Millis, counts: impl Fn(&WindowKind) -> bool) -> Option<Millis> {
@@ -248,7 +270,7 @@ impl AccountUsage {
 
     fn plan_ran_out(&self, now: Millis) -> impl Iterator<Item = &WindowReading> {
         self.windows.iter().map(|window| &window.reading).filter(move |reading| {
-            matches!(reading.kind, WindowKind::Session | WindowKind::Weekly)
+            reading.kind.account_wide(self.provider)
                 && (reading.exhausted || reading.used == Share::FULL)
                 && reading.resets_at.is_none_or(|reset| reset > now)
         })
@@ -274,12 +296,20 @@ impl AccountUsage {
 /// day's first reading of the week anchors today's slice; a new day or a new week moves it.
 pub fn record(usage: Option<&AccountUsage>, provider: Provider, account: &AccountId, reading: &UsageReading, at: Millis, day: &str) -> AccountUsage {
     let mut next = usage.cloned().unwrap_or_else(|| AccountUsage { provider, account: account.clone(), windows: vec![], plan: None, day_start: None });
+    if provider == Provider::Codex {
+        let primary = reading.windows.iter().find(|window| matches!(&window.kind, WindowKind::Other(name) if name.starts_with("codex:account:primary:")));
+        let secondary = reading.windows.iter().find(|window| matches!(&window.kind, WindowKind::Other(name) if name.starts_with("codex:account:secondary:")));
+        let positive = |window: &WindowReading| !window.exhausted && window.used < Share::FULL && window.resets_at.is_none_or(|reset| reset > at);
+        if primary.is_some_and(positive) && secondary.is_some_and(positive) {
+            next.windows.retain(|window| !window.reading.kind.is_native_limit_marker() || window.measured_at >= at);
+        }
+    }
     if reading.complete {
-        next.windows.retain(|window| reading.windows.iter().any(|read| read.kind == window.reading.kind));
+        next.windows.retain(|window| window.reading.kind.is_native_limit_marker() || reading.windows.iter().any(|read| read.kind.same_dimension(&window.reading.kind, provider)));
     }
     for read in &reading.windows {
         let kept = UsageWindow { reading: read.clone(), measured_at: at };
-        match next.windows.iter_mut().find(|window| window.reading.kind == read.kind) {
+        match next.windows.iter_mut().find(|window| window.reading.kind.same_dimension(&read.kind, provider)) {
             Some(window) => *window = kept,
             None => next.windows.push(kept),
         }
@@ -419,7 +449,7 @@ fn or_implicit(accounts: &[AccountStatus]) -> std::borrow::Cow<'_, [AccountStatu
     }
     let account = crate::accounts::ProviderAccount::implicit_default();
     std::borrow::Cow::Owned(vec![AccountStatus {
-        provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, email: None, plan: None, billing: account.billing, sign_ins: 0,
+        provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0,
     }])
 }
 
@@ -427,6 +457,7 @@ pub fn margins(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Shar
     let accounts = or_implicit(accounts);
     let counted: Vec<AccountMargin> = accounts
         .iter()
+        .filter(|account| account.provider == Provider::Claude)
         .filter_map(|account| {
             let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
             let weight = weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()))?;
@@ -455,6 +486,20 @@ fn can_work(account: &AccountStatus, usage: Option<&AccountUsage>, now: Millis) 
         return false;
     }
     usage.is_none_or(|usage| !usage.plan_exhausted(now))
+}
+
+pub fn eligible_account_keys(order: &[AccountKey], accounts: &[AccountStatus], usage: &[AccountUsage], now: Millis) -> Vec<AccountKey> {
+    let keys = if order.is_empty() {
+        accounts.iter().map(|account| AccountKey::new(account.provider, account.id.clone())).collect()
+    } else { order.to_vec() };
+    let mut eligible = vec![];
+    for key in keys {
+        if eligible.contains(&key) { continue; }
+        let Some(status) = accounts.iter().find(|status| status.provider == key.provider && status.id == key.account) else { continue };
+        let measured = usage.iter().find(|reading| reading.provider == key.provider && reading.account == key.account);
+        if status.state == AccountState::SignedIn && can_work(status, measured, now) { eligible.push(key); }
+    }
+    eligible
 }
 
 /// The account a new launch of `provider` runs on, as `policy` spreads the work over the

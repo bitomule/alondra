@@ -109,20 +109,20 @@ public struct UsageExhaustedBanner: View {
         let when = whenText(wording.when, now: now)
         switch wording.subject {
         case .unspecified:
-            return Text("No margin \(when) · every Claude account is at its limit", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("Usage limit reached \(when)", tableName: "AlondraDesign", bundle: #bundle)
         case .thisMac:
-            return Text("No margin on this Mac \(when) · every Claude account is at its limit", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("Usage limit reached on this Mac \(when)", tableName: "AlondraDesign", bundle: #bundle)
         case .someMacs(let exhausted, let total):
-            return Text("\(exhausted) of \(total) Macs with no margin \(when) · their Claude accounts are at their limit", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("Usage limit reached on \(exhausted) of \(total) Macs \(when)", tableName: "AlondraDesign", bundle: #bundle)
         case .pausedByUser:
             return Text("Paused by you until tomorrow \(timeText(wording.when, now: now))", tableName: "AlondraDesign", bundle: #bundle)
         case .allMacs:
-            return Text("No margin on any of your Macs \(when) · every Claude account is at its limit", tableName: "AlondraDesign", bundle: #bundle)
+            return Text("Usage limit reached on all your Macs \(when)", tableName: "AlondraDesign", bundle: #bundle)
         }
     }
 }
 
-/// One line across the top of a screen while no Claude account has a session and new work waits for one.
+/// One line across the top while no provider account is available for new work.
 public struct SessionWaitBanner: View {
     private let notice: Notice
 

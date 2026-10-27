@@ -27,11 +27,11 @@ fn instructions(role: Role, user: &str) -> String {
         Role::Orchestrator => "alondra-orchestrator:alondra-orchestrator",
     };
     let common = format!(
-        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Load the skill {skill} with the Skill tool before your first Alondra call and follow it: these lines are only its core. Everything the user reads must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. Every card is decided without reading your chat: {user} sees only the card, so it carries the whole thing being decided, and {user} cannot open a file from the app. A refused card was not sent and is never a permission: fix the field it names and send it again with the same interaction_id; when a call could not reach Alondra, do not proceed: retry it."
+        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Load the role skill {skill} before your first Alondra call and follow it: use read_skill when the provider has no native Skill tool. Write self-contained decisions and results, never process jargon, steps Alondra takes itself, or internal ids. Every card is decided without reading your chat: {user} sees only the card, so it carries the whole thing being decided, and {user} cannot open a file from the app. A refused card was not sent and is never a permission: do not proceed as if granted; fix the field it names and send it again with the same interaction_id; when a mutation's reply is lost, inspect its durable outcome and current state before continuing; never blindly repeat it. Read-only calls may be retried."
     );
     match role {
         Role::Node => format!(
-            "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode. When you are done, deliver with present_result and is_final true; Alondra merges your one PR: never merge it yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
+            "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. Use request_plan_mode for an Alondra-managed planning turn, then end this turn. Produce the complete checklist plan in native plan mode; Alondra must receive and approve it before implementation. Native update_plan is progress, not approval. When you are done, deliver with present_result and is_final true; Alondra merges your one PR: never merge it yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
         ),
         Role::Orchestrator => format!(
             "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns one PR. Answer a Request without a Task with close_request (headline and answer): Alondra writes the user's card; close one whose Tasks are over with close_request, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
@@ -45,6 +45,18 @@ fn tools(role: Role, user: &str) -> Value {
         Role::Node => node_domain_tools(user),
         Role::Orchestrator => orchestrator_domain_tools(user),
     };
+    if role == Role::Node {
+        list.push(domain_tool("request_plan_mode","Request read-only native planning for your own task. Stop or join existing work first, call this, then end the current turn. Alondra applies the mode before the next turn; produce the full checklist plan there and wait for its approval. This does not approve a plan.",json!({"task_id":{"type":"string"}}),&["task_id"]));
+    }
+    list.push(domain_tool("read_skill", "Read the installed instructions for your Alondra role. Follow next_line when the skill has another page.", json!({"name":{"type":"string","enum":[if role == Role::Node { "alondra" } else { "alondra-orchestrator" }]},"start_line":{"type":"integer","minimum":1,"maximum":1000000}}), &["name"]));
+    if role == Role::Node {
+        list.push(domain_tool("task_context", "Read a page of your task's retained public conversation. When next is non-null, pass the last entry reference as after. Missing older content and omitted bytes are explicit; private reasoning is never returned.", json!({"task_id":{"type":"string"},"after":{"type":"object","properties":{"task":{"type":"string"},"sequence":{"type":"integer","minimum":1},"generation":{"type":"integer","minimum":1},"cursor":{"type":"integer","minimum":0}},"required":["task","sequence","generation","cursor"],"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":128}}), &["task_id"]));
+    } else {
+        list.push(domain_tool("batch_outcomes","Read durable domain and physical tool outcome references from an earlier batch. Set list_runs=true to discover every retained batch when prompt references are omitted; follow next with after, then read each run_id. Without list_runs, omitted run_id means this batch. Uncertain is never proof of success; read current state before continuing goals.",json!({"list_runs":{"type":"boolean","default":false},"run_id":{"type":"string","description":"Omit for this batch; omit when list_runs is true"},"after":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":32}}),&[]));
+        list.push(domain_tool("read_file", "Read a bounded page of a UTF-8 file inside the configured projects root. Symbolic links and parent traversal are refused.", json!({"path":{"type":"string"},"start_line":{"type":"integer","minimum":1,"maximum":1000000},"max_lines":{"type":"integer","minimum":1,"maximum":400}}), &["path"]));
+        list.push(domain_tool("glob_files", "Find up to 100 files under a directory in the projects root. Supports *, ** and ?. Symbolic links are never followed; limits and omissions are reported.", json!({"path":{"type":"string"},"pattern":{"type":"string"}}), &["pattern"]));
+        list.push(domain_tool("search_files", "Search a bounded set of project file previews for a literal string. Reports line numbers and omitted previews. No regular expressions or shell programs.", json!({"path":{"type":"string"},"query":{"type":"string"}}), &["query"]));
+    }
     let (whose, task_help) = match role {
         Role::Node => ("your Task", "Your Task's id"),
         Role::Orchestrator => ("you", "Only the cards of this Task; leave it out for all of yours"),
@@ -71,23 +83,24 @@ fn tools(role: Role, user: &str) -> Value {
         list.extend([
             json!({"name": "tasks_in_progress", "description": format!("Work in progress: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells, each since when it runs); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
-            json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
+            json!({"name": "machine", "description": "The models you choose from (Available models: each model of an enabled account with its efforts, the accounts' margin, its sheet and Alondra's measured results), the public evidence of each sheet, the account catalogs and profiles; machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "daemon_log", "description": "The last lines of Alondra's daemon log (alondrad.log), to find out why something in Alondra failed.", "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer", "description": "How many lines from the end: 200 by default, at most 1000"}}}}),
             json!({"name": "set_launch_plan", "description": "Replace the launch plan Alondra starts a task with by itself when the node limit has room and everything it depends on is done.", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "launch": launch_plan_schema()}, "required": ["task_id", "launch"]}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task, which must be the node's own: a node works only on the task it was launched for, and a closed task's node is closed with it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": "With task and an approach: one short line on what the task is and why this approach. Kept to measure how each approach does"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is running now (the node's `tool`, running since its `since`); `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While Claude usage has run out, launches are refused until it comes back. name and cwd are optional when the task has a launch plan."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "replace": {"type": "boolean", "description": "With task, replace its current node, to change its model or effort: Alondra stops that session (claude stop, never claude rm), frees the task and launches this node in the folder the old one worked in, its worktree and uncommitted files included. cwd and name default to the old node's. The call answers at once with replacing: true while Alondra waits for the old node's turn to end, which can take minutes; you are told when the new node works on the task or why it did not start"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": format!("The model, a Claude Code alias (haiku, sonnet, opus, fable). Required when the request's effort is auto; refused when {user} chose an effort, which already sets the model")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"], "description": "Thinking effort: medium for ordinary opus work, high for architecture design or a hard bug; leave it out for sonnet"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": format!("One short line on what the task is and why this model (and effort) fits it. Required when the request's effort is auto; optional when {user} chose the effort. Kept to measure how each model does")}}, "required": ["task"]}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While the selected account has no available usage, launches wait for an eligible account or its reset. name and cwd are optional when the task has a launch plan."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "replace": {"type": "boolean", "description": "With task, recover a disconnected legacy node only on its original account. Existing SDK nodes cannot be replaced through this tool: use the task options for supported same-session model changes. Account and provider are selected only when creating a node and stay fixed. Unsupported changes require a new task and node."}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "provider": {"type":"string","enum":["claude","codex"]}, "profile": {"type":"string","enum":["implementation","general","design","review"]}, "reasoning_effort":{"type":"string","description":"Native effort advertised by the exact selected model; distinct from inherited work effort"}, "model": {"type": "string", "description": format!("Exact advertised model, preferably provider-qualified (codex/model-id or claude/model-id). Automatic uses configured profiles; {user}'s explicit choice remains binding")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "description": "Legacy alias for native reasoning_effort; use only an effort advertised for the selected model"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": format!("One short line on what the task is and why this model (and effort) fits it. Required when the request's effort is auto; optional when {user} chose the effort. Kept to measure how each model does")}}, "required": ["task"]}}),
         ]);
     }
     for tool in &mut list {
         if tool["name"] == "launch" {
             tool["description"] = json!(format!(
-                "Launch a new node with the Alondra plugin for a Task no connected node works on, or with replace: true for a Task whose connected node should change model or effort (Alondra stops that node and starts this one in its worktree; the call answers at once with replacing: true, because the old node's turn may take minutes to end, and you are told how the replacement ended): it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While Claude usage has run out, launches are refused until it comes back."
+                "Launch a new node with the Alondra plugin for a Task no connected node works on, or with replace: true for supported legacy recovery on its original account (existing SDK nodes refuse replacement; use the task options for supported same-session model controls, with account and provider fixed): it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While the selected account has no available usage, launches wait for an eligible account or its reset."
             ));
             let properties = tool["inputSchema"]["properties"]
                 .as_object_mut()
                 .expect("launch properties");
             properties.remove("request_id");
+            properties.insert("tags".into(), tags_schema());
             tool["inputSchema"]["required"] = json!(["task"]);
         }
     }
@@ -407,11 +420,24 @@ fn launch_plan_schema() -> Value {
             "name":{"type":"string","description":"The new node's name, with its hierarchy (lumo/phase-c)"},
             "cwd":{"type":"string","description":"The folder the node starts in"},
             "mission":{"type":"string","description":"The node's mission; without it, the task title and the request"},
-            "model":{"type":"string","description":"Required when the request's effort is auto"},
-            "effort":{"type":"string","enum":["low","medium","high","xhigh","max"]},
+            "model":{"type":"string","description":"Optional exact provider-qualified model from machine catalogs; otherwise the configured work profile resolves Automatic"},
+            "effort":{"type":"string","description":"Native reasoning effort advertised for the exact model, not inherited work effort"},
             "approach":{"type":"string","enum":["solo","subagents","workflow"]},
             "reason":{"type":"string","description":"Required when the request's effort is auto"},
-            "role":{"type":"string","enum":["design","implementation","review"],"description":"For work split into design, implementation and review"}}})
+            "role":{"type":"string","enum":["design","implementation","review"],"description":"For work split into design, implementation and review"},
+            "tags":tags_schema()}})
+}
+
+/// What the task is: kept with each model decision, so the model is chosen and measured by kind.
+fn tags_schema() -> Value {
+    use alondra_core::task_tags::{TaskArea, TaskKind, TaskRisk};
+    json!({"type":"object","additionalProperties":false,"required":["kind"],
+        "description":"What the task is: its kind, where it works and its risks. Alondra keeps them with the model chosen and reports results by kind",
+        "properties":{
+            "kind":{"type":"string","enum":TaskKind::names()},
+            "areas":{"type":"array","items":{"type":"string","enum":TaskArea::names()}},
+            "risks":{"type":"array","items":{"type":"string","enum":TaskRisk::names()},
+                "description":"concurrency, security and data_migration call for the strongest model for the kind"}}})
 }
 
 fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
@@ -559,10 +585,12 @@ fn call_timeout(tool: &str) -> Duration {
 
 fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
+        "request_plan_mode" => execute_tool(client,name,args),
         "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain::NODES_DO_NOT_NOTIFY),
         "answer_clarification" if args.get("text").is_some() => {
             anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_core::domain::NODES_DO_NOT_NOTIFY)
         }
+        "read_skill" | "task_context" => execute_tool(client, name, args),
         "start_task"
         | "ask"
         | "request_action"
@@ -627,6 +655,7 @@ fn with_relative_images(name: &str, args: &Value, cwd: &std::path::Path, home: &
 
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
+        "read_file" | "glob_files" | "search_files" | "read_skill" | "batch_outcomes" => execute_tool(client, name, args),
         "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain::NODES_DO_NOT_NOTIFY),
         "create_request"
         | "close_request"
@@ -673,11 +702,16 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
     let client = match call_timeout(name) {
         CALL_TIMEOUT => client,
         longer => {
-            waiting = Client::new(longer);
+            waiting = match client.operation_id() { Some(operation) => Client::new(longer).with_mcp_operation(operation),None => Client::new(longer) };
             &waiting
         }
     };
     Ok(match name {
+        "request_plan_mode" => serde_json::to_string_pretty(&client.domain_post("/agents/plan-mode",&domain_bearer()?,args)?)?,
+        "read_file" | "glob_files" | "search_files" => serde_json::to_string_pretty(&client.domain_post("/orchestrator/read", &domain_bearer()?, &json!({"operation":name,"arguments":args}))?)?,
+        "read_skill" => serde_json::to_string_pretty(&client.domain_post("/tools/read-skill", &domain_bearer()?, args)?)?,
+        "task_context" => serde_json::to_string_pretty(&client.domain_post("/agents/context", &domain_bearer()?, args)?)?,
+        "batch_outcomes" => serde_json::to_string_pretty(&client.domain_post("/orchestrator/outcomes", &domain_bearer()?, args)?)?,
         "answer_clarification" => answer_clarification(client, args)?,
         "ask"
         | "request_action"
@@ -781,7 +815,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         }
         "machine" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&client.domain_get("/orchestrator/machine", &bearer)?)?
+            machine_text(client.domain_get("/orchestrator/machine", &bearer)?)?
         }
         "daemon_log" => {
             let bearer = domain_bearer()?;
@@ -795,13 +829,24 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
     })
 }
 
+/// The machine as the orchestrator reads it: the table of available models first, as plain
+/// lines, then the rest of the answer.
+fn machine_text(mut answer: Value) -> Result<String> {
+    let table = answer.as_object_mut().and_then(|fields| fields.remove("available_models")).and_then(|table| table.as_str().map(str::to_owned));
+    let rest = serde_json::to_string_pretty(&answer)?;
+    Ok(match table {
+        Some(table) => format!("{table}\n{rest}"),
+        None => rest,
+    })
+}
+
 /// Sends one typed command. A card carries its own id, so a retry after a timeout is the same
 /// command and the daemon answers it with the first outcome instead of making a second card.
 fn submit(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<String> {
     let capabilities = client.domain_get("/capabilities", bearer)?;
     let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
-    let (method, path, body) = command_request(name, args, data_epoch)?;
+    let (method, path, body) = scoped_command_request(name, args, data_epoch,client.operation_id())?;
     let response = client.domain_call(method, &path, bearer, Some(&body))?;
     Ok(response.get("notice").and_then(Value::as_str).unwrap_or("Recorded.").to_owned())
 }
@@ -816,6 +861,18 @@ fn command_request(name: &str, args: &Value, data_epoch: &str) -> Result<(&'stat
         body[key] = envelope[key].clone();
     }
     Ok((method, path, body))
+}
+
+fn scoped_command_request(name:&str,args:&Value,epoch:&str,operation:Option<&str>)->Result<(&'static str,String,Value)> {
+    let (method,path,mut body)=command_request(name,args,epoch)?;
+    let stable_card=CARD_COMMANDS.contains(&name) && args.get("interaction_id").and_then(Value::as_str).is_some_and(|id|id.len()<=200 && !id.chars().any(char::is_control));
+    if let Some(operation)=operation && !stable_card {
+        use sha2::{Digest,Sha256};
+        let digest=Sha256::digest(serde_json::to_vec(&(operation,name))?);
+        let identity:String=digest.iter().map(|byte|format!("{byte:02x}")).collect();
+        body["command_id"]=json!(format!("mcp-native-{identity}"));
+    }
+    Ok((method,path,body))
 }
 
 const CARD_COMMANDS: [&str; 10] = [
@@ -843,7 +900,7 @@ fn explain(error: &anyhow::Error) -> String {
         return format!("Alondra refused it [{}]: {} Nothing was sent, and a refusal is never an answer or a permission: do not go on as if it had been granted. {guidance}", refused.code, refused.message);
     }
     if error.chain().any(|cause| cause.downcast_ref::<ureq::Error>().is_some()) {
-        return "don't proceed: could not reach Alondra; retry the same call with the same ids (a retry never duplicates). Nothing was sent, and do not treat this as an answer or a permission.".to_owned();
+        return "don't proceed: could not reach Alondra; the mutation's result is unconfirmed. Inspect its durable outcome and current state before continuing; never blindly send it again or treat the lost reply as permission.".to_owned();
     }
     error.to_string()
 }
@@ -1658,6 +1715,33 @@ fn check_arguments(tools: &Value, name: &str, args: &Value) -> Result<(), String
     Ok(())
 }
 
+fn require_native_root(params: &Value, mapping: &std::path::Path) -> Result<()> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    anyhow::ensure!(mapping.is_absolute(), "The native root thread mapping is unavailable");
+    let mut file=std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(mapping)?;
+    let metadata=file.metadata()?;
+    anyhow::ensure!(metadata.is_file() && metadata.nlink()==1 && metadata.uid()==unsafe {libc::geteuid()} && metadata.mode() & 0o7777 == 0o600 && metadata.len()<=1024,"The private native root thread mapping is invalid");
+    let mut bytes=Vec::new();Read::by_ref(&mut file).take(1025).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len()<=1024,"The native root thread mapping exceeds its limit");
+    let native:Value=serde_json::from_slice(&bytes)?;
+    let root=native["threadId"].as_str().filter(|id|!id.is_empty() && id.len()<=256).ok_or_else(||anyhow::anyhow!("The native root thread identity is unavailable"))?;
+    anyhow::ensure!(params["_meta"]["threadId"].as_str()==Some(root),"Only the root Alondra node may use its business MCP tools; child agents must report to their parent");
+    Ok(())
+}
+
+fn mcp_operation_identity(params: &Value, rpc: &Value, instance: &str) -> Result<String> {
+    use sha2::{Digest,Sha256};
+    let meta = &params["_meta"];
+    let native = ["threadId","sessionId","callId"].map(|key| meta[key].as_str().filter(|value| !value.is_empty() && value.len() <= 256));
+    let identity = match native {
+        [Some(thread),Some(session),Some(call)] => json!({"thread":thread,"session":session,"call":call}),
+        _ if std::env::var("ALONDRA_PROVIDER").ok().as_deref() == Some("codex") => anyhow::bail!("incompatible_protocol: native Codex MCP call identity is missing"),
+        _ => json!({"instance":instance,"rpc":rpc}),
+    };
+    Ok(Sha256::digest(serde_json::to_vec(&identity)?).iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 fn serve_server(
     server_name: &str,
     instructions: String,
@@ -1665,6 +1749,7 @@ fn serve_server(
     dispatch: fn(&Client, &str, &Value) -> Result<String>,
 ) -> Result<()> {
     let client = Client::new(CALL_TIMEOUT);
+    let instance = crate::client::new_id("mcp-server");
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -1689,7 +1774,14 @@ fn serve_server(
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let checked = check_arguments(&tools, name, &args).map_err(anyhow::Error::msg);
-                Ok(match checked.and_then(|()| dispatch(&client, name, &args)) {
+                Ok(match checked.and_then(|()| {
+                    let operation = mcp_operation_identity(&params,&id,&instance)?;
+                    if std::env::var("ALONDRA_PROVIDER").ok().as_deref()==Some("codex") {
+                        let mapping=std::env::var_os("ALONDRA_CODEX_THREAD_MAPPING").ok_or_else(||anyhow::anyhow!("incompatible_protocol: the host did not provide its native root thread mapping"))?;
+                        require_native_root(&params,std::path::Path::new(&mapping))?;
+                    }
+                    dispatch(&client.with_mcp_operation(&operation),name,&args)
+                }) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {}", explain(&e))}], "isError": true}),
                 })
@@ -1719,6 +1811,30 @@ fn skill_text(role: Role) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_business_tools_require_the_private_root_mapping_and_reject_children() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory=crate::test_support::Directory::new();std::fs::create_dir_all(&*directory).unwrap();
+        let mapping=directory.join("root-thread");
+        std::fs::write(&mapping,br#"{"threadId":"root-thread"}"#).unwrap();std::fs::set_permissions(&mapping,std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(require_native_root(&json!({"_meta":{"threadId":"root-thread"}}),&mapping).is_ok());
+        assert!(require_native_root(&json!({"_meta":{"threadId":"child-thread"}}),&mapping).is_err());
+        assert!(require_native_root(&json!({}),&mapping).is_err());
+        let linked=directory.join("linked");std::os::unix::fs::symlink(&mapping,&linked).unwrap();assert!(require_native_root(&json!({"_meta":{"threadId":"root-thread"}}),&linked).is_err());
+        std::fs::set_permissions(&mapping,std::fs::Permissions::from_mode(0o644)).unwrap();assert!(require_native_root(&json!({"_meta":{"threadId":"root-thread"}}),&mapping).is_err());
+    }
+
+    #[test]
+    fn native_mcp_operation_uses_native_ids_across_rpc_reconnection() {
+        let metadata = json!({"_meta":{"threadId":"native-thread","sessionId":"native-session","callId":"native-call"}});
+        let first = mcp_operation_identity(&metadata,&json!(1),"connection-one").unwrap();
+        assert_eq!(first,mcp_operation_identity(&metadata,&json!(999),"connection-two").unwrap());
+        let mut another = metadata.clone(); another["_meta"]["callId"] = json!("another-call");
+        assert_ne!(first,mcp_operation_identity(&another,&json!(1),"connection-one").unwrap());
+        let mut another_thread = metadata; another_thread["_meta"]["threadId"] = json!("another-thread");
+        assert_ne!(first,mcp_operation_identity(&another_thread,&json!(1),"connection-one").unwrap());
+    }
 
     #[test]
     fn register_pr_normalizes_the_host_a_node_got_slightly_wrong() {
@@ -1771,7 +1887,9 @@ mod tests {
         }
         assert!(instructions(Role::Node, "Ana").contains("deliver with present_result and is_final true"));
         assert!(instructions(Role::Node, "Ana").contains("never install, restart or replace the Alondra daemon or CLI"));
-        assert!(instructions(Role::Node, "Ana").contains("A plan goes through plan mode: EnterPlanMode, then ExitPlanMode"));
+        assert!(instructions(Role::Node, "Ana").contains("Use request_plan_mode"));
+        assert!(tools(Role::Node,"Ana").as_array().unwrap().iter().any(|tool| tool["name"]=="request_plan_mode"));
+        assert!(!tools(Role::Orchestrator,"Ana").as_array().unwrap().iter().any(|tool| tool["name"]=="request_plan_mode"));
         let skill = skill_text(Role::Node);
         assert!(skill.contains("A task owns exactly one PR for its whole life"));
         assert!(skill.contains("`ask` with the decision in `body` and the approval options, then at once `link_interaction_subject`"));
@@ -1856,6 +1974,32 @@ mod tests {
         assert!(body.get("kind").is_none() && body["task_id"] == "t-2");
         let envelope = domain_envelope("create_task", &args, "epoch", "one").unwrap();
         assert_eq!(envelope["command"]["launch"]["name"], "app/next", "the domain sees the plan");
+    }
+
+    #[test]
+    fn launch_and_every_launch_plan_take_the_tasks_tags() {
+        let catalog = tools(Role::Orchestrator, "Ana");
+        let tool = |name: &str| catalog.as_array().unwrap().iter().find(|tool| tool["name"] == name).cloned().unwrap();
+        for tags in [tool("launch")["inputSchema"]["properties"]["tags"].clone(), tool("create_task")["inputSchema"]["properties"]["launch"]["properties"]["tags"].clone(),
+            tool("set_launch_plan")["inputSchema"]["properties"]["launch"]["properties"]["tags"].clone()] {
+            assert_eq!(tags["required"], json!(["kind"]));
+            assert_eq!(tags["properties"]["kind"]["enum"], json!(["feature", "fix", "refactor", "tests", "docs", "migration", "design", "review", "release", "research"]));
+            assert_eq!(tags["properties"]["areas"]["items"]["enum"], json!(["ui", "daemon", "data", "build"]));
+            assert_eq!(tags["properties"]["risks"]["items"]["enum"], json!(["concurrency", "security", "data_migration", "unclear_spec", "user_visible"]));
+        }
+        let args = json!({"task_id": "t-1", "request_id": "r-1", "title": "Docs", "review_prs": false, "dependencies": [], "stack": null,
+            "launch": {"name": "app/docs", "cwd": "/tmp", "tags": {"kind": "docs", "areas": ["ui"]}}});
+        let envelope = domain_envelope("create_task", &args, "epoch", "one").unwrap();
+        assert_eq!(envelope["command"]["launch"]["tags"], json!({"kind": "docs", "areas": ["ui"]}), "the domain keeps the plan's tags");
+    }
+
+    #[test]
+    fn the_machine_answer_shows_the_available_models_table_before_the_rest() {
+        let text = machine_text(json!({"available_models": "Available models: model | efforts\nclaude/sonnet | medium\n", "machine": {"memory": "fine"}})).unwrap();
+        assert!(text.starts_with("Available models: model | efforts\nclaude/sonnet | medium\n\n{"), "{text}");
+        assert!(!text.contains("available_models") && text.contains("\"memory\": \"fine\""), "{text}");
+        let without = machine_text(json!({"available_models": null, "machine": {}})).unwrap();
+        assert!(without.starts_with('{') && !without.contains("available_models"), "{without}");
     }
 
     /// Claude Code passes the model at most 2 KB of a server's instructions and of each tool's
@@ -2420,6 +2564,21 @@ mod card_tool_tests {
     }
 
     #[test]
+    fn the_orchestrator_skill_chooses_models_from_the_table_and_never_by_brand() {
+        let skill = skill_text(Role::Orchestrator);
+        for rule in ["Give every task `tags` on `launch` and in every launch plan", "`machine` starts with the Available models table",
+            "or one the request text names (\"use Codex\"), is the model", "Calling a model worse needs at least 5 tasks of that kind for both",
+            "A task tagged `concurrency`, `security` or `data_migration` takes the model with the best measured results for its kind",
+            "Never by brand reputation", "`reason` cites the row"] {
+            assert!(skill.contains(rule), "{rule}");
+        }
+        let lower = skill.to_lowercase();
+        for brand_rule in ["opus, effort", ", sonnet)", "one sonnet task", "alondra models"] {
+            assert!(!lower.contains(brand_rule), "{brand_rule}");
+        }
+    }
+
+    #[test]
     fn a_notice_says_what_it_means_for_the_user_and_never_answers_claude_or_maintenance() {
         let notice = tool(Role::Orchestrator, "publish_information")["description"].as_str().unwrap().to_owned();
         assert!(notice.contains("only when knowing it helps Ana") && notice.contains("never script names, task ids or internal steps"), "{notice}");
@@ -2737,6 +2896,16 @@ mod card_tool_tests {
     }
 
     #[test]
+    fn a_native_call_reconnection_keeps_its_durable_command_identity() {
+        let args=json!({"task_id":"t-1"});
+        let (_,_,first)=scoped_command_request("cleanup_done",&args,"epoch",Some("ab12")).unwrap();
+        let (_,_,reconnected)=scoped_command_request("cleanup_done",&args,"epoch",Some("ab12")).unwrap();
+        let (_,_,other)=scoped_command_request("cleanup_done",&args,"epoch",Some("cd34")).unwrap();
+        assert_eq!(first,reconnected);
+        assert_ne!(first["command_id"],other["command_id"]);
+    }
+
+    #[test]
     fn a_retried_card_keeps_its_command_id_and_another_card_does_not() {
         let ask = |id: &str| with(json!({"interaction_id":id}));
         assert_eq!(command_id("ask", &ask("card-1")), command_id("ask", &ask("card-1")));
@@ -2768,8 +2937,8 @@ mod card_tool_tests {
         let args = with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":true}));
         let error = submit(&client, &"a".repeat(64), "ask", &args).unwrap_err();
         let text = explain(&error);
-        assert!(text.starts_with("don't proceed: could not reach Alondra; retry"), "{text}");
-        assert!(text.contains("never duplicates") && text.contains("not treat this as an answer or a permission"), "{text}");
+        assert!(text.starts_with("don't proceed: could not reach Alondra;") && text.contains("unconfirmed") && text.contains("durable outcome") && !text.contains("Nothing was sent"), "{text}");
+        assert!(text.contains("never blindly") && text.contains("permission") && !text.contains("Nothing was sent"), "{text}");
     }
 
     #[test]

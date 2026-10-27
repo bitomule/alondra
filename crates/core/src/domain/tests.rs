@@ -108,6 +108,7 @@ fn fixture() -> DomainState {
 }
 fn schedule() -> Schedule {
     Schedule {
+        paid_account_grant: None,
         id: "schedule-1".into(),
         title: "Daily review".into(),
         text: "Review the project".into(),
@@ -144,7 +145,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3093,10 +3094,18 @@ fn variant_index(c: &Command) -> usize {
         Command::ChangeAccounts { .. } => 101,
         Command::RevokeTaskGrant { .. } => 102,
         Command::AdoptSdkNodes => 103,
-        Command::ReviewWaits => 104,
+        Command::SetAccountOrder { .. } => 104,
+        Command::RecordAccountConfiguration { .. } => 105,
+        Command::RecordModelCatalog { .. } => 106,
+        Command::RecordTaskSelection { .. } => 107,
+        Command::RecordModelProfiles { .. } => 108,
+        Command::SetModelProfile { .. } => 109,
+        Command::ReplaceAccountConfiguration { .. } => 110,
+        Command::RequestTaskSelection { .. } => 111,
+        Command::ReviewWaits => 112,
     }
 }
-const COMMAND_KINDS: usize = 105;
+const COMMAND_KINDS: usize = 113;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3221,11 +3230,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()), waits_for: vec![] }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
-        (Command::AdmitExecution { task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
+        (Command::AdmitExecution { provider: Default::default(), task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
             instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }, false),
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
-        (Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None }, false),
+        (Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None }, false),
         (Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }, true),
         (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
@@ -3263,6 +3272,21 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordDistribution { policy: crate::accounts::Policy::Chain, move_when_exhausted: true }, true),
         (Command::ChangeAccounts { provider: crate::accounts::Provider::Claude,
             change: crate::accounts::AccountChange::Remove { account: crate::accounts::AccountId::default_account() } }, false),
+        (Command::SetAccountOrder { order: vec![], expected_config_version: "fixture".into() }, false),
+        (Command::RecordAccountConfiguration { order: vec![], version: "fixture".into() }, true),
+        (Command::RecordModelCatalog { catalog: crate::model_selection::AccountModelCatalog {
+            account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex), revision: "fixture".into(),
+            models: vec![], native_default: None, measured_at: 1,
+        } }, false),
+        (Command::RecordTaskSelection { task_id: ids.task.into(), selection: crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation), pending: None }, false),
+        (Command::RecordModelProfiles { profiles: Default::default(), version: "fixture".into() }, true),
+        (Command::SetModelProfile { provider: crate::accounts::Provider::Codex, profile: crate::model_selection::ModelProfile::Orchestrator,
+            policy: crate::model_selection::RoleModelPolicy::NativeDefault, expected_config_version: "fixture".into() }, false),
+        (Command::ReplaceAccountConfiguration { accounts: crate::accounts::AccountsConfig::fresh().to_toml(), expected_config_version: "fixture".into() }, false),
+        (Command::RequestTaskSelection { task_id: ids.task.into(), expected_selection: "fixture".into(), selection: crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation), pending: crate::model_selection::PendingTaskSelection {
+            account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex),
+            model: crate::model_selection::ModelSelection { model: crate::model_selection::ModelKey { provider: crate::accounts::Provider::Codex, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "A user choice".into(),
+        } }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -4502,7 +4526,7 @@ fn guards_refuse_what_the_commands_refuse() {
     exec(&mut sdk, orchestrator(), Command::CreateTask { plan_items: None, task_id: "sdk".into(), request_id: "r".into(),
         title: "SDK".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
-    exec(&mut sdk, Actor::System, Command::AdmitExecution { task_id: "sdk".into(), agent_id: "s".into(),
+    exec(&mut sdk, Actor::System, Command::AdmitExecution { provider: Default::default(), task_id: "sdk".into(), agent_id: "s".into(),
         conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }).unwrap();
     let LifecycleRecord::Planned { input } = sdk.lifecycle_journal[&TaskId::from("sdk")][0].clone() else { panic!("planned first") };
     exec(&mut sdk, Actor::System, Command::RecordRuntimeFacts { task_id: "sdk".into(), generation: 1, facts: vec![
@@ -4551,7 +4575,7 @@ fn guards_refuse_what_the_commands_refuse() {
     ]).collect();
     use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
     let account = |id: &str, state| AccountStatus {
-        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, email: None, plan: Some("max".into()),
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: Some("max".into()),
         billing: if id == "api" { AccountBilling::PayPerUse } else { AccountBilling::default() }, sign_ins: 0,
     };
     let mut accounts = sdk.clone();
@@ -4669,7 +4693,7 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
     use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     let account = |id: &str, state| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), state,
-        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
     };
     let mut s = DomainState::new("epoch");
     let accounts = vec![account("default", AccountState::SignedIn), account("work", AccountState::SignedOut)];
@@ -4688,17 +4712,12 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
         transport: crate::views::Transport::Loopback, cursor: "", rendered_at: "",
     };
     let view = crate::views::build("accounts", context).unwrap();
-    let rows: Vec<(String, Option<String>)> = view.sections.iter().flat_map(|s| &s.items).filter_map(|item| match item {
-        crate::views::Item::Row(row) => Some((row.title.clone(), row.subtitle.clone())),
-        _ => None,
+    let rows: Vec<(String, Option<String>)> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        crate::views::Item::Row(row) if row.account.is_some() => Some((row.title.clone(), row.subtitle.clone())), _ => None,
     }).collect();
     assert_eq!(rows, [
-        ("DEFAULT".to_owned(), Some("default@example.org · max · peso 5, por plan".to_owned())),
-        ("WORK".to_owned(), Some("work@example.org · max · peso 5, por plan".to_owned())),
-        ("Añadir una cuenta".to_owned(), Some("Solo pide un nombre; luego inicias sesión en Claude en el Mac".to_owned())),
-        ("Primero la de más margen".to_owned(), Some("Cada tarea nueva empieza en la cuenta con más margen, según su plan".to_owned())),
-        ("Mover un nodo cuando su cuenta se agota".to_owned(),
-            Some("Anthropic no dice si cambiar de cuenta al llegar al límite está permitido.".to_owned())),
+        ("DEFAULT".to_owned(), Some("Claude · default@example.org · max · peso 5, por plan".to_owned())),
+        ("WORK".to_owned(), Some("Claude · work@example.org · max · peso 5, por plan".to_owned())),
     ]);
     assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a view never shows a folder");
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }).unwrap();
@@ -4711,7 +4730,7 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
     use crate::usage::{Share, UsageReading, WindowKind, WindowReading};
     let account = |id: &str| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
-        email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
     };
     let (now, day) = (1_790_192_202_000, "2026-09-23");
     let reading = |week: f64| UsageReading {
@@ -4744,7 +4763,7 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
 fn a_settings_change_to_the_accounts_is_recorded_as_the_file_will_hold_it() {
     use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
     let account = |id: &str, state| AccountStatus {
-        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, email: Some(format!("{id}@example.org")),
+        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: Some(format!("{id}@example.org")),
         plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
     };
     let mut s = DomainState::new("epoch");
@@ -4779,6 +4798,86 @@ fn a_settings_change_to_the_accounts_is_recorded_as_the_file_will_hold_it() {
     let restored: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
     assert_eq!(restored.account_policy, Policy::Chain, "the policy survives a restart");
     assert!(restored.account_moves, "so does moving nodes");
+}
+
+#[test]
+fn mixed_account_order_conflicts_only_with_configuration_and_qualified_tasks_do_not_collide() {
+    use crate::accounts::{AccountBilling, AccountChange, AccountKey, AccountState, AccountStatus, Provider};
+    let mut s = fixture();
+    let keys = [AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex)];
+    let accounts = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: key.provider.as_str().into(),
+        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).collect();
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordAccountConfiguration { order: keys.to_vec(), version: "settings-one".into() }).unwrap();
+    let stale = Command::SetAccountOrder { order: keys.iter().rev().cloned().collect(), expected_config_version: "settings-old".into() };
+    assert_eq!(exec(&mut s, user(), stale).unwrap_err().code, "stale_config");
+    exec(&mut s, Actor::System, Command::RecordAccountUsage { provider: Provider::Codex, account: keys[1].account.clone(),
+        reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-25".into() }).unwrap();
+    exec(&mut s, user(), Command::SetAccountOrder { order: keys.iter().rev().cloned().collect(), expected_config_version: "settings-one".into() }).unwrap();
+    assert_eq!(ReadIndex::build(&s).account_order(), &[keys[1].clone(), keys[0].clone()]);
+    let duplicate = Command::SetAccountOrder { order: vec![keys[0].clone(), keys[0].clone()], expected_config_version: "settings-one".into() };
+    assert_eq!(exec(&mut s, user(), duplicate).unwrap_err().code, "invalid_input");
+    assert_eq!(s.tasks_on_account_key(&keys[0]), 1);
+    assert_eq!(s.tasks_on_account_key(&keys[1]), 0);
+    let task = s.tasks.get_mut(&TaskId::from("t")).unwrap();
+    task.provider = Provider::Codex;
+    assert_eq!(s.tasks_on_account_key(&keys[0]), 0);
+    assert_eq!(ReadIndex::build(&s).nodes_on_account_key(&keys[1]), 1);
+    exec(&mut s, user(), Command::ChangeAccounts { provider: Provider::Claude, change: AccountChange::Disable { account: keys[0].account.clone() } }).unwrap();
+    assert_eq!(exec(&mut s, user(), Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Disable { account: keys[1].account.clone() } }).unwrap_err().code, "invalid_input");
+}
+
+#[test]
+fn task_selection_is_committed_metadata_and_only_the_system_records_pending_switches() {
+    use crate::accounts::{AccountKey, Provider};
+    use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, PendingTaskSelection, TaskSelection};
+    let mut s = fixture();
+    let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+    intent.request_model(Some(ModelKey { provider: Provider::Codex, model: "advertised-model".into() }));
+    intent.requested_reasoning_effort = Some("high".into());
+    let model = ModelSelection { model: intent.requested.clone().unwrap(), reasoning_effort: Some("high".into()), catalog_revision: "native-catalog".into() };
+    let pending = PendingTaskSelection { account: AccountKey::native(Provider::Codex), model: model.clone(), reason: "The previous account reached its limit".into() };
+    let record = |selection, pending| Command::RecordTaskSelection { task_id: "t".into(), selection, pending };
+    assert_eq!(exec(&mut s, user(), record(intent.clone(), Some(pending.clone()))).unwrap_err().code, "forbidden");
+    exec(&mut s, Actor::System, record(intent.clone(), Some(pending.clone()))).unwrap();
+    let index = ReadIndex::build(&s);
+    assert_eq!(index.pending_task_selection(&"t".into()), Some(&pending));
+    assert!(index.task_selection(&"t".into()).unwrap().effective.is_none());
+    intent.effective = Some(model.clone());
+    assert_eq!(exec(&mut s, Actor::System, record(intent.clone(), None)).unwrap_err().code, "invalid_input", "the new model is not effective before its provider is admitted");
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![crate::accounts::AccountStatus {
+        provider: Provider::Codex, id: AccountKey::native(Provider::Codex).account, name: "Native".into(), state: crate::accounts::AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
+    }], reserve: crate::usage::default_reserve() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordModelCatalog { catalog: crate::model_selection::AccountModelCatalog {
+        account: AccountKey::native(Provider::Codex), revision: "native-catalog".into(), native_default: None, measured_at: 1,
+        models: vec![crate::model_selection::CatalogModel { model: "advertised-model".into(), display_name: "Advertised".into(), reasoning_efforts: vec!["high".into()],
+            default_reasoning_effort: Some("high".into()), context_window: None, input_modalities: vec![], is_default: false, hidden: false }],
+    } }).unwrap();
+    exec(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Codex, task_id: "t".into(), agent_id: "a".into(), conversation: "native-conversation".into(),
+        instance: "native-instance".into(), host: "codex-host".into(), model: None, account: None, leaves_limit: None }).unwrap();
+    exec(&mut s, Actor::System, record(intent.clone(), None)).unwrap();
+    let index = ReadIndex::build(&s);
+    assert!(index.pending_task_selection(&"t".into()).is_none());
+    assert_eq!(index.task_selection(&"t".into()).unwrap().requested_reasoning_effort.as_deref(), Some("high"));
+    let encoded = serde_json::to_value(&s.tasks[&TaskId::from("t")]).unwrap();
+    let restored: Task = serde_json::from_value(encoded).unwrap();
+    assert_eq!(restored.selection, Some(intent));
+}
+
+#[test]
+fn an_execution_cannot_grant_itself_a_paid_account_or_rewrite_user_constraints() {
+    let mut state = fixture();
+    let original = crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation);
+    exec(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: original.clone(), pending: None }).unwrap();
+    let mut paid = original.clone();
+    paid.account = Some(crate::accounts::AccountKey::native(crate::accounts::Provider::Codex));
+    paid.paid_account_grant = paid.account.clone();
+    let mut substituted = original.clone(); substituted.allow_model_substitution = false;
+    let mut changed_model = original; changed_model.requested = Some(crate::model_selection::ModelKey { provider: crate::accounts::Provider::Codex, model: "other-model".into() });
+    for selection in [paid, substituted, changed_model] {
+        reject_unchanged(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection, pending: None }, "invalid_input");
+    }
 }
 
 #[test]
@@ -4838,4 +4937,114 @@ fn a_task_keeps_the_project_it_was_created_with() {
     let mut saved = serde_json::to_value(&s.tasks[&"p".into()]).unwrap();
     saved.as_object_mut().unwrap().remove("project");
     assert_eq!(serde_json::from_value::<Task>(saved).unwrap().project, None, "a task saved before projects decodes");
+}
+
+#[test]
+fn a_user_selection_is_pending_until_admission_and_uses_the_same_action_guard() {
+    use crate::accounts::{AccountBilling, AccountId, AccountKey, AccountState, AccountStatus, Provider};
+    use crate::model_selection::*;
+    let mut state = DomainState::new("epoch");
+    exec(&mut state,user(),Command::CreateRequest {request_id:"r".into(),body:"Work".into(),auto_merge:false,maintenance:false,message:false}).unwrap();
+    exec(&mut state,Actor::System,Command::RegisterAgent {agent_id:"a".into(),name:"Node".into(),at:0}).unwrap();
+    exec(&mut state,orchestrator(),Command::CreateTask {task_id:"t".into(),request_id:"r".into(),title:"Work".into(),agent_id:None,review_prs:false,dependencies:BTreeSet::new(),stack:None,launch:Some(LaunchPlan::new("node","/tmp")),plan_items:None}).unwrap();
+    exec(&mut state,Actor::System,Command::AdmitExecution {provider:Provider::Codex,task_id:"t".into(),agent_id:"a".into(),conversation:"code-session".into(),instance:"code-instance".into(),host:"alondra-host".into(),model:None,account:None,leaves_limit:None}).unwrap();
+    let account = AccountKey::native(Provider::Codex);
+    exec(&mut state, Actor::System, Command::RecordAccounts { accounts: vec![AccountStatus {
+        provider: Provider::Codex, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+    }], reserve: crate::usage::default_reserve() }).unwrap();
+    let catalog = AccountModelCatalog { account: account.clone(), revision: "catalog".into(), measured_at: 1, native_default: Some("only-model".into()), models: vec![CatalogModel {
+        model: "only-model".into(), display_name: "Only model".into(), reasoning_efforts: vec!["high".into()], default_reasoning_effort: Some("high".into()), context_window: Some(10000), input_modalities: vec!["text".into()], is_default: true, hidden: false,
+    }] };
+    let model = catalog.select(&RoleModelPolicy::NativeDefault).unwrap();
+    exec(&mut state, Actor::System, Command::RecordModelCatalog { catalog }).unwrap();
+    let mut verified=TaskSelection::automatic(ModelProfile::Implementation);
+    verified.native_tool_denials=Some(vec![]);
+    verified.effective=Some(model.clone());
+    exec(&mut state,Actor::System,Command::RecordTaskSelection {task_id:"t".into(),selection:verified.clone(),pending:None}).unwrap();
+    let mut intent = verified;
+    intent.request_model(Some(model.model.clone()));
+    intent.requested_reasoning_effort = Some("high".into());
+    let pending = PendingTaskSelection { account, model, reason: "The user selected another model".into() };
+    let stamp = state.task_selection_stamp(&"t".into()).unwrap();
+    let command = |selection, pending| Command::RequestTaskSelection { task_id: "t".into(), expected_selection: stamp.clone(), selection, pending };
+    assert!(state.task_selection_action(&"t".into(), intent.clone(), pending.clone()).enabled);
+    let mut other_account=pending.clone();other_account.account.account=AccountId::parse("another-account").unwrap();
+    assert!(!state.task_selection_action(&"t".into(),intent.clone(),other_account.clone()).enabled);
+    assert_eq!(exec(&mut state,user(),command(intent.clone(),other_account)).unwrap_err().code,"invalid_input");
+    let mut other_provider=pending.clone();other_provider.account.provider=Provider::Claude;other_provider.model.model.provider=Provider::Claude;
+    assert!(!state.task_selection_action(&"t".into(),intent.clone(),other_provider.clone()).enabled);
+    assert_eq!(exec(&mut state,user(),command(intent.clone(),other_provider)).unwrap_err().code,"invalid_input");
+    let mut new_pin=intent.clone();new_pin.account=Some(pending.account.clone());
+    assert!(!state.task_selection_action(&"t".into(),new_pin,pending.clone()).enabled,"active editing cannot create an account pin");
+    let mut new_grant=intent.clone();new_grant.paid_account_grant=Some(pending.account.clone());
+    assert!(!state.task_selection_action(&"t".into(),new_grant,pending.clone()).enabled,"active editing cannot create payment consent");
+    let mut changed_effort=pending.clone();changed_effort.model.reasoning_effort=None;
+    assert!(!state.task_selection_action(&"t".into(),intent.clone(),changed_effort).enabled,"active effort stays fixed because the verified native control only changes model");
+    let mut unknown=state.clone();
+    unknown.tasks.get_mut(&TaskId::from("t")).unwrap().selection.as_mut().unwrap().native_tool_denials=None;
+    let mut unknown_intent=intent.clone();unknown_intent.native_tool_denials=None;
+    assert!(!unknown.task_selection_action(&"t".into(),unknown_intent,pending.clone()).enabled,"Unknown native restrictions cannot silently permit Codex");
+    let mut denied=state.clone();
+    denied.tasks.get_mut(&TaskId::from("t")).unwrap().selection.as_mut().unwrap().native_tool_denials=Some(vec!["Write".into()]);
+    let mut denied_intent=intent.clone();denied_intent.native_tool_denials=Some(vec!["Write".into()]);
+    let denied_stamp=denied.task_selection_stamp(&"t".into()).unwrap();
+    assert!(!denied.task_selection_action(&"t".into(),denied_intent.clone(),pending.clone()).enabled);
+    assert_eq!(exec(&mut denied,user(),Command::RequestTaskSelection {task_id:"t".into(),expected_selection:denied_stamp,selection:denied_intent,pending:pending.clone()}).unwrap_err().code,"unsupported_tool_policy");
+    let mut forged=intent.clone();forged.native_tool_denials=None;
+    assert!(!state.task_selection_action(&"t".into(),forged,pending.clone()).enabled,"A user selection cannot erase the verified runtime fact");
+
+    let mut substituted = intent.clone();
+    substituted.requested = Some(ModelKey { provider: Provider::Claude, model: "earlier-user-choice".into() });
+    substituted.requested_reasoning_effort = Some("earlier-effort".into());
+    substituted.allow_model_substitution = true;
+    assert!(state.task_selection_action(&"t".into(), substituted.clone(), pending.clone()).enabled, "authorized substitution keeps the original model and effort intent");
+    substituted.allow_model_substitution = false;
+    assert!(!state.task_selection_action(&"t".into(), substituted, pending.clone()).enabled);
+    let mut progress_only = state.clone();
+    progress_only.revision += 1;
+    progress_only.tasks.get_mut(&TaskId::from("t")).unwrap().revision += 1;
+    assert_eq!(progress_only.task_selection_stamp(&"t".into()).as_deref(), Some(stamp.as_str()));
+    let mut changed_epoch = state.clone();
+    changed_epoch.data_epoch = "a-different-data-epoch".into();
+    assert_ne!(changed_epoch.task_selection_stamp(&"t".into()), Some(stamp.clone()));
+
+    assert_eq!(exec(&mut state, agent(), command(intent.clone(), pending.clone())).unwrap_err().code, "forbidden");
+    let mut stale = pending.clone();
+    stale.model.catalog_revision = "old-catalog".into();
+    assert!(!state.task_selection_action(&"t".into(), intent.clone(), stale.clone()).enabled);
+    assert_eq!(exec(&mut state, user(), command(intent.clone(), stale)).unwrap_err().code, "model_unavailable");
+    let mut forged = intent.clone();
+    forged.effective = None;
+    assert_eq!(exec(&mut state, user(), command(forged, pending.clone())).unwrap_err().code, "invalid_input");
+    exec(&mut state, user(), command(intent.clone(), pending.clone())).unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].selection.as_ref().unwrap().effective.as_ref(),Some(&pending.model));
+    assert_eq!(state.tasks[&TaskId::from("t")].pending_selection.as_ref(), Some(&pending));
+    let mut cancelled=state.clone();let original_selection=cancelled.tasks[&TaskId::from("t")].selection.clone();
+    exec(&mut cancelled,user(),Command::CancelTask {task_id:"t".into()}).unwrap();
+    assert!(cancelled.tasks[&TaskId::from("t")].pending_selection.is_none(),"a model change cannot remain pending after cancellation starts");
+    assert_eq!(cancelled.tasks[&TaskId::from("t")].selection,original_selection,"cancellation preserves requested model, account and grant provenance");
+    assert!(!state.task_selection_action(&"t".into(), intent.clone(), pending.clone()).enabled);
+    assert_eq!(exec(&mut state, user(), command(intent, pending)).unwrap_err().code, "selection_pending");
+}
+
+#[test]
+fn native_account_is_chosen_at_first_admission_and_cannot_change_after_release(){
+    use crate::accounts::{AccountId,AccountKey,Provider};
+    use crate::model_selection::{TaskSelection,ModelProfile};
+    for (provider,typed) in [Provider::Claude,Provider::Codex].into_iter().flat_map(|provider|[false,true].map(|typed|(provider,typed))){
+        let mut state=fixture();let work=AccountId::parse("work").unwrap();
+        if typed {exec(&mut state,Actor::System,Command::RecordTaskSelection{task_id:"t".into(),selection:TaskSelection::automatic(ModelProfile::Implementation),pending:None}).unwrap();}
+        let admit=|provider,account,instance:&str|Command::AdmitExecution{provider,task_id:"t".into(),agent_id:"a".into(),conversation:"same-native-conversation".into(),instance:instance.into(),host:"alondra-host".into(),model:None,account,leaves_limit:None};
+        exec(&mut state,Actor::System,admit(provider,Some(work.clone()),"first")).unwrap();
+        assert_eq!(state.tasks[&TaskId::from("t")].account_key(),AccountKey::new(provider,work.clone()));
+        let other=if provider==Provider::Claude{Provider::Codex}else{Provider::Claude};
+        reject_unchanged(&mut state,Actor::System,admit(other,Some(work.clone()),"other-provider"),"active_account_immutable");
+        reject_unchanged(&mut state,Actor::System,admit(provider,None,"other-account"),"active_account_immutable");
+        exec(&mut state,Actor::System,Command::ReleaseTask{task_id:"t".into(),reason:"The physical old host has ended".into()}).unwrap();
+        assert!(state.lifecycle_of(&"t".into()).unwrap().execution().is_none());
+        reject_unchanged(&mut state,Actor::System,admit(other,Some(work.clone()),"after-release-provider"),"active_account_immutable");
+        reject_unchanged(&mut state,Actor::System,admit(provider,None,"after-release-account"),"active_account_immutable");
+        exec(&mut state,Actor::System,admit(provider,Some(work),"same-account")).unwrap();
+    }
 }

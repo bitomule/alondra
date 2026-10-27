@@ -845,7 +845,8 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live.api_watch, now);
     let returning = inner.saved.pauses.paused.iter().filter(|(session, paused)| match &paused.reason {
         Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
-        _ => paused.returns(usage_clear, domain.live.api_watch.answered_since(paused.since), now),
+        _ => paused.returns(usage_clear && (!matches!(paused.reason, Reason::Usage)
+            || crate::usage_pause::task_usage_ready(state, &paused.task, paused.since, now)), domain.live.api_watch.answered_since(paused.since), now),
     });
     for (session, paused) in returning {
         let key = Key::Resume(session.clone());

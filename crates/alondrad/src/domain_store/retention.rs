@@ -99,7 +99,7 @@ fn week_old_commands(tx: &Transaction<'_>, now: i64, limit: i64) -> rusqlite::Re
         .take_while(|row| row.as_ref().map_or(true, |row| row.4 < now - WINDOW_MS))
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let Some(last) = old.last().map(|row| row.0) else { return Ok(0) };
-    let mut forget = tx.prepare_cached("DELETE FROM semantic_receipts WHERE actor=?1 AND command_id=?2 AND data_epoch=?3")?;
+    let mut forget = tx.prepare_cached("DELETE FROM semantic_receipts WHERE actor=?1 AND command_id=?2 AND data_epoch=?3 AND NOT EXISTS(SELECT 1 FROM orchestrator_batch_effects e WHERE e.actor=?1 AND e.command_id=?2 AND e.data_epoch=?3 AND e.pinned=1)")?;
     for (_, actor, command_id, data_epoch, _) in &old {
         forget.execute(params![actor, command_id, data_epoch])?;
     }
@@ -119,7 +119,7 @@ fn undated_receipts(tx: &Transaction<'_>, now: i64, limit: i64) -> rusqlite::Res
 
 fn receipts(tx: &Transaction<'_>, now: i64, limit: i64) -> rusqlite::Result<usize> {
     tx.execute(
-        "DELETE FROM semantic_receipts WHERE rowid IN(SELECT rowid FROM semantic_receipts WHERE at<?1 LIMIT ?2)",
+        "DELETE FROM semantic_receipts WHERE rowid IN(SELECT r.rowid FROM semantic_receipts r WHERE at<?1 AND NOT EXISTS(SELECT 1 FROM orchestrator_batch_effects e WHERE e.actor=r.actor AND e.command_id=r.command_id AND e.data_epoch=r.data_epoch AND e.pinned=1) LIMIT ?2)",
         params![now - WINDOW_MS, limit],
     )
 }

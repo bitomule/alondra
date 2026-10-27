@@ -14,7 +14,7 @@ public struct MacRequestOptionsSheet: View {
     public var body: some View {
         NavigationStack {
             Form {
-                ForEach(store.fields, id: \.id) { field in
+                ForEach(store.state.visibleFields, id: \.id) { field in
                     control(field)
                 }
             }
@@ -35,12 +35,20 @@ public struct MacRequestOptionsSheet: View {
     @ViewBuilder private func control(_ field: Field) -> some View {
         switch field.kind {
         case .choice(let items):
-            Picker(selection: Binding(get: { store.state.selected(field.id) }, set: { store.send(.choose(field.id, $0)) })) {
-                ForEach(items, id: \.id) { item in Text(verbatim: item.label).tag(item.id) }
-            } label: {
-                labelled(field, description: items.first { $0.id == store.state.selected(field.id) }?.description)
+            if ["model", "reasoning_effort"].contains(field.id) || items.contains(where: { $0.group != nil || $0.disabledReason != nil || $0.availableWhen != nil }) {
+                NavigationLink {
+                    RequestChoicePicker(store: store, fieldID: field.id)
+                } label: {
+                    LabeledContent { Text(verbatim: store.state.selectedLabel(field.id)) } label: { labelled(field, description: items.first { $0.id == store.state.selected(field.id) }?.description) }
+                }
+            } else {
+                Picker(selection: Binding(get: { store.state.selected(field.id) }, set: { store.send(.choose(field.id, $0)) })) {
+                    ForEach(store.state.choicesIncludingSelection(field.id), id: \.id) { item in Text(verbatim: item.label).tag(item.id).disabled(!store.state.isAvailable(item)) }
+                } label: {
+                    labelled(field, description: items.first { $0.id == store.state.selected(field.id) }?.description)
+                }
+                .pickerStyle(.menu)
             }
-            .pickerStyle(.menu)
         case .toggle:
             Toggle(isOn: Binding(get: { store.state.isOn(field.id) }, set: { store.send(.toggle(field.id, $0)) })) {
                 labelled(field, description: nil)

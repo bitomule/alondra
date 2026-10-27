@@ -36,6 +36,15 @@ struct ScheduleDraft {
 
 fn enabled_default() -> bool { true }
 
+pub(crate) fn validate_orchestrator_options(body: Option<&Value>) -> Result<(), d::DomainError> {
+    if let Some(account) = body.and_then(|body| body.get("options")).and_then(|options| options.get("account"))
+        && account.as_str() != Some("auto")
+    {
+        return Err(d::DomainError::new("forbidden", "An orchestrator-created schedule uses Automatic accounts; a user may choose an account in Schedules"));
+    }
+    Ok(())
+}
+
 fn error(code: &str, message: &str) -> Value {
     let status = match code {
         "forbidden" => 403,
@@ -141,13 +150,17 @@ fn old_frequency(frequency: d::ScheduleFrequency) -> crate::schedules::Frequency
 }
 
 impl ScheduleDraft {
-    fn materialize(self, home: &Path, schedule_id: d::ScheduleId, revision: i64) -> Result<d::Schedule, String> {
-        let file = match std::fs::read_to_string(options::path_in(home)) {
-            Ok(contents) => OptionsFile::parse(&contents)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => OptionsFile::default(),
-            Err(error) => return Err(error.to_string()),
-        };
-        file.resolve(self.project.as_deref(), &self.options)?;
+    fn materialize(mut self, domain: &DomainRuntime, home: &Path, schedule_id: d::ScheduleId, revision: i64, verified_user: bool) -> Result<d::Schedule, String> {
+        let file = crate::domain_schedule_runner::options_at(home).map_err(|error| error.to_string())?;
+        let resolved = file.resolve(self.project.as_deref(), &self.options)?;
+        crate::domain_orchestrator_tools::validate_request_selection(domain, &resolved).map_err(|error| error.message)?;
+        crate::domain_orchestrator_tools::validate_native_requirements(resolved.selection.as_ref(), &self.disallowed_tools).map_err(|error| error.message)?;
+        let explicit_account = matches!(self.options.get("account"), Some(Choice::Value(account)) if account != "auto");
+        let selected = explicit_account.then(|| resolved.account_key()).flatten();
+        if let Some(account) = &selected { self.options.insert("account".into(), Choice::Value(account.wire_id())); }
+        let paid_account_grant = selected.filter(|key| verified_user && (
+            file.accounts.find(key.provider, key.account.as_str()).is_some_and(|account| account.billing == alondra_core::accounts::AccountBilling::PayPerUse)
+            || domain.read().state().accounts.iter().any(|account| account.provider == key.provider && account.id == key.account && account.billing == alondra_core::accounts::AccountBilling::PayPerUse)));
         let root = file.projects_root(&crate::options::user_home());
         if let Some(project) = self.project.as_deref() {
             if !options::projects(&root).iter().any(|(name, _)| name == project) {
@@ -167,6 +180,7 @@ impl ScheduleDraft {
             text: self.text.trim().into(),
             project: self.project,
             options: self.options,
+            paid_account_grant,
             disallowed_tools: self.disallowed_tools,
             frequency: self.frequency,
             hour: self.hour,
@@ -207,6 +221,24 @@ pub(crate) fn mutation(
     domain: &DomainRuntime, home: &Path,
     method: &str, path: &str, body: Option<&Value>,
     identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>,
+) -> Value {
+    mutation_with_source(domain, home, method, path, body, identity, authorize, true)
+}
+
+pub(crate) fn orchestrator_mutation(
+    domain: &DomainRuntime, home: &Path,
+    method: &str, path: &str, body: Option<&Value>,
+    identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>,
+) -> Value {
+    if let Err(refused) = validate_orchestrator_options(body) { return error(&refused.code, &refused.message); }
+    mutation_with_source(domain, home, method, path, body, identity, authorize, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mutation_with_source(
+    domain: &DomainRuntime, home: &Path,
+    method: &str, path: &str, body: Option<&Value>,
+    identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>, verified_user: bool,
 ) -> Value {
     if !approved_mutation_path(method, path, body.is_some()) {
         return error("invalid_input", "invalid Schedule operation");
@@ -281,7 +313,7 @@ pub(crate) fn mutation(
         };
         if method == "POST" {
             let revision = 1;
-            let schedule = match draft.materialize(home, crate::auth::random_hex(16).into(), revision) {
+            let schedule = match draft.materialize(domain, home, crate::auth::random_hex(16).into(), revision, verified_user) {
                 Ok(schedule) => schedule,
                 Err(message) => return error("invalid_input", &message),
             };
@@ -292,7 +324,7 @@ pub(crate) fn mutation(
                 Some(revision) if revision > 1 => revision,
                 _ => return error("invalid_input", "positive Schedule revision required"),
             };
-            let schedule = match draft.materialize(home, schedule_id.into(), revision) {
+            let schedule = match draft.materialize(domain, home, schedule_id.into(), revision, verified_user) {
                 Ok(schedule) => schedule,
                 Err(message) => return error("invalid_input", &message),
             };

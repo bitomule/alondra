@@ -103,10 +103,8 @@ impl DomainStore {
     }
 
     /// Records the plan of the task's next move; refused while another of its moves is open.
-    pub(crate) fn plan_account_move(&mut self, task: &TaskId, plan: &Plan) -> Result<i64> {
-        let number: i64 = self.conn.query_row("SELECT coalesce(max(number),0)+1 FROM account_move_steps WHERE task_id=?1", [&task.0], |r| r.get(0))?;
-        insert_step(&self.conn, task, number, Step::Planned, &serde_json::to_value(plan)?)?;
-        Ok(number)
+    pub(crate) fn plan_account_move(&mut self, _task: &TaskId, _plan: &Plan) -> Result<i64> {
+        anyhow::bail!("Accounts and providers are chosen when creating a node. An existing execution cannot move to another account")
     }
 
     /// No host runs the session the move takes any more.
@@ -196,8 +194,10 @@ mod tests {
     fn a_move_goes_only_forward_one_at_a_time_and_its_steps_are_never_changed_or_removed() {
         let (dir, mut store) = store();
         let task = TaskId::from("t-moved");
-        let first = store.plan_account_move(&task, &plan()).unwrap();
-        assert!(store.plan_account_move(&task, &plan()).is_err(), "one open move per task");
+        assert!(store.plan_account_move(&task,&plan()).unwrap_err().to_string().contains("creating a node"));
+        let first = 1;
+        insert_step(&store.conn,&task,first,Step::Planned,&serde_json::to_value(plan()).unwrap()).unwrap();
+        assert!(insert_step(&store.conn,&task,first+1,Step::Planned,&serde_json::to_value(plan()).unwrap()).is_err(), "historical one-open-move invariant is retained");
         let skipped = store.record_move_done(&task, first).unwrap_err();
         assert!(format!("{skipped:#}").contains("only after the one before it"), "{skipped:#}");
         store.record_move_host_stopped(&task, first).unwrap();
@@ -207,7 +207,8 @@ mod tests {
         }
         store.record_move_undone(&task, first, "the other account ran out too").unwrap();
         assert!(store.record_move_host_stopped(&task, first).is_err(), "an undone move takes no further step");
-        let second = store.plan_account_move(&task, &plan()).unwrap();
+        let second=first+1;
+        insert_step(&store.conn,&task,second,Step::Planned,&serde_json::to_value(plan()).unwrap()).unwrap();
         assert_eq!(second, first + 1, "an ended move lets the next one start");
         store.record_move_host_stopped(&task, second).unwrap();
         store.conn.execute(

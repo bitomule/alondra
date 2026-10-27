@@ -53,6 +53,7 @@ checks:
     with:
       targets:
         - //agent-host:sdk_test
+        - //agent-host:release_host
         - //agent-host:sea_test
         - //agent-host:frame_test
         - //agent-host:ownership_test
@@ -69,6 +70,9 @@ checks:
         - //agent-host:sdk_worker_test
         - //agent-host:controls_test
         - //agent-host:decisions_test
+        - //agent-host:codex_session_test
+        - //agent-host:codex_rollout_test
+        - //agent-host:model_probe_test
         - //agent-host:umask_test
         - //agent-host:probe_test
 

@@ -1534,7 +1534,7 @@ mod tests {
     /// carried them.
     #[test]
     fn a_closed_nodes_mark_and_an_old_requests_options_go_with_the_retention_window() {
-        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
+        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None, selection: None };
         let mut v = run(&[hook("s", "UserPromptSubmit")]);
         v.apply(2, 2_000, &Event::NodeRemoved { session_id: "s".into() });
         v.apply(3, 3_000, &Event::RequestSent { request_id: "r-3000".into(), options, text: None, attachments: vec![] });

@@ -1274,7 +1274,7 @@ fn a_banner_tops_the_screen_while_claude_usage_is_out_and_goes_with_it() {
     let first_row: String = shown.chars().take(120).collect();
     let rest: String = shown.chars().skip(120).collect();
     assert!(
-        first_row.contains("No margin on this Mac until 14:30 · every Claude account is at its limit"),
+        first_row.contains("Usage limit reached on this Mac until 14:30"),
         "{shown}"
     );
     assert!(rest.contains(" Alondra "), "the header sits under the banner: {shown}");

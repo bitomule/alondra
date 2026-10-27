@@ -10,14 +10,20 @@ pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
 #[cfg(test)]
 pub(crate) use owner::{Refuse, refuse_next};
 pub(crate) mod model_metrics;
+mod codex_metrics;
 pub(crate) mod metrics_fold;
 mod metrics;
 mod lifecycle_migration;
 mod account_move;
+pub(crate) mod provider_transition;
 pub(crate) use account_move::{AccountMove, Plan as AccountMovePlan, Step as AccountMoveStep};
 mod handover;
 pub(crate) use handover::{Handover, Plan as HandoverPlan, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
 mod repository;
+mod provider_accounts;
+pub(crate) mod provider_settings;
+mod task_context;
+pub(crate) mod batch_effects;
 pub(crate) mod retention;
 
 use alondra_core::domain::*;
@@ -287,6 +293,7 @@ pub(crate) enum Attached<'a> {
     None,
     /// What the user chose for the launch of the Request a `CreateRequest` makes.
     Request(&'a RequestLaunch),
+    Batch(&'a batch_effects::BatchCommand<'a>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -602,10 +609,14 @@ impl DomainStore {
         }
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(TASK_ACCOUNTS)?;
+        tx.execute_batch(provider_accounts::SCHEMA)?;
+        tx.execute_batch(provider_settings::SCHEMA)?;
+        tx.execute_batch(batch_effects::SCHEMA)?;
         tx.execute_batch(TASK_PROJECTS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;
+        model_metrics::add_routing_columns(&tx)?;
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(API_FAILURES)?;
         tx.execute_batch(ALLOWED_RULES)?;
@@ -644,6 +655,7 @@ impl DomainStore {
         tx.execute_batch(TASK_GRANTS)?;
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
         tx.execute_batch(account_move::ACCOUNT_MOVE_STEPS)?;
+        tx.execute_batch(provider_transition::SCHEMA)?;
         tx.execute_batch(EVENTS_VIEW)?;
         retention::upgrade(&tx)?;
         if version != 0 {
@@ -663,6 +675,7 @@ impl DomainStore {
         tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
         tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
         alondra_store::LifecycleTransaction::upgrade(&mut tx)?;
+        if version == SCHEMA_VERSION { alondra_store::LifecycleTransaction::verify(&tx)?; }
         if version == PREVIOUS_SCHEMA_VERSION {
             lifecycle_migration::migrate(&conn, tx)
                 .with_context(|| format!("the domain database at {} keeps schema {version}: moving its tasks into the lifecycle journal failed", path.display()))?;
@@ -959,27 +972,11 @@ impl BatchOwner {
     pub(crate) fn run(&self) -> &str {
         &self.run
     }
+    pub(crate) fn session(&self) -> &str { &self.session }
+    pub(crate) fn epoch(&self) -> &alondra_core::domain::DataEpoch { &self.epoch }
+    pub(crate) fn host_name(&self) -> &str { BATCH_HOST }
 }
 
-impl alondra_provider_claude::HostOwner for BatchOwner {
-    fn owner_generation(&self) -> u64 {
-        1
-    }
-    fn epoch(&self) -> &alondra_core::domain::DataEpoch {
-        &self.epoch
-    }
-    fn host(&self) -> &str {
-        BATCH_HOST
-    }
-    fn wire_execution(&self) -> alondra_provider_claude::Execution {
-        alondra_provider_claude::Execution::Orchestrator(alondra_provider_claude::OrchestratorExecution {
-            lane: alondra_provider_claude::OrchestratorLane::Orchestrator,
-            run_id: self.run.clone(),
-            conversation_id: self.session.clone(),
-            generation: 1,
-        })
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct DeliveryClaim {
@@ -1549,12 +1546,40 @@ impl DomainStore {
         session: &str,
         epoch: alondra_core::domain::DataEpoch,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
+        self.claim_selected_orchestrator_batch(ids, run, session, epoch, None)
+    }
+
+    pub(crate) fn claim_selected_orchestrator_batch(
+        &mut self, ids: &[i64], run: &str, session: &str,
+        epoch: alondra_core::domain::DataEpoch,
+        selection: Option<&crate::orchestrator_provider::BatchSelection>,
+    ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
+        if let Some(selection) = selection {
+            let state = self.load()?;
+            ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");
+            if let Some(source) = &selection.account_status {
+                ensure!(state.accounts.iter().find(|status| status.provider == selection.account.provider && status.id == selection.account.account).is_some_and(|current| current.sign_ins == source.sign_ins && current.email == source.email && current.billing == source.billing && current.native_identity == source.native_identity), "The native account identity changed before the batch claim");
+            }
+            let eligible = alondra_core::usage::eligible_account_keys(&state.account_order,&state.accounts,&state.account_usage,alondra_core::now_millis());
+            ensure!(eligible.contains(&selection.account), "The selected subscription account is no longer eligible before the batch claim");
+            let catalog = state.model_catalogs.iter().find(|catalog| catalog.account==selection.account && catalog.revision==selection.model.catalog_revision).context("The selected model catalog changed before the batch claim")?;
+            let current = catalog.resolve(&alondra_core::model_selection::ModelCandidate { model:selection.model.model.model.clone(),reasoning_effort:selection.model.reasoning_effort.clone() }).map_err(anyhow::Error::msg)?;
+            ensure!(current==selection.model,"The selected native model configuration changed before the batch claim");
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_schema(&tx)?;
         let mut claims = vec![];
         let mut changed = false;
+        let recorded = tx.execute("INSERT INTO orchestrator_batch_runs(run,session,data_epoch) VALUES(?1,?2,?3) ON CONFLICT(run) DO UPDATE SET session=excluded.session WHERE orchestrator_batch_runs.data_epoch=excluded.data_epoch AND (orchestrator_batch_runs.session IS NULL OR orchestrator_batch_runs.session=excluded.session)", params![run,session,epoch.0])?;
+        ensure!(recorded == 1, "the claimed batch has a different native session or epoch");
+        if let Some(selection) = selection {
+            let encoded = serde_json::to_string(selection)?;
+            let previous: Option<String> = tx.query_row("SELECT selection FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0))?;
+            ensure!(previous.as_ref().is_none_or(|previous| previous == &encoded), "A batch selection is immutable");
+            tx.execute("UPDATE orchestrator_batch_runs SET selection=?2 WHERE run=?1", params![run,encoded])?;
+        }
         for id in ids {
             let claimed = claim_in(&tx, *id, true, None)?;
             changed |= claimed.changed();
@@ -1568,7 +1593,7 @@ impl DomainStore {
         }
         let owner = BatchOwner::issued(run, session, epoch);
         tx.commit()?;
-        if changed {
+        if changed || recorded > 0 {
             self.note_side_write();
         }
         Ok((claims, owner))

@@ -17,6 +17,7 @@ public struct NewRequestFeature: Sendable {
     public struct State: Equatable {
         public var screen = ScreenFeature.State(key: .newRequest())
         public var values: [String: JSONValue] = [:]
+        public var requestedModelLabel: String?
         public var attachments = AttachmentFeature.State()
         public var pending = PendingRequests()
         public var outbox: IdentifiedArrayOf<OutgoingRequest.State> = []
@@ -45,6 +46,7 @@ public struct NewRequestFeature: Sendable {
         public var canSend: Bool {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && attachments.canPrepareSubmission && attachments.failedUploadMessage == nil
+                && selectionUnavailableReason == nil
         }
 
         public var optionFields: [Field] {
@@ -57,12 +59,34 @@ public struct NewRequestFeature: Sendable {
             return choiceLabel("project", id: id)
         }
 
+        public var model: String? {
+            guard form?.fields.contains(where: { $0.id == "model" }) == true else { return nil }
+            let value: String
+            if case let .string(selected)? = values["model"] { value = selected } else { value = "auto" }
+            if let field = form?.fields.first(where: { $0.id == "model" }), case let .choice(items) = field.kind,
+               let item = items.first(where: { $0.id == value }) {
+                return item.group.map { "\($0) · \(item.label)" } ?? item.label
+            }
+            return requestedModelLabel ?? value
+        }
+
+        public var selectionUnavailableReason: String? {
+            guard form != nil else { return nil }
+            return NewRequestFeature.selectionUnavailable(fields: optionFields, values: values, actionID: form?.submit.id)
+        }
+
         /// The issue and the choices that differ from the defaults, one short phrase each.
         public var optionsSummary: [String] {
-            ["issue", "pr", "effort"].compactMap { id in
-                guard case .string(let value)? = values[id], !value.isEmpty else { return nil }
+            ["issue", "pr", "effort", "account", "reasoning_effort"].compactMap { id in
+                guard id != "effort" || optionFields.contains(where: { $0.id == "effort" }), case .string(let value)? = values[id], !value.isEmpty, !(["account", "reasoning_effort"].contains(id) && value == "auto") else { return nil }
                 return choiceLabel(id, id: value) ?? value
             }
+        }
+
+        public var legacyPresetNotice: String? {
+            guard optionFields.contains(where: { $0.id == "model" }), !optionFields.contains(where: { $0.id == "effort" }),
+                  case let .string(preset)? = values["effort"], !preset.isEmpty, preset != "auto" else { return nil }
+            return String(localized: "The previous effort preset does not choose a native model. Review Model and Reasoning effort.")
         }
 
         public var recent: [AlondraContract.Row] {
@@ -117,6 +141,8 @@ public struct NewRequestFeature: Sendable {
                 if let form = state.form {
                     for field in form.fields where state.values[field.id] == nil { state.values[field.id] = field.value }
                 }
+                let refreshedFields = state.optionFields
+                state.options?.refresh(fields: refreshedFields)
                 state.pending.reconcile(shown: state.recent, version: document.version)
                 let pending = state.pending
                 state.outbox.removeAll { pending[$0.id] == nil }
@@ -130,6 +156,7 @@ public struct NewRequestFeature: Sendable {
                 state.options = RequestOptionsFeature.State(fields: state.optionFields, values: state.values)
                 return .none
             case .options(.presented(.delegate(.set(let id, let value)))):
+                if id == "model" { state.requestedModelLabel = state.options?.selectedLabel("model") }
                 return Self.set(id, value, in: &state)
             case .send:
                 guard state.canSend else { return .none }
@@ -200,16 +227,23 @@ public struct NewRequestFeature: Sendable {
             state.pending.set(id, .waiting(.attachments))
             return .none
         }
-        guard let submit = state.form?.submit, let actionID = submit.id, let epoch = state.screen.document?.dataEpoch else {
-            state.pending.set(id, .waiting(.options))
-            return .none
+        let request: ActionRequest
+        if let original = outgoing.submission {
+            request = original
+        } else {
+            guard let submit = state.form?.submit, let actionID = submit.id, let epoch = state.screen.document?.dataEpoch else {
+                state.pending.set(id, .waiting(.options))
+                return .none
+            }
+            if let reason = Self.selectionUnavailable(fields: state.optionFields, values: outgoing.fields, actionID: actionID) {
+                state.pending.set(id, .failed(reason))
+                return .none
+            }
+            let ids = outgoing.attachments.storedIDs
+            request = ActionRequest(commandId: id, dataEpoch: epoch, client: state.client, lang: state.lang, actionId: actionID,
+                input: ActionInput(attachments: ids.isEmpty ? nil : ids, fields: outgoing.fields), resolvesCard: submit.resolvesCard)
+            state.outbox[id: id]?.submission = request
         }
-        let ids = outgoing.attachments.storedIDs
-        let request = ActionRequest(
-            commandId: id, dataEpoch: epoch, client: state.client, lang: state.lang, actionId: actionID,
-            input: ActionInput(attachments: ids.isEmpty ? nil : ids, fields: outgoing.fields),
-            resolvesCard: submit.resolvesCard
-        )
         state.pending.set(id, .sending)
         return .merge(
             .run { [viewsClient] send in
@@ -244,6 +278,21 @@ public struct NewRequestFeature: Sendable {
             moved.entries[index].progress = 0
         }
         return moved
+    }
+
+    private static func selectionUnavailable(fields: [Field], values: [String: JSONValue], actionID: String?) -> String? {
+            let explicit = ["model", "reasoning_effort"].contains { id in if case let .string(value)? = values[id] { return !value.isEmpty && value != "auto" }; return false }
+                || values["substitution_was_edited"] == .bool(true)
+                || { if case let .string(account)? = values["account"] { return account.contains("/") }; return false }()
+            if explicit && actionID?.hasPrefix("new_request_selection:") != true { return String(localized: "Unavailable in the current catalog") }
+            let options = RequestOptionsFeature.State(fields: fields, values: values)
+            for id in ["model", "account", "reasoning_effort"] {
+                let value = options.selected(id)
+                guard !value.isEmpty, value != "auto" else { continue }
+                guard let item = options.choices(id).first(where: { $0.id == value }) else { return String(localized: "Unavailable in the current catalog") }
+                if let reason = options.unavailableReason(item) { return reason }
+            }
+            return nil
     }
 
     private static func set(_ id: String, _ value: JSONValue, in state: inout State) -> Effect<Action> {

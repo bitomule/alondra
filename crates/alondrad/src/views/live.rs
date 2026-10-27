@@ -588,6 +588,10 @@ async fn gather_inner(
     }).collect();
     let keyed = gather_keyed(client, state, keys, issue_data).await;
     LiveSnapshot {
+        observed_at: (keys.iter().any(|key| key == "accounts" || key == "settings" || key.starts_with("account:"))
+            && state.accounts.iter().any(|account| state.account_usage.iter().any(|usage|
+                usage.provider == account.provider && usage.account == account.id && usage.measured_at().is_some())))
+            .then_some(now.div_euclid(60_000) * 60_000),
         closed_nodes: client.domain.live.closed_sessions(),
         closed_tasks: client.domain.live.closed_task_ids(),
         nodes,
@@ -1133,7 +1137,7 @@ mod cache_tests {
         for (id, kind) in [("launch", DecisionKind::Launch), ("relaunch", DecisionKind::Relaunch), ("send", DecisionKind::Send)] {
             domain.record_model_decision(&Decision { task_id: id.into(), request_id: "request".into(), agent_id: None,
                 at: now, kind, model: None, effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
-                reason: None, title: id.into() }).unwrap();
+                reason: None, title: id.into(), provider: None, tags: None }).unwrap();
         }
         domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();

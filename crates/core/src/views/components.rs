@@ -135,6 +135,8 @@ pub enum CheckState {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct View {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_configuration: Option<AccountConfigurationPresentation>,
     pub protocol: u32,
     pub data_epoch: String,
     pub view: String,
@@ -166,6 +168,8 @@ pub struct View {
 pub struct Service {
     pub version: String,
     pub views_protocol: ProtocolRange,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolRange {
@@ -398,7 +402,54 @@ pub struct Stamp {
     pub format: TimeFormat,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountConfigurationPresentation {
+    pub version: String,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountPresentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_catalog: Option<crate::model_selection::AccountModelCatalog>,
+    pub key: crate::accounts::AccountKey,
+    pub position: u32,
+    pub availability: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    pub active_nodes: u32,
+    pub freshness: Label,
+    #[serde(default)]
+    pub windows: Vec<AccountWindowPresentation>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountWindowPresentation {
+    pub kind: String,
+    pub label: String,
+    pub used_percent: u32,
+    pub measured_at: crate::Millis,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<crate::Millis>,
+    pub stale: bool,
+    pub exhausted: bool,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskModelPresentation {
+    pub requested: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Row {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountPresentation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<TaskModelPresentation>,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
@@ -674,11 +725,19 @@ pub enum LocalLink {
     /// shows it to finish on the Mac.
     AccountAdd {
         command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        argv: Option<Vec<String>>,
     },
     /// The client signs the account in on the Mac, as for `AccountAdd`, with `command` whole.
     AccountSignIn {
         account: String,
         command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        argv: Option<Vec<String>>,
     },
     /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
     #[serde(other, skip_serializing)]
@@ -686,6 +745,8 @@ pub enum LocalLink {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Form {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitution_was_edited: Option<bool>,
     pub id: String,
     pub fields: Vec<Field>,
     pub submit: Action,
@@ -730,6 +791,12 @@ pub enum FieldKind {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_when: Option<Condition>,
     pub id: String,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]

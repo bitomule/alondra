@@ -44,7 +44,7 @@ enum EnvelopeRequestPolicy {
     static func viewsChangeWait(_ path: String) -> Int? {
         guard path.hasPrefix("/changes?"), let components = URLComponents(string: path),
               let items = components.queryItems else { return nil }
-        let allowed: Set<String> = ["protocol", "client", "lang", "wait", "cursor", "views"]
+        let allowed: Set<String> = ["protocol", "client", "lang", "wait", "cursor", "views", "capabilities"]
         let names = items.map(\.name)
         guard Set(names).isSubset(of: allowed), Set(names).count == names.count,
               ["protocol", "client", "lang", "wait"].allSatisfy(names.contains),
@@ -53,6 +53,8 @@ enum EnvelopeRequestPolicy {
               ["en", "es"].contains(items.first(where: { $0.name == "lang" })?.value ?? ""),
               let wait = items.first(where: { $0.name == "wait" })?.value.flatMap(Int.init), (0...50).contains(wait)
         else { return nil }
+        if let capabilities = items.first(where: { $0.name == "capabilities" })?.value,
+           !APIRequest.validViewCapabilities(capabilities) { return nil }
         return wait
     }
 }

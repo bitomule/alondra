@@ -15,6 +15,31 @@ pub struct ContextEnv {
     pub config_dir: Option<String>,
 }
 
+pub(crate) struct CodexContext {
+    pub home: PathBuf,
+    pub path: String,
+    pub environment: BTreeMap<String, String>,
+}
+impl CodexContext {
+    pub(crate) fn from_job(job: &serde_json::Value) -> Result<Self> {
+        let vars = job.get("EnvironmentVariables").context("The service has no native environment")?;
+        let home = vars.get("HOME").and_then(serde_json::Value::as_str).context("The service has no HOME")?;
+        let path = vars.get("PATH").and_then(serde_json::Value::as_str).context("The service has no PATH")?;
+        let mut environment = BTreeMap::new();
+        if let Some(value) = vars.get("CODEX_HOME").and_then(serde_json::Value::as_str).filter(|value| !value.is_empty()) {
+            anyhow::ensure!(Path::new(value).is_absolute(), "The service CODEX_HOME must be absolute");
+            environment.insert("CODEX_HOME".into(), value.to_owned());
+        }
+        Ok(Self { home: home.into(), path: path.into(), environment })
+    }
+}
+pub(crate) fn installed_codex_context(user_home: &Path) -> Result<CodexContext> {
+    let config = alondra_core::config::Config::load().map_err(anyhow::Error::msg)?;
+    let job = crate::setup::read_plist(&user_home.join("Library/LaunchAgents").join(format!("{}.plist", config.service_label)))
+        .context("Cannot determine the service's Codex profile; run alondra doctor --fix before signing in")?;
+    CodexContext::from_job(&job)
+}
+
 pub fn daemon_path(home: &Path, bin: &Path) -> String {
     format!(
         "{}:{}/.local/bin:{}/.claude/local:{}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -442,4 +467,15 @@ fi
         assert_eq!(job(&[("CLAUDE_CONFIG_DIR", "/Users/ana/.claude-work"), ("CLAUDE_HOME", "/Users/ana/.claude-work")]), work);
         assert_eq!(job(&[("CLAUDE_HOME", "/Users/ana/.claude-work")]), work);
     }
+    #[test]
+    fn codex_login_uses_service_namespace_and_never_copies_secrets() {
+        let job = serde_json::json!({"EnvironmentVariables":{"HOME":"/service/user","PATH":"/service/bin","CODEX_HOME":"/service/codex","OPENAI_API_KEY":"secret","CLAUDE_CONFIG_DIR":"/wrong"}});
+        let context = CodexContext::from_job(&job).unwrap();
+        assert_eq!(context.home, PathBuf::from("/service/user")); assert_eq!(context.path, "/service/bin");
+        assert_eq!(context.environment, BTreeMap::from([("CODEX_HOME".into(), "/service/codex".into())]));
+        let default = CodexContext::from_job(&serde_json::json!({"EnvironmentVariables":{"HOME":"/service/user","PATH":"/service/bin"}})).unwrap();
+        assert!(default.environment.is_empty());
+        assert!(CodexContext::from_job(&serde_json::json!({"EnvironmentVariables":{"HOME":"/service/user","PATH":"/service/bin","CODEX_HOME":"relative"}})).is_err());
+    }
+
 }

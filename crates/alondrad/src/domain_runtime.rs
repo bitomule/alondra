@@ -24,6 +24,8 @@ pub struct DomainRuntime {
     snapshot: RwLock<Arc<ReadSnapshot>>,
     approval_home: PathBuf,
     authority: RuntimeMutex<Authority>,
+    operations_live: Mutex<std::collections::BTreeSet<(String,String)>>,
+    operations_changed: watch::Sender<u64>,
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub(crate) stored_reads: Arc<crate::service_files::StoredReads>,
@@ -52,6 +54,7 @@ pub struct DomainRuntime {
     pub(crate) handovers: crate::sdk_handover::Handovers,
     /// Each move of an SDK task to another account when its own reaches its usage limit.
     pub(crate) moves: crate::account_move::Moves,
+    pub(crate) selection_changes: crate::provider_transition::Transitions,
     /// What each SDK task's conversation measured, to compact it while it rests.
     pub(crate) contexts: crate::idle_compaction::Contexts,
     #[cfg(test)]
@@ -77,6 +80,8 @@ pub(crate) struct Retained {
     pub(crate) folded: usize,
 }
 
+pub(crate) mod batch_operations;
+
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
         &self,
@@ -95,6 +100,7 @@ impl DomainRuntime {
 
     pub(crate) fn open_at(home: &Path, database: &Path) -> Result<Self> {
         let mut store = DomainStore::open(database)?;
+        crate::domain_store::provider_settings::recover_store(&mut store, home)?;
         let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
         store.fill_task_projects(&options.projects_root(&crate::options::user_home()))?;
         let state = store.load()?;
@@ -115,6 +121,7 @@ impl DomainRuntime {
             snapshot: RwLock::new(Arc::new(ReadSnapshot::build(state))),
             approval_home: home.to_path_buf(),
             authority: RuntimeMutex::new(authority),
+            operations_live: Default::default(), operations_changed: watch::channel(0).0,
             changed,
             schedule_changed,
             stored_reads: Default::default(),
@@ -131,6 +138,7 @@ impl DomainRuntime {
             full_disk: Default::default(),
             handovers: Default::default(),
             moves: Default::default(),
+            selection_changes: Default::default(),
             contexts: Default::default(),
             #[cfg(test)]
             before_owner_publish: Default::default(),
@@ -350,9 +358,21 @@ impl DomainRuntime {
         scope: alondra_store::AuthorityScope,
         stage: impl FnOnce(&mut OwnerTransaction<'_>) -> Result<T, StoreError>,
     ) -> Result<(T, Vec<StagedOutcome>), StoreError> {
+        self.own_projected(scope, stage, |_| Ok(()))
+    }
+
+    pub(crate) fn own_projected<T>(
+        &self,
+        scope: alondra_store::AuthorityScope,
+        stage: impl FnOnce(&mut OwnerTransaction<'_>) -> Result<T, StoreError>,
+        project: impl FnOnce(&mut DomainStore) -> anyhow::Result<()>,
+    ) -> Result<(T, Vec<StagedOutcome>), StoreError> {
         let mut store = self.store.lock().expect("domain store poisoned");
         let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
         let (value, commit) = store.own(scope, stage)?;
+        if let Err(why) = project(&mut store) {
+            log!("The authority transaction committed; its recoverable settings projection needs repair before another settings read: {why:#}");
+        }
         #[cfg(test)]
         if let Some(hook) = self.before_owner_publish.lock().unwrap().as_mut() {
             hook();
@@ -415,6 +435,17 @@ impl DomainRuntime {
         let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
         *self.snapshot.write().expect("domain snapshot poisoned") = snapshot;
     }
+    pub(crate) fn publish_batch_report(&self, run: &str, cursor: u64, evidence: &[u8], report: &crate::domain_store::batch_effects::BatchReport) -> Result<(), StoreError> {
+        let mut store = self.store.lock().expect("domain store poisoned");
+        store.record_batch_report(run, cursor, evidence, report)?;
+        let committed = store.load()?;
+        self.publish(&committed);
+        if !Arc::ptr_eq(self.read().state(), &committed) {
+            return Err(StoreError::Storage(anyhow::anyhow!("The committed batch report has not been published")));
+        }
+        Ok(())
+    }
+
     /// After a test writes domain rows straight to SQL, or through another runtime on the
     /// same file: the daemon itself only changes the domain by committing commands.
     #[cfg(test)]
@@ -496,6 +527,7 @@ impl DomainRuntime {
     pub fn bind_orchestrator(&self, execution_id: &str) -> Result<Capability, StoreError> {
         let mut authority = self.authority.lock().expect("domain authority poisoned");
         let state = self.state()?;
+        self.store.lock().expect("domain store poisoned").bind_batch_effects(execution_id, &state.data_epoch)?;
         authority.revoke_execution(execution_id);
         let capability = authority
             .issue(Principal::Orchestrator {
@@ -550,14 +582,84 @@ impl DomainRuntime {
         Ok(principal)
     }
 
+    pub(crate) fn request_plan_mode(&self, bearer: &str, task: &TaskId, operation: &str) -> Result<CommandOutcome,StoreError> {
+        if operation.is_empty() || operation.len() > 96 || !operation.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(DomainError::new("invalid_input","A bounded native operation identity is required").into());
+        }
+        let authority = self.authority.lock().expect("domain authority poisoned");
+        let epoch = self.read().state().data_epoch.clone();
+        let principal = authority.resolve(&epoch.0,bearer).map_err(|_| DomainError::new("forbidden","A current task capability is required"))?;
+        let Principal::Agent { session_id,task_binding,provider_agent_id } = principal else { return Err(DomainError::new("forbidden","Only the task's own node requests plan mode").into()) };
+        if provider_agent_id.is_some() || task_binding.as_deref().is_some_and(|bound| bound != task.0) {
+            return Err(DomainError::new("not_assigned","The node is bound to another execution").into());
+        }
+        let scope = alondra_store::AuthorityScope::new(epoch.clone())?;
+        let (outcome,_) = self.own(scope,|owner| {
+            let state = owner.state();
+            if state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).map(|node| node.0.as_str()) != Some(session_id.as_str()) {
+                return Err(DomainError::new("not_assigned","Only the current assigned node requests plan mode").into());
+            }
+            let before_revision = state.revision;
+            let already_requested = state.lifecycle_journal.get(task).and_then(|journal| journal.iter().rev().find_map(|record| match record {
+                LifecycleRecord::ControlRequested { operation: ControlRecord::SetPermissionMode { mode }, .. } => Some(*mode == PermissionModeRecord::Plan),
+                LifecycleRecord::Admitted { .. } => Some(false),
+                _ => None,
+            })).unwrap_or(false);
+            let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION,data_epoch:epoch,
+                command_id:format!("plan-mode-{operation}").into(),expected_revision:0,
+                command:Command::SetPermissionMode { task_id:task.clone(),mode:PermissionModeRecord::Plan } };
+            let outcome = owner.stage_command(&Actor::System,&envelope,crate::domain_store::Attached::None)?.clone();
+            if !outcome.changed || (already_requested && outcome.revision > before_revision) { return Ok(outcome); }
+            let continuation = CommandEnvelope { protocol_version:PROTOCOL_VERSION,data_epoch:envelope.data_epoch.clone(),
+                command_id:format!("plan-mode-input-{operation}").into(),expected_revision:0,
+                command:Command::TellNode { task_id:task.clone(),text:"Alondra has enabled plan mode. Prepare the task plan for the user's approval before implementation. Preserve the current session and completed work.".into() } };
+            owner.stage_command(&Actor::System,&continuation,crate::domain_store::Attached::None).cloned()
+        })?;
+        Ok(outcome)
+    }
+
     /// Expose only the public protocol cursor to a daemon-authorized producer.
     /// Commands recheck the capability while holding the writer lock.
+    pub(crate) fn read_current_task_context(&self, bearer: &str, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> std::result::Result<alondra_store::ContextPage, DomainError> {
+        let authority = self.authority.lock().expect("domain authority poisoned");
+        let store = self.store.lock().expect("domain store poisoned");
+        let read = self.read();
+        let principal = authority.resolve(&read.state().data_epoch.0, bearer)
+            .map_err(|_| DomainError::new("forbidden", "A current node capability is required"))?;
+        let Principal::Agent { session_id, task_binding, .. } = principal else {
+            return Err(DomainError::new("forbidden", "Only a task's own node reads its portable conversation"));
+        };
+        if task_binding.as_deref().is_some_and(|binding| binding != task.0)
+            || read.index().task_of_node(&AgentId::from(session_id)) != Some(task)
+        { return Err(DomainError::new("not_assigned", "This conversation belongs to another task")); }
+        store.public_task_context(task, after, limit)
+            .map_err(|_| DomainError::new("storage_unavailable", "The retained task conversation could not be read"))
+    }
+
+    pub(crate) fn read_batch_outcomes(&self, bearer: &str, run: Option<&str>, list_runs: bool, after: &str, limit: usize) -> std::result::Result<serde_json::Value, DomainError> {
+        if run.is_some_and(|run|run.is_empty() || run.len()>128) || after.len()>if list_runs{128}else{2048} || !(1..=32).contains(&limit) || (list_runs && run.is_some()) {
+            return Err(DomainError::new("invalid_input","Invalid outcome page"));
+        }
+        let authority=self.authority.lock().expect("domain authority poisoned");
+        let store=self.store.lock().expect("domain store poisoned");
+        let read=self.read();
+        let principal=authority.resolve(&read.state().data_epoch.0,bearer).map_err(|_|DomainError::new("forbidden","The current orchestrator is required"))?;
+        let Principal::Orchestrator{generation,execution_id}=principal else{return Err(DomainError::new("forbidden","The current orchestrator is required"))};
+        if generation!=read.state().orchestrator_generation{return Err(DomainError::new("stale_generation","The orchestrator generation changed"));}
+        let epoch=&read.state().data_epoch;
+        let result=if list_runs{store.batch_run_manifest(epoch,after,limit)}else{store.batch_outcomes(run.unwrap_or(&execution_id),epoch,after,limit)};
+        result.map_err(|error|DomainError::new("outcome_unavailable",format!("{error:#}")))
+    }
+
     pub fn resolve_bearer(&self, bearer: &str) -> Result<Principal, StoreError> {
         let authority = self.authority.lock().expect("domain authority poisoned");
         let state = self.state()?;
-        authority
-            .resolve(&state.data_epoch.0, bearer)
-            .map_err(|message| DomainError::new("forbidden", message).into())
+        let principal = authority.resolve(&state.data_epoch.0,bearer).map_err(|message| DomainError::new("forbidden",message))?;
+        if let Principal::Orchestrator { generation, .. } = &principal
+            && *generation != state.orchestrator_generation {
+            return Err(DomainError::new("stale_generation","The orchestrator generation changed").into());
+        }
+        Ok(principal)
     }
 
     /// `authorize` rechecks mutable transport approval while holding the writer lock.
@@ -689,6 +791,14 @@ impl DomainRuntime {
         self.commit(&Actor::System, &envelope, None, None, true, || Ok(()))
     }
 
+    /// A fixture's synchronous actor step takes its revision on the writer lane, as an internal
+    /// producer does. Client tests use `execute_with` to exercise their optimistic revision.
+    #[cfg(test)]
+    pub(crate) fn execute_fixture(&self, actor: &Actor, envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
+        let envelope = CommandEnvelope { expected_revision: 0, ..envelope };
+        self.commit(actor, &envelope, None, None, true, || Ok(()))
+    }
+
     fn commit(
         &self,
         actor: &Actor,
@@ -753,7 +863,7 @@ impl DomainRuntime {
             return;
         }
         let Some(Scope::Task { task_id }) = state.interactions.get(interaction_id).map(|card| &card.scope) else { return };
-        crate::sdk_owner::retake(self, task_id.clone());
+        crate::sdk_owner::retake_manually(self, task_id.clone());
     }
 
     /// «Allow always», chosen on the card of a decision Claude asked for through the SDK and
@@ -822,7 +932,10 @@ impl DomainRuntime {
             Principal::Orchestrator { generation, .. } => Actor::Orchestrator { generation },
         };
         let prepared = crate::domain_content::prepare(&self.home, envelope)?;
-        let commit = store.execute_filling_revision(&actor, &prepared.envelope);
+        let commit = match &principal {
+            Principal::Orchestrator { execution_id, .. } => store.execute_from_batch(&actor, &prepared.envelope, execution_id),
+            _ => store.execute_filling_revision(&actor, &prepared.envelope),
+        };
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
@@ -919,6 +1032,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RevokeTaskGrant { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }
+        | Command::RecordTaskSelection { task_id, .. }
+        | Command::RequestTaskSelection { task_id, .. }
         | Command::SettlePlanReview { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }
         | Command::AskQuestion { scope, .. }
@@ -992,6 +1107,12 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ForceStopTurn { .. }
         | Command::CompactEndedTasks { .. }
         | Command::ClearCompleted { .. }
+        | Command::SetAccountOrder { .. }
+        | Command::ReplaceAccountConfiguration { .. }
+        | Command::RecordAccountConfiguration { .. }
+        | Command::RecordModelCatalog { .. }
+        | Command::RecordModelProfiles { .. }
+        | Command::SetModelProfile { .. }
         | Command::SetMergeMethod { .. } => None,
     }
 }

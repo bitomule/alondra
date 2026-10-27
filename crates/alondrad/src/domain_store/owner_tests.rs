@@ -150,7 +150,7 @@ impl ObservationNormalizer for Normalizer {
 
 /// The SDK host takes the task: the domain admits an execution of its own.
 fn admit(label: &str) -> Command {
-    Command::AdmitExecution {
+    Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude,
         task_id: task(),
         agent_id: "agent-1".into(),
         conversation: format!("conversation-{label}"),
@@ -875,7 +875,7 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     let state = store.load().unwrap();
-    let admit = Command::AdmitExecution { task_id: task.clone(), agent_id: node, conversation: id("conversation"), instance: id("instance"), host: "fixture-service".into(), model: None, account: None, leaves_limit: None };
+    let admit = Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: task.clone(), agent_id: node, conversation: id("conversation"), instance: id("instance"), host: "fixture-service".into(), model: None, account: None, leaves_limit: None };
     let (execution, _) = store
         .own(scope_of(&state), |owner| {
             owner.stage_command(&Actor::System, &envelope(&state, &id("admit"), admit), Attached::None)?;
@@ -1172,11 +1172,18 @@ fn what_a_node_reported_of_its_mcp_servers_outlives_a_reload_of_the_state_from_i
 fn a_usage_observation_is_recorded_for_the_account_of_the_binding_that_produced_it() {
     use alondra_core::usage::{Share, WindowKind};
     use alondra_provider_contract::{UsageReport, UsageWindow, UsageWindowKind};
-    let (fixture, store, execution) = running();
+    let native_binding=ProviderBinding::new("composite-binding".into(),"claude-agent-sdk".into(),"fixture-instance".into(),"fixture-config".into(),1,1,
+        BTreeSet::from([Capability::OfferInput]),"fixture-credential-reference".into(),1).unwrap();
+    let (fixture, store, execution) = running_with(&native_binding);
     let runtime = runtime(&fixture, store);
+    let state=runtime.read();
+    runtime.execute_as_system(envelope(state.state(),"native-account",Command::RecordAccounts {accounts:vec![alondra_core::accounts::AccountStatus {
+        provider:alondra_core::accounts::Provider::Claude,id:alondra_core::accounts::AccountId::parse("fixture-credential-reference").unwrap(),name:"Native account".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:Default::default(),sign_ins:0,
+    }],reserve:alondra_core::usage::default_reserve()})).unwrap();
+    drop(state);
     let observe = |cursor: u64, facts: Vec<Observation>| {
         let state = Arc::clone(runtime.read().state());
-        runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)).unwrap();
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&native_binding, 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)).unwrap();
     };
     let week = |used: u16, exhausted: bool| Observation::Usage(UsageReport {
         windows: vec![UsageWindow { kind: UsageWindowKind::Weekly, used, resets_at: Some(4_102_444_800_000), exhausted }], plan: None,
@@ -1193,4 +1200,59 @@ fn a_usage_observation_is_recorded_for_the_account_of_the_binding_that_produced_
     assert!(usage.window(&WindowKind::Weekly).unwrap().reading.exhausted, "the week ran out");
     assert_eq!(usage.day_start.map(|start| start.weekly), Some(Share::of(0.53)), "today still starts from its first reading");
     assert_eq!(usage.plan.as_deref(), Some("max"));
+}
+
+#[test]
+fn a_previous_native_credentials_generation_cannot_change_the_new_accounts_auth_or_quota(){
+    use alondra_core::accounts::{AccountId,AccountState,AccountStatus,Provider};
+    use alondra_core::usage::WindowKind;
+    use alondra_provider_contract::{ApiFailure,TurnOutcome,UsageReport,UsageWindow,UsageWindowKind};
+    let native=ProviderBinding::new("composite-binding".into(),"claude-agent-sdk".into(),"fixture-instance".into(),"fixture-config".into(),1,1,BTreeSet::from([Capability::OfferInput]),"default".into(),1).unwrap();
+    let (fixture,store,execution)=running_with(&native);let runtime=runtime(&fixture,store);
+    let publish=|email:&str,signed_in:bool,id:&str|{
+        let state=runtime.read();let account=AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Native default".into(),state:if signed_in{AccountState::SignedIn}else{AccountState::SignedOut},native_identity: None, email:Some(email.into()),plan:None,billing:Default::default(),sign_ins:0};
+        runtime.execute_as_system(envelope(state.state(),id,Command::RecordAccounts{accounts:vec![account],reserve:alondra_core::usage::default_reserve()})).unwrap();
+    };
+    publish("first@example.test",true,"source-native-account");
+    let input=runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();let turn=TurnId::new("native-first-turn").unwrap();
+    let observe=|cursor:u64,facts:Vec<Observation>|{let state=Arc::clone(runtime.read().state());runtime.own(scope_of(&state),|owner|owner.stage_observation(&native,1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap();};
+    observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()}]);
+    publish("first@example.test",false,"source-native-logout");publish("replacement@example.test",true,"replacement-native-login");publish("replacement@example.test",false,"replacement-native-logout");
+    assert!(crate::accounts::generation_provider(runtime.read().state(),&alondra_core::accounts::AccountKey::new(Provider::Claude,AccountId::default_account()))>native.credential_generation());
+    observe(2,vec![Observation::ModelAnswered,Observation::Usage(UsageReport{windows:vec![UsageWindow{kind:UsageWindowKind::Weekly,used:10_000,resets_at:None,exhausted:true}],plan:None}),Observation::TurnEnded{turn,outcome:TurnOutcome::ApiFailed(ApiFailure{error:"authentication_failed".into(),status:Some(401),resets_at:None})}]);
+    let state=runtime.read();assert_eq!(state.state().accounts[0].email.as_deref(),Some("replacement@example.test"));assert_eq!(state.state().accounts[0].state,AccountState::SignedOut);
+    assert!(!state.state().account_usage.iter().any(|usage|usage.provider==Provider::Claude && usage.account.is_default() && usage.window(&WindowKind::Weekly).is_some_and(|window|window.reading.exhausted)));
+    assert!(state.state().lifecycle_of(&task()).unwrap().turn().is_none(),"the previous task turn still commits");
+    assert_eq!(state.state().lifecycle_of(&task()).unwrap().cursor(),Some(3),"Available, TurnStarted and TurnEnded remain three distinct lifecycle facts");
+    let normalized:i64=runtime.store.lock().unwrap().conn.query_row("SELECT cursor FROM provider_normalization_checkpoints WHERE task_id=?1 AND generation=?2",rusqlite::params![TASK,i64::try_from(execution.generation()).unwrap()],|row|row.get(0)).unwrap();
+    assert_eq!(normalized,2,"the two raw observations still have their exact committed normalization checkpoint");
+}
+
+#[test]
+fn a_live_native_cell_continuation_is_one_durable_input_without_retiring_own_work() {
+    let (fixture,mut store,execution)=running();let input=pending_input(&mut store);let runtime=runtime(&fixture,store);let work=WorkId::new("owned-code-cell").unwrap();let turn=TurnId::new("cell-origin").unwrap();
+    let observe=|cursor,facts|{let state=runtime.state().unwrap();runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap().0};
+    observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()},Observation::WorkStarted{turn:turn.clone(),work:work.clone()}]);
+    observe(2,vec![Observation::TurnEnded{turn,outcome:alondra_provider_contract::TurnOutcome::Completed}]);
+    let state=runtime.state().unwrap();runtime.execute_as_system(envelope(&state,"already-queued",Command::TellNode{task_id:task(),text:"Preserve this existing input".into()})).unwrap();
+    let before=runtime.state().unwrap();let pending=before.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();
+    let before_runtime_cursor=before.lifecycle_of(&task()).unwrap().cursor();
+    let before_told=before.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_core::domain::LifecycleRecord::Told{..})).count();
+    let continuation=Observation::ContinuationRequested{work:work.clone(),activation:"process/root/origin/exec".into(),text:"Use functions.wait for the existing cell".into()};
+    assert_eq!(observe(3,vec![continuation.clone()]),ObservationAcceptance::Accepted);
+    let state=runtime.state().unwrap();let after=state.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();assert_eq!(&after[..pending.len()],pending.as_slice());assert_eq!(after.len(),pending.len()+1);
+    assert_eq!(state.lifecycle_of(&task()).unwrap().cursor(),before_runtime_cursor,"Tell queues a real input and domain event; it is not a new native runtime fact");
+    assert_eq!(state.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_core::domain::LifecycleRecord::Told{..})).count(),before_told+1,"the zero cursor delta cannot skip the actual durable Tell");
+    assert!(!state.lifecycle_journal[&task()].iter().any(|record|matches!(record,alondra_core::domain::LifecycleRecord::WorkEnded{work:ended,..} if ended==work.as_str())));
+    let before=counts(&observer(&fixture));assert_eq!(observe(3,vec![continuation]),ObservationAcceptance::Duplicate);assert_eq!(counts(&observer(&fixture)),before);
+    let told:i64=observer(&fixture).query_row("SELECT count(*) FROM command_audit WHERE command_id LIKE 'native-work-followup-%'",[],|row|row.get(0)).unwrap();assert_eq!(told,1);
+    let state=runtime.state().unwrap();let before=counts(&observer(&fixture));let error=runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,4),&Normalizer::Facts(vec![Observation::ContinuationRequested{work:WorkId::new("unknown-cell").unwrap(),activation:"unknown".into(),text:"Do not invent a follow-up".into()}]),no_home(),false));assert!(error.is_err());assert_eq!(counts(&observer(&fixture)),before,"an unowned cell cannot advance raw evidence/checkpoint or queue input");
+    let state=runtime.state().unwrap();let accepted=runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,4),&Normalizer::Facts(vec![Observation::ContinuationRequested{work:WorkId::new("unknown-cell").unwrap(),activation:"unknown".into(),text:"Do not invent a follow-up".into()}]),no_home(),true)).unwrap().0;assert_eq!(accepted,ObservationAcceptance::Accepted,"a late continuation is acknowledged with no input after explicit domain refusal");
+    let before_terminal=runtime.state().unwrap().lifecycle_of(&task()).unwrap().cursor().unwrap();
+    observe(5,vec![Observation::WorkEnded{work:work.clone(),continuation:alondra_foundation::ContinuationId::new("finished-cell").unwrap()}]);
+    assert_eq!(runtime.state().unwrap().lifecycle_of(&task()).unwrap().cursor(),Some(before_terminal+1),"positive native terminal evidence still advances the exact native cursor");
+    let late=Normalizer::Facts(vec![Observation::ContinuationRequested{work,activation:"late-original-cell".into(),text:"The finished cell needs no follow-up".into()}]);
+    let state=runtime.state().unwrap();let before=counts(&observer(&fixture));assert!(runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,6),&late,no_home(),false)).is_err());assert_eq!(counts(&observer(&fixture)),before);
+    let state=runtime.state().unwrap();assert_eq!(runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,6),&late,no_home(),true)).unwrap().0,ObservationAcceptance::Accepted);
+    drop(runtime);let reopened=DomainRuntime::open_at(&fixture.0,&fixture.path()).unwrap();let state=reopened.state().unwrap();let remaining=state.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();assert_eq!(remaining,after,"the real durable input queue survives restart without a second store");
 }

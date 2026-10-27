@@ -12,17 +12,17 @@ pub struct Loaded {
 pub fn load_in(home: &Path, last: &std::sync::Mutex<Option<OptionsFile>>) -> Loaded {
     let path = options::path_in(home);
     let mut last = last.lock().expect("options lock poisoned");
-    let parsed = match std::fs::read_to_string(&path) {
-        Ok(text) => OptionsFile::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(OptionsFile::default()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    let parsed = match crate::domain_store::provider_settings::read_options(home) {
+        Ok(Some(text)) => OptionsFile::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
+        Ok(None) => Ok(OptionsFile::fresh()),
+        Err(why) => Err(format!("{}: {why}", path.display())),
     };
     match parsed {
         Ok(file) => {
             *last = Some(file.clone());
             Loaded { file, error: None }
         }
-        Err(error) => Loaded { file: last.clone().unwrap_or_default(), error: Some(error) },
+        Err(error) => Loaded { file: last.clone().unwrap_or_else(OptionsFile::fresh), error: Some(error) },
     }
 }
 

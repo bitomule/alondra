@@ -82,6 +82,14 @@ public struct NewRequestView: View {
                 Button { store.send(.optionsTapped) } label: {
                     optionsLabel {
                         VStack(alignment: .leading, spacing: 2) {
+                            if let model = store.model {
+                                Label { Text(verbatim: model) } icon: { Image(systemName: "cpu") }
+                                    .accessibilityIdentifier("request.model")
+                            }
+                            if let notice = store.legacyPresetNotice { Text(verbatim: notice).font(.caption).foregroundStyle(.secondary) }
+                            if let reason = store.selectionUnavailableReason {
+                                Text(verbatim: reason).font(.caption).foregroundStyle(Palette.ember)
+                            }
                             if let project = store.project {
                                 Text(verbatim: project).font(.subheadline.weight(.semibold))
                             } else {

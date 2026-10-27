@@ -3,6 +3,7 @@
 mod test_support;
 
 pub mod accounts;
+pub mod codex_account;
 pub mod bonjour;
 pub mod home_lock;
 pub mod service_config;
@@ -24,6 +25,10 @@ pub mod close_problem;
 pub mod machine_incident;
 pub mod model;
 pub mod model_label;
+pub mod model_selection;
+pub mod model_sheets;
+pub mod model_table;
+pub mod selection_transition;
 pub mod claude_account;
 pub mod claude_code;
 pub mod node_guard;
@@ -42,6 +47,7 @@ pub mod startup;
 mod recorded;
 pub mod states;
 pub mod tasks;
+pub mod task_tags;
 pub mod metrics;
 pub mod update;
 pub mod upkeep;

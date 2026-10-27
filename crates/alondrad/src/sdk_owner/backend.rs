@@ -30,6 +30,10 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SdkBackend {
+    #[serde(default, skip_serializing_if = "is_claude")]
+    pub(crate) provider: alondra_core::accounts::Provider,
+    #[serde(skip)]
+    pub(crate) origin: Option<Box<SdkBackend>>,
     pub(crate) node: PathBuf,
     pub(crate) node_sha256: String,
     pub(crate) host: PathBuf,
@@ -85,6 +89,7 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
     ensure!(state_root.as_os_str().len() + EXECUTION_FOLDER <= SOCKET_PATH_LIMIT,
         "{} is too long a path for the Agent SDK host's socket: move ALONDRA_HOME to a shorter one", state_root.display());
     Ok(SdkBackend {
+        provider: alondra_core::accounts::Provider::Claude, origin: None,
         node: host.clone(), node_sha256: String::new(), host, host_sha256: String::new(),
         native: PathBuf::new(), native_sha256: String::new(),
         host_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
@@ -151,10 +156,15 @@ impl SdkBackend {
         let mut backend = self.clone();
         backend.host_sha256 = installed_digest(&backend.host)?;
         backend.node_sha256 = backend.host_sha256.clone();
-        backend.native = on_path(backend.native_environment.get("PATH").map(String::as_str).unwrap_or_default(), "claude")
-            .context("Claude Code (`claude`) is not on this daemon's PATH: install it, then run `alondra doctor --fix`")?;
+        backend.native = on_path(backend.native_environment.get("PATH").map(String::as_str).unwrap_or_default(), if backend.provider == alondra_core::accounts::Provider::Claude { "claude" } else { "codex" })
+            .with_context(|| if backend.provider == alondra_core::accounts::Provider::Claude {
+                "Claude Code (`claude`) is not on this daemon's PATH: install it, then run `alondra doctor --fix`"
+            } else { "Codex (`codex`) is not on this daemon's PATH: install it, then run `alondra doctor --fix`" })?;
         backend.native_sha256 = digest(&backend.native)?;
-        compatible(&backend.native, &backend.native_sha256)?;
+        match backend.provider {
+            alondra_core::accounts::Provider::Claude => { compatible(&backend.native, &backend.native_sha256)?; }
+            alondra_core::accounts::Provider::Codex => { compatible_codex(&backend.native, &backend.native_sha256)?; }
+        }
         Ok(backend)
     }
 }
@@ -303,6 +313,59 @@ mod tests {
         assert_eq!(first.configuration_digest(), load(&home, false, &user).unwrap().unwrap().configuration_digest(), "the same configuration, the same digest");
         std::fs::write(home.join(FILE), configuration(&home, serde_json::json!({"PATH": "/bin"})).to_string()).unwrap();
         assert_ne!(first.configuration_digest(), load(&home, false, &user).unwrap().unwrap().configuration_digest(), "another environment, another digest");
+    }
+
+    #[test]
+    fn codex_account_binding_rejects_symbolic_managed_ancestors_and_keeps_default_native_home(){
+        use alondra_core::accounts::{AccountKey,Provider,provider_folder};
+        let home=crate::test_support::Directory::new();std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join(FILE),configuration(&home,serde_json::json!({"HOME":home.to_str().unwrap()})).to_string()).unwrap();
+        let mut backend=load(&home,true,&home).unwrap().unwrap();backend.provider=Provider::Codex;
+        let account=AccountId::parse("work").unwrap();let folder=provider_folder(&home,&AccountKey::new(Provider::Codex,account.clone())).unwrap();std::fs::create_dir_all(&folder).unwrap();
+        assert_eq!(backend.for_account_provider(&home,Provider::Codex,&AccountId::default_account(),&[]).unwrap().native_environment,backend.native_environment);
+        assert_eq!(backend.for_account_provider(&home,Provider::Codex,&account,std::slice::from_ref(&account)).unwrap().native_environment["CODEX_HOME"],folder.display().to_string());
+        for managed in [folder.parent().unwrap().to_path_buf(),folder.parent().unwrap().parent().unwrap().to_path_buf()]{
+            let retained=home.join("retained-managed");std::fs::rename(&managed,&retained).unwrap();std::os::unix::fs::symlink(&retained,&managed).unwrap();
+            assert!(backend.for_account_provider(&home,Provider::Codex,&account,std::slice::from_ref(&account)).unwrap_err().to_string().contains("symlink"));
+            std::fs::remove_file(&managed).unwrap();std::fs::rename(&retained,&managed).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_selected_codex_backend_is_idempotent_and_returns_to_its_claude_launcher() {
+        use alondra_core::accounts::Provider;
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir(&home).unwrap();
+        let environment = serde_json::json!({"HOME": home.to_str().unwrap()});
+        let original = configuration(&home, environment.clone());
+        std::fs::write(home.join(FILE), original.to_string()).unwrap();
+        let source = load(&home, true, &home).unwrap().unwrap();
+        let mut codex = configuration(&home, environment);
+        let native = home.join("codex-native");
+        std::fs::write(&native, "must never execute during backend selection").unwrap();
+        codex["native"] = serde_json::json!(native);
+        codex["native_sha256"] = serde_json::json!(digest(&native).unwrap());
+        codex["state_root"] = serde_json::json!(home.join("codex"));
+        std::fs::write(home.join("codex-backend.json"), codex.to_string()).unwrap();
+        codex["native_environment"]["OPENAI_API_KEY"]=serde_json::json!("fixture-key-must-not-inherit");
+        codex["native_environment"]["CODEX_ACCESS_TOKEN"]=serde_json::json!("fixture-external-token-must-not-inherit");
+        codex["native_environment"]["OPENAI_IDENTITY_TOKEN_FILE"]=serde_json::json!("/fixture-only-token-source");
+        std::fs::write(home.join("codex-backend.json"),codex.to_string()).unwrap();
+        let selected = source.for_provider(Provider::Codex, &home).unwrap();
+        assert!(!selected.native_environment.contains_key("OPENAI_API_KEY"),"runtime and no-inference probe must use the same native file/OAuth authentication context");
+        assert!(!selected.native_environment.contains_key("CODEX_ACCESS_TOKEN"));assert!(!selected.native_environment.contains_key("OPENAI_IDENTITY_TOKEN_FILE"));
+        assert_eq!(selected.provider, Provider::Codex);
+        let mut contaminated=selected.clone();contaminated.native_environment.insert("OPENAI_API_KEY".into(),"fixture-key-must-not-inherit".into());
+        let again = contaminated.for_provider(Provider::Codex, &home).unwrap();
+        assert!(!again.native_environment.contains_key("OPENAI_API_KEY"));
+        assert_eq!(again.configuration_digest(), selected.configuration_digest());
+        assert_eq!(again.native, native);
+        let claude = selected.for_provider(Provider::Claude, &home).unwrap();
+        assert_eq!(claude.provider, Provider::Claude);
+        assert_eq!(claude.configuration_digest(), source.configuration_digest());
+        assert_eq!(claude.native, source.native);
+        assert_ne!(claude.native, selected.native);
+        assert!(serde_json::to_value(&source).unwrap().get("provider").is_none(), "legacy Claude configuration bytes do not acquire a provider field");
     }
 
     /// A Homebrew install: the keg with the daemon and its host, the `opt` link to it, and a
@@ -470,4 +533,89 @@ mod tests {
         let linked = backend.for_account(&home, &work, &registered).unwrap_err().to_string();
         assert!(linked.contains("not a folder Alondra made"), "{linked}");
     }
+}
+
+impl SdkBackend {
+    /// Selects a provider before checking its native executable. A Codex-only start never probes Claude.
+    pub(crate) fn for_provider(&self, provider: alondra_core::accounts::Provider, home: &Path) -> Result<Self> {
+        if self.provider == provider {
+            let mut selected=self.clone();
+            if provider==alondra_core::accounts::Provider::Codex {remove_codex_auth_environment(&mut selected.native_environment);}
+            return Ok(selected);
+        }
+        if let Some(origin) = &self.origin { return origin.for_provider(provider, home); }
+        ensure!(self.provider == alondra_core::accounts::Provider::Claude, "the selected backend has no original launcher for the requested provider");
+        let path = home.join("codex-backend.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let mut backend: Self = serde_json::from_slice(&bytes).context("reading the Codex backend")?;
+                let declared: serde_json::Value = serde_json::from_slice(&bytes)?;
+                ensure!(declared.get("provider").is_none() || backend.provider == provider, "the Codex backend declares another provider");
+                backend.provider = provider;
+                remove_codex_auth_environment(&mut backend.native_environment);
+                backend.origin = Some(Box::new(self.clone()));
+                if let Some(port) = self.native_environment.get("ALONDRA_PORT") { backend.native_environment.insert("ALONDRA_PORT".into(), port.clone()); }
+                for (file, expected) in [(&backend.node, &backend.node_sha256), (&backend.host, &backend.host_sha256), (&backend.native, &backend.native_sha256)] {
+                    ensure!(file.is_absolute() && digest(file)? == *expected, "the Codex backend artifact does not match its manifest");
+                }
+                ensure!(backend.state_root.is_absolute() && (1..=300).contains(&backend.io_timeout_seconds), "the Codex backend limits are invalid");
+                ensure!(backend.state_root.as_os_str().len() + EXECUTION_FOLDER <= SOCKET_PATH_LIMIT, "the Codex state root is too long for its Unix socket");
+                ensure!(backend.native_environment.get("HOME") == self.native_environment.get("HOME"), "the Codex backend must use this installation's native HOME");
+                return Ok(backend);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("reading the Codex backend"),
+        }
+        ensure!(self.installed_native, "a sandbox Codex execution requires an explicit codex-backend.json; it never uses the machine's Codex");
+        let host = self.host.parent().and_then(Path::parent).context("the installed runtime has no provider asset directory")?.join("codex/alondra-codex-host");
+        let sha256 = installed_digest(&host).context("the Codex host is missing: reinstall Alondra")?;
+        let mut native_environment = self.native_environment.clone();
+        remove_codex_auth_environment(&mut native_environment);
+        native_environment.retain(|key, _| key!="OPENAI_API_KEY" && !key.starts_with("CLAUDE") && (!key.starts_with("ALONDRA_") || key == "ALONDRA_PORT"));
+        let native = on_path(native_environment.get("PATH").map(String::as_str).unwrap_or_default(), "codex")
+            .context("Codex (`codex`) is not on this daemon's PATH: install Codex, then run `alondra doctor --fix`")?;
+        let native_sha256 = digest(&native)?;
+        compatible_codex(&native, &native_sha256)?;
+        let state_root = home.join("codex");
+        ensure!(state_root.as_os_str().len() + EXECUTION_FOLDER <= SOCKET_PATH_LIMIT, "the Codex state root is too long for its Unix socket");
+        Ok(Self {
+            provider, origin: Some(Box::new(self.clone())),
+            node: host.clone(), node_sha256: sha256.clone(), host, host_sha256: sha256,
+            native, native_sha256, host_environment: self.host_environment.clone(), native_environment,
+            confinement: self.confinement.clone(), state_root, io_timeout_seconds: self.io_timeout_seconds,
+            installed_native: true,
+        })
+    }
+
+    pub(crate) fn for_account_provider(&self, home: &Path, provider: alondra_core::accounts::Provider, account: &AccountId, registered: &[AccountId]) -> Result<Self> {
+        if provider == alondra_core::accounts::Provider::Claude { return self.for_account(home, account, registered); }
+        if account.is_default() { return Ok(self.clone()); }
+        ensure!(registered.contains(account), "the Codex account is not registered in options.toml");
+        let key = alondra_core::accounts::AccountKey::new(provider, account.clone());
+        let folder = alondra_core::accounts::provider_folder(home, &key).context("the managed provider account has no folder")?;
+        let mut ancestor = home.to_path_buf();
+        for component in folder.strip_prefix(home).context("the Codex account escaped its managed home")?.components() {
+            ensure!(matches!(component,std::path::Component::Normal(_)),"the Codex account path is not managed");
+            ancestor.push(component);
+            let metadata=std::fs::symlink_metadata(&ancestor).context("a managed Codex account directory is missing")?;
+            ensure!(metadata.is_dir() && !metadata.is_symlink(),"a managed Codex account directory is a symlink or is not owned by Alondra");
+        }
+        let mut backend = self.clone();
+        backend.native_environment.insert("CODEX_HOME".into(), folder.display().to_string());
+        Ok(backend)
+    }
+}
+
+fn is_claude(provider: &alondra_core::accounts::Provider) -> bool { *provider == alondra_core::accounts::Provider::Claude }
+fn compatible_codex(native: &Path, sha256: &str) -> Result<String> {
+    let key = format!("codex:{sha256}");
+    if let Some(known) = CHECKED.lock().expect("checked releases poisoned").as_ref().and_then(|known| known.get(&key).cloned()) { return Ok(known); }
+    let release = version_of(native)?;
+    ensure!(alondra_core::codex_account::supported_cli_version(&release), "Codex {} is not supported by this Alondra release; Codex 0.163.0 is required", release.trim());
+    CHECKED.lock().expect("checked releases poisoned").get_or_insert_default().insert(key, release.clone());
+    Ok(release)
+}
+
+fn remove_codex_auth_environment(environment:&mut std::collections::BTreeMap<String,String>){
+    for key in ["OPENAI_API_KEY","CODEX_API_KEY","CODEX_ACCESS_TOKEN","OPENAI_FEDERATION_RULE_ID","OPENAI_IDENTITY_TOKEN_FILE","OPENAI_WORKLOAD_IDENTITY_CONTEXT"]{environment.remove(key);}
 }

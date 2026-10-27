@@ -147,6 +147,7 @@ pub(crate) struct Reported {
     pub work: crate::node_work::NodeWork,
     /// What only the Agent SDK host's events say, for a node that runs through it.
     pub sdk: Option<crate::sdk_live::Readings>,
+    pub codex: Option<crate::codex_live::Readings>,
 }
 
 const LABEL_LIMIT: usize = 80;
@@ -390,10 +391,26 @@ impl Reports {
         steps
     }
 
+    pub(crate) fn apply_codex(&self, session_id: &str, message: &Value, now: Millis) {
+        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let session = sessions.entry(session_id.to_owned()).or_default();
+        session.last_event_at = Some(now);
+        crate::codex_live::observe(session, message, now);
+        drop(sessions);
+        self.changed.publish();
+    }
+
+    pub(crate) fn restore_codex_scope(&self,session_id:&str,scope:alondra_provider_codex::LiveScope,now:Millis){
+        let mut sessions=self.sessions.lock().expect("node reports poisoned");
+        crate::codex_live::restore_scope(sessions.entry(session_id.to_owned()).or_default(),scope,now);
+        drop(sessions);self.changed.publish();
+    }
+
     /// The node's Agent SDK host is gone, and with it everything it ran.
     pub(crate) fn sdk_ended(&self, session_id: &str, now: Millis) {
         if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
             crate::sdk_live::ended(session, now);
+            crate::codex_live::ended(session, now);
         }
         self.changed.publish();
     }

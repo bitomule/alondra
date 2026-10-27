@@ -667,3 +667,29 @@ fn a_thread_that_panicked_holding_the_gate_does_not_stop_it() {
     assert_eq!(ask(&domain, "t1", now), Ok(()));
     assert_eq!(domain.live.gate.live(&domain, now).unwrap().working, 1);
 }
+
+#[test]
+fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
+    use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, Provider};
+    use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
+    let (_home, domain) = world();
+    domain.live.gate.ignore_mac();
+    create(&domain, "t1");
+    start(&domain, "t1", 1_000);
+    let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 };
+    run(&domain, Actor::System, Command::RecordAccounts { accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve() });
+    let record = |provider, windows| crate::usage_probe::record_for_provider(&domain, &AccountKey::new(provider, AccountId::default_account()),
+        UsageReading { windows, plan: None, complete: true }, 1_000);
+    record(Provider::Claude, vec![WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: Some(9_000), exhausted: true }]);
+    record(Provider::Codex, vec![
+        WindowReading { kind: WindowKind::Other("codex:account:primary:300".into()), used: Share::of(0.2), resets_at: Some(9_000), exhausted: false },
+        WindowReading { kind: WindowKind::Other("codex:account:secondary:10080".into()), used: Share::of(0.2), resets_at: Some(9_000), exhausted: false },
+    ]);
+    domain.live.usage_pause.resume(2_000);
+    assert!(domain.live.gate.hold_back(&domain, "agent-t1", Reason::Usage, 2_000));
+    assert!(!domain.live.gate.snapshot(&domain, 2_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
+        "global Codex capacity cannot release this Claude account");
+    assert!(domain.live.gate.snapshot(&domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
+        "its own declared reset admits the same node");
+}

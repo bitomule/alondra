@@ -52,7 +52,20 @@ pub(crate) fn prepare_intent(
     file: &OptionsFile,
     projects_root: &Path,
 ) -> Result<ScheduleLaunchIntent, String> {
-    let resolved = file.resolve(definition.project.as_deref(), &definition.options)?;
+    let mut resolved = file.resolve(definition.project.as_deref(), &definition.options)?;
+    let pinned = resolved.account_key();
+    if resolved.selection.is_none() && pinned.is_some() {
+        let mut intent = alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation);
+        intent.account = pinned;
+        if let Some(model) = &resolved.flags.model {
+            intent.request_model(Some(alondra_core::model_selection::ModelKey { provider: alondra_core::accounts::Provider::Claude, model: model.clone() }));
+            intent.requested_reasoning_effort = resolved.flags.effort.clone();
+        }
+        resolved.selection = Some(intent);
+    }
+    if let Some(intent) = &mut resolved.selection {
+        intent.paid_account_grant = definition.paid_account_grant.clone().filter(|grant| Some(grant) == intent.account.as_ref());
+    }
     let cwd = match definition.project.as_deref() {
         Some(project) => {
             if !options::projects(projects_root)
@@ -94,12 +107,17 @@ pub(crate) fn producer_prompt(
     approach: alondra_core::options::Approach,
 ) -> String {
     let user = crate::domain_messages::user_name();
+    let planning = if resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude) {
+        format!("a plan goes through plan mode (`EnterPlanMode`, then `ExitPlanMode`, which {user} approves or sends back in Alondra), never a document or an `ask`")
+    } else {
+        "submit plans through the Alondra planning tools advertised for this execution and wait for the user approval; use only native planning tools available in this session".to_owned()
+    };
     let mut lines = vec![
         text.trim_end().to_owned(),
         String::new(),
         "## Your Alondra task".into(),
         String::new(),
-        format!("This work is Alondra task {task}; pass it as task_id to the Alondra tools. Your terminal does not reach {user}: only the Alondra tools do, and {user}'s answers are typed into this session. Use `ask` for a decision and end your turn after it; a plan goes through plan mode (`EnterPlanMode`, then `ExitPlanMode`, which {user} approves or sends back in Alondra), never a document or an `ask`. Use `request_action` for something {user} does outside Alondra, and `publish_information` for a finding {user} should read now. When you are done, deliver it with `present_result` and is_final true (the answer in body, files in attachments, a PR you registered or a document revision in targets) and end your turn: {user} accepts it in Alondra. A file or a final message left in this session is not a delivery."),
+        format!("This work is Alondra task {task}; pass it as task_id to the Alondra tools. Your terminal does not reach {user}: only the Alondra tools do, and {user}'s answers are typed into this session. Use `ask` for a decision and end your turn after it; {planning}. Use `request_action` for something {user} does outside Alondra, and `publish_information` for a finding {user} should read now. When you are done, deliver it with `present_result` and is_final true (the answer in body, files in attachments, a PR you registered or a document revision in targets) and end your turn: {user} accepts it in Alondra. A file or a final message left in this session is not a delivery."),
         String::new(),
         "## Choices for this work".into(),
         String::new(),
@@ -122,7 +140,7 @@ pub(crate) fn producer_prompt(
         lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
     }
     lines.push(String::new());
-    lines.extend(approach.how_to_work());
+    lines.extend(approach.how_to_work_for(if resolved.selection.is_some() { None } else { resolved.selected_provider() }));
     lines.join("\n")
 }
 
@@ -136,14 +154,31 @@ async fn launch_through_sdk(
     disallowed_tools: &[String],
     home: &Path,
 ) -> Result<String, String> {
-    let account = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
-        .ok_or_else(|| if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }.to_owned())?;
-    let profile = alondra_core::accounts::folder(home, &account);
-    let (workplace, plugin, resolved) = prepare_claimed(launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
+    let mut resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|why| why.to_string())?;
+    let account = if let Some(intent) = resolved.selection.clone() {
+        let decision = crate::accounts::select_for_launch_with_tools(domain, home, &intent, disallowed_tools, alondra_core::now_millis()).map_err(|why| why.message)?;
+        let mut intent = intent;
+        intent.effective = Some(decision.selection.clone());
+        resolved.flags.model = (decision.account.provider == alondra_core::accounts::Provider::Claude).then(|| decision.selection.model.model.clone());
+        resolved.flags.effort = decision.selection.reasoning_effort;
+        resolved.selection = Some(intent);
+        decision.account
+    } else {
+        let id = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
+            .ok_or_else(|| if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }.to_owned())?;
+        alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Claude, id)
+    };
+    let profile = alondra_core::accounts::provider_folder(home, &account);
+    let mut selected_launch = launch.clone();
+    selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| why.to_string())?;
+    let (workplace, plugin, resolved) = prepare_claimed(&selected_launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
     crate::domain_orchestrator_tools::own_worktree(domain, task, &workplace).await.map_err(|error| error.message)?;
+    let selected = resolved.selection.as_ref().and_then(|selection| selection.effective.as_ref());
     let options = crate::sdk_owner::LaunchOptions {
-        model: resolved.flags.model.clone(),
-        effort: resolved.flags.effort.clone(),
+        provider: account.provider,
+        selection: resolved.selection.clone(),
+        model: selected.map(|selection| selection.model.model.clone()).or_else(|| resolved.flags.model.clone()),
+        effort: selected.and_then(|selection| selection.reasoning_effort.clone()).or_else(|| resolved.flags.effort.clone()),
         disallowed_tools: disallowed_tools.to_vec(),
     };
     let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch {
@@ -154,7 +189,7 @@ async fn launch_through_sdk(
         plugin,
         options,
         model: resolved.launch_model(),
-        account,
+        account: account.account,
     })
     .await
     .map_err(|error| error.message)?;
@@ -179,8 +214,9 @@ async fn prepare_claimed(
             "schedule project directory does not exist".into(),
         ));
     }
+    let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
-    if let Some(repository) = crate::claude_trust::ensure_for(profile, Path::new(&launch.cwd), projects_root.as_deref()) {
+    if let Some(repository) = (resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude)).then(|| crate::claude_trust::ensure_for(profile, Path::new(&launch.cwd), projects_root.as_deref())).flatten() {
         return Err((
             StatusCode::CONFLICT,
             crate::claude_trust::instructions(&repository),
@@ -189,14 +225,12 @@ async fn prepare_claimed(
     let workplace = crate::launch_worktree::isolate(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), None, None)
         .await
         .map_err(|why| (StatusCode::CONFLICT, why))?;
-    let Some(plugin) = crate::plugins::node() else {
+    let Some(plugin) = crate::plugins::node_in(home) else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "Alondra's Claude plugin is unavailable".into(),
         ));
     };
-    let resolved: Resolved = serde_json::from_str(&launch.options_json)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     Ok((workplace, plugin, resolved))
 }
 
@@ -216,10 +250,10 @@ fn ordinary_conflict(error: &StoreError) -> bool {
 }
 
 pub(crate) fn options_at(home: &Path) -> Result<OptionsFile> {
-    match std::fs::read_to_string(options::path_in(home)) {
-        Ok(contents) => OptionsFile::parse(&contents).map_err(anyhow::Error::msg),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(OptionsFile::default()),
-        Err(error) => Err(error.into()),
+    match crate::domain_store::provider_settings::read_options(home) {
+        Ok(Some(contents)) => OptionsFile::parse(&contents).map_err(anyhow::Error::msg),
+        Ok(None) => Ok(OptionsFile::fresh()),
+        Err(error) => Err(anyhow::anyhow!(error)),
     }
 }
 
@@ -227,6 +261,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
     let request_id: RequestId = format!("r-{}", crate::auth::random_hex(16)).into();
     let request = Request::new(request_id.clone(), snapshot.text.clone());
     let task = Task {
+        provider: Default::default(), selection: None, pending_selection: None,
         id: format!("t-{}", crate::auth::random_hex(16)).into(),
         request_id,
         agent_id: None,
@@ -351,7 +386,16 @@ async fn dispatch_pending(
         }
     };
     let now = alondra_core::now_millis();
-    if crate::accounts::choose_for_launch(domain, home, now).is_none() || domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low() {
+    let resolved: Resolved = serde_json::from_str(&launch.intent.options_json)?;
+    let ready = if let Some(intent) = &resolved.selection {
+        match crate::accounts::select_for_launch_with_tools(domain, home, intent, &policy, now) {
+            Ok(_) => true,
+            Err(error) if error.code == "paid_authorization_required" || error.code == "unsupported_capability" => { fail_run(domain, run_id, error.message)?; return Ok(()); }
+            Err(_) => false,
+        }
+    } else { crate::accounts::choose_for_launch(domain, home, now).is_some() };
+    let paused = domain.live.usage_pause.current().is_some_and(|pause| pause.by_user || resolved.selection.is_none());
+    if !ready || paused || domain.live.machine_watch.disk_low() {
         return Ok(());
     }
     let waiting = crate::admission::Waiting {
@@ -762,6 +806,7 @@ mod tests {
     #[test]
     fn calendar_matches_legacy_for_manual_disabled_and_due_slots() {
         let mut schedule = Schedule {
+            paid_account_grant: None,
             id: "schedule-1".into(),
             title: "Review".into(),
             text: "Review project".into(),
@@ -795,6 +840,7 @@ mod tests {
     fn runner_waits_for_the_nearest_live_schedule_and_rebases_only_future_unclaimed_runs() {
         let mut state = DomainState::new("epoch");
         let mut daily = Schedule {
+            paid_account_grant: None,
             id: "daily".into(),
             title: "Daily".into(),
             text: "Review".into(),
@@ -881,6 +927,7 @@ mod tests {
                 &domain,
                 Command::CreateSchedule {
                     schedule: Schedule {
+                        paid_account_grant: None,
                         id: "schedule-1".into(),
                         title: "Review".into(),
                         text: "Review project".into(),
@@ -1034,6 +1081,7 @@ mod tests {
         let fixture = Fixture::new();
         let mut changes = fixture.domain.subscribe_schedules();
         let schedule = Schedule {
+            paid_account_grant: None,
             id: "schedule-2".into(),
             title: "Another review".into(),
             text: "Review".into(),

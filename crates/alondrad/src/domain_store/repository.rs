@@ -124,6 +124,12 @@ fn s(v: &Value) -> Result<&str> {
     v.as_str().context("missing relation ID")
 }
 
+fn schedule_row(schedule: &Schedule) -> Result<Map<String, Value>> {
+    let mut row = object(schedule)?;
+    strip(&mut row, &["paid_account_grant"]);
+    Ok(row)
+}
+
 /// Save schedule definitions before their runs so the run FK and claim-revision
 /// guard see the current definition. Callers own the transaction containing any
 /// Request/Task rows linked by a newly sent run.
@@ -131,7 +137,7 @@ fn s(v: &Value) -> Result<&str> {
 pub(super) fn save_schedule_state(c: &Connection, schedule: &ScheduleState) -> Result<()> {
     schedule.validate()?;
     for definition in schedule.schedules.values() {
-        upsert(c, "schedules", &["id"], object(definition)?)?;
+        upsert(c, "schedules", &["id"], schedule_row(definition)?)?;
     }
     for run in schedule.runs.values() {
         upsert(c, "schedule_runs", &["id"], object(run)?)?;
@@ -299,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account", "allowed", "project"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -662,7 +668,7 @@ fn save_document_review(c: &Connection, r: &DocumentReview, before: Option<&Docu
 }
 fn save_schedule_changes(c: &Connection, before: &ScheduleState, after: &ScheduleState) -> Result<()> {
     for (definition, _) in changed(&before.schedules, &after.schedules) {
-        upsert(c, "schedules", &["id"], object(definition)?)?;
+        upsert(c, "schedules", &["id"], schedule_row(definition)?)?;
     }
     for (run, prior) in changed(&before.runs, &after.runs) {
         upsert(c, "schedule_runs", &["id"], object(run)?)?;
@@ -927,6 +933,7 @@ pub(super) fn save_changes(
                 params![usage.provider.as_str(), usage.account.as_str(), serde_json::to_string(usage)?])?;
         }
     }
+    super::provider_accounts::save(c, before, after)?;
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
 }
@@ -1429,6 +1436,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         state.account_usage.push(serde_json::from_str(&row?)?);
     }
     drop(usage);
+    super::provider_accounts::load(c, &mut state)?;
     state.schedule = load_schedule_state(c)?;
     Ok(state)
 }

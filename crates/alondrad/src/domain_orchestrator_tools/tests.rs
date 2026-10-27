@@ -68,6 +68,7 @@ fn bare_world() -> Fixture {
 fn broken_backend(f: &Fixture) -> crate::sdk_owner::SdkBackend {
     let missing = f.root.join("missing");
     crate::sdk_owner::SdkBackend {
+        provider: Default::default(), origin: None,
         node: missing.join("node"), node_sha256: "0".repeat(64),
         host: missing.join("host.cjs"), host_sha256: "0".repeat(64),
         native: missing.join("claude"), native_sha256: "0".repeat(64),
@@ -228,7 +229,7 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
     assert!(same(&folders[0], &f.project), "{folders:?}");
     assert_eq!((f.sdk().flag("--model").as_deref(), f.sdk().flag("--effort").as_deref()), (Some("opus"), Some("xhigh")),
         "an effort the user chose is binding: {:?}", f.sdk().args());
-    assert_eq!(f.sdk().options(&agent.0), LaunchOptions { model: Some("opus".into()), effort: Some("xhigh".into()), disallowed_tools: vec![] });
+    assert_eq!(f.sdk().options(&agent.0), LaunchOptions { model: Some("opus".into()), effort: Some("xhigh".into()), disallowed_tools: vec![] , ..Default::default() });
     let prompt = &prompts[0];
     for expected in ["Editor colours", "Make the editor readable", "Crash on launch", "shot.png"] {
         assert!(prompt.contains(expected), "{expected} missing from {prompt}");
@@ -265,16 +266,14 @@ async fn a_launch_records_on_the_task_the_model_it_runs() {
     assert_eq!(model(&orchestrated), Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::Orchestrator }));
 
     let closed = world();
-    command(&closed.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
-    command(&closed.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    closed.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": closed.project.to_str().unwrap()})).unwrap(), 1);
-    crate::node_revival::user_closed(&closed.domain, "agent-b").unwrap();
+    let old = sdk_node_on_the_task(&closed, &closed.project).await;
+    close_sdk_node(&closed, &old);
     relaunch(&closed.domain, &closed.home, &"t".into()).await.unwrap();
     assert_eq!(model(&closed), Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::Orchestrator }),
-        "an auto-effort task that never recorded a model restarts on the starting model");
+        "recovery retains the native model recorded by its original launch");
 
     let replaced = world();
-    connected_node_on_the_task(&replaced);
+    sdk_node_on_the_task(&replaced, &replaced.project).await;
     launch(&replaced.domain, &replaced.home, replace_body(), |_| None).await.unwrap();
     assert_eq!(model(&replaced).map(|m| m.model), Some("opus".into()), "the replacement's model is the task's");
 }
@@ -310,7 +309,7 @@ async fn without_choices_the_orchestrators_model_and_effort_apply_and_the_prompt
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "prompt": "Only the dark theme"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert_eq!((f.sdk().flag("--model").as_deref(), f.sdk().flag("--effort").as_deref()), (Some("sonnet"), Some("medium")), "{:?}", f.sdk().args());
-    assert_eq!(f.sdk().options(&agent_of(&answer).0), LaunchOptions { model: Some("sonnet".into()), effort: Some("medium".into()), disallowed_tools: vec![] });
+    assert_eq!(f.sdk().options(&agent_of(&answer).0), LaunchOptions { model: Some("sonnet".into()), effort: Some("medium".into()), disallowed_tools: vec![] , ..Default::default() });
     assert!(prompt.starts_with("Only the dark theme\n"), "{prompt}");
 }
 
@@ -341,7 +340,7 @@ async fn a_model_alias_from_options_toml_is_launched_as_what_it_stands_for() {
     f.launched(1).await;
     assert_eq!(f.sdk().flag("--model").as_deref(), Some("claude-opus-5-5[1m]"), "{:?}", f.sdk().args());
     assert_eq!(f.sdk().flag("--effort"), None, "no effort unless the orchestrator names one: {:?}", f.sdk().args());
-    assert_eq!(f.sdk().options(&agent_of(&answer).0), LaunchOptions { model: Some("claude-opus-5-5[1m]".into()), effort: None, disallowed_tools: vec![] });
+    assert_eq!(f.sdk().options(&agent_of(&answer).0), LaunchOptions { model: Some("claude-opus-5-5[1m]".into()), effort: None, disallowed_tools: vec![] , ..Default::default() });
 }
 
 #[tokio::test]
@@ -553,23 +552,23 @@ async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_on
 #[tokio::test]
 async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_closed_nodes_folder() {
     let f = world();
-    command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
-    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    f.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let refused = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap_err();
     assert_eq!(refused.code, "conflict", "a task whose node was not closed is not relaunched");
-    assert!(f.sdk().starts().is_empty());
+    assert_eq!(f.sdk().starts().len(), 1);
 
-    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
+    close_sdk_node(&f, &old);
     let state = f.domain.state().unwrap();
     assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].agent_id.clone()), (TaskState::NotStarted, None));
     assert_eq!(f.domain.live.closed_task_ids(), ["t"]);
 
     let answer = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap();
     let agent = agent_of(&answer);
-    let (folders, prompts) = f.launched(1).await;
-    assert!(same(&folders[0], &f.project), "the new node starts where the closed one worked: {folders:?}");
-    assert!(prompts[0].contains("Editor colours") && prompts[0].contains("Make the editor readable"), "the mission comes with it: {}", prompts[0]);
+    let (folders, prompts) = f.launched(2).await;
+    assert_resumed(&f, &original);
+    assert!(same(&folders[1], &f.project), "the new node starts where the closed one worked: {folders:?}");
+    assert!(prompts[1].contains("Editor colours") && prompts[1].contains("Make the editor readable"), "the mission comes with it: {}", prompts[1]);
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the closed node's name");
     assert_eq!(state.tasks[&"t".into()].agent_id, Some(agent));
@@ -669,12 +668,11 @@ async fn a_message_with_an_approach_is_recorded_and_a_plain_one_is_not() {
 #[tokio::test]
 async fn a_relaunch_is_recorded_as_one_and_needs_no_reason() {
     let f = world();
-    command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
-    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    f.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
-    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    close_sdk_node(&f, &old);
+    let before = decisions(&f.domain).len();
     relaunch(&f.domain, &f.home, &"t".into()).await.unwrap();
-    assert_eq!(decisions(&f.domain), [row("relaunch", Some("sonnet"), None, Some("solo"), None)]);
+    assert_eq!(&decisions(&f.domain)[before..], [row("relaunch", Some("sonnet"), None, Some("solo"), None)]);
 }
 
 #[tokio::test]
@@ -711,13 +709,66 @@ fn the_follow_up_context_is_empty_without_earlier_work_and_shortens_a_long_resul
     assert_eq!(clipped("short", 10, "[shortened]"), "short");
 }
 
+#[test]
+fn canonical_task_context_is_scoped_bounded_and_preserves_source_ids() {
+    let f = world();
+    let mut state = f.domain.state().unwrap().as_ref().clone();
+    let task = state.tasks[&TaskId::from("t")].clone();
+    state.requests.get_mut(&task.request_id).unwrap().body = "The requested feature".into();
+    state.requests.insert("unrelated".into(), alondra_core::domain::Request {
+        id: "unrelated".into(), body: "Private unrelated request".into(), ..state.requests[&task.request_id].clone()
+    });
+    let context = canonical_task_context(&state, &task);
+    assert!(context.complete);
+    assert!(context.text.contains("The requested feature"));
+    assert!(context.text.contains(&task.request_id.to_string()));
+    assert!(!context.text.contains("Private unrelated request"));
+    state.requests.get_mut(&task.request_id).unwrap().body = "界".repeat(CANONICAL_CONTEXT_LIMIT * 2);
+    let context = canonical_task_context(&state, &task);
+    assert!(context.text.chars().count() <= CANONICAL_CONTEXT_LIMIT);
+    assert!(!context.complete);
+    assert!(context.omitted_sources.contains(&format!("request:{}", task.request_id)));
+    assert!(!context.text.contains("界"));
+    assert!(context.text.contains(&task.id.to_string()));
+}
+
+#[test]
+fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_or_oversized_text() {
+    use alondra_core::domain::LifecycleRecord;
+    let f = world();
+    let mut state = f.domain.state().unwrap().as_ref().clone();
+    let task = state.tasks[&TaskId::from("t")].clone();
+    for record in [
+        LifecycleRecord::Told { input: "refinement".into(), text: Some("Only change the file-backed profile".into()) },
+        LifecycleRecord::Answered { card: "question".into(), input: "freeform".into(), text: Some("Other: preserve the native default credentials".into()) },
+        LifecycleRecord::HandedBack { delivery: "delivery".into(), input: "review".into(), text: Some("The native credentials still changed; repair that".into()) },
+    ] { state.lifecycle_journal.get_mut(&task.id).unwrap().push(record); }
+    state.lifecycle_journal.insert("unrelated-task".into(), vec![LifecycleRecord::Told { input: "private".into(), text: Some("Unrelated private input".into()) }]);
+    let context = canonical_task_context(&state, &task);
+    assert!(context.complete);
+    let first = context.text.find("Only change the file-backed profile").unwrap();
+    let second = context.text.find("Other: preserve the native default credentials").unwrap();
+    let third = context.text.find("The native credentials still changed; repair that").unwrap();
+    assert!(first < second && second < third);
+    assert!(!context.text.contains("Unrelated private input"));
+    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "lost".into(), text: None });
+    let context = canonical_task_context(&state, &task);
+    assert!(!context.complete);
+    assert!(context.omitted_sources.contains(&format!("task:{}:input:lost", task.id)));
+    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "oversized".into(), text: Some("界".repeat(CANONICAL_CONTEXT_LIMIT)) });
+    let context = canonical_task_context(&state, &task);
+    assert!(!context.complete);
+    assert!(context.omitted_sources.contains(&format!("task:{}:input:oversized", task.id)));
+    assert!(!context.text.contains("界"));
+}
+
 #[tokio::test]
 async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
     let f = world();
     let plan = crate::launch_plans::LaunchPlan {
         name: "app/editor".into(), cwd: f.project.to_str().unwrap().into(), mission: Some("Make the colours tokens".into()),
         model: Some("sonnet".into()), effort: None, approach: Some(alondra_core::options::Approach::Solo),
-        reason: Some("Colour tokens in one file".into()), role: None, project: None,
+        reason: Some("Colour tokens in one file".into()), role: None, tags: None, project: None,
     };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
@@ -727,6 +778,23 @@ async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
     assert_eq!(f.domain.state().unwrap().agents[&agent_of(&answer)].name, "app/editor");
     assert!(prompts[0].contains("Make the colours tokens"), "the plan's mission is the node's mission");
     assert_eq!(decisions(&f.domain), [row("launch", Some("sonnet"), None, Some("solo"), Some("Colour tokens in one file"))]);
+}
+
+#[tokio::test]
+async fn a_decision_keeps_the_provider_and_the_tags_of_the_plan_or_of_the_launch() {
+    let f = world();
+    let tags = serde_json::from_value(json!({"kind": "docs", "areas": ["ui"], "risks": ["user_visible"]})).unwrap();
+    let plan = crate::launch_plans::LaunchPlan { model: Some("sonnet".into()), reason: Some("Docs only".into()), tags: Some(tags),
+        ..crate::launch_plans::LaunchPlan::new("app/docs", f.project.to_str().unwrap()) };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    launch(&f.domain, &f.home, serde_json::from_value(json!({"task": "t"})).unwrap(), |_| None).await.unwrap();
+    let routing = f.domain.store.lock().unwrap().model_decision_routing().unwrap();
+    assert_eq!(routing, [(Some("claude".into()), Some("docs".into()), Some(r#"["ui"]"#.into()), Some(r#"["user_visible"]"#.into()))]);
+
+    let repeated: LaunchBody = serde_json::from_value(json!({"task": "t", "tags": {"kind": "fix", "risks": ["security", "security"]}})).unwrap();
+    let refused = launch(&f.domain, &f.home, repeated, |_| None).await.unwrap_err();
+    assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", "tags.risks repeats a risk"));
+    assert!(serde_json::from_value::<LaunchBody>(json!({"task": "t", "tags": {"kind": "chore"}})).is_err(), "a kind outside the list is refused");
 }
 
 #[tokio::test]
@@ -743,30 +811,93 @@ async fn a_launch_of_a_task_left_without_a_plan_needs_a_name_and_a_folder() {
 #[tokio::test]
 async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_new_node() {
     let f = world();
-    give(&f, "t", "agent-b");
-    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    command(&f.domain, Actor::System, Command::MoveNode { agent_id: "agent-b".into(), event: alondra_core::domain::NodeEvent::SessionLost, at: 0 });
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
+    f.domain.stop_sdk_host(&old).unwrap();
+    let (backend, runtime) = f.domain.sdk().unwrap();
+    crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
+    crate::node_revival::take_out(&f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into())).unwrap();
+    assert!(f.task_node().is_none(), "the confirmed exit releases the old assignment before recovery");
+    answer_ended_cards(&f);
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)));
-    assert!(f.domain.owns_sdk_host(&agent_of(&answer)), "the new node runs");
+    assert!(f.domain.owns_sdk_host(&agent_of(&answer)), "the recovered node runs");
+    f.launched(2).await;
+    assert_resumed(&f, &original);
 }
 
 #[tokio::test]
 async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over() {
     let f = world();
-    give(&f, "t", "agent-b");
+    let answer = crate::sdk_owner::launch(&f.domain, crate::sdk_owner::Launch {
+        task: "t".into(), name: "Instance B".into(), directory: f.project.to_str().unwrap().into(),
+        prompt: "consume-and-hold".into(), plugin: crate::plugins::node_in(&f.home).unwrap(),
+        options: LaunchOptions::default(), model: None,
+        account: alondra_core::accounts::AccountId::default_account(),
+    }).await.unwrap();
+    let old = agent_of(&answer);
+    let mut changed = f.domain.subscribe();
+    while !f.domain.state().unwrap().lifecycle_journal[&TaskId::from("t")].iter()
+        .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnStarted { .. })) {
+        changed.changed().await.unwrap();
+    }
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Result".into() }];
-    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
+    command(&f.domain, Actor::Agent { agent_id: old.clone() }, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
         interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true, nothing_to_review: false,
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets: targets(),
         body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });
-    command(&f.domain, Actor::System, Command::MoveNode { agent_id: "agent-b".into(), event: alondra_core::domain::NodeEvent::SessionLost, at: 0 });
-    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()) });
+    f.domain.stop_sdk_host(&old).unwrap();
+    let (backend, runtime) = f.domain.sdk().unwrap();
+    crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
+    command(&f.domain, Actor::System, Command::RecordNodeEnd {
+        task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some(old.clone()),
+    });
+    assert!(f.task_node().is_none(), "confirmed source exit releases the reviewed node while retaining its delivery and feedback");
+    answer_ended_cards(&f);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::NotStarted);
     launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
-    let prompt = f.prompt().await;
+    let prompt = f.launched(2).await.1[1].clone();
+    assert_resumed(&f, &original);
     assert!(prompt.contains("## Changes the user asked for on the result you take over\n\n- Use the new palette"), "{prompt}");
+}
+
+async fn sdk_node_on_the_task(f: &Fixture, directory: &Path) -> AgentId {
+    let answer = launch(&f.domain, &f.home, launch_body(f, json!({"model": "sonnet", "name": "Instance B", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap();
+    f.sdk().until_answered("t").await;
+    agent_of(&answer)
+}
+
+fn close_sdk_node(f: &Fixture, agent: &AgentId) {
+    f.domain.stop_sdk_host(agent).unwrap();
+    let (backend, runtime) = f.domain.sdk().unwrap();
+    crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
+    crate::node_revival::user_closed(&f.domain, &agent.0).unwrap();
+    answer_ended_cards(f);
+}
+
+fn answer_ended_cards(f: &Fixture) {
+    let state = f.domain.state().unwrap();
+    let cards: Vec<_> = state.interactions.values().filter(|card| {
+        card.scope == (alondra_core::domain::Scope::Task { task_id: "t".into() })
+            && state.open(card)
+            && matches!(&card.payload, alondra_core::domain::InteractionPayload::Question { options, .. }
+                if options.iter().any(|option| option.id == alondra_core::domain::CARRY_ON))
+    }).map(|card| card.id.clone()).collect();
+    for card in cards {
+        command(&f.domain, user(), Command::AnswerQuestion {
+            interaction_id: card.clone(), option_id: alondra_core::domain::CARRY_ON.into(),
+            inputs: Default::default(), attachments: vec![],
+        });
+        assert!(!f.domain.state().unwrap().open(&f.domain.state().unwrap().interactions[&card]), "the user answered the existing card");
+    }
+}
+
+fn assert_resumed(f: &Fixture, original: &str) {
+    let starts = f.sdk().starts();
+    let resumed = starts.iter().find(|start| start["resume"].as_str() == Some(original)).expect("the replacement resumes the original native session");
+    assert!(resumed["history"].as_u64().unwrap() > 0, "the native history is preserved: {starts:?}");
 }
 
 fn connected_node_on_the_task(f: &Fixture) -> u64 {
@@ -786,37 +917,37 @@ async fn the_replaced_node_is_never_revived_when_its_stop_drops_the_connection()
     let f = world();
     let connection = connected_node_on_the_task(&f);
     *f.sessions.drops_on_stop.lock().unwrap() = Some(connection);
-    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
     assert_eq!(*f.sessions.stopped.lock().unwrap(), ["agent-b"]);
     let agent_b = AgentId::from("agent-b");
     assert!(!crate::sdk_handover::moved(&f.domain, &agent_b), "the revival saw the stop and did not bring the old node back");
-
     crate::node_revival::revive(&f.domain, "agent-b", &REVIVAL).await;
-    assert!(!crate::sdk_handover::moved(&f.domain, &agent_b), "nor later, when the daemon reports every known session as lost");
-    assert_eq!(f.launched(1).await.0.len(), 1, "only the replacement started");
+    assert!(!crate::sdk_handover::moved(&f.domain, &agent_b), "nor later when the daemon reports every known session as lost");
+    assert!(f.sdk().starts().is_empty(), "stopping a legacy process does not invent a native session");
 }
 
 #[tokio::test]
 async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_the_new_model() {
     let f = world();
-    connected_node_on_the_task(&f);
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let taken = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "opus"})), |_| None).await.unwrap_err();
     assert!(taken.message.contains("already has a connected agent"), "without replace a live node keeps its task: {}", taken.message);
 
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "effort": "high", "prompt": "Finish the tokens"})).unwrap();
     let answer = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
     let agent = agent_of(&answer);
-    assert_eq!(*f.sessions.stopped.lock().unwrap(), ["agent-b"], "the old session is stopped");
-    let (folders, prompts) = f.launched(1).await;
-    assert!(same(&folders[0], &f.project), "the new node starts where the old one worked: {folders:?}");
+    assert!(!f.domain.owns_sdk_host(&old), "the old SDK host was stopped");
+    assert!(f.sessions.stopped.lock().unwrap().is_empty(), "native SDK recovery does not stop a legacy process");
+    let (folders, prompts) = f.launched(2).await;
+    assert_resumed(&f, &original);
+    assert!(same(&folders[1], &f.project), "the new node starts where the old one worked: {folders:?}");
     assert_eq!((f.sdk().flag("--model").as_deref(), f.sdk().flag("--effort").as_deref()), (Some("opus"), Some("high")), "{:?}", f.sdk().args());
-    assert!(prompts[0].starts_with("Finish the tokens"), "{}", prompts[0]);
+    assert!(prompts[1].starts_with("Finish the tokens"), "{}", prompts[1]);
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the old node's name");
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent));
-    assert!(!state.agents[&AgentId::from("agent-b")].phase.holds_slot(), "the old node is disconnected");
-    assert!(f.domain.live.is_closed("agent-b"), "and is not brought back");
+    assert!(!state.agents[&old].phase.holds_slot(), "the old node is disconnected");
     assert!(f.domain.live.closed_task_ids().is_empty());
 }
 
@@ -854,11 +985,13 @@ async fn a_replacement_works_in_a_worktree_of_a_trusted_repository() {
     let config = f.root.join(".claude.json");
     crate::claude_trust::use_config_for_test(&config);
     std::fs::write(&config, json!({"projects": {main.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
-    connected_node_on_the_task(&f);
+    sdk_node_on_the_task(&f, &linked).await;
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": linked.to_str().unwrap()})).unwrap();
     launch(&f.domain, &f.home, body, |_| None).await.unwrap();
-    let (folders, _) = f.launched(1).await;
-    assert!(same(&folders[0], &linked), "{folders:?}");
+    let (folders, _) = f.launched(2).await;
+    assert_resumed(&f, &original);
+    assert!(same(&folders[1], &linked), "{folders:?}");
 }
 
 #[tokio::test]
@@ -866,17 +999,14 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
     let f = world();
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
-    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    let refused = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
-    assert_eq!(refused.code, "replace_failed");
-    assert!(refused.message.contains("still shows agent-b running"), "the orchestrator gets the reason: {}", refused.message);
-    assert!(f.sdk().starts().is_empty(), "no second node is launched into the worktree");
+    let refused = stop_replaced(&f.domain, &"agent-b".into()).await.unwrap_err();
+    assert!(refused.contains("still shows agent-b running"), "the stop returns its actual reason: {refused}");
+    assert!(f.sdk().starts().is_empty(), "the stop component never starts a fresh session");
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")), "the old node keeps its task");
     assert_eq!(state.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_eq!(state.agents.len(), 1, "no new agent was registered");
     assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot() && !f.domain.live.is_closed("agent-b"));
-    assert!(!refused.message.contains("keeps its node"), "{}", refused.message);
 }
 
 fn release_reasons(f: &Fixture) -> Vec<String> {
@@ -895,15 +1025,15 @@ fn told_orchestrator(f: &Fixture, prefix: &str) -> Vec<String> {
 #[tokio::test]
 async fn a_replacement_inherits_only_a_worktree_alondra_owned() {
     let f = world();
-    connected_node_on_the_task(&f);
+    sdk_node_on_the_task(&f, &f.project).await;
     let body = || serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
     let answer = launch(&f.domain, &f.home, body(), |_| None).await.unwrap();
     assert_eq!(f.domain.inherited_worktree(&agent_of(&answer).0).unwrap(), None, "the user's project folder is never Alondra's to delete");
 
     let g = world();
-    connected_node_on_the_task(&g);
+    let old = sdk_node_on_the_task(&g, &g.project).await;
     let dir = g.project.to_str().unwrap();
-    g.domain.set_inherited_worktree("agent-b", dir, "agent-a").unwrap();
+    g.domain.set_inherited_worktree(&old.0, dir, "agent-a").unwrap();
     let answer = launch(&g.domain, &g.home, body(), |_| None).await.unwrap();
     assert_eq!(g.domain.inherited_worktree(&agent_of(&answer).0).unwrap().as_deref(), Some(dir), "a worktree passed down a chain of replacements stays Alondra's");
 }
@@ -915,10 +1045,12 @@ async fn a_replacement_whose_stop_errs_but_whose_node_ended_finishes() {
     connected_node_on_the_task(&f);
     f.domain.live.mods.set_job("agent-b", None, Some(f.root.join("jobs/gone")));
     *f.sessions.stop_fails.lock().unwrap() = Some("claude stop timed out".into());
-    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    let answer = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
-    assert_eq!(f.task_node(), Some(agent_of(&answer)));
+    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
+    crate::node_revival::take_out(&f.domain, "agent-b", "node replaced by the orchestrator", Some(f.project.display().to_string())).unwrap();
+    assert!(f.domain.live.is_closed("agent-b"));
+    assert_eq!(f.task_node(), None, "positive end evidence lets the caller release the task");
     assert_eq!(release_reasons(&f), ["node replaced by the orchestrator"]);
+    assert!(f.sdk().starts().is_empty(), "this historical stop test does not invent recoverable native history");
 }
 
 /// The node a replacement could not stop ends later: the task is freed for that reason, never as
@@ -928,9 +1060,7 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_wit
     let f = world();
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
-    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
-
+    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap_err();
     crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
     assert_eq!(f.task_node(), None, "the task is free");
     assert_eq!(release_reasons(&f), [crate::node_revival::REPLACE_ABORTED]);
@@ -938,6 +1068,7 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_wit
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(told[0].contains("“Editor colours” (t) has no node now") && told[0].contains("still shows agent-b running")
         && told[0].contains("launch (task t), without replace"), "{}", told[0]);
+    assert!(f.sdk().starts().is_empty());
 }
 
 fn on_a_turn(f: &Fixture) {
@@ -952,16 +1083,17 @@ async fn a_node_on_a_turn_is_stopped_once_the_turn_ends() {
     let f = world();
     connected_node_on_the_task(&f);
     on_a_turn(&f);
-    *f.domain.handovers.turn_deadline.lock().unwrap() = Some(std::time::Duration::from_secs(5));
-    let domain = f.domain.clone();
-    let ends = tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
-    });
-    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
-    ends.await.unwrap();
+    let old = AgentId::from("agent-b");
+    let mut stopping = Box::pin(stop_replaced(&f.domain, &old));
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(stopping.as_mut(), context).is_pending(), "a busy legacy turn must hold its stop");
+        std::task::Poll::Ready(())
+    }).await;
+    assert!(f.sessions.stopped.lock().unwrap().is_empty());
+    f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
+    stopping.await.unwrap();
     assert_eq!(*f.sessions.busy_at_stop.lock().unwrap(), [false], "claude stop waited for the turn to end");
+    assert!(f.sdk().starts().is_empty());
 }
 
 #[tokio::test]
@@ -970,24 +1102,24 @@ async fn a_node_whose_turn_does_not_end_is_interrupted_before_it_is_stopped() {
     connected_node_on_the_task(&f);
     let node = Node::connect(&f.domain, "agent-b");
     on_a_turn(&f);
-    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
     assert_eq!(node.interrupts(), 1, "past the deadline the turn is interrupted first");
     assert_eq!(f.sessions.stopped.lock().unwrap().len(), 1);
+    assert!(f.sdk().starts().is_empty());
 }
 
 #[tokio::test]
 async fn the_replacing_node_is_told_to_continue_in_the_worktree_without_making_another() {
     let f = world();
-    connected_node_on_the_task(&f);
     let repo = f.root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git_in(&repo, &["init", "-q", "-b", "main"]);
     git_in(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
     git_in(&repo, &["worktree", "add", "-q", "-b", "worktree-t-cards-3", f.project.to_str().unwrap()]);
+    sdk_node_on_the_task(&f, &f.project).await;
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
     launch(&f.domain, &f.home, body, |_| None).await.unwrap();
-    let prompt = f.prompt().await;
+    let prompt = f.launched(2).await.1[1].clone();
     let expected = format!("You continue in {}, branch worktree-t-cards-3", f.project.display());
     assert!(prompt.contains(&expected) && prompt.contains("Do not create another worktree and do not use EnterWorktree"), "{prompt}");
 }
@@ -1046,10 +1178,17 @@ async fn a_first_launch_in_a_main_checkout_gets_a_worktree_of_its_own_and_the_ne
     assert!(same(&folders[0], &made), "{folders:?}");
     assert!(prompts[0].contains("the worktree Alondra made for this task"), "{}", prompts[0]);
     let recorded = f.domain.task_worktree(&TaskId::from("t")).unwrap().unwrap();
+    f.sdk().until_answered("t").await;
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
+    let original_account = f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key();
     assert!(same(Path::new(&recorded), &made));
     launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "replace": true})), |_| None).await.unwrap();
     let (folders, _) = f.launched(2).await;
     assert!(same(&folders[1], &made), "the next launch works in the same worktree: {folders:?}");
+    let starts = f.sdk().starts();
+    assert_eq!(starts[1]["resume"].as_str(), Some(original.as_str()), "replacement retains the original native session: {starts:?}");
+    assert!(starts[1]["history"].as_u64().unwrap() > 0, "replacement retains native history: {starts:?}");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key(), original_account);
 }
 
 #[tokio::test]
@@ -1096,7 +1235,8 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::AssignTask { task_id: "t".into(), agent_id: "worker".into(), model: None });
     record(&domain, Decision { task_id: "t".into(), request_id: "r".into(), agent_id: Some("worker".into()), at: alondra_core::now_millis(),
         kind: DecisionKind::Launch, model: Some("sonnet".into()), effort: Some("medium".into()), approach: None,
-        chosen_by: ModelChooser::Orchestrator, reason: Some("Colour tokens in one file: sonnet".into()), title: "Editor colours".into() });
+        chosen_by: ModelChooser::Orchestrator, reason: Some("Colour tokens in one file: sonnet".into()), title: "Editor colours".into(),
+        provider: None, tags: None });
     let worker = domain.bind_agent("worker").unwrap().expose_for_child_environment().to_owned();
     let reviewer = domain.bind_agent("reviewer").unwrap().expose_for_child_environment().to_owned();
 
@@ -1167,9 +1307,9 @@ fn replace_body() -> LaunchBody {
 }
 
 /// Waits on the domain until a node other than agent-b holds the task.
-async fn until_replaced(f: &Fixture) {
+async fn until_replaced(f: &Fixture, old: &AgentId) {
     let mut changed = f.domain.subscribe();
-    while f.task_node().is_none_or(|agent| agent.0 == "agent-b") {
+    while f.task_node().is_none_or(|agent| agent == *old) {
         changed.changed().await.unwrap();
     }
 }
@@ -1187,19 +1327,25 @@ async fn a_replacement_answers_before_the_old_node_stops_and_finishes_without_a_
     let f = world();
     connected_node_on_the_task(&f);
     on_a_turn(&f);
-    *f.domain.handovers.turn_deadline.lock().unwrap() = Some(std::time::Duration::from_secs(5));
-    let answer = launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let domain = Arc::clone(&f.domain);
+    let answer = launch_replacement_work(Arc::clone(&f.domain), "t".into(), move |checked| async move {
+        checked();
+        released.await.map_err(|_| DomainError::new("replace_failed", "the explicit stop barrier was dropped"))?;
+        stop_replaced(&domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
+        Ok(json!({"stopped": "agent-b"}))
+    }).await.unwrap();
     assert_eq!(answer["replacing"], true, "{answer}");
     assert!(answer["message"].as_str().unwrap().contains("you are told only if it did not start"), "{answer}");
-    assert!(f.sessions.stopped.lock().unwrap().is_empty(), "answered while the old node is still on its turn");
-
+    assert!(f.sessions.stopped.lock().unwrap().is_empty(), "the shared supervisor answers before its checked stop work is released");
     let again = launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap_err();
     assert_eq!(again.code, "conflict", "a second launch waits for the replacement under way: {}", again.message);
-
     f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
-    until_replaced(&f).await;
-    assert!(told_orchestrator(&f, "replaced-").is_empty(), "a finished replacement is no news");
+    release.send(()).unwrap();
     until_launchable(&f).await;
+    assert_eq!(*f.sessions.stopped.lock().unwrap(), ["agent-b"]);
+    assert!(told_orchestrator(&f, "replaced-").is_empty(), "the successful supervised stop has no failure notice");
+    assert!(f.sdk().starts().is_empty(), "the component does not fabricate a replacement session");
 }
 
 #[tokio::test]
@@ -1207,11 +1353,19 @@ async fn a_replacement_that_fails_after_answering_tells_the_orchestrator_why() {
     let f = world();
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
-    let answer = launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap();
+    let domain = Arc::clone(&f.domain);
+    let answer = launch_replacement_work(Arc::clone(&f.domain), "t".into(), move |checked| async move {
+        checked();
+        stop_replaced(&domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
+        Ok(json!({"stopped": "agent-b"}))
+    }).await.unwrap();
     assert_eq!(answer["replacing"], true);
     let told = until_told(&f, "replaced-").await;
     assert!(told[0].contains("did not finish") && told[0].contains("still shows agent-b running"), "{}", told[0]);
     assert!(!told[0].contains("keeps its node"), "{}", told[0]);
+    until_launchable(&f).await;
+    assert_eq!(f.task_node(), Some("agent-b".into()));
+    assert!(f.sdk().starts().is_empty());
 }
 
 #[tokio::test]
@@ -1228,26 +1382,33 @@ async fn a_replacement_refused_before_stopping_anything_answers_with_the_refusal
 /// Once the old node is stopped the task has no node: a launch that fails after that says so.
 #[tokio::test]
 async fn a_replacement_whose_new_node_does_not_start_says_the_task_has_no_node() {
-    let f = bare_world();
-    f.domain.enable_sdk(broken_backend(&f));
-    connected_node_on_the_task(&f);
+    let f = world();
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    struct RestoreStarts<'a>(&'a SdkLaunches);
+    impl Drop for RestoreStarts<'_> { fn drop(&mut self) { self.0.refuse_starts(false); } }
+    let _restore = RestoreStarts(f.sdk());
+    f.sdk().refuse_starts(true);
     launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap();
     let told = until_told(&f, "replaced-").await;
     assert!(told[0].contains("did not start through the Agent SDK")
-        && told[0].contains("The node it replaced was stopped, so “Editor colours” (t) has no node now: start one with launch (task t), without replace."),
-        "{}", told[0]);
+        && told[0].contains("The node it replaced was stopped, so “Editor colours” (t) has no node now: start one with launch (task t), without replace."), "{}", told[0]);
     assert_eq!(f.task_node(), None);
+    assert!(!f.domain.owns_sdk_host(&old));
+    assert_eq!(f.sdk().starts().len(), 1, "only the original verified native session was started");
 }
 
 /// The call can be dropped as soon as the replacement starts: the replacement still finishes.
 #[tokio::test]
 async fn a_dropped_replace_call_still_finishes_the_replacement() {
     let f = world();
-    connected_node_on_the_task(&f);
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    let native = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let call = launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None);
     assert!(tokio::time::timeout(std::time::Duration::ZERO, call).await.is_err(), "the call is dropped before it answers");
-    until_replaced(&f).await;
+    until_replaced(&f, &old).await;
     until_launchable(&f).await;
+    f.launched(2).await;
+    assert_resumed(&f, &native);
 }
 
 /// A panic in the replacement gives the launch guard back and the orchestrator its reason.
@@ -1256,18 +1417,25 @@ async fn a_replacement_that_panics_releases_the_task_and_tells_the_orchestrator(
     let f = world();
     connected_node_on_the_task(&f);
     f.sessions.stop_panics.store(true, Ordering::SeqCst);
-    let reason = match launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await {
+    let domain = Arc::clone(&f.domain);
+    let reason = match launch_replacement_work(Arc::clone(&f.domain), "t".into(), move |checked| async move {
+        checked();
+        stop_replaced(&domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
+        Ok(json!({"stopped": "agent-b"}))
+    }).await {
         Err(refused) => refused.message,
         Ok(_) => until_told(&f, "replaced-").await.remove(0),
     };
     assert!(reason.contains("stopped unexpectedly"), "{reason}");
-    assert!(f.domain.live.begin_launch("t"), "the task is not left being launched");
+    until_launchable(&f).await;
+    assert_eq!(f.task_node(), Some("agent-b".into()));
+    assert!(f.sdk().starts().is_empty(), "panic recovery cannot create a new native identity");
 }
 
 /// The branch where Claude Code made the old node's worktree, read from a Claude home of the
 /// test's own.
 #[tokio::test]
-async fn a_replacement_inherits_the_worktree_claude_code_made_for_the_old_node() {
+async fn a_legacy_worktree_is_found_without_replacing_an_unverified_native_session() {
     let f = world();
     let claude_home = f.root.join("claude");
     crate::watcher::use_claude_home_for_test(&claude_home);
@@ -1279,10 +1447,12 @@ async fn a_replacement_inherits_the_worktree_claude_code_made_for_the_old_node()
     std::fs::write(claude_home.join("jobs/0ldn0de0/state.json"),
         json!({"cwd": f.project.to_str().unwrap(), "worktreePath": made.to_str().unwrap()}).to_string()).unwrap();
     connected_node(&f, old);
-    let answer = launch(&f.domain, &f.home, replace_body(), |_| None).await.unwrap();
-    let (folders, _) = f.launched(1).await;
-    assert!(same(&folders[0], &made), "the new node starts in that worktree: {folders:?}");
-    assert_eq!(f.domain.inherited_worktree(&agent_of(&answer).0).unwrap().as_deref(), made.to_str(), "and Alondra may delete it with the new node");
+    assert_eq!(owned_worktree(&f.domain, old).as_deref(), made.to_str());
+    let refused = launch(&f.domain, &f.home, replace_body(), |_| None).await.unwrap_err();
+    assert_eq!(refused.code, "native_session_required");
+    assert_eq!(f.task_node(), Some(old.into()));
+    assert!(f.sessions.stopped.lock().unwrap().is_empty());
+    assert!(f.sdk().starts().is_empty());
 }
 
 /// What Alondra keeps about a session only while it lives goes when it ends.
@@ -1384,20 +1554,21 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     assert!(prompt.contains("- [ ] Guards") && prompt.contains("- [ ] Index matches the state"), "the whole plan: {prompt}");
 }
 
-// Replacing a claude --bg node of the previous release stops it, frees the task from it and
-// admits a node of the SDK in its folder: the claude --bg node never goes down the SDK node's
-// replacement, which only stops an SDK host.
+// The verified legacy handover has its own integration suite; an unknown session stays intact.
 #[tokio::test]
-async fn replacing_a_claude_bg_node_stops_it_and_starts_an_sdk_node() {
+async fn an_unverified_legacy_native_session_is_kept_until_it_can_be_recovered() {
     let f = world();
     connected_node_on_the_task(&f);
-    let answer = launch(&f.domain, &f.home, replace_body(), |_| None).await.unwrap();
-    assert_eq!(*f.sessions.stopped.lock().unwrap(), ["agent-b"], "the claude --bg node is stopped");
-    let agent = agent_of(&answer);
+    let original = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let refused = launch(&f.domain, &f.home, replace_body(), |_| None).await.unwrap_err();
+    assert_eq!(refused.code, "native_session_required");
+    assert!(f.sessions.stopped.lock().unwrap().is_empty());
+    assert!(f.sdk().starts().is_empty());
     let state = f.domain.state().unwrap();
-    assert_eq!(state.tasks[&TaskId::from("t")].agent_id.as_ref(), Some(&agent));
-    assert!(crate::sdk_owner::runs_through_sdk(&state, &agent) && f.domain.owns_sdk_host(&agent), "a node of the SDK runs the task");
-    assert!(f.domain.live.is_closed("agent-b"), "the old node is closed and not brought back");
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id, original.agent_id);
+    assert_eq!(state.tasks[&TaskId::from("t")].account_key(), original.account_key());
+    assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot());
+    assert!(!f.domain.live.is_closed("agent-b"));
 }
 
 struct NoBgSessions;
@@ -1448,7 +1619,7 @@ fn with_work_account(f: &Fixture) -> PathBuf {
     std::fs::create_dir_all(&folder).unwrap();
     let accounts = ["default", "work"].map(|id| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
-        email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
     }).to_vec();
     command(&f.domain, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
     folder
@@ -1542,4 +1713,51 @@ async fn a_request_that_chose_an_account_paid_per_use_runs_there_and_only_then()
     assert_eq!(config_dir_sha256(&f), Some(sha256(api.to_str().unwrap())), "Claude runs with the API account's folder");
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     assert_eq!(task.account.as_ref().map(|account| account.as_str()), Some("api"));
+}
+
+
+#[tokio::test]
+async fn a_started_legacy_background_node_cannot_be_stopped_to_select_another_account(){
+    use alondra_core::accounts::{AccountId,AccountState};
+    let f=world();with_work_account(&f);connected_node_on_the_task(&f);
+    let mut accounts=f.domain.state().unwrap().accounts.clone();
+    accounts.iter_mut().find(|account|account.id.is_default()).unwrap().state=AccountState::Disabled;
+    command(&f.domain,Actor::System,Command::RecordAccounts{accounts,reserve:alondra_core::usage::default_reserve()});
+    let choices=Choices{project:None,options:OptionsFile::parse("[[accounts.claude]]\nid=\"default\"\nname=\"Native default\"\n[[accounts.claude]]\nid=\"work\"\nname=\"Work\"\n[defaults]\naccount=\"claude/work\"\n").unwrap().resolve(None,&std::collections::BTreeMap::new()).unwrap(),issue:None,issue_text:None,attachments:vec![]};
+    let original=f.task_node();let before=f.sdk().starts();
+    assert!(f.domain.live.mods.session("agent-b").is_some(), "the fixture has an actual connected mod session");
+    let error=launch(&f.domain,&f.home,launch_body(&f,json!({"replace":true,"model":"sonnet"})),|_|Some(choices)).await.unwrap_err();
+    assert_eq!(error.code,"active_account_immutable");assert_eq!(f.task_node(),original);
+    assert!(f.sessions.stopped.lock().unwrap().is_empty(),"wrong-account replacement is refused before stopping the legacy native session");
+    assert_eq!(f.sdk().starts(),before);assert!(f.domain.live.mods.session("agent-b").is_some());
+    assert!(!f.domain.live.is_closed("agent-b"));
+    assert!(f.domain.state().unwrap().agents[&AgentId::from("agent-b")].phase.holds_slot());
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key().account,AccountId::default_account());
+}
+
+#[tokio::test]
+async fn changing_the_recovery_directory_refuses_before_workspace_effects_or_stopping_the_original_sdk_node() {
+    let f = world();
+    let old = sdk_node_on_the_task(&f, &f.project).await;
+    let original = f.domain.task_worktree(&"t".into()).unwrap();
+    for (name, repository) in [("Other", false), ("OtherRepository", true)] {
+        let directory = f.root.join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        if repository {
+            git_in(&directory, &["init", "-q", "-b", "main"]);
+            git_in(&directory, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+        }
+        let trust = f.root.join("trust.json");
+        let bytes = json!({"projects": {directory.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string();
+        std::fs::write(&trust, &bytes).unwrap();
+        crate::claude_trust::use_config_for_test(&trust);
+        let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"replace": true, "model": "sonnet", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap_err();
+        assert_eq!(refused.code, "native_session_required");
+        assert_eq!(f.task_node(), Some(old.clone()));
+        assert!(f.domain.owns_sdk_host(&old));
+        assert_eq!(f.sdk().starts().len(), 1);
+        assert_eq!(f.domain.task_worktree(&"t".into()).unwrap(), original);
+        assert!(!directory.join(".claude/worktrees/t").exists());
+        assert_eq!(std::fs::read_to_string(&trust).unwrap(), bytes);
+    }
 }

@@ -170,6 +170,8 @@ enum Cmd {
     #[command(about = tr!("The Claude accounts nodes may run on", "Las cuentas de Claude con las que pueden trabajar los nodos"),
         after_help = examples(&["alondra accounts list", "alondra accounts add Work", "alondra accounts login Work", "alondra accounts remove Work"]))]
     Accounts {
+        #[arg(long, global = true, default_value = "claude", value_parser = ["claude", "codex"])]
+        provider: String,
         #[command(subcommand)]
         command: AccountsCmd,
     },
@@ -465,7 +467,7 @@ fn takes_json(command: Option<&Cmd>) -> bool {
         | Cmd::Device { command: DeviceCmd::List }
         | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
         | Cmd::Account { command: AccountCmd::Status }
-        | Cmd::Accounts { command: AccountsCmd::List }
+        | Cmd::Accounts { command: AccountsCmd::List, .. }
         | Cmd::Relay { command: RelayCmd::Status }
     ))
 }
@@ -524,13 +526,13 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             AccountCmd::Login => commands::account_login(no_input),
             AccountCmd::Logout => account::logout(),
         },
-        Some(Cmd::Accounts { command }) => match command {
-            AccountsCmd::List => provider_accounts::list(json),
-            AccountsCmd::Add { name } => provider_accounts::add(&name.join(" "), no_input),
-            AccountsCmd::Login { name } => provider_accounts::login(&name.join(" "), no_input),
-            AccountsCmd::Enable { name } => provider_accounts::set_enabled(&name.join(" "), true),
-            AccountsCmd::Disable { name } => provider_accounts::set_enabled(&name.join(" "), false),
-            AccountsCmd::Remove { name } => provider_accounts::remove(&name.join(" ")),
+        Some(Cmd::Accounts { command, provider }) => match command {
+            AccountsCmd::List => provider_accounts::list_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, json),
+            AccountsCmd::Add { name } => provider_accounts::add_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), no_input),
+            AccountsCmd::Login { name } => provider_accounts::login_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), no_input),
+            AccountsCmd::Enable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), true),
+            AccountsCmd::Disable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), false),
+            AccountsCmd::Remove { name } => provider_accounts::remove_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" ")),
             AccountsCmd::Move { state } => provider_accounts::moving(state.map(|state| state == "on")),
         },
         Some(Cmd::Relay { command }) => match command {

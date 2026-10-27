@@ -437,6 +437,8 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let task = state.tasks.get(&handover.task).ok_or("the task is gone")?;
     let options = crate::sdk_owner::LaunchOptions {
+        provider: alondra_core::accounts::Provider::Claude,
+        selection: None,
         model: task.model.as_ref().map(|model| model.model.clone()),
         effort: None,
         disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),

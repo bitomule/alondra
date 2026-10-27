@@ -37,12 +37,23 @@ pub(crate) fn parse(listing: &str) -> Option<BTreeMap<String, Listed>> {
     }).collect())
 }
 
+fn needs_claude_listing(state: &alondra_core::domain::DomainState, agent: &alondra_core::domain::Agent) -> bool {
+    if !agent.phase.live() || Some(&agent.id) == state.orchestrator_session.as_ref() || crate::sdk_owner::runs_through_sdk(state, &agent.id) { return false; }
+    let tasks: Vec<_> = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id)).collect();
+    if !tasks.is_empty() { return tasks.iter().any(|task| task.provider == alondra_core::accounts::Provider::Claude); }
+    state.accounts.iter().any(|account| account.provider == alondra_core::accounts::Provider::Claude)
+        || (state.accounts.is_empty() && state.account_config_version.is_empty())
+}
+
 /// Lists the real sessions once and hands the node machine what it says of every live node
 /// Alondra launched, and of every other live node whose session is gone and that holds no open
 /// task, so it closes without ever being brought back. A node of the Agent SDK is never in the
 /// listing and is left to its host. False when the listing could not be read: nothing is moved
 /// then.
 pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> bool {
+    let Ok(state) = domain.state() else { return false };
+    if !state.agents.values().any(|agent| needs_claude_listing(&state, agent)) { return true; }
+    drop(state);
     let asked = alondra_core::now_millis();
     let listing = match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
         Ok(listing) => listing,
@@ -58,8 +69,7 @@ pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> boo
     let Ok(state) = domain.state() else { return false };
     let open_task = |agent: &AgentId| state.tasks.values().any(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
     let listed: BTreeMap<AgentId, Listed> = state.agents.values()
-        .filter(|agent| agent.phase.live() && Some(&agent.id) != state.orchestrator_session.as_ref())
-        .filter(|agent| !crate::sdk_owner::runs_through_sdk(&state, &agent.id))
+        .filter(|agent| needs_claude_listing(&state, agent))
         .map(|agent| (agent, sessions.get(&agent.id.0).copied().unwrap_or(Listed::Absent)))
         .filter(|(agent, listed)| domain.launched_by_alondra(&agent.id).unwrap_or(false) || (matches!(listed, Listed::Absent | Listed::Done) && !open_task(&agent.id)))
         .map(|(agent, listed)| (agent.id.clone(), listed))
@@ -93,6 +103,31 @@ mod tests {
     use crate::node_close::Answer;
     use alondra_core::domain::{Actor, Command, CommandEnvelope, LaunchPlan, NodeEvent, NodePhase, ORCHESTRATOR_READER, PROTOCOL_VERSION};
     use std::sync::Mutex;
+
+    struct NoClaude;
+    impl Sessions for NoClaude {
+        fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<String,String>> { panic!("this daemon has no legacy Claude node to list") }
+        fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> { Box::pin(async { None }) }
+    }
+
+    #[tokio::test]
+    async fn a_daemon_without_legacy_nodes_never_invokes_claude_discovery() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = open(&home);
+        assert!(once(&domain, &NoClaude).await);
+    }
+
+    #[test]
+    fn a_committed_codex_task_is_never_a_legacy_claude_session() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = open(&home);
+        launch(&domain, "native");
+        let mut state = (*domain.state().unwrap()).clone();
+        state.tasks.get_mut(&"t-native".into()).unwrap().provider = alondra_core::accounts::Provider::Codex;
+        assert!(!needs_claude_listing(&state, &state.agents[&"native".into()]));
+    }
 
     struct Claude(Mutex<String>);
 
@@ -382,7 +417,7 @@ mod tests {
         assert_eq!(moves.len(), 1, "the same session moves to the SDK, conversation and all: {moves:?}");
         assert_eq!(moves[0].session, NODE);
         assert_eq!(Some(moves[0].cwd.as_str()), worktree.to_str(), "in the same worktree");
-        assert!(moves[0].input.ends_with("Your Claude usage limit has reset. Carry on with what you were doing."), "{}", moves[0].input);
+        assert!(moves[0].input.ends_with("Your usage limit has reset. Carry on with what you were doing."), "{}", moves[0].input);
         assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "its pause is over");
         assert_eq!(std::fs::read_to_string(worktree.join("staged.rs")).unwrap(), "uncommitted work");
     }

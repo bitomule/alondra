@@ -104,6 +104,7 @@ pub struct AuthStatus {
     pub logged_in: bool,
     pub email: Option<String>,
     pub subscription: Option<String>,
+    pub pay_per_use: bool,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +115,8 @@ struct RawStatus {
     email: Option<String>,
     #[serde(default)]
     subscription_type: Option<String>,
+    #[serde(default)]
+    auth_method: Option<String>,
 }
 
 /// `None` when the answer does not say: a corrupt answer, or one that claims a sign-in while the
@@ -126,7 +129,8 @@ pub fn parse_status(success: bool, bytes: &[u8]) -> Option<AuthStatus> {
     let clean = |text: Option<String>| text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
     match raw.logged_in? {
         false => Some(AuthStatus::default()),
-        true if success => Some(AuthStatus { logged_in: true, email: clean(raw.email), subscription: clean(raw.subscription_type) }),
+        true if success => Some(AuthStatus { logged_in: true, email: clean(raw.email), subscription: clean(raw.subscription_type),
+            pay_per_use: matches!(raw.auth_method.as_deref(), Some("api_key" | "api_key_helper" | "third_party")) }),
         true => None,
     }
 }

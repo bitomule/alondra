@@ -31,7 +31,7 @@ class PublicPayloadTests(unittest.TestCase):
             stage = pathlib.Path(temp)
             r.stage_assets(r.ROOT, stage)
             files = {str(p.relative_to(stage)) for p in stage.rglob('*') if p.is_file()}
-            self.assertEqual(files, r.PUBLIC_FILES - r.BINARIES - {r.HOST_MANIFEST})
+            self.assertEqual(files, r.PUBLIC_FILES - r.BINARIES - r.HOST_MANIFESTS)
             self.assertFalse(any(p.is_symlink() for p in stage.rglob('*')))
             wrapper = stage / 'plugin-orchestrator/bin/alondra'
             self.assertEqual(wrapper.read_bytes(), (r.ROOT / 'plugin/bin/alondra').read_bytes())
@@ -46,6 +46,11 @@ class PublicPayloadTests(unittest.TestCase):
             host = pathlib.Path(temp) / 'alondra-host'
             host.write_bytes(b'fake host')
             r.stage_host(host, built, stage)
+            r.stage_host(host, built, stage, provider='codex')
+            codex = json.loads((stage / r.CODEX_MANIFEST).read_text())
+            self.assertEqual(codex['sha256'],r.sha(stage / r.CODEX_HOST))
+            self.assertEqual((stage / r.CODEX_HOST).read_bytes(),host.read_bytes())
+            self.assertNotIn('codex',r.PRE_CODEX_FILES)
             built.unlink()
             manifest = json.loads((stage / r.HOST_MANIFEST).read_text())
             self.assertEqual(manifest, {'sdk': '0.3.300', 'node': 'v24.19.0', 'bundle_sha256': 'b' * 64, 'sha256': r.sha(host)})

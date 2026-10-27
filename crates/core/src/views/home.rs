@@ -116,6 +116,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         empty,
         notices: vec![],
         service: None,
+        account_configuration: None,
         first_cards,
         summary: None,
     })

@@ -184,6 +184,9 @@ public extension DependencyValues {
         Scope(state: \.measurements, action: \.measurements) { ConnectionMeasurementsFeature() }
         Reduce { state, action in
             switch action {
+            case .accounts(.task):
+                state.accounts.macName = state.macs.first { $0.id == state.selectedMacID }?.displayName
+                return .none
             case .machineSettings, .allowedRules, .accounts, .mcpServers, .measurements: return .none
             case .appeared:
                 guard state.supportsNotifications else { return .none }
@@ -376,6 +379,7 @@ public extension DependencyValues {
             case .macSelected(let id, let generation):
                 guard generation == state.generation, state.selectingMacID == id else { return .none }
                 state.selectedMacID = id; state.selectingMacID = nil
+                state.accounts.macName = state.macs.first { $0.id == id }?.displayName
                 return .none
             case .macSelectionFailed(let problem, let generation):
                 guard generation == state.generation, state.selectingMacID != nil else { return .none }

@@ -263,8 +263,41 @@ impl ObservationNormalizer for Normalizer {
         checkpoint.cursor = batch.cursor;
         let bytes =
             serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;
-        Normalization::new(facts, bytes)
+        Normalization::new(facts, bytes)?.with_context(public_context(event))
     }
+}
+
+fn public_context(event: &Event) -> Vec<alondra_store::TaskContextItem> {
+    use alondra_store::{ContextSource, TaskContextItem};
+    let WireObservation::Sdk { payload, native, .. } = &event.observation else { return vec![]; };
+    if native.parent_tool_use_id.is_some() || payload.get("parent_tool_use_id").is_some_and(|parent| !parent.is_null()) { return vec![]; }
+    let kind = payload.get("type").and_then(Value::as_str).unwrap_or_default();
+    if !matches!(kind, "assistant" | "user") { return vec![]; }
+    let Some(content) = payload.pointer("/message/content").and_then(Value::as_array) else { return vec![]; };
+    let identity = payload.get("uuid").and_then(Value::as_str).or(native.message_id.as_deref()).map(str::to_owned).unwrap_or_else(|| format!("cursor-{}", event.cursor));
+    let mut items = vec![];
+    for (ordinal, block) in content.iter().enumerate() {
+        let native_id = alondra_store::native_context_id(&format!("{identity}/{ordinal}"));
+        let item = match (kind, block.get("type").and_then(Value::as_str)) {
+            ("assistant", Some("text")) => block.get("text").and_then(Value::as_str).filter(|text| !text.is_empty())
+                .and_then(|text| TaskContextItem::text(native_id, ContextSource::Assistant, text).ok()),
+            ("user", Some("tool_result")) => {
+                let text = match block.get("content") {
+                    Some(Value::String(text)) => Some(text.clone()),
+                    Some(Value::Array(blocks)) => {
+                        let text = blocks.iter().filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                            .filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n");
+                        (!text.is_empty()).then_some(text)
+                    }
+                    _ => None,
+                };
+                text.and_then(|text| TaskContextItem::tool_result(native_id, text, None, None).ok())
+            }
+            _ => None,
+        };
+        if let Some(item) = item { items.push(item); }
+    }
+    items
 }
 /// What a host leaves behind as it ends: its Claude's exit, and the end of the SDK iterator that
 /// read it (closed by the host, or cut by the exit).
@@ -955,6 +988,36 @@ mod tests {
                 failures: vec![],
             },
         }
+    }
+
+    #[test]
+    fn long_native_message_ids_keep_their_public_content_and_replay_identity() {
+        let message = event(json!({"type":"assistant","uuid":"native-id".repeat(1024),"message":{"content":[{"type":"text","text":"The durable public result"}]}}));
+        let first = public_context(&message); assert_eq!(first.len(),1); assert_eq!(first[0].content,"The durable public result");
+        assert!(first[0].native_id.len()<=4096);assert_eq!(first,public_context(&message));
+        let other = event(json!({"type":"assistant","uuid":"other-native-id".repeat(1024),"message":{"content":[{"type":"text","text":"The durable public result"}]}}));
+        assert_ne!(first[0].native_id,public_context(&other)[0].native_id);
+    }
+    #[test]
+    fn portable_context_keeps_public_text_and_never_thinking_or_tool_configuration() {
+        let message = event(json!({"type":"assistant","uuid":FIRST,"message":{"content":[
+            {"type":"text","text":"The public result"},
+            {"type":"thinking","thinking":"Private reasoning"},
+            {"type":"tool_use","id":"tool","name":"Read","input":{"token":"private-config"}}
+        ]}}));
+        let context = public_context(&message);
+        assert_eq!(context.len(), 1);
+        assert_eq!(context[0].content, "The public result");
+        assert_eq!(context[0].source, alondra_store::ContextSource::Assistant);
+        let child = event(json!({"type":"assistant","parent_tool_use_id":"child","message":{"content":[{"type":"text","text":"Child internals"}]}}));
+        assert!(public_context(&child).is_empty());
+        let tool = event(json!({"type":"user","uuid":SECOND,"message":{"content":[
+            {"type":"tool_result","tool_use_id":"tool","content":[{"type":"text","text":"Command result"},{"type":"thinking","thinking":"Never retain"}]}
+        ]}}));
+        let context = public_context(&tool);
+        assert_eq!(context.len(), 1);
+        assert_eq!(context[0].content, "Command result");
+        assert_eq!(context[0].source, alondra_store::ContextSource::ToolResult);
     }
     fn session() -> SessionRecord {
         SessionRecord {

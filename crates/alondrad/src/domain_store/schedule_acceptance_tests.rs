@@ -136,6 +136,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
         run_id: run.into(),
         request: Request::new(request_id.clone().into(), "Synthetic mission".into()),
         task: Task {
+            provider: Default::default(), selection: None, pending_selection: None,
             id: format!("task-{suffix}").into(),
             request_id: request_id.into(),
             agent_id: None,

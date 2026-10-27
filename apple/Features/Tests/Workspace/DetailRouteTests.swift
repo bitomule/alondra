@@ -15,6 +15,7 @@ final class DetailRouteTests: XCTestCase {
             ("card:i-1", .card), ("card:github.com/o/r#1", .card), ("document:rev-1", .document),
             ("pull_request:github.com/o/r#1", .pullRequest), ("task:t-1", .task),
             ("schedules", .schedules),
+            ("model_profile:codex-orchestrator", .modelProfile), ("task_selection:t-1", .taskSelection),
             ("schedule:new", .schedule), ("schedule:s-1", .schedule), ("tasks?section=finished&after=20", .tasksPage),
         ]
         for (key, kind) in expected {
@@ -37,13 +38,13 @@ final class DetailRouteTests: XCTestCase {
         guard case .prReview(let card) = try route("card:github.com/o/r#1") else { return XCTFail("a pull request card opens the PR review") }
         XCTAssertEqual(card.screen.key, .pullRequest("github.com/o/r#1"))
         guard case .prReview = try route("pull_request:github.com/o/r#1") else { return XCTFail("pull request") }
-        for key in ["tasks?section=finished&after=20"] {
+        for key in ["tasks?section=finished&after=20", "model_profile:claude-general", "model_profile:codex-orchestrator", "task_selection:t-1"] {
             guard case .legacy = try route(key) else { return XCTFail("\(key) is not on the legacy renderer yet") }
         }
     }
 
     func testTheKeyOfARebuiltScreenIsTheKeyItWasOpenedWith() throws {
-        for key in ["card:i-1", "document:rev-1", "task:t-1", "schedules", "schedule:new", "schedule:s-1", "pull_request:github.com/o/r#1"] {
+        for key in ["card:i-1", "document:rev-1", "task:t-1", "schedules", "schedule:new", "schedule:s-1", "pull_request:github.com/o/r#1", "model_profile:codex-orchestrator", "task_selection:t-1"] {
             XCTAssertEqual(DetailRoute.State(key: ViewKey(rawValue: key), owner: "test")?.key.rawValue, key)
         }
     }

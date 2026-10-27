@@ -9,7 +9,7 @@ use rusqlite::Row;
 
 const TASKS: &str = "SELECT m.project,m.model,m.effort,m.approach,m.outcome,m.started_at,m.finished_at,m.clean,m.change_rounds,
   m.reviewer_rounds,m.interventions,m.reopened,m.relaunched,m.work_ms,m.waiting_user_ms,m.queued_ms,m.blocked_ms,m.sessions,m.steps,
-  m.subagent_steps,m.looks,m.polls,m.pr_merged,m.pr_lines,m.measured,u.cost,u.costed,u.input,u.output,u.cache_read,u.cache_write
+  m.subagent_steps,m.looks,m.polls,m.pr_merged,m.pr_lines,m.measured,u.cost,u.costed,u.input,u.output,u.cache_read,u.cache_write,m.provider,m.kind
  FROM task_metrics m LEFT JOIN (SELECT task_id,sum(cost_micros) cost,count(cost_micros) costed,sum(input) input,sum(output) output,
   sum(cache_read) cache_read,sum(cache_write) cache_write FROM task_model_usage GROUP BY task_id) u ON u.task_id=m.task_id
  ORDER BY m.finished_at";
@@ -42,6 +42,8 @@ fn task(r: &Row<'_>) -> rusqlite::Result<TaskRow> {
         model: r.get(1)?,
         effort: r.get(2)?,
         approach: r.get(3)?,
+        provider: r.get(31)?,
+        kind: r.get(32)?,
         outcome: if r.get::<_, String>(4)? == "done" { Outcome::Done } else { Outcome::Cancelled },
         started_at: r.get(5)?,
         finished_at: r.get(6)?,

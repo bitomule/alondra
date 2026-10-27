@@ -65,8 +65,8 @@ impl StuckProblem {
         (
             t!(lang, "Alondra cannot start the work on your requests", "Alondra no consigue ponerse con tus peticiones").into(),
             tf!(lang,
-                "Claude failed to start {failures} times in a row, so new requests wait. Alondra keeps trying by itself.",
-                "Claude no arrancó {failures} veces seguidas, así que las peticiones nuevas esperan. Alondra lo sigue intentando sola.",
+                "The assistant failed to start {failures} times in a row, so new requests wait. Alondra keeps trying by itself.",
+                "El asistente no arrancó {failures} veces seguidas, así que las peticiones nuevas esperan. Alondra lo sigue intentando sola.",
                 failures = self.failures),
         )
     }

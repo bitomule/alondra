@@ -42,7 +42,7 @@ if [ -e "$HOME/broken" ]; then echo "Error: could not write the settings" >&2; e
 echo "Removed MCP server $6"
 "#).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let backend = SdkBackend {
+        let backend = SdkBackend { provider:alondra_core::accounts::Provider::Claude,origin:None,
             node: PathBuf::new(), node_sha256: String::new(), host: PathBuf::new(), host_sha256: String::new(),
             native, native_sha256: String::new(), host_environment: BTreeMap::new(),
             native_environment: BTreeMap::from([("HOME".into(), home.display().to_string()), ("PATH".into(), "/usr/bin:/bin".into())]),

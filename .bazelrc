@@ -33,3 +33,5 @@ common:ci --bes_results_url=https://app.buildbuddy.io/invocation/
 
 common:warming --config=upload
 common:warming --remote_download_minimal
+
+test --keep_going

@@ -48,6 +48,7 @@ public struct ActionInputView: View {
                 } else if let form {
                     formFields(form.fields)
                 }
+                if let reason = store.modelUnavailableReason { Text(verbatim: reason).font(.caption).foregroundStyle(.secondary) }
                 if let error = store.error { Text(error).font(.callout).foregroundStyle(.red) }
                 StallNoticeView(store: store)
                 if let stamp = store.stamp { Label(stamp, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
@@ -193,7 +194,10 @@ public struct ActionInputView: View {
                 }.labelsHidden().pickerStyle(.menu)
             } else {
                 Picker(field.label, selection: stringBinding(field, value: value)) {
-                    ForEach(items, id: \.id) { item in Text(item.label).tag(item.id) }
+                    let options = RequestOptionsFeature.State(fields: form?.fields ?? [], values: store.fields)
+                    ForEach(options.choicesIncludingSelection(field.id), id: \.id) { item in
+                        Text(item.group.map { $0 + " · " + item.label } ?? item.label).tag(item.id).disabled(!options.isAvailable(item))
+                    }
                 }.labelsHidden().pickerStyle(.menu)
             }
         case let .picker(source):

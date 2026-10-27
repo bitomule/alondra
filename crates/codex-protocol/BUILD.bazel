@@ -1,0 +1,13 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "codex_protocol",
+    srcs = ["src/lib.rs", "//crates/agent-protocol:transport_sources"],
+    crate_name = "alondra_codex_protocol",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__"],
+    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
+)
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

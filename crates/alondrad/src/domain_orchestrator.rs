@@ -43,6 +43,8 @@ pub(crate) struct Runtime {
     /// Batches whose execution was interrupted or given up: the next run is
     /// told never to replay them.
     pub pending_resolutions: Vec<Resolution>,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    pub batch_handoffs: Vec<crate::orchestrator_provider::BatchHandoff>,
     /// The Problem that tells the user Claude does not start, while it is open.
     #[serde(default)]
     pub stuck_problem: Option<String>,
@@ -178,12 +180,35 @@ impl Executor {
     /// next run is told what was interrupted.
     pub(crate) fn recover(&self) -> Result<Runtime> {
         let mut runtime = load(&self.home)?;
-        if let Some(run) = runtime.active_run.take() {
-            if let Err(error) = process::end_recorded(&self.home.join("runtime/orchestrator"), &run.id) {
-                log!("orchestrator: cannot end the process the previous daemon left running: {error:#}");
+        if let Some(run) = runtime.active_run.clone() {
+            let admitted = self.domain.end_execution(&run.id);
+            let stopped = process::end_recorded(&self.home.join("runtime/orchestrator"), &run.id);
+            let confirmed = self.domain.confirmed_batch_effects(&run.id,&admitted)?;
+            if runtime.last_error.is_some() || stopped.is_err() || !confirmed {
+                let why = stopped.err().map(|error| format!("The previous process could not be fenced: {error:#}"))
+                    .unwrap_or_else(|| "The daemon restarted with an unresolved operation; reconcile its durable result before continuing".into());
+                let problem = BatchProblem { stop:if runtime.failure==Some(Failure::Denied) {BatchStop::Denied} else {BatchStop::Interrupted},calls:admitted,subjects:vec![],error:why.clone() };
+                if runtime.last_error.is_none() {
+                    self.failed(runtime,&run,why,Some(problem))?;
+                } else {
+                    runtime.failure.get_or_insert(Failure::Interrupted);
+                    save(&self.home,&runtime)?;
+                    self.raise_batch_problem(&run.id,problem,&why);
+                }
+                return load(&self.home);
             }
-            self.give_up(&run, "daemon_restarted_during_execution")?;
-            runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
+            let (effects,operations,selection) = {
+                let store = self.domain.store.lock().expect("domain store poisoned");
+                (store.batch_effects(&run.id)?,store.tool_operations(&run.id)?,store.batch_selection(&run.id)?)
+            };
+            if (!effects.is_empty() || !operations.is_empty()) && let Some(selection) = selection {
+                self.finish(&run,State::Retryable,Some("continue_confirmed_batch_after_restart"))?;
+                runtime.batch_handoffs.push(crate::orchestrator_provider::BatchHandoff { run_id:run.id.clone(),selection,reason:"Daemon restarted after confirmed effects; inspect current state and continue remaining goals".into() });
+            } else {
+                self.give_up(&run, "daemon_restarted_during_execution")?;
+                runtime.pending_resolutions.push(Resolution { run_id: run.id.clone(), message_ids: run.message_ids.clone() });
+            }
+            runtime.active_run = None;
             runtime.last_error = None;
             runtime.failure = None;
             runtime.retry_at = None;
@@ -271,8 +296,21 @@ impl Executor {
             text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded. An open Request below with no Task of its own was not turned into work: handle it now, unless tasks_in_progress shows an open question about it.\n");
         }
         if let Some(root) = projects_root {
-            text.push_str(&format!("Projects root, readable with Read, Glob and Grep: {}\n", root.display()));
+            text.push_str(&format!("Projects root, readable through the role's file tools: {}\n", root.display()));
         }
+        let mut transfer = String::from("\nRead batch_outcomes with list_runs=true and paginate with after to discover all retained batches, including references omitted below. Read a selected run_id before continuing its remaining goals; never replay its calls.\n");
+        for handoff in runtime.batch_handoffs.iter().rev() {
+            let header = format!("\nCONFIRMED BATCH HANDOFF {}: {}. Continue pending GOALS from current committed state; never replay previous tool calls. Use batch_outcomes for its durable references.\n",handoff.run_id,handoff.reason);
+            if transfer.len()+header.len()>8192 {transfer.push_str("More batch references were omitted from this bounded prompt.\n");break;}
+            transfer.push_str(&header);
+            let store = self.domain.store.lock().expect("domain store poisoned");
+            for effect in store.batch_effects(&handoff.run_id)?.into_iter().take(8) {
+                let line = format!("Confirmed domain command {} ({}) at revision {}; receipt {}.\n",effect.command_id,effect.kind,effect.revision,effect.receipt_ref.command_id);
+                if transfer.len()+line.len()>8192 {break;}
+                transfer.push_str(&line);
+            }
+        }
+        text.push_str(&transfer);
         let user = crate::domain_messages::user_name();
         text.push_str(&summary(&state, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
             .map(|choices| crate::domain_orchestrator_tools::choices_text(&user, &self.home, &choices))));
@@ -308,20 +346,20 @@ impl Executor {
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
         let now = now_millis();
+        crate::usage_probe::follow(&self.domain, now);
+        if self.domain.live.usage_pause.current().is_some_and(|pause|pause.by_user) { return Ok(()); }
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
             return Ok(());
         }
-        let pause = &self.domain.live.usage_pause;
-        let account = if pause.is_active() && !pause.waits_for_session() { None } else { crate::accounts::choose_for_launch(&self.domain, &self.home, now) };
-        let Some(account) = account else {
-            if let Some(line) = self.account_wait_change() {
-                log!("{line}");
+        let selection = match crate::orchestrator_provider::selection(&self.domain, &self.home, now) {
+            Ok(selection) => selection,
+            Err(error) => {
+                if self.domain.live.account_wait.start() { log!("orchestrator waits for account/model selection: {}", error.message); }
+                return Ok(());
             }
-            return Ok(());
         };
-        if self.domain.live.account_wait.end() {
-            log!("orchestrator resumes: the Claude account {account} has a session");
-        }
+        if self.domain.live.account_wait.end() { log!("orchestrator resumes with {}", selection.account.wire_id()); }
+        if self.domain.live.usage_pause.is_active() { return Ok(()); }
         {
             let mut store = self.domain.store.lock().expect("domain store poisoned");
             store.discard_expired_orchestrator_messages(
@@ -342,8 +380,8 @@ impl Executor {
             return Ok(());
         }
         let (Some(orchestrator_plugin), Some(node_plugin)) = (
-            crate::plugins::dir(&self.claude_home, crate::plugins::ORCHESTRATOR),
-            crate::plugins::dir(&self.claude_home, crate::plugins::NODE),
+            crate::plugins::orchestrator_in(&self.home).or_else(|| crate::plugins::dir(&self.claude_home, crate::plugins::ORCHESTRATOR)),
+            crate::plugins::node_in(&self.home).or_else(|| crate::plugins::dir(&self.claude_home, crate::plugins::NODE)),
         ) else {
             bail!("Required Alondra plugins are not installed; run alondra doctor --fix");
         };
@@ -355,7 +393,7 @@ impl Executor {
         drop(state);
         let ids: Vec<i64> = pending.iter().map(|message| message.id).collect();
         let (claims, owner) = self.domain.store.lock().expect("domain store poisoned")
-            .claim_orchestrator_batch(&ids, &run_id, &session, epoch)?;
+            .claim_selected_orchestrator_batch(&ids, &run_id, &session, epoch, Some(&selection))?;
         let attempts: Vec<(i64, u64)> = claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect();
         let claimed: Vec<OutboxMessage> = claims.into_iter().map(|claim| claim.message).collect();
         if claimed.is_empty() && runtime.pending_resolutions.is_empty() {
@@ -395,11 +433,11 @@ impl Executor {
             }
         };
         let output = match self.domain.sdk() {
-            Some((backend, _)) => crate::orchestrator_sdk::execute(crate::orchestrator_sdk::Batch {
-                owner, backend: backend.clone(), home: self.home.clone(), directory: directory.clone(),
+            Some((backend, _)) => crate::orchestrator_provider::execute(crate::orchestrator_provider::Batch {
+                owner, domain: Arc::clone(&self.domain), backend: backend.clone(), home: self.home.clone(), directory: directory.clone(),
                 node_plugin, orchestrator_plugin, projects_root: projects_root.clone(),
                 capability: capability.expose_for_child_environment().to_owned(),
-                session: session.clone(), prompt, account: account.clone(),
+                session: session.clone(), prompt, selection: selection.clone(),
             }, mark_spawned, cancel).await,
             None => {
                 drop(owner);
@@ -407,14 +445,27 @@ impl Executor {
             }
         };
         let changes = self.domain.end_execution(&run_id);
+        self.domain.drain_batch_operations(&run_id).await?;
+        let effects_confirmed = self.domain.confirmed_batch_effects(&run_id,&changes)?;
         let mut runtime = load(&self.home)?;
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
         let end = if runtime.cancel_requested {
-            BatchEnd::Cancelled { effects: (!changes.is_empty()).then_some(changes) }
+            BatchEnd::Cancelled { effects: (!changes.is_empty()).then_some(changes.clone()) }
+        } else if output.stream.denied {
+            BatchEnd::Denied { calls:changes.clone(),why:output.stream.error.clone().unwrap_or_else(|| "The provider denied an Alondra tool".into()) }
+        } else if output.stream.native_request_rejected || output.stream.native_work_unfinished {
+            BatchEnd::Interrupted { calls: changes.clone(), why: output.stream.error.clone().unwrap_or_else(|| "The native request was rejected; correct it before explicitly retrying".into()) }
+        } else if let Some(reset) = output.stream.limit(&output.diagnostic) && effects_confirmed {
+            BatchEnd::Limited { reset }
+        } else if !effects_confirmed {
+            BatchEnd::Interrupted { calls: changes.clone(), why: "Some admitted mutations have no confirmed durable result; reconcile them before continuing".into() }
         } else {
-            output.end(&session, false)
+            match output.end(&session,false) {
+                BatchEnd::NotStarted { why } if !changes.is_empty() => BatchEnd::Interrupted { calls: changes.clone(),why },
+                other => other,
+            }
         };
-        crate::metrics_capture::orchestrator_batch(&self.domain, &session, &output.stream.spent, now_millis());
+        crate::metrics_capture::orchestrator_provider_batch(&self.domain, &session, selection.account.provider, &output.stream.spent, now_millis());
         if let Some(context) = output.stream.context() {
             log!("orchestrator: batch {} read {} tokens in its first call and {} in its last (window {})",
                 run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));
@@ -423,7 +474,7 @@ impl Executor {
         if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. } | BatchEnd::SessionMissing)
             && let Some(reset) = output.stream.limit(&output.diagnostic)
         {
-            crate::usage_probe::record_limit(&self.domain, &account, reset, now_millis());
+            crate::orchestrator_provider::record_limit(&self.domain, &selection, reset, now_millis());
         }
         let problem = |stop: BatchStop, calls: Vec<String>| BatchProblem { stop, calls, subjects: self.subjects(&claimed), error: String::new() };
         match end {
@@ -454,6 +505,9 @@ impl Executor {
                 save(&self.home, &runtime)
             }
             BatchEnd::Limited { .. } => {
+                if !changes.is_empty() {
+                    runtime.batch_handoffs.push(crate::orchestrator_provider::BatchHandoff { run_id: run.id.clone(), selection: selection.clone(), reason: "The selected account exhausted its quota after confirmed effects".into() });
+                }
                 self.finish(&run, State::Retryable, Some("orchestrator_usage_exhausted"))?;
                 runtime.active_run = None;
                 runtime.last_error = None;
@@ -484,10 +538,13 @@ impl Executor {
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         runtime.pending_resolutions.clear();
+        let prior_handoffs = std::mem::take(&mut runtime.batch_handoffs);
         if let Some(problem) = runtime.stuck_problem.take() {
             let _ = self.domain.withdraw_problem(&InteractionId(problem));
         }
         save(&self.home, &runtime)?;
+        for handoff in prior_handoffs { self.domain.store.lock().expect("domain store poisoned").finish_batch(&handoff.run_id)?; }
+        self.domain.store.lock().expect("domain store poisoned").finish_batch(&run.id)?;
         if !self.pending()?.is_empty() {
             return Ok(());
         }
@@ -541,6 +598,7 @@ impl Executor {
             return save(&self.home, &runtime);
         };
         self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
+        runtime.retry_at = None;
         runtime.failure = Some(if problem.stop == BatchStop::Denied { Failure::Denied } else { Failure::Interrupted });
         save(&self.home, &runtime)?;
         self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
@@ -884,6 +942,40 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         Fixture::over(root, domain, home)
     }
 
+    fn seed_command(domain:&DomainRuntime,id:&str,command:Command) {
+        let state=domain.state().unwrap();
+        domain.execute_as_system(CommandEnvelope {protocol_version:PROTOCOL_VERSION,data_epoch:state.data_epoch.clone(),command_id:id.into(),expected_revision:state.revision,command}).unwrap();
+    }
+
+    pub(crate) fn seed_native_metadata(domain:&DomainRuntime, home:&std::path::Path) {
+        let option_path = alondra_core::options::path_in(&home);
+            if !option_path.exists() {
+                std::fs::write(&option_path, "[accounts]\nconnected=[\"claude\"]\n[model_profiles.claude.orchestrator]\nmode=\"ordered_candidates\"\ncandidates=[{model=\"opus\"}]\n").unwrap();
+            }
+            let configured = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&option_path).unwrap()).unwrap();
+            if !configured.accounts.is_connected(alondra_core::accounts::Provider::Claude) { return; }
+            if configured.model_profiles.get(&alondra_core::accounts::Provider::Claude).is_none_or(|profiles| !profiles.contains_key(&alondra_core::model_selection::ModelProfile::Orchestrator)) {
+                let mut profiles = configured.model_profiles.clone();
+                profiles.entry(alondra_core::accounts::Provider::Claude).or_default().insert(alondra_core::model_selection::ModelProfile::Orchestrator,
+                    alondra_core::model_selection::RoleModelPolicy::OrderedCandidates { candidates: vec![alondra_core::model_selection::ModelCandidate { model:"opus".into(),reasoning_effort:None }] });
+                let text=std::fs::read_to_string(&option_path).unwrap();
+                std::fs::write(&option_path,alondra_core::options::with_model_profiles(&text,&profiles).unwrap()).unwrap();
+            }
+            {
+                use alondra_core::accounts::{AccountBilling,AccountId,AccountKey,AccountState,AccountStatus,Provider};
+                use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
+                let key = AccountKey::new(Provider::Claude,AccountId::default_account());
+                if domain.read().state().accounts.is_empty() {
+                seed_command(&domain,"fixture-account",Command::RecordAccounts { accounts: vec![AccountStatus { provider: Provider::Claude,id: key.account.clone(),name:"Default".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins:0 }],reserve:alondra_core::usage::default_reserve() });
+                }
+                seed_command(&domain,"fixture-account-order",Command::RecordAccountConfiguration { order:vec![key.clone()],version:"fixture-accounts".into() });
+                let file = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&option_path).unwrap()).unwrap();
+                let version = alondra_core::model_selection::profiles_version(&file.model_profiles);
+                seed_command(&domain,"fixture-model-profiles",Command::RecordModelProfiles { profiles:file.model_profiles,version });
+                seed_command(&domain,"fixture-model-catalog",Command::RecordModelCatalog { catalog:AccountModelCatalog { account:key,revision:"fixture-models".into(),models:vec![CatalogModel { model:"opus".into(),display_name:"Native fixture model".into(),reasoning_efforts:vec![],default_reasoning_effort:None,context_window:Some(200000),input_modalities:vec!["text".into()],is_default:false,hidden:false }],native_default:None,measured_at:0 } });
+            }
+    }
+
     impl Fixture {
         /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live in `root`.
         pub(crate) fn over(root: Directory, domain: Arc<DomainRuntime>, home: PathBuf) -> Self {
@@ -916,8 +1008,10 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
                 state_root: state.join("h"),
                 io_timeout_seconds: 30,
                 installed_native: false,
+            provider: alondra_core::accounts::Provider::Claude, origin: None,
             };
             domain.enable_sdk(backend);
+            seed_native_metadata(&domain,&home);
             let ownership = Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
             Self { executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership, capture, held, release, claude_home, _state: state, root }
         }
@@ -1170,7 +1264,7 @@ mod tests {
         ask_orchestrator(&f, 1);
         f.tick().await;
         let prompt = last_prompt(&f);
-        assert!(prompt.contains(&format!("Projects root, readable with Read, Glob and Grep: {}\n", projects.display())), "{prompt}");
+        assert!(prompt.contains(&format!("Projects root, readable through the role's file tools: {}\n", projects.display())), "{prompt}");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none(), "{runtime:?}");
         assert_eq!(runtime.last_error, None);
@@ -1477,6 +1571,45 @@ mod tests {
         assert!(attempts(domain).iter().any(|(id, state, _)| *id == claim.message.id && state == "discarded"));
     }
 
+    #[test]
+    fn a_native_billing_change_cannot_turn_a_selected_batch_into_automatic_paid_use() {
+        let f=fixture();
+        let domain=&f.executor.domain;
+        let selected=crate::orchestrator_provider::selection(domain,&f.executor.home,now_millis()).unwrap();
+        let before=domain.state().unwrap();
+        let mut accounts=before.accounts.clone();
+        accounts[0].billing=alondra_core::accounts::AccountBilling::PayPerUse;
+        f.run(Actor::System,"native-billing-changed",Command::RecordAccounts {accounts,reserve:before.account_reserve});
+        let mut store=domain.store.lock().unwrap();
+        assert!(store.claim_selected_orchestrator_batch(&[],"paid-race","native-session",before.data_epoch.clone(),Some(&selected)).is_err());
+        assert!(store.batch_selection("paid-race").unwrap().is_none(),"No run or provider offer was created");
+    }
+
+    #[test]
+    fn a_restart_keeps_an_unconfirmed_physical_operation_ambiguous() {
+        let f = fixture();
+        ask_orchestrator(&f,1);
+        let domain = &f.executor.domain;
+        let pending = unhandled(domain)[0].0;
+        let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
+        let epoch = domain.state().unwrap().data_epoch.clone();
+        {
+            let mut store = domain.store.lock().unwrap();
+            store.bind_batch_effects("uncertain-restart",&epoch).unwrap();
+            store.begin_tool_operation("uncertain-restart","call","interrupt",&serde_json::json!({"session_id":"a"})).unwrap();
+        }
+        let mut runtime = load(&f.executor.home).unwrap();
+        runtime.active_run = Some(Run { id:"uncertain-restart".into(),message_ids:vec![claim.message.id],attempts:vec![(claim.attempt_id,claim.version)],started_at:1,spawned:true });
+        save(&f.executor.home,&runtime).unwrap();
+        for _ in 0..2 {
+            let recovered = f.executor.recover().unwrap();
+            assert_eq!(recovered.active_run.as_ref().map(|run| run.id.as_str()),Some("uncertain-restart"));
+            assert_eq!(recovered.failure,Some(Failure::Interrupted));
+            assert!(unhandled(domain).is_empty(),"An unknown physical result is never reoffered");
+        }
+        assert!(attempts(domain).iter().any(|(id,state,_)| *id==claim.message.id && state=="uncertain"));
+    }
+
     #[tokio::test]
     async fn an_interrupted_batch_is_not_replayed_but_one_fresh_run_sees_its_open_request() {
         let f = fixture();
@@ -1621,9 +1754,13 @@ mod tests {
         use alondra_core::accounts::{AccountBilling, AccountId, AccountStatus, Provider};
         let accounts = vec![AccountStatus {
             provider: Provider::Claude, id: AccountId::default_account(), name: "default".into(), state,
-            email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+            native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
         }];
         command(&f.executor.domain, Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+        if state == alondra_core::accounts::AccountState::SignedIn {
+            let catalog=alondra_core::model_selection::AccountModelCatalog { account:alondra_core::accounts::AccountKey::native(Provider::Claude),revision:"fixture-models".into(),native_default:None,measured_at:now_millis(),models:vec![alondra_core::model_selection::CatalogModel { model:"opus".into(),display_name:"Native fixture model".into(),reasoning_efforts:vec![],default_reasoning_effort:None,context_window:Some(200000),input_modalities:vec!["text".into()],is_default:false,hidden:false }] };
+            command(&f.executor.domain,Actor::System,&format!("{id}-models"),Command::RecordModelCatalog {catalog});
+        }
     }
 
     #[tokio::test]
@@ -1734,6 +1871,7 @@ mod tests {
         let claude_home = super::testing::registered_plugins(&root);
         let _ownership = crate::orchestrator_process::Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
         let executor = Executor { domain: domain.clone(), home: home.clone(), claude_home };
+        super::testing::seed_native_metadata(&domain,&home);
         command(&domain, Actor::User { user_id: "u".into() }, "m-1", Command::CreateRequest {
             request_id: "m-1".into(), body: "Where do I put change 1?".into(), auto_merge: false, maintenance: false, message: true,
         });

@@ -34,6 +34,7 @@ pub(super) fn install(connection: &Connection) -> Result<()> {
     }
     connection.execute_batch(SCHEMA)?;
     connection.execute_batch(ADDITIONS)?;
+    context(connection, true)?;
     connection.execute_batch(MARKER_SCHEMA)?;
     connection.execute(
         "INSERT INTO lifecycle_journal_format(singleton,format) VALUES(1,?1)",
@@ -65,10 +66,14 @@ pub(super) fn extend(connection: &Connection) -> Result<bool> {
         let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get(0))?;
         if present {
             widen(connection)?;
+            verify_schema(connection)?;
+            context(connection,true)?;
             return Ok(true);
         }
     }
     connection.execute_batch(ADDITIONS)?;
+    verify_schema(connection)?;
+    context(connection,true)?;
     Ok(true)
 }
 /// Rebuilds, with every row, each addition table that still has an earlier definition, and brings
@@ -117,6 +122,7 @@ fn retain(connection: &Connection) -> Result<()> {
     Ok(())
 }
 fn verify_schema(connection: &Connection) -> Result<()> {
+    context(connection, false)?;
     require_object(
         connection,
         "table",
@@ -138,6 +144,21 @@ fn verify_schema(connection: &Connection) -> Result<()> {
             require_object(connection, kind, name, &expected)?;
         }
     }
+    Ok(())
+}
+fn context(connection: &Connection, install: bool) -> Result<()> {
+    let objects = objects(crate::task_context::SCHEMA)?;
+    let mut present = false;
+    for (_, name, _) in &objects {
+        present |= connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get::<_, bool>(0))?;
+    }
+    if !present && !install { return Ok(()); }
+    if install {
+        connection.execute_batch(crate::task_context::SCHEMA)?;
+        if !present { connection.execute_batch(crate::task_context::LEGACY_COVERAGE)?; }
+    }
+    for (kind, name, expected) in objects { require_object(connection, kind, name, &expected)?; }
+    if install { connection.execute_batch(crate::task_context::USAGE_BACKFILL)?; }
     Ok(())
 }
 /// The owned schema source delimits each CREATE at a line boundary; trigger bodies contain

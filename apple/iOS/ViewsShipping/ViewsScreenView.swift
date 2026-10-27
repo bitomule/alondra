@@ -15,7 +15,7 @@ struct ViewsScreenView: View {
     @State private var diffComments: [String: ActionComment] = [:]
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
-    private var isInlineForm: Bool { store.key.rawValue.hasPrefix("schedule:") }
+    private var isInlineForm: Bool { store.hasInlineForm }
     private var pickerRows: [AlondraContract.Row] {
         store.pickerDocument?.sections.flatMap(\.items).compactMap { item in
             if case let .row(row) = item { row } else { nil }

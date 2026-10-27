@@ -735,7 +735,7 @@ impl TaskLifecycle {
         match (input, &mut session) {
             (Some(input), Session::Present(execution)) => {
                 if cards.values().any(|card| card.reason == WaitReason::Pause)
-                    || execution.resource != ResourceEvidence::Available
+                    || !(execution.resource == ResourceEvidence::Available || (execution.resource == ResourceEvidence::Reserved && matches!(execution.activity,Activity::Launching(_))))
                 {
                     return Err(Refusal::InvalidState);
                 }
@@ -935,6 +935,7 @@ impl TaskLifecycle {
                             id,
                             work,
                             continuations,
+                            taken,
                             stop,
                         } => {
                             let mut work = work.clone();
@@ -943,6 +944,7 @@ impl TaskLifecycle {
                                 id: id.clone(),
                                 work,
                                 continuations: continuations.clone(),
+                                taken: taken.clone(),
                                 stop: *stop,
                             }
                         }

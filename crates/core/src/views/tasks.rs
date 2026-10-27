@@ -330,7 +330,7 @@ fn request_state(request: &Request, tasks: &[&Task], context: &RenderContext<'_>
     } else if without_tasks && orchestrator_asks(context) {
         t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
     } else if without_tasks && context.live.orchestrator.as_ref().is_some_and(|orchestrator| orchestrator.waits_for_sign_in) {
-        t!(context.lang, "Waiting for a Claude session", "Esperando una sesión de Claude")
+        t!(context.lang, "Waiting for a provider session", "Esperando una sesión de proveedor")
     } else if without_tasks {
         t!(context.lang, "Preparing its tasks", "Preparando sus tareas")
     } else {
@@ -637,6 +637,7 @@ fn group_row(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) ->
 fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Presentation>,
     chains: &BTreeMap<&TaskId, Vec<&Task>>, context: &RenderContext<'_>) -> super::Row {
     let mut row = presented_row(task, &shown[&task.id], context);
+    row.model = task_model_presentation(&task.id, context);
     row.depth = depth;
     let Some(waiting) = chains.get(&task.id).filter(|waiting| waiting.len() >= CHAIN_FOLDS_FROM) else { return row };
     let mut fold = common::row(&format!("chain:{}", task.id), "", Icon::Branch,
@@ -969,6 +970,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         tone: Some(task_state::present(task, context).tone),
         link: None,
     }];
+    let mut model_readings = vec![];
+    if let Some(model) = task_model_presentation(&task.id, context) {
+        model_readings.push(Fact { label: t!(context.lang, "Requested model", "Modelo solicitado").into(), value: model.requested, tone: None, link: None });
+        if let Some(effective) = model.effective { model_readings.push(Fact { label: t!(context.lang, "Effective model", "Modelo efectivo").into(), value: effective, tone: None, link: None }); }
+        if let Some(pending) = model.pending { model_readings.push(Fact { label: t!(context.lang, "Pending model", "Modelo pendiente").into(), value: pending, tone: Some(Tone::Warning), link: None }); }
+        if let Some(reason) = model.reason { model_readings.push(Fact { label: t!(context.lang, "Reason", "Motivo").into(), value: reason, tone: None, link: None }); }
+    }
     facts.push(Fact {
         label: t!(context.lang, "Request", "Solicitud").into(),
         value: request
@@ -998,7 +1006,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
-    let readings = live.map(|node| super::task_node::node_readings(node, context)).unwrap_or_default();
+    model_readings.extend(live.map(|node| super::task_node::node_readings(node, context)).unwrap_or_default());
+    let readings = model_readings;
     if !readings.is_empty() {
         view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
     }
@@ -1181,7 +1190,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value: crate::model_label::model_label(now), tone: None, link: None });
     }
     if let Some(account) = account_text(task, context) {
-        task_options.push(Fact { label: t!(context.lang, "Claude account", "Cuenta de Claude").into(), value: account, tone: None, link: None });
+        let provider = super::accounts::provider_name(task.provider);
+        task_options.push(Fact { label: tf!(context.lang, "{provider} account", "Cuenta de {provider}", provider = provider), value: account, tone: None, link: None });
     }
     view.sections.push(common::section(
         "options",
@@ -1271,6 +1281,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             }
             actions.push(action);
         }
+    }
+    if !task.state.terminal() && (!context.index.model_catalogs().is_empty() || task.selection.is_some())
+    {
+        actions.push(common::view_link(&format!("task_selection:{id}"), t!(context.lang, "Change model", "Cambiar modelo")));
     }
     view.sections.push(common::section(
         "actions",
@@ -1374,10 +1388,31 @@ fn account_text(task: &crate::domain::Task, context: &RenderContext<'_>) -> Opti
     if accounts.len() < 2 && account.is_default() {
         return None;
     }
-    let status = accounts.iter().find(|status| status.id == *account);
+    let status = accounts.iter().find(|status| status.provider == task.provider && status.id == *account);
     let name = status.map_or_else(|| account.as_str().to_owned(), |status| status.name.clone());
     Some(match status.map(|status| &status.billing) {
         Some(crate::accounts::AccountBilling::PayPerUse) => tf!(context.lang, "{name} · paid per use", "{name} · de pago por uso", name = name),
         _ => name,
+    })
+}
+
+
+fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option<super::TaskModelPresentation> {
+    let selection = context.index.task_selection(task)?;
+    let model_name = |model: &crate::model_selection::ModelKey, effort: Option<&str>| {
+        let provider = super::accounts::provider_name(model.provider);
+        match effort { Some(effort) => format!("{provider} · {} · {effort}", model.model), None => format!("{provider} · {}", model.model) }
+    };
+    let requested = selection.requested.as_ref().map(|model| model_name(model, selection.requested_reasoning_effort.as_deref()))
+        .unwrap_or_else(|| t!(context.lang, "Automatic", "Automático").into());
+    let effective = selection.effective.as_ref().map(|selection| model_name(&selection.model, selection.reasoning_effort.as_deref()));
+    let pending = context.index.pending_task_selection(task);
+    Some(super::TaskModelPresentation {
+        requested, effective,
+        pending: pending.map(|pending| format!("{} · {}", model_name(&pending.model.model, pending.model.reasoning_effort.as_deref()), pending.account.account)),
+        reason: pending.map(|pending| match pending.reason.as_str() {
+            "User changed model selection" | "User requested a selection change" => t!(context.lang, "Model change requested", "Cambio de modelo solicitado").into(),
+            _ => pending.reason.clone(),
+        }),
     })
 }

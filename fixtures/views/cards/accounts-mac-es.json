@@ -4,9 +4,9 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "vde0497ec4ff13bc3",
+  "version": "va3aff3d896fc21a0",
   "cursor": "cursor-1",
-  "title": "Cuentas de Claude",
+  "title": "Cuentas",
   "status": {
     "version": "v98d627cc842f14b6",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
@@ -61,15 +61,51 @@
   },
   "sections": [
     {
-      "id": "claude",
+      "id": "accounts",
       "collapsed": false,
       "items": [
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "default"
+            },
+            "position": 1,
+            "availability": {
+              "text": "Con sesión",
+              "tone": "success"
+            },
+            "email": "someone@example.org",
+            "plan": "max",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Último uso informado",
+              "tone": "neutral"
+            },
+            "windows": [
+              {
+                "kind": "session",
+                "label": "5 h",
+                "used_percent": 12,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              },
+              {
+                "kind": "weekly",
+                "label": "semana",
+                "used_percent": 34,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              }
+            ]
+          },
           "id": "claude-default",
           "icon": "machine",
           "title": "Principal",
-          "subtitle": "someone@example.org · max · peso 5, por plan\n5 h 12 % · semana 34 %",
+          "subtitle": "Claude · someone@example.org · max · peso 5, por plan\n5 h 12 % · semana 34 %",
           "badges": [
             {
               "text": "Con sesión",
@@ -177,15 +213,80 @@
               "attachments": false,
               "enabled": true,
               "resolves_card": false
+            },
+            {
+              "id": "account_rename:default@6",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Principal",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:default@6",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "work"
+            },
+            "position": 2,
+            "availability": {
+              "text": "Con sesión",
+              "tone": "success"
+            },
+            "email": "someone@work.example",
+            "plan": "max_20x",
+            "active_nodes": 1,
+            "freshness": {
+              "text": "Último uso informado",
+              "tone": "neutral"
+            },
+            "windows": [
+              {
+                "kind": "session",
+                "label": "5 h",
+                "used_percent": 61,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              },
+              {
+                "kind": "weekly",
+                "label": "semana",
+                "used_percent": 48,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              }
+            ]
+          },
           "id": "claude-work",
           "icon": "machine",
           "title": "Work",
-          "subtitle": "someone@work.example · max_20x · peso 8, fijado por ti\n5 h 61 % · semana 48 % · 1 nodo",
+          "subtitle": "Claude · someone@work.example · max_20x · peso 8, fijado por ti\n5 h 61 % · semana 48 % · 1 nodo",
           "badges": [
             {
               "text": "Con sesión",
@@ -316,6 +417,35 @@
               "resolves_card": false
             },
             {
+              "id": "account_rename:work@6",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Work",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:work@6",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
               "id": "account_remove:work@6",
               "label": "Quitar",
               "style": "destructive",
@@ -333,10 +463,28 @@
         },
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "personal"
+            },
+            "position": 3,
+            "availability": {
+              "text": "Sin sesión",
+              "tone": "your_turn"
+            },
+            "reason": "Inicia sesión en el Mac para usar esta cuenta",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Uso sin informar",
+              "tone": "neutral"
+            },
+            "windows": []
+          },
           "id": "claude-personal",
           "icon": "machine",
           "title": "Personal",
-          "subtitle": "peso 5, por plan",
+          "subtitle": "Claude · peso 5, por plan",
           "badges": [
             {
               "text": "Sin sesión",
@@ -363,7 +511,7 @@
                 "local": {
                   "kind": "account_sign_in",
                   "account": "Personal",
-                  "command": "alondra accounts login 'Personal'"
+                  "command": "alondra accounts login 'personal'"
                 }
               },
               "resolves_card": false
@@ -481,6 +629,35 @@
               "resolves_card": false
             },
             {
+              "id": "account_rename:personal@6",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Personal",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:personal@6",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
               "id": "account_remove:personal@6",
               "label": "Quitar",
               "style": "destructive",
@@ -492,7 +669,7 @@
               "attachments": false,
               "confirm": {
                 "title": "¿Quitar Personal?",
-                "message": "Alondra cierra la sesión de Personal en Claude en este Mac y la olvida. Tu cuenta de Claude sigue como está.",
+                "message": "Alondra cierra la sesión de Personal en Claude en este Mac y la olvida. Tu cuenta del proveedor sigue como está.",
                 "button": "Quitar"
               },
               "enabled": true,
@@ -503,10 +680,28 @@
         },
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "old"
+            },
+            "position": 4,
+            "availability": {
+              "text": "Desactivada",
+              "tone": "neutral"
+            },
+            "reason": "Trabajo nuevo desactivado; el trabajo en curso continúa",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Uso sin informar",
+              "tone": "neutral"
+            },
+            "windows": []
+          },
           "id": "claude-old",
           "icon": "machine",
           "title": "Old",
-          "subtitle": "peso 5, por plan",
+          "subtitle": "Claude · peso 5, por plan",
           "badges": [
             {
               "text": "Desactivada",
@@ -615,6 +810,35 @@
               "resolves_card": false
             },
             {
+              "id": "account_rename:old@6",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Old",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:old@6",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
               "id": "account_remove:old@6",
               "label": "Quitar",
               "style": "destructive",
@@ -626,7 +850,7 @@
               "attachments": false,
               "confirm": {
                 "title": "¿Quitar Old?",
-                "message": "Alondra cierra la sesión de Old en Claude en este Mac y la olvida. Tu cuenta de Claude sigue como está.",
+                "message": "Alondra cierra la sesión de Old en Claude en este Mac y la olvida. Tu cuenta del proveedor sigue como está.",
                 "button": "Quitar"
               },
               "enabled": true,
@@ -634,13 +858,36 @@
               "resolves_card": false
             }
           ]
-        },
+        }
+      ],
+      "style": "list",
+      "actions": [
+        {
+          "id": "account_check:accounts@6",
+          "label": "Comprobar cuentas",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": false
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "title": "Proveedores",
+      "collapsed": false,
+      "items": [
         {
           "type": "row",
           "id": "claude-add",
           "icon": "action",
-          "title": "Añadir una cuenta",
-          "subtitle": "Solo pide un nombre; luego inicias sesión en Claude en el Mac",
+          "title": "Añadir una cuenta de Claude",
+          "subtitle": "Elige un nombre y completa el inicio de sesión nativo en el Mac",
           "depth": 0,
           "struck": false,
           "actions": [
@@ -660,6 +907,46 @@
                 "local": {
                   "kind": "account_add",
                   "command": "alondra accounts add"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-connect",
+          "icon": "machine",
+          "title": "Conectar Codex",
+          "subtitle": "Usar el inicio de sesión nativo de este proveedor en el Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Conectar",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_sign_in",
+                  "account": "default",
+                  "command": "alondra accounts login --provider codex 'default'",
+                  "provider": "codex",
+                  "argv": [
+                    "accounts",
+                    "login",
+                    "--provider",
+                    "codex",
+                    "default"
+                  ]
                 }
               },
               "resolves_card": false
@@ -714,7 +1001,7 @@
           "id": "claude-moves",
           "icon": "node",
           "title": "Mover un nodo cuando su cuenta se agota",
-          "subtitle": "Anthropic no dice si cambiar de cuenta al llegar al límite está permitido.",
+          "subtitle": "Continuar con la siguiente cuenta apta de tu orden cuando se agote la cuota",
           "badges": [
             {
               "text": "Desactivado",
@@ -730,13 +1017,231 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "on",
-              "description": "El nodo sigue con otra cuenta, en la misma conversación",
+              "description": "El nodo continúa con el contexto guardado en la siguiente cuenta apta",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
               "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "model_profiles",
+      "title": "Modelos por función",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-implementation",
+          "icon": "machine",
+          "title": "Claude · Implementación",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-implementation@0",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-implementation"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-general",
+          "icon": "machine",
+          "title": "Claude · Trabajo general",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-general@0",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-general"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-design",
+          "icon": "machine",
+          "title": "Claude · Diseño",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-design@0",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-design"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-review",
+          "icon": "machine",
+          "title": "Claude · Revisión",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-review@0",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-review"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-orchestrator",
+          "icon": "machine",
+          "title": "Claude · Orquestador",
+          "subtitle": "Predeterminado nativo si se comunica",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-orchestrator@0",
+              "label": "Elegir modelo",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Editar candidatos ordenados",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-orchestrator"
+              },
               "resolves_card": false
             }
           ]

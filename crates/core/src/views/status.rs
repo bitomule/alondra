@@ -93,8 +93,8 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
             paused_by_user: exhausted.paused_by_user,
         }),
         session_wait: context.live.waits_for_session.then(|| super::Notice {
-            text: t!(context.lang, "Waiting for a Claude session · sign in to an account in Claude accounts",
-                "Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude").into(),
+            text: t!(context.lang, "No provider account is available · check Accounts",
+                "No hay ninguna cuenta de proveedor disponible · revisa Cuentas").into(),
             tone: Tone::Warning,
             action: None,
         }),

@@ -1,0 +1,62 @@
+# What Alondra knows of each model before it has measured it: relative cost, the kinds of work it
+# suits, what to watch for and the public evidence behind it. The first sheet whose `match` starts
+# the model's id wins, so a specific prefix goes before a generic one. Sources:
+#   TB4: Terminal-Bench 4.0 (tbench.ai, via the morphllm leaderboard, 2026-10-06).
+#   AIDev: study of 7,156 agentic PRs, arXiv 2602.08915. Task type mattered more than the agent.
+#   Warp: Warp's guidance on choosing between Claude Code and Codex.
+
+[[sheet]]
+provider = "claude"
+match = "opus"
+cost = "high"
+good_for = ["feature", "refactor", "design", "review", "research", "migration"]
+cautions = "Priciest Claude tier; wasted on mechanical work"
+evidence = "TB4: Claude Code + Opus 5.5 64.8%, top of the cited runs. AIDev: Claude Code led features (72.6%) and docs (92.3%). Warp: Claude Code for large refactors and integrations"
+
+[[sheet]]
+provider = "claude"
+match = "sonnet"
+cost = "medium"
+good_for = ["feature", "fix", "refactor", "tests", "docs"]
+cautions = "Below Opus on TB4 (61.8% vs 64.8%)"
+evidence = "TB4: Claude Code + Sonnet 5.5 61.8%. AIDev: Claude Code led features (72.6%) and docs (92.3%)"
+
+[[sheet]]
+provider = "claude"
+match = "haiku"
+cost = "low"
+good_for = ["docs", "tests"]
+cautions = "No cited benchmark; small, fully specified work only"
+evidence = "None cited; rely on Alondra's measured results"
+
+[[sheet]]
+provider = "claude"
+match = "fable"
+cost = "high"
+good_for = ["design", "review", "research"]
+cautions = "No cited benchmark; choose it on measured results"
+evidence = "None cited; rely on Alondra's measured results"
+
+[[sheet]]
+provider = "codex"
+match = "gpt-6.1-sol"
+cost = "medium"
+good_for = ["fix", "tests", "migration", "refactor", "review", "docs"]
+cautions = "Below the Claude Code runs on TB4 (58.2%)"
+evidence = "TB4: Codex + GPT-6.1 Sol 58.2% at $1.92/task. AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill"
+
+[[sheet]]
+provider = "codex"
+match = "gpt-6-astra"
+cost = "medium"
+good_for = ["fix", "tests", "migration"]
+cautions = "Below the Claude Code runs on TB4 (58.2%)"
+evidence = "TB4: GPT-6 Astra 58.2%. AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill"
+
+[[sheet]]
+provider = "codex"
+match = "gpt"
+cost = "medium"
+good_for = ["fix", "tests", "migration"]
+cautions = "Generic Codex sheet; no benchmark for this model"
+evidence = "AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill"

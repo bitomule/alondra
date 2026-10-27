@@ -140,4 +140,22 @@ final class NewRequestSnapshotTests: XCTestCase {
         let store = Store(initialState: state) { EmptyReducer<IssuePickerFeature.State, IssuePickerFeature.Action>() }
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 700) { IssuePickerView(store: store) } }
     }
+    func test_codexModelOptions() throws {
+        let store = try options("new-request-codex-ios") { state in
+            state.values["model"] = .string("codex/fixture-general")
+            state.values["reasoning_effort"] = .string("high")
+            state.values["allow_model_substitution"] = .bool(false)
+        }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { RequestOptionsSheet(store: store) } }
+    }
+
+    func test_codexModelOptions_spanish() throws {
+        let store = try options("new-request-codex-ios-es") { state in
+            state.values["model"] = .string("codex/fixture-general")
+            state.values["reasoning_effort"] = .string("high")
+            state.values["allow_model_substitution"] = .bool(false)
+        }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { RequestOptionsSheet(store: store) } }
+    }
+
 }

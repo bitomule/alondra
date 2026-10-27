@@ -248,7 +248,7 @@ impl App {
             agent_sel: self.agent_sel.clone(),
             agent_scroll: self.agent_scroll,
             agent_detail_scroll: self.agent_detail_scroll,
-            composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. }))
+            composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. } | super::Target::AccountPosition))
                 .map(|c| OpenComposer { text: c.input.text(), chips: c.chips, target: c.target }),
         }
     }
@@ -436,7 +436,7 @@ mod tests {
 
     /// A daemon newer than this terminal, the same version on disk, and 10 s without a key.
     fn behind(app: &mut App) {
-        app.service_seen(Service { version: NEWER.into(), views_protocol: alondra_core::views::VIEWS_PROTOCOLS });
+        app.service_seen(Service { version: NEWER.into(), views_protocol: alondra_core::views::VIEWS_PROTOCOLS, capabilities: vec![] });
         app.version_tick();
         app.disk_checked(NEWER.into(), Disk::Version(NEWER.into()));
         app.updated.last_key_at = now_millis() - version_watch::IDLE_MS;

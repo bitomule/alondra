@@ -29,6 +29,11 @@ pub(super) enum Act {
     CloseMcpServers,
     OpenMcpDetail,
     McpAction(usize),
+    OpenAccountDetail,
+    BeginAccountOrder,
+    MoveAccountOrder(bool),
+    AccountOrderPosition,
+    SaveAccountOrder,
     Search,
     Quit,
     Help,
@@ -428,12 +433,30 @@ impl App {
         if screen.rows().len() > 1 {
             t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
         }
+        if let Some(order) = &screen.order {
+            if order.command.is_none() {
+                if !order.conflict {
+                    t.add(vec![char('K')], "K", tr!("move up", "subir"), Act::MoveAccountOrder(false));
+                    t.add(vec![char('J')], "J", tr!("move down", "bajar"), Act::MoveAccountOrder(true));
+                    t.add(vec![char('p')], "p", tr!("position", "posición"), Act::AccountOrderPosition);
+                    if order.keys() != order.initial { t.add(vec![plain(KeyCode::Enter)], "Enter", tr!("save", "guardar"), Act::SaveAccountOrder); }
+                } else { t.add(vec![char('r')], "r", tr!("reload draft", "recargar borrador"), Act::BeginAccountOrder); }
+                t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("cancel", "cancelar"), Act::CloseMcpServers);
+            }
+            return;
+        }
+        if screen.account_detail.is_none() && screen.selected().is_some_and(|row| row.account.is_some()) {
+            t.add(vec![plain(KeyCode::Enter)], "Enter", tr!("account details", "detalles de cuenta"), Act::OpenAccountDetail);
+        }
+        if !screen.detail && screen.accounts.as_ref().is_some_and(|view| view.sections.iter().flat_map(|section| &section.actions).any(|action| action.enabled && action.id.starts_with("account_order:"))) {
+            t.add(vec![char('o')], "o", tr!("reorder accounts", "ordenar cuentas"), Act::BeginAccountOrder);
+        }
         if screen.on_servers_row() {
             t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::OpenMcpDetail);
         } else if let Some(row) = screen.selected() {
             for (index, action) in super::mcp_servers::actions(row).into_iter().enumerate() {
                 let mut keys: Vec<KeyEvent> = digit(index).into_iter().collect();
-                if index == 0 {
+                if index == 0 && (row.account.is_none() || screen.account_detail.is_some()) {
                     keys.push(plain(KeyCode::Enter));
                 }
                 t.add(keys, &(index + 1).to_string(), super::mcp_servers::button_label(row, action).to_owned(), Act::McpAction(index));
@@ -560,6 +583,7 @@ impl App {
             Act::Focus(pane) => self.focus = pane,
             Act::Back => {
                 self.view_navigation.pop();
+                self.restore_settings_after_view();
                 self.card_view = None;
                 self.card_view_asked = None;
                 self.load_selected_view();
@@ -598,6 +622,11 @@ impl App {
             Act::CloseMcpServers => self.close_mcp_servers(),
             Act::OpenMcpDetail => self.open_mcp_detail(),
             Act::McpAction(index) => return self.mcp_server_action(index),
+            Act::OpenAccountDetail => self.open_account_detail(),
+            Act::BeginAccountOrder => self.begin_account_order(),
+            Act::MoveAccountOrder(down) => self.move_account_order(down),
+            Act::AccountOrderPosition => self.account_order_position(),
+            Act::SaveAccountOrder => self.save_account_order(),
             Act::Search => {
                 self.search = Some(super::Search {
                     input: super::TextInput::default(),

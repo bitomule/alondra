@@ -173,7 +173,7 @@ impl World {
     /// What the daemon does once usage is back: it probes Claude with a task the limit holds, whose
     /// Claude answers, which lets every other task the limit held go on.
     fn usage_back(&mut self, n: usize) -> Result<(), String> {
-        let Ok(_) = exec(&mut self.s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None }) else { return Ok(()) };
+        let Ok(_) = exec(&mut self.s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: None }) else { return Ok(()) };
         let probed = (0..TASKS.len()).find(|at| matches!(self.s.lifecycle_journal[&TaskId::from(TASKS[*at].0)].last(), Some(LifecycleRecord::Resumed { .. })))
             .ok_or("the probe resumed no task")?;
         if self.claude[probed].turn.is_none() && !self.take_input(probed, n) {

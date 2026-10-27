@@ -20,17 +20,32 @@ public struct ListRowView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 12) {
-                ListToneSymbol(icon: row.icon, tone: row.badges.first?.tone)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(verbatim: row.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink).lineLimit(2)
-                    if let badge = row.badges.first { ListToneChip(label: badge) }
-                    if let subtitle = row.subtitle {
-                        Text(verbatim: subtitle).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 12) {
+                    ListToneSymbol(icon: row.icon, tone: row.badges.first?.tone)
+                    labels.fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 0)
+                    actions
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                actions
+                HStack(alignment: .top, spacing: 12) {
+                    ListToneSymbol(icon: row.icon, tone: row.badges.first?.tone)
+                    VStack(alignment: .leading, spacing: 8) {
+                        labels
+                        if !row.actions.isEmpty { actions }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if let model = row.model {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Requested: \(model.requested)")
+                    if let effective = model.effective { Text("Effective: \(effective)") }
+                    if let pending = model.pending { Text("Pending: \(pending)").foregroundStyle(Palette.ember) }
+                    if let reason = model.reason { Text(verbatim: reason).foregroundStyle(.secondary) }
+                }.font(.caption).padding(.leading, 44)
+            }
+            ForEach(disabledReasons, id: \.self) { reason in
+                Text(verbatim: reason).font(.footnote).foregroundStyle(.secondary).padding(.leading, 44)
             }
             ForEach(row.children, id: \.id) { child in
                 HStack(spacing: 8) {
@@ -47,21 +62,36 @@ public struct ListRowView: View {
         .accessibilityIdentifier("list.row.\(row.id)")
     }
 
+    private var labels: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: row.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            if let badge = row.badges.first { ListToneChip(label: badge) }
+            if let subtitle = row.subtitle {
+                Text(verbatim: subtitle).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var disabledReasons: [String] {
+        row.actions.filter { !$0.enabled }.compactMap { $0.disabledReason ?? ($0.needsNewerApp ? String(localized: "Update Alondra to use this action") : nil) }
+            .reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+    }
+
     private func run(_ action: Action) {
         if let link = action.link { onLink(link) } else { onAction(action) }
     }
 
     @ViewBuilder private var actions: some View {
-        let shown = row.actions.filter(\.enabled)
+        let shown = row.actions
         HStack(spacing: 6) {
-            if let first = shown.first { button(first) }
+            if let first = shown.first { button(first).disabled(!first.enabled) }
             if shown.count > 1 {
                 Menu {
-                    ForEach(Array(shown.dropFirst().enumerated()), id: \.offset) { _, action in
+                    ForEach(Array(shown.dropFirst()), id: \.label) { action in
                         if action.presentation == .menu, !action.options.isEmpty {
-                            Menu { options(action) } label: { Text(verbatim: action.label) }
+                            Menu { options(action) } label: { Text(verbatim: action.label) }.disabled(!action.enabled)
                         } else {
-                            Button(role: action.style == .destructive ? .destructive : nil) { run(action) } label: { Text(verbatim: action.label) }
+                            Button(role: action.style == .destructive ? .destructive : nil) { run(action) } label: { Text(verbatim: action.label) }.disabled(!action.enabled)
                         }
                     }
                 } label: {

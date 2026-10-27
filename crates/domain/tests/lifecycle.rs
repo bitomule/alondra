@@ -1029,6 +1029,28 @@ fn a_turn_takes_up_the_notifications_waiting_as_it_starts_and_its_empty_end_wake
     assert!(task.cards().is_empty(), "nobody is asked yet");
 }
 
+/// Codex reports reading a finished child's continuation after the turn that reads it has started;
+/// that turn already took it, so the report is accepted, and one for a continuation nobody left is not.
+#[test]
+fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknown_one_refused() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("child-done") });
+    apply(&mut task, Event::Tell { input: input("told") });
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
+    fact(&mut task, RuntimeFact::ContinuationConsumed { continuation: continuation("child-done") });
+    let stamp = task.execution().unwrap().clone();
+    let cursor = task.cursor().unwrap() + 1;
+    assert_eq!(
+        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::ContinuationConsumed { continuation: continuation("child-done") } }),
+        Err(Refusal::UnknownObligation),
+        "a continuation is read once"
+    );
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None });
+    assert_eq!(task.activity(), ActivityView::Resting);
+}
+
 /// One step of an arbitrary history: an event the task may or may not accept.
 fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
     let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
@@ -3029,4 +3051,13 @@ fn a_hand_back_keeps_the_questions_that_still_wait_and_queues_the_changes() {
     assert_eq!(task.phase(), TaskPhase::InProgress);
     assert_eq!(task.stage(), Some(WorkStage::ChangesRequested));
     assert_eq!(task.pending_inputs(), vec![&input("changes")]);
+}
+
+
+#[test]
+fn retry_answer_before_native_readiness_preserves_original_mission_and_never_claims_availability(){
+    let mut task=TaskLifecycle::planned("task".into(),input("original-mission")).unwrap();admit(&mut task,"instance");apply(&mut task,Event::Ask{card:"retry".into()});apply(&mut task,Event::Answer{card:"retry".into(),input:input("user-retry")});
+    assert_eq!(task.resource(),Some(ResourceEvidence::Reserved));assert_eq!(task.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["original-mission","user-retry"]);assert!(task.turn().is_none());
+    let before=format!("{task:?}");let stamp=task.execution().unwrap().clone();assert!(task.apply(task.revision(),Event::Runtime{stamp,cursor:1,fact:RuntimeFact::TurnStarted{turn:turn("invalid"),trigger:Trigger::Input(input("original-mission"))}}).is_err());assert_eq!(format!("{task:?}"),before);
+    fact(&mut task,RuntimeFact::ResourceAvailable);fact(&mut task,RuntimeFact::TurnStarted{turn:turn("actual"),trigger:Trigger::Input(input("original-mission"))});assert_eq!(task.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["user-retry"]);
 }

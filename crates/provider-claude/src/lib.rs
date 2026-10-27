@@ -20,7 +20,7 @@ pub use context::{ContextEvent, context_event, sdk_message};
 pub use mcp::{mcp_traits, removal_found_nothing, remove_arguments};
 pub use elicitation::{elicitation_content, elicitation_fields};
 pub use ended::{EndedJournal, Retained};
-pub use batch::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
+pub use batch::{BatchHost, PendingHostEvent, HostEvent, McpServer, OrchestratorProfile};
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 pub use wire::HostOwner;
 pub use records::conversation_session;

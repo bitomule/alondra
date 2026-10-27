@@ -14,6 +14,7 @@ fn sonnet_launch() -> Decision {
         task_id: "task-1".into(), request_id: "request-1".into(), agent_id: Some("agent-1".into()), at: 0, kind: DecisionKind::Launch,
         model: Some("sonnet".into()), effort: Some("medium".into()), approach: Some(Approach::Solo),
         chosen_by: ModelChooser::Orchestrator, reason: Some("why task-1".into()), title: "Title task-1".into(),
+        provider: None, tags: None,
     }
 }
 
@@ -26,6 +27,26 @@ fn decisions_can_be_neither_changed_nor_removed() {
     let delete = store.conn.execute("DELETE FROM model_decisions", []).unwrap_err().to_string();
     assert!(delete.contains("model decisions are retained"), "{delete}");
     assert_eq!(store.model_decision_rows().unwrap().len(), 1);
+}
+
+#[test]
+fn a_store_made_before_routing_gains_provider_and_tags_empty_for_its_old_rows() {
+    let (fixture, mut store) = store();
+    store.record_model_decision(&sonnet_launch()).unwrap();
+    store.conn.execute_batch("DROP TRIGGER immutable_model_decision; DROP TRIGGER retain_model_decision;
+        ALTER TABLE model_decisions DROP COLUMN provider; ALTER TABLE model_decisions DROP COLUMN task_kind;
+        ALTER TABLE model_decisions DROP COLUMN areas; ALTER TABLE model_decisions DROP COLUMN risks;
+        ALTER TABLE task_metrics DROP COLUMN provider; ALTER TABLE task_metrics DROP COLUMN kind;").unwrap();
+    drop(store);
+
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(reopened.model_decision_routing().unwrap(), [(None, None, None, None)], "the old row keeps its place, without provider or tags");
+    let tags = serde_json::from_value(serde_json::json!({"kind": "migration", "risks": ["data_migration", "concurrency"]})).unwrap();
+    reopened.record_model_decision(&Decision { provider: Some(alondra_core::accounts::Provider::Codex), tags: Some(tags), ..sonnet_launch() }).unwrap();
+    assert_eq!(reopened.model_decision_routing().unwrap()[1],
+        (Some("codex".into()), Some("migration".into()), None, Some(r#"["data_migration","concurrency"]"#.into())));
+    let task_metrics: i64 = reopened.conn.query_row("SELECT count(*) FROM pragma_table_info('task_metrics') WHERE name IN('provider','kind')", [], |r| r.get(0)).unwrap();
+    assert_eq!(task_metrics, 2);
 }
 
 #[test]

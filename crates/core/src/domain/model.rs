@@ -176,6 +176,12 @@ pub struct Task {
     /// was recorded, which run on the provider's own sign-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<crate::accounts::AccountId>,
+    #[serde(default, skip_serializing_if = "crate::accounts::Provider::is_claude")]
+    pub provider: crate::accounts::Provider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<crate::model_selection::TaskSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_selection: Option<crate::model_selection::PendingTaskSelection>,
     /// What the user allowed for the rest of the task from its permission cards, by the card each
     /// was allowed on. It is forgotten when the task ends.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -228,6 +234,10 @@ pub enum WorktreeEnd {
     UsersOwn,
 }
 impl Task {
+    pub fn account_key(&self) -> crate::accounts::AccountKey {
+        crate::accounts::AccountKey::new(self.provider, self.account.clone().unwrap_or_else(crate::accounts::AccountId::default_account))
+    }
+
     /// The worktrees that have not ended yet.
     pub fn open_worktrees(&self) -> impl Iterator<Item = (&String, &TaskWorktree)> {
         self.worktrees.iter().filter(|(_, w)| w.end.is_none())
@@ -1190,6 +1200,16 @@ pub struct DomainState {
     /// A node whose account reaches its limit goes on with another account.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub account_moves: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_order: Vec<crate::accounts::AccountKey>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account_config_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_catalogs: Vec<crate::model_selection::AccountModelCatalog>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_profiles: crate::model_selection::ModelProfiles,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_profiles_version: String,
     /// What each account last said of its usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub account_usage: Vec<crate::usage::AccountUsage>,
@@ -1229,6 +1249,11 @@ impl DomainState {
             account_reserve: crate::usage::default_reserve(),
             account_policy: crate::accounts::Policy::Margin,
             account_moves: false,
+            account_order: vec![],
+            account_config_version: String::new(),
+            model_catalogs: vec![],
+            model_profiles: BTreeMap::new(),
+            model_profiles_version: String::new(),
             account_usage: Vec::new(),
             merge_method: MergeMethod::default(),
         }

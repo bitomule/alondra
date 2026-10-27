@@ -166,7 +166,7 @@ fn command_name(command: &Command) -> &'static str {
 /// what its Claude does.
 fn moves_lifecycle(command: &Command) -> bool {
     matches!(command, Command::RecordRuntimeFacts { .. } | Command::RecordTurnBoundary { .. } | Command::RecordDroppedInput { .. }
-        | Command::RecordDecisionRequest { .. } | Command::RecordDecisionSettled { .. } | Command::RecordDecisionAborted { .. })
+        | Command::RecordDecisionRequest { .. } | Command::RecordDecisionSettled { .. } | Command::RecordDecisionAborted { .. } | Command::TellNode { .. })
 }
 fn application_error(error: alondra_agent_application::Error) -> StoreError {
     match error {
@@ -176,6 +176,12 @@ fn application_error(error: alondra_agent_application::Error) -> StoreError {
 }
 
 impl<'connection> OwnerTransaction<'connection> {
+    pub(crate) fn domain_state(&self) -> &DomainState { &self.draft.state }
+    pub(crate) fn record_settings_projection(&mut self, identity: &super::provider_settings::ProjectionIdentity) -> std::result::Result<(),StoreError> {
+        let conn = self.conn;
+        self.journal.inspect_mut(|_| super::provider_settings::record(conn,identity).map_err(StoreError::Storage))
+    }
+
     fn begin(
         conn: &'connection Connection,
         cached: &'connection Option<Cached>,
@@ -202,6 +208,19 @@ impl<'connection> OwnerTransaction<'connection> {
             },
             unrecorded: vec![],
         })
+    }
+
+    pub(crate) fn execution_binding(&self, stamp: &ExecutionStamp) -> std::result::Result<ProviderBinding, StoreError> { Ok(self.journal.execution_binding(stamp)?) }
+    pub(crate) fn state(&self) -> &DomainState { &self.draft.state }
+
+    pub(crate) fn retained_context(&self, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> std::result::Result<alondra_store::ContextPage,StoreError> {
+        Ok(self.journal.context_page(task,after,limit)?)
+    }
+    pub(crate) fn pin_context(&mut self, transfer: &str, through: &alondra_store::ContextRef) -> std::result::Result<(),StoreError> {
+        Ok(self.journal.pin_context(transfer,through)?)
+    }
+    pub(crate) fn release_context(&mut self, transfer: &str, task: &TaskId) -> std::result::Result<(),StoreError> {
+        Ok(self.journal.release_context(transfer,task)?)
     }
 
     /// What this transaction's observations moved in Claude and the domain refused to record.
@@ -253,6 +272,9 @@ impl<'connection> OwnerTransaction<'connection> {
         home: &std::path::Path,
         probe: bool,
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
+        self.stage_observation_with_identity(binding,owner_generation,batch,normalizer,home,probe,None)
+    }
+    pub(crate) fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&crate::sdk_owner::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
         let pending = alondra_agent_application::stage_observation(
             &mut self.journal,
             binding,
@@ -263,12 +285,26 @@ impl<'connection> OwnerTransaction<'connection> {
         .map_err(application_error)?;
         let execution = pending.execution().clone();
         let (task_id, generation) = (execution.task().clone(), execution.generation());
+        let proven_same_identity=|provider:alondra_core::accounts::Provider,status:&alondra_core::accounts::AccountStatus|identity.is_some_and(|expected|expected.change(status).is_none() && expected.same_known_native_account(provider,status));
+        let account_fresh=alondra_core::accounts::Provider::from_driver(binding.driver()).is_none_or(|provider|{
+            let account=crate::usage_probe::account_of(binding.credential());let key=alondra_core::accounts::AccountKey::new(provider,account.clone());
+            let status=self.draft.state.accounts.iter().find(|status|status.provider==provider && status.id==account);
+            if provider==alondra_core::accounts::Provider::Codex{return status.is_some_and(|status|proven_same_identity(provider,status))}
+            let generation_matches=binding.credential_generation()==crate::accounts::generation_provider(&self.draft.state,&key);
+            (generation_matches || status.is_some_and(|status|proven_same_identity(provider,status)))
+                && identity.is_none_or(|expected|status.is_none_or(|status|expected.change(status)!=Some("identity")))
+        });
+        let same_known_identity=identity.is_some_and(|_|alondra_core::accounts::Provider::from_driver(binding.driver()).is_some_and(|provider|{
+            let account=crate::usage_probe::account_of(binding.credential());
+            self.draft.state.accounts.iter().find(|status|status.provider==provider && status.id==account).is_some_and(|status|proven_same_identity(provider,status))
+        }));
         let cursor = |journal: &LifecycleTransaction<'_>| -> std::result::Result<Option<u64>, StoreError> {
             let lifecycle = journal.load(&task_id)?;
             Ok((lifecycle.execution() == Some(&execution)).then(|| lifecycle.cursor().unwrap_or(0)))
         };
         let before = if probe { cursor(&self.journal)? } else { None };
         let mut commands = vec![];
+        let mut continuations=std::collections::BTreeMap::new();
         let mut read_status = false;
         let mut technical = vec![];
         let flush = |commands: &mut Vec<Command>, technical: &mut Vec<RuntimeObservation>| {
@@ -279,11 +315,33 @@ impl<'connection> OwnerTransaction<'connection> {
         for fact in pending.facts() {
             match fact {
                 ObservedFact::Runtime(fact) => technical.push(self.journal.inspect(|| observed(fact))?),
-                ObservedFact::ModelAnswered => technical.push(RuntimeObservation::ModelAnswered),
+                ObservedFact::ContinuationRequested { work, activation, text } => {
+                    flush(&mut commands, &mut technical);
+                    if activation.is_empty() || activation.len()>4096 || text.trim().is_empty() || text.len()>8192 {
+                        return Err(DomainError::new("invalid_input","The native work continuation is invalid").into());
+                    }
+                    continuations.insert(commands.len(),(work.clone(),activation.clone()));
+                    commands.push(Command::TellNode{task_id:task_id.clone(),text:text.clone()});
+                }
+                ObservedFact::ModelAnswered => if account_fresh || same_known_identity{technical.push(RuntimeObservation::ModelAnswered)},
                 ObservedFact::TurnEnded { turn, outcome } => {
                     flush(&mut commands, &mut technical);
+                    if let TurnOutcome::ApiFailed(failure)=outcome
+                        && account_fresh
+                        && alondra_core::accounts::Provider::from_driver(binding.driver())==Some(alondra_core::accounts::Provider::Codex)
+                        && alondra_core::domain::classify_sdk(&failure.error,failure.status)==Some(alondra_core::domain::SdkFailureKind::Usage)
+                    {
+                        let account=self.draft.state.tasks.get(&task_id).ok_or_else(||DomainError::new("not_found","Task missing"))?.account_key();
+                        let provider=alondra_core::accounts::Provider::from_driver(binding.driver()).ok_or_else(||DomainError::new("unknown_provider","The native quota observation has no supported driver"))?;
+                        if provider!=account.provider{return Err(DomainError::new("provider_mismatch","The native quota belongs to another provider").into())}
+                        let at=alondra_core::now_millis();
+                        let kind=if provider==alondra_core::accounts::Provider::Codex{WindowKind::Other("codex:account:limit".into())}else{WindowKind::Session};
+                        let resets_at=failure.resets_at.and_then(|seconds|i64::try_from(seconds).ok()?.checked_mul(1000)).filter(|reset|*reset>at);
+                        commands.push(Command::RecordAccountUsage{provider,account:account.account,at,day:crate::node_reports::local_day(at),reading:UsageReading{plan:None,complete:false,windows:vec![WindowReading{kind,used:Share::NONE,exhausted:true,resets_at}]}});
+                    }
                     let (failure, failed) = match outcome {
                         TurnOutcome::Completed => (None, None),
+                        TurnOutcome::ApiFailed(_) if !account_fresh => (None,Some("stale_native_account_observation".into())),
                         TurnOutcome::ApiFailed(failure) => {
                             (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at }), None)
                         }
@@ -384,13 +442,15 @@ impl<'connection> OwnerTransaction<'connection> {
                     }
                 }
                 ObservedFact::Usage(report) => {
+                    if !account_fresh{continue}
                     flush(&mut commands, &mut technical);
+                    let Some(provider) = alondra_core::accounts::Provider::from_driver(binding.driver()) else { continue };
                     let account = crate::usage_probe::account_of(binding.credential());
                     let reading = usage_reading(report);
                     let at = alondra_core::now_millis();
-                    if !reading.is_empty() && reading.check().is_ok() && self.usage_changes(&account, &reading, at) {
+                    if !reading.is_empty() && reading.check().is_ok() && self.usage_changes(provider, &account, &reading, at) {
                         let day = crate::node_reports::local_day(at);
-                        commands.push(Command::RecordAccountUsage { provider: alondra_core::accounts::Provider::Claude, account, reading, at, day });
+                        commands.push(Command::RecordAccountUsage { provider, account, reading, at, day });
                     }
                 }
             }
@@ -400,10 +460,32 @@ impl<'connection> OwnerTransaction<'connection> {
             commands.push(Command::ReadMcpStatus { task_id: task_id.clone() });
         }
         for (index, command) in commands.into_iter().enumerate() {
+            let command_id=if let Some((work,activation))=continuations.get(&index){
+                let mut live=false;
+                for record in self.draft.state.lifecycle_journal.get(&task_id).into_iter().flatten(){
+                    match record {
+                        alondra_core::domain::LifecycleRecord::Admitted{..}|alondra_core::domain::LifecycleRecord::HostEnded{..}=>live=false,
+                        alondra_core::domain::LifecycleRecord::WorkStarted{work:found,..} if found==work.as_str()=>live=true,
+                        alondra_core::domain::LifecycleRecord::WorkEnded{work:found,..} if found==work.as_str()=>live=false,
+                        _=>{},
+                    }
+                }
+                let lifecycle=self.draft.state.lifecycle_of(&task_id)?;
+                live &= lifecycle.execution()==Some(&execution) && matches!(lifecycle.phase(),alondra_domain::TaskPhase::InProgress|alondra_domain::TaskPhase::Delivered);
+                if !live {
+                    if !probe{return Err(DomainError::new("native_work_mismatch","The native continuation has no matching live work").into())}
+                    log!("the native continuation of {task_id} has no matching live work: it commits without another input");
+                    continue;
+                }
+                use sha2::Digest;
+                let identity=serde_json::to_vec(&(task_id.0.as_str(),generation,work.as_str(),activation)).map_err(|error|StoreError::Storage(error.into()))?;
+                let digest=sha2::Sha256::digest(identity);let key:String=digest.iter().map(|byte|format!("{byte:02x}")).collect();
+                format!("native-work-followup-{key}")
+            }else{format!("observation:{}:{}:{}:{index}", execution.task(), execution.generation(), batch.cursor)};
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
                 data_epoch: self.draft.state.data_epoch.clone(),
-                command_id: format!("observation:{}:{}:{}:{index}", execution.task(), execution.generation(), batch.cursor).as_str().into(),
+                command_id: command_id.as_str().into(),
                 expected_revision: 0,
                 command,
             };
@@ -427,6 +509,10 @@ impl<'connection> OwnerTransaction<'connection> {
                 self.stage_command(&Actor::System, &envelope, Attached::None)?;
                 continue;
             };
+            if continuations.contains_key(&index) {
+                log!("the domain refused the native work continuation of {task_id}: {}: the observation commits without another input",refusal.message);
+                continue;
+            }
             if let Command::RecordDecisionRequest { task_id, generation, epoch, .. } = &envelope.command {
                 let denial = CommandEnvelope {
                     command_id: format!("{}:refused", envelope.command_id.0).as_str().into(),
@@ -445,14 +531,20 @@ impl<'connection> OwnerTransaction<'connection> {
                 self.unrecorded.push(what);
             }
         }
-        if !probe {
-            return pending.settle(&mut self.journal).map_err(application_error);
+        if account_fresh && binding.driver() == "codex-app-server" {
+            if let Some(message) = alondra_provider_codex::native_message(batch) {
+                let account = alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Codex, crate::usage_probe::account_of(binding.credential())).wire_id();
+                self.journal.inspect(|| super::codex_metrics::stage(self.conn, &account, &task_id.0, &message, alondra_core::now_millis()).map_err(|error| StoreError::Storage(error.into())))?;
+            }
         }
-        let moved = match (before, cursor(&self.journal)?) {
-            (Some(before), Some(after)) => after.saturating_sub(before),
-            _ => 0,
+        let accepted = if !probe {
+            pending.settle(&mut self.journal).map_err(application_error)?
+        } else {
+            let moved = match (before, cursor(&self.journal)?) { (Some(before), Some(after)) => after.saturating_sub(before), _ => 0 };
+            pending.settle_recorded(&mut self.journal, usize::try_from(moved).unwrap_or(usize::MAX)).map_err(application_error)?
         };
-        pending.settle_recorded(&mut self.journal, usize::try_from(moved).unwrap_or(usize::MAX)).map_err(application_error)
+        self.observe_provider_transition(&execution, batch.cursor)?;
+        Ok(accepted)
     }
 
     /// Why the domain would refuse `envelope` now, decided on a copy of this transaction's state.
@@ -467,9 +559,9 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// Whether `reading` says something new of `account`: the same windows and plan again within
     /// a few minutes change nothing, and a provider event repeats them on every request.
-    fn usage_changes(&self, account: &alondra_core::accounts::AccountId, reading: &UsageReading, at: alondra_core::Millis) -> bool {
+    fn usage_changes(&self, provider: alondra_core::accounts::Provider, account: &alondra_core::accounts::AccountId, reading: &UsageReading, at: alondra_core::Millis) -> bool {
         const FRESH: alondra_core::Millis = 5 * 60_000;
-        let Some(known) = self.draft.state.account_usage.iter().find(|usage| usage.account == *account) else { return true };
+        let Some(known) = self.draft.state.account_usage.iter().find(|usage| usage.provider == provider && usage.account == *account) else { return true };
         let reread = reading.plan.as_ref().is_none_or(|plan| known.plan.as_ref() == Some(plan))
             && reading.windows.iter().all(|read| known.window(&read.kind).is_some_and(|window| window.reading == *read && at - window.measured_at < FRESH));
         !reread
@@ -493,8 +585,8 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// After `AdmitExecution`, what launches it, in the same transaction: the task's worktree,
-    /// the text of its first input with the provider's metadata for it, the launch's dispatch in
-    /// that worktree and the owner's reservation. The commit issues the launch permit and grant.
+    /// any unbound launch text, every pending input's provider metadata and FIFO dispatch, and
+    /// the owner's reservation. Bound input payloads remain immutable; all are committed before offer.
     pub(crate) fn launch(
         &mut self,
         task: &TaskId,
@@ -511,13 +603,27 @@ impl<'connection> OwnerTransaction<'connection> {
                 params![task.0, directory, alondra_core::now_millis()],
             )
         })?;
-        let first = self.journal.load(task)?.pending_inputs().first().map(|input| (*input).clone()).ok_or(alondra_store::Error::MissingInput)?;
-        self.journal.give_input_text(task, InputPayload::new(first.clone(), text.to_owned())?)?;
+        let pending: Vec<_> = self.journal.load(task)?.pending_inputs().into_iter().cloned().collect();
+        if pending.is_empty() { return Err(alondra_store::Error::MissingInput.into()); }
         self.journal.bind_provider(task, binding)?;
         let execution = self.journal.load(task)?.execution().cloned().ok_or(alondra_store::Error::MissingIntent)?;
-        InputMetadata::with_execution(&mut self.journal, &execution, &first, |metadata| provider.stage_input(metadata))
-            .map_err(application_error)?;
-        self.journal.stage_launch(task, &Placement::LocalDirectory(directory.to_owned()), binding)?;
+        for (at, input) in pending.iter().enumerate() {
+            let has_text: bool = self.sql(|connection| Ok(connection.query_row(
+                "SELECT body IS NOT NULL FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",
+                params![task.0, input.as_str()], |row| row.get(0),
+            )?))?;
+            if !has_text {
+                if at != 0 { return Err(alondra_store::Error::MissingInput.into()); }
+                self.journal.give_input_text(task, InputPayload::new(input.clone(), text.to_owned())?)?;
+            }
+            InputMetadata::with_execution(&mut self.journal, &execution, input, |metadata| provider.stage_input(metadata))
+                .map_err(application_error)?;
+            if at == 0 {
+                self.journal.stage_launch(task, &Placement::LocalDirectory(directory.to_owned()), binding)?;
+            } else {
+                self.journal.stage_input(task, input)?;
+            }
+        }
         self.journal.reserve_owner(&execution, 0)?;
         if std::path::Path::new(directory).join(".git").is_file() {
             let envelope = CommandEnvelope {
@@ -568,6 +674,10 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.pending_handoffs(task)?)
     }
 
+    pub(crate) fn normalization_checkpoint(&self, stamp: &alondra_foundation::ExecutionStamp) -> std::result::Result<Option<alondra_store::NormalizationCheckpoint>, StoreError> {
+        Ok(self.journal.normalization_checkpoint(stamp)?)
+    }
+
     pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<std::sync::Arc<TaskLifecycle>, StoreError> {
         Ok(self.journal.load(task)?)
     }
@@ -599,6 +709,25 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// The commit hands back the attempt; `false` when the control was revoked instead, an
     /// interrupt whose turn or work already ended. A permit some later commit made stale is refused.
+    pub(crate) fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&crate::sdk_owner::NativeAccountIdentity>)->std::result::Result<(),StoreError>{
+        let Some(expected)=expected else{return Ok(())};
+        let Some(provider)=alondra_core::accounts::Provider::from_driver(binding.driver()) else{return Ok(())};
+        let id=crate::usage_probe::account_of(binding.credential());
+        if let Some(change)=self.state().accounts.iter().find(|account|account.provider==provider && account.id==id).and_then(|account|expected.change(account)){
+            return Err(if change=="identity"{DomainError::new("native_account_changed","This account now has a different known identity. Its existing native session will not take new input or switch accounts; create a new node")}else{DomainError::new("native_billing_policy_changed","Billing policy changed for this account. Restore the original policy or create a new node with an explicit paid account selection")}.into())
+        }
+        Ok(())
+    }
+    pub(crate) fn claim_control_for_identity(&mut self,permit:ControlPermit,directory:&std::path::Path)->std::result::Result<bool,StoreError>{
+        let kind=self.conn.query_row("SELECT kind,argument FROM lifecycle_controls WHERE id=?1",[permit.id()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).optional().map_err(|error|StoreError::Storage(error.into()))?;
+        let Some((kind,argument))=kind else{return Ok(false)};
+        let safe=matches!(kind.as_str(),"interrupt"|"force_stop") || (kind=="respond" && argument.as_deref().and_then(|argument|serde_json::from_str::<serde_json::Value>(argument).ok()).and_then(|value|value.get("kind").and_then(serde_json::Value::as_str).map(str::to_owned)).is_some_and(|kind|matches!(kind.as_str(),"deny"|"decline")));
+        if !safe{
+            let expected=crate::sdk_owner::NativeAccountIdentity::load(directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
+            let binding=self.execution_binding(permit.execution())?;self.require_native_identity(&binding,expected.as_ref())?;
+        }
+        self.claim_control(permit)
+    }
     pub(crate) fn claim_control(&mut self, permit: ControlPermit) -> std::result::Result<bool, StoreError> {
         Ok(self.journal.claim_control(permit)?)
     }

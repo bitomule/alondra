@@ -5,30 +5,9 @@ import { isDeepStrictEqual } from 'node:util';
 import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
 import { fitValue, framingProblem, hasToolUse, jsonEvidence, MAX_DECISION_BYTES, MAX_DIAGNOSTIC_BYTES, type Decision, type DecisionKind } from './frame.js';
 
-export type Failure = { surface: string; code: string; details: unknown };
-export type Observation =
-  | { type: 'sdk'; kind: string; native: Record<string, string>; payload: unknown; failures: Failure[] }
-  | { type: 'decision_requested'; request_id: string; tool_use_id?: string; kind: DecisionKind; payload: unknown }
-  | { type: 'decision_settled'; request_id: string; epoch: number; outcome: 'answered' | 'cancelled' }
-  | { type: 'process_exited'; exit_code: number | null; signal: string | null };
-/** A request as the owner names it: the epoch is the cursor the host gave its `decision_requested` event. */
-/** The request a decision answers, `asked` as the domain kept it from this host's report of it. */
-export type DecisionRequest = { request_id: string; epoch: number; kind: DecisionKind; tool_use_id: string | null; asked: Record<string, unknown> };
-export type Configuration = {
-  executable: string;
-  cwd: string;
-  env: Readonly<Record<string, string | undefined>>;
-  /** Returns the cursor the observation was persisted under, when it was. */
-  observe: (observation: Observation) => number | void;
-  beforeSpawn?: () => void;
-  sessionId?: string;
-  /** The native session `sessionId` already exists: resume it rather than start it. */
-  resume?: boolean;
-  /** One turn of Alondra's orchestrator: its own tools, MCP and permissions, and nothing after its result. */
-  orchestrator?: OrchestratorProfile;
-  /** Alondra's plugins and launch settings for a task, on top of the user's own settings sources. */
-  worker?: WorkerProfile;
-  // Test override must return a local ChildProcess: a PID proves spawn occurred.
+export type { Failure, Observation, DecisionRequest } from './host-session.js';
+import type { Failure, Observation, DecisionRequest, HostConfiguration } from './host-session.js';
+export type Configuration = HostConfiguration & {
   spawn?: (options: SpawnOptions) => SpawnedProcess & Pick<ChildProcess, 'pid'>;
 };
 
@@ -229,10 +208,12 @@ export class Session {
     const env = { ...config.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1' };
     const sessionId = config.sessionId?.toLowerCase();
     const profile = config.orchestrator;
+    if (profile?.reasoning_effort && !['low', 'medium', 'high', 'xhigh', 'max'].includes(profile.reasoning_effort)) throw new Error('The selected Claude reasoning effort is unsupported by this SDK');
     const permissions: Options = profile
       ? {
           sessionId,
           model: profile.model,
+          ...(profile.reasoning_effort ? { effort: profile.reasoning_effort as NonNullable<Options['effort']> } : {}),
           tools: profile.tools,
           disallowedTools: profile.disallowed_tools,
           mcpServers: Object.fromEntries(Object.entries(profile.mcp_servers).map(([name, server]) => [name, { type: 'stdio' as const, command: server.command, args: server.args }])),

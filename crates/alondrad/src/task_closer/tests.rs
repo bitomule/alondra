@@ -109,7 +109,7 @@ impl Rig {
         let rig = Self::without_a_launch(wait);
         rig.domain.record_model_decision(&Decision {
             task_id: "t".into(), request_id: "r".into(), agent_id: Some(SESSION.into()), at: T0, kind: DecisionKind::Launch,
-            model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(),
+            model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(), provider: None, tags: None,
         }).unwrap();
         rig
     }
@@ -772,7 +772,7 @@ impl Rig {
         let rig = Self::undelivered(thirty_minutes());
         rig.domain.record_model_decision(&Decision {
             task_id: "t".into(), request_id: "r".into(), agent_id: Some(SESSION.into()), at: T0, kind: DecisionKind::Launch,
-            model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(),
+            model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(), provider: None, tags: None,
         }).unwrap();
         command(&rig.domain, agent(), "register-pr", Command::RegisterPr {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,

@@ -130,6 +130,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         empty: None,
         notices: vec![],
         service: None,
+        account_configuration: None,
         first_cards: vec![],
         summary: None,
     })
@@ -164,6 +165,7 @@ fn settled_view(key: String, settled: Settled, context: &RenderContext<'_>) -> V
         empty: Some(Notice { text: settled.notice(context.lang).into(), tone: Tone::Neutral, action: None }),
         notices: vec![],
         service: None,
+        account_configuration: None,
         first_cards: vec![],
         summary: None,
     }
@@ -844,7 +846,8 @@ fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lan
 /// What one of Alondra's own cards asks and why, in the viewer's language; `None` for a card
 /// someone worded.
 pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    host_lost_text(interaction, domain, lang)
+    model_change_not_applied_text(interaction, lang)
+        .or_else(|| host_lost_text(interaction, domain, lang))
         .or_else(|| start_problem_text(interaction, domain, lang))
         .or_else(|| pace_text(interaction, domain, lang))
         .or_else(|| unheard_text(interaction, domain, lang))
@@ -854,6 +857,17 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| decision_cancelled_text(interaction, domain, lang))
         .or_else(|| claude_hold_text(interaction, domain, lang))
         .or_else(|| mcp_wait_text(interaction, domain, lang))
+}
+
+fn model_change_not_applied_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
+    if interaction.author != Author::System || !interaction.id.0.starts_with("native-model-change-selection-")
+        || !matches!(interaction.payload, InteractionPayload::Information { .. }) { return None }
+    let why = match interaction.body.as_str() {
+        "native_code_cells_active" => t!(lang, "The current model will finish its running native code cells. Your requested model is retained; choose it again after those cells finish. The account and native session are unchanged.", "El modelo actual terminará las celdas nativas que siguen en ejecución. Se conserva el modelo solicitado; vuelve a elegirlo cuando terminen las celdas. La cuenta y la sesión nativa no han cambiado."),
+        "native_model_control_rejected" => t!(lang, "The native runtime refused this change before applying it. Your requested model is retained and the previous model is still active. Finish running native cells or refresh available models, then try again. The account and native session are unchanged.", "El entorno nativo rechazó el cambio antes de aplicarlo. Se conserva el modelo solicitado y sigue activo el anterior. Termina las celdas nativas o actualiza los modelos disponibles y vuelve a intentarlo. La cuenta y la sesión nativa no han cambiado."),
+        _ => return None,
+    };
+    Some((t!(lang, "The model change was not applied", "No se aplicó el cambio de modelo").into(), why.into()))
 }
 
 /// How Alondra can sign in to the server an MCP wait's card waits for.
@@ -940,7 +954,7 @@ fn mcp_actions(interaction: &Interaction, context: &RenderContext<'_>) -> Vec<Ac
     vec![connect, reconnect]
 }
 
-/// The card of a task Claude holds, in the viewer's language: Waiting for You shows one of them
+/// The card of a task its provider holds, in the viewer's language: Waiting for You shows one of them
 /// for every task that waits on the same hold.
 fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
     use crate::domain::ClaudeHold;
@@ -949,9 +963,35 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
     }
     let (hold, account) = domain.claude_card_waits_for(interaction)?;
     let waiting = domain.claude_waiting(interaction).max(1);
+    let provider = match &interaction.scope {
+        Scope::Task { task_id } => domain.tasks.get(task_id).map(|task| task.provider).unwrap_or_default(),
+        _ => crate::accounts::Provider::Claude,
+    };
     let named = account.as_ref().filter(|account| !account.is_default()).map(|account| {
-        domain.accounts.iter().find(|status| status.id == *account).map_or_else(|| account.to_string(), |status| status.name.clone())
+        domain.accounts.iter().find(|status| status.provider == provider && status.id == *account).map_or_else(|| account.to_string(), |status| status.name.clone())
     });
+    if provider == crate::accounts::Provider::Codex {
+        let need = match (hold, &named) {
+            (ClaudeHold::SignedOut, Some(name)) => tf!(lang, "Sign in to the Codex account {name}", "Inicia sesión en la cuenta de Codex {name}"),
+            (ClaudeHold::SignedOut, None) => t!(lang, "Sign in to Codex on the Mac", "Inicia sesión en Codex en el Mac").into(),
+            (ClaudeHold::Outage, _) => t!(lang, "Codex is unavailable: waiting tasks", "Codex no está disponible: hay tareas esperando").into(),
+            (ClaudeHold::Usage, Some(name)) => tf!(lang, "The Codex account {name} reached a usage limit", "La cuenta de Codex {name} alcanzó un límite de uso"),
+            (ClaudeHold::Usage, None) => t!(lang, "Codex reported a usage limit", "Codex ha indicado un límite de uso").into(),
+        };
+        let account = account.as_ref().map_or_else(|| "default".to_owned(), ToString::to_string);
+        let why = match hold {
+            ClaudeHold::SignedOut => tf!(lang,
+                "On the Mac, run alondra accounts login --provider codex {account}, then press I signed in.",
+                "En el Mac, ejecuta alondra accounts login --provider codex {account} y pulsa Ya he iniciado sesión."),
+            ClaudeHold::Outage => t!(lang,
+                "The task waits for Codex. Check this account in Accounts and try again when it is available.",
+                "La tarea espera a Codex. Revisa esta cuenta en Cuentas y vuelve a intentarlo cuando esté disponible.").into(),
+            ClaudeHold::Usage => t!(lang,
+                "Codex reported a usage limit. Check the account's native usage in Accounts before retrying.",
+                "Codex ha indicado un límite de uso. Revisa el uso nativo de la cuenta en Cuentas antes de reintentar.").into(),
+        };
+        return Some((clip(&need, CardSpec::NEED_MAX), why));
+    }
     let need = match (hold, waiting, &named) {
         (ClaudeHold::SignedOut, _, None) => t!(lang, "Sign in to Claude outside Alondra", "Inicia sesión en Claude fuera de Alondra").to_owned(),
         (ClaudeHold::SignedOut, _, Some(name)) => tf!(lang, "Sign in to the Claude account {name} on the Mac", "Inicia sesión en la cuenta de Claude {name} en el Mac"),
@@ -1058,6 +1098,24 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     }
     if interaction.card.why == crate::domain::INTERRUPTED_WHY {
         return Some(interrupted_text(title, lang));
+    }
+    if interaction.card.why == crate::domain::NATIVE_REQUEST_REJECTED_WHY {
+        return Some((t!(lang, "Codex rejected this task's request: check it before continuing", "Codex rechazó la solicitud de esta tarea: revísala antes de continuar").into(), t!(lang,
+            "Codex rejected this task's request. Check the selected model, reasoning effort and input before explicitly continuing on this account or cancelling. A listed model is not proof that this request will be accepted.",
+            "Codex rechazó la solicitud de esta tarea. Revisa el modelo, el esfuerzo de razonamiento y la entrada antes de continuar expresamente con esta cuenta o cancelar. Que un modelo figure en la lista no demuestra que esta solicitud vaya a aceptarse.").into()));
+    }
+    if interaction.card.why == crate::domain::NATIVE_CONTEXT_EXCEEDED_WHY {
+        return Some((t!(lang, "This request exceeds the Codex model's context window", "Esta solicitud supera la ventana de contexto del modelo de Codex").into(), t!(lang,
+            "Codex reports that this request exceeds the model's context window. Compact this session or reduce the next input before explicitly continuing. Model changes use this node's supported controls on the same account.",
+            "Codex indica que esta solicitud supera la ventana de contexto del modelo. Compacta esta sesión o reduce la siguiente entrada antes de continuar expresamente. Los cambios de modelo usan los controles compatibles de este nodo con la misma cuenta.").into()));
+    }
+    if interaction.card.why == crate::domain::NATIVE_FAILED_WHY {
+        let code = interaction.card.need.split('`').nth(1)?;
+        let need = tf!(lang, "Codex's turn ended with an error (`{code}`): tell it how to go on",
+            "El turno de Codex terminó con un error (`{code}`): dile cómo seguir");
+        return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+            "Codex ended its turn with an error. Tell it how to continue, write what to do next, or cancel the task.",
+            "El turno de Codex terminó con un error. Dile cómo seguir, escríbele qué hacer después o cancela la tarea.").into()));
     }
     if interaction.card.why == crate::domain::FAILED_WHY {
         let code = interaction.card.need.split('`').nth(1)?;
@@ -2128,4 +2186,27 @@ pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Fac
             })
         });
     (Facts { items: facts }, checks, pr_badges(pr, context))
+}
+
+#[cfg(test)]
+mod model_change_notice_tests {
+    use super::*;
+    #[test]
+    fn a_positive_model_refusal_is_localized_information_and_cannot_be_forged_by_an_agent() {
+        let mut interaction = Interaction {
+            attachments: vec![], id: "native-model-change-selection-owned".into(), scope: Scope::Task { task_id: "task".into() },
+            author: Author::System, recipient: Recipient::User, body: "native_code_cells_active".into(), blocking: false, subject: None,
+            payload: InteractionPayload::Information { read_by: std::collections::BTreeSet::new() }, revision: 1, order: 1, withdrawn: false,
+            card: CardSpec::derived(CardKind::Know, "The model change was not applied"), clarification: None,
+        };
+        for code in ["native_code_cells_active", "native_model_control_rejected"] {
+            interaction.body = code.into();
+            let english = model_change_not_applied_text(&interaction, Lang::En).unwrap();
+            let spanish = model_change_not_applied_text(&interaction, Lang::Es).unwrap();
+            assert!(english.1.contains("requested model")); assert!(spanish.1.contains("modelo solicitado"));
+            assert_ne!(english, spanish); assert!(!interaction.blocking);
+        }
+        interaction.author = Author::Agent { agent_id: "untrusted".into() };
+        assert!(model_change_not_applied_text(&interaction, Lang::En).is_none());
+    }
 }

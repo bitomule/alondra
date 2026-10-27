@@ -16,6 +16,10 @@ pub const AUTO_MERGE: &str = "auto_merge";
 pub const AUTO: &str = "auto";
 /// The built-in option that pins a request's work to one account paid per use.
 pub const ACCOUNT: &str = "account";
+pub const MODEL: &str = "model";
+pub const REASONING_EFFORT: &str = "reasoning_effort";
+pub const ALLOW_MODEL_SUBSTITUTION: &str = "allow_model_substitution";
+pub const SUBSTITUTION_WAS_EDITED: &str = "substitution_was_edited";
 const MAPPED: [&str; 3] = ["light", "normal", "hard"];
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const MODEL_ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
@@ -86,6 +90,7 @@ pub struct OptionsFile {
     /// Extra model aliases the orchestrator may pick, and what `--model` receives for any alias
     /// (the built-in ones pass themselves).
     pub models: BTreeMap<String, String>,
+    pub model_profiles: crate::model_selection::ModelProfiles,
     pub defaults: BTreeMap<String, Choice>,
     pub option: Vec<UserOption>,
     pub projects: BTreeMap<String, ProjectOptions>,
@@ -208,6 +213,8 @@ pub struct Picked {
 /// change what the user asked for.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Resolved {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<crate::model_selection::TaskSelection>,
     #[serde(default)]
     pub project: Option<String>,
     pub auto_merge: bool,
@@ -249,10 +256,10 @@ fn builtins() -> [Spec; 2] {
             label: "Effort".into(),
             kind: Kind::Choice,
             values: vec![
-                v(AUTO, "auto", "Alondra picks the model and effort from the task"),
-                v("light", "light", "A quick, cheaper model for small, clear work"),
-                v("normal", "normal", "Claude's default model and effort"),
-                v("hard", "hard", "The strongest model and the most effort"),
+                v(AUTO, "auto", "Uses the configured model profile for the task"),
+                v("light", "light", "Legacy light model preset for small, clear work"),
+                v("normal", "normal", "Legacy standard model and effort preset"),
+                v("hard", "hard", "Legacy hard model and effort preset"),
             ],
             default: Choice::Value(AUTO.into()),
             builtin: true,
@@ -384,6 +391,7 @@ pub fn with_node_limit(text: &str, limit: NodeLimit) -> Result<String, String> {
 }
 
 impl OptionsFile {
+    pub fn fresh() -> Self { Self { accounts: crate::accounts::AccountsConfig::fresh(), ..Self::default() } }
     pub fn parse(text: &str) -> Result<Self, String> {
         let file: OptionsFile = toml::from_str(text).map_err(|e| e.to_string())?;
         file.check()?;
@@ -392,6 +400,7 @@ impl OptionsFile {
 
     fn check(&self) -> Result<(), String> {
         self.accounts.check()?;
+        crate::model_selection::validate_profiles(&self.model_profiles)?;
         for (level, flags) in &self.effort {
             if !MAPPED.contains(&level.as_str()) {
                 return Err(format!("effort {level}: the levels with a mapping are light, normal and hard; auto leaves the choice to the orchestrator"));
@@ -449,20 +458,15 @@ impl OptionsFile {
     /// Automatic, or one of the accounts paid per use that are on: Alondra never picks those by
     /// itself, so a request runs on one only when the user chooses it. Absent without any.
     fn account_spec(&self) -> Option<Spec> {
-        let paid: Vec<_> = self
-            .accounts
-            .accounts(crate::accounts::Provider::Claude)
-            .into_iter()
-            .filter(|account| account.enabled && account.billing == crate::accounts::AccountBilling::PayPerUse)
+        let enabled: Vec<_> = self.accounts.ordered_accounts().into_iter().filter(|(_, account)| account.enabled)
             .collect();
-        if paid.is_empty() {
+        if enabled.is_empty() || (enabled.len() == 1 && self.accounts.connected.is_none() && self.accounts.claude.is_empty()) {
             return None;
         }
-        let mut values = vec![SpecValue { id: AUTO.into(), label: "automatic".into(), description: Some("Alondra picks a subscription account by its margin".into()) }];
-        values.extend(paid.into_iter().map(|account| SpecValue {
-            id: account.id.as_str().into(),
-            label: account.name,
-            description: Some("Paid per use: this request's tasks run on it".into()),
+        let mut values = vec![SpecValue { id: AUTO.into(), label: "automatic".into(), description: Some("Alondra follows the configured account order".into()) }];
+        values.extend(enabled.into_iter().map(|(key, account)| SpecValue {
+            id: key.wire_id(), label: account.name,
+            description: Some(if account.billing == crate::accounts::AccountBilling::PayPerUse { "Paid per use: used only when explicitly selected" } else { "Keep this request's work on this account" }.into()),
         }));
         Some(Spec { id: ACCOUNT.into(), label: "Account".into(), kind: Kind::Choice, values, default: Choice::Value(AUTO.into()), builtin: true })
     }
@@ -521,7 +525,40 @@ impl OptionsFile {
     /// a stale client cannot send something the node would never hear about.
     pub fn resolve(&self, project: Option<&str>, chosen: &BTreeMap<String, Choice>) -> Result<Resolved, String> {
         let catalog = self.catalog(project);
-        for (id, c) in chosen {
+        let mut chosen = chosen.clone();
+        if let Some(Choice::Value(account)) = chosen.get_mut(ACCOUNT)
+            && account != AUTO && catalog.iter().any(|spec| spec.id == ACCOUNT && spec.builtin)
+        {
+            *account = crate::accounts::AccountKey::parse_wire(account)?.wire_id();
+        }
+        let controls = [MODEL, REASONING_EFFORT, ALLOW_MODEL_SUBSTITUTION, SUBSTITUTION_WAS_EDITED];
+        let modern = self.accounts.connected.as_ref().is_some_and(|providers| !providers.is_empty()) || controls.iter().any(|id| chosen.contains_key(*id));
+        let mut selection = crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation);
+        if modern {
+            if let Some(choice) = chosen.get(MODEL) {
+                let Choice::Value(model) = choice else { return Err("Choose a model or Automatic".into()); };
+                selection.request_model((model != AUTO).then(|| crate::model_selection::ModelKey::parse_wire(model)).transpose()?);
+            }
+            if let Some(choice) = chosen.get(REASONING_EFFORT) {
+                let Choice::Value(effort) = choice else { return Err("Choose a reasoning effort or Automatic".into()); };
+                if effort != AUTO {
+                    if effort.is_empty() || effort.len() > 64 || effort.chars().any(char::is_control) { return Err("The reasoning effort is invalid".into()); }
+                    if selection.requested.is_none() { return Err("Choose a model before its reasoning effort".into()); }
+                    selection.requested_reasoning_effort = Some(effort.clone());
+                }
+            }
+            for (id, target) in [(ALLOW_MODEL_SUBSTITUTION, &mut selection.allow_model_substitution), (SUBSTITUTION_WAS_EDITED, &mut selection.substitution_was_edited)] {
+                if let Some(choice) = chosen.get(id) {
+                    let Choice::Toggle(value) = choice else { return Err(format!("{id} must be true or false")); };
+                    *target = *value;
+                }
+            }
+            selection.account = chosen.get(ACCOUNT).and_then(|choice| match choice { Choice::Value(account) if account != AUTO => Some(crate::accounts::AccountKey::parse_wire(account)), _ => None }).transpose()?;
+            if let (Some(account), Some(model)) = (&selection.account, &selection.requested)
+                && account.provider != model.provider { return Err("The chosen account belongs to another provider than the model".into()); }
+        }
+        for (id, c) in &chosen {
+            if controls.contains(&id.as_str()) { continue; }
             let spec = catalog.iter().find(|s| &s.id == id).ok_or_else(|| format!("unknown option {id}"))?;
             spec.accepts(c).map_err(|e| format!("option {id}: {e}"))?;
         }
@@ -541,7 +578,7 @@ impl OptionsFile {
                 Picked { id: s.id.clone(), label: s.label.clone(), value_label: s.value_label(&choice), choice, mission }
             })
             .collect();
-        Ok(Resolved { project: project.map(str::to_string), auto_merge, flags: self.effort_flags(&effort), effort, picked, issue: None })
+        Ok(Resolved { project: project.map(str::to_string), auto_merge, flags: self.effort_flags(&effort), effort, picked, issue: None, selection: modern.then_some(selection) })
     }
 
     /// For a launch no user request stands behind: the defaults, but never auto-merge, since
@@ -632,6 +669,20 @@ pub enum Approach {
 impl Approach {
     /// The `## How to work` section of a node's mission.
     pub fn how_to_work(self) -> Vec<String> {
+        self.how_to_work_for(Some(crate::accounts::Provider::Claude))
+    }
+
+    pub fn how_to_work_for(self, provider: Option<crate::accounts::Provider>) -> Vec<String> {
+        if provider != Some(crate::accounts::Provider::Claude) {
+            let mut lines = vec!["## How to work".into(), String::new(), "Track the work with the planning tools advertised for this execution, keeping the current step and completed work visible.".into()];
+            match self {
+                Self::Solo => {}
+                Self::Subagents => lines.push("Delegate independent parts through the delegation tools permitted for this execution. Use its configured task profiles and advertised models. Give each worker precise scope and acceptance checks, and review its returned work.".into()),
+                Self::Workflow => lines.push("Plan stages using the workflow or task tools permitted for this execution. Choose available models through the configured profiles, verify each stage and try a small complete path first.".into()),
+            }
+            lines.push("Independent reviews may use separate sessions of the same available model; they do not require another provider or a different model.".into());
+            return lines;
+        }
         let mut lines = vec![
             "## How to work".to_string(),
             String::new(),
@@ -647,10 +698,23 @@ impl Approach {
 }
 
 impl Resolved {
+    pub fn selected_provider(&self) -> Option<crate::accounts::Provider> {
+        match &self.selection {
+            Some(selection) => selection.effective.as_ref().map(|effective| effective.model.provider)
+                .or_else(|| selection.requested.as_ref().map(|requested| requested.provider))
+                .or_else(|| selection.account.as_ref().map(|account| account.provider)),
+            None => Some(crate::accounts::Provider::Claude),
+        }
+    }
     /// The account the user chose for the request's work; none when Alondra picks it.
     pub fn account(&self) -> Option<crate::accounts::AccountId> {
+        self.account_key().filter(|key| key.provider == crate::accounts::Provider::Claude).map(|key| key.account)
+    }
+
+    pub fn account_key(&self) -> Option<crate::accounts::AccountKey> {
+        if let Some(account) = self.selection.as_ref().and_then(|selection| selection.account.clone()) { return Some(account); }
         self.picked.iter().find(|picked| picked.id == ACCOUNT).and_then(|picked| match &picked.choice {
-            Choice::Value(value) if value != AUTO => crate::accounts::AccountId::parse(value).ok(),
+            Choice::Value(value) if value != AUTO => crate::accounts::AccountKey::parse_wire(value).ok(),
             _ => None,
         })
     }
@@ -683,6 +747,11 @@ impl Resolved {
 
     /// The model the launch passes to Claude and who chose it; none when Claude's default stays.
     pub fn launch_model(&self) -> Option<TaskModel> {
+        if self.selected_provider() != Some(crate::accounts::Provider::Claude) { return None; }
+        if let Some(selection) = &self.selection {
+            let effective = selection.effective.as_ref()?;
+            return Some(TaskModel { model: effective.model.model.clone(), chosen_by: if selection.requested.is_some() { ModelChooser::User } else { ModelChooser::Orchestrator } });
+        }
         let model = self.flags.model.clone()?;
         let chosen_by = if self.effort == AUTO { ModelChooser::Orchestrator } else { ModelChooser::User };
         Some(TaskModel { model, chosen_by })
@@ -690,6 +759,11 @@ impl Resolved {
 
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
+        if self.selection.is_some() || self.selected_provider() != Some(crate::accounts::Provider::Claude) {
+            let mut note = format!("Effort {} describes the work requested by {user}. Resolve implementation, general, design and review roles through the configured model profiles and this account's advertised native catalog. Do not infer model names or capabilities from a brand. An explicit requested model and reasoning effort stay binding; substitute only when the task expressly allows it. Independent reviews can use separate sessions of the same available model.", self.effort);
+            if let Some(requested) = self.selection.as_ref().and_then(|selection| selection.requested.as_ref()) { note.push_str(&format!(" Requested model: {}.", requested.wire_id())); }
+            return note;
+        }
         if self.effort == AUTO {
             "Effort is auto: choose the model and effort per task after splitting. Opus whenever the task touches interface with interaction, a state machine, concurrency or races, session or security, a cause nobody has found or an intermittent test, design, stored data (formats or migrations), or its specification does not name the files, states and edge cases; sonnet (no effort) for an implementation phase whose approved plan names the files and the test, a mechanical rename, copy that must be checked against the code, documentation drawn from the code, or a release; opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
         } else {
@@ -699,6 +773,13 @@ impl Resolved {
 
     /// `claude` flags for the effort; a model the orchestrator named explicitly wins.
     pub fn launch_flags(&self, explicit_model: Option<&str>) -> Vec<String> {
+        if self.selected_provider() != Some(crate::accounts::Provider::Claude) { return vec![]; }
+        if let Some(selection) = &self.selection {
+            let Some(effective) = &selection.effective else { return vec![]; };
+            let mut flags = vec!["--model".into(), effective.model.model.clone()];
+            if let Some(effort) = &effective.reasoning_effort { flags.extend(["--effort".into(), effort.clone()]); }
+            return flags;
+        }
         let mut out = vec![];
         if let Some(m) = explicit_model.or(self.flags.model.as_deref()) {
             out.extend(["--model".to_string(), m.to_string()]);
@@ -712,6 +793,17 @@ impl Resolved {
 
 pub fn path_in(home: &Path) -> PathBuf {
     home.join(FILE_NAME)
+}
+
+pub fn with_model_profiles(text: &str, profiles: &crate::model_selection::ModelProfiles) -> Result<String, String> {
+    crate::model_selection::validate_profiles(profiles)?;
+    #[derive(Serialize)]
+    struct Section<'a> { model_profiles: &'a crate::model_selection::ModelProfiles }
+    let section = toml::to_string_pretty(&Section { model_profiles: profiles }).map_err(|why| why.to_string())?;
+    let written = crate::accounts::with_section(text, "model_profiles", &section)?;
+    let parsed = OptionsFile::parse(&written)?;
+    if parsed.model_profiles != *profiles { return Err("The model profiles did not take the new value".into()); }
+    Ok(written)
 }
 
 #[cfg(test)]

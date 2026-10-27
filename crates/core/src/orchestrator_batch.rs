@@ -39,7 +39,7 @@ pub struct BatchProblem {
 
 /// Whether an orchestrator tool changes anything; the ones that only read never do.
 pub fn changes_something(tool: &str) -> bool {
-    !matches!(tool, "tasks_in_progress" | "node" | "machine")
+    !matches!(tool, "tasks_in_progress" | "node" | "machine" | "log" | "daemon_log" | "task_detail" | "read_file" | "glob_files" | "search_files" | "read_skill" | "batch_outcomes")
 }
 
 fn call_text(tool: &str, lang: Lang) -> &'static str {
@@ -87,11 +87,11 @@ impl BatchProblem {
                 "It stopped before finishing and may have changed things in Alondra already. Running it again could do them twice.",
                 "Se detuvo antes de terminar y puede que ya hubiera hecho cambios en Alondra. Repetirlo podría hacerlos dos veces."),
             (BatchStop::Denied, true) => t!(lang,
-                "Claude refused it one of Alondra's tools halfway, after it had already changed things. Running it again could do them twice.",
-                "Claude le negó una herramienta de Alondra a mitad de trabajo, cuando ya había hecho cambios. Repetirlo podría hacerlos dos veces."),
+                "The provider refused an Alondra tool halfway, after it had already changed things. Running it again could do them twice.",
+                "El proveedor le negó una herramienta de Alondra a mitad de trabajo, cuando ya había hecho cambios. Repetirlo podría hacerlos dos veces."),
             (BatchStop::Denied, false) => t!(lang,
-                "Claude refused it one of Alondra's tools halfway, and it may have changed things already. Running it again could do them twice.",
-                "Claude le negó una herramienta de Alondra a mitad de trabajo y puede que ya hubiera hecho cambios. Repetirlo podría hacerlos dos veces."),
+                "The provider refused an Alondra tool halfway, and it may have changed things already. Running it again could do them twice.",
+                "El proveedor le negó una herramienta de Alondra a mitad de trabajo y puede que ya hubiera hecho cambios. Repetirlo podría hacerlos dos veces."),
             (BatchStop::Cancelled, true) => t!(lang,
                 "You stopped it halfway, after it had already changed things in Alondra. Running it again could do them twice.",
                 "Lo paraste a mitad de trabajo, cuando ya había hecho cambios en Alondra. Repetirlo podría hacerlos dos veces."),
@@ -188,6 +188,7 @@ mod tests {
     #[test]
     fn reading_tools_change_nothing() {
         assert!(!changes_something("tasks_in_progress") && !changes_something("node") && !changes_something("machine"));
+        for name in ["read_file","glob_files","search_files","read_skill","batch_outcomes"] { assert!(!changes_something(name),"{name}"); }
         assert!(changes_something("create_task") && changes_something("ask"));
     }
 }

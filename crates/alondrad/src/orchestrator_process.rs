@@ -159,6 +159,7 @@ pub enum BatchEnd {
 #[derive(Default, Debug)]
 pub struct Stream {
     restricted: bool,
+    native_limits_only: bool,
     /// The id the SDK gives the batch's one prompt: a result that names another is not this batch's.
     input: Option<String>,
     pub initialized: bool,
@@ -177,6 +178,8 @@ pub struct Stream {
     pub acted: bool,
     pub missing_session: bool,
     pub denied: bool,
+    pub(crate) native_request_rejected: bool,
+    pub(crate) native_work_unfinished: bool,
     /// Claude said the plan's usage ran out, and the reset it reported in Unix milliseconds.
     pub limited: bool,
     pub limit_reset: Option<i64>,
@@ -192,6 +195,12 @@ impl Stream {
     pub fn for_input(input: &str) -> Self {
         Self { restricted: true, input: Some(input.to_owned()), ..Self::default() }
     }
+    pub(crate) fn native(input: Option<&str>) -> Self {
+        let mut stream = input.map_or_else(Self::default, Self::for_input);
+        stream.native_limits_only = true;
+        stream
+    }
+
     /// The context the batch read, once the model answered at least once.
     pub fn context(&self) -> Option<crate::domain_orchestrator::BatchContext> {
         Some(crate::domain_orchestrator::BatchContext { first: self.first_input_tokens?, last: self.input_tokens?, window: self.window })
@@ -201,6 +210,7 @@ impl Stream {
         if self.limited {
             return Some(self.limit_reset);
         }
+        if self.native_limits_only { return None; }
         let said = |text: &str| crate::usage_pause::says_usage_limit(text).then(|| crate::usage_pause::reset_in(text, alondra_core::now_millis()));
         self.error.as_deref().and_then(said).or_else(|| said(diagnostic))
     }
@@ -214,6 +224,9 @@ impl Stream {
         if resumed && self.session_missing(exit_ok, diagnostic, session) {
             return BatchEnd::SessionMissing;
         }
+        if self.native_work_unfinished {
+            return BatchEnd::Interrupted { calls: self.alondra_calls.clone(), why: self.error.clone().unwrap_or_else(|| "Native work remains unresolved; reconcile this batch before retrying".into()) };
+        }
         if exit_ok && self.success && self.result && self.initialized && self.error.is_none() {
             return BatchEnd::Handled;
         }
@@ -225,6 +238,9 @@ impl Stream {
         } else {
             diagnostic.to_owned()
         });
+        if self.native_request_rejected {
+            return BatchEnd::Interrupted { calls: self.alondra_calls.clone(), why };
+        }
         match effects {
             None => BatchEnd::NotStarted { why },
             Some(calls) if self.denied => BatchEnd::Denied { calls, why },
@@ -698,6 +714,22 @@ mod tests {
         terminate_orphan(&dir, Some("test-run")).unwrap();
         assert!(!child.wait().await.unwrap().success());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+
+    #[test]
+    fn structured_native_streams_never_infer_account_limits_from_legacy_error_or_diagnostic_text() {
+        let text = "You've hit your session limit";
+        let mut legacy = Stream::for_input("input"); legacy.error = Some(text.into());
+        assert_eq!(legacy.limit(""), Some(None), "the existing Claude text protocol stays supported");
+        for input in [None, Some("input")] {
+            let mut native = Stream::native(input); native.error = Some(text.into());
+            assert_eq!(native.limit(text), None);
+            let output = Output { stream: native, diagnostic: text.into(), exit_ok: false };
+            assert!(!matches!(output.end("session", false), BatchEnd::Limited { .. }));
+        }
+        let mut native = Stream::native(Some("input")); native.limited = true; native.limit_reset = Some(20);
+        assert_eq!(native.limit(text), Some(Some(20)), "positive native account-limit evidence remains authoritative");
     }
 
 }

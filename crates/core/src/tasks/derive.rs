@@ -1222,7 +1222,7 @@ mod tests {
 
     #[test]
     fn a_launch_puts_the_task_in_the_request_david_sent() {
-        let options = crate::options::Resolved { project: Some("app".into()), auto_merge: false, effort: "hard".into(), flags: Default::default(), picked: vec![], issue: None };
+        let options = crate::options::Resolved { project: Some("app".into()), auto_merge: false, effort: "hard".into(), flags: Default::default(), picked: vec![], issue: None, selection: None };
         let mut run = Run::new();
         run.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
         assert_eq!(run.view.board.request_state("r-1"), RequestState::Defining);

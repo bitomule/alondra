@@ -83,6 +83,21 @@ try {
     await sdk(owner, 'result', (payload) => payload.subtype === 'success' && payload.user_message_uuids?.includes(input(3)));
     assert.equal(lines(host.capture + '.prompts').at(-1), '/compact', 'compaction is an ordinary input');
   }
+  for (const refusal of ['typed', 'untyped']) {
+    const host = startHost(`control-${refusal}`, { nativeEnv: { FIXTURE_CONTROL_REFUSAL: refusal } });
+    const owner = await own(host);
+    assert.deepEqual((await owner.command({ type: 'start', cwd: host.config.native.cwd, input_id: input(1), prompt: 'first prompt' })).outcome, { status: 'accepted', phase: 'offered' });
+    await sdk(owner, 'result');
+    if (refusal === 'typed') {
+      assert.deepEqual((await owner.command({ type: 'set_model', model: 'fixture-model' })).outcome, { status: 'rejected', code: 'native_code_cells_active', message: 'The native code cells must finish before changing the model' });
+      assert.deepEqual(controls(host), [], 'positive pre-effect refusal must not mutate the native model');
+      assert.deepEqual((await owner.command({ type: 'mcp_status' })).outcome, applied, 'a positive refusal keeps the owner lane usable');
+    } else {
+      await assert.rejects(owner.command({ type: 'set_model', model: 'fixture-model' }), /lane closed/);
+      assert(!owner.frames.some((frame) => frame.body.type === 'receipt' && frame.body.outcome.code === 'native_code_cells_active'), 'a same-text generic native error is still uncertain');
+      assert.deepEqual(controls(host), []);
+    }
+  }
   {
     const host = startHost('stubborn');
     const owner = await own(host);

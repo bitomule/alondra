@@ -128,4 +128,17 @@ final class NewerDaemonTests: XCTestCase {
         XCTAssertEqual(again, view)
         XCTAssertTrue(try card(again).actions[0].needsNewerApp)
     }
+    func testFormIntentMetadataAcceptsEditedUneditedAndLegacyDocuments() throws {
+        let document = #"{"id":"f","fields":[],"submit":{"label":"Save","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}}"#
+        let legacy = try ContractCodec.decode(Form.self, from: Data(document.utf8))
+        XCTAssertNil(legacy.substitutionWasEdited)
+        XCTAssertNil(legacy.initialValues["substitution_was_edited"])
+        for edited in [true, false] {
+            let current = document.replacingOccurrences(of: #""id":"f""#, with: #""id":"f","substitution_was_edited":\#(edited)"#)
+            let form = try ContractCodec.decode(Form.self, from: Data(current.utf8))
+            XCTAssertEqual(form.substitutionWasEdited, edited)
+            XCTAssertEqual(form.initialValues["substitution_was_edited"], .bool(edited))
+        }
+    }
+
 }

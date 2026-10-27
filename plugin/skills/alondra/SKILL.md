@@ -141,7 +141,7 @@ Pick the tool by what you need:
   plan (do it in this task), discarded (with the reason), or a new task it already created (with
   its id). At most five wait per task.
 - In a background session, menu questions (`AskUserQuestion`), permission prompts and plans
-  also reach the user in Alondra, and their answer comes back as Claude's own.
+  also reach the user in Alondra, and their answer returns through the active provider.
 - Run a command that may need the user's approval on its own, not chained with `;`, `&&` or a
   pipe to other commands, and run read-only checks (`git status`, `tail`, `ls`) as separate
   calls. Never chain a delete or a `reset --hard` with anything else.
@@ -232,8 +232,11 @@ Pick the tool by what you need:
   plan to implement it" asks for a plan, also when it comes as an answer to a report you
   delivered: it goes through plan mode, never as a new version of the report, and approving it
   starts the implementation in this task.
-- A plan (the user asks you to plan, or the work needs a plan approved first): enter plan mode
-  with `EnterPlanMode`, plan, and present it with `ExitPlanMode`. Alondra holds it as a plan card:
+- A plan (the user asks you to plan, or the work needs a plan approved first): on an
+  Alondra-managed node call `request_plan_mode` for your task and end the current turn. The next
+  turn uses native planning mode. Write the complete proposed checklist plan there. A Claude
+  session may also use native `EnterPlanMode` and `ExitPlanMode`. On Codex, produce the native
+  proposed-plan item; `update_plan` is progress, never approval. Alondra holds it as a plan card:
   the user reads the whole plan, comments on any block, and approves or requests changes; the
   requested changes reach you as a message right after. Never write a plan as a document or ask
   about it with `ask`. Write its scope as Markdown checklist lines (`- [ ] …`), one per thing you

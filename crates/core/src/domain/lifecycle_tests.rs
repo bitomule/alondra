@@ -268,7 +268,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
         started: true, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
         documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     };
     s.tasks.insert(unjournaled.id.clone(), unjournaled);
     assert_eq!(s.validate_journal().unwrap_err().code, "lifecycle_journal", "a loaded state with a task and no journal is refused");
@@ -309,7 +309,7 @@ fn an_orphan_reviewer_is_cancelled_through_its_lifecycle() {
 fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_facts() {
     let mut s = world();
     task(&mut s, "t", None);
-    let admit = |host: &str| Command::AdmitExecution {
+    let admit = |host: &str| Command::AdmitExecution { provider: Default::default(),
         task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(), instance: "instance".into(), host: host.into(), model: None, account: None, leaves_limit: None,
     };
     assert_eq!(exec(&mut s, Actor::System, admit(alondra_domain::CLAUDE_BG_HOST)).unwrap_err().code, "invalid_input", "the claude --bg node is assigned instead");
@@ -341,8 +341,11 @@ fn sdk_turn_named(s: &mut DomainState, id: &str, node: &str, turn: &str) -> Stri
 }
 /// An SDK task whose observed turn started on `account`.
 fn sdk_turn_on(s: &mut DomainState, id: &str, node: &str, turn: &str, account: Option<&str>) -> String {
+    sdk_turn_on_provider(s,crate::accounts::Provider::Claude,id,node,turn,account)
+}
+fn sdk_turn_on_provider(s: &mut DomainState, provider: crate::accounts::Provider, id: &str, node: &str, turn: &str, account: Option<&str>) -> String {
     task(s, id, None);
-    must(s, Actor::System, Command::AdmitExecution {
+    must(s, Actor::System, Command::AdmitExecution { provider,
         task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{id}"), instance: format!("instance-{id}"), host: "sdk-host".into(), model: None,
         account: account.map(|account| crate::accounts::AccountId::parse(account).unwrap()), leaves_limit: None,
     });
@@ -836,20 +839,20 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
     let limit = s.claude_held().into_iter().find(|held| held.hold == ClaudeHold::Usage).unwrap();
     assert_eq!(usage_resets_at(&limit.card), Some(4_102_444_800), "the reset Claude gave");
-    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::SignedOut, account: None }).unwrap_err().code, "invalid_input",
+    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::SignedOut, account: None }).unwrap_err().code, "invalid_input",
         "only the user's answer probes the sign-in");
-    assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None }).unwrap_err().code, "forbidden");
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None });
+    assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None }).unwrap_err().code, "forbidden");
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None });
     assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)], "one probe, the oldest");
     let resumed_text = |s: &DomainState, id: &str| s.lifecycle_journal[&TaskId::from(id)].iter().rev()
         .find_map(|record| match record { LifecycleRecord::Resumed { text, .. } => text.clone(), _ => None });
     assert_eq!(resumed_text(&s, "t").as_deref(), Some(GO_ON), "the API answers again");
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: None });
     assert_eq!(held(&s), [("u".into(), ClaudeHold::Outage)]);
     let renewed = resumed_text(&s, "v").expect("the limit's task is told to go on");
     assert!(renewed.starts_with("Your usage limit has renewed: Claude answers again. Go on with your task now"), "{renewed}");
     assert!(renewed.contains("never wait for one with sleep, cron or a background loop"), "{renewed}");
-    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None }).unwrap_err().code, "not_found");
+    assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: None }).unwrap_err().code, "not_found");
     assert_aggregate_rules(&s);
 }
 
@@ -880,7 +883,7 @@ fn a_turn_that_hits_the_limit_while_the_limit_already_holds_its_task_ends_on_the
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "the end of the turn is recorded");
     assert_eq!(s.live_state(&"t".into()), Some(usage), "the task still waits for the usage limit");
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "on one card");
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: None });
     assert!(matches!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(_))), "the reset lets it go on");
     assert_aggregate_rules(&s);
 }
@@ -901,7 +904,7 @@ fn a_turn_the_limit_ends_while_the_api_holds_its_task_waits_for_the_limit_instea
     assert!(outage(&s).withdrawn, "the API answered, with the limit");
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)]);
     assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: None });
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: None });
     assert!(held(&s).is_empty());
     assert_aggregate_rules(&s);
 }
@@ -909,7 +912,7 @@ fn a_turn_the_limit_ends_while_the_api_holds_its_task_waits_for_the_limit_instea
 fn accounts_seen(s: &mut DomainState, states: &[(&str, crate::accounts::AccountState)]) {
     let accounts = states.iter().map(|(id, state)| crate::accounts::AccountStatus {
         provider: crate::accounts::Provider::Claude, id: crate::accounts::AccountId::parse(id).unwrap(), name: id.to_uppercase(), state: *state,
-        email: None, plan: None, billing: Default::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
     }).collect();
     must(s, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() });
 }
@@ -939,7 +942,7 @@ fn claude_answering_on_one_account_lets_only_that_accounts_held_tasks_go_on() {
     }
     assert_eq!(listed_holds(&s).len(), 2, "one card per account's limit: {:?}", listed_holds(&s));
     let probed = |s: &DomainState| s.claude_held().into_iter().map(|held| (held.task.0, held.account.to_string())).collect::<Vec<_>>();
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Usage, account: Some(crate::accounts::AccountId::parse("work").unwrap()) });
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: Some(crate::accounts::AccountId::parse("work").unwrap()) });
     assert_eq!(probed(&s), [("t".into(), "default".into()), ("u".into(), "default".into()), ("w".into(), "work".into())], "the work account's reset probes one of its own");
     turn_on_resumed(&mut s, "v", "turn-2");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "v".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
@@ -950,53 +953,38 @@ fn claude_answering_on_one_account_lets_only_that_accounts_held_tasks_go_on() {
 }
 
 fn admit_off_limit(s: &mut DomainState, id: &str, node: &str, account: &str, card: &InteractionId) -> Result<CommandOutcome, DomainError> {
-    exec(s, Actor::System, Command::AdmitExecution {
+    exec(s, Actor::System, Command::AdmitExecution { provider: Default::default(),
         task_id: id.into(), agent_id: node.into(), conversation: format!("conversation-{node}"), instance: format!("instance-{node}"), host: "sdk-host".into(),
         model: None, account: Some(crate::accounts::AccountId::parse(account).unwrap()), leaves_limit: Some(card.clone()),
     })
 }
 
-// A task whose turn ended on its account's usage limit goes on with another account: a new
-// execution there takes it past the limit, and its card is withdrawn. Only an account that can
-// take work does, never the one it leaves, and only for the card that holds it.
+// A legacy SDK quota hold cannot authorize another account; normal recovery keeps its binding.
 #[test]
-fn an_execution_on_another_account_takes_the_task_past_its_accounts_usage_limit() {
-    use crate::accounts::AccountState::{Disabled, SignedIn, SignedOut};
-    let mut s = world();
-    for node in ["m", "n"] {
-        must(&mut s, Actor::System, Command::RegisterAgent { agent_id: node.into(), name: node.into(), at: 0 });
+fn an_existing_legacy_execution_cannot_leave_its_accounts_limit_on_another_account() {
+    use crate::accounts::AccountState::{Disabled,SignedIn,SignedOut};
+    let mut s=world();must(&mut s,Actor::System,Command::RegisterAgent{agent_id:"m".into(),name:"m".into(),at:0});
+    accounts_seen(&mut s,&[("default",SignedIn),("work",SignedIn),("off",Disabled),("out",SignedOut)]);
+    sdk_turn_on(&mut s,"t","a","turn-1",Some("work"));usage_turn(&mut s,"t",4_102_444_800);
+    let card=s.held_by_limit(&"t".into()).unwrap().card;let journal=s.lifecycle_journal.clone();let revision=s.revision;
+    assert!(s.tasks[&TaskId::from("t")].selection.is_none());
+    for account in ["default","off","out","ghost"]{
+        assert_eq!(admit_off_limit(&mut s,"t","m",account,&card).unwrap_err().code,"active_account_immutable");
+        assert_eq!(s.revision,revision);assert_eq!(s.lifecycle_journal,journal);
     }
-    accounts_seen(&mut s, &[("default", SignedIn), ("work", SignedIn), ("off", Disabled), ("out", SignedOut)]);
-    sdk_turn_on(&mut s, "t", "a", "turn-1", Some("work"));
-    assert_eq!(s.held_by_limit(&"t".into()), None, "in its turn nothing holds it");
-    usage_turn(&mut s, "t", 4_102_444_800);
-    let card = s.held_by_limit(&"t".into()).expect("its turn ended on the limit").card;
-    for (account, code) in [("work", "invalid_input"), ("off", "conflict"), ("out", "conflict"), ("ghost", "not_found")] {
-        assert_eq!(admit_off_limit(&mut s, "t", "m", account, &card).unwrap_err().code, code, "{account}");
-    }
-    assert_eq!(admit_off_limit(&mut s, "t", "m", "default", &InteractionId::from("claude-usage-limit-other")).unwrap_err().code, "conflict");
-    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "a refused move changes nothing");
-
-    admit_off_limit(&mut s, "t", "m", "default", &card).unwrap();
-    assert!(s.claude_held().is_empty(), "nothing holds it any more");
-    assert!(s.interactions[&card].withdrawn, "its card is withdrawn");
-    assert_eq!(s.task_account(&"t".into()), crate::accounts::AccountId::default_account());
-    assert_eq!(s.tasks[&TaskId::from("t")].agent_id, Some("m".into()));
-    let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
-    assert_eq!(lifecycle.execution().map(|stamp| (stamp.instance().as_str().to_owned(), stamp.generation())), Some(("instance-m".into(), 2)));
-    assert_eq!(kinds(&s, "t").iter().rev().take(3).map(String::as_str).collect::<Vec<_>>(), ["admitted", "execution_released", "resumed"]);
-    let LifecycleRecord::Resumed { input, text, .. } = s.lifecycle_journal[&TaskId::from("t")].iter().rev().nth(2).unwrap() else { panic!("resumed") };
-    assert_eq!(lifecycle.pending_inputs().first().map(|pending| pending.as_str()), Some(input.as_str()), "the new execution starts with the input the move gave it");
-    assert_eq!(*text, None, "whose words are the ones it is launched with");
-    assert_eq!(admit_off_limit(&mut s, "t", "n", "work", &card).unwrap_err().code, "conflict", "a card left behind takes no second move");
-    assert_aggregate_rules(&s);
+    assert_eq!(admit_off_limit(&mut s,"t","m","work",&card).unwrap_err().code,"invalid_input","same account does not bypass its hold");
+    assert_eq!(s.task_account(&"t".into()),crate::accounts::AccountId::parse("work").unwrap());
+    assert_eq!(s.tasks[&TaskId::from("t")].agent_id,Some("a".into()));assert!(!s.interactions[&card].withdrawn);
+    must(&mut s,Actor::System,Command::ProbeClaudeAccess{provider:crate::accounts::Provider::Claude,hold:ClaudeHold::Usage,account:Some(crate::accounts::AccountId::parse("work").unwrap())});
+    turn_on_resumed(&mut s,"t","turn-2");
+    must(&mut s,Actor::System,Command::RecordRuntimeFacts{task_id:"t".into(),generation:1,facts:vec![RuntimeObservation::ModelAnswered]});
+    assert_eq!(s.task_account(&"t".into()),crate::accounts::AccountId::parse("work").unwrap());
+    assert_eq!(s.tasks[&TaskId::from("t")].agent_id,Some("a".into()));assert!(s.claude_held().is_empty());assert_aggregate_rules(&s);
 }
 
-// A question the node asked before its turn ended on the limit is the task's, not its
-// execution's: it stays open when the task goes on with another account, and its answer reaches
-// the new execution.
+// A refused account transfer does not lose a pending user question or its answer.
 #[test]
-fn a_question_the_node_asked_stays_open_when_its_task_leaves_its_accounts_limit() {
+fn a_question_the_node_asked_stays_open_when_an_account_transfer_is_refused() {
     use crate::accounts::AccountState::SignedIn;
     let mut s = world();
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "m".into(), name: "m".into(), at: 0 });
@@ -1007,7 +995,7 @@ fn a_question_the_node_asked_stays_open_when_its_task_leaves_its_accounts_limit(
         recipient: Recipient::User, body: "Pick the name".into(), blocking: true, options, card: CardSpec::derived(CardKind::Decide, "Pick the name") });
     usage_turn(&mut s, "t", 4_102_444_800);
     let card = s.held_by_limit(&"t".into()).expect("only the limit holds its execution").card;
-    admit_off_limit(&mut s, "t", "m", "default", &card).unwrap();
+    assert_eq!(admit_off_limit(&mut s,"t","m","default",&card).unwrap_err().code,"active_account_immutable");
     assert!(!s.interactions[&InteractionId::from("q")].withdrawn, "the question is still the user's to answer");
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "short".into(), inputs: BTreeMap::new() });
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into() });
@@ -1025,7 +1013,7 @@ fn the_api_answering_on_any_account_lets_every_task_the_outage_held_go_on() {
     fail_turn(&mut s, "u", "turn-1", "overloaded", Some(529));
     usage_turn(&mut s, "v", 4_102_448_400);
     assert_eq!(listed_holds(&s).len(), 2, "the API is one card for every account: {:?}", listed_holds(&s));
-    must(&mut s, Actor::System, Command::ProbeClaudeAccess { hold: ClaudeHold::Outage, account: None });
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None });
     turn_on_resumed(&mut s, "t", "turn-2");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
     assert_eq!(held(&s), [("v".into(), ClaudeHold::Usage)], "the API works for the work account too; its limit still stands");
@@ -1317,7 +1305,7 @@ fn interrupting_a_task_that_waits_for_its_background_work_or_its_input_names_no_
     ] });
     let mut handed = world();
     task(&mut handed, "t", None);
-    must(&mut handed, Actor::System, Command::AdmitExecution {
+    must(&mut handed, Actor::System, Command::AdmitExecution { provider: Default::default(),
         task_id: "t".into(), agent_id: "a".into(), conversation: "conversation-t".into(), instance: "instance-t".into(), host: "sdk-host".into(), model: None,
         account: None, leaves_limit: None,
     });
@@ -2017,4 +2005,300 @@ fn a_pause_keeps_its_owner_in_the_journal() {
     assert_eq!(json, r#"{"kind":"paused","card":"claude-signed-out-t-3","owner":"usage"}"#);
     let journal = [LifecycleRecord::Planned { input: "Start".into() }, serde_json::from_str(&json).unwrap()];
     assert_eq!(replay(&TaskId::from("t"), &journal).unwrap().live(), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)), "the owner it names wins over its card");
+}
+
+
+fn mixed_default_accounts(s: &mut DomainState, codex_state: crate::accounts::AccountState) {
+    use crate::accounts::*;
+    let accounts=[Provider::Claude,Provider::Codex].into_iter().map(|provider|AccountStatus {provider,id:AccountId::default_account(),name:format!("{provider:?} personal"),state:if provider==Provider::Codex {codex_state} else {AccountState::SignedIn},native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins:0}).collect();
+    must(s,Actor::System,Command::RecordAccounts {accounts,reserve:crate::usage::default_reserve()});
+}
+
+#[test]
+fn provider_qualified_sign_out_grouping_and_answers_never_cross_equal_default_slugs() {
+    use crate::accounts::{AccountState,Provider};
+    let mut s=world(); mixed_default_accounts(&mut s,AccountState::SignedIn);
+    sdk_turn_on_provider(&mut s,Provider::Claude,"t","a","turn-1",None);
+    sdk_turn_on_provider(&mut s,Provider::Codex,"u","b","turn-1",None);
+    fail_turn(&mut s,"u","turn-1","authentication_failed",Some(401));
+    let state=|s:&DomainState,provider|s.accounts.iter().find(|account|account.provider==provider).unwrap().state;
+    assert_eq!(state(&s,Provider::Claude),AccountState::SignedIn); assert_eq!(state(&s,Provider::Codex),AccountState::SignedOut);
+    mixed_default_accounts(&mut s,AccountState::SignedIn);
+    assert_eq!(state(&s,Provider::Claude),AccountState::SignedIn,"a held Code sign-in never marks Claude signed out");
+    assert_eq!(state(&s,Provider::Codex),AccountState::SignedOut,"a cached native sign-in does not prove the held Code account works");
+    fail_turn(&mut s,"t","turn-1","authentication_failed",Some(401));
+    assert_eq!(listed_holds(&s).len(),2,"one sign-in card per qualified default account");
+    let code=s.claude_held().into_iter().find(|held|held.provider==Provider::Codex).unwrap().card;
+    must(&mut s,user(),Command::AnswerQuestion {attachments:vec![],interaction_id:code,option_id:SIGNED_IN.into(),inputs:BTreeMap::new()});
+    turn_on_resumed(&mut s,"u","turn-2");
+    must(&mut s,Actor::System,Command::RecordRuntimeFacts {task_id:"u".into(),generation:1,facts:vec![RuntimeObservation::ModelAnswered]});
+    assert_eq!(state(&s,Provider::Codex),AccountState::SignedIn); assert_eq!(state(&s,Provider::Claude),AccountState::SignedOut);
+    assert_eq!(held(&s),[("t".into(),ClaudeHold::SignedOut)]);
+}
+
+#[test]
+fn a_codex_outage_probe_and_answer_do_not_release_claudes_outage() {
+    use crate::accounts::{AccountState,Provider};
+    let mut s=world(); mixed_default_accounts(&mut s,AccountState::SignedIn);
+    sdk_turn_on_provider(&mut s,Provider::Claude,"t","a","turn-1",None); sdk_turn_on_provider(&mut s,Provider::Codex,"u","b","turn-1",None);
+    fail_turn(&mut s,"t","turn-1","overloaded_error",Some(503)); fail_turn(&mut s,"u","turn-1","overloaded_error",Some(503));
+    assert_eq!(listed_holds(&s).len(),2,"outages of different services never group together");
+    must(&mut s,Actor::System,Command::ProbeClaudeAccess {provider:Provider::Codex,hold:ClaudeHold::Outage,account:None});
+    assert_eq!(held(&s),[("t".into(),ClaudeHold::Outage)]);
+    turn_on_resumed(&mut s,"u","turn-2");
+    must(&mut s,Actor::System,Command::RecordRuntimeFacts {task_id:"u".into(),generation:1,facts:vec![RuntimeObservation::ModelAnswered]});
+    assert_eq!(held(&s),[("t".into(),ClaudeHold::Outage)]);
+}
+
+#[test]
+fn quota_never_changes_the_provider_of_a_started_legacy_execution_even_when_default_slugs_match() {
+    use crate::accounts::{AccountState,Provider};
+    let mut s=world();mixed_default_accounts(&mut s,AccountState::SignedIn);sdk_turn(&mut s,"t","a");usage_turn(&mut s,"t",4_102_444_800);
+    let card=s.held_by_limit(&"t".into()).unwrap().card;
+    let move_to=|provider|Command::AdmitExecution{provider,task_id:"t".into(),agent_id:"a".into(),conversation:"new-conversation".into(),instance:"new-instance".into(),host:"alondra-host".into(),model:None,account:None,leaves_limit:Some(card.clone())};
+    assert_eq!(exec(&mut s,Actor::System,move_to(Provider::Claude)).unwrap_err().code,"invalid_input");
+    let records=s.lifecycle_journal.clone();
+    assert_eq!(exec(&mut s,Actor::System,move_to(Provider::Codex)).unwrap_err().code,"active_account_immutable");
+    assert_eq!(s.lifecycle_journal,records);assert_eq!(s.tasks[&TaskId::from("t")].account_key(),crate::accounts::AccountKey::native(Provider::Claude));
+    assert!(s.held_by_limit(&"t".into()).is_some());assert!(!s.interactions[&card].withdrawn);
+}
+
+
+#[test]
+fn legacy_probe_wire_defaults_to_claude_and_codex_is_explicit() {
+    let legacy=Command::ProbeClaudeAccess {provider:crate::accounts::Provider::Claude,hold:ClaudeHold::Usage,account:None};
+    let value=serde_json::to_value(&legacy).unwrap(); assert!(value.get("provider").is_none()); assert_eq!(serde_json::from_value::<Command>(value).unwrap(),legacy);
+    let code=Command::ProbeClaudeAccess {provider:crate::accounts::Provider::Codex,hold:ClaudeHold::Usage,account:None};
+    assert_eq!(serde_json::to_value(&code).unwrap()["provider"],"codex");
+}
+
+
+#[test]
+fn a_proven_new_identity_does_not_inherit_a_previous_identity_auth_hold() {
+    use crate::accounts::{AccountKey, AccountState, Provider};
+    for provider in [Provider::Claude, Provider::Codex] {
+        let mut state = world();
+        mixed_default_accounts(&mut state, AccountState::SignedIn);
+        let key = AccountKey::native(provider);
+        let mut seen = state.accounts.clone();
+        seen.iter_mut().find(|account| account.provider == provider).unwrap().email = Some("first@example.invalid".into());
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        sdk_turn_on_provider(&mut state, provider, "t", "a", "turn-1", None);
+        fail_turn(&mut state, "t", "turn-1", "authentication_failed", Some(401));
+        let hold = state.claude_held().into_iter().find(|held| held.task == TaskId::from("t")).unwrap().card;
+        state.interactions.get_mut(&hold).unwrap().card.cause = None;
+        let journal = state.lifecycle_journal[&TaskId::from("t")].clone();
+        let mut seen = state.accounts.clone();
+        let account = seen.iter_mut().find(|account| account.provider == provider).unwrap();
+        account.state = AccountState::Unavailable; account.email = None;
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        let mut seen = state.accounts.clone();
+        seen.iter_mut().find(|account| account.provider == provider).unwrap().state = AccountState::SignedIn;
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        let account = state.accounts.iter().find(|account| account.provider == provider).unwrap();
+        assert_eq!((account.state, account.sign_ins), (AccountState::SignedOut, 0), "a transient unavailable observation cannot turn cached sign-in into recovery proof");
+        let mut seen = state.accounts.clone();
+        let account = seen.iter_mut().find(|account| account.provider == provider).unwrap();
+        account.state = AccountState::SignedIn;
+        account.email = Some("second@example.invalid".into());
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        let account = state.accounts.iter().find(|account| account.provider == provider).unwrap();
+        assert_eq!((account.state, account.sign_ins), (AccountState::SignedIn, 1));
+        let seen = state.accounts.clone();
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        assert_eq!(state.accounts.iter().find(|account| account.provider == provider).unwrap().state, AccountState::SignedIn);
+        assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal, "an identity change never resumes or transfers the old node");
+        assert!(!state.interactions[&hold].withdrawn);
+        assert!(state.interactions[&hold].card.cause.is_some(), "a legacy hold gains its old credential cause only when identity replacement is proven");
+        assert!(state.claude_held().is_empty(), "new identity probes cannot pick the old identity's task");
+        let mut seen = state.accounts.clone();
+        let account = seen.iter_mut().find(|account| account.provider == provider).unwrap();
+        account.state = AccountState::Unavailable; account.email = None;
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        let mut seen = state.accounts.clone();
+        seen.iter_mut().find(|account| account.provider == provider).unwrap().state = AccountState::SignedIn;
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        assert_eq!(state.accounts.iter().find(|account| account.provider == provider).unwrap().state, AccountState::SignedIn, "an unavailable B probe cannot reapply A's hold");
+        assert_eq!(exec(&mut state, Actor::System, Command::ProbeClaudeAccess { provider, hold: ClaudeHold::SignedOut, account: Some(key.account.clone()) }).unwrap_err().code, "invalid_input", "automatic probes never resume authentication holds; user confirmation is required");
+        assert_eq!(exec(&mut state, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: hold.clone(), option_id: SIGNED_IN.into(), inputs: BTreeMap::new() }).unwrap_err().code, "account_credentials_changed");
+        assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+        assert_eq!(state.tasks[&TaskId::from("t")].account_key(), key);
+    }
+}
+
+
+#[test]
+fn same_identity_reauthentication_keeps_its_usage_wait_attached_to_the_existing_session() {
+    use crate::accounts::{AccountKey, AccountState, Provider};
+    for provider in [Provider::Claude, Provider::Codex] {
+        let mut state = world(); mixed_default_accounts(&mut state, AccountState::SignedIn);
+        let key = AccountKey::native(provider);
+        let mut seen = state.accounts.clone();
+        seen.iter_mut().find(|account| account.provider == provider).unwrap().email = Some("same@example.invalid".into());
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        sdk_turn_on_provider(&mut state, provider, "t", "a", "turn-1", None);
+        usage_turn(&mut state, "t", 1_800_000_000);
+        must(&mut state, Actor::System, Command::RecordAccountUsage { provider, account: key.account.clone(), reading: crate::usage::UsageReading {
+            windows: vec![crate::usage::WindowReading { kind: crate::usage::WindowKind::Weekly, used: crate::usage::Share::FULL, exhausted: true, resets_at: None }], plan: None, complete: false }, at: 1, day: "2026-10-26".into() });
+        let execution = state.lifecycle_of(&TaskId::from("t")).unwrap().execution().cloned();
+        let quota = state.account_usage.clone();
+        let mut seen = state.accounts.clone();
+        seen.iter_mut().find(|account| account.provider == provider).unwrap().state = AccountState::SignedOut;
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        let mut seen = state.accounts.clone();
+        seen.iter_mut().find(|account| account.provider == provider).unwrap().state = AccountState::SignedIn;
+        must(&mut state, Actor::System, Command::RecordAccounts { accounts: seen, reserve: crate::usage::default_reserve() });
+        assert_eq!(state.accounts.iter().find(|account| account.provider == provider).unwrap().sign_ins, 1);
+        assert_eq!(state.claude_held().len(), 1, "same-identity renewal never orphans the current usage wait");
+        assert_eq!(state.account_usage, quota, "reauthentication is not evidence the quota reset");
+        must(&mut state, Actor::System, Command::ProbeClaudeAccess { provider, hold: ClaudeHold::Usage, account: Some(key.account.clone()) });
+        assert_eq!(state.lifecycle_of(&TaskId::from("t")).unwrap().execution().cloned(), execution);
+        assert_eq!(state.tasks[&TaskId::from("t")].account_key(), key);
+    }
+}
+
+#[test]
+fn typed_codex_holds_keep_creation_time_paid_authority_when_the_account_policy_changes() {
+    use crate::accounts::{AccountBilling, AccountKey, AccountState, Provider};
+    use crate::model_selection::{ModelProfile, TaskSelection};
+    for originally_paid in [false, true] {
+        let mut state = world(); mixed_default_accounts(&mut state, AccountState::SignedIn);
+        let key = AccountKey::native(Provider::Codex);
+        let billing = |paid| if paid { AccountBilling::PayPerUse } else { AccountBilling::default() };
+        let record_policy = |state: &mut DomainState, paid| {
+            let mut accounts = state.accounts.clone();
+            accounts.iter_mut().find(|account| account.provider == Provider::Codex).unwrap().billing = billing(paid);
+            must(state, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() });
+        };
+        let record_creation = |state: &mut DomainState, task: &str, paid| {
+            let mut selection = TaskSelection::automatic(ModelProfile::General);
+            selection.account = Some(key.clone());
+            if paid { selection.paid_account_grant = Some(key.clone()); }
+            must(state, Actor::System, Command::RecordTaskSelection { task_id: task.into(), selection, pending: None });
+        };
+        record_policy(&mut state, originally_paid);
+        sdk_turn_on_provider(&mut state, Provider::Codex, "t", "a", "turn-1", None);
+        record_creation(&mut state, "t", originally_paid);
+        usage_turn(&mut state, "t", 4_102_444_800);
+        let card = state.interactions.values().find(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == "t") && ClaudeHold::of(&card.id) == Some(ClaudeHold::Usage)).unwrap().id.clone();
+        let journal = state.lifecycle_journal[&TaskId::from("t")].clone();
+        let selection = state.tasks[&TaskId::from("t")].selection.clone();
+        record_policy(&mut state, !originally_paid);
+        assert!(state.claude_held().is_empty(), "a different current spending policy never authorizes recovery of this existing node");
+        assert!(!state.grouped_away(&state.interactions[&card]), "the existing card remains independently visible");
+        assert_eq!(exec(&mut state, Actor::System, Command::ProbeClaudeAccess { provider: Provider::Codex, hold: ClaudeHold::Usage, account: Some(key.account.clone()) }).unwrap_err().code, "not_found");
+        sdk_turn_on_provider(&mut state, Provider::Codex, "u", "b", "turn-1", None);
+        record_creation(&mut state, "u", !originally_paid);
+        must(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "u".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+        assert!(!state.interactions[&card].withdrawn, "a new node's answer cannot recover the old financial context");
+        assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+        assert_eq!(state.tasks[&TaskId::from("t")].selection, selection, "no new paid consent or account pin is created");
+        usage_turn(&mut state, "u", 4_102_444_800);
+        let probe = exec(&mut state, Actor::System, Command::ProbeClaudeAccess { provider: Provider::Codex, hold: ClaudeHold::Usage, account: Some(key.account.clone()) });
+        if originally_paid { assert!(probe.is_ok(), "the independently authorized managed target remains probeable"); }
+        else { assert_eq!(probe.unwrap_err().code, "not_found", "the newer paid target also remains standalone"); }
+        assert!(!state.interactions[&card].withdrawn, "a probe never substitutes another session's API credential identity");
+        assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+        record_policy(&mut state, originally_paid);
+        assert_eq!(state.claude_held().iter().any(|held| held.task == TaskId::from("t")), !originally_paid, "restored managed policy permits native proof; an original paid grant never proves grouped identity");
+        assert!(!state.interactions[&card].withdrawn);
+        assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+    }
+}
+
+#[test]
+fn a_managed_codex_answer_never_heals_an_original_paid_target_with_the_same_public_labels() {
+    use crate::accounts::{AccountBilling, AccountKey, AccountState, Provider};
+    use crate::model_selection::{ModelProfile, TaskSelection};
+    let mut state = world(); mixed_default_accounts(&mut state, AccountState::SignedIn);
+    let key = AccountKey::native(Provider::Codex);
+    let mut accounts = state.accounts.clone();
+    let account = accounts.iter_mut().find(|account| account.provider == Provider::Codex).unwrap();
+    account.email = Some("retained@example.invalid".into()); account.native_identity = Some("retained-workspace".into()); account.billing = AccountBilling::PayPerUse;
+    must(&mut state, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() });
+    sdk_turn_on_provider(&mut state, Provider::Codex, "u", "b", "managed-turn", None);
+    let mut managed = TaskSelection::automatic(ModelProfile::General); managed.account = Some(key.clone()); managed.paid_account_grant = Some(key.clone());
+    must(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "u".into(), selection: managed, pending: None });
+    sdk_turn_on_provider(&mut state, Provider::Codex, "t", "a", "turn-1", None);
+    let mut paid = TaskSelection::automatic(ModelProfile::General); paid.account = Some(key.clone()); paid.paid_account_grant = Some(key.clone());
+    must(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: paid, pending: None });
+    usage_turn(&mut state, "t", 4_102_444_800);
+    let card = state.interactions.values().find(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == "t") && ClaudeHold::of(&card.id) == Some(ClaudeHold::Usage)).unwrap().id.clone();
+    let journal = state.lifecycle_journal[&TaskId::from("t")].clone(); let selection = state.tasks[&TaskId::from("t")].selection.clone();
+    assert!(!state.grouped_away(&state.interactions[&card]));
+    must(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "u".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert!(!state.interactions[&card].withdrawn, "a managed source seal and equal Pay policy cannot identify an older API-key target");
+    assert_eq!(exec(&mut state, Actor::System, Command::ProbeClaudeAccess { provider: Provider::Codex, hold: ClaudeHold::Usage, account: Some(key.account.clone()) }).unwrap_err().code, "not_found");
+    assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+    assert_eq!(state.tasks[&TaskId::from("t")].selection, selection, "the original spending grant remains untouched");
+}
+
+
+#[test]
+fn an_already_started_legacy_background_node_cannot_change_account_or_provider_at_sdk_handover(){
+    use crate::accounts::{AccountId,Provider};
+    let mut s=world();task(&mut s,"t",Some("a"));
+    must(&mut s,Actor::System,Command::MoveNode{agent_id:"a".into(),event:NodeEvent::TurnStarted,at:1});
+    assert!(s.tasks[&TaskId::from("t")].started);assert!(s.tasks[&TaskId::from("t")].selection.is_none());
+    for (provider,account) in [(Provider::Codex,None),(Provider::Claude,Some(AccountId::parse("work").unwrap()))]{
+        let revision=s.revision;let journal=s.lifecycle_journal.clone();
+        let result=exec(&mut s,Actor::System,Command::AdmitExecution{provider,task_id:"t".into(),agent_id:"b".into(),conversation:"session".into(),instance:"instance".into(),host:"alondra-host".into(),model:None,account,leaves_limit:None});
+        assert_eq!(result.unwrap_err().code,"active_account_immutable");assert_eq!(s.revision,revision);assert_eq!(s.lifecycle_journal,journal);
+    }
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn native_request_rejection_keeps_its_selection_and_catalog_and_waits_for_explicit_user_action() {
+    use crate::accounts::{AccountKey, AccountState, Provider};
+    use crate::model_selection::{AccountModelCatalog, CatalogModel, ModelKey, ModelProfile, ModelSelection, TaskSelection};
+    use crate::views::text::Lang;
+    for (code, why, english, spanish) in [
+        ("codex_turn_failed", NATIVE_FAILED_WHY, "Codex's turn ended with an error", "El turno de Codex terminó con un error"),
+        ("codex_request_rejected", NATIVE_REQUEST_REJECTED_WHY, "Codex rejected this task's request", "Codex rechazó la solicitud de esta tarea"),
+        ("codex_context_exceeded", NATIVE_CONTEXT_EXCEEDED_WHY, "exceeds the Codex model's context window", "supera la ventana de contexto del modelo de Codex"),
+    ] {
+        let mut state = world(); mixed_default_accounts(&mut state, AccountState::SignedIn);
+        let account = AccountKey::native(Provider::Codex);
+        must(&mut state, Actor::System, Command::RecordModelCatalog { catalog: AccountModelCatalog { account: account.clone(), revision: "native-request-fixture".into(), measured_at: 1, native_default: Some("fixture-model".into()), models: vec![CatalogModel { model: "fixture-model".into(), display_name: "Fixture model".into(), reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec!["text".into()], is_default: true, hidden: false }] } });
+        sdk_turn_on_provider(&mut state, Provider::Codex, "t", "a", "turn-1", None);
+        let mut intent = TaskSelection::automatic(ModelProfile::General); intent.requested = Some(ModelKey { provider: Provider::Codex, model: "fixture-model".into() }); intent.account = Some(account.clone());
+        intent.effective = Some(ModelSelection { model: intent.requested.clone().unwrap(), reasoning_effort: None, catalog_revision: "native-request-fixture".into() });
+        must(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent.clone(), pending: None });
+        let accounts = state.accounts.clone(); let catalog = state.model_catalogs.clone(); let usage = state.account_usage.clone();
+        let execution = state.lifecycle_of(&"t".into()).unwrap().execution().cloned();
+        must(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: Some(code.into()) });
+        let card = turn_ended_card_id(&"t".into(), 1, "turn-1");
+        assert_eq!(state.interactions[&card].card.why, why); assert_eq!(options(&state, &card), [CARRY_ON, CANCEL_TASK]);
+        assert_eq!(state.tasks[&TaskId::from("t")].selection.as_ref(), Some(&intent)); assert_eq!(state.tasks[&TaskId::from("t")].account_key(), account);
+        assert_eq!(state.accounts, accounts); assert_eq!(state.model_catalogs, catalog); assert_eq!(state.account_usage, usage); assert!(state.claude_held().is_empty());
+        let lifecycle = state.lifecycle_of(&"t".into()).unwrap(); assert_eq!(lifecycle.execution().cloned(), execution); assert!(lifecycle.pending_inputs().is_empty(), "no automatic retry input or account/model fallback is created");
+        let shown = turn_end_shown(&state, "t", Lang::En); assert!(shown.contains(english), "{shown}"); assert!(!shown.contains("Claude's turn ended"));
+        let shown = turn_end_shown(&state, "t", Lang::Es); assert!(shown.contains(spanish), "{shown}");
+        assert_aggregate_rules(&state);
+    }
+}
+
+#[test]
+fn a_known_codex_source_never_heals_an_unknown_original_target_but_own_node_success_still_recovers() {
+    use crate::accounts::{AccountState, Provider};
+    use crate::model_selection::{ModelProfile, TaskSelection};
+    let mut state = world(); mixed_default_accounts(&mut state, AccountState::SignedIn);
+    assert!(state.accounts.iter().find(|account| account.provider == Provider::Codex).unwrap().native_identity.is_none());
+    sdk_turn_on_provider(&mut state, Provider::Codex, "t", "a", "turn-1", None);
+    must(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: TaskSelection::automatic(ModelProfile::General), pending: None });
+    usage_turn(&mut state, "t", 4_102_444_800);
+    let target = state.held_by_limit(&"t".into()).unwrap().card; let journal = state.lifecycle_journal[&TaskId::from("t")].clone();
+    let mut accounts = state.accounts.clone(); accounts.iter_mut().find(|account| account.provider == Provider::Codex).unwrap().native_identity = Some("later-known-account".into());
+    must(&mut state, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() });
+    sdk_turn_on_provider(&mut state, Provider::Codex, "u", "b", "turn-1", None);
+    must(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "u".into(), selection: TaskSelection::automatic(ModelProfile::General), pending: None });
+    must(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "u".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert!(!state.interactions[&target].withdrawn, "a known source cannot identify another task's unknown original workspace");
+    assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+    usage_turn(&mut state, "u", 4_102_444_800); let own = state.held_by_limit(&"u".into()).unwrap().card;
+    must(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "u".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert!(state.interactions[&own].withdrawn, "own-node success retains the existing financial and credential fences");
+    assert!(!state.interactions[&target].withdrawn); assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
+    assert_aggregate_rules(&state);
 }

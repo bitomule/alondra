@@ -31,6 +31,12 @@ filegroup(
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
+filegroup(
+    name = "transport_sources",
+    srcs = ["src/codec.rs", "src/correlation.rs", "src/json.rs", "src/ownership.rs", "src/schema.rs"],
+    visibility = ["//crates/codex-protocol:__pkg__"],
+)
+
 # Read by the crash report's build script for its log catalog and the words of the code.
 filegroup(
     name = "report_sources",

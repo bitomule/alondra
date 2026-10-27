@@ -53,6 +53,25 @@ pub(crate) fn main_checkout(dir: &Path) -> bool {
     dir.join(".git").is_dir()
 }
 
+pub(crate) async fn recovery_directory_matches(cwd: &Path, original: &Path) -> bool {
+    if !original.is_dir() { return false; }
+    let original_git = git(original, &["rev-parse", "--path-format=absolute", "--git-dir"]).await;
+    let original_common = git(original, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await;
+    if let (Some(git), Some(common)) = (&original_git, &original_common)
+        && same_dir(Path::new(git), Path::new(common)) { return false; }
+    if same_dir(cwd, original) { return true; }
+    let (Some(original_common), Some(original_top), Some(top), Some(candidate_git), Some(candidate_common)) = (
+        original_common,
+        git(original, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await,
+        git(cwd, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await,
+        git(cwd, &["rev-parse", "--path-format=absolute", "--git-dir"]).await,
+        git(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await,
+    ) else { return false; };
+    same_dir(Path::new(&candidate_git), Path::new(&candidate_common))
+        && same_dir(Path::new(&original_common), Path::new(&candidate_common))
+        && relative(cwd, Path::new(&top)) == relative(original, Path::new(&original_top))
+}
+
 async fn choose(cwd: &Path, slug: &str, known: Option<&Path>, pr_head: Option<&str>) -> Result<Workplace, String> {
     let given = || Ok(Workplace::Given(cwd.to_path_buf()));
     let Some(top) = git(cwd, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await else { return given() };

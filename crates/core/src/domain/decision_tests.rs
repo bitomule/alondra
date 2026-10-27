@@ -508,3 +508,43 @@ fn a_revoked_grant_asks_again_and_a_task_that_ends_forgets_what_it_allowed() {
     assert!(allowed(&s).is_empty(), "nothing stays allowed once the task ends");
     assert_aggregate_rules(&s);
 }
+
+
+#[test]
+fn a_consumed_native_plan_starts_its_new_turn_before_core_settles_the_decision() {
+    for background in [false, true] {
+        let mut s = world();
+        sdk_turn(&mut s, "t", "a");
+        if background {
+            must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+                facts: vec![RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "native-child".into() }] });
+        }
+        must(&mut s, Actor::System, request(7, Hold::Plan, Some("ExitPlanMode"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
+        must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+        must(&mut s, user(), answer(&card_of(7), Hold::APPROVE, None));
+        let before = s.lifecycle_of(&"t".into()).unwrap().cursor().unwrap();
+        must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+            facts: vec![RuntimeObservation::TurnUnprompted { turn: "native-implementation".into() }] });
+        must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
+        assert_eq!(s.lifecycle_of(&"t".into()).unwrap().cursor(), Some(before + 3), "two provider observations produce three real guarded lifecycle events");
+        assert_eq!(kinds(&s, "t").iter().rev().take(3).cloned().collect::<Vec<_>>(), ["decision_continued", "decision_settled", "turn_unprompted"]);
+        let wake = alondra_domain::decision_continuation(1, 7).as_str().to_owned();
+        assert_eq!(refused_unchanged(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+            facts: vec![RuntimeObservation::WorkContinued { continuation: wake }] }), "invalid_input", "generic work cannot consume a decision's continuation");
+        assert!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().is_empty(), "the initial mission and approved decision leave no unconsumed input");
+        assert_eq!(s.lifecycle_of(&"t".into()).unwrap().activity(), alondra_domain::ActivityView::Working);
+        let targets = vec![DeliveryTarget::Text { text: "Parser and tests completed".into() }];
+        must(&mut s, node("a"), Command::PresentResult {
+            attachments: vec![], task_id: "t".into(), interaction_id: "native-delivery".into(), body: "Parser and tests completed".into(),
+            checklist: vec![
+                ChecklistMark { item: "1".into(), evidence: vec![Evidence { kind: EvidenceKind::File, value: "src/parser.rs".into(), detail: None }] },
+                ChecklistMark { item: "2".into(), evidence: vec![Evidence { kind: EvidenceKind::Test, value: "parser_accepts_valid_input".into(), detail: None }] },
+            ],
+            card: CardSpec::delivery("Review the parser and tests", &targets, true), targets, is_final: true, nothing_to_review: false,
+        });
+        must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "native-implementation".into(), failure: None, failed: None });
+        assert_eq!(s.lifecycle_of(&"t".into()).unwrap().activity(), if background { alondra_domain::ActivityView::OwnWork } else { alondra_domain::ActivityView::Resting });
+        assert_eq!(s.lifecycle_journal[&TaskId::from("t")].iter().filter(|record| matches!(record, LifecycleRecord::DecisionContinued { epoch: 7 })).count(), 1);
+        assert_aggregate_rules(&s);
+    }
+}

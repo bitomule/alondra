@@ -4,6 +4,9 @@
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
 
+#[path = "model_input.rs"]
+mod model_input;
+
 use alondra_core::domain::{
     Actor, ANSWER_TEXT, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, Target, TaskId,
@@ -283,7 +286,8 @@ impl LocalActionResource {
             Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
             Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
-            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves => add(Self::AccountSettings, true),
+            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ModelProfile => add(Self::AccountSettings, true),
+            Verb::TaskSelection => add(Self::Task(action.subject.clone()), true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
             Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(Self::Mcp(action.subject.clone()), true),
             _ => {},
@@ -354,9 +358,9 @@ pub(crate) fn external_request(body: &Value) -> bool {
 fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
-        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
+        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
-        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves)
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ModelProfile | Verb::TaskSelection)
 }
 
 pub(crate) async fn execute_action(
@@ -465,8 +469,8 @@ async fn execute_external(
         Verb::SchedRun => "Run started",
         Verb::SchedToggle => "Schedule updated",
         Verb::SchedDelete => "Schedule deleted",
-        Verb::SchedSave => "Schedule saved",
-        Verb::NewRequest => "Request sent",
+        Verb::SchedSave | Verb::ScheduleSelection => "Schedule saved",
+        Verb::NewRequest | Verb::NewRequestSelection => "Request sent",
         Verb::CloseUnmerged => "PR closed",
         Verb::Pause => "Paused",
         Verb::Resume => "Resumed",
@@ -480,6 +484,12 @@ async fn execute_external(
         Verb::AccountRemove => "Removed",
         Verb::AccountUp | Verb::AccountDown => "Moved",
         Verb::AccountWeight => "Weight updated",
+        Verb::AccountRename => "Renamed",
+        Verb::AccountOrder => "Order saved",
+        Verb::ModelProfile => "Model profile saved",
+        Verb::TaskSelection => "Selection change requested",
+        Verb::AccountCheck => "Accounts checked",
+        Verb::AccountModels => "Models refreshed",
         Verb::AccountPolicy => "Updated",
         Verb::AccountMoves => "Updated",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
@@ -490,12 +500,13 @@ async fn execute_external(
         Verb::Msg => "Mensaje enviado", Verb::Relaunch => "Relanzada", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido", Verb::ForceStop => "Parando",
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
-        Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
-        Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
+        Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave | Verb::ScheduleSelection => "Tarea guardada",
+        Verb::NewRequest | Verb::NewRequestSelection => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
         Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", Verb::RemoveRule => "Quitado",
         Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", Verb::McpRemove => "Borrado",
         Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
-        Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado", _ => stamp,
+        Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado",
+        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -730,13 +741,79 @@ async fn execute_external(
                 Err(error) => Ok(error_value(&error.code, &error.message)),
             }
         }
+        Verb::ModelProfile => {
+            let Some((provider, profile)) = alondra_core::views::model_controls::parse_profile(&action.subject) else { return Ok(rejected_field(lang, "profile", "Choose a model profile")); };
+            let Some(expected) = action.extra.as_deref() else { return Ok(rejected_field(lang, "profile", "Reload this model profile and try again")); };
+            let current = state.model_profiles.get(&provider).and_then(|profiles| profiles.get(&profile));
+            let policy = match model_input::profile(&request.input.fields, request.option_id.as_deref(), current, provider) { Ok(policy) => policy, Err(message) => return Ok(rejected_field(lang, "model", message)) };
+            let actor = Actor::User { user_id: user_id.clone() };
+            match crate::accounts::set_model_profile_authorized(domain, home, &actor, provider, profile, &policy, expected, &authorize) {
+                Ok(()) => Ok(to_applied(200, json!({"model_profile_saved": true}))),
+                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+            }
+        }
+        Verb::TaskSelection => {
+            let task_id = TaskId(action.subject.clone());
+            let Some(task) = state.tasks.get(&task_id) else { return Ok(no_longer_available(lang, "This task is no longer listed")); };
+            let Some(expected) = action.extra.as_deref() else { return Ok(rejected_field(lang, "model", "Reload this task and try again")); };
+            let base = task.selection.clone().unwrap_or_else(|| {
+                let mut intent = alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation);
+                if let Some(model) = task.model.as_ref().filter(|model| model.chosen_by == alondra_core::domain::ModelChooser::User) {
+                    intent.request_model(Some(alondra_core::model_selection::ModelKey { provider: task.provider, model: model.model.clone() }));
+                }
+                intent
+            });
+            let intent = match model_input::task(&request.input.fields, base, &task.account_key()) { Ok(value) => value, Err(message) => return Ok(rejected_field(lang, "model", message)) };
+            let chosen = match crate::accounts::select_for_active_model(domain, &task_id, &intent) { Ok(chosen) => chosen, Err(error) => return Ok(error_value(&error.code, &error.message)) };
+            let actor = Actor::User { user_id: user_id.clone() };
+            match crate::provider_transition::request(domain, &actor, &task_id, chosen.account, chosen.selection, intent, "User changed model selection", expected,
+                || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked"))) {
+                Ok(value) => Ok(to_applied(202, value)),
+                Err(error) => Ok(error_value(&error.code, &error.message)),
+            }
+        }
+        Verb::AccountModels => {
+            let Some(provider) = alondra_core::views::accounts::action_provider(action) else { return Ok(rejected_field(lang, "provider", "Choose an available provider")); };
+            let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else { return Ok(rejected_field(lang, "account", "Choose an account")); };
+            let key = alondra_core::accounts::AccountKey { provider, account };
+            let (runtime, home) = (client.domain.clone(), home.to_path_buf());
+            match tokio::task::spawn_blocking(move || crate::accounts::refresh_models(&runtime, &home, &key)).await? {
+                Ok(()) => Ok(to_applied(200, json!({"models_refreshed": true}))),
+                Err(message) => Ok(error_value("unavailable", &message)),
+            }
+        }
+        Verb::AccountCheck => {
+            let (runtime, home) = (client.domain.clone(), home.to_path_buf());
+            tokio::task::spawn_blocking(move || crate::accounts::check(&runtime, &home)).await?;
+            Ok(to_applied(200, json!({"accounts_checked": true})))
+        }
+        Verb::AccountOrder => {
+            let Some(order) = request.input.fields.get("order").and_then(|value| serde_json::from_value::<Vec<alondra_core::accounts::AccountKey>>(value.clone()).ok()) else {
+                return Ok(rejected_field(lang, "order", "Choose every account in its new order"));
+            };
+            let Some(expected) = request.input.fields.get("expected_config_version").and_then(Value::as_str)
+                .filter(|version| action.extra.as_deref() == Some(*version)) else {
+                return Ok(rejected_field(lang, "expected_config_version", "Reload the account order and try again"));
+            };
+            let actor = Actor::User { user_id: user_id.clone() };
+            let made = crate::accounts::set_order_authorized(domain, home, &actor, &order, expected, &authorize);
+            match made {
+                Ok(()) => Ok(to_applied(200, json!({"account_order_saved": true}))),
+                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+            }
+        }
         Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
-        | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves => {
-            let Some(change) = account_change(action, request.option_id.as_deref()) else {
+        | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename => {
+            let Some(provider) = alondra_core::views::accounts::action_provider(action) else {
+                return Ok(rejected_field(lang, "provider", "Choose an available provider"));
+            };
+            let Some(change) = account_change(action, request.option_id.as_deref(), request.input.text.as_deref()) else {
                 return Ok(rejected_field(lang, "option_id", "Choose an option"));
             };
-            let (runtime, at, actor) = (client.domain.clone(), home.to_path_buf(), Actor::User { user_id: user_id.clone() });
-            let made = tokio::task::spawn_blocking(move || crate::accounts::change(&runtime, &at, &actor, &change)).await?;
+            let actor = Actor::User { user_id: user_id.clone() };
+            let made = crate::accounts::change_for_provider_authorized(domain, home, &actor, provider, &change, &authorize);
             match made {
                 Ok(()) => Ok(to_applied(200, json!({"accounts": action.subject}))),
                 Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
@@ -783,10 +860,10 @@ async fn execute_external(
             let reply = crate::domain_bootstrap::apply_orchestrator_decision(client.domain.clone(), home, decision, Some(&json!({"run_id":run_id})));
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
-        Verb::SchedRun | Verb::SchedToggle | Verb::SchedDelete | Verb::SchedSave => {
+        Verb::SchedRun | Verb::SchedToggle | Verb::SchedDelete | Verb::SchedSave | Verb::ScheduleSelection => {
             schedule_action(domain, home, request, action, identity, &authorize, lang, stamp).await
         }
-        Verb::NewRequest => {
+        Verb::NewRequest | Verb::NewRequestSelection => {
             let fields = &request.input.fields;
             let text = fields.get("text").and_then(Value::as_str).unwrap_or_default().trim();
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
@@ -855,7 +932,7 @@ async fn schedule_action(
 ) -> anyhow::Result<Value> {
     use alondra_core::domain::ScheduleId;
     let state = domain.state()?;
-    if action.verb == Verb::SchedSave && action.subject == "view" {
+    if matches!(action.verb, Verb::SchedSave | Verb::ScheduleSelection) && action.subject == "view" {
         let options = schedule_option_specs(home, &request.input.fields, None);
         let body = schedule_draft(&request.input.fields, None, &options);
         if let Some(rejection) = schedule_field_rejection(&request.input.fields, &body, lang) {
@@ -882,7 +959,7 @@ async fn schedule_action(
             body["enabled"] = json!(!schedule.enabled);
             ("PUT", format!("/schedules/{raw_id}"), Some(body))
         }
-        Verb::SchedSave => {
+        Verb::SchedSave | Verb::ScheduleSelection => {
             let options = schedule_option_specs(home, &request.input.fields, Some(schedule));
             let draft = schedule_draft(&request.input.fields, Some(schedule), &options);
             if let Some(rejection) = schedule_field_rejection(&request.input.fields, &draft, lang) {
@@ -1565,7 +1642,7 @@ fn no_longer_available(lang: Lang, message: &str) -> Value {
 /// before; the sentence is the catalog's, in the user's language.
 /// The change a Settings button of the accounts makes, from its verb, the account it names and
 /// the option chosen.
-fn account_change(action: &ActionId, option: Option<&str>) -> Option<alondra_core::accounts::AccountChange> {
+fn account_change(action: &ActionId, option: Option<&str>, text: Option<&str>) -> Option<alondra_core::accounts::AccountChange> {
     use alondra_core::accounts::{AccountChange, AccountId, Policy};
     if action.verb == Verb::AccountMoves {
         let on = match option? {
@@ -1585,6 +1662,7 @@ fn account_change(action: &ActionId, option: Option<&str>) -> Option<alondra_cor
     }
     let account = AccountId::parse(&action.subject).ok()?;
     Some(match action.verb {
+        Verb::AccountRename => AccountChange::Rename { account, name: text?.trim().into() },
         Verb::AccountEnable => AccountChange::Enable { account },
         Verb::AccountDisable => AccountChange::Disable { account },
         Verb::AccountRemove => AccountChange::Remove { account },
@@ -1893,6 +1971,8 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "command_id must be a supported operation ID" => "El identificador del comando no es válido",
         "An attachment is no longer available" => "Un archivo adjunto ya no está disponible",
         "Choose an option" => "Elige una opción",
+        "Create another node to use a different account or provider" => "Crea otro nodo para usar otra cuenta o proveedor",
+        "Choose reasoning effort when creating another node" => "Elige el esfuerzo de razonamiento al crear otro nodo",
         "No running task uses this MCP server any more" => "Ya ninguna tarea en marcha usa este servidor MCP",
         "This project is no longer listed" => "Este proyecto ya no aparece",
         "This Alondra has no Agent SDK host to check with" => "Este Alondra no tiene el host del Agent SDK para comprobarlo",
@@ -1951,6 +2031,14 @@ fn head_prefix(head: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_native_session_choices_have_actionable_spanish_refusals() {
+        assert_eq!(rejected_field(Lang::Es, "model", "Create another node to use a different account or provider")["message"],
+            "Crea otro nodo para usar otra cuenta o proveedor");
+        assert_eq!(rejected_field(Lang::Es, "reasoning_effort", "Choose reasoning effort when creating another node")["message"],
+            "Elige el esfuerzo de razonamiento al crear otro nodo");
+    }
 
     #[test]
     fn spanish_says_merge_for_a_pull_request() {

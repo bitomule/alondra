@@ -157,7 +157,7 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Keyboard".into() });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Keyboard".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
-    apply(&mut state, Actor::System, Command::AdmitExecution { task_id: "t3".into(), agent_id: "agent-b".into(), conversation: "conversation-t3".into(),
+    apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t3".into(), agent_id: "agent-b".into(), conversation: "conversation-t3".into(),
         instance: "instance-t3".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
     let LifecycleRecord::Planned { input } = state.lifecycle_journal[&TaskId::from("t3")][0].clone() else { panic!("planned first") };
     apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t3".into(), generation: 1, facts: vec![
@@ -195,7 +195,7 @@ fn the_orchestrator_reads_a_node_of_the_agent_sdk_from_its_task_s_lifecycle() {
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Notes".into() });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t4".into(), request_id: "r".into(), title: "Notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
-    apply(&mut state, Actor::System, Command::AdmitExecution { task_id: "t4".into(), agent_id: "agent-s".into(), conversation: "conversation-t4".into(),
+    apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t4".into(), agent_id: "agent-s".into(), conversation: "conversation-t4".into(),
         instance: "instance-t4".into(), host: crate::sdk_owner::HOST.into(), model: None, account: None, leaves_limit: None });
     let read = |state: &DomainState| {
         let mut row = json!({});

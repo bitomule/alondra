@@ -95,7 +95,14 @@ pub struct ReadIndex {
     account_moves: bool,
     merge_method: super::MergeMethod,
     account_usage: Vec<crate::usage::AccountUsage>,
-    account_nodes: Vec<(crate::accounts::AccountId, usize)>,
+    account_nodes: Vec<(crate::accounts::AccountKey, usize)>,
+    account_order: Vec<crate::accounts::AccountKey>,
+    account_config_version: String,
+    model_catalogs: Vec<crate::model_selection::AccountModelCatalog>,
+    model_profiles: crate::model_selection::ModelProfiles,
+    model_profiles_version: String,
+    task_selections: HashMap<TaskId, crate::model_selection::TaskSelection>,
+    pending_selections: HashMap<TaskId, crate::model_selection::PendingTaskSelection>,
 }
 
 impl ReadIndex {
@@ -267,8 +274,18 @@ impl ReadIndex {
     }
     /// How many open tasks' nodes run on each account that has some.
     pub fn nodes_on_account(&self, account: &crate::accounts::AccountId) -> usize {
+        self.nodes_on_account_key(&crate::accounts::AccountKey::new(crate::accounts::Provider::Claude, account.clone()))
+    }
+    pub fn nodes_on_account_key(&self, account: &crate::accounts::AccountKey) -> usize {
         self.account_nodes.iter().find(|(on, _)| on == account).map_or(0, |(_, count)| *count)
     }
+    pub fn account_order(&self) -> &[crate::accounts::AccountKey] { &self.account_order }
+    pub fn account_config_version(&self) -> &str { &self.account_config_version }
+    pub fn model_catalogs(&self) -> &[crate::model_selection::AccountModelCatalog] { &self.model_catalogs }
+    pub fn model_profiles(&self) -> &crate::model_selection::ModelProfiles { &self.model_profiles }
+    pub fn model_profiles_version(&self) -> &str { &self.model_profiles_version }
+    pub fn task_selection(&self, task: &TaskId) -> Option<&crate::model_selection::TaskSelection> { self.task_selections.get(task) }
+    pub fn pending_task_selection(&self, task: &TaskId) -> Option<&crate::model_selection::PendingTaskSelection> { self.pending_selections.get(task) }
     /// What each account last said of its usage.
     pub fn account_usage(&self) -> &[crate::usage::AccountUsage] {
         &self.account_usage
@@ -397,8 +414,18 @@ impl<'a> Builder<'a> {
         index.account_moves = state.account_moves;
         index.merge_method = state.merge_method;
         index.account_usage = state.account_usage.clone();
-        index.account_nodes = state.accounts.iter().map(|account| (account.id.clone(), state.tasks_on_account(&account.id)))
-            .filter(|(_, count)| *count > 0).collect();
+        index.account_order = state.account_order.clone();
+        index.account_config_version = state.account_config_version.clone();
+        index.model_catalogs = state.model_catalogs.clone();
+        index.model_profiles = state.model_profiles.clone();
+        index.model_profiles_version = state.model_profiles_version.clone();
+        index.task_selections = state.tasks.values().filter_map(|task| task.selection.clone().map(|selection| (task.id.clone(), selection))).collect();
+        index.pending_selections = state.tasks.values().filter_map(|task| task.pending_selection.clone().map(|selection| (task.id.clone(), selection))).collect();
+        let mut account_nodes = std::collections::BTreeMap::new();
+        for task in state.tasks.values().filter(|task| !task.over() && task.agent_id.is_some()) {
+            *account_nodes.entry(task.account_key()).or_insert(0) += 1;
+        }
+        index.account_nodes = account_nodes.into_iter().collect();
         self.cards(&mut index);
         self.blockers();
         for d in state.interactions.values().filter(|d| matches!(d.payload, InteractionPayload::Delivery { .. })) {
@@ -765,8 +792,13 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     assert_eq!(index.account_reserve, state.account_reserve, "the accounts' reserve");
     assert_eq!(index.account_policy(), state.account_policy, "how work is spread over the accounts");
     assert_eq!(index.account_moves(), state.account_moves, "whether nodes move between accounts");
-    for account in &state.accounts {
-        assert_eq!(index.nodes_on_account(&account.id), state.tasks_on_account(&account.id), "the nodes on account {}", account.id);
+    let accounts: BTreeSet<_> = state.accounts.iter().map(|account| crate::accounts::AccountKey::new(account.provider, account.id.clone()))
+        .chain(state.tasks.values().map(|task| task.account_key())).collect();
+    for account in accounts {
+        assert_eq!(index.nodes_on_account_key(&account), state.tasks_on_account_key(&account), "the nodes on account {}", account.wire_id());
+        if account.provider == crate::accounts::Provider::Claude {
+            assert_eq!(index.nodes_on_account(&account.account), state.tasks_on_account(&account.account));
+        }
     }
     assert_eq!(index.merge_method, state.merge_method, "the merge method");
     for request in state.requests.keys() {

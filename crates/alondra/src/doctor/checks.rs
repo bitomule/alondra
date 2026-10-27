@@ -498,15 +498,46 @@ fn run_config(env: &Env) -> Option<Outcome> {
     Some(config_check(&env.sys.config_path(), env.sys.config_text().as_deref(), service_repair(&env.sys.service(), Action::InstallService)))
 }
 
+fn connected(env: &Env, provider: alondra_core::accounts::Provider) -> bool {
+    env.sys.options_text().and_then(|text| alondra_core::options::OptionsFile::parse(&text).ok()).is_some_and(|options| options.accounts.is_connected(provider))
+}
+fn run_providers(env: &Env) -> Option<Outcome> {
+    let options = env.sys.options_text().map(|text| alondra_core::options::OptionsFile::parse(&text)).transpose().ok()?;
+    let providers = options.map(|options| options.accounts.connected_providers().to_vec()).unwrap_or_default();
+    if providers.is_empty() { Some(outcome("providers", "AI providers", Group::Service, Status::Warn,
+        tr!("No AI provider is connected. Choose Claude or Codex in Accounts.", "No hay ningún proveedor de IA conectado. Elige Claude o Codex en Cuentas."), manual(tr!("Open Accounts in Alondra", "Abre Cuentas en Alondra")))) } else { None }
+}
+fn run_codex(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Codex) { return None; }
+    let version = env.sys.codex_version();
+    Some(match version {
+        Some(version) if alondra_core::codex_account::supported_cli_version(&version) => outcome("codex", "Codex", Group::Service, Status::Pass, version.trim(), None),
+        Some(_) => { let required = alondra_core::codex_account::SUPPORTED_CLI_VERSION; outcome("codex", "Codex", Group::Service, Status::Fail,
+            trf!("Codex CLI is incompatible. Alondra requires {required}.", "La CLI de Codex no es compatible. Alondra requiere {required}."), manual(trf!("Install Codex {required}, then run alondra doctor", "Instala Codex {required} y ejecuta alondra doctor"))) },
+        None => outcome("codex", "Codex", Group::Service, Status::Fail, tr!("The service cannot run Codex. Install the supported Codex CLI and run doctor again.", "El servicio no puede ejecutar Codex. Instala la CLI de Codex compatible y vuelve a ejecutar doctor."), manual("alondra doctor --fix")),
+    })
+}
+fn run_codex_signin(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Codex) { return None; }
+    let accounts = env.sys.native_accounts();
+    let signed_in = accounts.as_ref().and_then(Value::as_array).is_some_and(|accounts| accounts.iter().any(|account| account.get("provider").and_then(Value::as_str) == Some("codex") && account.get("enabled").and_then(Value::as_bool).unwrap_or(true) && account.get("state").and_then(Value::as_str) == Some("signed_in")));
+    Some(if signed_in { outcome("codex.signin", "Codex sign-in", Group::Service, Status::Pass,
+        tr!("The latest account check reports an enabled Codex session", "La última comprobación indica una sesión de Codex habilitada"), None) }
+    else { outcome("codex.signin", "Codex sign-in", Group::Service, Status::Warn,
+        tr!("No enabled Codex session is available. Sign in from Accounts.", "No hay ninguna sesión de Codex habilitada disponible. Inicia sesión desde Cuentas."), manual("alondra accounts --provider codex login default")) })
+}
 fn run_claude(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }
     Some(claude_version_check(env.sys.claude(&["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t).as_deref()))
 }
 
 fn run_profile(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }
     Some(profile_check(env.sys.profile(), &env.sys.user_home()))
 }
 
 fn run_signin(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }
     Some(signin_check(env.sys.signed_in()))
 }
 
@@ -561,10 +592,12 @@ fn run_update(env: &Env) -> Option<Outcome> {
 }
 
 fn run_hooks(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }
     hooks_port_check(env.sys.config().port)
 }
 
 fn run_plugin(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }
     let view = env.sys.service();
     Some(plugin_check(env.sys.plugins().as_ref(), env.sys.marketplace(), view.repo.as_deref(), view.marketplace_elsewhere.as_deref()))
 }
@@ -572,6 +605,7 @@ fn run_plugin(env: &Env) -> Option<Outcome> {
 /// `claude plugin validate` takes up to a minute, so it runs only with `--deep` or when the node
 /// plugin changed since it last passed.
 fn run_validate(env: &Env) -> Option<Outcome> {
+    if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }
     if !env.sys.marketplace() {
         return None;
     }
@@ -616,6 +650,8 @@ fn run_tuicr(env: &Env) -> Option<Outcome> {
 /// service itself) is repaired first.
 pub const CHECKS: &[Check] = &[
     Check { id: "mac", run: run_mac },
+    Check { id: "providers", run: run_providers },
+    Check { id: "codex", run: run_codex },
     Check { id: "claude", run: run_claude },
     Check { id: "claude.profile", run: run_profile },
     Check { id: "claude.signin", run: run_signin },
@@ -629,6 +665,7 @@ pub const CHECKS: &[Check] = &[
     Check { id: "upgrade", run: run_upgrade },
     Check { id: "update", run: run_update },
     Check { id: "hooks", run: run_hooks },
+    Check { id: "codex.signin", run: run_codex_signin },
     Check { id: "plugin", run: run_plugin },
     Check { id: "validate", run: run_validate },
     Check { id: "relay", run: run_relay },

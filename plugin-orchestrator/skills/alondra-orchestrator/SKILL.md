@@ -42,7 +42,7 @@ Alondra gives you:
   a node's work.
 
 Only sessions Alondra launched are nodes: the nodes `launch` starts, and you. The user's
-own terminals, crons and other Claude sessions cannot take a task or a message. Authority comes
+own terminals, crons and other provider sessions cannot take a task or a message. Authority comes
 from the capability the daemon issued to a session: public session ids and process ancestry
 never grant it, and an old session without one must resume with the current plugin. Never infer
 a task, a PR's owner, the user's acceptance or a completion from hook text.
@@ -155,7 +155,7 @@ user follows tasks, not nodes.
   instructions or the work call for it; a review follows the task it reviews.
 - `machine` shows the machine's room and the subscription's usage. Over today's slice of the
   week a launch still goes ahead, with a `warning` in its result: say so in your answer to the
-  user. When Claude usage has run out, `launch` is refused with `usage_exhausted` until the time
+  user. When the selected account has no quota, `launch` is refused with `usage_exhausted` until the time
   it names; the task stays as it is, and Alondra resumes your batches by itself when usage is back.
 - Usage is never your reason to stop a node. Only the user (on the usage card) and Alondra (its
   pacing) decide to stop for usage. Never tell a node to stop, wait or hold until a reset because
@@ -170,55 +170,70 @@ user follows tasks, not nodes.
 
 ## Choose the model and effort for each task
 
-With auto effort, assess each task after splitting the request and pick its model and effort.
-Pass both `model` and `effort` on `launch`; with auto effort `model` is required. **Be careful
-with sonnet: when in doubt, use opus.**
+### Tag every task
 
-- **opus** whenever the task:
-  - touches interface with interaction;
-  - touches a state machine;
-  - touches concurrency or races;
-  - touches session or security;
-  - has a cause nobody has found, or an intermittent test;
-  - is design;
-  - changes stored data: a format or a data migration;
-  - or its specification does not name the files, the states and the edge cases.
-- **sonnet** (effort left out) for:
-  - an implementation phase whose approved plan names the files and the test, e.g. "Phase 2 of
-    the approved plan: add the `--json` flag to `alondra models` in `models.rs`, tested by
-    `models_json`";
-  - a mechanical rename, e.g. renaming a flag across 4 files;
-  - copy that has to be checked against the code, e.g. the help text of a command against what
-    the command does;
-  - documentation drawn from the code, e.g. the README table of commands;
-  - a release: version bump, notes, running the release script.
-- **opus, effort `medium`:** everything that is not sonnet and not `high`: implementation that
-  needs any design decision, investigation of code the node does not know, ordinary bugs,
-  refactors, tests that need thought.
-- **opus, effort `high`:** very complex work: architecture design, a hard bug (a race, data loss,
-  a failure without a known cause), a migration with difficult data-preservation invariants, or
-  a choice with competing constraints. Name that difficulty in the mission.
-- **fable:** only when an opus node already failed at the task, or the user asks for it.
+Give every task `tags` on `launch` and in every launch plan (`create_task`, `set_launch_plan`):
+`kind` (feature, fix, refactor, tests, docs, migration, design, review, release, research),
+`areas` where it works (ui, daemon, data, build) and `risks` (concurrency, security,
+data_migration, unclear_spec, user_visible). Tag what the task really is, not what would justify
+a model. Alondra keeps the tags with each model decision, and `alondra metrics` reports results
+by provider and by kind.
 
-Whatever fits no list is opus. Sonnet's share is measured with the same table as everything
-else (`alondra models`): if the change rounds or reopenings of sonnet tasks exceed those of the
-average opus task, this widening is reverted to the earlier, narrower sonnet rule. Before it,
-12 of 187 tasks over 7 days (6 %) went to sonnet, all finished first time with no changes asked
-or reopenings, median 16 minutes.
+### Read the Available models table
 
-To move a live task to another model or effort, `launch` it again with `replace: true`: it
-answers at once with `replacing: true`, and you are told how it ended; do not launch the task
-again meanwhile.
+`machine` starts with the Available models table: one row per model an enabled account
+advertises, with its reasoning efforts, the accounts that serve it and their margin, its sheet
+(relative cost, the kinds it is good for, its caution) and Alondra's measured results (ended
+tasks, % done the first time, mean cost; per kind once a kind has 3 tasks). `model_evidence`
+holds the public evidence behind each sheet. Choose only from that table. A catalog entry does
+not guarantee that an account has access; respect a native rejection.
 
-The size or importance of the whole request does not raise every task. When the user chose an
-effort on the request, it already sets the model: `launch` refuses a `model` then, and the
-user's choice stands.
+### Choose
 
-With auto effort every `launch` carries `reason`: one short line on what the task is and why
-this model and effort fit it, e.g. "Rename a flag across 4 files with tests to check: sonnet" or
-"Race between merge watcher and relaunch nobody has traced: opus high". Alondra refuses the
-launch without it; pass `reason` on a `send` with an `approach` too. Alondra records each choice with how the task went, and the user reviews those numbers
-to tune this policy, so name the real difficulty, not the task's importance.
+1. **The user's model binds.** A model the user chose for the request, or one the request text
+   names ("use Codex"), is the model: pass it, and its effort if they named one.
+   Account fallback keeps that model when another eligible account serves it; changing the model
+   needs the user's substitution opt-in.
+2. **Severe risks take the strongest.** A task tagged `concurrency`, `security` or
+   `data_migration` takes the model with the best measured results for its kind (at least 5
+   tasks); without such measurements, the one whose sheet evidence is strongest for that kind.
+3. **Otherwise the cheapest that fits.** Among the models whose sheet lists the task's kind, take
+   the lowest cost, unless its measured results for that kind are clearly worse than the best
+   measured one's. Calling a model worse needs at least 5 tasks of that kind for both. At equal
+   cost, prefer the better measured results, then the better evidence. A model without a sheet
+   is chosen only when the user named it or no model with a sheet lists the kind.
+4. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
+   little measurement is not worse; it is unmeasured.
+
+Use only reasoning efforts the row lists. Qualify the model as `codex/<model-id>` or
+`claude/<model-id>`; `launch` also takes `provider` with an unqualified id. `reasoning_effort` is
+native reasoning effort; the request's light/normal/hard effort is work intent, not a provider or
+permission to replace the user's model.
+
+`reason` cites the row: the model, the task's kind, and the sheet evidence or the measured
+numbers that decided it, for example "docs; claude/sonnet: cheapest whose sheet lists docs,
+docs 12: 92% $0.80". When you deviate from these rules, say why in `reason`.
+
+Give an implementation node the approved files, states, edge cases and meaningful tests, whatever
+its model. An independent review may use another session of the same model.
+
+### Accounts and transitions
+
+Automatic can use NativeDefault or the profile's configured ordered candidates. A provider without
+an identifiable default needs its model chosen in Accounts settings. Do not invent a default from
+the first catalog row or require another provider to configure it. Subscription account
+preference is global across providers. Do not turn an automatic choice into a paid account pin.
+
+An existing execution changes through Alondra's durable selection transition. Its requested,
+effective and pending selections are distinct. A change during a turn applies later. Never
+replace a running node merely to bypass quota, a permission denial or a rejected input, and do
+not launch a second writer while a transition drains its source. `transition_required` means use
+the selection controls and retained handoff, not repeat `launch` with another provider.
+
+When this batch exhausts quota, Alondra may continue pending goals in a fresh batch using another
+eligible account. Confirmed outcome references describe what already happened; inspect current
+state and continue what remains. Never replay a list of earlier tool calls. An uncertain effect
+stays uncertain until reconciled or explicitly resolved by the user.
 
 ### Choose how the node works
 
@@ -233,21 +248,22 @@ into the mission; never write tool instructions yourself.
 Work with design in it (a state machine, an external integration, a migration, edge cases of a
 service) is three tasks, each depending on the one before:
 
-1. **Design** (`role: design`, opus, effort `high`). It delivers a document, not code: the
+1. **Design** (`role: design`, tags `kind: design`, effort `high`). It delivers a document, not code: the
    decisions; every edge case and failure mode with its expected behaviour; the list of tests;
    the files to touch. Its mission says: decisions for the user are asked with `ask` before the
    document is presented, each with the recommended option, and the document records the
    answers; the review never carries a choice. It presents the document for review.
-2. **Implementation** (`role: implementation`, sonnet). It implements exactly that document and
+2. **Implementation** (`role: implementation`, tagged with what it builds). It implements exactly that document and
    its tests. Its mission says: when the document does not cover something, ask instead of
    deciding.
-3. **Adversarial review** (`role: review`, opus). It tries to break the implementation against
+3. **Adversarial review** (`role: review`, tags `kind: review`). It tries to break the implementation against
    the document and against how the service really behaves. What it finds becomes a new implementation task that
    depends on the review, with its own node.
 
 Create the three at once, each with its launch plan on `create_task` and the last two with
-`dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose plan already names the files and the tests, or one of the mechanical
-cases above, stays one sonnet task.
+`dependencies` on the one before, so Alondra starts each as soon as the one before is done. Each
+gets its model by the rules above for its own tags. A change whose plan already names the files
+and the tests, or mechanical work, stays one task.
 
 ### Plans in phases
 
@@ -415,7 +431,7 @@ Send a `publish_information` only when knowing it helps the user. Say its effect
 plain words, never script names, task ids or internal steps. Wrong: "Publish release 0.2.56
 (release.sh + tag) finished: release 0.2.56 published". Right: "You can update Alondra to 0.2.56:
 it brings X and Y", or no notice at all when there is nothing for the user to know or do. An
-answer to a message from Claude or to a maintenance message never becomes a notice for the user:
+answer to a message from a node or to a maintenance message never becomes a notice for the user:
 close it with `close_request`.
 
 ## A finished node leaves a clean worktree

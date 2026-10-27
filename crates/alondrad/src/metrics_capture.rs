@@ -57,7 +57,11 @@ pub(crate) fn node_turn(domain: &DomainRuntime, agent: &AgentId, result: &Value,
 
 /// An orchestrator batch ended: what its session spent so far.
 pub(crate) fn orchestrator_batch(domain: &DomainRuntime, session: &str, usage: &[Usage], now: Millis) {
-    let spent = Spent { session_id: session, task_id: None, role: Role::Orchestrator, provider: CLAUDE, usage, steps: StepCounts::default(), at: now };
+    orchestrator_provider_batch(domain, session, alondra_core::accounts::Provider::Claude, usage, now);
+}
+
+pub(crate) fn orchestrator_provider_batch(domain: &DomainRuntime, session: &str, provider: alondra_core::accounts::Provider, usage: &[Usage], now: Millis) {
+    let spent = Spent { session_id: session, task_id: None, role: Role::Orchestrator, provider: provider.as_str(), usage, steps: StepCounts::default(), at: now };
     if let Err(error) = domain.record_spend(&spent) {
         log!("could not record what the orchestrator's session {session} spent: {error:#}");
     }

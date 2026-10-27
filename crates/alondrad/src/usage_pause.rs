@@ -40,7 +40,7 @@ pub(crate) struct Exhausted {
     /// The user paused until tomorrow; Claude did not run out.
     #[serde(default)]
     pub by_user: bool,
-    /// No Claude account has a session: `until` is no time at all, only a session ends the wait.
+    /// No provider account is available: `until` is no time at all, only an account becoming available ends the wait.
     #[serde(default)]
     pub no_session: bool,
 }
@@ -79,6 +79,18 @@ impl Default for UsagePause {
 }
 
 impl UsagePause {
+    /// Capacity on another provider ends a legacy global limit without waking still-limited Claude nodes.
+    pub(crate) fn provider_account_back(&self, now: Millis) -> bool {
+        let mut record = self.record.lock().expect("usage pause poisoned");
+        if !record.exhausted.as_ref().is_some_and(|standing| !standing.by_user) { return false; }
+        record.exhausted = None;
+        record.by_margin = false;
+        record.announced = false;
+        record.resumed_at = Some(now);
+        self.changed.send_replace(None);
+        true
+    }
+
     pub(crate) fn current(&self) -> Option<Exhausted> {
         self.record.lock().expect("usage pause poisoned").exhausted.clone()
     }
@@ -208,11 +220,13 @@ impl UsagePause {
     pub(crate) fn pause_by_user(&self, until: Millis, now: Millis) -> Change {
         let mut record = self.record.lock().expect("usage pause poisoned");
         let change = match record.exhausted.as_mut() {
-            Some(standing) if until > standing.until => {
-                standing.until = until;
-                Change::Extended
+            Some(standing) => {
+                let changed = !standing.by_user || standing.no_session || until > standing.until;
+                standing.until = standing.until.max(until);
+                standing.by_user = true;
+                standing.no_session = false;
+                if changed { Change::Extended } else { Change::Unchanged }
             }
-            Some(_) => Change::Unchanged,
             None => {
                 record.exhausted = Some(Exhausted { until, since: now, by_user: true, no_session: false });
                 Change::Started
@@ -250,7 +264,18 @@ impl UsagePause {
 
     /// Clears the exhaustion; true when the user was told about it, so they hear it is over.
     pub(crate) fn resume(&self, now: Millis) -> Option<bool> {
+        self.resume_matching(now, false)
+    }
+
+    fn resume_due(&self, now: Millis) -> Option<bool> {
+        self.resume_matching(now, true)
+    }
+
+    fn resume_matching(&self, now: Millis, due_only: bool) -> Option<bool> {
         let mut record = self.record.lock().expect("usage pause poisoned");
+        if due_only && record.exhausted.as_ref().is_none_or(|standing| standing.no_session || standing.until > now) {
+            return None;
+        }
         let ended = record.exhausted.take()?;
         record.by_margin = false;
         if !ended.by_user {
@@ -337,15 +362,15 @@ pub(crate) fn clock_text(millis: Millis, now: Millis, spanish: bool) -> String {
 
 pub(crate) fn out_text(exhausted: &Exhausted, now: Millis, spanish: bool) -> String {
     if exhausted.no_session {
-        return if spanish { "Ninguna cuenta de Claude tiene sesión: el trabajo nuevo espera a que inicies sesión en una".into() }
-            else { "No Claude account has a session: new work waits until you sign in to one".into() };
+        return if spanish { "No hay ninguna cuenta de proveedor disponible: revisa Cuentas".into() }
+            else { "No provider account is available: check Accounts".into() };
     }
     let clock = clock_text(exhausted.until, now, spanish);
-    if spanish { format!("Sin margen hasta {clock}") } else { format!("No Claude margin until {clock}") }
+    if spanish { format!("Sin margen hasta {clock}") } else { format!("No usage capacity until {clock}") }
 }
 
 pub(crate) fn back_text(spanish: bool) -> String {
-    if spanish { "Vuelve el margen de Claude: los nodos continúan".into() } else { "Claude has margin again: nodes are carrying on".into() }
+    if spanish { "Vuelve a haber margen de uso".into() } else { "Usage capacity is available again".into() }
 }
 
 /// The next local midnight after `now`.
@@ -402,7 +427,7 @@ pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, n
             && pause.current().is_some_and(|standing| standing.by_user)
         {
             pause.resume(now);
-            wake_nodes(domain);
+            wake_legacy_nodes(domain, false);
         }
     }
     if !pause.current().is_some_and(|standing| standing.by_user) {
@@ -486,8 +511,10 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
         let wait = (standing.until - now_millis()).max(0) as u64 + if standing.by_user { 0 } else { jitter(jitter_max_ms) };
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(wait)) => {
-                if let Some(announced) = pause.resume(now_millis()) {
-                    log!("Claude usage is back: resuming what the limit paused");
+                let now = now_millis();
+                crate::usage_probe::follow(&domain, now);
+                if let Some(announced) = pause.resume_due(now) {
+                    log!("the usage pause ended: checking each account before resuming");
                     wake_nodes(&domain);
                     if announced {
                         alerts.tell(back_text, false).await;
@@ -516,18 +543,70 @@ pub(crate) fn session_is_back(domain: &crate::domain_runtime::DomainRuntime) {
 /// task of each account whose limit holds tasks of the Agent SDK.
 pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
     crate::claude_access::probe_usage_holds(domain);
+    wake_legacy_nodes(domain, true);
+}
+
+fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capacity: bool) {
     let now = now_millis();
+    let Ok(state) = domain.state() else { return };
     for node in domain.live.nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
+        if !legacy_wake_ready(&state, &alondra_core::domain::AgentId(node.session_id.clone()), now, require_capacity) {
+            continue;
+        }
         if !domain.live.gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now)
             && crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err()
         {
             domain.live.losses.report(&node.session_id);
         }
     }
-    let Ok(state) = domain.state() else { return };
-    for agent in state.agents.keys().filter(|agent| !domain.live.mods.connected(&agent.0)) {
+    for agent in state.agents.keys().filter(|agent| !domain.live.mods.connected(&agent.0) && legacy_wake_ready(&state, agent, now, require_capacity)) {
         domain.live.losses.report(&agent.0);
     }
+}
+
+fn legacy_wake_ready(state: &alondra_core::domain::DomainState, agent: &alondra_core::domain::AgentId, now: Millis, require_capacity: bool) -> bool {
+    use alondra_core::accounts::{AccountKey, Provider};
+    if crate::sdk_owner::runs_through_sdk(state, agent) { return false; }
+    let mut tasks = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent));
+    let key = if let Some(task) = tasks.next() {
+        let key = task.account_key();
+        if key.provider != Provider::Claude || tasks.any(|task| task.account_key() != key) { return false; }
+        key
+    } else {
+        // An unbound legacy session has no credential scope in a mixed or named-account installation.
+        if state.accounts.len() != 1 || state.accounts[0].provider != Provider::Claude || state.accounts[0].id != alondra_core::accounts::AccountId::default_account() { return false; }
+        AccountKey { provider: Provider::Claude, account: alondra_core::accounts::AccountId::default_account() }
+    };
+    account_retry_ready(state, &key, now, now, require_capacity)
+}
+
+pub(crate) fn legacy_session_retry_ready(state: &alondra_core::domain::DomainState, session: &str, now: Millis) -> bool {
+    legacy_wake_ready(state, &alondra_core::domain::AgentId(session.to_owned()), now, true)
+}
+
+pub(crate) fn task_usage_ready(state: &alondra_core::domain::DomainState, task: &alondra_core::domain::TaskId, since: Millis, now: Millis) -> bool {
+    state.tasks.get(task).is_some_and(|task| account_retry_ready(state, &task.account_key(), since, now, true))
+}
+
+fn account_retry_ready(state: &alondra_core::domain::DomainState, key: &alondra_core::accounts::AccountKey, since: Millis, now: Millis, require_capacity: bool) -> bool {
+    use alondra_core::accounts::{AccountState, Provider};
+    if key.provider == Provider::Codex { return crate::claude_access::native_capacity_ready(state, key, since); }
+    let Some(account) = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account) else {
+        return state.accounts.is_empty() && state.account_config_version.is_empty();
+    };
+    if !matches!(account.state, AccountState::SignedIn | AccountState::Disabled) { return false; }
+    !require_capacity || state.account_usage.iter().find(|usage| usage.provider == key.provider && usage.account == key.account)
+        .is_none_or(|usage| legacy_account_retry_ready(usage, now))
+}
+
+fn legacy_account_retry_ready(usage: &alondra_core::usage::AccountUsage, now: Millis) -> bool {
+    use alondra_core::accounts::Provider;
+    use alondra_core::usage::{Share, WindowKind};
+    usage.provider == Provider::Claude && !usage.windows.iter().any(|window| {
+        matches!(window.reading.kind, WindowKind::Session | WindowKind::Weekly)
+            && (window.reading.exhausted || window.reading.used == Share::FULL)
+            && window.reading.resets_at.map_or_else(|| window.measured_at.saturating_add(UNKNOWN_RESET_WAIT_MS) > now, |reset| reset > now)
+    })
 }
 
 /// Records the exhaustion a Claude message describes: its own reset time when it names one,
@@ -554,6 +633,89 @@ mod tests {
         tm.tm_min = minute;
         tm.tm_isdst = -1;
         unsafe { libc::mktime(&mut tm) as Millis * 1000 }
+    }
+
+    #[test]
+    fn a_captured_deadline_cannot_resume_an_extended_pause_or_an_account_wait() {
+        let pause = UsagePause::default();
+        pause.exhaust(Some(2_000), 1_000);
+        pause.exhaust(Some(9_000), 1_100);
+        assert_eq!(pause.resume_due(2_000), None);
+        assert_eq!(pause.current().unwrap().until, 9_000);
+        assert_eq!(pause.resume_due(9_000), Some(false));
+        pause.wait_for_session(10_000);
+        assert_eq!(pause.resume_due(99_000), None);
+        assert!(pause.waits_for_session());
+    }
+
+    #[test]
+    fn a_legacy_account_retries_only_after_its_own_reset_or_unknown_reset_wait() {
+        use alondra_core::accounts::{AccountId, Provider};
+        use alondra_core::usage::{AccountUsage, UsageWindow, WindowReading};
+        let mut usage = AccountUsage { provider: Provider::Claude, account: AccountId::default_account(), windows: vec![UsageWindow {
+            reading: WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: Some(9_000), exhausted: true }, measured_at: 1_000,
+        }], plan: None, day_start: None };
+        assert!(!legacy_account_retry_ready(&usage, 2_000), "another account's earlier reset cannot wake this one");
+        assert!(legacy_account_retry_ready(&usage, 9_000));
+        usage.windows[0].reading.resets_at = None;
+        assert!(!legacy_account_retry_ready(&usage, 1_000 + UNKNOWN_RESET_WAIT_MS - 1));
+        assert!(legacy_account_retry_ready(&usage, 1_000 + UNKNOWN_RESET_WAIT_MS), "the existing legacy retry remains tied to its own observation");
+        usage.provider = Provider::Codex;
+        assert!(!legacy_account_retry_ready(&usage, 1_000 + UNKNOWN_RESET_WAIT_MS), "native SDK holds use their qualified recovery path");
+    }
+
+    #[test]
+    fn an_unbound_legacy_session_is_not_assumed_to_belong_to_a_codex_or_named_account() {
+        let (domain, _home) = domain();
+        let mut state = (*domain.state().unwrap()).clone();
+        let agent = alondra_core::domain::AgentId("unbound".into());
+        assert!(legacy_wake_ready(&state, &agent, 1_000, true));
+        state.account_usage.push(alondra_core::usage::AccountUsage {
+            provider: alondra_core::accounts::Provider::Claude, account: alondra_core::accounts::AccountId::default_account(),
+            windows: vec![alondra_core::usage::UsageWindow { measured_at: 500,
+                reading: WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: Some(9_000), exhausted: true } }],
+            plan: None, day_start: None,
+        });
+        assert!(!legacy_wake_ready(&state, &agent, 1_000, true), "automatic recovery waits for this account");
+        assert!(legacy_wake_ready(&state, &agent, 1_000, false), "the existing User resume action may retry its same account");
+        state.accounts[0].provider = alondra_core::accounts::Provider::Codex;
+        assert!(!legacy_wake_ready(&state, &agent, 1_000, true));
+        state.accounts[0].provider = alondra_core::accounts::Provider::Claude;
+        state.accounts[0].id = alondra_core::accounts::AccountId::parse("work").unwrap();
+        assert!(!legacy_wake_ready(&state, &agent, 1_000, true));
+    }
+
+    #[test]
+    fn native_codex_capacity_does_not_clear_another_accounts_legacy_usage_wait() {
+        use alondra_core::accounts::{AccountKey, Provider};
+        use alondra_core::usage::{AccountUsage, UsageWindow};
+        let (domain, _home) = domain();
+        let mut state = (*domain.state().unwrap()).clone();
+        let mut codex = state.accounts[0].clone(); codex.provider = Provider::Codex; state.accounts.push(codex);
+        let account = alondra_core::accounts::AccountId::default_account();
+        let window = |kind, used| UsageWindow { measured_at: 1_000, reading: WindowReading { kind, used, resets_at: Some(9_000), exhausted: false } };
+        state.account_usage = vec![
+            AccountUsage { provider: Provider::Claude, account: account.clone(), windows: vec![window(WindowKind::Session, Share::FULL)], plan: None, day_start: None },
+            AccountUsage { provider: Provider::Codex, account: account.clone(), windows: vec![
+                window(WindowKind::Other("codex:account:primary:300".into()), Share::of(0.2)),
+                window(WindowKind::Other("codex:account:secondary:10080".into()), Share::of(0.2)),
+            ], plan: None, day_start: None },
+        ];
+        assert!(account_retry_ready(&state, &AccountKey::new(Provider::Codex, account.clone()), 500, 2_000, true));
+        assert!(!account_retry_ready(&state, &AccountKey::new(Provider::Claude, account), 500, 2_000, true));
+    }
+
+    #[test]
+    fn an_explicit_user_pause_survives_provider_capacity_returning_after_a_session_wait() {
+        let pause = UsagePause::default();
+        pause.wait_for_session(1_000);
+        assert_eq!(pause.pause_by_user(9_000, 2_000), Change::Extended);
+        let standing = pause.current().unwrap();
+        assert!(standing.by_user);
+        assert!(!standing.no_session);
+        assert_eq!(standing.until, 9_000);
+        assert!(!pause.provider_account_back(3_000), "connecting a provider cannot override the user's pause");
+        assert_eq!(pause.current().unwrap(), standing);
     }
 
     #[test]
@@ -598,7 +760,7 @@ mod tests {
         assert!(!pause.margin_back(1_000_000 + UNKNOWN_RESET_WAIT_MS), "no reset ends it");
         assert!(pause.waits_for_session());
         let (told, _) = pause.claim_announcement().unwrap();
-        assert_eq!(out_text(&told, 1_000_000, true), "Ninguna cuenta de Claude tiene sesión: el trabajo nuevo espera a que inicies sesión en una");
+        assert_eq!(out_text(&told, 1_000_000, true), "No hay ninguna cuenta de proveedor disponible: revisa Cuentas");
         assert!(pause.session_back(), "a session ends it");
         assert!(!pause.is_active());
         assert!(!pause.session_back());
@@ -643,9 +805,9 @@ mod tests {
     fn the_notice_names_the_time_in_the_users_language_and_the_day_when_it_is_not_today() {
         let now = at(7, 14, 0);
         let out_text = |until, now, spanish| out_text(&Exhausted { until, since: now, by_user: false, no_session: false }, now, spanish);
-        assert_eq!(out_text(at(7, 15, 45), now, false), "No Claude margin until 15:45");
+        assert_eq!(out_text(at(7, 15, 45), now, false), "No usage capacity until 15:45");
         assert_eq!(out_text(at(7, 15, 45), now, true), "Sin margen hasta 15:45");
-        assert_eq!(out_text(at(12, 0, 0), now, false), "No Claude margin until Mon 00:00");
+        assert_eq!(out_text(at(12, 0, 0), now, false), "No usage capacity until Mon 00:00");
         assert_eq!(out_text(at(12, 0, 0), now, true), "Sin margen hasta lun 00:00");
     }
 
@@ -658,7 +820,17 @@ mod tests {
     fn domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        (Arc::new(DomainRuntime::open(&home).unwrap()), home)
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let state = domain.state().unwrap();
+        domain.execute_as_system(alondra_core::domain::CommandEnvelope {
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),
+            expected_revision: state.revision, command: alondra_core::domain::Command::RecordAccounts {
+                accounts: vec![alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Claude,
+                    id: alondra_core::accounts::AccountId::default_account(), name: "Personal".into(), state: alondra_core::accounts::AccountState::SignedIn,
+                    native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 }], reserve: alondra_core::usage::default_reserve(),
+            },
+        }).unwrap();
+        (domain, home)
     }
 
     /// The default account's windows as a node's events report them: `(kind, share used, reset)`.
@@ -763,8 +935,8 @@ mod tests {
         assert_eq!(node.texts(), [RESUME_MESSAGE], "the node the limit stopped is told once");
         let told = told.0.lock().unwrap().clone();
         assert_eq!(told.len(), 2, "one when it started and one when it ended: {told:?}");
-        assert!(told[0].0.starts_with("No Claude margin until "), "{told:?}");
-        assert_eq!(told[1].0, "Claude has margin again: nodes are carrying on");
+        assert!(told[0].0.starts_with("No usage capacity until "), "{told:?}");
+        assert_eq!(told[1].0, "Usage capacity is available again");
         std::fs::remove_dir_all(home).unwrap();
     }
 

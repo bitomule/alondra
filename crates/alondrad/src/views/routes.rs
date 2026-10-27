@@ -1,5 +1,5 @@
 use alondra_core::domain::DomainError;
-use alondra_core::views::{BuildError, Client, Lang, Transport, VIEWS_PROTOCOL};
+use alondra_core::views::{BuildError, Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -80,6 +80,7 @@ pub(super) async fn respond(
     let mut kind = None;
     let mut lang = None;
     let mut known = None;
+    let mut capabilities = None;
     let mut options = ViewOptions::default();
     for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
         let slot = match name.as_ref() {
@@ -87,6 +88,7 @@ pub(super) async fn respond(
             "client" => &mut kind,
             "lang" => &mut lang,
             "known" => &mut known,
+            "capabilities" => &mut capabilities,
             name => match options.slot(name) {
                 Some(slot) => slot,
                 None => {
@@ -127,6 +129,10 @@ pub(super) async fn respond(
         Some("es") => Lang::Es,
         _ => return error_lang(requested_language, "invalid_input", "invalid language"),
     };
+    let capabilities = match ClientCapabilities::parse(capabilities.as_deref().unwrap_or("")) {
+        Ok(capabilities) => capabilities,
+        Err(_) => return error_lang(language, "invalid_input", "invalid client capabilities"),
+    };
     if let Some(device) = device {
         client.remember_language(device, language);
     }
@@ -149,7 +155,7 @@ pub(super) async fn respond(
         client.feeds.wake();
     }
     let service = crate::views::this_service();
-    let input = super::cache::Input::of(read.state(), &live);
+    let input = super::cache::Input::of(read.state(), &live).with_capabilities(capabilities);
     if let Some(version) = known.as_deref()
         .and_then(|known| client.views.version(&key, &input, client_kind, language, transport).filter(|v| v.version == known))
     {
@@ -232,6 +238,7 @@ pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
             "protocol" if value == "1" => {}
             "client" if matches!(value.as_ref(), "ios" | "mac" | "tui") => {}
             "lang" if matches!(value.as_ref(), "en" | "es") => {}
+            "capabilities" if ClientCapabilities::parse(&value).is_ok() => {}
             "known"
                 if value.len() == 17
                     && value.starts_with('v')
@@ -474,6 +481,8 @@ fn normalize_key(raw: &str) -> Option<String> {
         "task",
         "request",
         "schedule",
+        "model_profile",
+        "task_selection",
     ] {
         let id = raw
             .strip_prefix(&format!("{prefix}:"))
@@ -515,6 +524,7 @@ fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
             "protocol is required" => "Falta el protocolo",
             "invalid client" => "Cliente no válido",
             "invalid language" => "Idioma no válido",
+            "invalid client capabilities" => "Capacidades del cliente no válidas",
             "invalid view key" => "Vista no válida",
             "invalid view parameter" => "Parámetro de vista no válido",
             "domain state unavailable" => "El estado no está disponible",
@@ -534,9 +544,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_and_relay_read_paths_accept_the_same_bounded_capability_query() {
+        for path in [
+            "/views/accounts?protocol=1&client=tui&lang=en&capabilities=provider_accounts",
+            "/changes?protocol=1&client=tui&lang=en&wait=0&capabilities=provider_accounts",
+        ] {
+            assert!(approved_read_path(path), "{path}");
+            assert!(!approved_read_path(&path.replace("provider_accounts", "../shell")), "{path}");
+            assert!(!approved_read_path(&format!("{path}&capabilities=")), "{path}");
+        }
+    }
+
+    #[test]
     fn every_family_of_views_is_reached_by_a_device() {
         let keys = ["home", "sidebar", "tasks", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers", "accounts", "metrics",
-            "card:i-1", "document:rev-1", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1"];
+            "card:i-1", "document:rev-1", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1", "model_profile:claude-orchestrator", "task_selection:t-1"];
         for key in keys {
             assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");
         }

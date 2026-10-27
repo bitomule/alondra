@@ -28,7 +28,7 @@ public struct ViewsScreenFeature: Sendable {
         public var action: ActionFeature.State
 
         public var hasInlineForm: Bool {
-            key.rawValue.hasPrefix("new_request") || key.rawValue.hasPrefix("schedule:")
+            ["new_request", "schedule:", "task_selection:", "model_profile:"].contains { key.rawValue.hasPrefix($0) }
         }
 
         /// The action's sheet steps aside while the server asks whether to send anyway, so the
@@ -95,11 +95,11 @@ public struct ViewsScreenFeature: Sendable {
                 return load(state)
             case .presentForm(let form):
                 state.form = form
-                let fields = Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) })
+                let fields = form.initialValues
                 let attachments = form.fields.contains {
                     if case .attachments = $0.kind { true } else { false }
                 }
-                return .send(.action(.presentForm(form.submit, fields, requiresAttachments: attachments)))
+                return .send(.action(.presentForm(form.submit, fields, requiresAttachments: attachments, modelFields: form.modelFields)))
             case .pickerOpened(let fieldID, let source):
                 guard source == "issue_picker" else { return .none }
                 state.pickerFieldID = fieldID
@@ -158,16 +158,29 @@ public struct ViewsScreenFeature: Sendable {
             case .loaded(.document(let document)):
                 guard document.key == state.key.rawValue else { return .none }
                 state.document = document
+                let sameEpoch = state.action.dataEpoch == document.dataEpoch
                 state.action.dataEpoch = document.dataEpoch
                 if let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> WireForm? in
                        if case let .form(form) = item { form } else { nil }
                    }).first, state.form != nil || state.hasInlineForm {
                     let wasEditing = state.form != nil
+                    if let original = state.form, ["model_profile", "task_selection"].contains(original.id), original.submit.id != updated.submit.id {
+                        if !state.action.inFlight {
+                            if !sameEpoch { state.action.modelFormAvailable = false }
+                            else if let id = updated.submit.id {
+                                state.action.formReplacement = ActionFeature.ChangedNotice(title: String(localized: "This selection changed"), body: String(localized: "Your draft is retained. Save these choices against the current selection?"), actionId: id, button: String(localized: "Save retained choices"))
+                            }
+                        }
+                        state.loading = false; return .none
+                    }
                     state.form = updated
                     state.action.action = updated.submit
+                    let edited = state.action.fields["substitution_was_edited"]
+                    state.action.modelFields = updated.modelFields; state.action.modelFormAvailable = true
                     state.action.fields = Dictionary(uniqueKeysWithValues: updated.fields.map {
                         ($0.id, wasEditing ? state.action.fields[$0.id] ?? $0.value : $0.value)
                     })
+                    if let edited = edited ?? updated.initialValues["substitution_was_edited"] { state.action.fields["substitution_was_edited"] = edited }
                     state.action.requiresAttachments = updated.submit.attachments || updated.fields.contains {
                         if case .attachments = $0.kind { true } else { false }
                     }
@@ -183,6 +196,7 @@ public struct ViewsScreenFeature: Sendable {
                 state.error = message
                 return .none
             case .missing:
+                if !state.action.modelFields.isEmpty { state.action.modelFormAvailable = false }
                 state.loading = false
                 state.document = nil
                 state.content = nil

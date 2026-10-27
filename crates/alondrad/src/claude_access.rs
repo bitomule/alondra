@@ -4,7 +4,7 @@
 //! wait held go on, or it holds again. The clock only says when to look. A sign-in is probed by
 //! the user's answer to its card, never here.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::accounts::AccountId;
+use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountBilling, Provider};
 use alondra_core::domain::{
     ClaudeHeld, ClaudeHold, Command, CommandEnvelope, Millis, OUTAGE_PROBE, PROTOCOL_VERSION, QUIET_RETRY,
     usage_resets_at,
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// A wait the schedule probes: the API, or one account's usage limit.
-type Wait = (ClaudeHold, Option<AccountId>);
+type Wait = (Provider, ClaudeHold, Option<AccountId>);
 
 /// Since when each wait has gone without a probe.
 #[derive(Default)]
@@ -34,7 +34,7 @@ impl Schedule {
         let mut due = vec![];
         let mut next: Option<Millis> = None;
         for (wait, waiting) in waits {
-            let usage = wait.0 == ClaudeHold::Usage;
+            let usage = wait.1 == ClaudeHold::Usage;
             let since = *self.since.entry(wait.clone()).or_insert(now);
             let at = if usage {
                 waiting
@@ -67,8 +67,12 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
         let now = alondra_core::now_millis();
         let held = domain.read().state().claude_held();
         let (due, next) = schedule.due(&held, now);
-        for (hold, account) in due {
-            probe(&domain, hold, account);
+        for (provider, hold, account) in due {
+            if provider == Provider::Claude { probe(&domain, hold, account); }
+            else {
+                let domain=domain.clone();
+                if tokio::task::spawn_blocking(move || probe_for(&domain,provider,hold,account)).await.is_err() { log!("the provider metadata probe stopped"); }
+            }
         }
         match next {
             Some(at) => tokio::select! {
@@ -91,24 +95,59 @@ pub(crate) fn probe_usage_holds(domain: &DomainRuntime) {
         .filter(|held| held.hold == ClaudeHold::Usage)
         .map(|held| held.waits_for())
         .collect();
-    for (hold, account) in waits {
-        probe(domain, hold, account);
+    for (provider, hold, account) in waits {
+        probe_for(domain, provider, hold, account);
     }
 }
 
 pub(crate) fn probe(domain: &DomainRuntime, hold: ClaudeHold, account: Option<AccountId>) {
+    probe_for(domain,Provider::Claude,hold,account)
+}
+
+pub(crate) fn native_capacity_ready(state: &alondra_core::domain::DomainState, key: &AccountKey, since: Millis) -> bool {
+    if !state.accounts.iter().any(|account| account.provider==key.provider && account.id==key.account && account.state==AccountState::SignedIn && !matches!(account.billing,AccountBilling::PayPerUse)) { return false; }
+    if !alondra_core::usage::eligible_account_keys(std::slice::from_ref(key),&state.accounts,&state.account_usage,since).contains(key) { return false; }
+    native_capacity_for_existing(state, key, since)
+}
+
+/// Window evidence only: the current-task probe supplies native identity and original billing authority.
+pub(crate) fn native_capacity_for_existing(state: &alondra_core::domain::DomainState, key: &AccountKey, since: Millis) -> bool {
+    if key.provider != Provider::Codex { return false; }
+    let Some(usage) = state.account_usage.iter().find(|usage| usage.provider == key.provider && usage.account == key.account) else { return false; };
+    if usage.plan_exhausted_until(since).is_some() { return false; }
+    let positive = |prefix: &str| usage.windows.iter().any(|window| window.measured_at >= since
+        && matches!(&window.reading.kind, alondra_core::usage::WindowKind::Other(name) if name.starts_with(prefix))
+        && !window.reading.exhausted && window.reading.used < alondra_core::usage::Share::FULL && window.reading.resets_at.is_none_or(|reset| reset > since));
+    positive("codex:account:primary:") && positive("codex:account:secondary:")
+}
+
+pub(crate) fn probe_for(domain: &DomainRuntime, provider: Provider, hold: ClaudeHold, account: Option<AccountId>) {
+    if provider == Provider::Codex {
+        let read = domain.read();
+        let candidate = read.state().claude_held().into_iter()
+            .filter(|held| held.provider == provider && held.hold == hold && account.as_ref().is_none_or(|account| held.account == *account))
+            .min_by_key(|held| read.state().interactions.get(&held.card).map(|card| card.order));
+        let Some(candidate) = candidate else { return; };
+        drop(read);
+        match crate::accounts::probe_current_codex(domain, &candidate.task, Some(hold)) {
+            Ok(true) => log!("continuing {} on its existing Codex account after its native metadata probe", candidate.task),
+            Ok(false) => {},
+            Err(why) => log!("the current Codex task's metadata probe could not recover it: {why}"),
+        }
+        return;
+    }
     let state = domain.read();
     let named = account.as_ref().map_or_else(String::new, |account| format!("-{account}"));
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.state().data_epoch.clone(),
-        command_id: format!("probe-claude-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),
+        command_id: format!("probe-{provider:?}-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),
         expected_revision: state.state().revision,
-        command: Command::ProbeClaudeAccess { hold, account: account.clone() },
+        command: Command::ProbeClaudeAccess { provider, hold, account: account.clone() },
     };
     match domain.execute_as_system(envelope) {
-        Ok(_) => log!("probing Claude with one task it held ({hold:?}{named})"),
-        Err(error) => log!("could not probe Claude ({hold:?}{named}): {error}"),
+        Ok(_) => log!("continuing one task held on {provider:?} after its metadata probe ({hold:?}{named})"),
+        Err(error) => log!("could not probe {provider:?} ({hold:?}{named}): {error}"),
     }
 }
 
@@ -122,11 +161,11 @@ mod tests {
     }
 
     fn on(task: &str, hold: ClaudeHold, card: &str, account: &str) -> ClaudeHeld {
-        ClaudeHeld { task: TaskId::from(task), hold, card: InteractionId::from(card), account: AccountId::parse(account).unwrap() }
+        ClaudeHeld { provider: Provider::Claude, task: TaskId::from(task), hold, card: InteractionId::from(card), account: AccountId::parse(account).unwrap() }
     }
 
     fn wait(hold: ClaudeHold, account: Option<&str>) -> Wait {
-        (hold, account.map(|account| AccountId::parse(account).unwrap()))
+        (Provider::Claude,hold, account.map(|account| AccountId::parse(account).unwrap()))
     }
 
     #[test]
@@ -153,6 +192,50 @@ mod tests {
         let mut schedule = Schedule::default();
         let unknown = [held("t", ClaudeHold::Usage, "claude-usage-limit-t-3")];
         assert_eq!(schedule.due(&unknown, 1_000), (vec![], Some(1_000 + QUIET_RETRY)));
+    }
+
+    #[test]
+    fn codex_probe_requires_fresh_positive_native_capacity_not_only_a_sign_in() {
+        use alondra_core::accounts::AccountStatus;
+        use alondra_core::usage::{AccountUsage,UsageWindow,WindowReading,WindowKind,Share};
+        let key=AccountKey::native(Provider::Codex); let mut state=alondra_core::domain::DomainState::new("epoch");
+        state.accounts.push(AccountStatus {provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,email:None,plan:None,billing:AccountBilling::default(),sign_ins:0,native_identity:None});
+        assert!(!native_capacity_ready(&state,&key,100));
+        let window=|name:&str|UsageWindow {measured_at:100,reading:WindowReading {kind:WindowKind::Other(format!("codex:account:{name}:300")),used:Share::NONE,resets_at:Some(200),exhausted:false}};
+        state.account_usage.push(AccountUsage {provider:key.provider,account:key.account.clone(),plan:None,day_start:None,windows:vec![window("primary")]});
+        assert!(!native_capacity_ready(&state,&key,100)); state.account_usage[0].windows.push(window("secondary"));
+        assert!(native_capacity_ready(&state,&key,100)); assert!(!native_capacity_ready(&state,&key,101),"old capacity is not a new metadata proof");
+        state.account_usage[0].windows.push(UsageWindow {measured_at:100,reading:WindowReading {kind:WindowKind::Other("codex:account:limit".into()),used:Share::NONE,resets_at:None,exhausted:true}});
+        assert!(!native_capacity_ready(&state,&key,100),"an unknown-reset limit remains authoritative until recovery cleared it");
+    }
+
+    #[test]
+    fn existing_capacity_evidence_does_not_invent_new_work_or_paid_authority() {
+        use alondra_core::accounts::AccountStatus;
+        use alondra_core::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
+        let key = AccountKey::native(Provider::Codex);
+        let mut state = alondra_core::domain::DomainState::new("epoch");
+        state.accounts.push(AccountStatus { provider: key.provider, id: key.account.clone(), name: "Personal".into(),
+            state: AccountState::Disabled, email: Some("same@example.invalid".into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, native_identity: None });
+        let window = |name: &str| UsageWindow { measured_at: 100, reading: WindowReading { kind: WindowKind::Other(format!("codex:account:{name}:300")),
+            used: Share::NONE, resets_at: Some(200), exhausted: false } };
+        state.account_usage.push(AccountUsage { provider: key.provider, account: key.account.clone(), windows: vec![window("primary"), window("secondary")], plan: None, day_start: None });
+        assert!(native_capacity_for_existing(&state, &key, 100), "capacity is separate from the disabled new-work policy");
+        assert!(!native_capacity_ready(&state, &key, 100), "metadata alone never enables new work");
+        state.accounts[0].billing = AccountBilling::PayPerUse;
+        assert!(native_capacity_for_existing(&state, &key, 100), "this is capacity evidence, never a paid grant");
+        assert!(!native_capacity_ready(&state, &key, 100));
+        assert!(!native_capacity_for_existing(&state, &key, 101), "the existing task still needs a fresh probe");
+    }
+
+    #[test]
+    fn equal_default_slugs_and_outages_are_scheduled_per_provider() {
+        let mut schedule=Schedule::default();
+        let claude=held("claude-task",ClaudeHold::Outage,"claude-outage-claude-1");
+        let mut codex=held("codex-task",ClaudeHold::Outage,"claude-outage-codex-1");codex.provider=Provider::Codex;
+        let holds=[claude,codex]; assert!(schedule.due(&holds,100).0.is_empty());
+        let due=schedule.due(&holds,100+OUTAGE_PROBE).0;
+        assert_eq!(due,vec![(Provider::Claude,ClaudeHold::Outage,None),(Provider::Codex,ClaudeHold::Outage,None)]);
     }
 
     #[test]

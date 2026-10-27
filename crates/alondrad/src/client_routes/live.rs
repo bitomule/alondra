@@ -43,6 +43,7 @@ pub(crate) struct Live {
     pub(crate) account_wait: crate::accounts::AccountWait,
     /// Asks the accounts check to run now.
     pub(crate) account_check: tokio::sync::Notify,
+    pub(crate) initial_account_check_pending: std::sync::atomic::AtomicBool,
     pub(crate) measured: crate::usage_probe::Measured,
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
@@ -237,7 +238,7 @@ impl Live {
     }
 
     pub(crate) fn threads(&self, session_id: &str) -> Option<Vec<alondra_core::activity::Activity>> {
-        if let Some(activity) = self.mods.session(session_id).as_ref().and_then(crate::sdk_live::activity) {
+        if let Some(activity) = self.mods.session(session_id).as_ref().and_then(|session| crate::codex_live::activity(session).or_else(|| crate::sdk_live::activity(session))) {
             return Some(activity);
         }
         let view = self.view.lock().expect("live sessions poisoned");

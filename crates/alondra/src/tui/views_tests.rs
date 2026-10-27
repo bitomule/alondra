@@ -589,14 +589,14 @@ fn settings_list_the_claude_accounts_between_general_and_mcp_servers_and_run_the
     assert!(app.open_views.lock().unwrap().contains_key("accounts"), "a change to the accounts reaches the open screen");
     select(&mut app, "Work");
     let screen = drawn(&mut app, 140, 80);
-    for shown in ["Settings", "CLAUDE ACCOUNTS", "Default  Signed in", "someone@work.example · max_20x · weight 8, set by you",
-        "5 h 61 % · week 48 % · 1 node", "Personal  Signed out", "Old  Off", "Add an account", "New work", "Most room first",
-        "Move a node when its account runs out  Off", "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed.",
+    for shown in ["Settings", "ACCOUNTS", "Default  Signed in", "someone@work.example · max_20x · weight 8, set by you",
+        "5 h 61 % · week 48 % · 1 node", "Personal  Signed out", "Old  Off", "Add a Claude account", "New work", "Most room first",
+        "Move a node when its account runs out  Off", "Continue with the next eligible account in your order when quota runs out",
         "1 Weight   2 Move up   3 Move down   4 Turn off", "MCP SERVERS"] {
         assert!(screen.contains(shown), "{shown}: {screen}");
     }
-    assert!(screen.find("Add an account") < screen.find("MCP SERVERS"), "the accounts come before the MCP servers: {screen}");
-    assert!(!screen.contains("Remove"), "a node runs on Work, so it can't be removed: {screen}");
+    assert!(screen.find("Add a Claude account") < screen.find("MCP SERVERS"), "the accounts come before the MCP servers: {screen}");
+    assert!(screen.contains("Open tasks still run on Work"), "a disabled remove explains why: {screen}");
 
     press(&mut app, KeyCode::Char('1'));
     let menu = drawn(&mut app, 140, 80);
@@ -630,9 +630,9 @@ fn settings_list_the_claude_accounts_between_general_and_mcp_servers_and_run_the
 fn adding_an_account_asks_its_name_then_signs_it_in_on_this_screen() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = accounts_open("accounts-ios.json");
-    select(&mut app, "Add an account");
+    select(&mut app, "Add a Claude account");
     press(&mut app, KeyCode::Char('1'));
-    assert!(matches!(&app.composer, Some(c) if matches!(c.target, Target::AccountName)), "it asks only for a name");
+    assert!(matches!(&app.composer, Some(c) if matches!(c.target, Target::AccountName { .. })), "it asks only for a name");
     app.on_paste("Side project");
     let flow = app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(&flow, Flow::AccountSignIn(sign_in) if sign_in.args == ["accounts", "add", "Side project"]),
@@ -702,4 +702,137 @@ fn every_node_limit_the_mac_offers_is_reached_with_the_arrows_and_picked_with_en
     app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
     let confirmed = drawn(&mut app, 140, 40);
     assert!(confirmed.contains("Limit: 8, set by you · automatic would be 6") && !confirmed.contains("Nodes at once: 8"), "{confirmed}");
+}
+
+fn mixed_provider_accounts() -> ViewDocument {
+    let mut view: ViewDocument = serde_json::from_value(super::parity::view_fixture("accounts-ios.json")).unwrap();
+    let template = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { alondra_core::views::Item::Row(row) => Some(row.clone()), _ => None }).unwrap();
+    view.account_configuration = Some(alondra_core::views::AccountConfigurationPresentation { version: "cfg-one".into() });
+    view.sections.truncate(1);
+    view.sections[0].items = ["codex", "claude"].into_iter().enumerate().map(|(position, provider)| {
+        let mut row = template.clone(); row.id = format!("{provider}-work"); row.title = "Work".into(); row.actions.clear();
+        row.account = Some(serde_json::from_value(json!({"key":{"provider":provider,"account":"work"},"position":position+1,
+            "availability":{"text":"Signed in","tone":"success"},"active_nodes":2,"freshness":{"text":"Last reported usage","tone":"neutral"},
+            "windows":[{"kind":"codex:account:primary:300","label":"Primary · 300 min","used_percent":42,"measured_at":1000,"resets_at":18000000,"stale":false,"exhausted":false}]})).unwrap());
+        alondra_core::views::Item::Row(row)
+    }).collect();
+    view.sections[0].actions = vec![serde_json::from_value(json!({"id":"account_order:accounts@0~cfg-one","label":"Reorder accounts","style":"secondary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true})).unwrap()];
+    view
+}
+
+#[test]
+fn provider_account_details_and_order_keep_identity_and_send_one_atomic_save_until_its_own_answer() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = accounts_open("accounts-ios.json");
+    let view = mixed_provider_accounts(); app.accounts_loaded(&view);
+    select(&mut app, "Work");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.mcp_servers.as_ref().unwrap().account_detail.is_some());
+    let detail = drawn(&mut app, 140, 45);
+    assert!(detail.contains("Codex · work · Signed in") && detail.contains("42% used") && detail.contains("1970-01-01"), "{detail}");
+    press(&mut app, KeyCode::Esc); press(&mut app, KeyCode::Char('o'));
+    press(&mut app, KeyCode::Char('J'));
+    let draft = app.mcp_servers.as_ref().unwrap().order.as_ref().unwrap();
+    assert_eq!(draft.keys().iter().map(|key| key.wire_id()).collect::<Vec<_>>(), ["claude/work", "codex/work"]);
+    assert_eq!(app.mcp_servers.as_ref().unwrap().sel, 1, "the moved account remains selected by identity");
+    assert!(app.posted.borrow().is_empty(), "moving only changes the local draft");
+    press(&mut app, KeyCode::Enter);
+    let request = app.posted.borrow().last().unwrap().1.clone();
+    assert_eq!(request["input"]["fields"]["order"], json!([{"provider":"claude","account":"work"},{"provider":"codex","account":"work"}]));
+    assert_eq!(request["input"]["fields"]["expected_config_version"], "cfg-one");
+    app.view_action_done(request.clone(), Err(crate::client::Delivery::Unanswered));
+    press(&mut app, KeyCode::Enter); press(&mut app, KeyCode::Esc);
+    assert_eq!(app.posted.borrow().len(), 1, "an uncertain save cannot become a second mutation");
+    assert!(app.mcp_servers.as_ref().unwrap().order.as_ref().unwrap().command.is_some());
+    let mut unrelated = request.clone(); unrelated["command_id"] = json!("another-command");
+    let done = || Ok(ViewActionReply::Outcome(alondra_core::views::Outcome { kind: alondra_core::views::OutcomeKind::Done, title: "Saved".into(), body: None, next: None }));
+    app.view_action_done(unrelated, done());
+    assert!(app.mcp_servers.as_ref().unwrap().order.is_some(), "another receipt cannot acknowledge this draft");
+    app.view_action_done(request, done());
+    assert!(app.mcp_servers.as_ref().unwrap().order.is_none());
+}
+
+#[test]
+fn provider_order_version_conflict_retains_the_draft_and_requires_explicit_reload() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = accounts_open("accounts-ios.json"); let mut view = mixed_provider_accounts(); app.accounts_loaded(&view);
+    press(&mut app, KeyCode::Char('o')); press(&mut app, KeyCode::Char('J'));
+    view.account_configuration.as_mut().unwrap().version = "cfg-two".into(); app.accounts_loaded(&view);
+    press(&mut app, KeyCode::Enter);
+    let draft = app.mcp_servers.as_ref().unwrap().order.as_ref().unwrap();
+    assert!(draft.conflict); assert_eq!(draft.keys()[0].wire_id(), "claude/work"); assert!(app.posted.borrow().is_empty());
+    press(&mut app, KeyCode::Char('r'));
+    let draft = app.mcp_servers.as_ref().unwrap().order.as_ref().unwrap();
+    assert!(!draft.conflict); assert_eq!(draft.version, "cfg-two"); assert_eq!(draft.keys()[0].wire_id(), "codex/work");
+    press(&mut app, KeyCode::Esc); assert!(app.mcp_servers.as_ref().unwrap().order.is_none());
+}
+
+#[test]
+fn a_restored_account_composer_cannot_execute_another_cli_command() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = accounts_open("accounts-ios.json");
+    app.compose(Target::AccountName { provider: alondra_core::accounts::Provider::Codex, argv: vec!["accounts".into(), "remove".into()] }, "");
+    app.on_paste("Keep this name");
+    let flow = app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(flow, Flow::Go));
+    assert!(app.composer.is_some());
+    assert_eq!(app.flash.as_ref().unwrap().text, "Reload Accounts before adding this account");
+    let screen = drawn(&mut app, 140, 50);
+    assert!(screen.contains("Reload Accounts before adding this account"), "{screen}");
+}
+
+#[test]
+fn a_settings_profile_link_opens_the_generic_view_and_returns_to_the_selected_role() {
+    let mut app = accounts_open("accounts-ios.json");
+    app.home_view = Some(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap());
+    app.loaded = true;
+    select(&mut app, "Claude · Orchestrator");
+    let row = app.mcp_servers.as_mut().unwrap().accounts.as_mut().unwrap().sections.iter_mut()
+        .flat_map(|section| &mut section.items).find_map(|item| match item { alondra_core::views::Item::Row(row) if row.title == "Claude · Orchestrator" => Some(row), _ => None }).unwrap();
+    let navigation: alondra_core::views::Action = serde_json::from_value(serde_json::json!({
+        "id":"", "label":"Edit ordered candidates", "style":"plain", "presentation":"button", "input":{"kind":"none"},
+        "attachments":false, "enabled":true, "link":{"kind":"view","key":"model_profile:claude-orchestrator"}
+    })).unwrap();
+    row.actions = vec![navigation];
+    let before = app.mcp_servers.as_ref().unwrap().selected().unwrap().id.clone();
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.mcp_servers.is_none(), "the specialized Settings overlay must not hide the generic form");
+    assert_eq!(app.view_navigation.last().map(String::as_str), Some("model_profile:claude-orchestrator"));
+    assert!(app.posted.borrow().is_empty(), "opening a form is navigation, not a mutation");
+    let mut form: ViewDocument = serde_json::from_value(super::parity::view_fixture("new-request-ios.json")).unwrap();
+    form.key = "model_profile:claude-orchestrator".into(); form.view = "model_profile".into(); form.title = Some("Orchestrator profile".into());
+    app.on_msg(Msg::ViewCard { key: form.key.clone(), result: Ok(form) });
+    for width in [72, 144] {
+        let shown = drawn(&mut app, width, 40);
+        assert!(shown.contains("Orchestrator profile"), "{width}: {shown}");
+    }
+    press(&mut app, KeyCode::Esc);
+    assert!(app.settings_after_view.is_none());
+    assert_eq!(app.mcp_servers.as_ref().unwrap().selected().unwrap().id, before, "Back preserves the selected role");
+}
+
+#[test]
+fn a_settings_only_model_form_offers_save_and_only_its_declared_inputs() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.home_view = Some(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap()); app.loaded = true;
+    let view: ViewDocument = serde_json::from_value(super::parity::view_fixture("model-profile-codex-tui.json")).unwrap();
+    let mut form = work::OptionsForm::new(&view.key); form.loaded(&view);
+    app.composer = Some(Composer { target: Target::Form { view: view.key.clone() }, input: TextInput::default(), chips: vec![], form: Some(form) });
+    for width in [72, 144] {
+        let screen = drawn(&mut app, width, 40);
+        assert!(screen.contains("Tab chooses settings"), "{width}: {screen}");
+        assert!(!screen.contains("Type here"), "{width}: {screen}");
+        assert!(!screen.contains("project, issue and options"), "{width}: {screen}");
+    }
+    press(&mut app, KeyCode::Char('x')); app.on_paste("undeclared body");
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+    assert!(app.composer.as_ref().unwrap().input.text().is_empty());
+    app.attach(std::path::PathBuf::from("a-file-not-read"));
+    assert!(app.composer.as_ref().unwrap().chips.is_empty());
+    assert_eq!(app.flash.as_ref().unwrap().text, "This form does not take attachments");
+    press(&mut app, KeyCode::Tab);
+    assert!(app.composer.as_ref().unwrap().form.as_ref().unwrap().focus.is_some(), "declared settings remain editable");
+    press(&mut app, KeyCode::Esc); assert!(app.composer.as_ref().unwrap().form.as_ref().unwrap().focus.is_none());
+    press(&mut app, KeyCode::Esc); assert!(app.composer.is_none());
 }

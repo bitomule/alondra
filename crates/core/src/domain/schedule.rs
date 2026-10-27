@@ -28,6 +28,8 @@ pub struct Schedule {
     pub text: String,
     pub project: Option<String>,
     pub options: BTreeMap<String, Choice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_account_grant: Option<crate::accounts::AccountKey>,
     pub disallowed_tools: Vec<String>,
     pub frequency: ScheduleFrequency,
     pub hour: u8,
@@ -47,6 +49,8 @@ pub struct ScheduleDefinitionSnapshot {
     pub text: String,
     pub project: Option<String>,
     pub options: BTreeMap<String, Choice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_account_grant: Option<crate::accounts::AccountKey>,
     pub disallowed_tools: Vec<String>,
 }
 
@@ -181,6 +185,10 @@ fn invalid(message: &str) -> DomainError {
 
 impl Schedule {
     pub fn validate(&self) -> Result<(), DomainError> {
+        if let Some(grant) = &self.paid_account_grant {
+            let pinned = self.options.get("account").and_then(|choice| match choice { Choice::Value(value) => crate::accounts::AccountKey::parse_wire(value).ok(), _ => None });
+            if pinned.as_ref() != Some(grant) { return Err(invalid("The paid account grant must match the explicitly selected qualified account")); }
+        }
         if self.id.0.is_empty()
             || self.revision < 1
             || self.revision > MAX_REVISION as i64
@@ -252,6 +260,7 @@ impl Schedule {
 
     fn snapshot(&self) -> ScheduleDefinitionSnapshot {
         ScheduleDefinitionSnapshot {
+            paid_account_grant: self.paid_account_grant.clone(),
             title: self.title.clone(),
             text: self.text.clone(),
             project: self.project.clone(),
@@ -656,6 +665,7 @@ mod tests {
 
     fn schedule(enabled: bool, next_run: Option<i64>) -> Schedule {
         Schedule {
+            paid_account_grant: None,
             id: "s".into(),
             title: "Review".into(),
             text: "Review project".into(),

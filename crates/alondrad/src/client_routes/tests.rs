@@ -39,9 +39,11 @@ pub(super) fn fixture_json(name: &str) -> Value {
 }
 
 impl Fixture {
-    pub(crate) async fn start() -> Self {
+    pub(crate) async fn start() -> Self { Self::start_with_accounts(None).await }
+    pub(crate) async fn start_with_accounts(accounts: Option<alondra_core::accounts::AccountsConfig>) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
+        if let Some(accounts)=accounts { std::fs::write(alondra_core::options::path_in(&home),accounts.to_toml()).unwrap(); }
         drop(DomainRuntime::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
@@ -1366,6 +1368,7 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
 async fn views_and_changes_say_which_daemon_answered_and_an_unserved_protocol_gets_409_with_it() {
     let fixture = Fixture::start().await;
     let service = json!({"version": env!("CARGO_PKG_VERSION"),
+        "capabilities": ["account_presentation", "model_selection", "provider_accounts"],
         "views_protocol": {"min": alondra_core::views::VIEWS_PROTOCOL_MIN, "max": alondra_core::views::VIEWS_PROTOCOL}});
     assert_eq!(view_json(&fixture, "home", "en").await["service"], service);
 

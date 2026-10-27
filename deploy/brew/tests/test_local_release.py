@@ -327,7 +327,7 @@ class LocalReleaseTests(unittest.TestCase):
         l.prepare('0.1.2', 'source', output)
         self.assertEqual(built_with, [tuple(l.RELEASE_TARGETS.values())])
         self.assertEqual(sorted(signed), sorted([(name, identifier, None) for name, identifier in l.SIGNED.items()]
-                                               + [('alondra-host', l.HOST_IDENTIFIER, l.HOST_ENTITLEMENTS)]))
+                                               + [('alondra-host', l.HOST_IDENTIFIER, l.HOST_ENTITLEMENTS), ('alondra-codex-host', 'com.bitomule.alondra-codex-host', l.HOST_ENTITLEMENTS)]))
         self.assertTrue(all(path.read_bytes() == name.encode() for name, path in built.items()), 'Bazel outputs stay as built')
         for name, original in originals.items():
             self.assertEqual((output / name).read_bytes(), original)

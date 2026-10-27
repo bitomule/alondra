@@ -517,6 +517,12 @@ fn account_lines(status: Option<&alondra_core::views::Status>) -> Vec<Line<'stat
 }
 
 fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::View, area: Rect) {
+    if !app.view_navigation.is_empty() && app.current_view().is_some_and(|view|
+        view.sections.iter().flat_map(|section| &section.items).any(|item| matches!(item, alondra_core::views::Item::Form(_)))) {
+        app.detail_view.shown = true;
+        draw_views_card(f, app, area);
+        return;
+    }
     let w = area.width;
     let lists = app.screen != Screen::Inbox && !app.schedules_open;
     app.detail_view.shown = w >= if lists { 100 } else { 84 };
@@ -856,10 +862,12 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(screen) = app.mcp_servers.as_mut() else { return };
-    let title = match !screen.detail {
+    let title = if screen.order.is_some() { tr!("Settings › Account order", "Ajustes › Orden de cuentas").to_owned() }
+        else if let Some(row) = &screen.account_detail { format!("{} › {}", tr!("Settings", "Ajustes"), row.title) }
+        else { match !screen.detail {
         true => tr!("Settings", "Ajustes").to_owned(),
         false => format!("{} › {}", tr!("Settings", "Ajustes"), screen.title().unwrap_or(tr!("MCP servers", "Servidores MCP"))),
-    };
+    }};
     let block = panel(Line::from(format!(" {title} ").bold()), true);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1371,8 +1379,8 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
             let start = sel.saturating_sub(room - 1);
             for (i, choice) in choices.iter().enumerate().skip(start).take(room) {
                 lines.push(Line::from(Span::styled(
-                    choice.label.clone(),
-                    selected(i == sel),
+                    form.choice_label(choice),
+                    if form.choice_reason(choice).is_some() { Style::new().fg(DIM) } else { selected(i == sel) },
                 )));
             }
             (
@@ -1394,7 +1402,7 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
                     } else {
                         Style::new().bold()
                     };
-                    Line::from(Span::styled(format!(" {} ", item.label), style))
+                    Line::from(Span::styled(format!(" {} ", form.choice_label(item)), if form.choice_reason(item).is_some() { Style::new().fg(DIM) } else { style }))
                 })
                 .collect();
             (tr!(" ↑↓ · ⏎ picks · Esc ", " ↑↓ · ⏎ elige · Esc "), lines)
@@ -1510,18 +1518,21 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
             "Sign in to {server} in the browser, then paste the address of the page that did not load",
             "Inicia sesión en {server} en el navegador y pega la dirección de la página que no carga"
         ),
-        Target::AccountName => tr!(
-            "Name of the new Claude account, such as Work; then you sign in to it",
-            "Nombre de la cuenta de Claude nueva, como Trabajo; luego inicias sesión en ella"
-        )
-        .into(),
+        Target::AccountPosition => tr!("New position in the account order", "Posición nueva en el orden de cuentas").into(),
+        Target::AccountName { provider, .. } => {
+            let provider = alondra_core::views::accounts::provider_name(*provider);
+            trf!("Name of the new {provider} account; then finish native sign-in", "Nombre de la cuenta nueva de {provider}; después completa el inicio de sesión nativo")
+        },
     };
-    let action = composer_action(&c.target);
+    let settings_only = c.form.as_ref().is_some_and(|form| form.loaded && form.primary().is_none());
+    let action = if settings_only { tr!("saves", "guarda") } else { composer_action(&c.target) };
     let title = truncate(&title, (area.width as usize).saturating_sub(6));
-    let hint = trf!(
+    let hint = if settings_only {
+        trf!(" ⏎ {action} · Tab options · Esc cancels ", " ⏎ {action} · Tab opciones · Esc cancela ")
+    } else { trf!(
         " ⏎ {action} · Alt+⏎ new line · Esc cancels ",
         " ⏎ {action} · Alt+⏎ nueva línea · Esc cancela "
-    );
+    ) };
     let block = panel(
         Line::from(Span::styled(
             format!(" {title} "),
@@ -1558,7 +1569,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
     if c.input.text().is_empty() {
         f.render_widget(
-            Paragraph::new(Line::from(tr!("Type here…", "Escribe aquí…").fg(DIM))),
+            Paragraph::new(Line::from(if settings_only { tr!("Tab chooses settings · Enter saves", "Tab elige ajustes · Enter guarda") } else { tr!("Type here…", "Escribe aquí…") }.fg(DIM))),
             text,
         );
     } else {
@@ -1581,7 +1592,8 @@ fn composer_action(t: &Target) -> &'static str {
             tr!("sends it back", "la devuelve")
         }
         Target::Comment { .. } | Target::General { send: false } => tr!("saves", "guarda"),
-        Target::AccountName => tr!("adds it", "la añade"),
+        Target::AccountName { .. } => tr!("adds it", "la añade"),
+        Target::AccountPosition => tr!("moves it in the draft", "la mueve en el borrador"),
         _ => tr!("sends", "envía"),
     }
 }
@@ -1679,6 +1691,11 @@ fn composer_keys(c: &super::Composer) -> Vec<(String, String)> {
                 k("⏎", tr!("picks", "elige")),
                 k("Esc", tr!("closes the list", "cierra la lista")),
             ];
+        }
+        if form.loaded && form.primary().is_none() {
+            return if form.focus.is_some() {
+                vec![k("↑/↓", tr!("setting", "ajuste")), k("⏎", tr!("shows its values", "muestra sus valores")), k("Tab", tr!("back to Save", "volver a Guardar")), k("Esc", tr!("cancel", "cancela"))]
+            } else { vec![k("⏎", tr!("save", "guarda")), k("Tab", tr!("options", "opciones")), k("Esc", tr!("cancel", "cancela"))] };
         }
         if form.focus.is_some() {
             return vec![

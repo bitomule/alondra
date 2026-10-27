@@ -5,6 +5,21 @@ import ComposableArchitecture
 import XCTest
 
 final class TaskDetailTests: XCTestCase {
+    func testModelSelectionNavigationRemainsAvailableWithANonMutatingViewLink() throws {
+        let document = try Samples.document("task-detail", editing: { object in
+            var sections = object["sections"] as! [[String: Any]]
+            let index = sections.firstIndex { $0["id"] as? String == "actions" }!
+            sections[index]["items"] = [["type": "actions", "actions": [[
+                "id": "", "label": "Change model", "style": "plain", "presentation": "button", "input": ["kind": "none"],
+                "attachments": false, "enabled": true, "link": ["kind": "view", "key": "task_selection:t-1"]
+            ]]]]
+            object["sections"] = sections
+        })
+        let detail = TaskDetail(document: document)
+        XCTAssertEqual(detail.modelSelection?.id, "")
+        XCTAssertEqual(detail.modelSelection?.link, .view(key: "task_selection:t-1"))
+    }
+
     func testEverySectionTheDaemonNamesLandsInItsPlace() throws {
         let detail = TaskDetail(document: try Samples.document("task-detail"))
 

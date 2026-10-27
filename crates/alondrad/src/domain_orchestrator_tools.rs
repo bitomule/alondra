@@ -80,10 +80,16 @@ pub(crate) struct LaunchBody {
     title: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<alondra_core::accounts::Provider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<alondra_core::model_selection::ModelProfile>,
+    #[serde(default, alias = "reasoning_effort")]
     effort: Option<String>,
     #[serde(default)]
     approach: Option<alondra_core::options::Approach>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tags: Option<alondra_core::task_tags::TaskTags>,
     /// What the task is and why this model: required when the orchestrator chooses the model.
     #[serde(default)]
     reason: Option<String>,
@@ -108,8 +114,15 @@ impl LaunchBody {
             prompt: plan.mission.clone(),
             title: None,
             model: plan.model.clone(),
+            provider: None,
+            profile: plan.role.map(|role| match role {
+                alondra_core::domain::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
+                alondra_core::domain::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
+                alondra_core::domain::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
+            }),
             effort: plan.effort.clone(),
             approach: plan.approach,
+            tags: plan.tags.clone(),
             reason: plan.reason.clone(),
             relaunch_model: None,
             replace: false,
@@ -139,6 +152,12 @@ impl LaunchBody {
         self.cwd = self.cwd.or_else(|| Some(plan.cwd.clone()));
         self.prompt = self.prompt.or_else(|| plan.mission.clone());
         self.approach = self.approach.or(plan.approach);
+        self.tags = self.tags.or_else(|| plan.tags.clone());
+        self.profile = self.profile.or_else(|| plan.role.map(|role| match role {
+            alondra_core::domain::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
+            alondra_core::domain::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
+            alondra_core::domain::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
+        }));
         if self.relaunch_model.is_none() {
             self.model = self.model.or_else(|| plan.model.clone());
             self.effort = self.effort.or_else(|| plan.effort.clone());
@@ -241,6 +260,16 @@ pub(crate) async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
         return launch(&domain, &home, body, choices).await;
     }
     let task = body.task.clone();
+    let work_domain = Arc::clone(&domain);
+    launch_replacement_work(domain, task, move |checked| async move {
+        launch_guarded(&work_domain, &home, body, choices, Origin::Orchestrator, Some(checked)).await
+    }).await
+}
+
+async fn launch_replacement_work<F, W>(domain: Arc<DomainRuntime>, task: TaskId, work: F) -> Result<Value, DomainError>
+where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
+      W: std::future::Future<Output = Result<Value, DomainError>> + Send + 'static,
+{
     let (checked_tx, checked) = tokio::sync::oneshot::channel();
     let worker = tokio::spawn({
         let (domain, task) = (domain.clone(), task.clone());
@@ -254,7 +283,7 @@ pub(crate) async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
                         reached.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = checked_tx.send(());
                     });
-                    launch_guarded(&domain, &home, body, choices, Origin::Orchestrator, Some(on_checked)).await
+                    work(on_checked).await
                 }
             });
             let outcome = replacement.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!(
@@ -286,6 +315,87 @@ fn pinned_account(home: &Path, options: &alondra_core::options::Resolved) -> Opt
         .map(|account| account.id)
 }
 
+pub(crate) fn validate_request_selection(domain: &DomainRuntime, resolved: &alondra_core::options::Resolved) -> Result<(), DomainError> {
+    let Some(intent) = &resolved.selection else { return Ok(()) };
+    let config = crate::accounts::config(domain.home()).map_err(|why| DomainError::new("settings_unavailable", why))?;
+    if let Some(account) = &intent.account
+        && !config.accounts(account.provider).iter().any(|known| known.id == account.account && known.enabled)
+    { return Err(DomainError::new("account_unavailable", "The selected account is not connected and enabled")); }
+    if let Some(requested) = &intent.requested {
+        let read = domain.read();
+        let candidate = alondra_core::model_selection::ModelCandidate { model: requested.model.clone(), reasoning_effort: intent.requested_reasoning_effort.clone() };
+        let offered = read.index().model_catalogs().iter().filter(|catalog| catalog.account.provider == requested.provider && intent.account.as_ref().is_none_or(|account| catalog.account == *account))
+            .any(|catalog| config.accounts(requested.provider).iter().any(|account| account.id == catalog.account.account && account.enabled) && catalog.resolve(&candidate).is_ok());
+        if !offered { return Err(DomainError::new("model_unavailable", "Refresh the connected account's models and choose an advertised model and reasoning effort")); }
+    }
+    Ok(())
+}
+
+pub(crate) fn authorize_user_request_selection(domain: &DomainRuntime, resolved: &mut alondra_core::options::Resolved, explicit_account: bool) {
+    if let Some(intent) = resolved.selection.as_mut() {
+        intent.paid_account_grant = None;
+        if explicit_account { intent.authorize_paid_account(&domain.read().state().accounts); }
+    }
+}
+
+pub(crate) fn validate_native_requirements(intent: Option<&alondra_core::model_selection::TaskSelection>, denied_tools: &[String]) -> Result<(), DomainError> {
+    if !denied_tools.is_empty() && intent.is_some_and(|intent| intent.account.as_ref().is_some_and(|account| account.provider == alondra_core::accounts::Provider::Codex)
+        || (!intent.allow_model_substitution && intent.requested.as_ref().is_some_and(|model| model.provider == alondra_core::accounts::Provider::Codex)))
+    { return Err(DomainError::new("unsupported_capability", "Codex cannot enforce this task's denied tools; choose a compatible provider or permit model substitution with Automatic accounts")); }
+    Ok(())
+}
+
+fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domain::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool)
+    -> Result<Option<(alondra_core::options::Resolved, alondra_core::accounts::AccountKey, String)>, DomainError>
+{
+    use alondra_core::accounts::Provider;
+    use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
+    let modern = task.selection.is_some() || requested.selection.is_some() || body.provider.is_some() || body.model.as_ref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/"));
+    if !modern { return Ok(None); }
+    let mut intent = task.selection.clone().or_else(|| requested.selection.clone()).unwrap_or_else(|| TaskSelection::automatic(ModelProfile::Implementation));
+    if let Some(profile) = body.profile { intent.profile = profile; }
+    if intent.account.is_none() { intent.account = requested.account_key(); }
+    let mut initial = intent.clone();
+    if let Some(model) = body.model.as_deref() {
+        let offered = if model.starts_with("claude/") || model.starts_with("codex/") {
+            ModelKey::parse_wire(model).map_err(|why| DomainError::new("invalid_input", why))?
+        } else {
+            let provider = body.provider.or_else(|| intent.requested.as_ref().map(|model| model.provider))
+                .or_else(|| intent.effective.as_ref().map(|model| model.model.provider))
+                .or_else(|| (file.accounts.connected_providers().len() == 1).then(|| file.accounts.connected_providers()[0]))
+                .ok_or_else(|| DomainError::new("invalid_input", "Specify the provider for a native model"))?;
+            ModelKey { provider, model: model.into() }
+        };
+        if body.provider.is_some_and(|provider| provider != offered.provider) { return Err(DomainError::new("invalid_input", "The model belongs to another provider")); }
+        if intent.requested.as_ref().is_some_and(|requested| requested != &offered) {
+            return Err(DomainError::new("model_is_binding", "The user selected the initial model; a launch cannot replace it before a permitted transition"));
+        }
+        initial.requested = Some(offered);
+    } else if prior_native && initial.requested.is_none() {
+        initial.requested = intent.effective.as_ref().map(|effective| effective.model.clone());
+        initial.requested_reasoning_effort = intent.effective.as_ref().and_then(|effective| effective.reasoning_effort.clone());
+    }
+    if let Some(effort) = &body.effort {
+        if intent.requested_reasoning_effort.as_ref().is_some_and(|requested| requested != effort) { return Err(DomainError::new("model_is_binding", "The requested reasoning effort is binding")); }
+        initial.requested_reasoning_effort = Some(effort.clone());
+    }
+    if initial.requested.is_none() && initial.requested_reasoning_effort.is_some() { return Err(DomainError::new("invalid_input", "Choose a model before its native reasoning effort")); }
+    let active = (prior_native || task.selection.as_ref().and_then(|selection| selection.effective.as_ref()).is_some()).then(||task.account_key());
+    let denied_tools = domain.schedule_request_tools(&task.request_id).map_err(|why| DomainError::new("storage_unavailable", why.to_string()))?.unwrap_or_default();
+    validate_native_requirements(Some(&initial), &denied_tools)?;
+    let decision = crate::accounts::select_for_node_with_tools(domain, home, &initial, active.as_ref(),
+        body.provider.filter(|_| denied_tools.is_empty()), &denied_tools, alondra_core::now_millis())?;
+    if let Some(current) = task.selection.as_ref().and_then(|selection| selection.effective.as_ref())
+        && (task.account_key() != decision.account || current.model != decision.selection.model || current.reasoning_effort != decision.selection.reasoning_effort)
+    { return Err(DomainError::new("selection_transition_required", "Continue this task through its durable model or account transition so its retained history is carried safely")); }
+    intent.effective = Some(decision.selection.clone());
+    let mut resolved = requested.clone();
+    resolved.flags.model = (decision.account.provider == Provider::Claude).then(|| decision.selection.model.model.clone());
+    resolved.flags.effort = decision.selection.reasoning_effort.clone();
+    resolved.selection = Some(intent);
+    Ok(Some((resolved, decision.account, decision.reason)))
+}
+
 fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
     domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
 }
@@ -306,6 +416,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    let prior_native = task.started || current.lifecycle_journal.get(&task.id).is_some_and(|records|records.iter()
+        .any(|record|matches!(record,alondra_core::domain::LifecycleRecord::Admitted{execution:Some(_),..}|alondra_core::domain::LifecycleRecord::ResourceAvailable)));
     let mut assigned_before = task.agent_id.clone();
     let replaced = match (&assigned_before, body.replace) {
         (Some(old), true) => Some(old.clone()),
@@ -319,9 +431,15 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         body.cwd = body.cwd.or_else(|| node_folder(domain, &old.0));
         body.name = body.name.or_else(|| current.agents.get(old).map(|agent| agent.name.clone()));
     }
+    if prior_native && body.cwd.is_none() {
+        body.cwd = domain.task_worktree(&task.id).map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?;
+    }
     let plan = domain.launch_plan(&task.id).map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
     let body = body.with_plan(plan.as_ref());
-    let (Some(name), Some(cwd)) = (body.name.clone(), body.cwd.clone()) else {
+    if let Some(Err(why)) = body.tags.as_ref().map(alondra_core::task_tags::TaskTags::validate) {
+        return Err(DomainError::new("invalid_input", why));
+    }
+    let (Some(name), Some(mut cwd)) = (body.name.clone(), body.cwd.clone()) else {
         return Err(DomainError::new("invalid_input", "name and cwd are required: this task has no stored launch plan"));
     };
     if task.over() {
@@ -337,12 +455,27 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     let choices = choices(&task.request_id);
-    let pinned = choices.as_ref().and_then(|choices| pinned_account(home, &choices.options));
-    let account = match &pinned {
-        Some(pinned) => Some(pinned.clone()),
-        None => crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis()),
+    let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
+    let requested = match &choices {
+        Some(choices) => choices.options.clone(),
+        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&cwd)).as_deref(), None),
     };
-    if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| pinned.is_none() || exhausted.by_user) {
+    if prior_native && (requested.account_key().is_some_and(|account|account!=task.account_key()) || body.provider.is_some_and(|provider|provider!=task.provider)) {
+        return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
+    }
+    let native = native_launch(domain, home, task, &requested, &file, &body, prior_native)?;
+    let provider = native.as_ref().map_or(alondra_core::accounts::Provider::Claude, |(_, account, _)| account.provider);
+    let pinned = choices.as_ref().and_then(|choices| pinned_account(home, &choices.options));
+    let account = match (&native, &pinned) {
+        (Some((_, key, _)), _) => Some(key.account.clone()),
+        (None, Some(pinned)) => Some(pinned.clone()),
+        (None, None) if prior_native => Some(task.account_key().account),
+        (None, None) => crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis()),
+    };
+    if prior_native && alondra_core::accounts::AccountKey::new(provider,account.clone().unwrap_or_else(alondra_core::accounts::AccountId::default_account)) != task.account_key() {
+        return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
+    }
+    if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| exhausted.by_user || (native.is_none() && pinned.is_none())) {
         remember_refusal(domain, &task.id, Some(("usage_exhausted", None)));
         if exhausted.no_session {
             return Err(DomainError::new("usage_exhausted", format!(
@@ -365,32 +498,45 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     }
     let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let account = account.unwrap_or_else(alondra_core::accounts::AccountId::default_account);
-    let profile = alondra_core::accounts::folder(home, &account);
-    if let Some(repository) = crate::claude_trust::ensure_for(profile.as_deref(), Path::new(&cwd), projects_root.as_deref()) {
+    let key = alondra_core::accounts::AccountKey::new(provider, account.clone());
+    let known = domain.task_worktree(&task.id).ok().flatten().map(PathBuf::from);
+    if prior_native {
+        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
+        let original_directory = known.clone().unwrap_or_else(|| PathBuf::from(&cwd));
+        crate::sdk_owner::require_recoverable_session(&runtime, backend, &task.id, provider, &account, original_directory.to_string_lossy().as_ref())
+            .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
+        if !crate::launch_worktree::recovery_directory_matches(Path::new(&cwd), &original_directory).await {
+            return Err(DomainError::new("native_session_required", "Recover this node in its original native directory. Create another node to choose a different workspace"));
+        }
+        cwd = original_directory.to_string_lossy().into_owned();
+    }
+    let profile = alondra_core::accounts::provider_folder(home, &key);
+    if let Some(repository) = (provider == alondra_core::accounts::Provider::Claude).then(|| crate::claude_trust::ensure_for(profile.as_deref(), Path::new(&cwd), projects_root.as_deref())).flatten() {
         remember_refusal(domain, &task.id, Some(("workspace_untrusted", Some(&repository.to_string_lossy()))));
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
-    let known = domain.task_worktree(&task.id).ok().flatten().map(PathBuf::from);
     let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
     let workplace = crate::launch_worktree::isolate(Path::new(&cwd), &crate::launch_worktree::slug(&task.id.0), known.as_deref(), pr_head).await
         .map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
+    if prior_native {
+        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
+        crate::sdk_owner::require_recoverable_session(&runtime, backend, &task.id, provider, &account, workplace.dir().to_string_lossy().as_ref())
+            .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
+    }
     own_worktree(domain, &task.id, &workplace).await?;
     let cwd = workplace.dir().to_string_lossy().into_owned();
-    let Some(plugin) = crate::plugins::node() else {
+    let Some(plugin) = crate::plugins::node_in(home) else {
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra doctor --fix`"));
     };
-    let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
     let request = current.requests.get(&task.request_id);
-    let requested = match &choices {
-        Some(choices) => choices.options.clone(),
-        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&cwd)).as_deref(), None),
-    };
     let auto = requested.effort == alondra_core::options::AUTO;
     let model = body.model.as_deref().or(body.relaunch_model.as_deref().filter(|_| auto));
-    let resolved = requested.with_orchestrator_model(&file, model, body.effort.as_deref())
-        .map_err(|reason| DomainError::new("invalid_input", reason))?;
-    let reason = given(body.reason.as_deref());
-    if auto && body.relaunch_model.is_none() && reason.is_none() {
+    let resolved = match &native {
+        Some((resolved, _, _)) => resolved.clone(),
+        None => requested.with_orchestrator_model(&file, model, body.effort.as_deref()).map_err(|reason| DomainError::new("invalid_input", reason))?,
+    };
+    let reason = given(body.reason.as_deref()).or_else(|| native.as_ref().map(|(_, _, reason)| reason.clone()));
+    if native.is_none() && auto && body.relaunch_model.is_none() && reason.is_none() {
         return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
     }
     if origin == Origin::Orchestrator && replaced.is_none() {
@@ -439,6 +585,9 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
                     crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())
                 })
                 .map_err(|crate::sdk_owner::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
+                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
+                    .map_err(|error| DomainError::new("storage_unavailable", format!(
+                        "the Agent SDK node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
             }
             Some(old) => {
                 stop_replaced(domain, old).await.map_err(|reason| DomainError::new("replace_failed", format!(
@@ -449,9 +598,12 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             }
             None => {}
         }
+        let selected = resolved.selection.as_ref().and_then(|selection| selection.effective.as_ref());
         let options = crate::sdk_owner::LaunchOptions {
-            model: resolved.flags.model.clone(),
-            effort: resolved.flags.effort.clone(),
+            provider,
+            selection: resolved.selection.clone(),
+            model: selected.map(|selection| selection.model.model.clone()).or_else(|| resolved.flags.model.clone()),
+            effort: selected.and_then(|selection| selection.reasoning_effort.clone()).or_else(|| resolved.flags.effort.clone()),
             disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),
         };
         let name = body.title.clone().unwrap_or(name);
@@ -472,11 +624,11 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             task_id: task.id.0.clone(), request_id: task.request_id.0.clone(),
             agent_id: launched["agent_id"].as_str().map(str::to_owned), at: alondra_core::now_millis(),
             kind: if body.relaunch_model.is_some() { DecisionKind::Relaunch } else { DecisionKind::Launch },
-            model: resolved.flags.model.as_deref().map(alondra_core::model_label::model_family),
-            effort: resolved.flags.effort.clone(),
+            model: selected.map(|selection| selection.model.wire_id()).or_else(|| resolved.flags.model.as_deref().map(alondra_core::model_label::model_family)),
+            effort: selected.and_then(|selection| selection.reasoning_effort.clone()).or_else(|| resolved.flags.effort.clone()),
             approach: Some(body.approach.unwrap_or_default()),
             chosen_by: resolved.launch_model().map_or_else(|| chooser(auto), |launched| launched.chosen_by),
-            reason, title: task.title.clone(),
+            reason, title: task.title.clone(), provider: Some(provider), tags: body.tags.clone(),
         });
         crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
         Ok(launched)
@@ -601,7 +753,9 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &Task
     let asked = request_choices(domain, &task.request_id).ok().flatten();
     let root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let project_dir = asked.as_ref().and_then(|choices| choices.project.as_ref()).zip(root.as_ref()).map(|(project, root)| root.join(project));
-    let cwd = closed.cwd.map(std::path::PathBuf::from).filter(|dir| dir.is_dir())
+    let original = domain.task_worktree(task_id).map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?;
+    let cwd = original.map(PathBuf::from).filter(|dir| dir.is_dir())
+        .or(closed.cwd.map(PathBuf::from).filter(|dir| dir.is_dir()))
         .or(project_dir.filter(|dir| dir.is_dir()))
         .or(root)
         .and_then(|dir| dir.to_str().map(str::to_owned))
@@ -613,6 +767,88 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &Task
 }
 
 const FOLLOW_UP_LIMIT: usize = 12_000;
+pub(crate) const CANONICAL_CONTEXT_LIMIT: usize = 32_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalTaskContext {
+    pub text: String,
+    pub complete: bool,
+    pub omitted_sources: Vec<String>,
+}
+
+pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::domain::Task) -> CanonicalTaskContext {
+    use alondra_core::domain::{InteractionPayload, Recipient, Scope};
+    let mut context = CanonicalTaskContext { text: format!("Task {}: {}\nRequest: {}", task.id, task.title, task.request_id), complete: true, omitted_sources: vec![] };
+    let mut append = |source: String, text: String| {
+        if text.is_empty() { return; }
+        if context.text.chars().count() + text.chars().count() + 2 <= CANONICAL_CONTEXT_LIMIT {
+            context.text.push_str("\n\n"); context.text.push_str(&text);
+        } else {
+            context.complete = false; context.omitted_sources.push(source);
+        }
+    };
+    if let Some(request) = state.requests.get(&task.request_id) {
+        append(format!("request:{}", request.id), format!("## Original request\n{}", request.body));
+    } else {
+        append(format!("request:{}", task.request_id), "[The original request is missing.]".into());
+    }
+    let plan = approved_plan(state, task);
+    let plan_source = state.checklists.get(&task.id).map_or_else(|| format!("task:{}:approved-plan", task.id), |checklist| format!("interaction:{}", checklist.plan));
+    append(plan_source, plan);
+    let mut missing_inputs = Vec::new();
+    let mut included_inputs = std::collections::BTreeSet::new();
+    for record in state.lifecycle_journal.get(&task.id).into_iter().flat_map(|journal| journal.iter()) {
+        let (input, text) = match record {
+            alondra_core::domain::LifecycleRecord::Told { input, text }
+            | alondra_core::domain::LifecycleRecord::Answered { input, text, .. }
+            | alondra_core::domain::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
+            _ => continue,
+        };
+        if !included_inputs.insert(input) { continue; }
+        let source = format!("task:{}:input:{input}", task.id);
+        match text {
+            Some(text) => append(source, format!("## Public user input ({input})\n{text}")),
+            None => missing_inputs.push(source),
+        }
+    }
+    append(format!("task:{}:asked-changes", task.id), asked_changes(state, task));
+    let mut public: Vec<_> = state.interactions.values().filter(|interaction| interaction.scope == (Scope::Task { task_id: task.id.clone() }) && interaction.recipient == Recipient::User).collect();
+    public.sort_by_key(|interaction| interaction.order);
+    for interaction in public {
+        if let InteractionPayload::Question { options, answer: Some(answer) } | InteractionPayload::ActionRequest { options, answer: Some(answer) } = &interaction.payload {
+            let choice = options.iter().find(|option| option.id == answer.option_id).map_or(answer.option_id.as_str(), |option| option.label.as_str());
+            append(format!("interaction:{}", interaction.id), format!("Public user decision {}: {} (revision {})", interaction.id, choice, answer.at_revision));
+        }
+    }
+    for (id, revision) in &task.documents {
+        append(format!("document:{id}@{revision}"), format!("Document attached to this task: {id}, revision {revision}"));
+    }
+    let dependencies: std::collections::BTreeSet<_> = task.dependencies.iter().chain(&task.delivered_dependencies)
+        .chain(task.stack.iter().map(|stack| &stack.upstream_task)).collect();
+    for dependency in dependencies {
+        let source = format!("dependency:{dependency}");
+        match state.tasks.get(dependency) {
+            Some(earlier) => {
+                let mut text = format!("## Earlier work {}: {}", earlier.id, earlier.title);
+                if let Some(result) = earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
+                    text.push_str(&format!("\n{}", result.body));
+                }
+                if let Some(pr) = earlier.pr_id.as_ref().and_then(|id| state.pull_requests.get(id)) {
+                    text.push_str(&format!("\nPull request: https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
+                }
+                append(source, text);
+            }
+            None => missing_inputs.push(source),
+        }
+    }
+    if !missing_inputs.is_empty() {
+        context.complete = false; context.omitted_sources.extend(missing_inputs);
+    }
+    if !state.requests.contains_key(&task.request_id) {
+        context.complete = false; context.omitted_sources.push(format!("request:{}", task.request_id));
+    }
+    context
+}
 
 fn prefixed(prefix: &str, text: String) -> String {
     if text.is_empty() { text } else { format!("{prefix}{text}") }
@@ -756,7 +992,10 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
         }
     }
     let text = match body.approach {
-        Some(approach) => format!("{}\n\n{}", body.text.trim_end(), approach.how_to_work().join("\n")),
+        Some(approach) => {
+            let provider = body.task.as_ref().and_then(|id| current.tasks.get(id)).map(|task| task.provider);
+            format!("{}\n\n{}", body.text.trim_end(), approach.how_to_work_for(provider).join("\n"))
+        }
         None => body.text,
     };
     let message = serde_json::from_value(json!({"text": text, "task_id": body.task}))
@@ -769,7 +1008,7 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
         record(domain, Decision {
             task_id: task.id.0.clone(), request_id: task.request_id.0.clone(), agent_id: Some(agent_id.0.clone()), at: alondra_core::now_millis(),
             kind: DecisionKind::Send, model: node_model, effort: None, approach: body.approach, chosen_by: chooser(auto),
-            reason: given(body.reason.as_deref()), title: task.title.clone(),
+            reason: given(body.reason.as_deref()), title: task.title.clone(), provider: Some(task.provider), tags: None,
         });
     }
     Ok(delivered)

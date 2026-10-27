@@ -21,8 +21,16 @@ public struct ServerSettingsSection: View {
                 ForEach(Array(document.sections.enumerated()), id: \.element.id) { index, section in
                     Section {
                         ForEach(rows(section), id: \.id) { row in
-                            ListRowView(row: row, busy: busy, onAction: { store.send(.perform($0)) }, onLink: { store.send(.follow($0)) },
-                                        onOption: { store.send(.performOption($0, optionID: $1)) })
+                            if row.account != nil {
+                                AccountRowView(row: row) { store.send(.accountOpened(row.id)) }
+                            } else {
+                                ListRowView(row: row, busy: busy, onAction: { store.send(.perform($0)) }, onLink: { store.send(.follow($0)) },
+                                            onOption: { store.send(.performOption($0, optionID: $1)) })
+                            }
+                        }
+                        ForEach(section.actions, id: \.label) { action in
+                            Button { store.send(.perform(action)) } label: { Text(verbatim: action.label) }.disabled(!action.enabled)
+                            if let reason = action.disabledReason { Text(verbatim: reason).font(.footnote).foregroundStyle(.secondary) }
                         }
                         if index == document.sections.count - 1 { messages }
                     } header: {
@@ -37,6 +45,12 @@ public struct ServerSettingsSection: View {
             }
         }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
+        .sheet(item: $store.accountDetail.sending(\.accountDetailPresented), onDismiss: { store.send(.accountDetailClosed) }) { row in
+            AccountDetailView(row: row, onAction: { store.send(.fromAccountDetail(.perform($0))) },
+                onLink: { store.send(.fromAccountDetail(.follow($0))) }, onOption: { store.send(.fromAccountDetail(.option($0, $1))) },
+                onReorder: store.reorderAction == nil ? nil : { store.send(.fromAccountDetail(.reorder)) })
+        }
+        .sheet(item: $store.orderDraft.sending(\.orderDraftPresented)) { _ in AccountOrderSheet(store: store) }
         .sheet(item: $store.scope(state: \.signIn, action: \.signIn)) { signIn in
             McpSignInSheet(store: signIn)
         }
@@ -48,7 +62,7 @@ public struct ServerSettingsSection: View {
             Button("Add") { store.send(.newAccountAdded) }.disabled(store.newAccount?.canAdd != true)
             Button("Cancel", role: .cancel) { store.send(.newAccountCancelled) }
         } message: {
-            Text("Then you sign it in to Claude in Terminal on the Mac.")
+            Text("Then you sign it in to \(store.newAccount?.provider.displayName ?? "") in Terminal on the Mac.")
         }
     }
 

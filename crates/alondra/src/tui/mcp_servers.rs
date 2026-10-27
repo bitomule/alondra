@@ -1,6 +1,6 @@
 //! Settings, the terminal's settings screen (`,` or `:settings` from any screen). General first:
 //! this Mac's settings, the `settings` section of the machine view (how PRs merge, nodes at once),
-//! each picked from its menu. Then Claude accounts: each account with how it is and what it takes,
+//! each picked from its menu. Then provider accounts: each account with how it is and what it takes,
 //! how new work is spread, and adding one, whose sign-in runs on this screen. Then MCP servers, one
 //! row with how many there are, that opens their own screen (`:mcp` opens it directly): per
 //! project, each server its nodes use with how it is, and the projects no node runs in, each checked
@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use alondra_core::views::{Action, Icon, Item, Row, View};
+use alondra_core::accounts::AccountKey;
+use serde_json::json;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
@@ -43,6 +45,8 @@ pub struct McpServers {
     pub scroll: usize,
     /// The MCP servers' own screen, instead of Settings.
     pub detail: bool,
+    pub account_detail: Option<Row>,
+    pub order: Option<AccountOrderDraft>,
     servers: Option<Row>,
     /// What the user just picked on a General row, by the action's id: the row says it at once,
     /// until the Mac refuses it or a view of the Mac says how it is now.
@@ -57,12 +61,42 @@ pub struct Chosen {
     applied: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct AccountOrderDraft {
+    pub rows: Vec<Row>,
+    pub version: String,
+    pub initial: Vec<AccountKey>,
+    pub epoch: String,
+    pub action: Action,
+    pub conflict: bool,
+    pub command: Option<String>,
+}
+
+impl AccountOrderDraft {
+    pub fn keys(&self) -> Vec<AccountKey> { self.rows.iter().filter_map(|row| row.account.as_ref().map(|account| account.key.clone())).collect() }
+    pub fn move_to(&mut self, selected: usize, target: usize) -> Option<usize> {
+        if self.command.is_some() || self.conflict || selected >= self.rows.len() || target >= self.rows.len() { return None; }
+        let row = self.rows.remove(selected);
+        self.rows.insert(target, row);
+        Some(target)
+    }
+}
+
 impl McpServers {
     pub fn title(&self) -> Option<&str> {
         self.view.as_ref()?.title.as_deref()
     }
 
     pub fn entries(&self) -> Vec<Entry<'_>> {
+        if let Some(order) = &self.order {
+            let mut entries = vec![Entry::Group(tr!("Account order", "Orden de cuentas"))];
+            entries.push(Entry::Note(if order.command.is_some() { tr!("Waiting for confirmation. This save keeps its original command.", "Esperando confirmación. Este guardado conserva su comando original.") }
+                else if order.conflict { tr!("The account configuration changed. Reload to start a new draft.", "La configuración de cuentas cambió. Recarga para empezar un borrador nuevo.") }
+                else { tr!("Changes stay here until Save. New work tries accounts from top to bottom.", "Los cambios se quedan aquí hasta Guardar. El trabajo nuevo prueba las cuentas de arriba abajo.") }));
+            entries.extend(order.rows.iter().map(Entry::Row));
+            return entries;
+        }
+        if let Some(row) = &self.account_detail { return vec![Entry::Row(row)]; }
         if self.detail {
             return sections(self.view.as_ref());
         }
@@ -80,7 +114,7 @@ impl McpServers {
             entries.extend(general.into_iter().map(Entry::Row));
         }
         if self.accounts.as_ref().is_some_and(|view| !view.sections.is_empty()) {
-            entries.push(Entry::Group(tr!("Claude accounts", "Cuentas de Claude")));
+            entries.push(Entry::Group(tr!("Accounts", "Cuentas")));
             entries.extend(sections(self.accounts.as_ref()));
         }
         if let Some(servers) = &self.servers {
@@ -112,6 +146,7 @@ impl McpServers {
             None => tr!("Loading…", "Cargando…").to_owned(),
         };
         Row {
+        account: None, model: None,
             id: SERVERS_ROW.into(), link: None, icon: Icon::Machine, title, subtitle: None, badges: vec![], trailing: None, depth: 0,
             struck: false, kind: None, children: vec![], folded: false, actions: vec![],
         }
@@ -142,6 +177,9 @@ impl McpServers {
 
     /// `row` as the screen draws it: with what the user just picked in place of what it said.
     pub fn shown<'a>(&self, row: &'a Row) -> Cow<'a, Row> {
+        if let Some(order) = &self.order && let Some(position) = order.rows.iter().position(|item| item.id == row.id) {
+            return Cow::Owned(Row { title: format!("{}. {}", position + 1, row.title), actions: vec![], ..row.clone() });
+        }
         match self.chosen.values().find(|chosen| chosen.row == row.id) {
             Some(chosen) => Cow::Owned(Row { subtitle: Some(chosen.line.clone()), ..row.clone() }),
             None => Cow::Borrowed(row),
@@ -244,6 +282,11 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
             lines.extend(super::md::wrap(buttons, text_width, lead.clone(), lead));
         }
     }
+    if selected {
+        for action in row.actions.iter().filter(|action| !action.enabled) { if let Some(reason) = &action.disabled_reason {
+            lines.extend(super::md::wrap(vec![Span::styled(format!("{}: {reason}", action.label), Style::new().fg(Color::Gray))], text_width, vec![bar.clone(), Span::raw(" ")], vec![bar.clone(), Span::raw(" ")]));
+        } }
+    }
     lines
 }
 
@@ -266,22 +309,30 @@ impl App {
 
     pub(super) fn accounts_loaded(&mut self, view: &View) {
         let Some(screen) = self.mcp_servers.as_mut() else { return };
+        let selected = screen.selected().map(|row| row.id.clone());
+        if let Some(order) = &mut screen.order {
+            if order.epoch != view.data_epoch { order.command = None; }
+            if order.epoch != view.data_epoch || (order.command.is_none() && view.account_configuration.as_ref().map(|configuration| &configuration.version) != Some(&order.version)) { order.conflict = true; }
+        }
+        if let Some(open) = &screen.account_detail {
+            let key = open.account.as_ref().map(|account| &account.key);
+            screen.account_detail = sections(Some(view)).into_iter().find_map(|entry| match entry {
+                Entry::Row(row) if row.account.as_ref().map(|account| &account.key) == key => Some(account_detail(row)), _ => None,
+            });
+        }
         screen.accounts = Some(view.clone());
+        if screen.order.is_none() && screen.account_detail.is_none() && let Some(selected) = selected && let Some(position) = screen.rows().iter().position(|row| row.id == selected) { screen.sel = position; }
         screen.clamp();
         self.sync_open_views();
     }
 
-    /// Claude's sign-in for an account runs on this Mac's screen, never on another Mac's.
+    /// Native sign-in runs on the Mac that holds this account's credentials.
     pub(super) fn account_sign_in(&mut self, args: Vec<String>) -> Flow {
         if self.remote_mac().is_some() {
-            let command = std::iter::once("alondra".to_owned()).chain(args.iter().map(|arg| match arg.contains(' ') {
-                true => alondra_core::views::accounts::shell_word(arg),
-                false => arg.clone(),
-            })).collect::<Vec<_>>().join(" ");
-            self.fail(trf!(
-                "Claude's sign-in opens on the Mac it is for: run {command} there",
-                "El inicio de sesión de Claude se abre en el Mac de la cuenta: ejecuta {command} allí"
-            ));
+            let command = std::iter::once("alondra").chain(args.iter().map(String::as_str))
+                .map(alondra_core::views::accounts::shell_word).collect::<Vec<_>>().join(" ");
+            let name = self.remote_mac().unwrap_or_else(|| "Mac".into());
+            self.fail(trf!("Finish native sign-in on {name}: run {command} there", "Completa el inicio de sesión nativo en {name}: ejecuta {command} allí"));
             return Flow::Go;
         }
         Flow::AccountSignIn(SignIn { args })
@@ -335,14 +386,74 @@ impl App {
     }
 
     /// Back: from the MCP servers' screen to Settings, and from Settings out.
+    pub(super) fn restore_settings_after_view(&mut self) {
+        if !self.settings_after_view.as_ref().is_some_and(|(_, depth)| self.view_navigation.len() <= *depth) { return; }
+        self.mcp_servers = self.settings_after_view.take().map(|(settings, _)| settings);
+        self.load_mcp_servers();
+        self.load_general();
+        self.load_accounts();
+    }
+
     pub(super) fn close_mcp_servers(&mut self) {
         match self.mcp_servers.as_mut() {
+            Some(screen) if screen.order.as_ref().is_some_and(|order| order.command.is_some()) => {},
+            Some(screen) if screen.order.is_some() => { screen.order = None; screen.sel = 0; },
+            Some(screen) if screen.account_detail.is_some() => { screen.account_detail = None; screen.sel = 0; },
             Some(screen) if screen.detail => screen.show_detail(false),
             _ => {
                 self.mcp_servers = None;
                 self.sync_open_views();
             }
         }
+    }
+
+    pub(super) fn open_account_detail(&mut self) {
+        let Some(screen) = &mut self.mcp_servers else { return };
+        if let Some(row) = screen.selected().filter(|row| row.account.is_some()).cloned() { screen.account_detail = Some(account_detail(&row)); screen.sel = 0; screen.scroll = 0; }
+    }
+
+    pub(super) fn begin_account_order(&mut self) {
+        let Some(screen) = &mut self.mcp_servers else { return };
+        if screen.order.as_ref().is_some_and(|order| order.command.is_some()) { return; }
+        let Some(view) = &screen.accounts else { return };
+        let Some(configuration) = &view.account_configuration else { return };
+        let Some(action) = view.sections.iter().flat_map(|section| &section.actions).find(|action| action.enabled && action.id.starts_with("account_order:")).cloned() else { return };
+        let rows: Vec<Row> = sections(Some(view)).into_iter().filter_map(|entry| match entry { Entry::Row(row) if row.account.is_some() => Some(row.clone()), _ => None }).collect();
+        let initial = rows.iter().filter_map(|row| row.account.as_ref().map(|account| account.key.clone())).collect();
+        screen.order = Some(AccountOrderDraft { rows, initial, version: configuration.version.clone(), epoch: view.data_epoch.clone(), action, conflict: false, command: None });
+        screen.sel = 0; screen.scroll = 0; screen.account_detail = None;
+    }
+
+    pub(super) fn move_account_order(&mut self, down: bool) {
+        let Some(screen) = &mut self.mcp_servers else { return };
+        let target = if down { screen.sel.saturating_add(1) } else { screen.sel.saturating_sub(1) };
+        if let Some(order) = &mut screen.order && let Some(selected) = order.move_to(screen.sel, target) { screen.sel = selected; }
+    }
+
+    pub(super) fn account_order_position(&mut self) {
+        if self.mcp_servers.as_ref().and_then(|screen| screen.order.as_ref()).is_some_and(|order| order.command.is_none() && !order.conflict) { self.compose(super::Target::AccountPosition, ""); }
+    }
+
+    pub(super) fn account_order_positioned(&mut self, text: &str) {
+        let Some(screen) = &mut self.mcp_servers else { return };
+        if let Ok(position) = text.trim().parse::<usize>() && let Some(order) = &mut screen.order && position > 0 && let Some(selected) = order.move_to(screen.sel, position - 1) { screen.sel = selected; return; }
+        self.fail(tr!("Enter a position within the account list.", "Introduce una posición dentro de la lista de cuentas."));
+    }
+
+    pub(super) fn save_account_order(&mut self) {
+        let Some(screen) = &mut self.mcp_servers else { return };
+        let Some(order) = &mut screen.order else { return };
+        if order.conflict || order.command.is_some() || order.keys() == order.initial { return; }
+        let request = Client::action_body(&order.epoch, &order.action.id, None, json!({"fields": {"order": order.keys(), "expected_config_version": order.version}}));
+        order.command = request["command_id"].as_str().map(str::to_owned);
+        self.submit_view_request(request, None);
+    }
+
+    pub(super) fn account_order_answered(&mut self, command: &str, applied: bool) {
+        let Some(screen) = &mut self.mcp_servers else { return };
+        if !screen.order.as_ref().is_some_and(|order| order.command.as_deref() == Some(command)) { return; }
+        if applied { screen.order = None; screen.sel = 0; self.load_accounts(); }
+        else if let Some(order) = &mut screen.order { order.command = None; order.conflict = true; }
     }
 
     pub(super) fn open_mcp_detail(&mut self) {
@@ -385,4 +496,37 @@ impl App {
         };
         self.press_card_action(action, None, &Key(row), epoch)
     }
+}
+
+fn account_detail(source: &Row) -> Row {
+    let mut row = source.clone();
+    let Some(account) = &source.account else { return row };
+    let provider = alondra_core::views::accounts::provider_name(account.key.provider);
+    let mut lines = vec![format!("{} · {} · {}", provider, account.key.account, account.availability.text), account.freshness.text.clone()];
+    if let Some(email) = &account.email { lines.push(email.clone()); }
+    if let Some(plan) = &account.plan { lines.push(plan.clone()); }
+    if let Some(reason) = &account.reason { lines.push(reason.clone()); }
+    let count = account.active_nodes;
+    lines.push(trf!("{count} active nodes", "{count} nodos activos"));
+    if account.windows.is_empty() { lines.push(tr!("Usage not reported", "Uso no comunicado").into()); }
+    for window in &account.windows {
+        let used = window.used_percent; let label = &window.label; let measured = account_time(window.measured_at);
+        lines.push(trf!("{label}: {used}% used · reported {measured}", "{label}: {used}% usado · comunicado {measured}"));
+        if let Some(reset) = window.resets_at { let reset = account_time(reset); lines.push(trf!("Resets {reset}", "Se restablece {reset}")); }
+        if window.stale { lines.push(tr!("Waiting for a new reading", "Esperando una lectura nueva").into()); }
+    }
+    if let Some(catalog) = &account.model_catalog {
+        lines.push(tr!("Available models", "Modelos disponibles").into());
+        for model in &catalog.models {
+            lines.push(format!("{} · {}", model.display_name, model.model));
+            if !model.reasoning_efforts.is_empty() { let efforts = model.reasoning_efforts.join(", "); lines.push(trf!("Reasoning effort: {efforts}", "Esfuerzo de razonamiento: {efforts}")); }
+            if let Some(context) = model.context_window { lines.push(trf!("Context: {context} tokens", "Contexto: {context} tokens")); }
+        }
+    }
+    for action in source.actions.iter().filter(|action| !action.enabled) { if let Some(reason) = &action.disabled_reason { lines.push(format!("{}: {reason}", action.label)); } }
+    row.subtitle = Some(lines.join("\n")); row
+}
+
+fn account_time(time: alondra_core::Millis) -> String {
+    super::view_render::date_time_at_offset(time, 0).map(|(date, clock)| format!("{date} {clock} UTC")).unwrap_or_else(|| tr!("Unknown", "Desconocido").into())
 }

@@ -28,6 +28,8 @@ public actor FeedSession {
     private let transport: any ViewTransport
     private let client: ViewClient
     private let lang: String
+    private var capabilities: [String] = []
+    private static let implementedCapabilities: Set<String> = ["account_presentation", "model_selection", "provider_accounts"]
     private var leases: [UUID: String] = [:]
     private var versions: [String: String] = [:]
     private var documents: [String: ViewDocument] = [:]
@@ -61,6 +63,7 @@ public actor FeedSession {
         let id: UUID
         var lifetime: UUID
         var epochGeneration: UInt64
+        let capabilities: [String]
         let requiredEpoch: String?
         var priority: LoadPriority
         var task: Task<Void, Never>?
@@ -226,7 +229,7 @@ public actor FeedSession {
         loadLifetimes[request.key] = lifetime
         loadOwners[request.key] = id
         cursorLoadOwner = id
-        inFlightLoads[request] = InFlightLoad(id: id, lifetime: lifetime, epochGeneration: epochGeneration, requiredEpoch: requiredEpoch, priority: Self.priority(of: waiters), task: nil, waiters: waiters)
+        inFlightLoads[request] = InFlightLoad(id: id, lifetime: lifetime, epochGeneration: epochGeneration, capabilities: capabilities, requiredEpoch: requiredEpoch, priority: Self.priority(of: waiters), task: nil, waiters: waiters)
         pendingLoads.append((request, id))
         admitLoads()
     }
@@ -260,11 +263,12 @@ public actor FeedSession {
             let transport = self.transport
             let client = self.client
             let lang = self.lang
+            let capabilities = load.capabilities
             let task = Task { @concurrent [weak self] in
                 let result: Result<ViewFetch, any Error>
                 do {
                     try Task.checkCancellation()
-                    let fetched = try await transport.fetchView(key: next.request.key, client: client, lang: lang, known: next.request.known)
+                    let fetched = try await transport.fetchView(key: next.request.key, client: client, lang: lang, known: next.request.known, capabilities: capabilities)
                     try Task.checkCancellation()
                     result = .success(fetched)
                 } catch { result = .failure(error) }
@@ -290,6 +294,9 @@ public actor FeedSession {
 
     func completeLoad(_ request: LoadKey, id: UUID, result: Result<ViewFetch, any Error>) {
         guard let load = inFlightLoads[request], load.id == id else { return }
+        guard load.capabilities == capabilities else { recoverUnconditional(request.key); return }
+        if loadOwners[request.key] == id, case let .success(.document(document)) = result,
+           updateCapabilities(from: document.service) { return }
         guard loadOwners[request.key] == id else {
             inFlightLoads.removeValue(forKey: request)
             pendingLoads.removeAll { $0.id == load.id }
@@ -614,9 +621,10 @@ public actor FeedSession {
                 // After a failure the Mac answers at once, so the app knows it is back without
                 // waiting out a long poll; then the poll holds again until something changes.
                 let reply = try await transport.fetchChanges(client: client, lang: lang, wait: failures == 0 ? 50 : 0,
-                                                             cursor: cursor, views: openVersions)
+                                                             cursor: cursor, views: openVersions, capabilities: capabilities)
                 guard !Task.isCancelled, generation == current else { return }
                 guard pollEpoch == epochGeneration else { continue }
+                if updateCapabilities(from: reply.service) { return }
                 if reply.superseded {
                     // Another poll of this device reached the Mac after this one: over the relay,
                     // usually one this session already cancelled. Ask again, slower each time, so two
@@ -765,9 +773,29 @@ public actor FeedSession {
         }
     }
 
+    @discardableResult
+    private func updateCapabilities(from service: ViewService?) -> Bool {
+        let offered = Set(service?.capabilities ?? [])
+        return setCapabilities(Self.implementedCapabilities.intersection(offered).sorted())
+    }
+
+    @discardableResult
+    private func setCapabilities(_ next: [String]) -> Bool {
+        guard next != capabilities else { return false }
+        capabilities = next
+        epochGeneration &+= 1
+        cursor = nil; feedOwnsCursor = false
+        versions.removeAll(); documents.removeAll(); embedded.removeAll()
+        resetLoads()
+        emit(.reset)
+        publish(reset: true)
+        restartFeed()
+        return true
+    }
+
     /// Opening a new view after an ended/failed feed starts a fresh poll for the current union.
     public func reconnect() {
-        restartFeed()
+        if !setCapabilities([]) { restartFeed() }
         guard active else { return }
         for continuation in reconnectionSubscribers.values { continuation.yield() }
     }

@@ -86,6 +86,9 @@ public struct TaskDetail: Equatable, Sendable {
     public var pause: WireAction? { action("pause") }
     public var resume: WireAction? { action("resume") }
     public var priority: WireAction? { action("set_priority") }
+    public var modelSelection: WireAction? {
+        actions.first { if case .view(let key) = $0.link { key.hasPrefix("task_selection:") } else { false } }
+    }
     public var message: WireAction? { action("msg") }
     /// Interrupt, or Force stop once Claude accepted the interrupt and its turn still runs.
     public var interrupt: WireAction? { action("interrupt") ?? action("force_stop") }

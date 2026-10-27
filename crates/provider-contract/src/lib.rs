@@ -180,6 +180,8 @@ pub enum Observation {
     ContinuationConsumed {
         continuation: ContinuationId,
     },
+    /// Live native work needs a model follow-up through the domain's durable input queue.
+    ContinuationRequested { work: WorkId, activation: String, text: String },
     /// The root turn ended, and how.
     TurnEnded {
         turn: TurnId,

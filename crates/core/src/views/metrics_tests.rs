@@ -9,7 +9,7 @@ const NOW: i64 = 20_752 * DAY_MS;
 fn task(days_ago: i64, project: &str, model: &str, change_rounds: i64, cost: Option<i64>) -> TaskRow {
     let finished_at = NOW - days_ago * DAY_MS - 3_600_000;
     TaskRow {
-        project: Some(project.into()), model: Some(model.into()), effort: Some("medium".into()), approach: Some("solo".into()),
+        project: Some(project.into()), model: Some(model.into()), effort: Some("medium".into()), approach: Some("solo".into()), provider: None, kind: None,
         outcome: Outcome::Done, started_at: Some(finished_at - 5_400_000), finished_at, clean: change_rounds == 0, change_rounds,
         reviewer_rounds: 0, interventions: 1, reopened: false, relaunched: false, work_ms: 3_000_000, waiting_user_ms: 1_200_000,
         queued_ms: 120_000, blocked_ms: 0, sessions: 2, steps: 140, subagent_steps: 30, looks: 60, polls: 6, pr_merged: true,

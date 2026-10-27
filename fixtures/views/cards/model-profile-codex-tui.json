@@ -1,0 +1,279 @@
+{
+  "protocol": 1,
+  "data_epoch": "78f6072ee3eccdafc695b1e2728213edd0fee66cdd7b5d25a188044e87ed9098",
+  "view": "model_profile",
+  "key": "model_profile:codex-orchestrator",
+  "client": "tui",
+  "version": "v95c113738293f165",
+  "cursor": "c1.WyI3OGY2MDcyZWUzZWNjZGFmYzY5NWIxZTI3MjgyMTNlZGQwZmVlNjZjZGQ3YjVkMjVhMTg4MDQ0ZTg3ZWQ5MDk4IiwxMSwiOTlkOTQxY2U4NDc2MmIzNSIsInZkOTk3MzE4NGE4ZDE4MGY3Il0",
+  "title": "Codex · Orchestrator",
+  "status": {
+    "version": "vd9973184a8d180f7",
+    "summary": "0 nodes working",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 0
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "value": 0.32,
+        "text": "32%",
+        "level": "calm"
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "value": 0.32845218658447267,
+        "text": "33%",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "value": 0.9048818339788443,
+        "text": "47 GB free (15 GB purgeable)",
+        "level": "warm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "model_profile",
+          "fields": [
+            {
+              "id": "model",
+              "label": "Model",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Native default"
+                  },
+                  {
+                    "group": "Codex",
+                    "id": "codex/fixture-general",
+                    "label": "Fixture general"
+                  },
+                  {
+                    "group": "Codex",
+                    "id": "codex/fixture-review",
+                    "label": "Fixture review"
+                  }
+                ]
+              },
+              "value": "codex/fixture-general",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "reasoning_effort",
+              "label": "Reasoning effort",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Native default"
+                  },
+                  {
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "high",
+                    "label": "High"
+                  },
+                  {
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "low",
+                    "label": "Low"
+                  },
+                  {
+                    "available_when": {
+                      "field": "model",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "medium",
+                    "label": "Medium"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "visible_when": {
+                "field": "model",
+                "any_of": [
+                  "codex/fixture-general",
+                  "codex/fixture-review"
+                ]
+              },
+              "reload_on_change": false
+            },
+            {
+              "id": "candidate_2",
+              "label": "Candidate 2",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "No additional model"
+                  },
+                  {
+                    "group": "Codex",
+                    "id": "codex/fixture-general",
+                    "label": "Fixture general"
+                  },
+                  {
+                    "group": "Codex",
+                    "id": "codex/fixture-review",
+                    "label": "Fixture review"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "visible_when": {
+                "field": "model",
+                "any_of": [
+                  "codex/fixture-general",
+                  "codex/fixture-review"
+                ]
+              },
+              "reload_on_change": false
+            },
+            {
+              "id": "reasoning_effort_2",
+              "label": "Reasoning effort",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Native default"
+                  },
+                  {
+                    "available_when": {
+                      "field": "candidate_2",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "high",
+                    "label": "High"
+                  },
+                  {
+                    "available_when": {
+                      "field": "candidate_2",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "low",
+                    "label": "Low"
+                  },
+                  {
+                    "available_when": {
+                      "field": "candidate_2",
+                      "any_of": [
+                        "codex/fixture-general",
+                        "codex/fixture-review"
+                      ]
+                    },
+                    "id": "medium",
+                    "label": "Medium"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "visible_when": {
+                "field": "candidate_2",
+                "any_of": [
+                  "codex/fixture-general",
+                  "codex/fixture-review"
+                ]
+              },
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "model_profile:codex-orchestrator@0~99de0950aa5733d4",
+            "label": "Save model profile",
+            "style": "primary",
+            "role": "advance",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": false,
+            "enabled": true,
+            "resolves_card": false
+          }
+        }
+      ]
+    }
+  ],
+  "service": {
+    "version": "0.3.7",
+    "views_protocol": {
+      "min": 1,
+      "max": 1
+    },
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ]
+  }
+}

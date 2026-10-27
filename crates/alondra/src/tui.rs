@@ -503,8 +503,9 @@ pub enum Target {
         server: String,
         url: String,
     },
-    /// The name of a new account; Claude's sign-in for it runs once it is sent.
-    AccountName,
+    /// The name to append to a validated native account command.
+    AccountName { provider: alondra_core::accounts::Provider, argv: Vec<String> },
+    AccountPosition,
 }
 
 pub struct Composer {
@@ -650,6 +651,8 @@ pub struct App {
     pub rules: Option<rules::Rules>,
     /// The MCP servers of the nodes and projects, open over the list screens.
     pub mcp_servers: Option<mcp_servers::McpServers>,
+    /// Keeps Settings' selected row while a server-owned form uses the normal view navigator.
+    pub settings_after_view: Option<(mcp_servers::McpServers, usize)>,
     /// What a key's work leaves the screen to do once it returns, such as an account's sign-in.
     pub pending_flow: Option<Flow>,
     pub sel: Option<Key>,
@@ -1003,9 +1006,12 @@ fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -
         let value = value.expect("nonmissing value");
         match &field.kind {
             FieldKind::Choice { items }
-                if !value
-                    .as_str()
-                    .is_some_and(|choice| items.iter().any(|item| item.id == choice)) =>
+                if !value.as_str().is_some_and(|choice| items.iter().any(|item| {
+                    item.id == choice && item.disabled_reason.is_none() && item.available_when.as_ref().is_none_or(|condition| {
+                        let actual = values.get(&condition.field);
+                        condition.equals.as_ref().is_some_and(|expected| actual == Some(expected)) || actual.is_some_and(|actual| condition.any_of.contains(actual))
+                    })
+                })) =>
             {
                 anyhow::bail!(trf!(
                     "{label}: choose one of the listed values",
@@ -1147,6 +1153,7 @@ impl App {
             schedules_open: false,
             rules: None,
             mcp_servers: None,
+            settings_after_view: None,
             pending_flow: None,
             sel: None,
             sel_idx: 0,
@@ -1467,6 +1474,10 @@ impl App {
     }
 
     pub(super) fn navigate_view(&mut self, key: &str) {
+        if let Some(settings) = self.mcp_servers.take() {
+            self.settings_after_view = Some((settings, self.view_navigation.len()));
+            self.focus = Pane::Detail;
+        }
         self.reader_after_view = None;
         self.view_navigation.push(key.to_owned());
         self.card_view = None;
@@ -1830,6 +1841,10 @@ impl App {
 
     /// Copies a dropped file into Alondra's storage while the user keeps writing.
     fn attach(&mut self, path: std::path::PathBuf) {
+        if self.composer.as_ref().and_then(|composer| composer.form.as_ref()).is_some_and(|form| form.loaded && !form.submit.as_ref().is_some_and(|submit| submit.attachments)) {
+            self.fail(tr!("This form does not take attachments", "Este formulario no admite adjuntos"));
+            return;
+        }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -2249,6 +2264,7 @@ impl App {
             Some(body) => format!("{}\n{body}", outcome.title),
             None => outcome.title.clone(),
         };
+        self.account_order_answered(command, applied);
         self.rule_answered(command, applied);
         self.setting_answered(request["action_id"].as_str().unwrap_or_default(), applied);
         match outcome.kind {
@@ -2442,6 +2458,13 @@ impl App {
     }
 
     fn on_paste(&mut self, s: &str) {
+        if let Some(form) = self.composer.as_mut().and_then(|composer| composer.form.as_mut()).filter(|form| form.loaded && form.primary().is_none()) {
+            if form.popup.is_some() {
+                for character in md::one_line(s).chars() { let _ = form.key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)); }
+                return;
+            }
+            if dropped::dropped_files(s).is_none() { return; }
+        }
         if self.composer.is_some()
             && let Some(files) = dropped::dropped_files(s)
         {
@@ -2552,6 +2575,7 @@ impl App {
         self.screen = screen;
         self.card_menu = None;
         self.view_navigation.clear();
+        self.settings_after_view = None;
         self.reader_after_view = None;
         self.schedules_open = false;
         self.rules = None;
@@ -2745,6 +2769,8 @@ impl App {
                 work::FormKey::NotMine => {}
             }
         }
+        if c.form.as_ref().is_some_and(|form| form.loaded && form.primary().is_none())
+            && (!matches!(k.code, KeyCode::Esc | KeyCode::Enter) || k.code == KeyCode::Enter && k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)) { return; }
         match k.code {
             KeyCode::Esc => self.composer = None,
             KeyCode::Enter
@@ -2766,7 +2792,7 @@ impl App {
     }
 
     fn submit(&mut self) {
-        let Some(c) = self.composer.take() else {
+        let Some(mut c) = self.composer.take() else {
             return;
         };
         let text = c.input.text().trim().to_string();
@@ -2778,7 +2804,7 @@ impl App {
             Target::Message { .. } => c.chips.is_empty(),
             Target::Form { .. } => false,
             Target::Comment { .. } | Target::General { .. } => false,
-            Target::McpReturn { .. } | Target::AccountName => true,
+            Target::McpReturn { .. } | Target::AccountName { .. } | Target::AccountPosition => true,
         };
         if needs_text && text.is_empty() {
             self.composer = Some(c);
@@ -2849,8 +2875,18 @@ impl App {
             }
             Target::Form { .. } => {}
             Target::McpReturn { card, server, .. } => self.mcp_give_back(&card, &server, text),
-            Target::AccountName => {
-                let flow = self.account_sign_in(vec!["accounts".into(), "add".into(), text]);
+            Target::AccountPosition => self.account_order_positioned(&text),
+            Target::AccountName { provider, mut argv } => {
+                let legacy = provider == alondra_core::accounts::Provider::Claude && argv == ["accounts", "add"];
+                if !legacy && alondra_core::views::accounts::account_arguments(Some(provider.as_str()), Some(&argv), None, true).is_none() {
+                    c.target = Target::AccountName { provider, argv };
+                    self.composer = Some(c);
+                    self.fail(tr!("Reload Accounts before adding this account", "Vuelve a cargar Cuentas antes de añadir esta cuenta"));
+                    return;
+                }
+                if argv.iter().any(|arg| arg == "--provider") || text.starts_with('-') { argv.push("--".into()); }
+                argv.push(text);
+                let flow = self.account_sign_in(argv);
                 self.pending_flow = Some(flow).filter(|flow| !matches!(flow, Flow::Go));
             }
             Target::Comment { block, quote } => {
@@ -2891,6 +2927,7 @@ impl App {
             self.flash(tr!("Still loading the form", "Aún se está cargando el formulario"));
             return;
         };
+        if let Some(reason) = form.intent_error() { self.composer = Some(c); self.fail(reason); return; }
         let fields = form.submitted(&text, &ids);
         let checked = validate_view_fields(&form.fields, &fields);
         let request = Client::action_body(

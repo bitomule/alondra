@@ -55,7 +55,7 @@ const action = z.discriminatedUnion('type', [
 ]);
 export type Action = z.infer<typeof action>;
 export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in', 'mcp_clear_auth'] as const;
-export type Capability = typeof HOST_CAPABILITIES[number];
+export type Capability = typeof HOST_CAPABILITIES[number] | 'native_account_policy' | 'causal_child_continuations';
 /** The capability that carries each action, as the daemon's `Action::capability` names it: an action added after the protocol's version names its own, so an owner never sends it to a host that cannot read it. */
 export const ACTION_CAPABILITIES: Record<Action['type'], Capability | undefined> = {
   start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', force_stop: 'force_stop', close: undefined,

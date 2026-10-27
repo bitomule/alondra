@@ -81,6 +81,8 @@ pub trait System {
     fn service_config(&self) -> bool;
     fn relay(&self) -> bool;
     fn apns(&self) -> Option<String>;
+    fn codex_version(&self) -> Option<String> { None }
+    fn native_accounts(&self) -> Option<Value> { None }
     fn claude(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)>;
     fn signed_in(&self) -> Result<bool>;
     fn profile(&self) -> Result<Option<String>, String>;
@@ -308,6 +310,20 @@ impl Real {
 }
 
 impl System for Real {
+    fn codex_version(&self) -> Option<String> {
+        let context = crate::claude_auth::installed_codex_context(&self.env_home).ok()?;
+        let executable = alondra_core::codex_account::executable(&context.path)?;
+        let username = alondra_core::claude_account::effective_username()?;
+        let mut command = alondra_core::codex_account::command(&executable, &context.environment, &context.home, &context.path, &username, None);
+        command.arg("--version");
+        command_output(command, Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
+    }
+    fn native_accounts(&self) -> Option<Value> {
+        let client = Client::new(Duration::from_secs(5));
+        let listing: Value = client.get("/settings/accounts").ok()?;
+        listing.get("accounts").cloned()
+    }
+
     fn home(&self) -> PathBuf {
         self.home.clone()
     }

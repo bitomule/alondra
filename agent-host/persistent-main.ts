@@ -4,12 +4,14 @@ import { PersistentHost } from './persistent.js';
 import { boundDiagnostics, listeningHint } from './diagnostics.js';
 import { PROBE_FLAG, runProbe } from './probe.js';
 import { USAGE_PROBE_FLAG, probeUsage } from './usage-probe.js';
+import { MODEL_PROBE_FLAG, probeModels } from './model-probe.js';
 
 /** `--usage-probe`: reads the probe's request on stdin and writes what the account has used. */
 async function probe(): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  const report = await probeUsage(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+  const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const report = process.argv.includes(MODEL_PROBE_FLAG) ? await probeModels(input) : await probeUsage(input);
   process.stdout.write(JSON.stringify(report) + '\n');
 }
 
@@ -32,7 +34,7 @@ async function main(): Promise<void> {
   await listeningHint();
 }
 if (process.argv.includes(PROBE_FLAG)) void runProbe().then(() => process.exit());
-else if (process.argv.includes(USAGE_PROBE_FLAG)) {
+else if (process.argv.includes(USAGE_PROBE_FLAG) || process.argv.includes(MODEL_PROBE_FLAG)) {
   probe().then(() => process.exit(0), (error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`.slice(0, 512)); process.exit(1); });
 } else {
   boundDiagnostics();

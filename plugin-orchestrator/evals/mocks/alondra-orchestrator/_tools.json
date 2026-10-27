@@ -88,6 +88,57 @@
          "review"
         ],
         "type": "string"
+       },
+       "tags": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "kind"
+        ],
+        "description": "What the task is: its kind, where it works and its risks. Alondra keeps them with the model chosen and reports results by kind",
+        "properties": {
+         "kind": {
+          "type": "string",
+          "enum": [
+           "feature",
+           "fix",
+           "refactor",
+           "tests",
+           "docs",
+           "migration",
+           "design",
+           "review",
+           "release",
+           "research"
+          ]
+         },
+         "areas": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "ui",
+            "daemon",
+            "data",
+            "build"
+           ]
+          }
+         },
+         "risks": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "concurrency",
+            "security",
+            "data_migration",
+            "unclear_spec",
+            "user_visible"
+           ]
+          },
+          "description": "concurrency, security and data_migration call for the strongest model for the kind"
+         }
+        }
        }
       },
       "required": [
@@ -399,6 +450,57 @@
          "review"
         ],
         "type": "string"
+       },
+       "tags": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "kind"
+        ],
+        "description": "What the task is: its kind, where it works and its risks. Alondra keeps them with the model chosen and reports results by kind",
+        "properties": {
+         "kind": {
+          "type": "string",
+          "enum": [
+           "feature",
+           "fix",
+           "refactor",
+           "tests",
+           "docs",
+           "migration",
+           "design",
+           "review",
+           "release",
+           "research"
+          ]
+         },
+         "areas": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "ui",
+            "daemon",
+            "data",
+            "build"
+           ]
+          }
+         },
+         "risks": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "enum": [
+            "concurrency",
+            "security",
+            "data_migration",
+            "unclear_spec",
+            "user_visible"
+           ]
+          },
+          "description": "concurrency, security and data_migration call for the strongest model for the kind"
+         }
+        }
        }
       },
       "required": [
@@ -412,6 +514,14 @@
      "task_id",
      "launch"
     ]
+   }
+  },
+  {
+   "name": "machine",
+   "description": "The models you choose from (Available models: each model of an enabled account with its efforts, the accounts' margin, its sheet and Alondra's measured results), the public evidence of each sheet, the account catalogs and profiles; machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {}
    }
   }
  ]

@@ -164,6 +164,7 @@ pub(crate) fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, Pat
         state_root: state.join("h"),
         io_timeout_seconds: 30,
         installed_native: false,
+            provider: alondra_core::accounts::Provider::Claude, origin: None,
     };
     (backend, capture)
 }
@@ -332,7 +333,9 @@ impl Slice {
         Self::with_hosts(HostRoot::new())
     }
 
-    fn with_hosts(state: HostRoot) -> Self {
+    fn with_hosts(state: HostRoot) -> Self { Self::with_database_name(state,"domain.sqlite") }
+
+    fn with_database_name(state: HostRoot,name:&str)->Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let worktree = home.join("worktree");
@@ -340,7 +343,7 @@ impl Slice {
         let plugin = home.join("plugin");
         std::fs::DirBuilder::new().mode(0o700).create(&plugin).unwrap();
         let (backend, capture) = fixture_backend(&home, &state);
-        let database = home.join("domain.sqlite");
+        let database = home.join(name);
         let domain = Arc::new(DomainRuntime::open_at(&home, &database).unwrap());
         let slice = Self { domain, database, capture, worktree, plugin, backend, kept: Arc::default(), _home: home, _state: state };
         slice.on_acknowledge(|| {});
@@ -372,7 +375,7 @@ impl Slice {
 
     fn try_run(&self, actor: &Actor, id: &str, command: Command) -> Result<CommandOutcome, StoreError> {
         let state = self.domain.state().unwrap();
-        self.domain.execute_with(actor, &envelope(&state, id, command), None, None, || Ok(()))
+        self.domain.execute_fixture(actor, envelope(&state, id, command))
     }
 
     fn launch(&self) -> Driver {
@@ -1737,7 +1740,7 @@ impl Slice {
 
     fn accounts_seen(&self, id: &str, work: AccountState) {
         let accounts = [("default", AccountState::SignedIn), ("work", work)].map(|(id, state)| AccountStatus {
-            provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, email: None, plan: None, billing: Default::default(), sign_ins: 0,
+            provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
         }).to_vec();
         self.run(&Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
     }
@@ -1798,7 +1801,7 @@ fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
 #[test]
 fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_session() {
     let slice = Slice::new();
-    let options = LaunchOptions { model: Some("fixture-model".into()), effort: Some("high".into()), disallowed_tools: vec!["WebFetch".into()] };
+    let options = LaunchOptions { provider: alondra_core::accounts::Provider::Claude, selection: None, model: Some("fixture-model".into()), effort: Some("high".into()), disallowed_tools: vec!["WebFetch".into()] };
     let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
@@ -1850,10 +1853,67 @@ fn a_node_may_edit_only_inside_its_own_worktree_without_asking() {
 // «Replace» stops the node's host through its owner and starts the task on a new execution: its
 // first generation's open request is withdrawn with it, and an answer to that card is refused.
 #[test]
+fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_generation_before_offer() {
+    let slice=Slice::new();let mut driver=slice.launch_working();let original_agent=driver.agent().clone();
+    let original_account=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key();
+    let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&original_account.account,slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
+    for (id,text) in [("queued-first","First exact queued instruction"),("queued-second","Second exact queued instruction")]{
+        slice.run(&Actor::System,id,Command::TellNode{task_id:TASK.into(),text:text.into()});
+    }
+    driver.stop().unwrap();drop(driver);
+    end_unowned_host(Arc::clone(&slice.domain),&slice.backend,TASK.into()).unwrap();
+    crate::node_revival::user_closed(&slice.domain,&original_agent.0).unwrap();
+    let pending:Vec<_>=lifecycle(&slice.domain).pending_inputs().into_iter().cloned().collect();
+    assert_eq!(pending.len(),2,"the two existing instructions authorize continuation and survive release without an invented third input");
+    let expected:Vec<String>=pending.iter().map(|input|slice.observer().query_row(
+        "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",rusqlite::params![TASK,input.as_str()],|row|row.get(0)).unwrap()).collect();
+    assert_eq!(&expected[..2],["First exact queued instruction","Second exact queued instruction"]);
+    let mut replacement=start(Arc::clone(&slice.domain),&slice.backend,Launch{
+        task:TASK.into(),name:"Recovered release notes".into(),directory:slice.worktree.to_str().unwrap().into(),
+        prompt:"This launch summary must not replace any queued user input".into(),plugin:slice.plugin.clone(),
+        options:LaunchOptions::default(),model:None,account:original_account.account.clone(),
+    }).unwrap();
+    let stamp=lifecycle(&slice.domain).execution().unwrap().clone();
+    let rows:Vec<(String,String,String,i64)>=slice.observer().prepare(
+        "SELECT d.input_id,d.kind,d.status,(SELECT count(*) FROM provider_input_metadata m WHERE m.task_id=d.task_id AND m.input_id=d.input_id AND m.conversation_id=?3) FROM lifecycle_dispatches d WHERE d.task_id=?1 AND d.generation=?2 ORDER BY d.id"
+    ).unwrap().query_map(rusqlite::params![TASK,i64::try_from(stamp.generation()).unwrap(),stamp.conversation().as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows.len(),pending.len(),"every inherited pending input has a committed new-generation intent");
+    for (at,(id,kind,status,metadata)) in rows.iter().enumerate(){
+        assert_eq!(id,pending[at].as_str());assert_eq!(kind,if at==0{"launch"}else{"input"});assert_eq!(*metadata,1);
+        if at>0{assert_eq!(status,"prepared","later inputs remain unoffered when start returns");}
+    }
+    slice.settle(&mut replacement);
+    assert_eq!(lifecycle(&slice.domain).resource(),Some(alondra_domain::ResourceEvidence::Available),"the current generation has positively resumed its native session");
+    assert!(lifecycle(&slice.domain).pending_inputs().is_empty(),"both real queued inputs have been consumed before checking the native witness");
+    let delivered:Vec<String>=slice.prompts().into_iter().skip(1).collect();
+    assert_eq!(delivered,expected,"every original payload reaches the same native session exactly once and in order");
+    assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key(),original_account);
+    let capture:serde_json::Value=serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let args:Vec<&str>=capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    assert!(args.windows(2).any(|pair|pair==["--resume",native.as_str()]) || args.iter().any(|arg|*arg==format!("--resume={native}")),"{args:?}");
+    let starts:Vec<serde_json::Value>=std::fs::read_to_string(format!("{}.starts",slice.capture.display())).unwrap().lines().map(|line|serde_json::from_str(line).unwrap()).collect();
+    let resumed=starts.last().unwrap();assert_eq!(resumed["resume"].as_str(),Some(native.as_str()));assert_eq!(resumed["cwd"].as_str(),Some(slice.worktree.to_str().unwrap()));assert!(resumed["history"].as_u64().unwrap()>0);
+    replacement.stop().unwrap();
+}
+
+#[test]
+fn replacement_requires_positive_original_native_session_evidence_before_stopping_its_host() {
+    let slice=Slice::new();let mut driver=slice.launch();let original=driver.agent().clone();
+    assert!(require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).is_err(), "an admitted UUID alone is not a native session witness");
+    assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.as_ref(),Some(&original));
+    slice.settle(&mut driver);
+    require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap();
+    driver.stop().unwrap();
+}
+
+#[test]
 fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() {
     let slice = Slice::new();
     let (driver, card) = slice.asked("decide:bash make test");
     let old = driver.agent().clone();
+    let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
+    assert!(require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::parse("another").unwrap(),slice.worktree.to_str().unwrap()).is_err(), "a different account is refused while the original host and card remain live");
+    assert!(open_card(&slice.domain,"decision-").is_some());
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
     slice.domain.stop_sdk_host(&old).unwrap();
     end_unowned_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
@@ -1864,6 +1924,9 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
         model: None, account: AccountId::default_account(),
     }).unwrap();
     slice.settle(&mut replacement);
+    let capture:serde_json::Value=serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let args:Vec<&str>=capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    assert!(args.windows(2).any(|pair|pair==["--resume",native.as_str()]) || args.iter().any(|arg|*arg==format!("--resume={native}")), "replacement must resume the exact original native conversation: {args:?}");
     let state = slice.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from(TASK)].agent_id.as_ref(), Some(replacement.agent()), "the task is the new node's");
     assert_ne!(replacement.agent(), &old);
@@ -1880,10 +1943,17 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
     slice.domain.enable_sdk(slice.backend.clone());
     let (driver, card) = slice.asked("decide:bash make test");
     let old = driver.agent().clone();
+    let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
+    assert!(require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::parse("another").unwrap(),slice.worktree.to_str().unwrap()).is_err(), "a different account is refused while the original host and card remain live");
+    assert!(open_card(&slice.domain,"decision-").is_some());
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
     let body = serde_json::from_value(serde_json::json!({"task": TASK, "replace": true, "model": "sonnet", "effort": "high", "reason": "Release notes are short prose"})).unwrap();
     let launched = crate::domain_orchestrator_tools::launch(&slice.domain, &slice._home, body, |_| None).await;
     assert!(launched.is_ok(), "{launched:?}");
+    let state=slice.domain.state().unwrap();let stamp=state.lifecycle_of(&TASK.into()).unwrap().execution().unwrap().clone();
+    let metadata=slice.domain.store.lock().unwrap().conversation_metadata(&TASK.into(),stamp.conversation().as_str()).unwrap().unwrap();
+    assert_eq!(alondra_provider_claude::conversation_session(&metadata).as_deref(),Some(native.as_str()));
+
     assert!(open_card(&slice.domain, "decision-").is_none(), "the stopped host's request is closed with its card");
     assert!(!slice.domain.owns_sdk_host(&old), "the old host is stopped");
     let new = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().expect("the task has a node");
@@ -3918,4 +3988,22 @@ fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_befor
     let replaced = slice.take_over(&restarted);
     assert!(!replaced.worker.runs_another_release());
     assert_replaced(&slice, &restarted, replaced, &session, &processes);
+}
+
+#[path = "codex_tests.rs"]
+mod codex_tests;
+
+#[test]
+fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {
+    let slice = Slice::new();
+    let title = || Command::TitleRequest { request_id: "sdk-slice-request".into(), title: "Forbidden writer".into() };
+    let forbidden = slice.try_run(&Actor::Agent { agent_id: "unassigned".into() }, "wrong-actor", title()).unwrap_err();
+    assert!(matches!(forbidden, StoreError::Domain(error) if error.code == "forbidden"));
+    let stale = slice.try_run(&Actor::Orchestrator { generation: 1 }, "wrong-generation", title()).unwrap_err();
+    assert!(matches!(stale, StoreError::Domain(error) if error.code == "stale_generation"));
+    let state = slice.domain.state().unwrap();
+    let mut request = envelope(&state, "stale-client", title());
+    request.expected_revision = 0;
+    let stale = slice.domain.execute_with(&user(), &request, None, None, || Ok(())).unwrap_err();
+    assert!(matches!(stale, StoreError::Domain(error) if error.code == "stale_revision"));
 }

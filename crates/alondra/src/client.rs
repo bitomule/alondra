@@ -35,6 +35,8 @@ pub struct Client {
     direct: Option<std::sync::Arc<crate::direct_client::Connection>>,
     timeout: Duration,
     protocol: u32,
+    mcp_operation: Option<String>,
+    capabilities: std::sync::Mutex<alondra_core::views::ClientCapabilities>,
 }
 
 /// The version the local daemon stamped on the first answer this process got from it.
@@ -287,7 +289,7 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent, pairing: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL }
+        Client { base: format!("http://{host}:{port}"), agent, pairing: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default() }
     }
 
     #[cfg(test)]
@@ -335,8 +337,17 @@ impl Client {
         self
     }
 
+    pub fn with_mcp_operation(&self, identity: &str) -> Self {
+        assert!(!identity.is_empty() && identity.len() <= 1024 && identity.bytes().all(|byte| byte.is_ascii_hexdigit()), "invalid MCP operation identity");
+        Self { base: self.base.clone(), agent: self.agent.clone(), pairing: self.pairing.clone(), service: self.service.clone(), direct: self.direct.clone(), timeout: self.timeout,
+            protocol: self.protocol, mcp_operation: Some(identity.into()), capabilities: std::sync::Mutex::new(*self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner())) }
+    }
+
+    pub fn operation_id(&self) -> Option<&str> { self.mcp_operation.as_deref() }
+
     fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8], signer: Option<&Signer>) -> Result<ureq::RequestBuilder<B>> {
         req = req.header("x-alondra-client-version", env!("CARGO_PKG_VERSION"));
+        if let Some(operation) = self.operation_id() { req = req.header("x-alondra-mcp-operation", operation); }
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
         if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
         match signer {
@@ -391,7 +402,7 @@ impl Client {
     }
 
     fn unsigned(&self) -> Client {
-        Client { base: self.base.clone(), agent: self.agent.clone(), pairing: None, service: None, direct: None, timeout: self.timeout, protocol: self.protocol }
+        Client { base: self.base.clone(), agent: self.agent.clone(), pairing: None, service: None, direct: None, timeout: self.timeout, protocol: self.protocol, mcp_operation: None, capabilities: Default::default() }
     }
 
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -422,9 +433,17 @@ impl Client {
     /// identifiers may contain reserved characters; its options (`section`, `after`, `project`…)
     /// travel in the query next to the protocol's own parameters.
     pub fn views(&self, key: &str, known: Option<&str>) -> Result<ViewDocument> {
+        let view = self.view_with_capabilities(key, known)?;
+        if self.observe_capabilities(view.service.as_ref()) { return self.view_with_capabilities(key, None); }
+        Ok(view)
+    }
+
+    fn view_with_capabilities(&self, key: &str, known: Option<&str>) -> Result<ViewDocument> {
         let (base, options) = key.split_once('?').unwrap_or((key, ""));
         let mut query = vec![("protocol".to_owned(), self.protocol.to_string()), ("client".to_owned(), "tui".to_owned()), ("lang".to_owned(), lang_name(crate::i18n::lang()).to_owned())];
         if let Some(version) = known { query.push(("known".to_owned(), version.to_owned())); }
+        let capabilities = self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner()).query();
+        if !capabilities.is_empty() { query.push(("capabilities".into(), capabilities)); }
         query.extend(url::form_urlencoded::parse(options.as_bytes()).into_owned());
         let query = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(query).finish();
         let path = format!("/views/{}?{query}", crate::mcp::urlencode(base));
@@ -434,12 +453,33 @@ impl Client {
     /// Poll changes for the open TUI views. Starting a newer request for the same device
     /// supersedes this one at the daemon.
     pub fn feed(&self, cursor: Option<&str>, views: &[(&str, &str)], wait: u64) -> Result<ViewsFeed> {
+        let reply = self.feed_with_capabilities(cursor, views, wait)?;
+        if self.observe_capabilities(reply.service.as_ref()) {
+            let mut fresh = self.feed_with_capabilities(None, &[], 0)?;
+            fresh.reset = true;
+            return Ok(fresh);
+        }
+        Ok(reply)
+    }
+
+    fn observe_capabilities(&self, service: Option<&alondra_core::views::Service>) -> bool {
+        let supported = service.map(|service| service.capabilities.iter().filter(|cap| matches!(cap.as_str(), "provider_accounts" | "model_selection" | "account_presentation")).cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
+        let next = alondra_core::views::ClientCapabilities::parse(&supported).unwrap_or_default();
+        let mut capabilities = self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner());
+        if *capabilities == next { return false; }
+        *capabilities = next;
+        true
+    }
+
+    fn feed_with_capabilities(&self, cursor: Option<&str>, views: &[(&str, &str)], wait: u64) -> Result<ViewsFeed> {
         let mut query = vec![
             ("protocol", self.protocol.to_string()),
             ("client", "tui".to_owned()),
             ("lang", lang_name(crate::i18n::lang()).to_owned()),
             ("wait", wait.min(50).to_string()),
         ];
+        let capabilities = self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner()).query();
+        if !capabilities.is_empty() { query.push(("capabilities", capabilities)); }
         if let Some(cursor) = cursor { query.push(("cursor", cursor.to_owned())); }
         if !views.is_empty() {
             let open = views.iter().map(|(key, version)| format!("{key}@{version}")).collect::<Vec<_>>().join(",");
@@ -490,13 +530,15 @@ impl Client {
     pub fn domain_call(&self, method: &str, path: &str, bearer: &str, body: Option<&Value>) -> Result<Value> {
         let url = self.domain_url(path);
         let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
-        let request = ureq::http::Request::builder()
+        let mut request = ureq::http::Request::builder()
             .method(method)
             .uri(url)
             .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {bearer}"))
-            .body(bytes)?;
-        let response = self.agent.run(request)?;
+            .header("authorization", format!("Bearer {bearer}"));
+        if let Some(operation) = self.operation_id() {
+            request = request.header("x-alondra-mcp-operation", operation);
+        }
+        let response = self.agent.run(request.body(bytes)?)?;
         answer(response)
     }
 
@@ -1469,5 +1511,78 @@ mod pairing_tests {
         assert!(format!("{:#}", client.get::<Value>("/views/home").unwrap_err()).contains("device not paired"));
         assert_eq!(daemon.counts(), (0, 0));
         assert_eq!(pairing.stored().unwrap().device, "device-revoked");
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn mcp_operation_header_is_scoped_to_one_client_clone() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut present = vec![];
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut bytes = vec![];
+                while !bytes.ends_with(b"\r\n\r\n") { let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); bytes.push(byte[0]); }
+                present.push(String::from_utf8(bytes).unwrap().to_ascii_lowercase().contains("x-alondra-mcp-operation: abcd0123\r\n"));
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+            }
+            present
+        });
+        let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(5))).build().into();
+        let client = Client { base, agent, pairing: None, service: None, direct: None, timeout: Duration::from_secs(5), protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default() };
+        let scoped = client.with_mcp_operation("abcd0123");
+        assert_eq!(client.operation_id(), None); assert_eq!(scoped.operation_id(), Some("abcd0123"));
+        let _: Value = client.get("/echo").unwrap(); let _: Value = scoped.get("/echo").unwrap(); let _: Value = client.get("/echo").unwrap();
+        assert_eq!(server.join().unwrap(), [false, true, false]);
+    }
+
+    #[test]
+    fn a_native_plan_mode_post_carries_its_scoped_mcp_operation_identity() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut observed = vec![];
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut bytes = vec![];
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); bytes.push(byte[0]);
+                }
+                let headers = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+                assert!(headers.starts_with("post /agents/plan-mode http/1.1\r\n"));
+                assert!(headers.contains("authorization: bearer fixture-capability\r\n"));
+                let length = headers.lines().find_map(|line| line.strip_prefix("content-length: ")).unwrap().parse::<usize>().unwrap();
+                let mut body = vec![0; length]; stream.read_exact(&mut body).unwrap();
+                assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), serde_json::json!({"task_id":"fixture-task"}));
+                let present = headers.contains("x-alondra-mcp-operation: abcd0123\r\n");
+                observed.push(present);
+                let (status, body) = if present {
+                    ("200 OK", r#"{"pending":true}"#)
+                } else {
+                    ("400 Bad Request", r#"{"code":"incompatible_protocol","message":"A native operation identity is required"}"#)
+                };
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            observed
+        });
+        let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(5))).build().into();
+        let client = Client { base, agent, pairing: None, service: None, direct: None, timeout: Duration::from_secs(5), protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default() };
+        let scoped = client.with_mcp_operation("abcd0123");
+        let body = serde_json::json!({"task_id":"fixture-task"});
+        let first = client.domain_post("/agents/plan-mode", "fixture-capability", &body);
+        let native = scoped.domain_post("/agents/plan-mode", "fixture-capability", &body);
+        let last = client.domain_post("/agents/plan-mode", "fixture-capability", &body);
+        assert_eq!(server.join().unwrap(), [false, true, false]);
+        assert!(first.is_err());
+        assert_eq!(native.unwrap()["pending"], true);
+        assert!(last.is_err());
     }
 }

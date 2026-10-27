@@ -46,7 +46,7 @@ pub(in crate::domain_store) fn done_task(fixture: &Fixture) -> DomainStore {
     store.record_model_decision(&Chosen {
         task_id: "task-1".into(), request_id: "request-1".into(), agent_id: Some("agent-1".into()), at: 0, kind: ChosenKind::Launch,
         model: Some("sonnet".into()), effort: Some("medium".into()), approach: Some(Approach::Solo), chosen_by: ModelChooser::Orchestrator,
-        reason: None, title: "Goal".into(),
+        reason: None, title: "Goal".into(), provider: None, tags: None,
     }).unwrap();
     run(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     run(&mut store, &agent(), "ask", Command::AskQuestion {
@@ -265,6 +265,32 @@ fn tasks_older_than_90_days_add_up_exactly_into_their_week_and_their_models_day(
 }
 
 #[test]
+fn a_folded_task_keeps_the_provider_of_its_last_launch_and_the_kind_it_was_tagged_with() {
+    let fixture = Fixture::new();
+    let mut store = done_task(&fixture);
+    let tags = serde_json::from_value(serde_json::json!({"kind": "fix", "areas": ["daemon"]})).unwrap();
+    let decision = |kind, provider, tags| Chosen {
+        task_id: "task-1".into(), request_id: "request-1".into(), agent_id: Some("agent-2".into()), at: 0, kind,
+        model: Some("codex/gpt-6.1-sol".into()), effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
+        reason: None, title: "Goal".into(), provider, tags,
+    };
+    store.record_model_decision(&decision(ChosenKind::Relaunch, Some(alondra_core::accounts::Provider::Codex), Some(tags))).unwrap();
+    store.record_model_decision(&decision(ChosenKind::Send, Some(alondra_core::accounts::Provider::Codex), None)).unwrap();
+    assert_eq!(store.fold_ended_tasks(64).unwrap(), 1);
+    let folded: (Option<String>, Option<String>) = store.conn.query_row("SELECT provider,kind FROM task_metrics WHERE task_id='task-1'", [],
+        |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(folded, (Some("codex".into()), Some("fix".into())), "a message without tags keeps the kind the launch gave");
+    let read = store.metrics_inputs(1).unwrap();
+    assert_eq!((read.tasks[0].provider.as_deref(), read.tasks[0].kind.as_deref()), (Some("codex"), Some("fix")));
+
+    let untagged = Fixture::new();
+    let mut store = done_task(&untagged);
+    store.fold_ended_tasks(64).unwrap();
+    let read = store.metrics_inputs(1).unwrap();
+    assert_eq!((read.tasks[0].provider.as_deref(), read.tasks[0].kind.as_deref()), (None, None), "older decisions leave both unknown");
+}
+
+#[test]
 fn a_folded_task_takes_at_most_400_bytes() {
     let fixture = Fixture::new();
     let store = DomainStore::open(&fixture.path()).unwrap();
@@ -321,4 +347,14 @@ pub(crate) fn with_a_running_task(test: impl FnOnce(&crate::domain_runtime::Doma
     run(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     drop(store);
     test(&crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap());
+}
+
+#[test]
+fn codex_native_orchestrator_samples_keep_partial_coverage_and_unknown_cost_after_updates() {
+    let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path()).unwrap();
+    for tokens in [100, 200] {
+        let observed = [usage("native-model", None, tokens)];
+        store.record_spend(&Spent { session_id: "codex-batch", task_id: None, role: Role::Orchestrator, provider: "codex", usage: &observed, steps: StepCounts::default(), at: tokens }).unwrap();
+        assert_eq!(store.usage_row("codex-batch", "native-model"), Some((None, None, [tokens, tokens / 10, tokens * 10, tokens], false)));
+    }
 }

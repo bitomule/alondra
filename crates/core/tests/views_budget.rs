@@ -113,7 +113,7 @@ fn unit(shape: Shape) -> DomainState {
         launch: Some(LaunchPlan::new("node", "/synthetic/project")),
     });
     if through_sdk {
-        seed.run(Actor::System, Command::AdmitExecution { task_id: task.as_str().into(), agent_id: agent.as_str().into(),
+        seed.run(Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: task.as_str().into(), agent_id: agent.as_str().into(),
             conversation: format!("conversation-{TOKEN}"), instance: format!("instance-{TOKEN}"), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
         let Some(LifecycleRecord::Planned { input }) = seed.0.lifecycle_journal[&task.as_str().into()].first().cloned() else { panic!("planned first") };
         seed.run(Actor::System, Command::RecordRuntimeFacts { task_id: task.as_str().into(), generation: 1, facts: vec![
@@ -256,6 +256,7 @@ fn real_size() -> DomainState {
     }
     for index in 0..3 {
         let schedule = Schedule {
+            paid_account_grant: None,
             id: format!("schedule-{index}").into(), title: format!("Synthetic schedule {index}"), text: "Review the project".into(),
             project: Some("project".into()), options: BTreeMap::new(), disallowed_tools: vec![], frequency: ScheduleFrequency::Daily,
             hour: 9, minute: 0, weekday: None, interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1,
@@ -265,7 +266,7 @@ fn real_size() -> DomainState {
     }
     state.accounts = ["default", "work", "team"].into_iter().map(|id| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: format!("Synthetic {id}"), state: AccountState::SignedIn,
-        email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
     }).collect();
     let accounts: Vec<AccountId> = state.accounts.iter().map(|account| account.id.clone()).collect();
     for (number, task) in state.tasks.values_mut().enumerate() {
@@ -273,7 +274,43 @@ fn real_size() -> DomainState {
     }
     state.revision = state.revision.max(state.interactions.values().map(|i| i.order).max().unwrap_or(0)) + 1;
     state.validate().expect("the synthetic domain is valid");
-    loaded(state)
+    let mut state = loaded(state);
+    model_controls_fixture(&mut state);
+    state.validate().expect("the model controls fixture is valid");
+    state
+}
+
+fn model_controls_fixture(state: &mut DomainState) {
+    use alondra_core::accounts::AccountKey;
+    use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelCandidate, ModelKey, ModelProfile, ModelSelection, RoleModelPolicy, TaskSelection};
+    state.accounts.push(AccountStatus { provider: Provider::Codex, id: AccountId::default_account(), name: "Synthetic Codex".into(), state: AccountState::SignedIn,
+        native_identity: None, email: Some("codex@example.invalid".into()), plan: Some("plus".into()), billing: AccountBilling::default(), sign_ins: 0 });
+    state.account_order = state.accounts.iter().map(|account| AccountKey::new(account.provider, account.id.clone())).collect();
+    state.account_config_version = "budget-account-order".into();
+    state.model_profiles_version = "budget-model-profiles".into();
+    for account in &state.accounts {
+        let provider = account.provider;
+        let models: Vec<_> = ["standard", "design", "review"].into_iter().map(|role| CatalogModel {
+            model: format!("budget-{}-{role}", provider.as_str()), display_name: format!("Synthetic {} {role}", provider.as_str()),
+            reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()], default_reasoning_effort: Some("medium".into()),
+            context_window: Some(200_000), input_modalities: vec!["text".into(), "image".into()], is_default: provider == Provider::Codex && role == "standard", hidden: false,
+        }).collect();
+        state.model_catalogs.push(AccountModelCatalog { account: AccountKey::new(provider, account.id.clone()), revision: format!("budget-{}-{}", provider.as_str(), account.id),
+            native_default: (provider == Provider::Codex).then(|| models[0].model.clone()), models, measured_at: 1 });
+    }
+    for provider in [Provider::Claude, Provider::Codex] {
+        state.model_profiles.insert(provider, [ModelProfile::Implementation, ModelProfile::General, ModelProfile::Design, ModelProfile::Review, ModelProfile::Orchestrator].into_iter().map(|profile| (profile,
+            RoleModelPolicy::OrderedCandidates { candidates: vec![ModelCandidate { model: format!("budget-{}-standard", provider.as_str()), reasoning_effort: Some("high".into()) },
+                ModelCandidate { model: format!("budget-{}-review", provider.as_str()), reasoning_effort: Some("medium".into()) }] })).collect());
+    }
+    let task_id = id("t", Shape::Running).replace(TOKEN, "u001");
+    let task = state.tasks.get_mut(&task_id.as_str().into()).expect("the selected running task");
+    let account = task.account_key();
+    let model = ModelKey { provider: account.provider, model: format!("budget-{}-standard", account.provider.as_str()) };
+    let mut selection = TaskSelection::automatic(ModelProfile::Implementation);
+    selection.request_model(Some(model.clone())); selection.requested_reasoning_effort = Some("high".into());
+    selection.effective = Some(ModelSelection { model, reasoning_effort: Some("high".into()), catalog_revision: state.model_catalogs.iter().find(|catalog| catalog.account == account).expect("the active account catalog").revision.clone() });
+    task.selection = Some(selection);
 }
 
 /// The domain as the daemon opens it: each journal replayed once and handed to the domain with it.
@@ -334,7 +371,7 @@ fn metrics_inputs() -> MetricsInputs {
         let finished_at = now - n * 90 * DAY / 3_250;
         TaskRow {
             project: Some(projects[n as usize % 3].into()), model: Some(models[n as usize % 4].into()), effort: Some("medium".into()),
-            approach: Some("solo".into()), outcome: if n % 20 == 0 { Outcome::Cancelled } else { Outcome::Done },
+            approach: Some("solo".into()), provider: None, kind: None, outcome: if n % 20 == 0 { Outcome::Cancelled } else { Outcome::Done },
             started_at: Some(finished_at - 3_600_000), finished_at, clean: n % 3 != 0, change_rounds: n % 3, reviewer_rounds: n % 2,
             interventions: n % 4, reopened: n % 17 == 0, relaunched: n % 23 == 0, work_ms: 1_800_000, waiting_user_ms: 600_000,
             queued_ms: 60_000, blocked_ms: 0, sessions: 2, steps: 150, subagent_steps: 20, looks: 60, polls: 7, pr_merged: n % 5 != 0,
@@ -394,6 +431,9 @@ fn keys() -> Vec<(String, Client)> {
         ("schedules".to_owned(), Client::Ios),
         ("schedule:schedule-1".to_owned(), Client::Ios),
         ("new_request".to_owned(), Client::Ios),
+        ("model_profile:codex-orchestrator".to_owned(), Client::Mac),
+        ("model_profile:claude-implementation".to_owned(), Client::Ios),
+        (format!("task_selection:{}", one("t", Shape::Running)), Client::Tui),
         ("issue_picker".to_owned(), Client::Ios),
         ("search?q=node".to_owned(), Client::Ios),
         ("machine".to_owned(), Client::Mac),

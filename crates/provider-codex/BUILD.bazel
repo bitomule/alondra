@@ -1,0 +1,33 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+_DEPS = [
+    "//crates/codex-protocol:codex_protocol",
+    "//crates/agent-runtime:agent_runtime",
+    "//crates/agent-application:agent_application",
+    "//crates/provider-contract:provider_contract",
+    "//crates/foundation:foundation",
+    "//crates/store:store",
+] + all_crate_deps(normal = True)
+
+rust_library(
+    name = "provider_codex",
+    srcs = glob(["src/*.rs"], exclude = ["src/*_tests.rs"]),
+    crate_name = "alondra_provider_codex",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__"],
+    deps = _DEPS,
+)
+rust_test(
+    name = "provider_codex_test",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "alondra_provider_codex",
+    edition = "2024",
+    version = "0.1.0",
+    deps = _DEPS + all_crate_deps(normal_dev = True),
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json"],
+    env = {"HOME": "."},
+)
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

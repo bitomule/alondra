@@ -34,6 +34,7 @@ RELEASE_TARGETS = {
     'alondrad': '//crates/alondrad:alondrad',
     'alondrad-launcher': '//crates/alondrad:alondrad-launcher',
     'alondra-host': '//agent-host:release_host',
+    'alondra-codex-host': '//agent-host:codex_release_host',
 }
 HOST_IDENTIFIER = 'com.bitomule.alondra-host'
 # V8 compiles JavaScript at run time; the hardened runtime allows it only with this entitlement.
@@ -121,7 +122,8 @@ def release_build(ver):
     run('bazelisk', 'build', *RELEASE_TARGETS.values())
     built = {name: bazel_file(label) for name, label in RELEASE_TARGETS.items()}
     check_versions(ver, built)
-    built['alondra-host.json'] = built['alondra-host'].with_name('alondra-host.manifest.json')
+    for name in ('alondra-host', 'alondra-codex-host'):
+        built[name + '.json'] = built[name].with_name(name + '.manifest.json')
     return built
 
 
@@ -194,7 +196,7 @@ def smoke(ver, target, archive):
         assets.mkdir(parents=True)
         for name in SIGNED:
             shutil.move(unpack / name, binaries / name)
-        for name in ('.claude-plugin', 'plugin', 'plugin-orchestrator', 'sdk'):
+        for name in ('.claude-plugin', 'plugin', 'plugin-orchestrator', 'sdk', 'codex'):
             shutil.move(unpack / name, assets / name)
         opt = prefix / 'opt/alondra'
         opt.parent.mkdir()
@@ -209,6 +211,7 @@ def smoke(ver, target, archive):
             run('codesign', '--verify', '--strict', binary)
             run('/usr/bin/arch', f'-{arch}', binary, '--version' if name == 'alondrad-launcher' else '--help')
         host_smoke(assets / release.HOST)
+        host_smoke(assets / release.CODEX_HOST)
         run(sys.executable, ROOT / 'deploy/brew/smoke-setup.py', opt)
 
 
@@ -279,8 +282,12 @@ def prepare(ver, source, output):
             shutil.copyfile(built['alondra-host'], payload / 'alondra-host')
             (payload / 'alondra-host').chmod(0o755)
             sign(payload / 'alondra-host', HOST_IDENTIFIER, HOST_ENTITLEMENTS)
+            shutil.copyfile(built['alondra-codex-host'], payload / 'alondra-codex-host')
+            (payload / 'alondra-codex-host').chmod(0o755)
+            sign(payload / 'alondra-codex-host', 'com.bitomule.alondra-codex-host', HOST_ENTITLEMENTS)
             run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad',
-                payload / 'alondrad-launcher', payload / 'alondra-host', built['alondra-host.json'], output)
+                payload / 'alondrad-launcher', payload / 'alondra-host', built['alondra-host.json'],
+                payload / 'alondra-codex-host', built['alondra-codex-host.json'], output)
         smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
     rehearse_upgrade(ver, output)
     (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')

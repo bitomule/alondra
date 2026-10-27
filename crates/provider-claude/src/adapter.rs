@@ -53,6 +53,8 @@ pub struct WorkerProfile {
     pub effort: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff_context: Option<String>,
 }
 
 /// Opaque technical worker. The application owns SQL, policy and publication.
@@ -394,6 +396,7 @@ impl ClaudeWorker {
     }
     /// The exact command of a claimed control, under the current owner. One at a time, like
     /// dispatches: it is sent only once its committed evidence matches it.
+    pub fn state_directory(&self)->&std::path::Path{&self.adapter.configuration.state_directory}
     pub fn prepare_control(&mut self, attempt: &ControlAttempt) -> Result<PreparedCommand, AdapterError> {
         if self.prepared_control.is_some() {
             return Err(AdapterError::InvalidObservation);
@@ -864,7 +867,7 @@ impl Adapter for ClaudeAdapter {
                 Action::Start {
                     cwd: directory.clone(),
                     input_id: native.message_id,
-                    prompt: invocation.text.into(),
+                    prompt: self.configuration.worker.as_ref().and_then(|profile|profile.handoff_context.as_ref()).map_or_else(||invocation.text.to_owned(),|context|format!("{context}\n\nCurrent input:\n{}",invocation.text)),
                 }
             }
             Operation::Input => Action::Offer {

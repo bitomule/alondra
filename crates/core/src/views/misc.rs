@@ -15,6 +15,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         vec![],
     );
     let mut projects = vec![ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
         id: "".into(),
         label: t!(
             context.lang,
@@ -27,6 +28,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
     for entry in &context.live.projects {
         if !projects.iter().any(|item| item.id == entry.name) {
             projects.push(ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
                 id: entry.name.clone(),
                 label: entry.name.clone(),
                 description: None,
@@ -42,6 +44,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
     {
         if !projects.iter().any(|item| item.id == *name) {
             projects.push(ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
                 id: name.clone(),
                 label: name.clone(),
                 description: None,
@@ -50,6 +53,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
     }
     if !project.is_empty() && !projects.iter().any(|item| item.id == project) {
         projects.push(ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
             id: project.clone(),
             label: project.clone(),
             description: None,
@@ -109,6 +113,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         .get(&project)
         .unwrap_or(&context.live.options);
     fields.extend(specs.iter().map(|spec| option_field(spec, context.lang, context.client)));
+    enrich_model_fields(&mut fields, context);
     fields.push(Field {
         id: "issue".into(),
         label: t!(context.lang, "Issue", "Incidencia").into(),
@@ -125,6 +130,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         "form",
         None,
         vec![Item::Form(Form {
+            substitution_was_edited: None,
             id: "new_request".into(),
             fields,
             submit,
@@ -210,6 +216,23 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
         }.into()
     };
     let builtin_description = |value: &crate::options::SpecValue| -> Option<String> {
+        if spec.builtin && spec.id == "effort" {
+            return Some(match value.id.as_str() {
+                "auto" => t!(lang, "Use configured task profiles; an explicit model stays selected", "Usar los perfiles de tarea configurados; un modelo explícito se mantiene"),
+                "light" => t!(lang, "Small, focused work; an explicit model stays selected", "Trabajo pequeño y concreto; un modelo explícito se mantiene"),
+                "normal" => t!(lang, "Standard work using the configured task profiles", "Trabajo normal con los perfiles de tarea configurados"),
+                "hard" => t!(lang, "Demanding work; an explicit model and native effort stay binding", "Trabajo exigente; el modelo explícito y su esfuerzo nativo siguen siendo obligatorios"),
+                _ => return value.description.clone(),
+            }.into());
+        }
+        if spec.builtin && spec.id == "account" {
+            return Some(match value.description.as_deref() {
+                Some("Alondra follows the configured account order") => t!(lang, "Alondra follows the configured account order", "Alondra sigue el orden configurado de las cuentas"),
+                Some("Paid per use: used only when explicitly selected") => t!(lang, "Paid per use: used only when explicitly selected", "Pago por uso: solo se utiliza si se selecciona expresamente"),
+                Some("Keep this request's work on this account") => t!(lang, "Keep this request's work on this account", "Mantener el trabajo de esta solicitud en esta cuenta"),
+                _ => return value.description.clone(),
+            }.into());
+        }
         if !spec.builtin || lang == super::Lang::En {
             return value.description.clone();
         }
@@ -233,6 +256,7 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
                 .values
                 .iter()
                 .map(|value| ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
                     id: value.id.clone(),
                     label: builtin_label(&spec.id, Some(&value.id), &value.label),
                     description: builtin_description(value),
@@ -439,4 +463,64 @@ fn settings_section(context: &RenderContext<'_>) -> Option<super::Section> {
         items.push(Item::Row(row));
     }
     (!items.is_empty()).then(|| common::section("settings", None, items))
+}
+
+
+pub(super) fn enrich_model_fields(fields: &mut Vec<Field>, context: &RenderContext<'_>) {
+    let lang = context.lang;
+    let item = |id: String, label: String, group: Option<String>, disabled_reason: Option<String>, available_when: Option<super::Condition>| ChoiceItem {
+        id, label, description: None, group, disabled_reason, available_when,
+    };
+    let automatic = || item("auto".into(), t!(lang, "Automatic", "Automático").into(), None, None, None);
+    let mut models = vec![automatic()];
+    let mut efforts: std::collections::BTreeMap<String, Vec<serde_json::Value>> = std::collections::BTreeMap::new();
+    for catalog in context.index.model_catalogs() {
+        for model in catalog.models.iter().filter(|model| !model.hidden) {
+            let id = format!("{}/{}", catalog.account.provider.as_str(), model.model);
+            if !models.iter().any(|item| item.id == id) {
+                models.push(item(id.clone(), model.display_name.clone(), Some(super::accounts::provider_name(catalog.account.provider).into()), None, None));
+            }
+            for effort in &model.reasoning_efforts {
+                let supported = efforts.entry(effort.clone()).or_default();
+                if !supported.iter().any(|value| value == &json!(id)) { supported.push(json!(id)); }
+            }
+        }
+    }
+    let model_ids: Vec<_> = models.iter().filter(|model| model.id != "auto").map(|model| json!(model.id)).collect();
+    let mut reasoning = vec![item("auto".into(), t!(lang, "Native default", "Predeterminado nativo").into(), None, None, None)];
+    reasoning.extend(efforts.into_iter().map(|(effort, models)| item(effort.clone(), common::effort_label(&effort, lang).unwrap_or(&effort).into(), None, None,
+        Some(super::Condition { field: "model".into(), equals: None, any_of: models }))));
+    let mut accounts = vec![automatic()];
+    for account in context.index.accounts() {
+        let key = crate::accounts::AccountKey { provider: account.provider, account: account.id.clone() };
+        let mut compatible = vec![json!("auto")];
+        if let Some(catalog) = context.index.model_catalogs().iter().find(|catalog| catalog.account == key) {
+            compatible.extend(catalog.models.iter().filter(|model| !model.hidden)
+                .map(|model| json!(format!("{}/{}", account.provider.as_str(), model.model))));
+        }
+        let reason = match account.state {
+            crate::accounts::AccountState::SignedOut => Some(t!(lang, "Sign in on the Mac first", "Inicia sesión en el Mac primero").into()),
+            crate::accounts::AccountState::Disabled => Some(t!(lang, "This account is turned off", "Esta cuenta está desactivada").into()),
+            crate::accounts::AccountState::Unavailable => Some(t!(lang, "This account could not be checked", "No se pudo comprobar esta cuenta").into()),
+            _ => None,
+        };
+        let paid = matches!(account.billing, crate::accounts::AccountBilling::PayPerUse);
+        let mut choice = item(format!("{}/{}", account.provider.as_str(), account.id), if paid { format!("{} · {}", super::accounts::name(account, lang), t!(lang, "Pay-per-use", "Pago por uso")) } else { super::accounts::name(account, lang) },
+            Some(super::accounts::provider_name(account.provider).into()), reason,
+            Some(super::Condition { field: "model".into(), equals: None, any_of: compatible }));
+        if paid { choice.description = Some(t!(lang, "Selecting this account authorizes paid usage for this work", "Seleccionar esta cuenta autoriza el uso de pago para este trabajo").into()); }
+        accounts.push(choice);
+    }
+    let choice = |id: &str, label: &str, items: Vec<ChoiceItem>, visible_when: Option<super::Condition>| Field {
+        id: id.into(), label: label.into(), kind: FieldKind::Choice { items }, value: json!("auto"), required: false,
+        help: None, visible_when, reload_on_change: false,
+    };
+    fields.retain(|field| !matches!(field.id.as_str(), "model" | "reasoning_effort" | "allow_model_substitution" | "account"));
+    fields.push(choice("model", t!(lang, "Model", "Modelo"), models, None));
+    fields.push(choice("account", t!(lang, "Account", "Cuenta"), accounts, None));
+    fields.push(choice("reasoning_effort", t!(lang, "Reasoning effort", "Esfuerzo de razonamiento"), reasoning,
+        Some(super::Condition { field: "model".into(), equals: None, any_of: model_ids })));
+    fields.push(Field { id: "allow_model_substitution".into(), label: t!(lang, "Allow model substitution", "Permitir sustituir el modelo").into(), kind: FieldKind::Toggle,
+        value: json!(true), required: false, help: Some(t!(lang, "If the requested model cannot run, continue with another eligible model", "Si el modelo solicitado no puede trabajar, continuar con otro modelo apto").into()),
+        visible_when: None, reload_on_change: false });
 }

@@ -21,6 +21,9 @@ pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &Request
     if plan.mission.as_deref().is_some_and(|mission| mission.chars().count() > MISSION_LIMIT) {
         return Err(invalid(format!("launch.mission is longer than {MISSION_LIMIT} characters")));
     }
+    if let Some(Err(why)) = plan.tags.as_ref().map(alondra_core::task_tags::TaskTags::validate) {
+        return Err(invalid(format!("launch.{why}")));
+    }
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| invalid(format!("options.toml: {error}")))?;
     let requested = match crate::domain_orchestrator_tools::request_choices(domain, request_id).ok().flatten() {
         Some(choices) => choices.options,
@@ -28,6 +31,31 @@ pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &Request
     };
     let auto = requested.effort == alondra_core::options::AUTO;
     let given = |text: &Option<String>| text.as_deref().is_some_and(|text| !text.trim().is_empty());
+    if requested.selection.is_some() || plan.model.as_deref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/")) {
+        use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
+        let mut native = requested.clone();
+        let mut intent = native.selection.take().unwrap_or_else(|| TaskSelection::automatic(ModelProfile::Implementation));
+        if let Some(model) = &plan.model {
+            let model = if model.starts_with("codex/") || model.starts_with("claude/") { ModelKey::parse_wire(model).map_err(&invalid)? }
+                else {
+                    let provider = intent.requested.as_ref().map(|model| model.provider).or_else(|| intent.account.as_ref().map(|account| account.provider))
+                        .or_else(|| (file.accounts.connected_providers().len() == 1).then(|| file.accounts.connected_providers()[0]))
+                        .ok_or_else(|| invalid("Qualify the model with its provider".into()))?;
+                    ModelKey { provider, model: if provider == alondra_core::accounts::Provider::Claude { file.model_flag(model).unwrap_or_else(|| model.clone()) } else { model.clone() } }
+                };
+            if intent.requested.as_ref().is_some_and(|requested| requested != &model) { return Err(invalid("The user-selected model is binding".into())); }
+            intent.requested = Some(model);
+        }
+        if let Some(effort) = &plan.effort {
+            if intent.requested_reasoning_effort.as_ref().is_some_and(|requested| requested != effort) { return Err(invalid("The user-selected reasoning effort is binding".into())); }
+            intent.requested_reasoning_effort = Some(effort.clone());
+        }
+        native.selection = Some(intent);
+        crate::domain_orchestrator_tools::validate_request_selection(domain, &native)?;
+        let tools = domain.schedule_request_tools(request_id).map_err(|why| invalid(why.to_string()))?.unwrap_or_default();
+        crate::domain_orchestrator_tools::validate_native_requirements(native.selection.as_ref(), &tools)?;
+        return Ok(());
+    }
     if auto && !(given(&plan.model) && given(&plan.reason)) {
         return Err(invalid("effort is auto for this request: the launch plan needs model and reason".into()));
     }

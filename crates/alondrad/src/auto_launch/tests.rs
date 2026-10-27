@@ -38,13 +38,17 @@ fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
 }
 
 fn world() -> Fixture {
+    world_using_sdk(SdkLaunches::enable_holding)
+}
+
+fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) -> Fixture {
     let root = crate::test_support::Directory::new();
     let home = root.join("home");
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-    let sdk = SdkLaunches::enable_holding(&domain, &home);
+    let sdk = enable(&domain, &home);
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Rebuild the editor".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Editor".into() });
     Fixture { sdk, root, home, project, domain }
@@ -53,7 +57,7 @@ fn world() -> Fixture {
 fn plan(f: &Fixture, name: &str) -> LaunchPlan {
     LaunchPlan {
         name: name.into(), cwd: f.project.to_str().unwrap().into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("A clear, mechanical change".into()), role: None, project: None,
+        approach: None, reason: Some("A clear, mechanical change".into()), role: None, tags: None, project: None,
     }
 }
 
@@ -435,6 +439,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
     let f = world();
     let options = BTreeMap::from([("effort".to_owned(), alondra_core::options::Choice::Value("hard".into()))]);
     command(&f.domain, Actor::System, Command::CreateSchedule { schedule: alondra_core::domain::Schedule {
+        paid_account_grant: None,
         id: "weekly".into(), title: "BlurCamera · weekly improvement".into(), text: "Improve BlurCamera".into(), project: Some("App".into()),
         options: options.clone(), disallowed_tools: vec![], frequency: alondra_core::domain::ScheduleFrequency::Daily, hour: 9, minute: 0,
         weekday: None, interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
@@ -448,7 +453,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
         revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: Default::default(), stack: None,
         documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
     };
     command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
         launch: alondra_core::domain::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
@@ -712,14 +717,29 @@ async fn a_delivery_dependency_cancelled_goes_to_the_user_once_the_orchestrator_
 /// relaunch starts a new node in the closed one's folder.
 #[tokio::test]
 async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_node() {
-    let f = world();
+    let f = world_using_sdk(SdkLaunches::enable);
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
-    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "bg-f1".into(), name: "app/f1".into(), at: 0 });
-    command(&f.domain, user(), Command::AssignTask { task_id: "f1".into(), agent_id: "bg-f1".into(), model: None });
-    f.domain.store.lock().unwrap().set_auto_launch(&"f1".into(), AutoLaunchState::Launched, None, None, alondra_core::now_millis()).unwrap();
-    let node = agent_of(&f, "f1").expect("its claude --bg node");
+    pass(&f.domain, &f.home).await.unwrap();
+    f.sdk.until_answered("f1").await;
+    let node = agent_of(&f, "f1").expect("its original SDK node");
+    let original = f.sdk.starts()[0]["session"].as_str().unwrap().to_owned();
+    let original_account = f.domain.state().unwrap().tasks[&TaskId::from("f1")].account_key();
+    f.domain.stop_sdk_host(&node).unwrap();
+    let (backend, runtime) = f.domain.sdk().unwrap();
+    crate::sdk_owner::end_unowned_host(runtime, backend, "f1".into()).unwrap();
     crate::node_revival::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into())).unwrap();
     assert!(agent_of(&f, "f1").is_none());
+    let state = f.domain.state().unwrap();
+    let ended_cards: Vec<_> = state.interactions.values().filter(|card| {
+        card.scope == (alondra_core::domain::Scope::Task { task_id: "f1".into() })
+            && state.open(card)
+            && matches!(&card.payload, alondra_core::domain::InteractionPayload::Question { options, .. }
+                if options.iter().any(|option| option.id == alondra_core::domain::CARRY_ON))
+    }).map(|card| card.id.clone()).collect();
+    for card in ended_cards {
+        answer(&f, &card, alondra_core::domain::CARRY_ON);
+    }
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);
     pass(&f.domain, &f.home).await.unwrap();
     let card = problem(&f, "f1").expect("the user decides");
     assert_eq!(card.card.need, "Relaunch “Task f1” or cancel it");
@@ -728,8 +748,26 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
 
     answer(&f, &card.id, alondra_core::domain::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 1, "a new node");
+    assert_eq!(launches(&f), 2, "one original node and its replacement");
     assert!(agent_of(&f, "f1").is_some_and(|agent| agent != node));
+    let recovered = agent_of(&f, "f1").unwrap();
+    let mut changed = f.domain.subscribe();
+    loop {
+        let ready = {
+            let state = f.domain.state().unwrap();
+            let lifecycle = state.lifecycle_of(&TaskId::from("f1")).unwrap();
+            let execution = lifecycle.execution().expect("the recovered node has its own admission");
+            assert_eq!(execution.node(), &recovered);
+            assert_eq!(execution.generation(), 2);
+            lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available)
+        };
+        if ready { break; }
+        changed.changed().await.unwrap();
+    }
+    let starts = f.sdk.starts();
+    let resumed = starts.iter().find(|start| start["resume"].as_str() == Some(original.as_str())).expect("relaunch resumes the original native session");
+    assert!(resumed["history"].as_u64().unwrap() > 0, "relaunch retains the original native cache and history: {starts:?}");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].account_key(), original_account);
     pass(&f.domain, &f.home).await.unwrap();
     assert!(problem(&f, "f1").is_none(), "nothing more to ask");
 }
@@ -745,11 +783,14 @@ fn queued(f: &Fixture) -> Vec<(String, i64)> {
 /// cannot make leaves it there, and its retry starts it.
 #[tokio::test]
 async fn a_reopened_task_waits_in_the_queue_with_its_seniority_and_a_refused_start_keeps_it_there() {
-    let f = world();
+    let f = world_using_sdk(SdkLaunches::enable);
     f.domain.live.gate.ignore_mac();
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
     pass(&f.domain, &f.home).await.unwrap();
+    f.sdk.until_answered("f1").await;
     let first = agent_of(&f, "f1").expect("its first node");
+    let original = f.sdk.starts()[0]["session"].as_str().unwrap().to_owned();
+    let original_account = f.domain.state().unwrap().tasks[&TaskId::from("f1")].account_key();
     let planned_at = f.domain.store.lock().unwrap().planned_tasks().unwrap()[&TaskId::from("f1")];
 
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f1".into() });
@@ -783,6 +824,11 @@ async fn a_reopened_task_waits_in_the_queue_with_its_seniority_and_a_refused_sta
     f.sdk.refuse_starts(false);
     crate::admission::pass_at(&f.domain, &f.home, retry.1).await.unwrap();
     assert!(agent_of(&f, "f1").is_some(), "its retry starts it");
+    f.sdk.until_turns_ended("f1", 2).await;
+    let starts = f.sdk.starts();
+    let resumed = starts.iter().find(|start| start["resume"].as_str() == Some(original.as_str())).expect("the reopened task resumes its original native session");
+    assert!(resumed["history"].as_u64().unwrap() > 0, "the reopened task retains its native history: {starts:?}");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].account_key(), original_account);
     assert!(!queued(&f).iter().any(|(task, _)| task == "f1"));
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
 }

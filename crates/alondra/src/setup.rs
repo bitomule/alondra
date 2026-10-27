@@ -68,6 +68,7 @@ impl Paths {
 
 #[derive(Default, Clone)]
 pub struct Observed {
+    pub connected: Vec<alondra_core::accounts::Provider>,
     pub config: Option<String>,
     pub apns: Option<String>,
     pub plist: Option<String>,
@@ -145,6 +146,9 @@ fn render_plist_with_context(label: &str, paths: &Paths, context: &crate::claude
     if let Some(profile) = &context.config_dir {
         config.push_str(&format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string><key>ALONDRA_CLAUDE_PROFILE_MODE</key><string>explicit</string>", xml_escape(profile)));
     }
+    let installed = read_plist(&paths.plist(label)).ok();
+    let codex_home = installed.as_ref().and_then(|job| job.get("EnvironmentVariables")).and_then(|vars| vars.get("CODEX_HOME")).and_then(Value::as_str).map(str::to_owned).or_else(|| std::env::var("CODEX_HOME").ok().filter(|value| !value.is_empty()));
+    if let Some(home) = codex_home { config.push_str(&format!("<key>CODEX_HOME</key><string>{}</string>", xml_escape(&home))); }
     let launcher = paths.launcher().map(|launcher| format!("<string>{}</string>\n        ", xml_escape(&launcher.display().to_string()))).unwrap_or_default();
     Ok(TEMPLATE
         .replace("@LAUNCHER@", &launcher)
@@ -278,7 +282,7 @@ fn plan_with_context(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, path
         }
     }
 
-    if !args.skip_plugin {
+    if !args.skip_plugin && seen.connected.contains(&alondra_core::accounts::Provider::Claude) {
         let claude = |args: &[&str]| Step::Run { program: "claude".into(), args: args.iter().map(|s| s.to_string()).collect() };
         if !seen.claude {
             steps.push(Step::Warn(
@@ -591,8 +595,11 @@ fn other_services(paths: &Paths, label: &str) -> Vec<PathBuf> {
 
 fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context: &crate::claude_auth::ContextEnv) -> Observed {
     let read = |p: PathBuf| std::fs::read_to_string(p).ok();
-    let plugins = if args.skip_plugin { None } else { plugin_list(&context) };
+    let connected = read(paths.alondra_home.join(alondra_core::options::FILE_NAME)).and_then(|text| alondra_core::options::OptionsFile::parse(&text).ok()).map(|options| options.accounts.connected_providers().to_vec()).unwrap_or_default();
+    let claude_enabled = connected.contains(&alondra_core::accounts::Provider::Claude) && !args.skip_plugin;
+    let plugins = if claude_enabled { plugin_list(&context) } else { None };
     Observed {
+        connected,
         config: read(paths.config()),
         apns: read(paths.apns()),
         plist: read(paths.plist(label)),
@@ -600,9 +607,9 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context
         other_services: other_services(paths, label),
         binaries: paths.bin.join("alondrad").is_file() && paths.bin.join("alondra").is_file(),
         apns_key_exists: apns.is_some_and(|a| a.key_path.is_file()),
-        claude: args.skip_plugin || claude_output(&context, &["--version"]).is_some(),
-        marketplace: !args.skip_plugin && has_marketplace(&context),
-        marketplace_path: if args.skip_plugin { None } else { marketplace_path(&context) },
+        claude: claude_enabled && claude_output(&context, &["--version"]).is_some(),
+        marketplace: claude_enabled && has_marketplace(&context),
+        marketplace_path: if claude_enabled { marketplace_path(&context) } else { None },
         enabled_globally: plugins.as_ref().map(enabled_globally).unwrap_or_default(),
         tuicr: command_ok("tuicr", &["--version"]).is_some(),
         brew: command_ok("brew", &["--version"]).is_some(),
@@ -969,7 +976,7 @@ esac
     }
 
     fn fresh() -> Observed {
-        Observed { binaries: true, claude: true, tuicr: true, ..Default::default() }
+        Observed { connected: vec![alondra_core::accounts::Provider::Claude], binaries: true, claude: true, tuicr: true, ..Default::default() }
     }
 
     fn named(n: &str) -> FileConfig {
@@ -1497,4 +1504,15 @@ fn continue_after_recovery(outcome: crate::service_setup::RecoveryOutcome, resum
             || { entered = true; Ok(()) }).unwrap();
         assert!(entered, "control: completed recovery must continue ordinary setup");
     }
+    #[test]
+    fn codex_only_and_unconnected_installations_do_not_plan_claude_commands() {
+        for connected in [vec![], vec![alondra_core::accounts::Provider::Codex]] {
+            let observed = Observed { connected, claude: false, binaries: true, tuicr: true, ..Default::default() };
+            let paths = Paths { home: "/fixture/user".into(), alondra_home: "/fixture/user/.alondra".into(), bin: "/fixture/bin".into(), repo: Some("/fixture/assets".into()), uid: 501 };
+            let planned = plan(&FileConfig::default(), None, &Args::default(), &paths, &observed);
+            assert!(planned.steps.iter().all(|step| !matches!(step, Step::Run { program, .. } if program == "claude")));
+            assert!(!planned.steps.iter().any(|step| matches!(step, Step::Warn(text) if text.contains("Claude Code"))));
+        }
+    }
+
 }

@@ -2,7 +2,7 @@
 //! The batch's claim owns the host; its one prompt is the batch, and the host takes no other, so
 //! a message that arrives during the turn waits for the next batch. What Claude reported goes
 //! through the same parser as `claude -p`, and `domain_orchestrator::tick` decides from its end.
-use crate::domain_store::BatchOwner;
+use crate::domain_store::{BatchOwner,batch_effects::BatchReport};
 use crate::orchestrator_process::{self as process, Output, ProcessOwner, Stream, bounded};
 use crate::sdk_owner::SdkBackend;
 use alondra_agent_runtime::owned_host::VerifiedArtifact;
@@ -16,21 +16,7 @@ use std::time::Duration;
 /// How often a read wakes to look whether the user cancelled the run. It decides nothing.
 const WAKE: Duration = Duration::from_millis(250);
 
-/// One batch's run: what Claude gets and who owns its host.
-pub(crate) struct Batch {
-    pub(crate) owner: BatchOwner,
-    pub(crate) backend: SdkBackend,
-    pub(crate) home: PathBuf,
-    pub(crate) directory: PathBuf,
-    pub(crate) node_plugin: PathBuf,
-    pub(crate) orchestrator_plugin: PathBuf,
-    pub(crate) projects_root: Option<PathBuf>,
-    pub(crate) capability: String,
-    pub(crate) session: String,
-    pub(crate) prompt: String,
-    /// The provider account the batch's Claude runs on.
-    pub(crate) account: alondra_core::accounts::AccountId,
-}
+pub(crate) use crate::orchestrator_provider::Batch;
 
 /// Runs the batch's one turn: `spawned` once the host took the prompt, until Claude's process
 /// ends or `cancel` resolves.
@@ -69,6 +55,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         stop(host, &batch.directory);
         return output;
     }
+    let mut consumed=false;
     loop {
         if cancelled.load(Ordering::SeqCst) {
             break;
@@ -81,42 +68,48 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
                 break;
             }
         }
-        match host.next() {
-            Ok(HostEvent::Sdk(message)) => {
-                let accepted = serde_json::to_vec(&message).map_err(anyhow::Error::from)
-                    .and_then(|line| output.stream.accept(&line, &batch.session));
-                if let Err(error) = accepted {
-                    output.stream.error.get_or_insert_with(|| bounded(error.to_string()));
-                    break;
-                }
+        let pending=match host.next_pending(){Ok(value)=>value,Err(error)=>{output.stream.error.get_or_insert_with(||format!("The SDK host stopped: {error:?}"));break}};
+        let mut exited=false;
+        let report=match pending.event {
+            HostEvent::Sdk(message)=>{
+                let accepted=serde_json::to_vec(&message).map_err(anyhow::Error::from).and_then(|line|output.stream.accept(&line,&batch.session));
+                let valid=accepted.is_ok() && message["session_id"]==batch.session;
+                if let Err(error)=accepted {output.stream.error.get_or_insert_with(||bounded(error.to_string()));exited=true;}
+                if valid && message["parent_tool_use_id"].is_null() && ((message["type"]=="user" && message["uuid"].as_str().is_some_and(|id|id.eq_ignore_ascii_case(host.input()))) || (message["type"]=="result" && message["num_turns"].as_u64().is_some_and(|turns|turns>0) && message["user_message_uuid"].as_str().is_some_and(|id|id.eq_ignore_ascii_case(host.input())))) {consumed=true;}
+                if output.stream.result && output.stream.success && !consumed {output.stream.error=Some("A successful Claude terminal result without positive input consumption cannot settle its batch".into());}
+                BatchReport{kind:message["type"].as_str().filter(|kind|!kind.is_empty() && kind.len()<=128).unwrap_or("sdk_unknown").into(),input_consumed:consumed,turn_completed:output.stream.result,native_turn:None,failure:output.stream.error.clone(),public_result:output.stream.note.as_ref().map(|text|bounded(text.clone()))}
             }
-            Ok(HostEvent::Diagnostic(text)) => {
-                output.diagnostic = bounded(format!("{}{text}\n", output.diagnostic));
+            HostEvent::Diagnostic(text)=>{
+                if text=="Unexpected native decision in the Alondra orchestrator" {output.stream.error=Some(text.clone());exited=true;}
+                output.diagnostic=bounded(format!("{}{text}\n",output.diagnostic));
+                BatchReport{kind:"diagnostic".into(),failure:output.stream.error.clone(),..Default::default()}
             }
-            Ok(HostEvent::Exited { code, .. }) => {
-                output.exit_ok = code == Some(0);
-                break;
+            HostEvent::Exited{code,..}=>{
+                output.exit_ok=code==Some(0);exited=true;
+                BatchReport{kind:"process_exited".into(),input_consumed:consumed,turn_completed:output.stream.result,native_turn:None,failure:output.stream.error.clone(),public_result:output.stream.note.as_ref().map(|text|bounded(text.clone()))}
             }
-            Err(error) => {
-                output.stream.error.get_or_insert_with(|| format!("the SDK host stopped: {error:?}"));
-                break;
-            }
+        };
+        if let Err(error)=batch.domain.publish_batch_report(&run,pending.cursor,&pending.evidence,&report){
+            output.stream.error=Some(bounded(format!("The batch report was not committed; its host evidence remains unacknowledged: {error:#}")));break;
         }
+        if let Err(error)=host.acknowledge(pending.cursor){output.stream.error=Some(format!("The batch ACK is uncertain: {error:?}"));break;}
+        if exited {break}
+
     }
     stop(host, &batch.directory);
     output
 }
 
 fn stop(host: BatchHost<BatchOwner>, directory: &Path) {
-    if let Err(error) = host.stop() {
-        log!("orchestrator: the SDK host did not stop cleanly: {error:?}");
+    match host.stop(){
+        Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json"));},
+        Err(error)=>log!("orchestrator: the SDK host did not stop cleanly; its process record is retained: {error:?}"),
     }
-    let _ = std::fs::remove_file(directory.join("owner.json"));
 }
 
 fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
-    let backend = &batch.backend.for_start()
-        .and_then(|backend| backend.for_account(&batch.home, &batch.account, &crate::accounts::registered(&batch.home)))
+    let backend = &batch.backend.for_provider(alondra_core::accounts::Provider::Claude,&batch.home).and_then(|backend|backend.for_start())
+        .and_then(|backend| backend.for_account(&batch.home, &batch.selection.account.account, &crate::accounts::registered(&batch.home)))
         .map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
     let state_directory = backend.state_root.join(format!("o-{}", crate::auth::random_hex(8)));
@@ -131,12 +124,14 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
     native_environment.extend(BTreeMap::from([
         ("ALONDRA_HOME".to_owned(), batch.home.display().to_string()),
         ("ALONDRA_ORCHESTRATOR".to_owned(), "1".to_owned()),
+        ("ALONDRA_PROVIDER".to_owned(), "claude".to_owned()),
         ("ALONDRA_ORCHESTRATOR_EXECUTION".to_owned(), batch.owner.run().to_owned()),
         ("ALONDRA_SESSION_ID".to_owned(), alondra_core::orchestrator::NODE_ID.to_owned()),
         ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), batch.capability.clone()),
         ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
     ]));
     for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
+        if native_environment.contains_key(name){continue}
         if let Ok(value) = std::env::var(name) {
             native_environment.insert(name.to_owned(), value);
         }
@@ -150,7 +145,7 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
         native_directory: batch.directory.clone(),
         native_environment,
         profile_id: "alondra".into(),
-        account_id: batch.account.to_string(),
+        account_id: batch.selection.account.account.to_string(),
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
@@ -172,7 +167,8 @@ fn profile(batch: &Batch) -> OrchestratorProfile {
         }
     }
     OrchestratorProfile {
-        model: "opus".into(),
+        model: batch.selection.model.model.model.clone(),
+        reasoning_effort: batch.selection.model.reasoning_effort.clone(),
         tools: process::RESTRICTED_TOOLS.split(',').map(str::to_owned).collect(),
         disallowed_tools: vec!["AskUserQuestion".into(), "ExitPlanMode".into()],
         mcp_servers: BTreeMap::from([(

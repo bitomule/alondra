@@ -24,8 +24,26 @@ pub fn dir(claude_home: &Path, name: &str) -> Option<PathBuf> {
 pub fn node_source(claude_home: &Path) -> Option<PathBuf> {
     match std::env::var_os("ALONDRA_PLUGIN_SOURCE") {
         Some(dir) => Some(PathBuf::from(dir)).filter(|dir| dir.join(".claude-plugin/plugin.json").is_file()),
-        None => dir(claude_home, NODE),
+        None => bundled_source(NODE).or_else(|| dir(claude_home, NODE)),
     }
+}
+
+pub fn orchestrator_source(claude_home: &Path) -> Option<PathBuf> {
+    let explicit = std::env::var_os("ALONDRA_ORCHESTRATOR_SOURCE").map(PathBuf::from);
+    let beside_node = std::env::var_os("ALONDRA_PLUGIN_SOURCE").and_then(|source| PathBuf::from(source).parent().map(|parent| parent.join(ORCHESTRATOR)));
+    explicit.or(beside_node).filter(|source| source.join(".claude-plugin/plugin.json").is_file())
+        .or_else(|| bundled_source(ORCHESTRATOR)).or_else(|| dir(claude_home, ORCHESTRATOR))
+}
+
+fn bundled_source(name: &str) -> Option<PathBuf> {
+    bundled_source_for(&std::env::current_exe().ok()?, name)
+}
+
+fn bundled_source_for(executable: &Path, name: &str) -> Option<PathBuf> {
+    if !matches!(name, NODE | ORCHESTRATOR) { return None; }
+    let prefix = executable.parent()?.parent()?;
+    let source = prefix.join("libexec/alondra").join(name);
+    source.join(".claude-plugin/plugin.json").is_file().then_some(source)
 }
 
 static NODE_PLUGIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -40,6 +58,10 @@ pub fn node_in(home: &Path) -> Option<PathBuf> {
     node().or_else(|| Some(home.join(NODE)).filter(|plugin| plugin.is_dir()))
 }
 
+pub fn orchestrator_in(home: &Path) -> Option<PathBuf> {
+    Some(home.join(ORCHESTRATOR)).filter(|plugin| plugin.join(".claude-plugin/plugin.json").is_file())
+}
+
 /// Claude Code loads a mod from the folder a session was started with and drops it for good when
 /// that folder is replaced, as `brew upgrade` replaces its keg. So sessions load a copy this
 /// daemon owns, `<home>/plugin`, which every start brings up to date file by file: a running
@@ -49,6 +71,12 @@ pub fn install_node(home: &Path, source: &Path, alondra: &Path) -> anyhow::Resul
     let target = home.join(NODE);
     sync(source, &target, &wrapper(home, alondra))?;
     let _ = NODE_PLUGIN.set(target.clone());
+    Ok(target)
+}
+
+pub fn install_orchestrator(home: &Path, source: &Path, alondra: &Path) -> anyhow::Result<PathBuf> {
+    let target = home.join(ORCHESTRATOR);
+    sync(source, &target, &wrapper(home, alondra))?;
     Ok(target)
 }
 
@@ -143,6 +171,25 @@ pub fn launch_settings_with(permissions: Option<serde_json::Value>) -> serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_role_assets_are_available_without_a_claude_marketplace() {
+        let scratch = crate::test_support::Directory::new();
+        let source = scratch.join("prefix/libexec/alondra/plugin-orchestrator");
+        std::fs::create_dir_all(source.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(source.join("skills/alondra-orchestrator")).unwrap();
+        std::fs::write(source.join(".claude-plugin/plugin.json"), "{}").unwrap();
+        std::fs::write(source.join("skills/alondra-orchestrator/SKILL.md"), "Role instructions").unwrap();
+        let executable = scratch.join("prefix/bin/alondrad");
+        assert_eq!(bundled_source_for(&executable, ORCHESTRATOR), Some(source.clone()));
+        assert_eq!(bundled_source_for(&executable, "../secrets"), None);
+        let home = scratch.join("home");
+        assert_eq!(orchestrator_in(&home), None);
+        let owned = install_orchestrator(&home, &source, &scratch.join("prefix/bin/alondra")).unwrap();
+        assert_eq!(orchestrator_in(&home), Some(owned.clone()));
+        assert_eq!(std::fs::read_to_string(owned.join("skills/alondra-orchestrator/SKILL.md")).unwrap(), "Role instructions");
+        assert!(!home.join(".claude").exists());
+    }
 
     #[test]
     fn the_plugins_are_found_through_the_registered_marketplace() {

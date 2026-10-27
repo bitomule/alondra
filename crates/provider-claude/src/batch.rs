@@ -19,6 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[derive(Clone, Debug, Serialize)]
 pub struct OrchestratorProfile {
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub mcp_servers: BTreeMap<String, McpServer>,
@@ -43,6 +45,13 @@ pub enum HostEvent {
     Exited { code: Option<i32>, signal: Option<String> },
 }
 
+pub struct PendingHostEvent {
+    pub cursor: u64,
+    pub event: HostEvent,
+    /// Exact bounded JSON bytes validated against this batch's ownership fence.
+    pub evidence: Vec<u8>,
+}
+
 /// The host of one batch. Its input takes one prompt: the host refuses any later one, so a
 /// message that arrives during the turn waits for the next batch and its own host.
 pub struct BatchHost<O: HostOwner> {
@@ -53,6 +62,7 @@ pub struct BatchHost<O: HostOwner> {
     cwd: String,
     input: MessageUuid,
     commands: u32,
+    pending: Option<u64>,
 }
 
 impl<O: HostOwner> BatchHost<O> {
@@ -90,6 +100,7 @@ impl<O: HostOwner> BatchHost<O> {
             cwd: configuration.native_directory.to_string_lossy().into_owned(),
             input: random_uuid()?,
             commands: 0,
+            pending: None,
         };
         let start = Action::Start { cwd: batch.cwd.clone(), input_id: batch.input.clone(), prompt: prompt.into() };
         match batch.send(start)? {
@@ -126,9 +137,14 @@ impl<O: HostOwner> BatchHost<O> {
         self.connection.readable(timeout)
     }
 
-    /// The next thing the host saw, acknowledged once read: the batch keeps no host evidence of
-    /// its own, its claim is the record.
-    pub fn next(&mut self) -> Result<HostEvent, AdapterError> {
+    /// Compatibility reader for callers that do not retain a durable batch report.
+    pub fn next(&mut self)->Result<HostEvent,AdapterError>{
+        let pending=self.next_pending()?;self.acknowledge(pending.cursor)?;Ok(pending.event)
+    }
+
+    /// Leaves this exact validated frame unacknowledged until the caller commits its report.
+    pub fn next_pending(&mut self)->Result<PendingHostEvent,AdapterError>{
+        if self.pending.is_some(){return Err(AdapterError::InvalidObservation)}
         let deadline = deadline(self.io_timeout)?;
         let received = self.connection.next(self.host.owner(), deadline)?;
         let Body::Event(event) = &received.frame().body else {
@@ -141,12 +157,18 @@ impl<O: HostOwner> BatchHost<O> {
                     .unwrap_or_else(|| "diagnostic".into()),
             ),
             Observation::Sdk { payload, .. } => HostEvent::Sdk(payload.clone()),
-            Observation::DecisionRequested { .. } | Observation::DecisionSettled { .. } => return Err(AdapterError::Unsupported),
+            Observation::DecisionRequested { .. } | Observation::DecisionSettled { .. } => HostEvent::Diagnostic("Unexpected native decision in the Alondra orchestrator".into()),
             Observation::ProcessExited { exit_code, signal } => HostEvent::Exited { code: *exit_code, signal: signal.clone() },
         };
         let cursor = event.cursor;
-        self.connection.acknowledge(self.host.owner(), cursor, deadline)?;
-        Ok(seen)
+        self.pending = Some(cursor);
+        Ok(PendingHostEvent { cursor,event:seen,evidence:received.payload().to_vec() })
+    }
+
+    pub fn acknowledge(&mut self,cursor:u64)->Result<(),AdapterError>{
+        if self.pending!=Some(cursor){return Err(AdapterError::InvalidObservation)}
+        self.connection.acknowledge(self.host.owner(),cursor,deadline(self.io_timeout)?)?;
+        self.pending=None;Ok(())
     }
 
     /// Stops the host and waits until it has exited.

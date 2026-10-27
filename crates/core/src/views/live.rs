@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LiveSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<crate::Millis>,
     #[serde(default)]
     pub closed_nodes: Vec<String>,
     /// Tasks whose node the user closed, waiting for a relaunch.

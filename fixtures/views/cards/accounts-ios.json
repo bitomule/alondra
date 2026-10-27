@@ -4,9 +4,9 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "vd00e0869a53cc1f6",
+  "version": "v952efa7947ade9d5",
   "cursor": "cursor-1",
-  "title": "Claude accounts",
+  "title": "Accounts",
   "status": {
     "version": "ve626d8542726ea98",
     "summary": "2 questions · 3 to read · 0 nodes working",
@@ -61,15 +61,51 @@
   },
   "sections": [
     {
-      "id": "claude",
+      "id": "accounts",
       "collapsed": false,
       "items": [
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "default"
+            },
+            "position": 1,
+            "availability": {
+              "text": "Signed in",
+              "tone": "success"
+            },
+            "email": "someone@example.org",
+            "plan": "max",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Last reported usage",
+              "tone": "neutral"
+            },
+            "windows": [
+              {
+                "kind": "session",
+                "label": "5 h",
+                "used_percent": 12,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              },
+              {
+                "kind": "weekly",
+                "label": "week",
+                "used_percent": 34,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              }
+            ]
+          },
           "id": "claude-default",
           "icon": "machine",
           "title": "Default",
-          "subtitle": "someone@example.org · max · weight 5, by plan\n5 h 12 % · week 34 %",
+          "subtitle": "Claude · someone@example.org · max · weight 5, by plan\n5 h 12 % · week 34 %",
           "badges": [
             {
               "text": "Signed in",
@@ -177,15 +213,80 @@
               "attachments": false,
               "enabled": true,
               "resolves_card": false
+            },
+            {
+              "id": "account_rename:default@6",
+              "label": "Rename",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Default",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:default@6",
+              "label": "Refresh models",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "work"
+            },
+            "position": 2,
+            "availability": {
+              "text": "Signed in",
+              "tone": "success"
+            },
+            "email": "someone@work.example",
+            "plan": "max_20x",
+            "active_nodes": 1,
+            "freshness": {
+              "text": "Last reported usage",
+              "tone": "neutral"
+            },
+            "windows": [
+              {
+                "kind": "session",
+                "label": "5 h",
+                "used_percent": 61,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              },
+              {
+                "kind": "weekly",
+                "label": "week",
+                "used_percent": 48,
+                "measured_at": 1759225000000,
+                "stale": false,
+                "exhausted": false
+              }
+            ]
+          },
           "id": "claude-work",
           "icon": "machine",
           "title": "Work",
-          "subtitle": "someone@work.example · max_20x · weight 8, set by you\n5 h 61 % · week 48 % · 1 node",
+          "subtitle": "Claude · someone@work.example · max_20x · weight 8, set by you\n5 h 61 % · week 48 % · 1 node",
           "badges": [
             {
               "text": "Signed in",
@@ -316,6 +417,35 @@
               "resolves_card": false
             },
             {
+              "id": "account_rename:work@6",
+              "label": "Rename",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Work",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:work@6",
+              "label": "Refresh models",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
               "id": "account_remove:work@6",
               "label": "Remove",
               "style": "destructive",
@@ -333,10 +463,28 @@
         },
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "personal"
+            },
+            "position": 3,
+            "availability": {
+              "text": "Signed out",
+              "tone": "your_turn"
+            },
+            "reason": "Sign in on the Mac to use this account",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Usage not reported",
+              "tone": "neutral"
+            },
+            "windows": []
+          },
           "id": "claude-personal",
           "icon": "machine",
           "title": "Personal",
-          "subtitle": "weight 5, by plan",
+          "subtitle": "Claude · weight 5, by plan",
           "badges": [
             {
               "text": "Signed out",
@@ -351,7 +499,7 @@
               "label": "Sign in",
               "style": "primary",
               "role": "advance",
-              "description": "Opens Claude's sign-in on the Mac",
+              "description": "Opens Claude sign-in on the Mac",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -363,7 +511,7 @@
                 "local": {
                   "kind": "account_sign_in",
                   "account": "Personal",
-                  "command": "alondra accounts login 'Personal'"
+                  "command": "alondra accounts login 'personal'"
                 }
               },
               "resolves_card": false
@@ -481,6 +629,35 @@
               "resolves_card": false
             },
             {
+              "id": "account_rename:personal@6",
+              "label": "Rename",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Personal",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:personal@6",
+              "label": "Refresh models",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
               "id": "account_remove:personal@6",
               "label": "Remove",
               "style": "destructive",
@@ -492,7 +669,7 @@
               "attachments": false,
               "confirm": {
                 "title": "Remove Personal?",
-                "message": "Alondra signs Personal out of Claude on this Mac and forgets it. Your Claude account itself stays as it is.",
+                "message": "Alondra signs Personal out of Claude on this Mac and forgets it. Your provider account itself stays as it is.",
                 "button": "Remove"
               },
               "enabled": true,
@@ -503,10 +680,28 @@
         },
         {
           "type": "row",
+          "account": {
+            "key": {
+              "provider": "claude",
+              "account": "old"
+            },
+            "position": 4,
+            "availability": {
+              "text": "Off",
+              "tone": "neutral"
+            },
+            "reason": "New work is disabled; running work continues",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Usage not reported",
+              "tone": "neutral"
+            },
+            "windows": []
+          },
           "id": "claude-old",
           "icon": "machine",
           "title": "Old",
-          "subtitle": "weight 5, by plan",
+          "subtitle": "Claude · weight 5, by plan",
           "badges": [
             {
               "text": "Off",
@@ -615,6 +810,35 @@
               "resolves_card": false
             },
             {
+              "id": "account_rename:old@6",
+              "label": "Rename",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Old",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:old@6",
+              "label": "Refresh models",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
               "id": "account_remove:old@6",
               "label": "Remove",
               "style": "destructive",
@@ -626,7 +850,7 @@
               "attachments": false,
               "confirm": {
                 "title": "Remove Old?",
-                "message": "Alondra signs Old out of Claude on this Mac and forgets it. Your Claude account itself stays as it is.",
+                "message": "Alondra signs Old out of Claude on this Mac and forgets it. Your provider account itself stays as it is.",
                 "button": "Remove"
               },
               "enabled": true,
@@ -634,13 +858,36 @@
               "resolves_card": false
             }
           ]
-        },
+        }
+      ],
+      "style": "list",
+      "actions": [
+        {
+          "id": "account_check:accounts@6",
+          "label": "Check accounts",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": false
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "title": "Providers",
+      "collapsed": false,
+      "items": [
         {
           "type": "row",
           "id": "claude-add",
           "icon": "action",
-          "title": "Add an account",
-          "subtitle": "It asks only for a name; then you sign in to Claude on the Mac",
+          "title": "Add a Claude account",
+          "subtitle": "Choose a name, then finish native sign-in on the Mac",
           "depth": 0,
           "struck": false,
           "actions": [
@@ -660,6 +907,46 @@
                 "local": {
                   "kind": "account_add",
                   "command": "alondra accounts add"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-connect",
+          "icon": "machine",
+          "title": "Connect Codex",
+          "subtitle": "Use this provider's native sign-in on the Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Connect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_sign_in",
+                  "account": "default",
+                  "command": "alondra accounts login --provider codex 'default'",
+                  "provider": "codex",
+                  "argv": [
+                    "accounts",
+                    "login",
+                    "--provider",
+                    "codex",
+                    "default"
+                  ]
                 }
               },
               "resolves_card": false
@@ -714,7 +1001,7 @@
           "id": "claude-moves",
           "icon": "node",
           "title": "Move a node when its account runs out",
-          "subtitle": "Anthropic doesn't say whether switching accounts when one reaches its limit is allowed.",
+          "subtitle": "Continue with the next eligible account in your order when quota runs out",
           "badges": [
             {
               "text": "Off",
@@ -730,13 +1017,231 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "on",
-              "description": "The node goes on with another account, in the same conversation",
+              "description": "The node continues with saved context on the next eligible account",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
               "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "model_profiles",
+      "title": "Models by role",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-implementation",
+          "icon": "machine",
+          "title": "Claude · Implementation",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-implementation@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-implementation"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-general",
+          "icon": "machine",
+          "title": "Claude · General work",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-general@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-general"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-design",
+          "icon": "machine",
+          "title": "Claude · Design",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-design@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-design"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-review",
+          "icon": "machine",
+          "title": "Claude · Review",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-review@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-review"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "claude-orchestrator",
+          "icon": "machine",
+          "title": "Claude · Orchestrator",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:claude-orchestrator@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:claude-orchestrator"
+              },
               "resolves_card": false
             }
           ]

@@ -24,7 +24,7 @@
 //! use alondra_agent_application::WorkerController;
 //! ```
 use alondra_domain::{RuntimeFact, Trigger, TurnId};
-use alondra_foundation::{ExecutionStamp, InputId};
+use alondra_foundation::{ExecutionStamp, InputId, WorkId};
 use alondra_provider_contract::{
     Adapter, AdapterError, DecisionKind, Invocation, Observation, Operation, OrderedObservation,
 };
@@ -155,6 +155,7 @@ impl ObservationMetadata<'_, '_> {
 pub struct Normalization {
     facts: Vec<Observation>,
     checkpoint: Vec<u8>,
+    context: Vec<alondra_store::TaskContextItem>,
 }
 impl Normalization {
     pub fn new(
@@ -164,7 +165,15 @@ impl Normalization {
         if facts.len() > 256 || checkpoint.is_empty() || checkpoint.len() > 65536 {
             return Err(AdapterError::InvalidObservation);
         }
-        Ok(Self { facts, checkpoint })
+        Ok(Self { facts, checkpoint, context: vec![] })
+    }
+
+    /// Public final messages and tool results; private reasoning and transport metadata never
+    /// belong here. The application stores these before committing this checkpoint.
+    pub fn with_context(mut self, context: Vec<alondra_store::TaskContextItem>) -> std::result::Result<Self, AdapterError> {
+        if context.len() > 256 { return Err(AdapterError::InvalidObservation); }
+        self.context = context;
+        Ok(self)
     }
 }
 /// Implementations fold from the supplied durable checkpoint without I/O or transport access.
@@ -214,6 +223,7 @@ pub fn invocation(attempt: &DispatchAttempt) -> Invocation<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObservedFact {
     Runtime(RuntimeFact),
+    ContinuationRequested { work: WorkId, activation: String, text: String },
     TurnEnded {
         turn: TurnId,
         outcome: alondra_provider_contract::TurnOutcome,
@@ -275,6 +285,7 @@ impl ObservedFact {
             | Self::McpServers { .. }
             | Self::McpSignIn { .. }
             | Self::McpToolFailed
+            | Self::ContinuationRequested { .. }
             | Self::Usage(_) => 0,
             Self::Settled { answered: true, continued: true, .. } => 2,
             _ => 1,
@@ -318,6 +329,7 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
                 outcome: outcome.clone(),
             });
         }
+        Observation::ContinuationRequested { work, activation, text } => return Ok(ObservedFact::ContinuationRequested { work: work.clone(), activation: activation.clone(), text: text.clone() }),
         Observation::ModelAnswered => return Ok(ObservedFact::ModelAnswered),
         Observation::Asked { request, epoch, kind, tool_use, payload } => {
             return Ok(ObservedFact::Asked {
@@ -422,7 +434,7 @@ pub fn stage_observation<N: ObservationNormalizer>(
     )?;
     let mut facts = vec![];
     if acceptance == ObservationAcceptance::Accepted {
-        let (previous, normalized, checkpoint) = transaction.inspect(|| {
+        let (previous, normalized, checkpoint, context) = transaction.inspect(|| {
             let metadata = ObservationMetadata {
                 transaction,
                 execution: &batch.execution,
@@ -435,7 +447,7 @@ pub fn stage_observation<N: ObservationNormalizer>(
                 .iter()
                 .map(domain_fact)
                 .collect::<Result<Vec<_>>>()?;
-            Ok::<_, Error>((previous, facts, normalized.checkpoint))
+            Ok::<_, Error>((previous, facts, normalized.checkpoint, normalized.context))
         })?;
         facts = normalized;
         if facts.iter().any(|fact| matches!(fact, ObservedFact::InputDropped { .. })) {
@@ -449,6 +461,9 @@ pub fn stage_observation<N: ObservationNormalizer>(
             previous,
             checkpoint,
         )?;
+        if !context.is_empty() {
+            transaction.capture_context(&batch.execution, batch.cursor, &context)?;
+        }
     }
     transaction.inspect(|| {
         if transaction

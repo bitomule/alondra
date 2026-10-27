@@ -326,8 +326,16 @@ fn closed_by_user(domain: &DomainRuntime, session: &str) -> bool {
 /// Waits for the usage limit to clear; false once the session turns out to be closed meanwhile.
 async fn until_usage_clear(domain: &DomainRuntime, session: &str) -> bool {
     loop {
+        if !domain.live.usage_pause.is_active() {
+            if domain.state().is_ok_and(|state| crate::usage_pause::legacy_session_retry_ready(&state, session, alondra_core::now_millis())) {
+                return true;
+            }
+            tokio::time::sleep(GATE_RECHECK).await;
+            if closed_by_user(domain, session) { return false; }
+            continue;
+        }
         tokio::select! {
-            () = domain.live.usage_pause.until_clear() => return true,
+            () = domain.live.usage_pause.until_clear() => {},
             () = tokio::time::sleep(GATE_RECHECK) => {
                 if closed_by_user(domain, session) {
                     return false;
@@ -453,6 +461,31 @@ mod tests {
         assert_eq!(moves.len(), 1, "one move to the SDK: {moves:?}");
         assert!(moves[0].1, "as a node brought back: {moves:?}");
         assert!(moves[0].0.contains(text), "its session opens told {text:?}: {}", moves[0].0);
+    }
+
+    #[tokio::test]
+    async fn a_global_capacity_return_does_not_release_a_different_accounts_revival_wait() {
+        use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};
+        use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
+        let (_home, domain) = world(true);
+        let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
+            native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 };
+        command(&domain, Actor::System, "mixed-accounts", Command::RecordAccounts {
+            accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve(),
+        });
+        let reset = 9_007_199_254_740_991;
+        command(&domain, Actor::System, "own-account-full", Command::RecordAccountUsage {
+            provider: Provider::Claude, account: AccountId::default_account(), reading: UsageReading { windows: vec![WindowReading {
+                kind: WindowKind::Session, used: Share::FULL, resets_at: Some(reset), exhausted: true,
+            }], plan: None, complete: true }, at: 1_000, day: "1970-01-01".into(),
+        });
+        assert_eq!(domain.state().unwrap().account_usage.iter().find(|usage| usage.provider == Provider::Claude && usage.account == AccountId::default_account())
+            .unwrap().plan_exhausted_until(2_000), Some(reset), "the fixture commits its own account's limit before polling recovery");
+        domain.live.usage_pause.resume(2_000);
+        let mut wait = std::pin::pin!(until_usage_clear(&domain, SESSION));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(wait.as_mut(), &mut context).is_pending(), "the same account still holds this disconnected node");
+        assert!(moves(&domain).is_empty());
     }
 
     #[tokio::test]

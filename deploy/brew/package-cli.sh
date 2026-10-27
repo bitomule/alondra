@@ -2,8 +2,8 @@
 # Package the signed CLI, TUI, daemon, Agent SDK host and Claude assets for the public Homebrew formula.
 set -euo pipefail
 
-if [[ $# -ne 8 ]]; then
-  echo 'usage: package-cli.sh VERSION TARGET ALONDRA_CLI ALONDRAD LAUNCHER HOST HOST_MANIFEST OUTPUT_DIR' >&2
+if [[ $# -ne 10 ]]; then
+  echo 'usage: package-cli.sh VERSION TARGET ALONDRA_CLI ALONDRAD LAUNCHER HOST HOST_MANIFEST CODEX_HOST CODEX_MANIFEST OUTPUT_DIR' >&2
   exit 2
 fi
 version=$1
@@ -13,7 +13,9 @@ daemon=$4
 launcher=$5
 host=$6
 host_manifest=$7
-output_dir=$8
+codex_host=$8
+codex_manifest=$9
+output_dir=${10}
 if [[ ! $version =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo 'version must be numeric, e.g. 0.1' >&2
   exit 2
@@ -23,7 +25,7 @@ if [[ $target != aarch64-apple-darwin ]]; then
   exit 2
 fi
 repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
-for path in "$cli" "$daemon" "$launcher" "$host"; do
+for path in "$cli" "$daemon" "$launcher" "$host" "$codex_host"; do
   [[ -f $path && -x $path ]] || { echo "missing executable: $path" >&2; exit 2; }
   codesign --verify --strict "$path"
   signature=$(codesign --display --verbose=4 "$path" 2>&1)
@@ -46,6 +48,7 @@ ditto "$daemon" "$stage/alondrad"
 ditto "$launcher" "$stage/alondrad-launcher"
 python3 "$repo_root/deploy/brew/release.py" stage-assets "$version" "$stage"
 python3 "$repo_root/deploy/brew/release.py" stage-host "$version" "$stage" --host "$host" --host-manifest "$host_manifest"
-COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher sdk .claude-plugin plugin plugin-orchestrator
+python3 "$repo_root/deploy/brew/release.py" stage-codex-host "$version" "$stage" --host "$codex_host" --host-manifest "$codex_manifest"
+COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher sdk codex .claude-plugin plugin plugin-orchestrator
 shasum -a 256 "$archive"
 python3 "$repo_root/deploy/brew/release.py" validate "$version" "$archive"

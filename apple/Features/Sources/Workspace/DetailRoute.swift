@@ -19,7 +19,7 @@ public extension DetailRoute {
     /// The screen a server link opens. A key outside this table opens nothing, so a view the app
     /// does not know shows up as a failing test instead of an unexplained generic screen.
     enum Kind: Equatable, Sendable, CaseIterable {
-        case card, document, pullRequest, task, schedules, schedule, tasksPage
+        case card, document, pullRequest, task, schedules, schedule, tasksPage, modelProfile, taskSelection
 
         public init?(key: ViewKey) {
             let raw = key.rawValue
@@ -31,6 +31,8 @@ public extension DetailRoute {
             case _ where raw.hasPrefix("task:"): self = .task
             case _ where raw.hasPrefix("schedule:"): self = .schedule
             case _ where raw.hasPrefix("tasks?"): self = .tasksPage
+            case _ where raw.hasPrefix("model_profile:"): self = .modelProfile
+            case _ where raw.hasPrefix("task_selection:"): self = .taskSelection
             default: return nil
             }
         }

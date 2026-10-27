@@ -88,6 +88,8 @@ pub fn render(report: &MetricsReport) -> String {
         }
     }
     groups(&mut out, tr!("By model", "Por modelo"), &report.by_model);
+    groups(&mut out, tr!("By provider", "Por proveedor"), &report.by_provider);
+    groups(&mut out, tr!("By kind of task", "Por tipo de tarea"), &report.by_kind);
     groups(&mut out, tr!("By approach", "Por enfoque"), &report.by_approach);
     groups(&mut out, tr!("By project", "Por proyecto"), &report.by_project);
     out
@@ -107,7 +109,7 @@ mod tests {
     fn task(days_ago: i64, change_rounds: i64) -> TaskRow {
         let finished_at = 100 * DAY_MS - days_ago * DAY_MS;
         TaskRow {
-            project: Some("app".into()), model: Some("sonnet".into()), effort: Some("medium".into()), approach: Some("solo".into()),
+            project: Some("app".into()), model: Some("sonnet".into()), effort: Some("medium".into()), approach: Some("solo".into()), provider: None, kind: None,
             outcome: Outcome::Done, started_at: Some(finished_at - 3_600_000), finished_at, clean: change_rounds == 0, change_rounds,
             reviewer_rounds: 0, interventions: 1, reopened: false, relaunched: false, work_ms: 1_800_000, waiting_user_ms: 600_000,
             queued_ms: 0, blocked_ms: 0, sessions: 1, steps: 80, subagent_steps: 20, looks: 30, polls: 10, pr_merged: true,
@@ -143,6 +145,25 @@ mod tests {
         assert_eq!(document["by_model"][0]["name"], "sonnet");
         let back: MetricsReport = serde_json::from_value(document).unwrap();
         assert_eq!(back, sample(), "`--json` reads back into the same report");
+    }
+
+    #[test]
+    fn the_text_groups_by_provider_and_by_kind_of_task() {
+        let mut codex = task(1, 0);
+        codex.model = Some("codex/gpt-6.1-sol".into());
+        codex.kind = Some("migration".into());
+        let inputs = MetricsInputs { now: 100 * DAY_MS, tasks: vec![codex, task(2, 1)], ..MetricsInputs::default() };
+        let sample = report(&inputs, &query(&options("7d", "none")).unwrap());
+        crate::i18n::set_for_this_thread(Lang::En);
+        let text = render(&sample);
+        for expected in ["By provider\n  claude: 1 task", "\n  codex: 1 task", "By kind of task\n  Unknown: 1 task", "\n  migration: 1 task"] {
+            assert!(text.contains(expected), "{expected} missing from\n{text}");
+        }
+        crate::i18n::set_for_this_thread(Lang::Es);
+        let text = render(&sample);
+        for expected in ["Por proveedor\n  claude: 1 tarea", "Por tipo de tarea\n  Desconocido: 1 tarea"] {
+            assert!(text.contains(expected), "{expected} missing from\n{text}");
+        }
     }
 
     #[test]

@@ -66,15 +66,19 @@ pub(crate) fn usage(domain: &DomainRuntime, now: Millis) -> Option<alondra_core:
 
 /// Records what `account` said of its usage, unless the domain already holds it.
 pub(crate) fn record(domain: &DomainRuntime, account: &AccountId, reading: UsageReading, now: Millis) {
+    record_for_provider(domain, &alondra_core::accounts::AccountKey::new(Provider::Claude, account.clone()), reading, now);
+}
+
+pub(crate) fn record_for_provider(domain: &DomainRuntime, account: &alondra_core::accounts::AccountKey, reading: UsageReading, now: Millis) {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: domain.read().state().data_epoch.clone(),
         command_id: format!("account-usage-{}", crate::auth::random_hex(16)).into(),
         expected_revision: 0,
-        command: DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: now, day: crate::node_reports::local_day(now) },
+        command: DomainCommand::RecordAccountUsage { provider: account.provider, account: account.account.clone(), reading, at: now, day: crate::node_reports::local_day(now) },
     };
     if let Err(error) = domain.execute_as_system(envelope) {
-        log!("could not record the usage of account {account}: {error}");
+        log!("could not record the usage of account {}: {error}", account.wire_id());
     }
 }
 
@@ -124,6 +128,24 @@ pub(crate) fn reading(report: ProbeReport) -> Result<UsageReading, String> {
 
 /// Runs the host's probe with `folder` as Claude's configuration, none for the default profile.
 fn probe(backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, String> {
+    let report = serde_json::from_value(run_probe(backend, folder, "--usage-probe")?).map_err(|error| format!("the probe's answer: {error}"))?;
+    reading(report)
+}
+
+pub(crate) fn models(backend: &SdkBackend, home: &Path, key: &alondra_core::accounts::AccountKey) -> Result<alondra_core::model_selection::AccountModelCatalog, String> {
+    use sha2::Digest;
+    if key.provider != Provider::Claude { return Err("The SDK catalog belongs to Claude".into()); }
+    let backend = backend.for_provider(key.provider, home).and_then(|backend| backend.for_account_provider(home, key.provider, &key.account, &crate::accounts::registered_provider(home, key.provider)))
+        .map_err(|why| format!("{why:#}"))?;
+    let report = run_probe(&backend, None, "--model-probe")?;
+    let models: Vec<alondra_core::model_selection::CatalogModel> = serde_json::from_value(report["models"].clone()).map_err(|why| format!("The SDK model catalog is invalid: {why}"))?;
+    let native_default = report["native_default"].as_str().map(str::to_owned);
+    let bytes = serde_json::to_vec(&(&models, &native_default)).map_err(|why| why.to_string())?;
+    let revision = sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(alondra_core::model_selection::AccountModelCatalog { account: key.clone(), revision, models, native_default, measured_at: alondra_core::now_millis() })
+}
+
+fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<serde_json::Value, String> {
     let started = backend.for_start().map_err(|error| format!("{error:#}"))?;
     let artifact = VerifiedArtifact::verify(&started.node, &started.host, &started.node_sha256, &started.host_sha256)
         .map_err(|error| format!("verifying the SDK host: {error}"))?;
@@ -146,7 +168,7 @@ fn probe(backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, St
     use std::os::unix::process::CommandExt;
     let mut child = command
         .arg(artifact.artifact())
-        .arg("--usage-probe")
+        .arg(flag)
         .current_dir(&started.state_root)
         .env_clear()
         .envs(&started.host_environment)
@@ -176,21 +198,40 @@ fn probe(backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, St
     if !status.success() {
         return Err(format!("the probe failed: {}", err.trim().chars().take(300).collect::<String>()));
     }
-    let report: ProbeReport = serde_json::from_str(out.trim()).map_err(|error| format!("the probe's answer: {error}"))?;
-    reading(report)
+    serde_json::from_str(out.trim()).map_err(|error| format!("the probe's answer: {error}"))
 }
 
 /// Brings the live view's copy and the Mac-wide pause in step with what the domain committed: when
 /// no account can work, the Mac waits until the soonest one can, or until one has a session when
 /// none has; when one can again before that, the wait ends.
+fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::accounts::AccountKey> {
+    let mut eligible = alondra_core::usage::eligible_account_keys(&state.account_order, &state.accounts, &state.account_usage, now);
+    if state.account_policy == Policy::Margin && !state.accounts.is_empty() && state.accounts.iter().all(|account| account.provider == Provider::Claude) {
+        let day = crate::node_reports::local_day(now);
+        let chosen = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
+        eligible.retain(|key| chosen.as_ref() == Some(&key.account));
+    }
+    // Paid accounts are considered only for readiness. Launch selection still requires the user's explicit grant.
+    for account in &state.accounts {
+        if account.state == AccountState::SignedIn && account.billing == AccountBilling::PayPerUse {
+            let capacity = AccountStatus { billing: AccountBilling::default(), ..account.clone() };
+            eligible.extend(alondra_core::usage::eligible_account_keys(&[], &[capacity], &state.account_usage, now));
+        }
+    }
+    eligible
+}
+
 pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
     let read = domain.read();
     let state = read.state();
     domain.live.measured.sync(state);
-    let day = crate::node_reports::local_day(now);
-    let can_work = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day).is_some();
+    let ready = available_accounts(state, now);
+    let other_capacity = ready.iter().any(|key| key.provider == Provider::Codex || state.accounts.iter().any(|status|
+        status.provider == key.provider && status.id == key.account && status.billing == AccountBilling::PayPerUse));
     drop(read);
-    if can_work {
+    if other_capacity {
+        if domain.live.usage_pause.provider_account_back(now) { domain.live.gate.poke(); }
+    } else if !ready.is_empty() {
         crate::usage_pause::session_is_back(domain);
         domain.live.usage_pause.margin_back(now);
     } else {
@@ -198,15 +239,16 @@ pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
     }
 }
 
-/// No account can work: without a session on any, new work waits for one, with no time to end it;
-/// otherwise until the soonest account's usage resets.
+/// Availability is checked across providers. A missing account or unknown reset cannot imply a timed quota limit.
 pub(crate) fn hold(domain: &DomainRuntime, now: Millis) {
     let read = domain.read();
     let state = read.state();
-    let no_session = crate::accounts::none_signed_in(&state.accounts).is_some();
-    let until = alondra_core::usage::margin_returns_at(Provider::Claude, &state.accounts, &state.account_usage, now);
+    if !available_accounts(state, now).is_empty() { return; }
+    let accounts: Vec<_> = state.accounts.iter().filter(|status| status.state == AccountState::SignedIn && status.billing != AccountBilling::PayPerUse).cloned().collect();
+    let until = accounts.iter().map(|status| status.provider).collect::<std::collections::BTreeSet<_>>().into_iter()
+        .filter_map(|provider| alondra_core::usage::margin_returns_at(provider, &accounts, &state.account_usage, now)).min();
     drop(read);
-    if no_session {
+    if until.is_none() {
         domain.live.usage_pause.wait_for_session(now);
     } else {
         domain.live.usage_pause.exhaust_for_margin(until, now);
@@ -281,10 +323,18 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
             if folder.as_ref().is_some_and(|folder| !folder.is_dir()) {
                 continue;
             }
+            let (fence, _) = match crate::accounts::probe_fence(&domain, &home) {
+                Ok(fence) => fence,
+                Err(why) => { log!("Could not prepare the account usage probe: {why}"); continue; }
+            };
+            let measured_at = now_millis();
             match tokio::task::spawn_blocking(move || probe(&backend, folder.as_deref())).await {
                 Ok(Ok(reading)) => {
-                    record(&domain, &account, reading, now_millis());
-                    crate::accounts::answered(&domain);
+                    let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: crate::node_reports::local_day(measured_at) };
+                    match crate::accounts::publish_probe(&domain, &home, fence, vec![command]) {
+                        Ok(()) => crate::accounts::answered(&domain),
+                        Err(why) => log!("Discarded stale native usage metadata: {why}"),
+                    }
                 }
                 Ok(Err(why)) => log!("could not measure the usage of account {account}: {why}"),
                 Err(_) => log!("the usage probe of account {account} stopped"),

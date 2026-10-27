@@ -9,6 +9,8 @@ import Synchronization
 public protocol ViewTransport: Sendable {
     func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch
     func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?, capabilities: [String]) async throws -> ViewFetch
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion], capabilities: [String]) async throws -> ViewFeed
     func actionJournal(dataEpoch: String) async throws -> ActionJournalState?
     func acknowledgeActions(_ acknowledgment: ActionJournalAcknowledgment) async throws
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
@@ -23,6 +25,12 @@ public protocol ViewTransport: Sendable {
 }
 
 public extension ViewTransport {
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?, capabilities: [String]) async throws -> ViewFetch {
+        try await fetchView(key: key, client: client, lang: lang, known: known)
+    }
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion], capabilities: [String]) async throws -> ViewFeed {
+        try await fetchChanges(client: client, lang: lang, wait: wait, cursor: cursor, views: views)
+    }
     func actionJournal(dataEpoch: String) async throws -> ActionJournalState? { nil }
     func acknowledgeActions(_ acknowledgment: ActionJournalAcknowledgment) async throws { throw OperationError.invalidEndpoint }
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
@@ -38,24 +46,39 @@ public extension ViewTransport {
 
 extension AlondraAPIClient: ViewTransport {
     public func fetchView(key: String, client: ViewClient, lang: String, known: String? = nil) async throws -> ViewFetch {
+        try await fetchView(key: key, client: client, lang: lang, known: known, capabilities: [])
+    }
+
+    public func fetchView(key: String, client: ViewClient, lang: String, known: String?, capabilities: [String]) async throws -> ViewFetch {
         guard let route = ViewRoute.parse(key) else { throw FeedError.invalidKey }
         let query: [(String, String)] = [("protocol", String(ContractCodec.protocolVersion)), ("client", client.rawValue), ("lang", lang)]
             + route.query
             + (known.map { [("known", $0)] } ?? [])
+            + capabilityQuery(capabilities)
         return try await send(Endpoint<ViewFetch>(.get, path: ["views", route.path], query: query) {
             try ContractCodec.decode(ViewFetch.self, from: $0)
         })
     }
 
     public func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
+        try await fetchChanges(client: client, lang: lang, wait: wait, cursor: cursor, views: views, capabilities: [])
+    }
+
+    public func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion], capabilities: [String]) async throws -> ViewFeed {
         precondition(wait <= 50)
         let viewList = views.map(\.feedValue).sorted().joined(separator: ",")
         let query: [(String, String)] = [("protocol", String(ContractCodec.protocolVersion)), ("client", client.rawValue), ("lang", lang), ("wait", String(wait))]
             + (cursor.map { [("cursor", $0)] } ?? [])
             + (viewList.isEmpty ? [] : [("views", viewList)])
+            + capabilityQuery(capabilities)
         return try await send(Endpoint<ViewFeed>(.get, path: ["changes"], query: query) {
             try ContractCodec.decode(ViewFeed.self, from: $0)
         })
+    }
+
+    private func capabilityQuery(_ capabilities: [String]) -> [(String, String)] {
+        let value = Set(capabilities).sorted().joined(separator: ",")
+        return value.isEmpty ? [] : [("capabilities", value)]
     }
 
     public func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? {

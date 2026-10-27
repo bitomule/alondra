@@ -20,6 +20,7 @@ sh_test(
         for member in [
             "agent-application",
             "agent-protocol",
+            "codex-protocol",
             "agent-runtime",
             "alondra",
             "alondrad",
@@ -29,6 +30,7 @@ sh_test(
             "foundation",
             "process-group",
             "provider-claude",
+            "provider-codex",
             "provider-contract",
             "relay",
             "store",

@@ -146,7 +146,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
         owner, backend: backend.clone(), home: f.executor.home.clone(), directory,
         node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
         projects_root: None, capability: "c".repeat(64), session: session.into(), prompt: String::new(),
-        account: alondra_core::accounts::AccountId::default_account(),
+        domain: Arc::clone(&f.executor.domain), selection: fixture_selection(),
     };
     let (configuration, profile) = (configuration(&batch).unwrap(), profile(&batch));
     let mut host = BatchHost::start(batch.owner, &configuration, session, &profile, "fixture:hold the first batch").unwrap();
@@ -180,7 +180,7 @@ fn the_projects_root_is_readable_and_never_writable() {
             owner, backend: f.domain().sdk().unwrap().0.clone(), home: f.executor.home.clone(), directory: f.executor.home.join("runtime/orchestrator"),
             node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
             projects_root: root.map(Path::to_path_buf), capability: "c".repeat(64), session: "00000000-0000-4000-8000-00000000c0de".into(), prompt: String::new(),
-            account: alondra_core::accounts::AccountId::default_account(),
+            domain: Arc::clone(&f.executor.domain), selection: fixture_selection(),
         }
     };
     let rooted = profile(&batch(Some(Path::new("/Users/someone/Projects"))));
@@ -331,4 +331,33 @@ async fn a_turn_cancelled_after_a_change_the_run_never_read_is_the_users_call() 
     assert_eq!(cards.len(), 1);
     let body = &f.domain().state().unwrap().interactions[&cards[0].clone().into()].body;
     assert_eq!(alondra_core::orchestrator_batch::BatchProblem::from_body(body).unwrap().calls, ["create_request"]);
+}
+
+fn fixture_selection() -> crate::orchestrator_provider::BatchSelection {
+    use alondra_core::accounts::{AccountKey, Provider};
+    use alondra_core::model_selection::{ModelKey, ModelSelection};
+    crate::orchestrator_provider::BatchSelection {
+        account: AccountKey::native(Provider::Claude), account_status: None,
+        model: ModelSelection { model: ModelKey { provider: Provider::Claude, model: "opus".into() }, reasoning_effort: None, catalog_revision: "fixture-catalog".into() },
+        policy_revision: "fixture-policy".into(), reason: "This test explicitly selects the native alias it advertises".into(), rejected_candidates: vec![],
+    }
+}
+
+#[tokio::test]
+async fn claude_batch_reports_are_durable_before_the_prompt_is_settled(){
+    let f=fixture();f.tell("report-proof","Where should the release note go?");f.tick().await;
+    assert_eq!(f.attempts(),["handed"]);
+    let db=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
+    let (count,first,last):(i64,i64,i64)=db.query_row("SELECT count(*),min(cursor),max(cursor) FROM orchestrator_batch_reports",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+    assert!(count>0);assert_eq!(first,1);assert_eq!(last,count);
+    let terminal:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM orchestrator_batch_reports WHERE json_extract(report,'$.kind')='result' AND json_extract(report,'$.input_consumed')=1 AND json_extract(report,'$.turn_completed')=1)",[],|row|row.get(0)).unwrap();assert!(terminal);
+}
+#[tokio::test]
+async fn claude_batch_report_commit_failure_cannot_ack_or_settle_the_prompt(){
+    let f=fixture();let db=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
+    db.execute_batch("CREATE TRIGGER refuse_native_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report refusal'); END;").unwrap();
+    f.tell("report-refusal","Where should the release note go?");f.tick().await;
+    assert_ne!(f.attempts(),["handed"],"without the required report transaction the native prompt cannot settle");
+    assert!(load(&f.executor.home).unwrap().last_error.as_deref().is_some_and(|why|why.contains("batch report was not committed")));
+    assert_eq!(db.query_row("SELECT count(*) FROM orchestrator_batch_reports",[],|row|row.get::<_,i64>(0)).unwrap(),0);
 }

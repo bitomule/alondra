@@ -18,6 +18,9 @@ public struct ActionFeature: Sendable {
         public var attachments: [String] = []
         public var comments: [ActionComment] = []
         public var fields: [String: JSONValue] = [:]
+        public var modelFields: [Field] = []
+        public var modelFormAvailable = true
+        public var formReplacement: ChangedNotice?
         public var confirmation: Confirm?
         public var pending: ActionRequest?
         public var inFlight = false
@@ -40,7 +43,8 @@ public struct ActionFeature: Sendable {
             didSet {
                 guard dataEpoch != oldValue else { return }
                 pending = nil; inFlight = false; unsure = nil; stalled = false
-                stamp = nil; error = nil; confirmation = nil; changed = nil
+                stamp = nil; error = nil; confirmation = nil; changed = nil; formReplacement = nil
+                if !modelFields.isEmpty { modelFormAvailable = false }
                 pendingAttachmentSubmit = false
             }
         }
@@ -59,7 +63,20 @@ public struct ActionFeature: Sendable {
         /// Whether the send button can go now: the action is live and has what it asks for.
         public var canSubmit: Bool {
             guard let action, action.enabled, action.id != nil, !inFlight else { return false }
-            return missingInput == nil
+            return missingInput == nil && modelUnavailableReason == nil
+        }
+
+        public var modelUnavailableReason: String? {
+            guard modelFormAvailable else { return String(localized: "Unavailable in the current catalog") }
+            guard !modelFields.isEmpty else { return nil }
+            let options = RequestOptionsFeature.State(fields: modelFields, values: fields)
+            for field in options.visibleFields {
+                guard case .choice = field.kind else { continue }
+                let selected = options.selected(field.id)
+                guard let item = options.choices(field.id).first(where: { $0.id == selected }) else { return String(localized: "Unavailable in the current catalog") }
+                if let reason = options.unavailableReason(item) { return reason }
+            }
+            return nil
         }
 
         /// What the card says while a send waits on a Mac that does not answer.
@@ -96,11 +113,12 @@ public struct ActionFeature: Sendable {
         public let actionId: String
         public let button: String
         public var resolvesCard: Bool? = nil
+        public init(title: String, body: String?, actionId: String, button: String, resolvesCard: Bool? = nil) { self.title = title; self.body = body; self.actionId = actionId; self.button = button; self.resolvesCard = resolvesCard }
     }
 
     public enum Action {
         case present(WireAction)
-        case presentForm(WireAction, [String: JSONValue], requiresAttachments: Bool)
+        case presentForm(WireAction, [String: JSONValue], requiresAttachments: Bool, modelFields: [Field] = [])
         case chooseOption(String)
         case textChanged(String)
         case attachmentsChanged([String])
@@ -165,17 +183,17 @@ public struct ActionFeature: Sendable {
                 state.action = value
                 state.requiresAttachments = value.attachments
                 state.selectedOptionID = value.optionId; state.text = ""; state.attachments = []
-                state.comments = []; state.fields = [:]; state.confirmation = nil
+                state.comments = []; state.fields = [:]; state.modelFields = []; state.modelFormAvailable = true; state.formReplacement = nil; state.confirmation = nil
                 state.pending = nil; state.inFlight = false; state.stamp = nil
                 state.error = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
                 state.attachmentPicker = AttachmentFeature.State()
                 return .none
-            case let .presentForm(value, fields, requiresAttachments):
+            case let .presentForm(value, fields, requiresAttachments, modelFields):
                 guard !(state.inFlight && state.stamp == nil) else { return .none }
                 state.action = value
                 state.selectedOptionID = nil; state.text = ""; state.attachments = []
-                state.comments = []; state.fields = fields; state.confirmation = nil
+                state.comments = []; state.fields = fields; state.modelFields = modelFields; state.modelFormAvailable = true; state.formReplacement = nil; state.confirmation = nil
                 state.pending = nil; state.inFlight = false; state.stamp = nil
                 state.error = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
@@ -204,10 +222,20 @@ public struct ActionFeature: Sendable {
                 state.pendingAttachmentSubmit = false
                 return send(&state)
             case let .commentsChanged(comments): state.comments = comments; return .none
-            case let .fieldsChanged(fields): state.fields = fields; return .none
+            case .fieldsChanged(var fields):
+                if fields["model"] != state.fields["model"] {
+                    if fields["reasoning_effort"] != nil { fields["reasoning_effort"] = .string("auto") }
+                    if fields["allow_model_substitution"] != nil, state.fields["substitution_was_edited"] != .bool(true) { fields["allow_model_substitution"] = .bool(fields["model"] == .string("auto")); fields["substitution_was_edited"] = .bool(false) }
+                } else if fields["allow_model_substitution"] != state.fields["allow_model_substitution"], fields["allow_model_substitution"] != nil { fields["substitution_was_edited"] = .bool(true) }
+                for id in Array(fields.keys) where id.hasPrefix("candidate_") && fields[id] != state.fields[id] { fields["reasoning_effort_" + String(id.dropFirst("candidate_".count))] = .string("auto") }
+                if fields["pin_account"] != state.fields["pin_account"], fields["pin_account"] == .bool(true), fields["account"] != .string("auto") { fields["account_was_edited"] = .bool(true) }
+                if fields["account"] != state.fields["account"], fields["pin_account"] != nil { fields["pin_account"] = .bool(fields["account"] != .string("auto")); fields["account_was_edited"] = .bool(true) }
+                state.fields = fields; return .none
             case .submit:
                 if state.inFlight, state.stalled { return .send(.retryNow) }
                 guard let selected = state.action, selected.enabled, selected.id != nil, !state.inFlight else { return .none }
+                if let reason = state.modelUnavailableReason { state.error = reason; return .none }
+                if let replacement = state.formReplacement { state.changed = replacement; return .none }
                 if let missing = state.missingInput {
                     state.error = missing
                     return .none
@@ -238,7 +266,8 @@ public struct ActionFeature: Sendable {
                 return .none
             case .sendChangedAction:
                 guard let changed = state.changed else { return .none }
-                state.changed = nil
+                if let reason = state.modelUnavailableReason { state.changed = nil; state.error = reason; return .none }
+                state.changed = nil; state.formReplacement = nil
                 state.sends += 1
                 state.pending = makeRequest(state, actionID: changed.actionId, resolvesCard: changed.resolvesCard)
                 return send(&state)

@@ -67,6 +67,126 @@ enum CardSettlement {
 fn scope() -> AuthorityScope {
     AuthorityScope::new("epoch".into()).unwrap()
 }
+
+fn capture_public_context(tx: &mut LifecycleTransaction<'_>, stamp: &ExecutionStamp, cursor: u64, items: &[TaskContextItem]) {
+    tx.accept_observation(stamp, cursor, CommandEvidence::new(format!("public item {cursor}").into_bytes()).unwrap()).unwrap();
+    tx.put_normalization_checkpoint(stamp, cursor, (cursor > 1).then_some(cursor - 1), format!("checkpoint {cursor}").into_bytes()).unwrap();
+    tx.capture_context(stamp, cursor, items).unwrap();
+}
+
+#[test]
+fn portable_context_and_checkpoint_roll_back_together_and_replay_once() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let item = TaskContextItem::text("thread/turn/item", ContextSource::Assistant, "The result needed by the next provider").unwrap();
+    {
+        let mut tx = fixture.transaction();
+        capture_public_context(&mut tx, &stamp, 1, std::slice::from_ref(&item));
+    }
+    {
+        let tx = fixture.transaction();
+        assert!(tx.context_page(&"task".into(), None, 10).unwrap().entries.is_empty());
+        assert!(tx.normalization_checkpoint(&stamp).unwrap().is_none());
+    }
+    let mut tx = fixture.transaction();
+    capture_public_context(&mut tx, &stamp, 1, std::slice::from_ref(&item));
+    tx.commit().unwrap();
+    let mut tx = fixture.transaction();
+    tx.capture_context(&stamp, 1, std::slice::from_ref(&item)).unwrap();
+    let page = tx.context_page(&"task".into(), None, 10).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].item, item);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn portable_context_survives_raw_retention_and_pending_transfer_pins() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let mut tx = fixture.transaction();
+    capture_public_context(&mut tx, &stamp, 1, &[TaskContextItem::text("answer", ContextSource::Assistant, "Keep this result").unwrap()]);
+    capture_public_context(&mut tx, &stamp, 2, &[]);
+    let reference = tx.context_page(&"task".into(), None, 10).unwrap().entries[0].reference.clone();
+    tx.pin_context("move-provider", &reference).unwrap();
+    tx.commit().unwrap();
+    let mut tx = fixture.transaction();
+    assert_eq!(tx.retain_evidence(100).unwrap().released, 1);
+    assert_eq!(tx.retain_context(&"task".into(), reference.sequence + 1, 100).unwrap(), 0);
+    assert_eq!(tx.context_page(&"task".into(), None, 10).unwrap().entries[0].item.content, "Keep this result");
+    tx.release_context("move-provider", &"task".into()).unwrap();
+    assert_eq!(tx.retain_context(&"task".into(), reference.sequence + 1, 100).unwrap(), 1);
+    let page = tx.context_page(&"task".into(), None, 10).unwrap();
+    assert!(page.entries.is_empty());
+    assert_eq!(page.coverage.omitted_items, 1);
+    assert!(page.coverage.reason.is_some());
+    tx.commit().unwrap();
+}
+
+#[test]
+fn portable_context_pages_and_references_are_scoped_to_their_task() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    fixture.create("other");
+    let stamp = fixture.launch("task").execution().clone();
+    let mut tx = fixture.transaction();
+    capture_public_context(&mut tx, &stamp, 1, &[
+        TaskContextItem::text("one", ContextSource::Assistant, "First").unwrap(),
+        TaskContextItem::text("two", ContextSource::Assistant, "Second").unwrap(),
+    ]);
+    let first = tx.context_page(&"task".into(), None, 1).unwrap();
+    assert!(first.next.is_some());
+    let reference = &first.entries[0].reference;
+    let second = tx.context_page(&"task".into(), Some(reference), 1).unwrap();
+    assert_eq!(second.entries[0].item.content, "Second");
+    assert!(second.next.is_none());
+    assert!(tx.context_page(&"other".into(), None, 1).unwrap().entries.is_empty());
+    assert!(matches!(tx.context_page(&"other".into(), Some(reference), 1), Err(Error::InvalidInput)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn portable_context_rejects_same_task_forged_cursor_identity() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let mut tx = fixture.transaction();
+    capture_public_context(&mut tx, &stamp, 1, &[TaskContextItem::text("item", ContextSource::Assistant, "Public").unwrap()]);
+    let mut reference = tx.context_page(&"task".into(), None, 1).unwrap().entries[0].reference.clone();
+    reference.cursor += 1;
+    assert!(matches!(tx.context_page(&"task".into(), Some(&reference), 1), Err(Error::InvalidInput)));
+}
+
+#[test]
+fn empty_provider_results_are_bounded_by_item_count_and_metadata() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let mut tx = fixture.transaction();
+    capture_public_context(&mut tx, &stamp, 1, &[]);
+    for index in 0..TASK_CONTEXT_ITEMS + 1 {
+        tx.capture_context(&stamp, 1, &[TaskContextItem::tool_result(format!("tool-{index}"), "", None, None).unwrap()]).unwrap();
+    }
+    let (count, charged): (i64,i64) = tx.connection.query_row("SELECT items,bytes FROM task_context_usage WHERE task_id='task'", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+    assert_eq!(count, TASK_CONTEXT_ITEMS as i64);
+    assert!(charged > count * 1024);
+    assert_eq!(tx.context_page(&"task".into(), None, 1).unwrap().coverage.omitted_items, 1);
+    assert_eq!(tx.connection.query_row("SELECT count(*) FROM task_context_items WHERE task_id='task'", [], |row| row.get::<_,i64>(0)).unwrap(), TASK_CONTEXT_ITEMS as i64);
+}
+
+#[test]
+fn portable_context_excerpts_keep_utf8_boundaries_and_omission_metadata() {
+    let text = "é".repeat(CONTEXT_ITEM_BYTES);
+    let assistant = TaskContextItem::text("assistant", ContextSource::Assistant, &text).unwrap();
+    assert_eq!(assistant.content.len(), CONTEXT_ITEM_BYTES);
+    assert_eq!(assistant.omitted_bytes, CONTEXT_ITEM_BYTES as u64);
+    let tool = TaskContextItem::tool_result("tool", &text, Some(42), Some("artifact:output".into())).unwrap();
+    assert_eq!(tool.content.len(), TOOL_EXCERPT_BYTES);
+    assert_eq!(tool.omitted_bytes, (text.len() - TOOL_EXCERPT_BYTES) as u64);
+    assert_eq!(tool.exit_code, Some(42));
+    assert_eq!(tool.artifact.as_deref(), Some("artifact:output"));
+}
 fn id(value: &str) -> InputId {
     InputId::new(value).unwrap()
 }
@@ -3898,4 +4018,49 @@ fn a_schema_change_forgets_the_cache_even_when_the_revision_stays() {
     assert_eq!(after.revision(), cached_aggregate.revision());
     assert!(after.is_pending(&id("spare")) && !after.is_pending(&id("told-19")), "the rewritten event is read, not the cached one");
     assert_eq!(*after, *replayed(&fixture.connection, &task));
+}
+
+
+#[test]
+fn first_context_schema_install_marks_legacy_history_incomplete_once_but_new_tasks_are_complete() {
+    let mut fixture = Fixture::new();
+    fixture.create("legacy");
+    let stamp = fixture.launch("legacy").execution().clone();
+    {
+        let mut tx = fixture.transaction();
+        for cursor in 1..=2 {
+            tx.accept_observation(&stamp,cursor,CommandEvidence::new(format!("old observation {cursor}").into_bytes()).unwrap()).unwrap();
+            tx.put_normalization_checkpoint(&stamp,cursor,(cursor>1).then_some(cursor-1),format!("old checkpoint {cursor}").into_bytes()).unwrap();
+        }
+        tx.retain_evidence(100).unwrap();
+        tx.commit().unwrap();
+    }
+    let bytes: Vec<u8> = fixture.connection.query_row("SELECT bytes FROM provider_observations WHERE task_id='legacy' AND cursor=1",[],|row|row.get(0)).unwrap();
+    assert_eq!(bytes,vec![0],"the normalized legacy history has already released raw evidence");
+    fixture.connection.execute_batch("DROP TABLE task_context_pins; DROP TABLE task_context_usage; DROP TABLE task_context_gaps; DROP TABLE task_context_items;").unwrap();
+    {
+        let mut sql=fixture.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        LifecycleTransaction::install(&mut sql).unwrap(); sql.commit().unwrap();
+    }
+    let mut tx=fixture.transaction();
+    capture_public_context(&mut tx,&stamp,3,&[TaskContextItem::text("new-answer",ContextSource::Assistant,"New content does not prove older history is complete").unwrap()]);
+    let page=tx.context_page(&"legacy".into(),None,10).unwrap();
+    assert_eq!(page.entries.len(),1); assert_eq!(page.coverage.omitted_items,1);
+    assert!(page.coverage.reason.as_deref().is_some_and(|reason|reason.contains("not verified")));
+    let budget=HandoffBudget {destination_context_tokens:None,reserved_tokens:0};
+    assert!(matches!(prepare_context_handoff("Original request","Continue",&page.entries,&page.coverage,None,budget),Err(HandoffError::IncompleteHistory(_))));
+    tx.commit().unwrap();
+    {
+        let mut sql=fixture.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        LifecycleTransaction::install(&mut sql).unwrap(); sql.commit().unwrap();
+    }
+    assert_eq!(fixture.transaction().context_page(&"legacy".into(),None,10).unwrap().coverage.omitted_items,1,"reopening never increments or erases the migration gap");
+    let mut fresh_fixture=Fixture::new(); fresh_fixture.create("fresh"); let fresh=fresh_fixture.launch("fresh").execution().clone();
+    let mut tx=fresh_fixture.transaction(); capture_public_context(&mut tx,&fresh,1,&[TaskContextItem::text("fresh-answer",ContextSource::Assistant,"A complete newly captured conversation").unwrap()]);
+    let page=tx.context_page(&"fresh".into(),None,10).unwrap(); assert_eq!(page.coverage.omitted_items,0);
+    assert!(prepare_context_handoff("Original request","Continue",&page.entries,&page.coverage,None,HandoffBudget {destination_context_tokens:None,reserved_tokens:0}).is_ok());
+    tx.commit().unwrap();
+    let mut sql=fresh_fixture.connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+    LifecycleTransaction::install(&mut sql).unwrap(); sql.commit().unwrap();
+    assert_eq!(fresh_fixture.transaction().context_page(&"fresh".into(),None,10).unwrap().coverage.omitted_items,0,"an existing capture schema never adds a legacy gap on reopen");
 }

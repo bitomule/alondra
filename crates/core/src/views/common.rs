@@ -26,6 +26,7 @@ pub(super) fn view(
         empty: None,
         notices: vec![],
         service: None,
+        account_configuration: None,
         first_cards: vec![],
         summary: None,
     }
@@ -52,6 +53,7 @@ pub(super) fn row(
     subtitle: Option<String>,
 ) -> Row {
     Row {
+        account: None, model: None,
         id: id.into(),
         link: Some(Link::View { key: key.into() }),
         icon,
@@ -89,6 +91,8 @@ pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static s
         "light" => t!(lang, "Light", "Ligero"),
         "normal" => t!(lang, "Normal", "Normal"),
         "hard" => t!(lang, "Hard", "A fondo"),
+        "none" => t!(lang, "None", "Ninguno"),
+        "minimal" => t!(lang, "Minimal", "Mínimo"),
         "low" => t!(lang, "Low", "Bajo"),
         "medium" => t!(lang, "Medium", "Medio"),
         "high" => t!(lang, "High", "Alto"),

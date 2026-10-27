@@ -155,6 +155,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         .or_else(|| schedule.and_then(|s| s.project.as_deref()))
         .unwrap_or("");
     let mut projects = vec![ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
         id: "".into(),
         label: t!(context.lang, "Projects folder", "Carpeta de proyectos").into(),
         description: None,
@@ -175,6 +176,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     {
         if !projects.iter().any(|item| item.id == *name) {
             projects.push(ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
                 id: name.clone(),
                 label: name.clone(),
                 description: None,
@@ -183,6 +185,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     }
     if !selected_project.is_empty() && !projects.iter().any(|item| item.id == selected_project) {
         projects.push(ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
             id: selected_project.into(),
             label: selected_project.into(),
             description: None,
@@ -224,6 +227,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                 ]
                 .into_iter()
                 .map(|id| ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
                     id: id.into(),
                     label: frequency_label(
                         match id {
@@ -250,6 +254,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             FieldKind::Choice {
                 items: (0..7)
                     .map(|n| ChoiceItem {
+                    group: None, disabled_reason: None, available_when: None,
                         id: n.to_string(),
                         label: match n {
                             0 => t!(context.lang, "Sunday", "Domingo"),
@@ -316,6 +321,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             false,
         ),
     ];
+    if let Some(field) = fields.iter_mut().find(|field| field.id == "disallowed_tools") { field.help = Some(t!(context.lang, "Codex cannot enforce individual tool restrictions. A Codex launch with a nonempty list is refused; your restrictions are retained.", "Codex no puede aplicar restricciones individuales de herramientas. Se rechaza un lanzamiento de Codex con una lista no vacía; se conservan tus restricciones.").into()); }
     let option_specs = context.live.project_options.get(selected_project)
         .unwrap_or(&context.live.options);
     fields.extend(option_specs.iter().map(|spec| {
@@ -327,6 +333,19 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         }
         field
     }));
+    if let Some(account) = fields.iter_mut().find(|field| field.id == "account") {
+        account.help = Some(t!(context.lang, "Choosing a pay-per-use account authorizes its scheduled billable usage. Automatic does not authorize a paid account.", "Elegir una cuenta de pago por uso autoriza su uso facturable programado. Automático no autoriza una cuenta de pago.").into());
+        if let FieldKind::Choice { items } = &mut account.kind {
+            for item in items {
+                let Ok(key) = crate::accounts::AccountKey::parse_wire(&item.id) else { continue };
+                if let Some(status) = context.index.accounts().iter().find(|account| account.provider == key.provider && account.id == key.account) {
+                    let provider = super::accounts::provider_name(key.provider);
+                    item.label = format!("{provider} · {}", super::accounts::name(status, context.lang));
+                    if matches!(status.billing, crate::accounts::AccountBilling::PayPerUse) { item.label.push_str(&format!(" · {}", t!(context.lang, "Pay-per-use", "Pago por uso"))); }
+                }
+            }
+        }
+    }
     fields[2].reload_on_change = true;
     fields[4].visible_when = Some(super::Condition {
         field: "repeat".into(),
@@ -372,6 +391,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         "form",
         None,
         vec![Item::Form(Form {
+            substitution_was_edited: None,
             id: "schedule".into(),
             fields,
             submit,

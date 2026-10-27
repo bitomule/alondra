@@ -670,14 +670,14 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                     }
                 }
                 Item::Form(form) => {
-                    lines.push(Line::from(Span::styled(
-                        form.id.clone(),
-                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    )));
-                    for field in &form.fields {
-                        let value = match &field.value {
-                            serde_json::Value::String(s) => s.clone(),
-                            value => value.to_string(),
+                    let values = form.fields.iter().map(|field| (field.id.clone(), field.value.clone())).collect();
+                    for field in form.fields.iter().filter(|field| super::work::field_visible(field, &values)) {
+                        let value = match (&field.kind, &field.value) {
+                            (FieldKind::Choice { items }, serde_json::Value::String(value)) => items.iter().find(|item| item.id == *value).map_or_else(|| value.clone(), |item| item.label.clone()),
+                            (FieldKind::Toggle, serde_json::Value::Bool(on)) => if *on { tr!("On", "Activado") } else { tr!("Off", "Desactivado") }.into(),
+                            (_, serde_json::Value::String(value)) => value.clone(),
+                            (_, serde_json::Value::Null) => String::new(),
+                            (_, value) => value.to_string(),
                         };
                         lines.push(Line::from(vec![
                             Span::styled(format!("{}: ", field.label), Style::new().fg(DIM)),
@@ -696,7 +696,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                         Span::styled("[e] ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
                         Span::raw({
                             let label = &form.submit.label;
-                            trf!("Edit the fields and {label}", "Edita los campos y {label}")
+                            trf!("Edit fields · {label}", "Edita los campos · {label}")
                         }),
                     ]));
                 }
@@ -743,6 +743,7 @@ pub fn placeholders(view: &mut View) {
 
 fn unknown_row(n: usize) -> Row {
     Row {
+        account: None, model: None,
         id: format!("unknown-{n}"),
         link: None,
         icon: Icon::Notice,
@@ -976,7 +977,7 @@ fn local_utc_offset(millis: i64) -> Option<i64> {
     Some(i64::from(tm.tm_gmtoff))
 }
 
-fn date_time_at_offset(millis: i64, utc_offset_seconds: i64) -> Option<(String, String)> {
+pub(super) fn date_time_at_offset(millis: i64, utc_offset_seconds: i64) -> Option<(String, String)> {
     let seconds = millis.div_euclid(1_000) + utc_offset_seconds;
     let days = seconds.div_euclid(86_400);
     let second_of_day = seconds.rem_euclid(86_400);
@@ -1289,6 +1290,16 @@ mod action_tests {
         let ids: Vec<String> = actions(&view).into_iter().map(|action| action.id).collect();
         assert_eq!(ids, ["cancel:task-a@1", "cancel:task-b@1"]);
     }
+    #[test]
+    fn a_native_model_form_summary_uses_server_labels_and_visible_fields() {
+        let view: View = serde_json::from_value(crate::tui::parity::view_fixture("model-profile-codex-tui.json")).unwrap();
+        let text = document_lines(&view, 100).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Fixture general"), "{text}");
+        assert!(text.contains("Native default"), "{text}");
+        assert!(!text.contains("model_profile"), "internal form IDs do not describe the screen: {text}");
+        assert!(!text.contains(": auto"), "opaque option IDs have human labels: {text}");
+        assert_eq!(text.matches("Reasoning effort:").count(), 1, "the empty next candidate has no visible reasoning field: {text}");
+    }
 }
 
 /// What the detail pane and the reader call the open document: its card's kind, else its title.
@@ -1300,4 +1311,5 @@ pub fn document_kind(view: &View) -> Option<String> {
             Item::Card(card) => card.eyebrow.as_ref().map(|eyebrow| eyebrow.text.to_lowercase()),
             _ => None,
         })
+
 }

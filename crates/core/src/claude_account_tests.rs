@@ -61,7 +61,7 @@ fn removing_an_account_deletes_its_folder_and_never_what_it_links() {
 #[test]
 fn a_status_says_the_sign_in_its_email_and_plan_and_fails_closed() {
     let status = parse_status(true, br#"{"loggedIn":true,"email":" me@example.org ","subscriptionType":"max","orgId":"x"}"#).unwrap();
-    assert_eq!(status, AuthStatus { logged_in: true, email: Some("me@example.org".into()), subscription: Some("max".into()) });
+    assert_eq!(status, AuthStatus { logged_in: true, email: Some("me@example.org".into()), subscription: Some("max".into()), pay_per_use: false });
     assert_eq!(parse_status(false, br#"{"loggedIn":false}"#), Some(AuthStatus::default()));
     for (ok, bytes) in [(true, b"corrupt".as_slice()), (true, b"{}".as_slice()), (false, br#"{"loggedIn":true}"#.as_slice())] {
         assert_eq!(parse_status(ok, bytes), None);
@@ -162,4 +162,16 @@ fn accounts_share_sessions_only_through_the_linked_projects_folder() {
     assert!(shares_sessions(&home, &user_home, Some(&profile), &default, &AccountId::parse("linked").unwrap()), "the default profile the daemon was set up with");
     assert!(!shares_sessions(&home, &user_home, Some(&profile), &default, &work), "an account linked to ~/.claude while the default profile is another");
     assert!(linked.join("projects").exists());
+}
+
+#[test]
+fn native_api_key_helper_and_cloud_auth_are_not_subscription_sign_ins() {
+    for method in ["api_key", "api_key_helper", "third_party"] {
+        let bytes = serde_json::to_vec(&serde_json::json!({"loggedIn":true,"authMethod":method,"apiProvider":"firstParty"})).unwrap();
+        assert!(parse_status(true,&bytes).unwrap().pay_per_use,"{method}");
+    }
+    let signed_in = parse_status(true,br#"{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}"#).unwrap();
+    assert!(!signed_in.pay_per_use);
+    assert_eq!(signed_in.subscription.as_deref(),Some("max"));
+    assert!(!parse_status(true,br#"{"loggedIn":true}"#).unwrap().pay_per_use,"older JSON stays compatible");
 }

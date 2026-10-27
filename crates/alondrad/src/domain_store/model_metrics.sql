@@ -2,7 +2,9 @@
 -- without being moved aside.
 
 -- Every model the orchestrator or the user's effort chose for a Task: each launch, relaunch and
--- each message that hands a Task to a node with a model or an approach.
+-- each message that hands a Task to a node with a model or an approach, with the provider it runs
+-- on and the tags the orchestrator gave the task (areas and risks as JSON arrays). Stores made
+-- before provider and tags gain those columns empty (`model_metrics::add_routing_columns`).
 CREATE TABLE IF NOT EXISTS model_decisions (
  id INTEGER PRIMARY KEY,
  task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -15,7 +17,11 @@ CREATE TABLE IF NOT EXISTS model_decisions (
  approach TEXT CHECK(approach IS NULL OR approach IN('solo','subagents','workflow')),
  chosen_by TEXT NOT NULL CHECK(chosen_by IN('orchestrator','user')),
  reason TEXT,
- title TEXT NOT NULL
+ title TEXT NOT NULL,
+ provider TEXT,
+ task_kind TEXT,
+ areas TEXT CHECK(areas IS NULL OR json_valid(areas)),
+ risks TEXT CHECK(risks IS NULL OR json_valid(risks))
 );
 CREATE INDEX IF NOT EXISTS model_decisions_task ON model_decisions(task_id,at);
 CREATE INDEX IF NOT EXISTS model_decisions_agent ON model_decisions(agent_id);
@@ -93,7 +99,9 @@ CREATE TABLE IF NOT EXISTS task_metrics (
  polls INTEGER NOT NULL,
  pr_merged INTEGER NOT NULL,
  pr_lines INTEGER,
- folded_revision INTEGER NOT NULL
+ folded_revision INTEGER NOT NULL,
+ provider TEXT,
+ kind TEXT
 ) WITHOUT ROWID;
 
 -- What each ended task's sessions spent, by the model that spent it.
@@ -186,3 +194,17 @@ CREATE TRIGGER IF NOT EXISTS immutable_review_finding BEFORE UPDATE ON review_fi
  BEGIN SELECT RAISE(ABORT,'review findings are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS retain_review_finding BEFORE DELETE ON review_findings
  BEGIN SELECT RAISE(ABORT,'review findings are retained'); END;
+
+CREATE TABLE IF NOT EXISTS codex_usage_baselines (
+ task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ account TEXT NOT NULL,
+ thread_id TEXT NOT NULL,
+ turn_id TEXT NOT NULL,
+ model TEXT,
+ input INTEGER,
+ output INTEGER,
+ cache_read INTEGER,
+ cache_write INTEGER,
+ last_at INTEGER NOT NULL,
+ PRIMARY KEY(account,thread_id)
+) WITHOUT ROWID;
