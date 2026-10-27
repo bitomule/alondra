@@ -1,6 +1,6 @@
-load("@crates//:defs.bzl", "all_crate_deps")
+load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("//:version.bzl", "VERSION")
 
 REPORT_SOURCES = [
@@ -27,26 +27,41 @@ cargo_build_script(
     edition = "2024",
 )
 
+rust_library(
+    name = "alondra_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    compile_data = ["//launchd:alondra.plist.in"],
+    crate_name = "alondra",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
+)
+
 rust_binary(
     name = "alondra",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = ["//launchd:alondra.plist.in"],
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
     edition = "2024",
     version = VERSION,
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
+    deps = crate_deps(["anyhow"]) + [":alondra_lib"],
 )
 
 rust_test(
     name = "alondra_test",
-    crate = ":alondra",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra",
+    crate_root = "src/lib.rs",
     compile_data = [
+        "//launchd:alondra.plist.in",
         "//:plugin/skills/alondra/SKILL.md",
         "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
     ],
-    deps = all_crate_deps(normal_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
     data = REPORT_SOURCES + ["//fixtures/report", "//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
+    version = VERSION,
 )
 
 # Cargo integration tests. Paths are runfiles-relative: Bazel runs tests from the

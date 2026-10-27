@@ -1,6 +1,6 @@
 load(":build_inputs_test.bzl", "rust_inputs_test")
-load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("//:version.bzl", "VERSION")
 
 exports_files(
@@ -8,24 +8,21 @@ exports_files(
     visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__"],
 )
 
-rust_binary(
-    name = "alondrad",
+rust_library(
+    name = "alondrad_lib",
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
+        exclude = ["src/main.rs", "src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
     ),
     compile_data = [
-        "Info.plist",
         "src/domain_store/schema.sql",
         "src/domain_store/schedule_launch_transition.sql",
         "src/domain_store/model_metrics.sql",
     ],
+    crate_name = "alondrad",
+    crate_root = "src/lib.rs",
     edition = "2024",
-    # macOS asks for Local Network access before alondrad may advertise on Bonjour; a
-    # standalone executable carries the reason in an embedded Info.plist (TN3179).
-    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
     version = VERSION,
-    visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + [
         "//crates/agent-application:agent_application",
         "//crates/agent-runtime:agent_runtime",
@@ -39,6 +36,20 @@ rust_binary(
         "//crates/provider-contract:provider_contract",
         "//crates/store:store",
     ],
+)
+
+rust_binary(
+    name = "alondrad",
+    srcs = ["src/main.rs"],
+    compile_data = ["Info.plist"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    # macOS asks for Local Network access before alondrad may advertise on Bonjour; a
+    # standalone executable carries the reason in an embedded Info.plist (TN3179).
+    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
+    version = VERSION,
+    visibility = ["//visibility:public"],
+    deps = crate_deps(["anyhow"]) + [":alondrad_lib"],
 )
 
 # launchd runs this at a fixed path so macOS keeps alondrad's Local Network permission across
@@ -84,9 +95,9 @@ rust_test(
         "src/domain_store/schedule_launch_transition.sql",
         "src/domain_store/model_metrics.sql",
     ],
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondrad",
-    crate_root = "src/main.rs",
+    crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {
         "FIXTURE_DAEMON": "$(rootpath :alondrad)",
@@ -137,7 +148,7 @@ rust_test(
 
 rust_inputs_test(
     name = "production_inputs_test",
-    target_under_test = ":alondrad",
+    target_under_test = ":alondrad_lib",
     test_sources = False,
 )
 

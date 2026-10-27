@@ -1,5 +1,5 @@
 //! The noun commands: `device`, `mac`, `account`, `relay` and `config`. Each verb is one function;
-//! `main.rs` only parses and dispatches.
+//! `lib.rs` only parses and dispatches.
 
 use std::time::Duration;
 

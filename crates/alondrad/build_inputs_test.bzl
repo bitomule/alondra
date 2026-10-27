@@ -8,7 +8,7 @@ def _rust_inputs_test_impl(ctx):
     asserts.true(env, len(actions) > 0, "The target must register an actual Rust compile action")
     for action in actions:
         inputs = {source.short_path: True for source in action.inputs.to_list()}
-        for source in ["crates/alondrad/src/main.rs", "crates/alondrad/src/domain_store/owner.rs"]:
+        for source in ["crates/alondrad/src/lib.rs", "crates/alondrad/src/domain_store/owner.rs"]:
             asserts.true(env, source in inputs, "{} must compile {}".format(action.mnemonic, source))
         test_inputs = [
             source
