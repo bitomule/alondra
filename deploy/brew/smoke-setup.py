@@ -17,6 +17,8 @@ import tempfile
 
 def check_report(doc, prefix, explicit_profile=None):
     """What `alondra doctor --json` says it would install, read from the service check."""
+    if not any(c.get('id') == 'providers' for c in doc.get('checks', [])):
+        raise RuntimeError('Doctor did not report the AI providers a fresh user can connect')
     service = next((c for c in doc.get('checks', []) if c.get('id') == 'service'), None)
     if service is None or 'install' not in service:
         raise RuntimeError('Doctor did not say what it would install')
@@ -66,18 +68,14 @@ def check_observations(entries, smoke_home, explicit_profile=None):
         ('claude', ('plugin', 'list', '--json')),
         ('claude', ('plugin', 'marketplace', 'list', '--json')),
     }
-    saw_claude = False
     expected = [str(smoke_home), explicit_profile, explicit_profile]
     for name, args, profile in entries:
         if name == 'claude':
-            saw_claude = True
             if profile != expected:
                 raise RuntimeError('Claude observation used a different user/profile from the daemon')
         read_only_launchctl = name == 'launchctl' and len(args) == 2 and args[0] == 'print'
         if (name, tuple(args)) not in allowed and not read_only_launchctl:
             raise RuntimeError(f'Doctor attempted a mutation: {name} {args}')
-    if not saw_claude:
-        raise RuntimeError('Doctor did not observe the installed Claude executable')
 
 
 def free_port():

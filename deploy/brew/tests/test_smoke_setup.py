@@ -15,7 +15,7 @@ class ProfileSmokeTests(unittest.TestCase):
     def report(self, profile=None, mode=None):
         install = {'program': f'{self.prefix}/bin/alondrad', 'marketplace': f'{self.prefix}/libexec/alondra',
                    'claude_profile': profile, 'profile_mode': mode or ('explicit' if profile else 'implicit')}
-        return {'checks': [{'id': 'service', 'fixable': True, 'install': install}]}
+        return {'checks': [{'id': 'providers', 'status': 'warn'}, {'id': 'service', 'fixable': True, 'install': install}]}
 
     def observations(self, profile=None):
         return [['claude', ['plugin', 'list', '--json'], [str(self.home), profile, profile]],
@@ -42,17 +42,20 @@ class ProfileSmokeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'different user/profile'):
                     s.check_observations(self.observations(), self.home, profile)
 
-    def test_profile_checks_do_not_allow_mutations_or_skip_observation(self):
+    def test_profile_checks_do_not_allow_mutations_and_a_fresh_user_hears_of_providers(self):
         with self.assertRaisesRegex(RuntimeError, 'attempted a mutation'):
             s.check_observations([['claude', ['auth', 'login'], [str(self.home), None, None]]], self.home)
-        with self.assertRaisesRegex(RuntimeError, 'did not observe'):
-            s.check_observations([], self.home)
+        s.check_observations([], self.home)
+        without = self.report()
+        without['checks'] = [check for check in without['checks'] if check['id'] != 'providers']
+        with self.assertRaisesRegex(RuntimeError, 'did not report the AI providers'):
+            s.check_report(without, self.prefix)
         cellar = self.report()
-        cellar['checks'][0]['install']['program'] = '/fixture/Cellar/alondra/0.1.6/bin/alondrad'
+        cellar['checks'][1]['install']['program'] = '/fixture/Cellar/alondra/0.1.6/bin/alondrad'
         with self.assertRaisesRegex(RuntimeError, 'daemon through the installed opt path'):
             s.check_report(cellar, self.prefix)
         with self.assertRaisesRegex(RuntimeError, 'did not say what it would install'):
-            s.check_report({'checks': [{'id': 'service', 'fixable': True}]}, self.prefix)
+            s.check_report({'checks': [{'id': 'providers'}, {'id': 'service', 'fixable': True}]}, self.prefix)
 
 
 if __name__ == '__main__':
