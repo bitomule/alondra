@@ -283,24 +283,39 @@ pub(crate) fn none_signed_in(accounts: &[AccountStatus]) -> Option<String> {
     Some(claude.iter().map(|account| format!("{} ({})", account.id, state(account.state))).collect::<Vec<_>>().join(", "))
 }
 
-/// Whether the orchestrator waits because no Claude account has a session: set and cleared once
-/// per change, so the log and the screens say it once.
+/// Whether the orchestrator waits for an account or a model, and why: set and cleared once per
+/// change, so the log and the screens say each reason once.
 #[derive(Default)]
-pub(crate) struct AccountWait(std::sync::Mutex<bool>);
+pub(crate) struct AccountWait(std::sync::Mutex<Option<String>>);
 
 impl AccountWait {
     pub(crate) fn is_waiting(&self) -> bool {
-        *self.0.lock().expect("account wait poisoned")
+        self.0.lock().expect("account wait poisoned").is_some()
     }
 
     /// True when the wait starts now.
     pub(crate) fn start(&self) -> bool {
-        !std::mem::replace(&mut *self.0.lock().expect("account wait poisoned"), true)
+        let mut wait = self.0.lock().expect("account wait poisoned");
+        if wait.is_some() { return false; }
+        *wait = Some(String::new());
+        true
+    }
+
+    /// True when the wait starts now or its reason changed.
+    pub(crate) fn wait_for(&self, reason: &str) -> bool {
+        let mut wait = self.0.lock().expect("account wait poisoned");
+        if wait.as_deref() == Some(reason) { return false; }
+        *wait = Some(reason.to_owned());
+        true
+    }
+
+    pub(crate) fn reason(&self) -> Option<String> {
+        self.0.lock().expect("account wait poisoned").clone()
     }
 
     /// True when a standing wait ends now.
     pub(crate) fn end(&self) -> bool {
-        std::mem::replace(&mut *self.0.lock().expect("account wait poisoned"), false)
+        self.0.lock().expect("account wait poisoned").take().is_some()
     }
 }
 
@@ -618,16 +633,24 @@ pub(crate) fn check(domain: &DomainRuntime, home: &Path) {
     }
 }
 
-pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Result<(), String> {
+/// Claude never names its native default model, so the orchestrator starts with opus until the
+/// user picks another. True when the profile was missing.
+fn seed_claude_orchestrator(profiles: &mut alondra_core::model_selection::ModelProfiles) -> bool {
     use alondra_core::model_selection::{ModelCandidate, ModelProfile, RoleModelPolicy};
+    let claude = profiles.entry(Provider::Claude).or_default();
+    if claude.contains_key(&ModelProfile::Orchestrator) { return false; }
+    claude.insert(ModelProfile::Orchestrator, RoleModelPolicy::OrderedCandidates { candidates: vec![ModelCandidate { model: "opus".into(), reasoning_effort: None }] });
+    true
+}
+
+pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Result<(), String> {
     let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     recover_settings(domain, home)?;
     let Some(previous) = crate::domain_store::provider_settings::read_options(home)? else { return Ok(()) };
     let mut file = alondra_core::options::OptionsFile::parse(&previous)?;
     if file.accounts.connected.is_some() { return Ok(()) }
     file.accounts.migrate_legacy();
-    file.model_profiles.entry(Provider::Claude).or_default().entry(ModelProfile::Orchestrator)
-        .or_insert_with(|| RoleModelPolicy::OrderedCandidates { candidates: vec![ModelCandidate { model: "opus".into(), reasoning_effort: None }] });
+    seed_claude_orchestrator(&mut file.model_profiles);
     let target = alondra_core::accounts::with_accounts(&previous, &file.accounts)?;
     let target = alondra_core::options::with_model_profiles(&target, &file.model_profiles)?;
     let read = domain.read();
@@ -683,7 +706,8 @@ pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Pa
     let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     recover_settings(domain, home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let previous = crate::domain_store::provider_settings::read_options(home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
-    let current = previous.as_deref().map(alondra_core::options::OptionsFile::parse).transpose().map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?.unwrap_or_else(alondra_core::options::OptionsFile::fresh).accounts;
+    let file = previous.as_deref().map(alondra_core::options::OptionsFile::parse).transpose().map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?.unwrap_or_else(alondra_core::options::OptionsFile::fresh);
+    let current = file.accounts;
     if version(&current) != seen { return Err(ChangeRefused::Store(Refused::Stale)); }
     let mut next = proposed.clone();
     if next.connected.is_none() && current.connected.is_some() && !current.is_connected(Provider::Claude) && next.claude != current.claude {
@@ -692,7 +716,13 @@ pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Pa
     }
     next.preserve_connected_from(&current);
     next.check().map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
-    let target = alondra_core::accounts::with_accounts(previous.as_deref().unwrap_or_default(), &next).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+    let mut target = alondra_core::accounts::with_accounts(previous.as_deref().unwrap_or_default(), &next).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+    let mut recorded = vec![];
+    let mut profiles = file.model_profiles;
+    if !current.is_connected(Provider::Claude) && next.is_connected(Provider::Claude) && seed_claude_orchestrator(&mut profiles) {
+        target = alondra_core::options::with_model_profiles(&target, &profiles).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+        recorded.push(Command::RecordModelProfiles { version: alondra_core::model_selection::profiles_version(&profiles), profiles });
+    }
     let state = domain.read();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.state().data_epoch.clone(),
         command_id: format!("account-configuration-{}", crate::auth::random_hex(16)).into(), expected_revision: 0,
@@ -703,7 +733,7 @@ pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Pa
     let user_home = claude.as_ref().map(|claude| claude.user_home.clone()).or_else(|| codex.as_ref().map(|codex| codex.user_home.clone())).unwrap_or_else(|| home.join("unavailable-native-home"));
     let refused = std::cell::RefCell::new(None);
     let removed = std::cell::RefCell::new(Vec::new());
-    let result = crate::domain_store::provider_settings::apply_authorized(domain, home, actor, envelope, previous, target, vec![], authorize, |state| {
+    let result = crate::domain_store::provider_settings::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |state| {
         match prepare_account_changes(home, &user_home, claude.as_ref(), codex.as_ref(), &current, &next, &working_keys(state)) {
             Ok(keys) => { *removed.borrow_mut() = keys; Ok(()) }
             Err(why) => { let message = format!("{why:?}"); *refused.borrow_mut() = Some(why); Err(crate::domain_store::StoreError::Storage(anyhow::anyhow!(message))) }

@@ -779,6 +779,23 @@ class HandoverWorld:
         """SIGKILL: the daemon dies at once, its nodes and SDK hosts go on."""
         self.daemon.kill()
 
+    def connect_claude(self):
+        """What `alondra doctor --fix` does on a new install when the user picks Claude: a new HOME
+        has no provider connected, and no request runs until one is."""
+        listing = self.settings('GET', '/settings/accounts')
+        config = listing['config']
+        connected = config.get('connected') or []
+        config['connected'] = connected if 'claude' in connected else [*connected, 'claude']
+        self.settings('PUT', '/settings/accounts', {'version': listing['version'], 'accounts': config})
+        self.settings('POST', '/settings/accounts/check')
+
+    def settings(self, method, path, body=None):
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}?capabilities=provider_accounts', method=method,
+                                         data=None if body is None else json.dumps(body).encode(),
+                                         headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=PATIENCE) as response:
+            return json.loads(response.read())
+
     def request(self, task, title):
         script = {'request_id': f'req-{task}', 'tasks': [{'task_id': task, 'title': title}]}
         (self.fakes / 'scripts' / f'req-{task}.json').write_text(json.dumps(script))
@@ -926,6 +943,7 @@ def fresh_sdk(rehearsal, new, sdk):
         world.home.mkdir(mode=0o700)
         world.provision()
         world.start(new['version'])
+        world.connect_claude()
         world.tool('phone', '--mac', '1', 'pair', '--direct')
         world.request(FRESH_TASK, 'Write the changelog')
         session = until('the task runs through the host the release installed', lambda: (fresh_session(world), fresh_sessions(world)), within=PATIENCE)

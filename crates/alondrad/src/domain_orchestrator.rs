@@ -354,7 +354,7 @@ impl Executor {
         let selection = match crate::orchestrator_provider::selection(&self.domain, &self.home, now) {
             Ok(selection) => selection,
             Err(error) => {
-                if self.domain.live.account_wait.start() { log!("orchestrator waits for account/model selection: {}", error.message); }
+                if self.domain.live.account_wait.wait_for(&error.message) { log!("orchestrator waits for account/model selection: {}", error.message); }
                 return Ok(());
             }
         };
@@ -1790,6 +1790,40 @@ mod tests {
         assert_eq!(f.starts().len(), 1, "the account check seeing a session runs the batch at once");
         assert!(!domain.live.usage_pause.is_active(), "and nothing holds new work any more");
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], false, "and the wait is gone from the screens");
+    }
+
+    #[tokio::test]
+    async fn a_request_on_a_fresh_install_says_each_reason_it_waits_and_runs_once_claude_is_connected() {
+        use alondra_core::accounts::{AccountKey, AccountsConfig, Provider};
+        let f = fixture();
+        let domain = &f.executor.domain;
+        let options = alondra_core::options::path_in(&f.executor.home);
+        let connected = std::fs::read_to_string(&options).unwrap();
+        std::fs::write(&options, AccountsConfig::fresh().to_toml()).unwrap();
+        crate::accounts::begin_initial_check(domain);
+        ask_orchestrator(&f, 1);
+
+        f.tick().await;
+        assert_eq!(f.starts().len(), 0);
+        let checking = domain.live.account_wait.reason().expect("the request waits");
+        assert!(checking.contains("Accounts are being checked"), "{checking}");
+
+        crate::accounts::check(domain, &f.executor.home);
+        f.tick().await;
+        assert_eq!(f.starts().len(), 0, "no provider is connected");
+        let unconnected = domain.live.account_wait.reason().expect("the request still waits");
+        assert_ne!(unconnected, checking, "the wait says why it waits now, not why it waited at startup");
+        assert!(unconnected.contains("open Accounts to connect"), "{unconnected}");
+
+        std::fs::write(&options, connected).unwrap();
+        let profiles = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&options).unwrap()).unwrap().model_profiles;
+        let version = alondra_core::model_selection::profiles_version(&profiles);
+        command(domain, Actor::System, "connected-profiles", Command::RecordModelProfiles { profiles, version });
+        accounts_seen(&f, "connected", alondra_core::accounts::AccountState::SignedIn);
+        command(domain, Actor::System, "connected-order", Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude)], version: "connected".into() });
+        f.tick().await;
+        assert_eq!(f.starts().len(), 1, "connecting Claude runs the request that waited");
+        assert_eq!(domain.live.account_wait.reason(), None);
     }
 
     #[tokio::test]

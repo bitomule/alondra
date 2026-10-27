@@ -536,3 +536,36 @@ fn absent_native_workspace_never_proves_existing_session_identity() {
     assert!(!native.matches(&report), "matching absence is not positive workspace proof");
     assert!(report.signed_in && report.supported_authentication(), "optional identity is independent from first-node authentication");
 }
+
+#[test]
+fn connecting_claude_on_a_fresh_install_gives_the_orchestrator_a_model_claude_advertises() {
+    use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelCandidate, ModelProfile, RoleModelPolicy};
+    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let options = alondra_core::options::path_in(&f.home);
+    std::fs::remove_file(&options).unwrap();
+    check(&domain, &f.home);
+    let user = Actor::User { user_id: "device:test".into() };
+    let fresh = config(&f.home).unwrap();
+    let mut connected = fresh.clone(); connected.connect(Provider::Claude);
+    replace_configuration_authorized(&domain, &f.home, &user, &version(&fresh), &connected, || Ok(())).unwrap();
+    let key = AccountKey::native(Provider::Claude);
+    record_probe_fixture(&domain, vec![probe_account("first@example.invalid")]);
+    record_account_command(&domain, Command::RecordAccountConfiguration { order: vec![key.clone()], version: version(&config(&f.home).unwrap()) });
+    let model = |name: &str| CatalogModel { model: name.into(), display_name: name.into(), reasoning_efforts: vec![], default_reasoning_effort: None,
+        context_window: None, input_modalities: vec![], is_default: false, hidden: false };
+    record_account_command(&domain, Command::RecordModelCatalog { catalog: AccountModelCatalog { account: key, revision: "no-native-default".into(),
+        models: vec![model("sonnet"), model("opus")], native_default: None, measured_at: 2 } });
+    let selection = crate::orchestrator_provider::selection(&domain, &f.home, 100).expect("the orchestrator has a model");
+    assert_eq!(selection.model.model.model, "opus");
+
+    let text = std::fs::read_to_string(&options).unwrap();
+    let mut profiles = alondra_core::options::OptionsFile::parse(&text).unwrap().model_profiles;
+    let chosen = RoleModelPolicy::OrderedCandidates { candidates: vec![ModelCandidate { model: "sonnet".into(), reasoning_effort: None }] };
+    profiles.entry(Provider::Claude).or_default().insert(ModelProfile::Orchestrator, chosen.clone());
+    std::fs::write(&options, alondra_core::options::with_model_profiles(&text, &profiles).unwrap()).unwrap();
+    let current = config(&f.home).unwrap();
+    let mut both = current.clone(); both.connect(Provider::Codex);
+    replace_configuration_authorized(&domain, &f.home, &user, &version(&current), &both, || Ok(())).unwrap();
+    let kept = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&options).unwrap()).unwrap().model_profiles;
+    assert_eq!(kept[&Provider::Claude][&ModelProfile::Orchestrator], chosen, "a later connection keeps the user's choice");
+}
