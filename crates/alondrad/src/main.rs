@@ -123,6 +123,7 @@ mod usage_pause;
 mod usage_probe;
 mod uploads;
 mod client_routes;
+mod open_files;
 mod views;
 mod watcher;
 mod worktree;
@@ -166,6 +167,11 @@ fn main() -> Result<()> {
         _ => (),
     }
     let diagnostic = diagnostic_device(args)?;
+    match open_files::raise() {
+        Ok((before, after)) if after > before => log!("open files: soft limit raised from {before} to {after}"),
+        Ok(_) => {}
+        Err(why) => log!("open files: the soft limit could not be raised: {why}"),
+    }
     let env = |k: &str| std::env::var(k).ok();
     let label = Config::load()
         .map(|c| c.service_label)
