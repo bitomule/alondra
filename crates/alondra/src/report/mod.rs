@@ -193,17 +193,38 @@ fn repo_of(host: &dyn Host) -> Result<String> {
 }
 
 /// `alondra report send`: sends report `id`, already previewed, to the report repository.
-pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool) -> Result<()> {
+pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool, json: bool) -> Result<()> {
     let host = Mac::new();
-    let files = checked(&host, id)?;
-    let gh = github::Gh::default();
-    let repo = github::Repo { gh: &gh, name: repo_of(&host)? };
-    let outcome = send::send(&repo, host.home(), id, &files, kind, host.now(), &backoff);
+    let sent = checked(&host, id).and_then(|files| {
+        let gh = github::Gh::default();
+        let repo = github::Repo { gh: &gh, name: repo_of(&host)? };
+        let outcome = send::send(&repo, host.home(), id, &files, kind, host.now(), &backoff)?;
+        Ok((repo.name, outcome))
+    });
     if retry {
-        return outcome.map(drop);
+        return sent.map(drop);
     }
-    println!("{}", outcome_notice(&repo.name, &outcome?));
+    if json {
+        println!("{}", serde_json::to_string_pretty(&sent_json(id, &sent))?);
+        return Ok(());
+    }
+    let (repo, outcome) = sent?;
+    println!("{}", outcome_notice(&repo, &outcome));
     Ok(())
+}
+
+/// What `alondra report send --json` prints: sent, pending, or refused with why, so whoever asked
+/// gets the answer in the same document either way.
+pub fn sent_json(id: &str, sent: &Result<(String, send::Outcome)>) -> Value {
+    match sent {
+        Ok((repo, outcome @ send::Outcome::Sent { url, .. })) => {
+            json!({"schema": "alondra.report-send/1", "id": id, "state": "sent", "url": url, "message": outcome_notice(repo, outcome)})
+        }
+        Ok((repo, outcome @ send::Outcome::Pending(_))) => {
+            json!({"schema": "alondra.report-send/1", "id": id, "state": "pending", "message": outcome_notice(repo, outcome)})
+        }
+        Err(error) => json!({"schema": "alondra.report-send/1", "id": id, "state": "refused", "message": format!("{error}")}),
+    }
 }
 
 /// How long a pending report waits; seconds in a sandbox with fast timing.
@@ -421,7 +442,8 @@ pub fn run(window_text: &str, description: Option<String>, kind: Option<send::Ki
     }
     let built = built?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&summary_json(&built))?);
+        let repo = if built.hits.is_empty() { host.report_repo() } else { None };
+        println!("{}", serde_json::to_string_pretty(&summary_json(&built, repo.as_deref()))?);
         return Ok(());
     }
     print!("{}", summary(&built));
@@ -470,7 +492,7 @@ pub fn saved_notice(file: &Path) -> String {
     )
 }
 
-fn size(bytes: usize) -> String {
+pub(crate) fn size(bytes: usize) -> String {
     if bytes < 1024 { format!("{bytes} B") } else if bytes < 1024 * 1024 { format!("{} KB", bytes.div_ceil(1024)) } else { format!("{:.1} MB", bytes as f64 / 1_048_576.0) }
 }
 
@@ -518,7 +540,7 @@ pub fn summary(built: &Built) -> String {
 }
 
 /// What a counter of the manifest's `omitted` counts, for the user.
-fn omitted_label(key: &str) -> String {
+pub(crate) fn omitted_label(key: &str) -> String {
     match key {
         "daemon_log_lines_without_template" => tr!("log lines no template of the code has", "líneas del log que no son de ninguna plantilla del código").into(),
         "lifecycle_events_not_decoded" => tr!("lifecycle events it could not read", "eventos del ciclo de vida que no pudo leer").into(),
@@ -529,7 +551,9 @@ fn omitted_label(key: &str) -> String {
     }
 }
 
-fn summary_json(built: &Built) -> Value {
+/// `repo` is where it would be sent, when the final check passed and this Mac knows one; `summary`
+/// is the text `alondra report` shows, for a screen to show the same.
+pub fn summary_json(built: &Built, repo: Option<&str>) -> Value {
     json!({
         "schema": "alondra.report/1",
         "id": built.id,
@@ -537,6 +561,8 @@ fn summary_json(built: &Built) -> Value {
         "compressed_bytes": built.compressed,
         "manifest": manifest_of(&built.files),
         "check": {"passed": built.hits.is_empty(), "hits": built.hits},
+        "repo": repo,
+        "summary": summary(built),
     })
 }
 

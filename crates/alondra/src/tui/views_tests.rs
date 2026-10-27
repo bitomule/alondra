@@ -836,3 +836,140 @@ fn a_settings_only_model_form_offers_save_and_only_its_declared_inputs() {
     press(&mut app, KeyCode::Esc); assert!(app.composer.as_ref().unwrap().form.as_ref().unwrap().focus.is_none());
     press(&mut app, KeyCode::Esc); assert!(app.composer.is_none());
 }
+
+fn built_report(repo: Option<&str>, passed: bool) -> Value {
+    json!({
+        "schema": "alondra.report/1",
+        "id": "r-20261027-0a1b2c3d",
+        "dir": "/Users/someone/.alondra/reports/r-20261027-0a1b2c3d",
+        "compressed_bytes": 48_000,
+        "manifest": {
+            "window": {"hours": 72},
+            "description": {"bytes": 31, "sha256": "d"},
+            "sections": [
+                {"name": "versions.json", "bytes": 210, "sha256": "a"},
+                {"name": "daemon.log", "bytes": 180_000, "sha256": "b"},
+                {"name": "sdk-host.jsonl", "empty": "no SDK host ran"},
+            ],
+            "omitted": {"daemon_log_lines_without_template": 4},
+        },
+        "check": {"passed": passed, "hits": if passed { json!([]) } else { json!([{"section": "daemon.log", "line": 7, "what": "a path of this Mac"}]) }},
+        "repo": repo,
+        "failure": "session-ended",
+    })
+}
+
+fn type_and_enter(app: &mut App, text: &str) {
+    app.on_paste(text);
+    press(app, KeyCode::Enter);
+}
+
+#[test]
+fn a_crash_report_asks_what_happened_shows_every_file_and_asks_once_whether_to_send_it() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    press(&mut app, KeyCode::Char(':'));
+    for c in "report".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.composer, Some(c) if matches!(&c.target, Target::ReportDescription { failure } if failure == "other")),
+        ":report asks what happened, as «other»");
+    type_and_enter(&mut app, "The node stopped after the Mac slept");
+    let report = app.crash_report.as_ref().expect("the report is being built");
+    assert!(matches!(report.stage, crash_report::Stage::Building));
+    assert_eq!(report.description.as_deref(), Some("The node stopped after the Mac slept"));
+
+    app.on_msg(Msg::Report(crash_report::Answer::Built(Ok(built_report(Some("owner/reports"), true)))));
+    let screen = drawn(&mut app, 120, 40);
+    for shown in ["Crash report r-20261027-0a1b2c3d · last 72 hours", "What happened? “The node stopped after the Mac slept”",
+        "manifest.json", "description.txt", "daemon.log", "no SDK host ran", "The final check found nothing private.",
+        "This is exactly what is sent. Anyone with the link of its issue will be able to read it",
+        "Send it to owner/reports? Anyone who sees its issue will be able to read it.", "Yes, send it", "No, keep it on this Mac"] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+    for hidden in ["recipient", "encrypt"] {
+        assert!(!screen.to_lowercase().contains(hidden), "{hidden}: {screen}");
+    }
+
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Enter);
+    let viewing = app.crash_report.as_ref().unwrap().viewing.as_ref().expect("Enter shows the file");
+    assert_eq!(viewing.name, "daemon.log", "the empty section is not a file to open");
+    app.on_msg(Msg::Report(crash_report::Answer::File { id: "r-20261027-0a1b2c3d".into(), name: "daemon.log".into(),
+        result: Ok(json!({"text": "2026-10-27T10:00:00Z alondrad: tarea-1 started\n"})) }));
+    assert!(drawn(&mut app, 120, 40).contains("2026-10-27T10:00:00Z alondrad: tarea-1 started"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.crash_report.as_ref().unwrap().viewing.is_none(), "Esc goes back to the report");
+
+    press(&mut app, KeyCode::Char('n'));
+    let screen = drawn(&mut app, 120, 40);
+    assert!(screen.contains("It stays on this Mac. To send it later: alondra report send r-20261027-0a1b2c3d"), "{screen}");
+}
+
+#[test]
+fn a_file_dropped_on_what_happened_stays_text_because_the_report_attaches_nothing() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let dir = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("notes.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let mut app = app();
+    app.open_crash_report("other");
+    assert!(!drawn(&mut app, 120, 40).contains("drop a file"), "the keys offer no attachment");
+    app.on_paste(&file.display().to_string());
+    let composer = app.composer.as_ref().expect("still asking what happened");
+    assert!(composer.chips.is_empty(), "nothing is attached");
+    assert_eq!(composer.input.text(), file.display().to_string());
+}
+
+#[test]
+fn yes_sends_the_report_as_the_failure_it_was_opened_for() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    let action = alondra_core::views::Action {
+        link: Some(alondra_core::views::Link::Local { local: alondra_core::views::LocalLink::CrashReport { failure: "not-resumed".into() } }),
+        ..serde_json::from_value(json!({"id": "", "label": "Send crash report", "style": "secondary", "presentation": "button",
+            "input": {"kind": "none"}, "attachments": false, "enabled": true})).unwrap()
+    };
+    app.run_view_action(&action, None, &Key("task:t-1".into()), "epoch".into());
+    assert!(matches!(&app.composer, Some(c) if matches!(&c.target, Target::ReportDescription { failure } if failure == "not-resumed")));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.crash_report.as_ref().unwrap().description, None, "«What happened?» is optional");
+    app.on_msg(Msg::Report(crash_report::Answer::Built(Ok(built_report(Some("owner/reports"), true)))));
+    press(&mut app, KeyCode::Char('y'));
+    assert!(matches!(app.crash_report.as_ref().unwrap().stage, crash_report::Stage::Sending(_)));
+    assert!(drawn(&mut app, 120, 40).contains("Sending it to owner/reports…"));
+    app.on_msg(Msg::Report(crash_report::Answer::Sent { id: "r-20261027-0a1b2c3d".into(),
+        result: Ok(json!({"state": "sent", "message": "Sent: https://github.com/owner/reports/issues/4."})) }));
+    assert!(drawn(&mut app, 120, 40).contains("Sent: https://github.com/owner/reports/issues/4."));
+}
+
+#[test]
+fn a_report_with_nowhere_to_go_or_something_private_offers_no_send() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    for (repo, passed, says) in [(None, true, "This Mac knows no report repository, so it stays here. To save it as a file: alondra report save r-20261027-0a1b2c3d"),
+        (Some("owner/reports"), false, "The report cannot leave this Mac; the final check found:")] {
+        let mut app = app();
+        app.open_crash_report("session-ended");
+        press(&mut app, KeyCode::Enter);
+        app.on_msg(Msg::Report(crash_report::Answer::Built(Ok(built_report(repo, passed)))));
+        let screen = drawn(&mut app, 140, 40);
+        assert!(screen.contains(says), "{screen}");
+        assert!(!screen.contains("Yes, send it") && !screen.contains("Send it to"), "{screen}");
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.crash_report.as_ref().unwrap().stage, crash_report::Stage::Ready(_)), "y sends nothing");
+    }
+}
+
+#[test]
+fn settings_open_a_crash_report_as_other() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = mcp_servers_open();
+    assert!(drawn(&mut app, 140, 60).contains("Send a crash report"));
+    select(&mut app, "Send a crash report");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.composer, Some(c) if matches!(&c.target, Target::ReportDescription { failure } if failure == "other")));
+}

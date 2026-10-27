@@ -2249,6 +2249,7 @@ impl DomainState {
             | Command::RecordDecisionAborted { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
             | Command::RevokeTaskGrant { task_id, .. }
+            | Command::ReportFailure { task_id }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. }
             | Command::SettlePlanReview { task_id, .. } => task(task_id),
@@ -4734,6 +4735,9 @@ impl DomainState {
             Command::RevokeTaskGrant { task_id, card } => {
                 self.revoke_grant_guard(actor, task_id, card)?;
                 self.tasks.get_mut(task_id).unwrap().allowed.remove(card);
+            }
+            Command::ReportFailure { task_id } => {
+                self.report_failure_guard(actor, task_id)?;
             }
             Command::ClearCompleted { seen } => {
                 let (tasks, requests) = self.clear_guard(actor, *seen)?;

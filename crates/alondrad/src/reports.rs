@@ -8,7 +8,7 @@ const EVERY: Duration = Duration::from_secs(60);
 const ONE_TRY: Duration = Duration::from_secs(15 * 60);
 
 /// A report id as `alondra report` makes them: `r-<8 digits>-<8 hex>`.
-fn is_report_id(id: &str) -> bool {
+pub(crate) fn is_report_id(id: &str) -> bool {
     let parts: Vec<&str> = id.split('-').collect();
     parts.len() == 3
         && parts[0] == "r"

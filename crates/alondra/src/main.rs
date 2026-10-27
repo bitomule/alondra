@@ -462,7 +462,7 @@ fn main() -> Result<()> {
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
         Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
-        | Cmd::Report { command: None | Some(ReportCmd::List), .. }
+        | Cmd::Report { command: None | Some(ReportCmd::List | ReportCmd::Send { .. }), .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
         | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
@@ -498,7 +498,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
                 println!("{}", report::saved_notice(&file));
                 Ok(())
             }
-            Some(ReportCmd::Send { id, kind, retry }) => report::send_report(&id, kind, retry),
+            Some(ReportCmd::Send { id, kind, retry }) => report::send_report(&id, kind, retry, json),
             Some(ReportCmd::List) => report::list_reports(json),
             Some(ReportCmd::Open { target }) => report::open_report(&target),
             Some(ReportCmd::Delete { target }) => report::delete_report(&target),

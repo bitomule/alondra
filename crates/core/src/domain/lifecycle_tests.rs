@@ -2302,3 +2302,11 @@ fn a_known_codex_source_never_heals_an_unknown_original_target_but_own_node_succ
     assert!(!state.interactions[&target].withdrawn); assert_eq!(state.lifecycle_journal[&TaskId::from("t")], journal);
     assert_aggregate_rules(&state);
 }
+
+#[test]
+fn a_message_claude_never_read_offers_a_crash_report_as_not_delivered() {
+    let mut s = world();
+    dropped(&mut s);
+    assert!(s.report_failure_action(&"t".into()).enabled);
+    assert_eq!(s.task_failure(&"t".into()), Some(ReportedFailure::MessageNotDelivered));
+}

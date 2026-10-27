@@ -351,6 +351,7 @@ impl App {
                     }
                     alondra_core::views::LocalLink::McpSignIn { card, server } => self.mcp_connect(card, server),
                     alondra_core::views::LocalLink::McpReconnect { card } => self.mcp_reconnect(card),
+                    alondra_core::views::LocalLink::CrashReport { failure } => self.open_crash_report(failure),
                     alondra_core::views::LocalLink::AccountAdd { provider, argv, .. } => {
                         if let Some(arguments) = alondra_core::views::accounts::account_arguments(provider.as_deref(), argv.as_deref(), None, true) {
                             let provider = provider.as_deref().map(alondra_core::accounts::Provider::parse).transpose().ok().flatten().unwrap_or_default();

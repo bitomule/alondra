@@ -1030,6 +1030,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordDecisionAborted { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::RevokeTaskGrant { task_id, .. }
+        | Command::ReportFailure { task_id }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }
         | Command::RecordTaskSelection { task_id, .. }

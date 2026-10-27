@@ -31,6 +31,7 @@ impl DomainState {
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),
             Command::RevokeTaskGrant { task_id, card } => self.revoke_grant_guard(actor, task_id, card),
+            Command::ReportFailure { task_id } => self.report_failure_guard(actor, task_id).map(drop),
             Command::ClearCompleted { seen } => self.clear_guard(actor, *seen).map(drop),
             Command::SetMergeMethod { .. } => user(actor).map(drop),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
@@ -413,6 +414,15 @@ impl DomainState {
             return fail("not_found", "That permission is no longer allowed in this task");
         }
         Ok(())
+    }
+
+    pub(super) fn report_failure_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<ReportedFailure> {
+        user(actor)?;
+        self.task(task_id)?;
+        match self.task_failure(task_id) {
+            Some(failure) => Ok(failure),
+            None => fail("conflict", "Nothing failed in this task for a crash report to explain"),
+        }
     }
 
     pub(super) fn archive_guard(&self, actor: &Actor, task_id: &TaskId, archived: bool) -> Result<()> {

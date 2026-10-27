@@ -1,0 +1,43 @@
+//! The failures a crash report explains, read from a task's lifecycle journal: its node's session
+//! ended on its own, a message never reached it, or its execution did not come back when the daemon
+//! started again. The “Send crash report” button of the task offers a report of the last one.
+use super::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportedFailure {
+    SessionEnded,
+    MessageNotDelivered,
+    NotResumed,
+}
+
+impl ReportedFailure {
+    /// The kind of failure as `alondra report send --kind` names it.
+    pub fn word(self) -> &'static str {
+        match self {
+            ReportedFailure::SessionEnded => "session-ended",
+            ReportedFailure::MessageNotDelivered => "message-not-delivered",
+            ReportedFailure::NotResumed => "not-resumed",
+        }
+    }
+
+    fn of(record: &LifecycleRecord) -> Option<ReportedFailure> {
+        match record {
+            LifecycleRecord::HostEnded { .. } => Some(ReportedFailure::SessionEnded),
+            LifecycleRecord::InputDropped { .. } | LifecycleRecord::HandoffDoubted { .. } => Some(ReportedFailure::MessageNotDelivered),
+            LifecycleRecord::Paused { card, .. } if card.0.starts_with(HOST_LOST_PREFIX) => Some(ReportedFailure::NotResumed),
+            _ => None,
+        }
+    }
+}
+
+impl DomainState {
+    /// The last failure of `task` a crash report explains, if it had one.
+    pub fn task_failure(&self, task: &TaskId) -> Option<ReportedFailure> {
+        self.lifecycle_journal.get(task)?.iter().rev().find_map(ReportedFailure::of)
+    }
+
+    /// The “Send crash report” button of `task`, judged by the guard of its command.
+    pub fn report_failure_action(&self, task: &TaskId) -> AvailableAction {
+        self.action("report_failure", Command::ReportFailure { task_id: task.clone() }, None, None, self)
+    }
+}

@@ -1628,3 +1628,61 @@ async fn a_file_is_never_marked_for_a_head_or_a_file_the_reader_did_not_see() {
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&mark("src/a.rs", PR_HEAD)).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::start().await;
+    let cli = fixture.home.join("fake-alondra");
+    std::fs::write(&cli, "#!/bin/sh\ncase \"$*\" in *fails*) echo 'Error: GitHub said no' >&2; exit 1;; esac\n\
+        printf '{\"args\":\"%s\",\"home\":\"%s\",\"lang\":\"%s\"}' \"$*\" \"$ALONDRA_HOME\" \"$ALONDRA_LANG\"\n").unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.client.use_report_cli(cli);
+    let post = |path: &'static str, body: Value| {
+        let request = fixture.signed("POST", path, Some(&body));
+        async move {
+            let response = request.send().await.unwrap();
+            (response.status(), response.json::<Value>().await.unwrap())
+        }
+    };
+
+    let (status, built) = post("/reports", json!({"description": "It stopped after the Mac slept", "lang": "es"})).await;
+    assert_eq!(status, StatusCode::OK, "{built}");
+    assert_eq!(built["args"], "--json --no-input report --description It stopped after the Mac slept");
+    assert_eq!(built["home"], fixture.home.display().to_string());
+    assert_eq!((built["lang"].as_str(), built["failure"].as_str()), (Some("es"), Some("other")), "a report from Settings goes as «other»");
+    let (_, built) = post("/reports", json!({"failure": "session-ended", "description": "  "})).await;
+    assert_eq!((built["args"].as_str(), built["failure"].as_str(), built["lang"].as_str()),
+        (Some("--json --no-input report"), Some("session-ended"), Some("en")));
+    let (status, refused) = post("/reports", json!({"failure": "crash"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+
+    let (status, sent) = post("/reports/r-20261027-0000abcd/send", json!({"failure": "not-resumed"})).await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert_eq!(sent["args"], "--json --no-input report send r-20261027-0000abcd --kind not-resumed");
+    let (_, sent) = post("/reports/r-20261027-0000abcd/send", json!({})).await;
+    assert_eq!(sent["args"], "--json --no-input report send r-20261027-0000abcd --kind other");
+    assert_eq!(parse_write("/reports/fails/send"), None, "only a report id is sent");
+    std::fs::write(fixture.home.join("fake-alondra"), "#!/bin/sh\necho 'Error: GitHub said no' >&2\nexit 1\n").unwrap();
+    let (status, failed) = post("/reports/r-20261027-0000abcd/send", json!({})).await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(failed["message"], "GitHub said no", "{failed}");
+
+    let dir = fixture.home.join("reports/r-20261027-0000abcd");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("manifest.json"), json!({"sections": [{"name": "daemon.log", "bytes": 9, "sha256": "x"}]}).to_string()).unwrap();
+    std::fs::write(dir.join("daemon.log"), "the log\n").unwrap();
+    std::fs::write(dir.join("pseudonyms.json"), r#"{"tarea-1": "t-secret"}"#).unwrap();
+    let (status, file) = fixture.get("/reports/r-20261027-0000abcd/files/daemon.log").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_slice::<Value>(&file).unwrap()["text"], "the log\n");
+    for path in ["/reports/r-20261027-0000abcd/files/pseudonyms.json", "/reports/r-20261027-0000abcd/files/sending.json"] {
+        let (status, body) = fixture.get(path).await;
+        assert_ne!(status, StatusCode::OK, "{path}");
+        assert!(!String::from_utf8_lossy(&body).contains("t-secret"), "{path}");
+    }
+    assert!(approved_read_path("/reports/r-20261027-0000abcd/files/daemon.log"), "the relay carries it too");
+    for path in ["/reports/r-1/files/daemon.log", "/reports/r-20261027-0000abcd/files/..", "/reports/r-20261027-0000abcd/files/a/b"] {
+        assert!(!approved_read_path(path), "{path}");
+    }
+}

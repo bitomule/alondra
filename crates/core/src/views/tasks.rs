@@ -949,6 +949,22 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
     }
 }
 
+/// “Send crash report”, on a task whose node failed in a way a report explains: it opens the
+/// report's preview, whose issue goes as that failure. The terminal is the only client with that
+/// preview for now.
+fn crash_report_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
+    if context.client != super::Client::Tui || !context.domain.report_failure_action(&task.id).enabled {
+        return None;
+    }
+    let failure = context.domain.task_failure(&task.id)?;
+    let mut action = common::view_link("", t!(context.lang, "Send crash report", "Enviar informe del fallo"));
+    action.style = Style::Secondary;
+    action.role = Some(Style::Secondary.role());
+    action.key = Some("!".into());
+    action.link = Some(super::Link::Local { local: super::LocalLink::CrashReport { failure: failure.word().into() } });
+    Some(action)
+}
+
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     let task = context
@@ -1286,6 +1302,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     {
         actions.push(common::view_link(&format!("task_selection:{id}"), t!(context.lang, "Change model", "Cambiar modelo")));
     }
+    actions.extend(crash_report_action(task, context));
     view.sections.push(common::section(
         "actions",
         None,

@@ -122,7 +122,7 @@ impl DomainState {
     pub fn set_merge_method_action(&self, method: MergeMethod) -> AvailableAction {
         self.action("set_merge_method", Command::SetMergeMethod { method }, None, None, self)
     }
-    fn action(
+    pub(super) fn action(
         &self,
         kind: &str,
         command: Command,

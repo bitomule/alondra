@@ -36,6 +36,8 @@ enum Shape {
     Defining,
     /// Its node runs through the Agent SDK and waits for the user to sign in to an MCP server.
     WaitingMcp,
+    /// Its node ran through the Agent SDK and its session ended on its own: it offers a crash report.
+    SessionEnded,
 }
 
 impl Shape {
@@ -49,13 +51,14 @@ impl Shape {
             Shape::Cancelled => "cancelled",
             Shape::Defining => "defining",
             Shape::WaitingMcp => "waiting-mcp",
+            Shape::SessionEnded => "session-ended",
         }
     }
 }
 
 /// The real domain on 15 October: ~300 tasks, ~280 nodes, ~300 requests, ~1700 cards, ~250
 /// deliveries with a PR and 12 cards waiting for the user.
-const UNITS: [(Shape, usize); 8] = [
+const UNITS: [(Shape, usize); 9] = [
     (Shape::Done, 230),
     (Shape::Document, 10),
     (Shape::Review, 6),
@@ -64,6 +67,7 @@ const UNITS: [(Shape, usize); 8] = [
     (Shape::Cancelled, 10),
     (Shape::Defining, 14),
     (Shape::WaitingMcp, 4),
+    (Shape::SessionEnded, 4),
 ];
 
 fn user() -> Actor {
@@ -106,7 +110,7 @@ fn unit(shape: Shape) -> DomainState {
     }
     seed.run(user(), Command::TitleRequest { request_id: request.as_str().into(), title: format!("Synthetic {} {TOKEN}", shape.name()) });
     seed.run(Actor::System, Command::RegisterAgent { agent_id: agent.as_str().into(), name: format!("{} node {TOKEN}", shape.name()), at: 0 });
-    let through_sdk = shape == Shape::WaitingMcp;
+    let through_sdk = matches!(shape, Shape::WaitingMcp | Shape::SessionEnded);
     seed.run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: task.as_str().into(), request_id: request.as_str().into(), title: format!("Synthetic {} task {TOKEN}", shape.name()),
         agent_id: (!through_sdk).then(|| agent.as_str().into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
@@ -119,6 +123,10 @@ fn unit(shape: Shape) -> DomainState {
         seed.run(Actor::System, Command::RecordRuntimeFacts { task_id: task.as_str().into(), generation: 1, facts: vec![
             RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
         ] });
+        if shape == Shape::SessionEnded {
+            seed.run(Actor::System, Command::RecordHostEnded { task_id: task.as_str().into(), generation: 1, resumes: false, ended_work: vec![] });
+            return seed.0;
+        }
         seed.run(Actor::System, Command::RecordMcpServers { task_id: task.as_str().into(), generation: 1, servers: vec![McpServerState {
             name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: Some("user".into()),
             transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_core::domain::McpTraits { scope: alondra_core::domain::McpScope::User, origin: alondra_core::domain::McpOrigin::UserSettings, connect: alondra_core::domain::McpConnect::SignIn, reconnect: true, sign_out: true, remove: true },
@@ -415,6 +423,7 @@ fn keys() -> Vec<(String, Client)> {
         (format!("card:{}", one("pr", Shape::Review)), Client::Mac),
         (format!("card:{}", mcp_card()), Client::Tui),
         (format!("task:{}", one("t", Shape::WaitingMcp)), Client::Tui),
+        (format!("task:{}", one("t", Shape::SessionEnded)), Client::Tui),
         (format!("document:{}", one("rev", Shape::Document)), Client::Ios),
         (format!("pull_request:{}", one("pr", Shape::Review)), Client::Ios),
         (format!("pull_request:{}", one("pr", Shape::Done)), Client::Mac),
@@ -603,4 +612,30 @@ fn reading_every_view_replays_no_journal() {
     println!("{}", serde_json::json!({"journal": journal, "views": keys.len(), "events_applied": applied,
         "median_ms": samples[SAMPLES / 2], "max_ms": samples[SAMPLES - 1]}));
     assert_eq!(applied, 0, "reading the index and {} views over a journal of {journal} records applied {applied} events", keys.len());
+}
+
+/// What a task's view says of a crash report: the failure its button sends the report as, if it
+/// offers one.
+fn crash_report_failure(state: DomainState, shape: Shape, client: Client) -> Option<String> {
+    let committed = ReadSnapshot::build(Arc::new(state));
+    let (state, index) = (committed.state(), committed.index());
+    let live = live(state);
+    let view = build(&format!("task:{}", id("t", shape)), RenderContext {
+        domain: state, index, live: &live, client, lang: Lang::En, transport: Transport::Loopback, cursor: "budget", rendered_at: "",
+    }).expect("the task renders");
+    let text = serde_json::to_string(&view).unwrap();
+    let at = text.find(r#""local":{"kind":"crash_report","failure":""#)?;
+    let rest = &text[at + r#""local":{"kind":"crash_report","failure":""#.len()..];
+    Some(rest[..rest.find('"')?].to_owned())
+}
+
+#[test]
+fn the_terminal_offers_a_crash_report_only_on_a_task_whose_session_ended_on_its_own() {
+    assert_eq!(crash_report_failure(unit(Shape::SessionEnded), Shape::SessionEnded, Client::Tui).as_deref(), Some("session-ended"));
+    for client in [Client::Ios, Client::Mac] {
+        assert_eq!(crash_report_failure(unit(Shape::SessionEnded), Shape::SessionEnded, client), None, "{client:?} has no preview yet");
+    }
+    for shape in [Shape::WaitingMcp, Shape::Running, Shape::Done] {
+        assert_eq!(crash_report_failure(unit(shape), shape, Client::Tui), None, "{shape:?}");
+    }
 }

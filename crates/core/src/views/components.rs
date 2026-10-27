@@ -739,6 +739,11 @@ pub enum LocalLink {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         argv: Option<Vec<String>>,
     },
+    /// The client opens the preview of a new crash report, whose issue goes as `failure`
+    /// (`alondra report send --kind`). Nothing is sent until the user says so on the preview.
+    CrashReport {
+        failure: String,
+    },
     /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
     #[serde(other, skip_serializing)]
     Unsupported,

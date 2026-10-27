@@ -25,6 +25,7 @@ pub const GENERAL: &str = "machine";
 pub const ACCOUNTS: &str = alondra_core::views::accounts::KEY;
 const GENERAL_SECTION: &str = "settings";
 const SERVERS_ROW: &str = "mcp_servers";
+const REPORT_ROW: &str = "crash_report";
 const ACCENT: Color = Color::LightCyan;
 
 /// A line of the screen: a project's heading, what a section says of itself, or one of its rows.
@@ -48,6 +49,7 @@ pub struct McpServers {
     pub account_detail: Option<Row>,
     pub order: Option<AccountOrderDraft>,
     servers: Option<Row>,
+    report: Option<Row>,
     /// What the user just picked on a General row, by the action's id: the row says it at once,
     /// until the Mac refuses it or a view of the Mac says how it is now.
     pub chosen: HashMap<String, Chosen>,
@@ -121,7 +123,27 @@ impl McpServers {
             entries.push(Entry::Group(tr!("MCP servers", "Servidores MCP")));
             entries.push(Entry::Row(servers));
         }
+        if let Some(report) = &self.report {
+            entries.push(Entry::Group(tr!("Help", "Ayuda")));
+            entries.push(Entry::Row(report));
+        }
         entries
+    }
+
+    /// Whether the selected row is the one that opens a new crash report.
+    pub fn on_report_row(&self) -> bool {
+        !self.detail && self.selected().is_some_and(|row| row.id == REPORT_ROW)
+    }
+
+    fn report_row() -> Row {
+        Row {
+            id: REPORT_ROW.into(), link: None, icon: Icon::Warning, title: tr!("Send a crash report", "Enviar informe de fallo").into(),
+            subtitle: Some(tr!(
+                "The logs of this Mac with everything private left out; you see exactly what is sent before it leaves",
+                "Los logs de este Mac con todo lo privado fuera; antes de que salga ves exactamente lo que se envía"
+            ).into()),
+            badges: vec![], trailing: None, depth: 0, struck: false, kind: None, children: vec![], folded: false, actions: vec![], account: None, model: None,
+        }
     }
 
     /// Whether the selected row is the one that opens the MCP servers' screen.
@@ -292,7 +314,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
 
 impl App {
     pub(super) fn open_mcp_servers(&mut self, detail: bool) {
-        self.mcp_servers = Some(McpServers { detail, servers: Some(McpServers::servers_row(None)), ..McpServers::default() });
+        self.mcp_servers = Some(McpServers { detail, servers: Some(McpServers::servers_row(None)), report: Some(McpServers::report_row()), ..McpServers::default() });
         self.load_mcp_servers();
         self.load_general();
         self.load_accounts();

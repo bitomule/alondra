@@ -466,6 +466,11 @@ pub enum Command {
         task_id: TaskId,
         archived: bool,
     },
+    /// The user asks for a crash report of what failed in the task. Nothing in the domain changes:
+    /// it only judges that the task had such a failure; the report is built and sent outside it.
+    ReportFailure {
+        task_id: TaskId,
+    },
     /// The user takes back what they allowed in the task from the permission card `card`: the
     /// next prompt it covered asks again.
     RevokeTaskGrant {

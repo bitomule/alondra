@@ -35,6 +35,11 @@ pub(super) enum Act {
     MoveAccountOrder(bool),
     AccountOrderPosition,
     SaveAccountOrder,
+    CrashReport,
+    ReportOpen,
+    ReportSend,
+    ReportKeep,
+    CloseReport,
     Search,
     Quit,
     Help,
@@ -256,7 +261,9 @@ impl App {
             t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back", "volver"), Act::CloseMenu);
             return t;
         }
-        if self.reader.is_some() {
+        if self.crash_report.is_some() {
+            self.crash_report_bindings(&mut t);
+        } else if self.reader.is_some() {
             self.reader_bindings(&mut t);
         } else if self.rules.is_some() {
             self.rules_bindings(&mut t);
@@ -268,8 +275,8 @@ impl App {
             self.list_bindings(&mut t);
         }
         t.help(vec![char('?')], "?", tr!("help", "ayuda"), Act::Help);
-        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :settings :<number>",
-            "línea de órdenes: :q :inbox :tasks :ajustes :<número>"), Act::CmdLine);
+        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :settings :report :<number>",
+            "línea de órdenes: :q :inbox :tasks :ajustes :informe :<número>"), Act::CmdLine);
         t.help(vec![char(']')], "]", tr!("next Mac, when this terminal is connected to several",
             "siguiente Mac, si este terminal está conectado a varios"), Act::NextMac);
         t
@@ -429,6 +436,30 @@ impl App {
         t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
     }
 
+    fn crash_report_bindings(&self, t: &mut Table) {
+        let Some(report) = self.crash_report.as_ref() else { return };
+        if let Some(viewing) = &report.viewing {
+            if matches!(&viewing.text, Some(Ok(lines)) if lines.len() > 1) {
+                let mut moves = selection_keys();
+                moves.extend(page_keys());
+                t.add(moves, "j/k", tr!("scroll", "desplazar"), Act::Move);
+            }
+            t.add(vec![plain(KeyCode::Esc), char('q'), char('h'), plain(KeyCode::Left)], "Esc", tr!("back to the report", "volver al informe"), Act::CloseReport);
+            return;
+        }
+        if let Some(built) = report.built() {
+            if built.openable().len() > 1 {
+                t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
+            }
+            t.add(vec![plain(KeyCode::Enter), char('v')], "Enter", tr!("show the file", "ver el fichero"), Act::ReportOpen);
+            if built.sendable() {
+                t.add(vec![char('y')], "y", tr!("Yes, send it", "Sí, enviarlo"), Act::ReportSend);
+                t.add(vec![char('n')], "n", tr!("No, keep it on this Mac", "No, que se quede en este Mac"), Act::ReportKeep);
+            }
+        }
+        t.add(vec![plain(KeyCode::Esc), char('q')], "Esc", tr!("close", "cerrar"), Act::CloseReport);
+    }
+
     fn mcp_servers_bindings(&self, t: &mut Table) {
         let Some(screen) = self.mcp_servers.as_ref() else { return };
         if screen.rows().len() > 1 {
@@ -452,7 +483,9 @@ impl App {
         if !screen.detail && screen.accounts.as_ref().is_some_and(|view| view.sections.iter().flat_map(|section| &section.actions).any(|action| action.enabled && action.id.starts_with("account_order:"))) {
             t.add(vec![char('o')], "o", tr!("reorder accounts", "ordenar cuentas"), Act::BeginAccountOrder);
         }
-        if screen.on_servers_row() {
+        if screen.on_report_row() {
+            t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::CrashReport);
+        } else if screen.on_servers_row() {
             t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::OpenMcpDetail);
         } else if let Some(row) = screen.selected() {
             for (index, action) in super::mcp_servers::actions(row).into_iter().enumerate() {
@@ -574,7 +607,9 @@ impl App {
         match act {
             Act::Move => {
                 let Some(motion) = motion(&key) else { return Flow::Go };
-                if self.reader.is_some() {
+                if let Some(report) = self.crash_report.as_mut() {
+                    report.step(motion);
+                } else if self.reader.is_some() {
                     self.reader_cmd(Cmd::Move(motion));
                 } else if let Some(rules) = self.rules.as_mut() {
                     rules.step(motion);
@@ -632,6 +667,11 @@ impl App {
             Act::MoveAccountOrder(down) => self.move_account_order(down),
             Act::AccountOrderPosition => self.account_order_position(),
             Act::SaveAccountOrder => self.save_account_order(),
+            Act::CrashReport => self.open_crash_report("other"),
+            Act::ReportOpen => self.open_report_file(),
+            Act::ReportSend => self.send_crash_report(),
+            Act::ReportKeep => self.keep_crash_report(),
+            Act::CloseReport => self.close_crash_report(),
             Act::Search => {
                 self.search = Some(super::Search {
                     input: super::TextInput::default(),

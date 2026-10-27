@@ -91,7 +91,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         None => body,
     };
-    if app.reader.is_some() {
+    if app.crash_report.is_some() {
+        draw_crash_report(f, app, body);
+    } else if app.reader.is_some() {
         draw_reader(f, app, body);
     } else if app.rules.is_some() {
         draw_rules(f, app, body);
@@ -860,6 +862,46 @@ fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
     scrollbar(f, inner, total, rules.scroll);
 }
 
+fn draw_crash_report(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(report) = app.crash_report.as_mut() else { return };
+    let title = match &report.viewing {
+        Some(viewing) => format!("{} › {}", tr!("Crash report", "Informe de fallo"), viewing.name),
+        None => tr!("Crash report", "Informe de fallo").to_owned(),
+    };
+    let block = panel(Line::from(format!(" {title} ").bold()), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if let Some(viewing) = report.viewing.as_mut() {
+        let lines: &[String] = match &viewing.text {
+            Some(Ok(lines)) => lines,
+            Some(Err(error)) => return centered_lines(f, inner, vec![Line::from(error.clone().fg(DIM))]),
+            None => return centered_lines(f, inner, vec![Line::from(tr!("Loading…", "Cargando…").fg(DIM))]),
+        };
+        if lines.is_empty() {
+            return centered_lines(f, inner, vec![Line::from(tr!("(empty)", "(vacío)").fg(DIM))]);
+        }
+        let height = inner.height as usize;
+        viewing.scroll = viewing.scroll.min(lines.len().saturating_sub(height.max(1)));
+        let shown: Vec<Line<'static>> = lines.iter().skip(viewing.scroll).take(height).map(|line| Line::from(line.clone())).collect();
+        f.render_widget(Paragraph::new(shown), Rect { width: inner.width.saturating_sub(1), ..inner });
+        scrollbar(f, inner, lines.len(), viewing.scroll);
+        return;
+    }
+    let width = inner.width.saturating_sub(1) as usize;
+    let (lines, selected) = super::crash_report::lines(report, width);
+    let total = lines.len();
+    let selected = selected.map(|row| (row, row + 1));
+    if let Some(range) = selected {
+        keep_visible(&mut report.scroll, range, inner.height as usize, total);
+    }
+    report.scroll = report.scroll.min(total.saturating_sub(inner.height as usize));
+    f.render_widget(Paragraph::new(lines).scroll((report.scroll as u16, 0)), inner);
+    if let Some((start, end)) = selected {
+        highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, start..end, report.scroll);
+    }
+    scrollbar(f, inner, total, report.scroll);
+}
+
 fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(screen) = app.mcp_servers.as_mut() else { return };
     let title = if screen.order.is_some() { tr!("Settings › Account order", "Ajustes › Orden de cuentas").to_owned() }
@@ -1523,6 +1565,11 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
             let provider = alondra_core::views::accounts::provider_name(*provider);
             trf!("Name of the new {provider} account; then finish native sign-in", "Nombre de la cuenta nueva de {provider}; después completa el inicio de sesión nativo")
         },
+        Target::ReportDescription { .. } => tr!(
+            "What happened? Optional; it goes as you write it, anyone who sees the report can read it",
+            "¿Qué pasó? Opcional; va tal cual lo escribas, lo podrá leer cualquiera que vea el informe"
+        )
+        .into(),
     };
     let settings_only = c.form.as_ref().is_some_and(|form| form.loaded && form.primary().is_none());
     let action = if settings_only { tr!("saves", "guarda") } else { composer_action(&c.target) };
@@ -1594,6 +1641,7 @@ fn composer_action(t: &Target) -> &'static str {
         Target::Comment { .. } | Target::General { send: false } => tr!("saves", "guarda"),
         Target::AccountName { .. } => tr!("adds it", "la añade"),
         Target::AccountPosition => tr!("moves it in the draft", "la mueve en el borrador"),
+        Target::ReportDescription { .. } => tr!("builds the report", "crea el informe"),
         _ => tr!("sends", "envía"),
     }
 }
@@ -1721,24 +1769,25 @@ fn composer_keys(c: &super::Composer) -> Vec<(String, String)> {
             k("Esc", tr!("cancel", "cancela")),
         ];
     }
-    vec![
+    let mut keys = vec![
         k("⏎", composer_action(&c.target)),
         k("Alt+⏎", tr!("new line", "nueva línea")),
         k("Ctrl+W", tr!("delete word", "borra palabra")),
         k("Ctrl+U", tr!("delete line", "borra línea")),
-        if c.chips.is_empty() {
-            k(
-                tr!("drop a file", "arrastra un archivo"),
-                tr!("attaches it", "lo adjunta"),
-            )
-        } else {
-            k(
-                tr!("⌫ on empty", "⌫ en vacío"),
-                tr!("removes the last attachment", "quita el último adjunto"),
-            )
-        },
-        k("Esc", tr!("cancel", "cancela")),
-    ]
+    ];
+    if !c.chips.is_empty() {
+        keys.push(k(
+            tr!("⌫ on empty", "⌫ en vacío"),
+            tr!("removes the last attachment", "quita el último adjunto"),
+        ));
+    } else if c.target.takes_files() {
+        keys.push(k(
+            tr!("drop a file", "arrastra un archivo"),
+            tr!("attaches it", "lo adjunta"),
+        ));
+    }
+    keys.push(k("Esc", tr!("cancel", "cancela")));
+    keys
 }
 
 /// Action results float above the key bar, wrapped, so they never hide the keys or get cut.

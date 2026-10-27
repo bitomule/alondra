@@ -6,6 +6,7 @@ mod live;
 mod mcp;
 mod new_work;
 mod pr_details;
+mod reports;
 mod tasks;
 mod viewed;
 
@@ -54,6 +55,7 @@ pub(crate) struct Client {
     pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
     device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
     device_languages_path: PathBuf,
+    report_cli: std::sync::Mutex<Option<PathBuf>>,
 }
 
 /// What a route answers: the status and the JSON body both the local listener and the relay
@@ -93,6 +95,8 @@ pub(crate) enum Write {
     ResolveConflicts(String),
     FileViewed(String),
     McpSignIn { card: String, step: mcp::Step },
+    NewReport,
+    SendReport(String),
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
@@ -100,6 +104,7 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
     match path {
         "/requests" => return Some(Write::NewRequest),
         "/activity" => return Some(Write::Presence),
+        "/reports" => return Some(Write::NewReport),
         _ => {}
     }
     if path == "/orchestrator/messages" {
@@ -115,6 +120,9 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
     }
     if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
         return crate::domain_api::decoded_pull_request_id(id).map(Write::ResolveConflicts);
+    }
+    if let Some(id) = path.strip_prefix("/reports/").and_then(|rest| rest.strip_suffix("/send")) {
+        return crate::reports::is_report_id(id).then(|| Write::SendReport(id.to_owned()));
     }
     if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/viewed-files")) {
         return crate::domain_api::decoded_pull_request_id(id).map(Write::FileViewed);
@@ -148,6 +156,7 @@ pub(crate) enum Route {
     Projects,
     Issues { refresh: bool },
     TaskHistory(String),
+    ReportFile { id: String, name: String },
 }
 
 fn plain_id(id: &str) -> bool {
@@ -199,12 +208,20 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
         ("/projects", None) => Some(Route::Projects),
         ("/issues", None) => Some(Route::Issues { refresh: false }),
         ("/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
+        (path, None) if path.starts_with("/reports/") => report_file_route(path),
         (path, None) if path.starts_with("/tasks/") => path.strip_prefix("/tasks/")?.strip_suffix("/history")
             .filter(|id| plain_id(id)).map(|id| Route::TaskHistory(id.to_owned())),
         (path, None) => path.strip_prefix("/agents/")?.strip_suffix("/activity")
             .filter(|id| plain_id(id)).map(|id| Route::Activity(id.to_owned())),
         _ => None,
     }
+}
+
+fn report_file_route(path: &str) -> Option<Route> {
+    let (id, name) = path.strip_prefix("/reports/")?.split_once("/files/")?;
+    let file_name = !name.is_empty() && name.len() <= 64 && !name.starts_with('.')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    (crate::reports::is_report_id(id) && file_name).then(|| Route::ReportFile { id: id.to_owned(), name: name.to_owned() })
 }
 
 pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
@@ -285,6 +302,7 @@ impl Client {
             mcp_probes: Default::default(),
             device_languages: std::sync::Mutex::new(device_languages),
             device_languages_path,
+            report_cli: std::sync::Mutex::new(crate::plugins::own_cli()),
         });
         crate::views::feed::start_clock(&client);
         client
@@ -327,6 +345,14 @@ impl Client {
                 self.cancel_reason(&id, body)
             }
             Write::McpSignIn { card, step } => self.mcp_sign_in(user_id, &card, step, body, authorize).await,
+            Write::NewReport => {
+                authorize()?;
+                Ok(self.new_report(body).await)
+            }
+            Write::SendReport(id) => {
+                authorize()?;
+                Ok(self.send_report(&id, body).await)
+            }
         }
     }
 
@@ -388,6 +414,7 @@ impl Client {
             Route::Projects => self.projects_answer(),
             Route::Issues { refresh } => self.issues_answer(refresh).await,
             Route::TaskHistory(id) => self.task_history(&id),
+            Route::ReportFile { id, name } => self.report_file(&id, &name),
         })
     }
 
@@ -540,6 +567,13 @@ async fn write(
     let Ok(Json(body)) = body else {
         return Reply::error(DomainError::new("invalid_input", "invalid request body")).into_response();
     };
+    if matches!(&route, Write::NewReport | Write::SendReport(_)) {
+        let authorize = || -> anyhow::Result<()> { Ok(()) };
+        return match client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await {
+            Ok(reply) => reply.into_response(),
+            Err(_) => storage(),
+        };
+    }
     let work = if matches!(&route, Write::Presence | Write::CancelReason(_)) {
         client.domain.command_work.clone()
     } else { client.domain.external_work.clone() };
@@ -554,6 +588,21 @@ async fn write(
     })).await {
         Ok(Ok(reply)) => reply.into_response(),
         _ => storage(),
+    }
+}
+
+/// A file of a crash report, for the preview of a screen on this Mac.
+async fn report_file(
+    State(client): State<Arc<Client>>,
+    signed: Option<Extension<Signed>>,
+    axum::extract::Path((id, name)): axum::extract::Path<(String, String)>,
+) -> Response {
+    if crate::domain_bootstrap::signed_device(client.home(), &signed).is_none() {
+        return forbidden();
+    }
+    match client.read(&format!("/reports/{id}/files/{name}")).await {
+        Some(response) => response,
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -590,6 +639,9 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
         .route("/orchestrator/messages", post(write))
         .route("/activity", post(write))
+        .route("/reports", post(write))
+        .route("/reports/{id}/send", post(write))
+        .route("/reports/{id}/files/{name}", axum::routing::get(report_file))
         .route("/mcp-sign-ins/{card}/{step}", post(write))
         .route("/tasks/{id}/cancel-reason", put(write))
         .route("/delivery-attempts/{id}/resolve", post(resolve_delivery))

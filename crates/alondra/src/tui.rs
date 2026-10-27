@@ -1,5 +1,6 @@
 mod agents;
 mod bindings;
+mod crash_report;
 mod draw;
 mod dropped;
 mod files;
@@ -506,6 +507,11 @@ pub enum Target {
     /// The name to append to a validated native account command.
     AccountName { provider: alondra_core::accounts::Provider, argv: Vec<String> },
     AccountPosition,
+    /// «What happened?» for a crash report whose issue goes as `failure`; the report is built once
+    /// it is sent, empty or not.
+    ReportDescription {
+        failure: String,
+    },
 }
 
 pub struct Composer {
@@ -513,6 +519,13 @@ pub struct Composer {
     pub input: TextInput,
     pub chips: Vec<Chip>,
     pub form: Option<work::OptionsForm>,
+}
+
+impl Target {
+    /// A crash report carries only what Alondra collects, so a file dropped on it is pasted as text.
+    pub fn takes_files(&self) -> bool {
+        !matches!(self, Target::ReportDescription { .. })
+    }
 }
 
 /// What the daemon found for a search nothing local matched.
@@ -618,6 +631,7 @@ enum Msg {
         allow: bool,
         result: Result<(), String>,
     },
+    Report(crash_report::Answer),
 }
 
 pub enum Flow {
@@ -653,6 +667,7 @@ pub struct App {
     pub mcp_servers: Option<mcp_servers::McpServers>,
     /// Keeps Settings' selected row while a server-owned form uses the normal view navigator.
     pub settings_after_view: Option<(mcp_servers::McpServers, usize)>,
+    pub crash_report: Option<crash_report::CrashReport>,
     /// What a key's work leaves the screen to do once it returns, such as an account's sign-in.
     pub pending_flow: Option<Flow>,
     pub sel: Option<Key>,
@@ -1154,6 +1169,7 @@ impl App {
             rules: None,
             mcp_servers: None,
             settings_after_view: None,
+            crash_report: None,
             pending_flow: None,
             sel: None,
             sel_idx: 0,
@@ -2121,6 +2137,7 @@ impl App {
                     .filter(|d| d.expires_at_ms > now && !self.pairing_answered.contains(&d.id))
                     .collect();
             }
+            Msg::Report(answer) => self.crash_report_answered(answer),
             Msg::PairingAnswered {
                 device,
                 allow,
@@ -2465,7 +2482,7 @@ impl App {
             }
             if dropped::dropped_files(s).is_none() { return; }
         }
-        if self.composer.is_some()
+        if self.composer.as_ref().is_some_and(|c| c.target.takes_files())
             && let Some(files) = dropped::dropped_files(s)
         {
             for f in files {
@@ -2658,13 +2675,17 @@ impl App {
                 self.reader = None;
                 self.open_mcp_servers(line == "mcp");
             }
+            "report" | "informe" => {
+                self.reader = None;
+                self.open_crash_report("other");
+            }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;
                 self.move_inbox(i);
             }
             other => self.fail(trf!(
-                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :settings, :<number>)",
-                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :ajustes, :<número>)"
+                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :settings, :report, :<number>)",
+                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :ajustes, :informe, :<número>)"
             )),
         }
         Flow::Go
@@ -2805,6 +2826,7 @@ impl App {
             Target::Form { .. } => false,
             Target::Comment { .. } | Target::General { .. } => false,
             Target::McpReturn { .. } | Target::AccountName { .. } | Target::AccountPosition => true,
+            Target::ReportDescription { .. } => false,
         };
         if needs_text && text.is_empty() {
             self.composer = Some(c);
@@ -2875,6 +2897,7 @@ impl App {
             }
             Target::Form { .. } => {}
             Target::McpReturn { card, server, .. } => self.mcp_give_back(&card, &server, text),
+            Target::ReportDescription { failure } => self.build_crash_report(failure, text),
             Target::AccountPosition => self.account_order_positioned(&text),
             Target::AccountName { provider, mut argv } => {
                 let legacy = provider == alondra_core::accounts::Provider::Claude && argv == ["accounts", "add"];

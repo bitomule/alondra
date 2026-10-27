@@ -3103,9 +3103,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ReplaceAccountConfiguration { .. } => 110,
         Command::RequestTaskSelection { .. } => 111,
         Command::ReviewWaits => 112,
+        Command::ReportFailure { .. } => 113,
     }
 }
-const COMMAND_KINDS: usize = 113;
+const COMMAND_KINDS: usize = 114;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3206,6 +3207,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ReopenTask { task_id: ids.task.into() }, false),
         (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
         (Command::RevokeTaskGrant { task_id: ids.task.into(), card: ids.interaction.into() }, false),
+        (Command::ReportFailure { task_id: ids.task.into() }, false),
         (Command::HoldHook { interaction_id: "fresh-hold".into(), task_id: ids.task.into(),
             agent_id: ids.agent.into(), hold: Hold::Permission, body: "Bash: ls".into(),
             options: Hold::Permission.options(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Authorize, "Allow the call") }, false),
@@ -4530,8 +4532,12 @@ fn guards_refuse_what_the_commands_refuse() {
         conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }).unwrap();
     let LifecycleRecord::Planned { input } = sdk.lifecycle_journal[&TaskId::from("sdk")][0].clone() else { panic!("planned first") };
     exec(&mut sdk, Actor::System, Command::RecordRuntimeFacts { task_id: "sdk".into(), generation: 1, facts: vec![
-        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },
+        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input: input.clone() },
     ] }).unwrap();
+    let mut ended = sdk.clone();
+    exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![] }).unwrap();
+    let mut lost = sdk.clone();
+    exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
     let mut resting = sdk.clone();
     exec(&mut resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None, failed: None }).unwrap();
     let mut accepted = sdk.clone();
@@ -4572,6 +4578,9 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::RevokeTaskGrant { task_id: "sdk".into(), card: decision_card_id(&"sdk".into(), 1, 1) },
         Command::RevokeTaskGrant { task_id: "sdk".into(), card: "missing".into() },
         Command::RevokeTaskGrant { task_id: "missing".into(), card: decision_card_id(&"sdk".into(), 1, 1) },
+        Command::ReportFailure { task_id: "sdk".into() },
+        Command::ReportFailure { task_id: "t".into() },
+        Command::ReportFailure { task_id: "missing".into() },
     ]).collect();
     use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
     let account = |id: &str, state| AccountStatus {
@@ -4614,7 +4623,7 @@ fn guards_refuse_what_the_commands_refuse() {
         change(AccountChange::SetMoveWhenExhausted { on: false }),
     ]).collect();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
+    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &ended, &lost, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
         &accounts, &work_busy, &alone] {
         for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
@@ -5047,4 +5056,37 @@ fn native_account_is_chosen_at_first_admission_and_cannot_change_after_release()
         reject_unchanged(&mut state,Actor::System,admit(provider,None,"after-release-account"),"active_account_immutable");
         exec(&mut state,Actor::System,admit(provider,Some(work),"same-account")).unwrap();
     }
+}
+
+#[test]
+fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
+    let mut sdk = fixture();
+    exec(&mut sdk, Actor::System, Command::RegisterAgent { agent_id: "s".into(), name: "SDK".into(), at: 0 }).unwrap();
+    exec(&mut sdk, orchestrator(), Command::CreateTask { plan_items: None, task_id: "sdk".into(), request_id: "r".into(),
+        title: "SDK".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
+    exec(&mut sdk, Actor::System, Command::AdmitExecution { provider: Default::default(), task_id: "sdk".into(), agent_id: "s".into(),
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None }).unwrap();
+    let LifecycleRecord::Planned { input } = sdk.lifecycle_journal[&TaskId::from("sdk")][0].clone() else { panic!("planned first") };
+    exec(&mut sdk, Actor::System, Command::RecordRuntimeFacts { task_id: "sdk".into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },
+    ] }).unwrap();
+    let task = TaskId::from("sdk");
+    let offered = |state: &DomainState| state.report_failure_action(&task).enabled.then(|| state.task_failure(&task)).flatten();
+    assert_eq!(offered(&sdk), None, "a task that works offers none");
+    let mut finished = sdk.clone();
+    exec(&mut finished, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None, failed: None }).unwrap();
+    assert_eq!(offered(&finished), None, "a turn that ended is no failure");
+    let mut ended = sdk.clone();
+    exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![] }).unwrap();
+    assert_eq!(offered(&ended), Some(ReportedFailure::SessionEnded));
+    let mut lost = sdk.clone();
+    exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
+    assert_eq!(offered(&lost), Some(ReportedFailure::NotResumed));
+    assert_eq!(offered(&fixture()), None, "the fixture's task never ran through a host");
+    let refused = lost.guard(&agent(), &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: lost.data_epoch.clone(),
+        command_id: "report".into(), expected_revision: lost.revision, command: Command::ReportFailure { task_id: task.clone() } });
+    assert_eq!(refused.unwrap_err().code, "forbidden", "only the user asks for a report");
+    assert_eq!(["session-ended", "message-not-delivered", "not-resumed"],
+        [ReportedFailure::SessionEnded.word(), ReportedFailure::MessageNotDelivered.word(), ReportedFailure::NotResumed.word()]);
 }
