@@ -3908,29 +3908,37 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     upgraded.stop_sdk_owners();
 }
 
-// Production can answer the node in the moment between the commit that brings it to rest on the
-// host of the release before and its owner's next step. The answer is not handed to that host:
-// a host of this release takes its place first, and the answer reaches the same session there.
+// Production can answer the node in the moment between its owner seeing it rest on the host of
+// the release before and the owner's next step. The answer is not handed to that host: a host of
+// this release takes its place first, and the answer reaches the same session there. The owner is
+// stepped by hand up to the step that finds the node at rest; the answer comes before the next.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_reaches_this_release() {
     let slice = Slice::new();
-    let (upgraded, adopted, session, old_host) = slice.upgraded_during_a_background_command();
-    // The test's wait reads it while it holds the domain's change channel, which carry_on writes:
-    // a lock here held across carry_on deadlocks the two.
-    let answered_at: Arc<std::sync::OnceLock<usize>> = Arc::default();
-    let (answering, answered) = (Arc::downgrade(&upgraded), Arc::clone(&answered_at));
-    upgraded.on_acknowledge(move || {
-        let Some(domain) = answering.upgrade() else { return };
-        if answered.get().is_none() && lifecycle(&domain).activity() == ActivityView::Resting {
-            answered.set(Slice::read_cards(&domain).len()).unwrap();
-            carry_on(&domain, "Add the tests first");
-        }
-    });
+    let before = slice.release_before();
+    let mut driver = slice.launch_with_backend(&before, "Write the release notes", capabilities());
+    slice.settle(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let old_host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    drop(driver);
+    let upgraded = slice.restart();
+    upgraded.enable_sdk(slice.backend.clone());
+    let mut adopted = slice.take_over(&upgraded);
+    assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");
+    while !adopted.moves_to_this_release {
+        adopted.step(&|| false).unwrap();
+    }
+    assert_eq!(lifecycle(&upgraded).activity(), ActivityView::Resting, "the node rests on the host of the release before");
+    adopted.moves_to_this_release = false;
+    let rested = Slice::read_cards(&upgraded).len();
+    carry_on(&upgraded, "Add the tests first");
     let mut changed = upgraded.subscribe();
     let owner = Owner::spawn(adopted);
-    slice.release_background_command();
     let reader = Arc::clone(&upgraded);
-    changed.wait_for(|_| answered_at.get().is_some_and(|&cards| Slice::read_cards(&reader).len() > cards)).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| Slice::read_cards(&reader).len() > rested))
+        .await
+        .expect("the answer's turn did not end within 60 s on a host of this release")
+        .unwrap();
     slice.assert_moved_to_this_release(&upgraded, &session, &old_host);
     upgraded.add_sdk_owner(owner);
     upgraded.stop_sdk_owners();
