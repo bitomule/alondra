@@ -31,6 +31,12 @@ pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &Request
     };
     let auto = requested.effort == alondra_core::options::AUTO;
     let given = |text: &Option<String>| text.as_deref().is_some_and(|text| !text.trim().is_empty());
+    let bare_model = plan.model.as_deref().filter(|model| !model.starts_with("codex/") && !model.starts_with("claude/"));
+    let offering = bare_model.map(|model| crate::domain_orchestrator_tools::providers_offering(domain, &file.accounts, model)).unwrap_or_default();
+    let pinned = requested.selection.as_ref().is_some_and(|intent| intent.requested.is_some() || intent.account.is_some());
+    if let Some(model) = bare_model.filter(|_| offering.len() > 1 && !pinned) {
+        return Err(crate::domain_orchestrator_tools::ambiguous_model(model, &offering));
+    }
     if requested.selection.is_some() || plan.model.as_deref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/")) {
         use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
         let mut native = requested.clone();
@@ -39,8 +45,9 @@ pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &Request
             let model = if model.starts_with("codex/") || model.starts_with("claude/") { ModelKey::parse_wire(model).map_err(&invalid)? }
                 else {
                     let provider = intent.requested.as_ref().map(|model| model.provider).or_else(|| intent.account.as_ref().map(|account| account.provider))
+                        .or_else(|| (offering.len() == 1).then(|| offering[0]))
                         .or_else(|| (file.accounts.connected_providers().len() == 1).then(|| file.accounts.connected_providers()[0]))
-                        .ok_or_else(|| invalid("Qualify the model with its provider".into()))?;
+                        .ok_or_else(|| crate::domain_orchestrator_tools::ambiguous_model(model, &offering))?;
                     ModelKey { provider, model: if provider == alondra_core::accounts::Provider::Claude { file.model_flag(model).unwrap_or_else(|| model.clone()) } else { model.clone() } }
                 };
             if intent.requested.as_ref().is_some_and(|requested| requested != &model) { return Err(invalid("The user-selected model is binding".into())); }

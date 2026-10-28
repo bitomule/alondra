@@ -208,8 +208,8 @@ not guarantee that an account has access; respect a native rejection.
 5. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
    little measurement is not worse; it is unmeasured.
 
-Use only reasoning efforts the row lists. Qualify the model as `codex/<model-id>` or
-`claude/<model-id>`; `launch` also takes `provider` with an unqualified id. `reasoning_effort` is
+Use only reasoning efforts the row lists. Name the model with its provider in every launch plan and `launch`: `claude/opus`, `codex/gpt-…`. A name without provider
+is placed by the catalogs when only one provider offers it, and refused with a tool error you can correct when both do; `launch` also takes `provider` with an unqualified id. `reasoning_effort` is
 native reasoning effort; the request's light/normal/hard effort is work intent, not a provider or
 permission to replace the user's model.
 

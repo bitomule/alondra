@@ -20,6 +20,17 @@ impl ModelKey {
     }
 }
 
+/// The connected providers a model named without its provider can belong to: those whose catalogs
+/// advertise it, or whose model sheets or id family (`claude-…`) know it. One provider settles
+/// the name; two make it ambiguous.
+pub fn providers_offering(catalogs: &[AccountModelCatalog], connected: &[Provider], model: &str) -> Vec<Provider> {
+    connected.iter().copied().filter(|&provider| {
+        catalogs.iter().any(|catalog| catalog.account.provider == provider && catalog.models.iter().any(|entry| entry.model == model && !entry.hidden))
+            || crate::model_sheets::sheet_for(provider, model).is_some()
+            || (provider == Provider::Claude && model.starts_with("claude-"))
+    }).collect()
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelection {
@@ -249,6 +260,27 @@ mod tests {
     fn catalog() -> AccountModelCatalog {
         AccountModelCatalog { account: AccountKey::native(Provider::Codex), revision: "catalog".into(), native_default: Some("only-model".into()), measured_at: 1,
             models: vec![CatalogModel { model: "only-model".into(), display_name: "Only model".into(), reasoning_efforts: vec!["high".into()], default_reasoning_effort: Some("high".into()), context_window: Some(1000), input_modalities: vec!["text".into()], is_default: true, hidden: false }] }
+    }
+
+    fn advertising(provider: Provider, models: &[&str]) -> AccountModelCatalog {
+        let mut advertised = catalog();
+        advertised.account = AccountKey::native(provider);
+        advertised.models = models.iter().map(|model| CatalogModel { model: (*model).into(), ..catalog().models.remove(0) }).collect();
+        advertised
+    }
+
+    #[test]
+    fn a_model_without_provider_belongs_to_the_one_connected_provider_that_knows_it() {
+        let both = [Provider::Claude, Provider::Codex];
+        let catalogs = [advertising(Provider::Claude, &["opus", "shared"]), advertising(Provider::Codex, &["gpt-6", "shared"])];
+        assert_eq!(providers_offering(&catalogs, &both, "opus"), [Provider::Claude]);
+        assert_eq!(providers_offering(&catalogs, &both, "claude-opus-5-5"), [Provider::Claude]);
+        assert_eq!(providers_offering(&catalogs, &both, "claude-3-haiku"), [Provider::Claude]);
+        assert_eq!(providers_offering(&catalogs, &both, "gpt-6"), [Provider::Codex]);
+        assert_eq!(providers_offering(&[], &both, "gpt-6-astra"), [Provider::Codex], "a model sheet places a model before any catalog is read");
+        assert_eq!(providers_offering(&catalogs, &both, "shared"), both, "only a name in two catalogs is ambiguous");
+        assert!(providers_offering(&catalogs, &both, "nonsense").is_empty());
+        assert!(providers_offering(&catalogs, &[Provider::Codex], "opus").is_empty(), "a provider that is not connected offers nothing");
     }
 
     #[test]

@@ -345,6 +345,21 @@ pub(crate) fn validate_native_requirements(intent: Option<&alondra_core::model_s
     Ok(())
 }
 
+/// The connected providers that can serve a model named without its provider.
+pub(crate) fn providers_offering(domain: &DomainRuntime, accounts: &alondra_core::accounts::AccountsConfig, model: &str) -> Vec<alondra_core::accounts::Provider> {
+    alondra_core::model_selection::providers_offering(domain.read().index().model_catalogs(), accounts.connected_providers(), model)
+}
+
+/// What the orchestrator gets back when a model name without a provider cannot be placed.
+pub(crate) fn ambiguous_model(model: &str, offering: &[alondra_core::accounts::Provider]) -> DomainError {
+    if offering.len() < 2 {
+        return DomainError::new("invalid_input", format!("Specify the provider of “{model}”: name it claude/{model} or codex/{model}"));
+    }
+    let names: Vec<String> = offering.iter().map(|provider| provider.as_str().to_owned()).collect();
+    let qualified: Vec<String> = offering.iter().map(|provider| format!("{}/{model}", provider.as_str())).collect();
+    DomainError::new("invalid_input", format!("“{model}” is offered by {}: name it {}", names.join(" and "), qualified.join(" or ")))
+}
+
 fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domain::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool)
     -> Result<Option<(alondra_core::options::Resolved, alondra_core::accounts::AccountKey, String)>, DomainError>
 {
@@ -360,11 +375,12 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
         let offered = if model.starts_with("claude/") || model.starts_with("codex/") {
             ModelKey::parse_wire(model).map_err(|why| DomainError::new("invalid_input", why))?
         } else {
+            let offering = providers_offering(domain, &file.accounts, model);
             let provider = body.provider.or_else(|| intent.requested.as_ref().map(|model| model.provider))
                 .or_else(|| intent.effective.as_ref().map(|model| model.model.provider))
-                .or_else(|| alondra_core::model_sheets::provider_of(model))
+                .or_else(|| (offering.len() == 1).then(|| offering[0]))
                 .or_else(|| (file.accounts.connected_providers().len() == 1).then(|| file.accounts.connected_providers()[0]))
-                .ok_or_else(|| DomainError::new("invalid_input", "Specify the provider for a native model"))?;
+                .ok_or_else(|| ambiguous_model(model, &offering))?;
             ModelKey { provider, model: model.into() }
         };
         if body.provider.is_some_and(|provider| provider != offered.provider) { return Err(DomainError::new("invalid_input", "The model belongs to another provider")); }

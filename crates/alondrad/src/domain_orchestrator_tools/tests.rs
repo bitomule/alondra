@@ -1771,3 +1771,54 @@ async fn changing_the_recovery_directory_refuses_before_workspace_effects_or_sto
         assert_eq!(std::fs::read_to_string(&trust).unwrap(), bytes);
     }
 }
+
+/// Claude and Codex connected, both signed in, each advertising its models; `twin` is in both catalogs.
+fn connect_claude_and_codex(f: &Fixture) {
+    use alondra_core::accounts::{AccountBilling, AccountKey, AccountState, AccountStatus, AccountsConfig, Provider};
+    use alondra_core::model_selection::{AccountModelCatalog, CatalogModel};
+    let mut config = AccountsConfig::fresh();
+    config.connect(Provider::Claude);
+    config.connect(Provider::Codex);
+    let keys = vec![AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex)];
+    config.set_order(keys.clone()).unwrap();
+    std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
+    let statuses = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).collect();
+    command(&f.domain, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::Share::of(config.distribution.reserve) });
+    command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: keys.clone(), version: alondra_core::accounts::config_version(&config) });
+    let model = |name: &str| CatalogModel { model: name.into(), display_name: name.into(), reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
+        default_reasoning_effort: Some("medium".into()), context_window: None, input_modalities: vec!["text".into()], is_default: false, hidden: false };
+    for key in keys {
+        let models = if key.provider == Provider::Claude { vec![model("opus"), model("sonnet"), model("twin")] } else { vec![model("gpt-6"), model("twin")] };
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog: AccountModelCatalog { account: key, revision: "fixture".into(), native_default: None, measured_at: 100, models } });
+    }
+}
+
+#[tokio::test]
+async fn a_plan_naming_opus_without_provider_starts_on_claude_when_claude_and_codex_are_connected() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let plan = crate::launch_plans::LaunchPlan { model: Some("opus".into()), effort: Some("medium".into()), reason: Some("Design work".into()),
+        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
+    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].provider, alondra_core::accounts::Provider::Claude);
+}
+
+#[tokio::test]
+async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_unique_one_is_not() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let plan = |model: &str| crate::launch_plans::LaunchPlan { model: Some(model.into()), reason: Some("Design work".into()),
+        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    let request = RequestId::from("r");
+    for model in ["opus", "gpt-6", "claude/twin", "codex/twin"] {
+        crate::launch_plans::validate(&f.domain, &f.home, &request, &plan(model)).unwrap_or_else(|error| panic!("{model}: {}", error.message));
+    }
+    let refused = crate::launch_plans::validate(&f.domain, &f.home, &request, &plan("twin")).unwrap_err();
+    assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", "“twin” is offered by claude and codex: name it claude/twin or codex/twin"));
+    let body: LaunchPlanBody = serde_json::from_value(json!({"task_id": "t", "launch": plan("twin")})).unwrap();
+    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
+}
