@@ -36,6 +36,19 @@ impl Seals {
         }
     }
 
+    /// Blocks for `timeout`, or until `stopped` says the owner ends, taking nothing.
+    pub(crate) fn pause(&self, timeout: std::time::Duration, stopped: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut queued = self.queued.lock().expect("seals poisoned");
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if stopped() || left.is_zero() {
+                return;
+            }
+            queued = self.arrived.wait_timeout(queued, left).expect("seals poisoned").0;
+        }
+    }
+
     /// Wakes every waiting owner, so one told to stop sees it.
     pub(crate) fn wake(&self) {
         let _queued = self.queued.lock().expect("seals poisoned");

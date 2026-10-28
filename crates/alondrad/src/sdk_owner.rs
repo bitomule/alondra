@@ -34,6 +34,12 @@ const DRIVER: &str = "claude-agent-sdk";
 /// How long the owner waits for the host before it looks again for a control to send: a quiet
 /// turn never holds back an interrupt.
 const WAKE: Duration = Duration::from_millis(250);
+/// How long the owner waits before each new host it puts in place of a replacement that ended
+/// without taking its input; past the last, the task gets a card to try again.
+#[cfg(not(test))]
+const RELAUNCH_WAITS: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(30)];
+#[cfg(test)]
+const RELAUNCH_WAITS: [Duration; 3] = [Duration::ZERO; 3];
 
 /// What an SDK execution's binding lets the domain ask of it.
 fn capabilities() -> BTreeSet<Capability> {
@@ -204,6 +210,13 @@ pub(crate) struct Driver {
     /// The node rests on a host a daemon of another release launched: a host of this release that
     /// resumes the same session takes its place.
     moves_to_this_release: bool,
+    /// This replacement was handed an input and did not take it: its end is watched and its place
+    /// taken by another host, up to `RELAUNCH_WAITS`.
+    untaken: bool,
+    /// Replacements in a row that ended without taking an input, this one's predecessors.
+    relaunches: usize,
+    /// The node plugin this host was taken over with, which the host that replaces it takes too.
+    plugin: Option<PathBuf>,
     #[cfg(test)]
     pub(crate) fail_next_step: bool,
 }
@@ -491,7 +504,9 @@ pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<ser
 pub(crate) fn adopt_for_transition(domain: Arc<DomainRuntime>, backend:&SdkBackend,task:TaskId,plugin:Option<&std::path::Path>)->Result<Option<Driver>,Failed>{take_host(domain,backend,task,plugin,true,false,false)}
 
 pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
-    take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed::new("the ended host was not replaced".into()))
+    let mut driver = take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed::new("the ended host was not replaced".into()))?;
+    driver.plugin = plugin.map(std::path::Path::to_path_buf);
+    Ok(driver)
 }
 
 /// Launches the first host of the task's SDK execution, which a daemon that ended right after
@@ -956,7 +971,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, #[cfg(test)] fail_next_step: false }
+        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, plugin: None, #[cfg(test)] fail_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -1073,6 +1088,9 @@ impl Driver {
         if handoff == Handoff::Offered {
             self.awaiting = Some(input);
             self.replacement = false;
+            self.relaunches = 0;
+        } else if self.replacement {
+            self.untaken = true;
         }
         Ok(())
     }
@@ -1239,7 +1257,7 @@ impl Driver {
         }
         // Claude goes on by itself while the task rests, as when a subagent hands its report back
         // after the turn ended: what its host says is read as it comes.
-        if !self.replacement && self.worker.readable(Duration::ZERO).unwrap_or(true) {
+        if (!self.replacement || self.untaken) && self.worker.readable(Duration::ZERO).unwrap_or(true) {
             return self.observe().map(drop);
         }
         let sealed = self.domain.seals.wait_for(&self.task, WAKE, || stopped() || paused && !self.paused());
@@ -1342,11 +1360,12 @@ impl Driver {
     /// Whether the owner should put a host that resumes the session in place of its own: its host
     /// closed or its connection to it failed, which a host that is dying shows before its exit, or
     /// a step of the owner itself failed, and it was not itself a replacement handed nothing yet,
-    /// which would only end again. The
+    /// which would only end again. A replacement that ended without taking its input is replaced
+    /// while `RELAUNCH_WAITS` lasts. The
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && !self.replacement && !crate::provider_transition::holds_execution(&self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken && self.relaunches < RELAUNCH_WAITS.len()) && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 
@@ -1470,14 +1489,24 @@ impl Owner {
                         lost_because = driver.native_account_refusal.clone().or_else(||Some("its new host stopped before it could take the task's next message".to_owned()));
                         break;
                     };
+                    let relaunches = if driver.replacement { driver.relaunches + 1 } else { 0 };
+                    if driver.replacement {
+                        driver.domain.seals.pause(RELAUNCH_WAITS[driver.relaunches], &told);
+                        if told() {
+                            break;
+                        }
+                    }
                     let task = driver.task.clone();
-                    let plugin = crate::plugins::node_in(driver.domain.home());
+                    let plugin = driver.plugin.clone().or_else(|| crate::plugins::node_in(driver.domain.home()));
                     let moved = driver.moves_to_this_release;
                     let controls = std::mem::take(&mut driver.controls);
                     match driver.replace_ended_host(&backend, plugin.as_deref()) {
                         Ok(mut next) => {
                             *current.lock().expect("host stop poisoned") = next.worker.stopper();
-                            if moved {
+                            next.relaunches = relaunches;
+                            if relaunches > 0 {
+                                log!("the new SDK host of {task} ended without taking its input: another host that resumes the same session took its place (attempt {relaunches} of {})", RELAUNCH_WAITS.len());
+                            } else if moved {
                                 next.controls.extend(controls);
                                 log!("{task} rested on the SDK host of the release before: a host of this release that resumes the same Claude session took its place");
                             } else {

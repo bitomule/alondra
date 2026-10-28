@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { CodexSession, codexPolicy, alondraMcpEnvironment } from './codex-session.js';
+import { InputNotOffered } from './host-session.js';
 
 function fixture(t, options = {}) {
   const home = mkdtempSync(join(tmpdir(), 'alondra-codex-'));
@@ -345,6 +347,43 @@ test('a canonical code evidence gap never forwards a false clean native turn com
   assert.equal(f.events.filter(method('alondra/codeCellFinished')).length, 0);
   assert(f.events.some((event) => method('alondra/transportFailed')(event) && event.payload.params.code === 'native_code_cell_observation_gap'));
   assert.equal(f.messages().filter((message) => message.method === 'turn/start').length, 0);
+});
+
+const workerProfile = (instructions) => ({ model: 'fixture-model', plugins: [], disallowed_tools: [], settings: { codex: { developerInstructions: instructions, mcp_servers: { alondra: { command: '/safe/alondra', args: ['mcp-node'] } } } } });
+
+// Production, 0.3.9: every Codex node stopped after the release, because each saved thread was
+// refused for having been started under the previous release's instructions.
+test('a thread saved under the instructions of the release before resumes under the current ones', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { config: { worker: workerProfile('Instructions of the release before') } });
+  await f.session.ready;
+  f.session.close(); await f.session.finished;
+  assert.equal(f.session.failure, undefined, 'a session closed on request did not fail');
+  const later = new CodexSession({ ...f.config, worker: workerProfile('Instructions of this release'), resume: true, processGeneration: 'next-release' });
+  try {
+    await later.ready;
+    assert.equal(later.thread, nativeThread);
+    const resumed = f.messages().filter((message) => message.method === 'thread/resume');
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0].params.threadId, nativeThread);
+    assert.equal(resumed[0].params.developerInstructions, 'Instructions of this release');
+    const mapping = JSON.parse(readFileSync(join(f.home, 'native-threads', f.config.sessionId)));
+    assert.equal(mapping.instructionsDigest, createHash('sha256').update('Instructions of this release').digest('hex'));
+  } finally { later.close(); await later.finished; }
+});
+
+test('an input whose session could not start is refused as never offered, and the session says why it ended', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { account: { failResumes: 1 }, config: { worker: workerProfile('Instructions') } });
+  await f.session.ready;
+  f.session.close(); await f.session.finished;
+  const later = new CodexSession({ ...f.config, resume: true, processGeneration: 'failing' });
+  const notOffered = (error) => error instanceof InputNotOffered && error.code === 'native_initialization_failed';
+  try {
+    await assert.rejects(later.offer('00000000-0000-4000-8000-000000000071', 'Continue'), notOffered);
+    await later.finished;
+    assert.equal(later.failure, 'native_initialization_failed');
+    assert.throws(() => later.offer('00000000-0000-4000-8000-000000000072', 'Again'), notOffered);
+    assert.equal(f.messages().filter((message) => message.method === 'turn/start').length, 0);
+  } finally { later.close(); await later.finished; }
 });
 
 for (const mode of ['complete', 'child']) {

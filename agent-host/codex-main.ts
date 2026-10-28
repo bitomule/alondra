@@ -8,7 +8,7 @@ import { boundDiagnostics, listeningHint } from './diagnostics.js';
 
 async function main(): Promise<void> {
   const config = loadBootstrap(__filename, CODEX_VERSION);
-  const host = new PersistentHost(config, (configuration) => new CodexSession(configuration), { capabilities: CODEX_CAPABILITIES });
+  const host = new PersistentHost(config, (configuration) => new CodexSession(configuration), { capabilities: CODEX_CAPABILITIES, endsWithFailedSession: !config.orchestrator });
   try { await host.listen(); } catch (error) { await host.stop(); throw error; }
   let stopping = false;
   const stop = (interruptTurn: boolean) => { if (!stopping) { stopping = true; void host.stop(interruptTurn).catch(() => { process.exitCode = 1; }); } };

@@ -34,6 +34,8 @@ export class ControlNotApplied extends Error {
 }
 export interface HostSession {
   readonly finished: Promise<void>;
+  /** Set when the native session ended without being asked to: nothing it runs can go on. */
+  readonly failure?: string;
   offer(inputId: string, prompt: string): void | Promise<void>;
   respond(request: DecisionRequest, decision: Decision): boolean;
   interrupt(): Promise<unknown>;

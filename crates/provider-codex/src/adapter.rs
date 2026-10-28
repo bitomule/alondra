@@ -203,10 +203,15 @@ pub fn answered_control(observation: &OrderedObservation) -> Option<CommandId> {
         _ => None,
     }
 }
-/// Whether the host observed the exit of its Codex. The host outlives it with no session left to
-/// run, so its owner ends the host as one that ended with its Codex.
+/// Whether the host observed the end of its Codex: its exit, or the transport failure after which
+/// the host ends it. The host has no session left to run, so its owner ends the host as one that
+/// ended with its Codex.
 pub fn native_exited(observation: &OrderedObservation) -> bool {
-    matches!(host_event(observation), Some(event) if matches!(event.observation, WireObservation::ProcessExited { .. }))
+    match host_event(observation).map(|event| event.observation) {
+        Some(WireObservation::ProcessExited { .. }) => true,
+        Some(WireObservation::Sdk { payload, .. }) => payload.get("method").and_then(serde_json::Value::as_str) == Some("alondra/transportFailed"),
+        _ => false,
+    }
 }
 struct PreparedDispatch {
     command: PreparedCommand,

@@ -803,3 +803,82 @@ fn initial_native_policy_rejection_keeps_original_mission_for_explicit_same_acco
 #[cfg(target_os = "macos")]
 #[path = "codex_process_tests.rs"]
 mod process_adoption;
+
+fn turns_started(domain: &DomainRuntime) -> usize {
+    domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnStarted { .. })).count()
+}
+
+/// A Codex node is mid-turn when the Mac goes down, host and daemon with it. `meanwhile` changes
+/// what the daemon that comes back finds; that daemon takes the node over and its owner runs on its
+/// own, as in production, until the cut turn goes on in a second one or the task gets a card.
+async fn codex_node_after_a_restart(meanwhile: impl FnOnce(&Slice)) -> (Slice, Arc<DomainRuntime>, Owner, PathBuf) {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    kill_host_and_daemon(driver);
+    meanwhile(&slice);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let mut changed = restarted.subscribe();
+    let owner = Owner::spawn(slice.take_over(&restarted));
+    let reader = Arc::clone(&restarted);
+    changed.wait_for(|_| turns_started(&reader) == 2 || open_card(&reader, HOST_LOST_PREFIX).is_some()).await.unwrap();
+    (slice, restarted, owner, trace)
+}
+
+fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
+    transcript(trace).into_iter().filter(|message| message["method"] == "thread/resume").collect()
+}
+
+// Production, 0.3.9: after the release every Codex node stood still for good. Each saved native
+// thread was refused for having been started under the previous release's node instructions, its
+// host never said why, and its owner never looked again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_node_cut_by_a_restart_goes_on_in_its_thread_under_the_new_release_instructions() {
+    let (_slice, restarted, mut owner, trace) = codex_node_after_a_restart(|slice| {
+        std::fs::write(slice.plugin.join("skills/alondra/SKILL.md"), "The next release's node instructions.").unwrap();
+    }).await;
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none(), "no card: the node goes on by itself");
+    assert_eq!(turns_started(&restarted), 2, "the cut turn goes on in a new one");
+    let resumed = resumed_threads(&trace);
+    assert_eq!(resumed.len(), 1, "{resumed:?}");
+    assert_eq!(resumed[0]["params"]["threadId"], "00000000-0000-4000-8000-000000000001", "the same native thread");
+    assert_eq!(resumed[0]["params"]["developerInstructions"], "The next release's node instructions.");
+    let turns: Vec<_> = transcript(&trace).into_iter().filter(|message| message["method"] == "turn/start").collect();
+    assert!(turns[1]["params"]["input"][0]["text"].as_str().unwrap().starts_with("Your session was cut off when its host stopped"), "{turns:?}");
+    owner.stop().unwrap();
+}
+
+// A new host whose Codex fails to start once is replaced by another that resumes the same thread,
+// and the node goes on with no card.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_host_that_could_not_start_its_session_is_relaunched_and_the_node_goes_on() {
+    let (_slice, restarted, mut owner, trace) = codex_node_after_a_restart(|slice| {
+        std::fs::write(slice._home.join("codex-native.account.json"), r#"{"failResumes": 1}"#).unwrap();
+    }).await;
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none(), "no card: the second host took the input");
+    assert_eq!(turns_started(&restarted), 2, "the cut turn goes on in a new one");
+    let resumed = resumed_threads(&trace);
+    assert_eq!(resumed.len(), 2, "the first new host failed to resume, the next one resumed: {resumed:?}");
+    assert!(resumed.iter().all(|message| message["params"]["threadId"] == "00000000-0000-4000-8000-000000000001"));
+    owner.stop().unwrap();
+}
+
+// A Codex session that can never start again is relaunched a bounded number of times, then the
+// task gets the card to try again: it never stands still with its input in doubt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_session_that_never_starts_ends_in_a_card_to_try_again_after_bounded_relaunches() {
+    let (slice, restarted, owner, trace) = codex_node_after_a_restart(|slice| {
+        for saved in std::fs::read_dir(slice.backend.state_root.join("native-threads")).unwrap() {
+            std::fs::remove_file(saved.unwrap().path()).unwrap();
+        }
+    }).await;
+    let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has a card to try again");
+    assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("Its new host stopped before it could take the task's next message"));
+    assert!(owner.ended(), "the owner owns nothing any more");
+    let initialized = transcript(&trace).into_iter().filter(|message| message["method"] == "initialize").count();
+    assert_eq!(initialized, 2 + RELAUNCH_WAITS.len(), "the first host, the one the restart put in its place and one per relaunch");
+    assert_eq!(turns_started(&restarted), 1, "no turn ran after the restart");
+    drop(slice);
+}

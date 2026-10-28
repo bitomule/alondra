@@ -82,6 +82,8 @@ export class CodexSession implements HostSession {
   private notificationBytes = 0;
   private closed = false;
   private closing = false;
+  /** Why the native session ended without being asked to. */
+  failure?: string;
   private pumping = false;
   private mode: 'default' | 'plan' | 'dontAsk' = 'default';
   private model?: string;
@@ -121,6 +123,7 @@ export class CodexSession implements HostSession {
     this.child.stderr.on('data', () => {});
     this.child.on('error', () => this.fail('native_spawn_failed'));
     this.child.on('exit', (code, signal) => {
+      if (!this.closing) this.failure ??= 'native_process_exited';
       this.closed = true;
       for (const pending of this.pending.values()) pending.reject(new Error('Codex process ended'));
       this.pending.clear();
@@ -141,6 +144,7 @@ export class CodexSession implements HostSession {
   }
   private fail(code: string): void {
     if (this.closed || this.closing) return;
+    this.failure = code;
     this.emit('alondra/transportFailed', { code }, 'diagnostic');
     this.close();
   }
@@ -354,7 +358,8 @@ export class CodexSession implements HostSession {
       if (!node.isFile() || node.isSymbolicLink() || node.nlink !== 1 || node.uid !== process.getuid?.() || (node.mode & 0o777) !== 0o600 || node.size > 1024) throw new Error('Private native thread refused');
       const retained = object(JSON.parse(readFileSync(this.mapping, 'utf8')));
       const home = createHash('sha256').update(this.config.env.CODEX_HOME ?? 'native_default').digest('hex');
-      if (retained.accountId !== (this.config.accountId ?? 'default') || retained.homeDigest !== home || retained.instructionsDigest !== this.instructionsDigest()) throw new Error('Native thread credential home differs');
+      // Instructions change with each release; the same thread resumes under the current ones.
+      if (retained.accountId !== (this.config.accountId ?? 'default') || retained.homeDigest !== home) throw new Error('Native thread credential home differs');
       const id = text(retained.threadId);
       if (!id || id.length > 256) throw new Error('Native thread identity refused');
       return id;
@@ -374,11 +379,12 @@ export class CodexSession implements HostSession {
   }
 
   offer(inputId: string, prompt: string): void | Promise<void> {
-    if (this.closed || this.closing || this.inputs.has(inputId) || this.queue.length >= 64) throw new Error('Codex input refused');
+    if (this.closed || this.closing) throw new InputNotOffered(this.failure ?? 'native_session_ended');
+    if (this.inputs.has(inputId) || this.queue.length >= 64) throw new Error('Codex input refused');
     if (Buffer.byteLength(prompt) > 900_000) throw new Error('Codex input capacity');
     this.inputs.add(inputId); this.queue.push({ id: inputId, prompt });
     void this.pump();
-    if(this.config.worker && !this.thread)return this.ready;
+    if(this.config.worker && !this.thread)return this.ready.catch((error: unknown) => { throw error instanceof InputNotOffered ? error : new InputNotOffered('native_initialization_failed'); });
   }
   private async pump(): Promise<void> {
     if (this.pumping || this.closed || this.closing || this.turn || this.queue.length === 0) return;

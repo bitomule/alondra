@@ -7,9 +7,9 @@ import { Journal, type Command, type CommandRecord } from './journal.js';
 import { proofMatches, hostProof, type Attach } from './ownership.js';
 import { ControlNotApplied, InputNotOffered, type HostSession, type Observation, type SessionFactory } from './host-session.js';
 
-type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; pending: number };
+type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; flushed: Promise<void>; pending: number };
 export { HOST_CAPABILITIES, type Capability } from './frame.js';
-export type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[] };
+export type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[]; endsWithFailedSession?: boolean };
 const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
 function bounded(value: unknown): string | undefined {
@@ -115,7 +115,7 @@ export class PersistentHost {
   private connection(socket: Socket): void {
     if (this.lanes.size >= MAX_CONNECTIONS) { socket.destroy(); return; }
     const channel = new Channel(socket, (frame, raw) => this.receive(lane, frame, raw), () => this.diagnostic('transport_rejected'));
-    const lane: Lane = { channel, nonce: randomBytes(32).toString('hex'), sentCursor: this.journal.acknowledged, receipts: new Map(), flushing: false, pending: 0 };
+    const lane: Lane = { channel, nonce: randomBytes(32).toString('hex'), sentCursor: this.journal.acknowledged, receipts: new Map(), flushing: false, flushed: Promise.resolve(), pending: 0 };
     this.lanes.add(lane);
     socket.on('close', () => { this.lanes.delete(lane); if (this.owner === lane) this.owner = undefined; });
     void (async () => {
@@ -300,7 +300,10 @@ export class PersistentHost {
       beforeSpawn: () => { this.hooks.beforeSpawn?.(); this.current(lane); },
       observe: (observation) => this.observe(observation),
     });
-    void session.finished.catch(() => this.storageUncertain());
+    void session.finished.then(() => {
+      // The owner sees a host whose session failed go and puts one that resumes it in its place.
+      if (this.hooks.endsWithFailedSession && session.failure && !this.stopping) void this.operations.then(() => this.owner?.flushed).then(() => this.stop()).catch(() => { process.exitCode = 1; });
+    }, () => this.storageUncertain());
     return session;
   }
   /** The control's result is evidence before the receipt that closes the command. */
@@ -339,7 +342,7 @@ export class PersistentHost {
   private flush(lane: Lane): void {
     if (lane.flushing) return;
     lane.flushing = true;
-    void (async () => {
+    lane.flushed = (async () => {
       try {
         for (;;) {
           this.current(lane);
@@ -364,7 +367,7 @@ export class PersistentHost {
           if (!sent) break;
         }
       } finally { lane.flushing = false; }
-    })().catch(() => lane.channel.socket.destroy());
+    })().catch(() => { lane.channel.socket.destroy(); });
   }
   private diagnostic(code: string): void { process.stderr.write(`Alondra host: ${code}\n`); }
   /** With `interruptTurn`, a turn Claude is running ends as an interrupted turn before the session closes. */

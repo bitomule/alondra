@@ -115,6 +115,13 @@ for line in sys.stdin:
             finish()
         continue
     if method == 'initialized': continue
+    if method == 'thread/resume' and fixture.get('failResumes'):
+        failures = os.environ.get('ALONDRA_FAKE_ACCOUNT_FILE', os.path.abspath(__file__) + '.account.json') + '.resume-failures'
+        failed = os.path.getsize(failures) if os.path.exists(failures) else 0
+        if failed < fixture['failResumes']:
+            with open(failures, 'a') as target: target.write('x')
+            send({'id': identity, 'error': {'code': -32603, 'message': 'Fixture thread resume unavailable'}})
+            continue
     result = {}
     if method == 'config/read': result = fixture.get('configRead', {'config': {'mcp_servers': {name: {'command': '/untrusted'} for name in json.loads(os.environ.get('ALONDRA_FAKE_INHERITED_MCP_NAMES', '["inherited-danger"]'))}}})
     elif method in ['thread/start', 'thread/resume']:
