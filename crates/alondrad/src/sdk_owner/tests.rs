@@ -3915,13 +3915,14 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
 async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_reaches_this_release() {
     let slice = Slice::new();
     let (upgraded, adopted, session, old_host) = slice.upgraded_during_a_background_command();
-    let answered_at: Arc<Mutex<Option<usize>>> = Arc::default();
+    // The test's wait reads it while it holds the domain's change channel, which carry_on writes:
+    // a lock here held across carry_on deadlocks the two.
+    let answered_at: Arc<std::sync::OnceLock<usize>> = Arc::default();
     let (answering, answered) = (Arc::downgrade(&upgraded), Arc::clone(&answered_at));
     upgraded.on_acknowledge(move || {
         let Some(domain) = answering.upgrade() else { return };
-        let mut answered = answered.lock().unwrap();
-        if answered.is_none() && lifecycle(&domain).activity() == ActivityView::Resting {
-            *answered = Some(Slice::read_cards(&domain).len());
+        if answered.get().is_none() && lifecycle(&domain).activity() == ActivityView::Resting {
+            answered.set(Slice::read_cards(&domain).len()).unwrap();
             carry_on(&domain, "Add the tests first");
         }
     });
@@ -3929,7 +3930,7 @@ async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_
     let owner = Owner::spawn(adopted);
     slice.release_background_command();
     let reader = Arc::clone(&upgraded);
-    changed.wait_for(|_| answered_at.lock().unwrap().is_some_and(|cards| Slice::read_cards(&reader).len() > cards)).await.unwrap();
+    changed.wait_for(|_| answered_at.get().is_some_and(|&cards| Slice::read_cards(&reader).len() > cards)).await.unwrap();
     slice.assert_moved_to_this_release(&upgraded, &session, &old_host);
     upgraded.add_sdk_owner(owner);
     upgraded.stop_sdk_owners();
