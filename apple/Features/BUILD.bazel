@@ -23,6 +23,7 @@ swift_test(
     srcs = glob(["Tests/**/*.swift"]) + ["//apple/Testing/Fixtures:sources"],
     data = [
         "//apple/Testing/Samples:all",
+        "//fixtures/report",
         "//fixtures/views:all",
         "//fixtures/views:cards",
     ],

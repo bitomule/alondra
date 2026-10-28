@@ -1635,7 +1635,7 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     let fixture = Fixture::start().await;
     let cli = fixture.home.join("fake-alondra");
     std::fs::write(&cli, "#!/bin/sh\ncase \"$*\" in *fails*) echo 'Error: GitHub said no' >&2; exit 1;; esac\n\
-        printf '{\"args\":\"%s\",\"home\":\"%s\",\"lang\":\"%s\"}' \"$*\" \"$ALONDRA_HOME\" \"$ALONDRA_LANG\"\n").unwrap();
+        printf '{\"args\":\"%s\",\"home\":\"%s\",\"lang\":\"%s\",\"stdin\":\"%s\"}' \"$*\" \"$ALONDRA_HOME\" \"$ALONDRA_LANG\" \"$(cat)\"\n").unwrap();
     std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
     fixture.client.use_report_cli(cli);
     let post = |path: &'static str, body: Value| {
@@ -1654,6 +1654,10 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     let (_, built) = post("/reports", json!({"failure": "session-ended", "description": "  "})).await;
     assert_eq!((built["args"].as_str(), built["failure"].as_str(), built["lang"].as_str()),
         (Some("--json --no-input report"), Some("session-ended"), Some("en")));
+    assert_eq!(built["stdin"], "");
+    let (_, built) = post("/reports", json!({"app_section": "the app section"})).await;
+    assert_eq!((built["args"].as_str(), built["stdin"].as_str()),
+        (Some("--json --no-input report --app-section -"), Some("the app section")), "the app's section goes to the CLI on stdin");
     let (status, refused) = post("/reports", json!({"failure": "crash"})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
 
@@ -1676,6 +1680,11 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     let (status, file) = fixture.get("/reports/r-20261027-0000abcd/files/daemon.log").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(serde_json::from_slice::<Value>(&file).unwrap()["text"], "the log\n");
+    let (status, page) = fixture.get("/reports/r-20261027-0000abcd/files/daemon.log?offset=4").await;
+    assert_eq!(status, StatusCode::OK);
+    let page = serde_json::from_slice::<Value>(&page).unwrap();
+    assert_eq!((page["text"].as_str(), page["next"].is_null(), page["bytes"].as_u64()), (Some("log\n"), true, Some(8)));
+    assert_eq!(parse_read("/reports/r-20261027-0000abcd/files/daemon.log?offset=x"), None);
     for path in ["/reports/r-20261027-0000abcd/files/pseudonyms.json", "/reports/r-20261027-0000abcd/files/sending.json"] {
         let (status, body) = fixture.get(path).await;
         assert_ne!(status, StatusCode::OK, "{path}");

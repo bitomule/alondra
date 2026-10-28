@@ -116,6 +116,8 @@ enum Cmd {
         description: Option<String>,
         #[arg(long, value_enum, help = tr!("What failed, for the issue when it is sent", "Qué falló, para el issue cuando se envíe"))]
         kind: Option<report::send::Kind>,
+        #[arg(long, hide = true, help = tr!("The section the app adds, already redacted by it, one JSON object per line; - reads it from stdin", "La sección que añade la app, ya redactada por ella, un objeto JSON por línea; - la lee de la entrada estándar"))]
+        app_section: Option<std::path::PathBuf>,
         #[command(subcommand)]
         command: Option<ReportCmd>,
     },
@@ -490,8 +492,8 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             ConfigCmd::Set { key, value } => commands::config_set(&key, Some(&value)),
             ConfigCmd::Unset { key } => commands::config_set(&key, None),
         },
-        Some(Cmd::Report { window, description, kind, command }) => match command {
-            None => report::run(&window, description, kind, json, no_input),
+        Some(Cmd::Report { window, description, kind, app_section, command }) => match command {
+            None => report::run(&window, description, app_section.as_deref(), kind, json, no_input),
             Some(ReportCmd::Save { id, file }) => {
                 let file = file.unwrap_or_else(|| report::default_file_name(&id).into());
                 report::save(&report::Mac::new(), &id, &file)?;

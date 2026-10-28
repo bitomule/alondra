@@ -157,7 +157,8 @@ pub(crate) enum Route {
     Projects,
     Issues { refresh: bool },
     TaskHistory(String),
-    ReportFile { id: String, name: String },
+    /// A file of a crash report, whole, or from `offset` one page at a time.
+    ReportFile { id: String, name: String, offset: Option<usize> },
 }
 
 fn plain_id(id: &str) -> bool {
@@ -209,7 +210,10 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
         ("/projects", None) => Some(Route::Projects),
         ("/issues", None) => Some(Route::Issues { refresh: false }),
         ("/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
-        (path, None) if path.starts_with("/reports/") => report_file_route(path),
+        (path, None) if path.starts_with("/reports/") => report_file_route(path, None),
+        (path, Some(query)) if path.starts_with("/reports/") => single_query(query, "offset")
+            .filter(|offset| offset.len() <= 12 && offset.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|offset| report_file_route(path, offset.parse().ok())),
         (path, None) if path.starts_with("/tasks/") => path.strip_prefix("/tasks/")?.strip_suffix("/history")
             .filter(|id| plain_id(id)).map(|id| Route::TaskHistory(id.to_owned())),
         (path, None) => path.strip_prefix("/agents/")?.strip_suffix("/activity")
@@ -218,11 +222,11 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
     }
 }
 
-fn report_file_route(path: &str) -> Option<Route> {
+fn report_file_route(path: &str, offset: Option<usize>) -> Option<Route> {
     let (id, name) = path.strip_prefix("/reports/")?.split_once("/files/")?;
     let file_name = !name.is_empty() && name.len() <= 64 && !name.starts_with('.')
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
-    (crate::reports::is_report_id(id) && file_name).then(|| Route::ReportFile { id: id.to_owned(), name: name.to_owned() })
+    (crate::reports::is_report_id(id) && file_name).then(|| Route::ReportFile { id: id.to_owned(), name: name.to_owned(), offset })
 }
 
 pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
@@ -417,7 +421,7 @@ impl Client {
             Route::Projects => self.projects_answer(),
             Route::Issues { refresh } => self.issues_answer(refresh).await,
             Route::TaskHistory(id) => self.task_history(&id),
-            Route::ReportFile { id, name } => self.report_file(&id, &name),
+            Route::ReportFile { id, name, offset } => self.report_file(&id, &name, offset),
         })
     }
 
@@ -599,11 +603,13 @@ async fn report_file(
     State(client): State<Arc<Client>>,
     signed: Option<Extension<Signed>>,
     axum::extract::Path((id, name)): axum::extract::Path<(String, String)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     if crate::domain_bootstrap::signed_device(client.home(), &signed).is_none() {
         return forbidden();
     }
-    match client.read(&format!("/reports/{id}/files/{name}")).await {
+    let query = query.map(|query| format!("?{query}")).unwrap_or_default();
+    match client.read(&format!("/reports/{id}/files/{name}{query}")).await {
         Some(response) => response,
         None => StatusCode::NOT_FOUND.into_response(),
     }

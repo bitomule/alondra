@@ -53,13 +53,13 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
     func test_settings_thisMacItsPairedMacsAndItsDevices() throws {
         let document = try machine("machine-settings-mac")
         let mcpServers = try machine("mcp-servers-mac")
-        assertWindow(size: CGSize(width: 560, height: 1320)) { settings(thisMac: "This Mac", machine: document, mcpServers: mcpServers) }
+        assertWindow(size: CGSize(width: 560, height: 1420)) { settings(thisMac: "This Mac", machine: document, mcpServers: mcpServers) }
     }
 
     func test_settings_thisMacItsPairedMacsAndItsDevices_spanish() throws {
         let document = try machine("machine-settings-ios-es")
         let mcpServers = try machine("mcp-servers-ios-es")
-        assertWindow(size: CGSize(width: 560, height: 1400), spanish: true, variants: light) { settings(thisMac: "Este Mac", machine: document, mcpServers: mcpServers) }
+        assertWindow(size: CGSize(width: 560, height: 1500), spanish: true, variants: light) { settings(thisMac: "Este Mac", machine: document, mcpServers: mcpServers) }
     }
 
     private func machine(_ name: String) throws -> ViewDocument {
@@ -117,6 +117,47 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
             EmptyReducer<ConnectionMeasurementsFeature.State, ConnectionMeasurementsFeature.Action>()
         }
         return Form { ConnectionMeasurementsSection(store: store) }.formStyle(.grouped)
+    }
+
+    private func crashReport(_ state: CrashReportFeature.State) -> some View {
+        let store = Store(initialState: state) { EmptyReducer<CrashReportFeature.State, CrashReportFeature.Action>() }
+        return NavigationStack { CrashReportScreen(store: store) }
+    }
+
+    private var crashReportPreview: CrashReportFeature.State {
+        let report = CrashReport(
+            id: "r-20261027-0000abcd", compressedBytes: 6_144, repo: "bitomule/alondra-issues", passed: true,
+            files: [.init(name: "manifest.json", bytes: nil), .init(name: "description.txt", bytes: 31),
+                    .init(name: "versions.json", bytes: 412), .init(name: "machine.json", bytes: 1_204),
+                    .init(name: "daemon.log", bytes: 48_310), .init(name: "lifecycle.jsonl", bytes: 9_822),
+                    .init(name: "nodes.jsonl", bytes: nil, empty: "no nodes in the window"), .init(name: "apps.jsonl", bytes: 7_480)])
+        return CrashReportFeature.State(whatHappened: "The node stopped after the Mac slept", stage: .ready(report))
+    }
+
+    func test_crashReport_preview() {
+        assertWindow(size: CGSize(width: 560, height: 1000)) { crashReport(crashReportPreview) }
+    }
+
+    func test_crashReport_preview_spanish() {
+        assertWindow(size: CGSize(width: 560, height: 1000), spanish: true, variants: light) { crashReport(crashReportPreview) }
+    }
+
+    func test_crashReport_whatHappened() {
+        assertWindow(size: CGSize(width: 560, height: 360)) { crashReport(.init()) }
+    }
+
+    func test_crashReport_whatHappened_spanish() {
+        assertWindow(size: CGSize(width: 560, height: 360), spanish: true, variants: light) { crashReport(.init()) }
+    }
+
+    func test_crashReport_serviceNotAnswering() {
+        assertWindow(size: CGSize(width: 560, height: 240)) { crashReport(.init(stage: .failed(.notAnswering(onThisMac: true), report: nil))) }
+    }
+
+    func test_crashReport_serviceNotAnswering_spanish() {
+        assertWindow(size: CGSize(width: 560, height: 240), spanish: true, variants: light) {
+            crashReport(.init(stage: .failed(.notAnswering(onThisMac: true), report: nil)))
+        }
     }
 
     func test_connectionMeasurements() {

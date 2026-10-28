@@ -109,6 +109,7 @@ public struct APIRequest: Sendable, Equatable {
             if path[1].hasPrefix("mcp-sign-in-"), ["connect", "return", "reconnect", "without"].contains(path[2]) { return true }
             if path[1].hasPrefix("mcp-server-"), ["connect", "return", "reconnect"].contains(path[2]) { return true }
         }
+        if path.first == "reports" { return validReportRoute(method: method, path: path) }
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),
@@ -119,6 +120,25 @@ public struct APIRequest: Sendable, Equatable {
             return validViewKey(rest[1])
         default:
             return false
+        }
+    }
+
+    /// A crash report: built, one of its files read whole, and sent.
+    private static func validReportRoute(method: HTTPMethod, path: [String]) -> Bool {
+        let digits = { (part: Substring) in part.allSatisfy { ("0"..."9").contains($0) } }
+        let reportID = { (id: String) -> Bool in
+            let parts = id.split(separator: "-", omittingEmptySubsequences: false)
+            return parts.count == 3 && parts[0] == "r" && parts[1].count == 8 && digits(parts[1])
+                && parts[2].count == 8 && parts[2].allSatisfy(\.isHexDigit) && id.allSatisfy(\.isASCII)
+        }
+        switch (method, path.count) {
+        case (.post, 1): return true
+        case (.post, 3): return path[2] == "send" && reportID(path[1])
+        case (.get, 4):
+            let name = path[3]
+            return path[2] == "files" && reportID(path[1]) && !name.isEmpty && name.utf8.count <= 64 && !name.hasPrefix(".")
+                && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_") }
+        default: return false
         }
     }
 
@@ -186,6 +206,10 @@ public struct APIRequest: Sendable, Equatable {
             return true
         }
         if path.first == "settings" { return validSettingsQuery(path: path, query: query) }
+        if path.first == "reports" {
+            return query.isEmpty || (method == .get && path.count == 4 && query.count == 1 && query[0].0 == "offset"
+                && (1...12).contains(query[0].1.utf8.count) && query[0].1.utf8.allSatisfy { (48...57).contains($0) })
+        }
         guard path.count == 2, path[0] == "views", method == .get else { return true }
         let names = query.map(\.0)
         guard Set(names).count == names.count,

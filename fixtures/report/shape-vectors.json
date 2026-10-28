@@ -1,0 +1,41 @@
+{
+  "about": "The safe-shape rule of crash reports, run by the CLI (Rust) and by the apps (Swift) on the same vectors.",
+  "vocabulary": ["Connected", "relay", "via", "RelayOnly", "CaptivePortal", "NoPortMapping", "direct", "failed", "Mac", "is", "broken"],
+  "safe": [
+    "12", "0.8", "250ms", "1.5s", "41%", "3GiB", "-2", "1m30s", "2h5m",
+    "2026-10-25T05:43:41.854Z", "2026-10-24T05:10:11.637+02:00",
+    "0.3.5", "v2.1.30", "1.2.3-beta.1", "26.4",
+    "sdk-0abdea5e130f80de", "run-1a2b3c", "o-feed01",
+    "RelayOnly", "Connected"
+  ],
+  "unsafe": [
+    "192.168.1.20", "ana.lopez", "acme-billing", "sdk-0ABDEA5E130F80DE", "sdk-0abd", "run-xyz123",
+    "1.", "12abc", "Relayonly", "t-fix-acme-invoice-rounding", "/Users/ana.lopez", "https://github.com/acme/billing",
+    "ana@acme.com", "1.2.3.4.5"
+  ],
+  "split": [
+    {"value": "RelayOnly [CaptivePortal, NoPortMapping]", "tokens": ["RelayOnly", "CaptivePortal", "NoPortMapping"]},
+    {"value": "failed: 3 (https://github.com/acme/billing/pull/42 now)", "tokens": ["failed", "3", "https://github.com/acme/billing/pull/42", "now"]}
+  ],
+  "values": [
+    {"value": "2026-10-24T05:10:11.637+02:00", "hint": "value", "redacted": "2026-10-24T03:10:11.637Z"},
+    {"value": "2026-10-24T05:10:11Z", "hint": "value", "redacted": "2026-10-24T05:10:11.000Z"},
+    {"value": "sdk-0abdea5e130f80de", "hint": "value", "redacted": "sdk-0abdea5e130f80de"},
+    {"value": "RelayOnly [CaptivePortal, NoPortMapping]", "hint": "value", "redacted": "RelayOnly [CaptivePortal, NoPortMapping]"},
+    {"value": "https://github.com/acme/billing/pull/42", "hint": "value", "redacted": "repo-1/pull/42"},
+    {"value": "/Users/ana.lopez/Code/acme-billing", "hint": "value", "redacted": "path-1"},
+    {"value": "t-fix-acme-invoice-rounding, t-acme-sso-login", "hint": "value", "redacted": "task-1, task-2"},
+    {"value": "acme-billing is broken", "hint": "path", "redacted": "path-2"},
+    {"value": "fix the acme invoice", "hint": "task", "redacted": "task-3"},
+    {"value": "Connected via relay in 250ms", "hint": "value", "redacted": "value-1"},
+    {"value": "Connected via relay 250ms", "hint": "value", "redacted": "Connected via relay 250ms"},
+    {"value": "failed /Users/ana.lopez/Code/acme-billing", "hint": "value", "redacted": "failed path-1"},
+    {"value": "req-acme-portal", "hint": "value", "redacted": "request-1"},
+    {"value": "0d3f6c8e-1b2a-4c5d-9e8f-7a6b5c4d3e2f", "hint": "node", "redacted": "node-1"},
+    {"value": "ana@acme.com", "hint": "account", "redacted": "account-1"},
+    {"value": "192.168.1.20", "hint": "device", "redacted": "device-1"},
+    {"value": "Ana's iPhone", "hint": "device", "redacted": "device-2"},
+    {"value": "t-fix-acme-invoice-rounding", "hint": "value", "redacted": "task-1"},
+    {"value": "", "hint": "value", "redacted": ""}
+  ]
+}

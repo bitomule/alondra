@@ -29,6 +29,9 @@ use self::collect::{Host, Status, Window};
 use self::redact::Redactor;
 use self::templates::Catalog;
 
+/// The most an app's own section may weigh.
+pub const MAX_APP_SECTION: usize = 512 * 1024;
+
 /// What `alondra report` built: where it is and what the final check found.
 pub struct Built {
     pub id: String,
@@ -50,10 +53,10 @@ pub fn window(text: &str, now: i64) -> Result<Window> {
 }
 
 /// Collects, redacts, checks and writes a new report into `<home>/reports/<id>/`.
-pub fn build(host: &dyn Host, window: Window, description: Option<String>) -> Result<Built> {
+pub fn build(host: &dyn Host, window: Window, description: Option<String>, app: Option<&str>) -> Result<Built> {
     let catalog = Catalog::built();
     let mut redactor = Redactor::new(&catalog.vocabulary);
-    let collected = collect::collect(host, window, catalog, &mut redactor);
+    let collected = collect::collect(host, window, catalog, &mut redactor, app);
     let now = host.now();
     let mut draft = Draft {
         id: bundle::new_id(now),
@@ -416,8 +419,20 @@ impl Host for Mac {
 }
 
 /// `alondra report`: builds a report, shows what it holds and asks whether to send it.
-pub fn run(window_text: &str, description: Option<String>, kind: Option<send::Kind>, json: bool, no_input: bool) -> Result<()> {
-    use std::io::IsTerminal;
+pub fn run(window_text: &str, description: Option<String>, app: Option<&Path>, kind: Option<send::Kind>, json: bool, no_input: bool) -> Result<()> {
+    use std::io::{IsTerminal, Read};
+    let app = match app {
+        None => None,
+        Some(path) if path == Path::new("-") => {
+            let mut text = String::new();
+            std::io::stdin().take(MAX_APP_SECTION as u64 + 1).read_to_string(&mut text).context("reading the app's section")?;
+            Some(text)
+        }
+        Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?),
+    };
+    if app.as_ref().is_some_and(|text| text.len() > MAX_APP_SECTION) {
+        bail!(tr!("the app's section is larger than 512 KB", "la sección de la app pasa de 512 KB"));
+    }
     let no_input = no_input || !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal());
     let host = Mac::new();
     let window = window(window_text, host.now())?;
@@ -436,7 +451,7 @@ pub fn run(window_text: &str, description: Option<String>, kind: Option<send::Ki
     if let Some(spinner) = &collecting {
         spinner.start(tr!("Collecting the report: the logs, the tasks and the nodes of the last hours…", "Recogiendo el informe: los logs, las tareas y los nodos de las últimas horas…"));
     }
-    let built = build(&host, window, description);
+    let built = build(&host, window, description, app.as_deref());
     if let Some(spinner) = collecting {
         spinner.clear();
     }

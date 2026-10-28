@@ -30,10 +30,11 @@ public enum APIError: Error, Equatable, Sendable {
         if status == 422, let message = object?["message"] as? String, !message.isEmpty {
             return .server(status: status, kind: object?["error"] as? String, detail: message, reasons: reasons)
         }
+        let message = (object?["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         if status == 403 { return .forbidden(kind: kind, detail: trimmed, reasons: reasons) }
-        if status == 409 { return .conflict(kind: kind, detail: trimmed, reasons: reasons) }
-        if status == 404, object?["error"] != nil {
-            return .server(status: status, kind: kind, detail: trimmed, reasons: reasons)
+        if status == 409 { return .conflict(kind: kind, detail: trimmed ?? message, reasons: reasons) }
+        if status == 404, object?["error"] != nil || message != nil {
+            return .server(status: status, kind: kind, detail: trimmed ?? message, reasons: reasons)
         }
         if !reasons.isEmpty || (trimmed?.isEmpty == false) {
             return .server(status: status, kind: kind, detail: trimmed, reasons: reasons)

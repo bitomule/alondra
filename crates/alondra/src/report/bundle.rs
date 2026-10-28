@@ -22,7 +22,7 @@ pub const PSEUDONYMS: &str = "pseudonyms.json";
 pub const SENDING: &str = "sending.json";
 const LOCAL_ONLY: &[&str] = &[PSEUDONYMS, SENDING, "sending.json.next", ".sending.lock"];
 pub const SECTIONS: &[&str] = &[
-    "versions.json", "machine.json", "machine-samples.csv", "doctor.json", "daemon.log", "lifecycle.jsonl", "tasks.jsonl", "nodes.jsonl", "sdk-host.jsonl",
+    "versions.json", "machine.json", "machine-samples.csv", "doctor.json", "daemon.log", "lifecycle.jsonl", "tasks.jsonl", "nodes.jsonl", "sdk-host.jsonl", "apps.jsonl",
 ];
 /// Cut, oldest lines first, in this order, when the package is too big; the rest is never cut.
 const TRIMMABLE: &[&str] = &["daemon.log", "lifecycle.jsonl"];

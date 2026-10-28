@@ -70,7 +70,7 @@ pub struct Collected {
     pub daemon_running: bool,
 }
 
-pub fn collect(host: &dyn Host, window: Window, catalog: &Catalog, redactor: &mut Redactor) -> Collected {
+pub fn collect(host: &dyn Host, window: Window, catalog: &Catalog, redactor: &mut Redactor, app: Option<&str>) -> Collected {
     let daemon = host.daemon();
     let mut omitted = Omitted::new();
     let mut sections = vec![
@@ -95,7 +95,23 @@ pub fn collect(host: &dyn Host, window: Window, catalog: &Catalog, redactor: &mu
         }
     }
     sections.push(sdk_host(host, window, daemon.is_some(), redactor, &mut omitted));
+    if let Some(app) = app {
+        sections.push(app_section(app));
+    }
     Collected { sections, omitted, log_capped: capped, daemon_running: daemon.is_some() }
+}
+
+/// The section an app sends with its report, already redacted by the app: kept only when every
+/// line is a JSON object, and checked for anything private like the rest.
+pub fn app_section(text: &str) -> Section {
+    let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return Section::empty("apps.jsonl", tr!("the app had nothing to add", "la app no tenía nada que añadir"));
+    }
+    if !lines.iter().all(|line| serde_json::from_str::<Value>(line).is_ok_and(|row| row.is_object())) {
+        return Section::empty("apps.jsonl", tr!("what the app sent is not one JSON object per line", "lo que mandó la app no es un objeto JSON por línea"));
+    }
+    Section::ok("apps.jsonl", lines.join("\n") + "\n")
 }
 
 fn pretty(value: &Value) -> String {

@@ -42,6 +42,15 @@ import Testing
         #expect(!EnvelopeRequestPolicy.validViewsPath(method: "GET", path: "/settings/folders?dir=%2F", hasBody: false))
     }
 
+    @Test func aDomainErrorKeepsItsMessageWhenItHasNoErrorKind() {
+        let body = Data(#"{"code":"unavailable","message":"GitHub said no","current_revision":null,"subject":null}"#.utf8)
+        #expect(APIError.from(status: 409, body: body) == .conflict(kind: nil, detail: "GitHub said no", reasons: []))
+        let gone = Data(#"{"code":"not_found","message":"That report is no longer on this Mac"}"#.utf8)
+        #expect(APIError.from(status: 404, body: gone)
+            == .server(status: 404, kind: nil, detail: "That report is no longer on this Mac", reasons: []))
+        #expect(APIError.from(status: 404, body: Data("{}".utf8)) == .unexpected(status: 404))
+    }
+
     @Test func aRefusedFolderKeepsTheMacsTranslatedReason() {
         let body = Data(#"{"error":"not_a_directory","message":"~/notas es un archivo, no una carpeta."}"#.utf8)
         #expect(APIError.from(status: 422, body: body)

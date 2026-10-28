@@ -132,6 +132,7 @@ public extension DependencyValues {
         public var accounts = ServerSettingsFeature.State(key: .accounts)
         public var mcpServers = ServerSettingsFeature.State(key: .mcpServers)
         public var measurements = ConnectionMeasurementsFeature.State()
+        public var crashReport = CrashReportFeature.State()
         public var generation: UInt64 = 0
         public let cancellation = UUID()
         public init(service: String, device: String, supportsNotifications: Bool, automaticallySavesQuietHours: Bool = false,
@@ -165,6 +166,7 @@ public extension DependencyValues {
         case accounts(ServerSettingsFeature.Action)
         case mcpServers(ServerSettingsFeature.Action)
         case measurements(ConnectionMeasurementsFeature.Action)
+        case crashReport(CrashReportFeature.Action)
     }
     @Dependency(\.serviceSettings) var client
     @Dependency(\.cloudPairing) var pairingService
@@ -182,12 +184,13 @@ public extension DependencyValues {
         Scope(state: \.accounts, action: \.accounts) { ServerSettingsFeature() }
         Scope(state: \.mcpServers, action: \.mcpServers) { ServerSettingsFeature() }
         Scope(state: \.measurements, action: \.measurements) { ConnectionMeasurementsFeature() }
+        Scope(state: \.crashReport, action: \.crashReport) { CrashReportFeature() }
         Reduce { state, action in
             switch action {
             case .accounts(.task):
                 state.accounts.macName = state.macs.first { $0.id == state.selectedMacID }?.displayName
                 return .none
-            case .machineSettings, .allowedRules, .accounts, .mcpServers, .measurements: return .none
+            case .machineSettings, .allowedRules, .accounts, .mcpServers, .measurements, .crashReport: return .none
             case .appeared:
                 guard state.supportsNotifications else { return .none }
                 return .run { send in

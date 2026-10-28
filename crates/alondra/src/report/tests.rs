@@ -10,7 +10,7 @@ use super::bundle::{self, Draft};
 use super::canary::{self, Private};
 use super::collect::{self, Host, Section, Status, Window};
 use super::daemon_log;
-use super::redact::{Kind, Redactor, is_number, is_version};
+use super::redact::{Kind, Redactor, is_number, is_safe_token, is_version};
 use super::templates::{Catalog, Piece, fill, pieces};
 use super::*;
 use crate::test_support::Directory;
@@ -238,6 +238,28 @@ fn safe_shapes() {
     assert_eq!(redactor.value("fix the acme invoice", Kind::Task), "task-3");
 }
 
+#[test]
+fn the_shape_vectors_the_apps_share_hold_for_the_cli() {
+    let vectors: Value = serde_json::from_str(&fixture("shape-vectors.json")).unwrap();
+    let strings = |key: &str| -> Vec<String> { vectors[key].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect() };
+    let vocabulary: std::collections::HashSet<String> = strings("vocabulary").into_iter().collect();
+    for token in strings("safe") {
+        assert!(is_safe_token(&token, &vocabulary), "{token} should be safe");
+    }
+    for token in strings("unsafe") {
+        assert!(!is_safe_token(&token, &vocabulary), "{token} should not be safe");
+    }
+    for case in vectors["split"].as_array().unwrap() {
+        let tokens: Vec<String> = redact::split_for_test(case["value"].as_str().unwrap()).into_iter().filter(|(token, _)| *token).map(|(_, t)| t).collect();
+        assert_eq!(serde_json::to_value(&tokens).unwrap(), case["tokens"]);
+    }
+    let mut redactor = Redactor::new(&vocabulary);
+    for case in vectors["values"].as_array().unwrap() {
+        let hint: Kind = serde_json::from_value(case["hint"].clone()).unwrap();
+        assert_eq!(redactor.value(case["value"].as_str().unwrap(), hint), case["redacted"].as_str().unwrap(), "{case}");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
 
@@ -418,7 +440,7 @@ fn a_report_of_a_mac_with_its_daemon_down_has_every_section_and_nothing_private(
     let home = Directory::new();
     full_home(&home);
     let mac = FakeMac::new(&home);
-    let built = build(&mac, hours_before(72), Some("It stopped after the Mac slept".into())).unwrap();
+    let built = build(&mac, hours_before(72), Some("It stopped after the Mac slept".into()), None).unwrap();
     let all = files_text(&built.files);
     let mut private: Vec<String> = private_values();
     private.extend(PRIVATE_TEXT.iter().map(|s| s.to_string()));
@@ -453,7 +475,7 @@ fn a_report_of_a_mac_with_its_daemon_down_has_every_section_and_nothing_private(
 fn the_state_sections_keep_only_structure_and_one_pseudonym_per_id() {
     let home = Directory::new();
     full_home(&home);
-    let built = build(&FakeMac::new(&home), hours_before(72), None).unwrap();
+    let built = build(&FakeMac::new(&home), hours_before(72), None, None).unwrap();
     let get = |name: &str| built.files.iter().find(|(n, _)| n == name).unwrap().1.clone();
     let task: Value = serde_json::from_str(get("tasks.jsonl").lines().next().unwrap()).unwrap();
     let pseudonym = task["task"].as_str().unwrap().to_owned();
@@ -484,11 +506,11 @@ fn the_state_sections_keep_only_structure_and_one_pseudonym_per_id() {
 fn a_database_of_an_older_version_is_read_and_a_newer_one_is_not() {
     let home = Directory::new();
     domain_fixture(&home, 4, false);
-    let built = build(&FakeMac::new(&home), hours_before(72), None).unwrap();
+    let built = build(&FakeMac::new(&home), hours_before(72), None, None).unwrap();
     assert!(built.files.iter().any(|(n, t)| n == "tasks.jsonl" && t.contains("\"closing\":null")));
     let newer = Directory::new();
     domain_fixture(&newer, 6, true);
-    let built = build(&FakeMac::new(&newer), hours_before(72), None).unwrap();
+    let built = build(&FakeMac::new(&newer), hours_before(72), None, None).unwrap();
     let tasks = built.sections.iter().find(|s| s.name == "tasks.jsonl").unwrap();
     assert_eq!(tasks.status, Status::Empty("domain.db is of a newer version (6) than this alondra reads (5)".into()));
 }
@@ -497,7 +519,7 @@ fn a_database_of_an_older_version_is_read_and_a_newer_one_is_not() {
 fn an_empty_home_still_makes_a_report() {
     let home = Directory::new();
     std::fs::create_dir_all(&*home).unwrap();
-    let built = build(&FakeMac::new(&home), hours_before(24), None).unwrap();
+    let built = build(&FakeMac::new(&home), hours_before(24), None, None).unwrap();
     assert!(built.hits.is_empty());
     let empty: Vec<&str> = built.sections.iter().filter(|s| s.status != Status::Ok).map(|s| s.name).collect();
     assert_eq!(empty, ["machine-samples.csv", "daemon.log", "lifecycle.jsonl", "tasks.jsonl", "nodes.jsonl", "sdk-host.jsonl"]);
@@ -540,7 +562,7 @@ fn a_report_the_final_check_refuses_is_never_saved() {
     let home = Directory::new();
     full_home(&home);
     let mac = FakeMac::new(&home);
-    let built = build(&mac, hours_before(72), None).unwrap();
+    let built = build(&mac, hours_before(72), None, None).unwrap();
     let leaked = "2026-10-25T05:00:00.000Z repo acme/billing is busy\n";
     std::fs::write(built.dir.join("daemon.log"), leaked).unwrap();
     let manifest_path = built.dir.join(bundle::MANIFEST);
@@ -562,14 +584,33 @@ fn a_report_changed_after_its_preview_is_refused() {
     let home = Directory::new();
     full_home(&home);
     let mac = FakeMac::new(&home);
-    let built = build(&mac, hours_before(72), None).unwrap();
+    let built = build(&mac, hours_before(72), None, None).unwrap();
     let out = home.join("out.txt");
     std::fs::write(built.dir.join("versions.json"), "{}\n").unwrap();
     assert!(save(&mac, &built.id, &out).unwrap_err().to_string().contains("versions.json changed after the preview"));
-    let again = build(&mac, hours_before(72), None).unwrap();
+    let again = build(&mac, hours_before(72), None, None).unwrap();
     std::fs::write(again.dir.join("notes.txt"), "extra").unwrap();
     assert!(save(&mac, &again.id, &out).unwrap_err().to_string().contains("notes.txt was added"));
     assert!(!out.exists());
+}
+
+#[test]
+fn the_section_an_app_sends_goes_through_the_final_check_like_the_rest() {
+    let home = Directory::new();
+    full_home(&home);
+    let mac = FakeMac::new(&home);
+    let clean = "{\"app\":\"iPhone\",\"version\":\"0.3.5 (12)\"}\n{\"message\":\"Connected via relay 250ms\"}\n";
+    let built = build(&mac, hours_before(72), None, Some(clean)).unwrap();
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    assert_eq!(built.files.last().unwrap(), &("apps.jsonl".to_owned(), clean.to_owned()));
+    assert_eq!(bundle::read(&built.dir).unwrap(), built.files, "a report with the app's section reads back for sending");
+    let leaked = "{\"message\":\"opened /Users/ana.lopez/Code\"}\n";
+    let built = build(&mac, hours_before(72), None, Some(leaked)).unwrap();
+    assert!(built.hits.iter().any(|hit| hit.section == "apps.jsonl"), "{:?}", built.hits);
+    assert!(checked(&mac, &built.id).is_err(), "it never leaves the Mac");
+    let built = build(&mac, hours_before(72), None, Some("not json\n")).unwrap();
+    assert!(built.files.iter().all(|(name, _)| name != "apps.jsonl"));
+    assert!(built.files[0].1.contains("not one JSON object per line"));
 }
 
 #[test]
@@ -577,7 +618,7 @@ fn a_saved_report_opens_into_the_same_files() {
     let home = Directory::new();
     full_home(&home);
     let mac = FakeMac::new(&home);
-    let built = build(&mac, hours_before(72), Some("It stopped after the Mac slept".into())).unwrap();
+    let built = build(&mac, hours_before(72), Some("It stopped after the Mac slept".into()), None).unwrap();
     let file = home.join(default_file_name(&built.id));
     save(&mac, &built.id, &file).unwrap();
     assert!(std::fs::read_to_string(&file).unwrap().starts_with(&format!("alondra-report 1 plain {}\n", built.id)));
@@ -651,7 +692,7 @@ fn the_preview_speaks_the_language_of_the_user() {
     let mac = FakeMac::new(&home);
     std::fs::remove_file(home.join("domain.db")).unwrap();
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
-    let built = build(&mac, hours_before(72), None).unwrap();
+    let built = build(&mac, hours_before(72), None, None).unwrap();
     let text = summary(&built);
     assert!(text.contains("no hay domain.db en este Mac"), "{text}");
     assert!(text.contains("líneas del log que no son de ninguna plantilla del código: "), "{text}");

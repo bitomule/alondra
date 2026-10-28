@@ -62,6 +62,28 @@ final class McpSignInRouteTests: XCTestCase {
     }
 }
 
+final class CrashReportRouteTests: XCTestCase {
+    func testAReportIsBuiltReadFileByFileAndSentOnlyByItsId() throws {
+        let id = "r-20261027-0000abcd"
+        XCTAssertTrue(APIRequest.validClientContractRoute(method: .post, path: ["reports"]))
+        XCTAssertTrue(APIRequest.validClientContractRoute(method: .post, path: ["reports", id, "send"]))
+        XCTAssertTrue(APIRequest.validClientContractRoute(method: .get, path: ["reports", id, "files", "daemon.log"]))
+        XCTAssertNoThrow(try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["reports"], body: Data("{}".utf8)), operationID: "report-1"))
+        XCTAssertNoThrow(try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["reports", id, "files", "daemon.log"], query: [("offset", "262144")]),
+                                        operationID: "read-1"), "a long file is read a page at a time")
+        XCTAssertThrowsError(try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["reports", id, "files", "daemon.log"], query: [("offset", "-1")]),
+                                            operationID: "read-2"))
+        XCTAssertThrowsError(try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["reports"], query: [("x", "1")], body: Data("{}".utf8)),
+                                            operationID: "report-2"))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .get, path: ["reports"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["reports", "r-2026-1", "send"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["reports", id, "delete"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .get, path: ["reports", id, "files", ".pseudonyms.json"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .get, path: ["reports", id, "files", "a/b"]))
+        XCTAssertFalse(APIRequest.validClientContractRoute(method: .post, path: ["reports", id, "files", "daemon.log"]))
+    }
+}
+
 final class OperationErrorTests: XCTestCase {
     func testEveryCaseReadsAsASentenceNotATypeName() {
         let cases: [OperationError] = [.operationIdentityRequired, .invalidConfiguration, .invalidEndpoint, .outcomeUnknown]

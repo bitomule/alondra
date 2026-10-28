@@ -77,6 +77,7 @@ struct MacServiceSettingsScene: View {
             client.revokeDevice = { id in try await thisMac.revokeDevice(id) }
         }
         client.problem = { services.connectionProblem(for: $0) }
+        let onThisMac = await MainActor.run { workspace.thisMac === services }
         guard !Task.isCancelled else { return }
         var state = SettingsFeature.State(service: api.base.host() ?? api.base.absoluteString,
             device: api.device, supportsNotifications: false, usesAccount: owner != nil && !services.isDirectOnly)
@@ -93,6 +94,7 @@ struct MacServiceSettingsScene: View {
                 $0.cloudPairing = account.additionalMacPairing
                 $0.findMac = account.findMacClient
                 $0.connectionMeasurements = .live(account.measurements)
+                $0.crashReports = services.crashReportClient(client: "mac", measurements: account.measurements.file, onThisMac: onThisMac)
                 $0.claudeTerminal.open = { command in
                     guard await MainActor.run(body: { workspace.thisMac === services }) else { return false }
                     return await ClaudeTerminal.open(command)

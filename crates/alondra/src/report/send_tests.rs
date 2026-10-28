@@ -188,7 +188,7 @@ fn repo(gh: &FakeGithub) -> Repo<'_> {
 fn built_report(home: &Directory) -> (FakeMac, Built) {
     full_home(home);
     let mac = FakeMac::new(home);
-    let built = build(&mac, hours_before(72), Some("It stopped after the Mac slept".into())).unwrap();
+    let built = build(&mac, hours_before(72), Some("It stopped after the Mac slept".into()), None).unwrap();
     assert!(built.hits.is_empty(), "{:?}", built.hits);
     (mac, built)
 }

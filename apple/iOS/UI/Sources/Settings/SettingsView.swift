@@ -20,6 +20,7 @@ public struct SettingsView: View {
             McpServersRow(store: store.scope(state: \.mcpServers, action: \.mcpServers))
             if store.supportsNotifications { notifications } else if store.alertsNeedAccount { alertsNeedAccount }
             ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
+            CrashReportRow(store: store.scope(state: \.crashReport, action: \.crashReport))
             about
         }
         .scrollContentBackground(.hidden)

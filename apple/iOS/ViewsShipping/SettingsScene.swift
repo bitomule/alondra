@@ -55,6 +55,7 @@ struct SettingsScene: View {
                 $0.cloudPairing = owner.additionalMacPairing
                 $0.findMac = owner.findMacClient
                 $0.connectionMeasurements = .live(owner.measurements)
+                $0.crashReports = services.crashReportClient(client: "ios", measurements: owner.measurements.file, onThisMac: false)
             }
         if let unopened = pairingRequested {
             pairingRequested = nil
