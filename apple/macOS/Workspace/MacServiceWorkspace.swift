@@ -214,7 +214,22 @@ public struct MacServiceSidebar: View {
                 }
             }
         } else if let title = section.title {
-            SidebarCountHeader(title: title, count: waitingCount(section), tint: sectionTint(section.id))
+            HStack(spacing: 8) {
+                SidebarCountHeader(title: title, count: waitingCount(section), tint: sectionTint(section.id))
+                if section.id == "waiting", let first = presentation.arrivals.first {
+                    Spacer(minLength: 4)
+                    Button { presentation.send(.select(.viewKey(first))) } label: {
+                        Label("\(presentation.arrivals.count) new cards", systemImage: "arrow.up")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(.orange.opacity(0.16), in: .capsule)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Shows the first card that arrived while you were reading")
+                    .accessibilityIdentifier("sidebar.arrivals")
+                }
+            }
         }
     }
 }

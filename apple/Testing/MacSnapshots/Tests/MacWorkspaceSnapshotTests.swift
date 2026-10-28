@@ -95,6 +95,21 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 320, height: 880)) { MacServiceSidebar(presentation: store) }
     }
 
+    /// A card arrived while another was open: the open one stays selected and the header says so.
+    func test_sidebar_announcesACardThatArrivedWhileReading() throws {
+        for spanish in [false, true] {
+            let store = try presentation(spanish: spanish, edit: { state in
+                let waiting = MacPresentationFeature.waitingKeys(in: state.sidebarDocument)
+                state.selection = waiting.dropFirst().first.map(MacPresentationFeature.Selection.viewKey)
+                state.selectedViewKey = waiting.dropFirst().first
+                state.arrivals = Array(waiting.prefix(1))
+            })
+            assertWindow(size: CGSize(width: 320, height: 880), spanish: spanish) {
+                MacServiceSidebar(presentation: store)
+            }
+        }
+    }
+
     func test_sidebar_hidesTheCardThatJustLeft() throws {
         let store = try presentation(edit: { state in
             let request = ActionRequest(commandId: "c1", dataEpoch: "", client: .mac, lang: "en", actionId: "answer")

@@ -111,9 +111,17 @@ public struct TriageView: View {
                 summary.foregroundStyle(.secondary).contentTransition(.numericText())
             }
             .font(.subheadline.weight(.medium)).lineLimit(1)
-            pageDots.padding(.top, 6)
-                .opacity(store.orderedIDs.count > 1 ? 1 : 0)
-                .accessibilityHidden(store.orderedIDs.count <= 1)
+            HStack(alignment: .center) {
+                pageDots
+                    .opacity(store.orderedIDs.count > 1 ? 1 : 0)
+                    .accessibilityHidden(store.orderedIDs.count <= 1)
+                Spacer(minLength: 8)
+                if !store.arrivals.isEmpty {
+                    arrivalsButton.transition(.scale(scale: 0.8).combined(with: .opacity))
+                }
+            }
+            .padding(.top, 6)
+            .animation(.spring(duration: 0.35, bounce: 0.2), value: store.arrivals.count)
         }
         .padding(.bottom, 14)
     }
@@ -127,6 +135,21 @@ public struct TriageView: View {
         if header.toRead > 0 { parts.append(Text("\(header.toRead) to read")) }
         parts.append(Text("\(header.working) nodes working"))
         return parts.dropFirst().reduce(parts[0]) { line, part in Text("\(line) · \(part)") }
+    }
+
+    /// Cards that arrived while the person was reading wait right behind; this brings the first forward.
+    private var arrivalsButton: some View {
+        Button { store.send(.showArrivals, animation: .spring(duration: 0.5, bounce: 0.22)) } label: {
+            Label("\(store.arrivals.count) new cards", systemImage: "arrow.up")
+                .font(.caption.weight(.semibold))
+                .contentTransition(.numericText())
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Palette.dawn.opacity(0.16), in: .capsule)
+                .foregroundStyle(Palette.dawn)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the first card that arrived while you were reading")
+        .accessibilityIdentifier("triage.arrivals")
     }
 
     private var pageDots: some View {

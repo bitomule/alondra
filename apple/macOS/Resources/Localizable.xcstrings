@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%lld new cards": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld new"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld new"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld nueva"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld nuevas"}}}}}}},
+    "Shows the first card that arrived while you were reading": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Muestra la primera tarjeta que llegó mientras leías"}}}},
     "MCP servers": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidores MCP"}}}},
     "Name of the new account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nombre de la cuenta nueva"}}}},
     "Work": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo"}}}},

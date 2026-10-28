@@ -9,6 +9,8 @@ import Foundation
 /// travel only with a tap on a button. A card answered here or from its own screen leaves at once
 /// and stays out while its answer travels, however long the network takes. Only the daemon brings
 /// it back: in a newer queue that still lists it, or at once when it asks about the answer again.
+/// A card that arrives while another is in front never takes its place: it waits right behind it,
+/// in the server's order, and is announced until the person brings it forward or it comes by itself.
 @Reducer
 public struct TriageFeature: Sendable {
     public init() {}
@@ -20,6 +22,10 @@ public struct TriageFeature: Sendable {
         public var cards: IdentifiedArrayOf<TriageCardFeature.State> = []
         public var orderedIDs: [String] = []
         public var index = 0
+        /// Cards that arrived while another was in front and have not been in front yet, in the server's order.
+        public var arrivals: [String] = []
+        /// Cards this queue has shown, so one that comes back after an answer is not announced as new.
+        public var seen: Set<String> = []
         public var machinePresented = false
         public var focusedID: String?
         public var newerQueueWaiting = false
@@ -103,6 +109,7 @@ public struct TriageFeature: Sendable {
         case screen(ScreenFeature.Action)
         case cards(IdentifiedActionOf<TriageCardFeature>)
         case next
+        case showArrivals
         case leaveForLater
         case dragChanged
         case dragEnded(translation: Double, predicted: Double)
@@ -174,6 +181,8 @@ public struct TriageFeature: Sendable {
                 state.screen = ScreenFeature.State(key: .focusedHome(id))
                 state.orderedIDs = []
                 state.index = 0
+                state.arrivals = []
+                state.seen = []
                 let optimistic = state.optimistic
                 state.cards.removeAll { !optimistic.isSending($0.id) }
                 state.newerQueueWaiting = false
@@ -210,6 +219,12 @@ public struct TriageFeature: Sendable {
                 return .none
             case .next:
                 return advance(&state)
+            case .showArrivals:
+                guard state.swipe == nil, let first = state.arrivals.first,
+                      let position = state.orderedIDs.firstIndex(of: first) else { return .none }
+                state.index = position
+                state.arrivals.removeAll { $0 == first }
+                return keepWindowObserved(&state)
             case .leaveForLater:
                 guard state.swipe == nil, state.orderedIDs.count > 1, let id = state.currentID else { return .none }
                 state.swipe = Swipe(cardID: id, released: true, leaving: .left)
@@ -306,11 +321,28 @@ public struct TriageFeature: Sendable {
     private func showQueue(_ state: inout State, front: String? = nil) -> Effect<Action> {
         guard let document = state.screen.document else { return .none }
         let previousID = front ?? state.currentID
-        let ids = (document.sections.first { $0.id == "queue" }?.cardIds ?? []).filter {
+        let listed = document.sections.first { $0.id == "queue" }?.cardIds ?? []
+        let ids = listed.filter {
             !state.optimistic.hides($0, undelivered: state.undelivered) && !state.answered.contains($0)
         }
-        state.orderedIDs = ids
-        state.index = previousID.flatMap(ids.firstIndex(of:)) ?? min(state.index, max(ids.count - 1, 0))
+        let seen = state.seen
+        if let previousID, ids.contains(previousID), state.orderedIDs.contains(previousID) {
+            let announced = state.arrivals
+            let arrived = ids.filter { (!seen.contains($0) || announced.contains($0)) && $0 != previousID }
+            var ring = ids.filter { !arrived.contains($0) }
+            let position = ring.firstIndex(of: previousID) ?? 0
+            ring.insert(contentsOf: arrived, at: position + 1)
+            state.orderedIDs = ring
+            state.index = position
+            state.arrivals = arrived
+        } else {
+            state.orderedIDs = ids
+            state.index = previousID.flatMap(ids.firstIndex(of:)) ?? min(state.index, max(ids.count - 1, 0))
+        }
+        state.seen = seen.union(state.orderedIDs).intersection(listed)
+        let current = state.currentID
+        let shownNow = Set(state.orderedIDs)
+        state.arrivals = state.arrivals.filter { $0 != current && shownNow.contains($0) }
         var effects = [keepWindowObserved(&state)]
         if let focused = state.focusedID {
             state.focusedID = nil
@@ -396,6 +428,8 @@ public struct TriageFeature: Sendable {
         guard state.orderedIDs.count > 1 else { return .none }
         state.index = (state.index + 1) % state.orderedIDs.count
         state.skips += 1
+        let current = state.currentID
+        state.arrivals.removeAll { $0 == current }
         return keepWindowObserved(&state)
     }
 

@@ -77,6 +77,18 @@ final class AppFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testACardOpenFromWaitingForYouStaysOpenWhenAnotherArrives() async throws {
+        let store = makeStore()
+        await store.send(.triage(.screen(.loaded(try Fixtures.home(queue: [Fixtures.deliveryID])))))
+        await store.send(.openFromTriage(key("card:\(Fixtures.deliveryID)")))
+
+        await store.send(.triage(.screen(.loaded(try Fixtures.home(queue: [Fixtures.questionID, Fixtures.deliveryID], version: "arrived")))))
+        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("card:\(Fixtures.deliveryID)")])
+        XCTAssertEqual(store.state.triage.currentID, Fixtures.deliveryID)
+        XCTAssertEqual(store.state.triage.arrivals, [Fixtures.questionID])
+    }
+
+    @MainActor
     func testTheReviewIsTheScreenForACardAndItsLinksOpenOnTheSameTab() async throws {
         let store = makeStore()
         await store.send(.open(.tasks, key("card:i-9")))

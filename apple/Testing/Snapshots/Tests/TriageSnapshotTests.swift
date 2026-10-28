@@ -506,6 +506,21 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    /// A question arrived while the report was in front: the report stays, the question waits right
+    /// behind it, and the header says there is one new card.
+    func test_aCardThatArrivedWhileReadingIsAnnounced() throws {
+        let queue = [Fixtures.deliveryID, Fixtures.questionID, Fixtures.informationID]
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card)) { $0.arrivals = [Fixtures.questionID] }
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_aCardThatArrivedWhileReadingIsAnnounced_es() throws {
+        let queue = [Fixtures.deliveryID, Fixtures.questionID, Fixtures.informationID]
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.spanishCard),
+                                            home: try Fixtures.home(queue: queue, spanish: true)) { $0.arrivals = [Fixtures.questionID] }
+        assertScreen([.light, .dark], language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_stackOfAShortAndALongCardShareOneHeight() throws {
         let queue = [Fixtures.informationID, Fixtures.questionID, Fixtures.deliveryID]
         let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))

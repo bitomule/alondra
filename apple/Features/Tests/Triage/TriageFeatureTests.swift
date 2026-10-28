@@ -484,6 +484,80 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertNil(store.state.loadError, "a saved queue is shown, not an error page")
     }
 
+    // MARK: Arrivals (David, 24 Oct: a blocking card arrived while he read a report)
+
+    /// The report in front, then a question that outranks it arrives: the server puts it first.
+    @MainActor
+    private func readingWhenAQuestionArrives() async throws -> TestStoreOf<TriageFeature> {
+        let reading = [ids.delivery, ids.information]
+        let store = store(FeedStub([try Fixtures.home(queue: reading)] + (try queue.map(Fixtures.card))))
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.currentID, ids.delivery)
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: [ids.question] + reading, version: "arrived"))))
+        await store.skipReceivedActions()
+        return store
+    }
+
+    @MainActor
+    func testACardThatArrivesWhileReadingWaitsRightBehindAndIsAnnounced() async throws {
+        let store = try await readingWhenAQuestionArrives()
+
+        XCTAssertEqual(store.state.currentID, ids.delivery, "the card being read stays in front")
+        XCTAssertEqual(store.state.index, 0, "and in the same place of the queue")
+        XCTAssertEqual(store.state.orderedIDs, [ids.delivery, ids.question, ids.information], "the new one is next")
+        XCTAssertEqual(store.state.arrivals, [ids.question])
+        XCTAssertEqual(store.state.visibleIDs, [ids.delivery, ids.question, ids.information])
+    }
+
+    @MainActor
+    func testANewCardStaysRightBehindThroughLaterQueues() async throws {
+        let store = try await readingWhenAQuestionArrives()
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: [ids.question, ids.delivery, ids.information], version: "again"))))
+        XCTAssertEqual(store.state.currentID, ids.delivery)
+        XCTAssertEqual(store.state.orderedIDs, [ids.delivery, ids.question, ids.information])
+        XCTAssertEqual(store.state.arrivals, [ids.question])
+    }
+
+    @MainActor
+    func testTheAnnouncementBringsTheNewCardForward() async throws {
+        let store = try await readingWhenAQuestionArrives()
+
+        await store.send(.showArrivals)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.arrivals, [])
+        XCTAssertEqual(store.state.orderedIDs, [ids.delivery, ids.question, ids.information], "the report stays in the queue")
+    }
+
+    @MainActor
+    func testANewCardReachedByMovingOnIsNoLongerAnnounced() async throws {
+        let store = try await readingWhenAQuestionArrives()
+
+        await store.send(.next)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.arrivals, [])
+    }
+
+    @MainActor
+    func testANewCardTheDaemonWithdrawsIsNoLongerAnnounced() async throws {
+        let store = try await readingWhenAQuestionArrives()
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: [ids.delivery, ids.information], version: "withdrawn"))))
+        XCTAssertEqual(store.state.currentID, ids.delivery)
+        XCTAssertEqual(store.state.arrivals, [])
+    }
+
+    @MainActor
+    func testTheFirstQueueAnnouncesNothing() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.arrivals, [])
+        XCTAssertEqual(store.state.orderedIDs, queue)
+    }
+
     @MainActor
     func testWithNothingSavedAFailureIsAnErrorPage() async throws {
         let store = store(FeedStub())

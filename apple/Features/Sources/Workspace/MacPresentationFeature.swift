@@ -48,6 +48,8 @@ public struct MacPresentationFeature: Sendable {
         public var openSections: Set<String> = []
         public var sectionPages: [String: SectionPage] = [:]
         public var selectedViewKey: String?
+        /// Cards that arrived while another card was selected and have not been opened yet, in the sidebar's order.
+        public var arrivals: [String] = []
         public var viewError: String?
         public var actionFeature = ActionFeature.State(dataEpoch: "", client: .mac, lang: "en")
         public var actionPresented = false
@@ -397,6 +399,7 @@ public struct MacPresentationFeature: Sendable {
                 }
                 state.selection = .viewKey(key)
                 state.selectedViewKey = key
+                state.arrivals.removeAll { $0 == key }
                 state.detailDocument = nil
                 state.openSections = []
                 state.sectionPages = [:]
@@ -460,10 +463,13 @@ public struct MacPresentationFeature: Sendable {
                         if previous?.version != document.version { state.returnReasons = [:] }
                         state.sidebarDocument = document
                         state.optimistic.reconcile(document.version, dataEpoch: document.dataEpoch)
+                        noteArrivals(from: previous, &state)
                         let links = Self.links(in: document)
                         if case let .viewKey(current)? = state.selection, !links.contains(current),
                            Self.links(in: previous).contains(current) {
-                            let next = Self.nextKey(after: current, in: previous, available: Set(links)) ?? links.first
+                            let next = firstArrival(in: Set(links), state)
+                                ?? Self.nextKey(after: current, in: previous, available: Set(links)) ?? links.first
+                            state.arrivals.removeAll { $0 == next }
                             state.selection = next.map(Selection.viewKey)
                             state.selectedViewKey = next
                             state.detailDocument = nil
@@ -636,10 +642,29 @@ public struct MacPresentationFeature: Sendable {
         .cancellable(id: CancelID.undelivered, cancelInFlight: true)
     }
 
+    /// A card that arrives while another is open never replaces it: it is announced, and it is the
+    /// one that comes next when the open card leaves.
+    private func noteArrivals(from previous: ViewDocument?, _ state: inout State) {
+        let waiting = Self.waitingEntries(in: state.sidebarDocument).map(\.key)
+        if let previous, let current = state.selectedViewKey, Self.cardID(forViewKey: current) != nil {
+            let before = Set(Self.waitingEntries(in: previous).map(\.key))
+            let known = state.arrivals
+            state.arrivals += waiting.filter { !before.contains($0) && $0 != current && !known.contains($0) }
+        }
+        let listed = Set(waiting)
+        let selected = state.selectedViewKey
+        state.arrivals = state.arrivals.filter { listed.contains($0) && $0 != selected }
+    }
+
+    private func firstArrival(in available: Set<String>, _ state: State) -> String? {
+        state.arrivals.first { available.contains($0) && !state.hides(Self.cardID(forViewKey: $0) ?? $0) }
+    }
+
     /// A settled card leaves the detail for the next waiting one, or for nothing.
     private func closeSettled(_ key: String, why: String, _ state: inout State) -> Effect<Action> {
         let available = Set(Self.waitingEntries(in: state.sidebarDocument).map(\.key)).subtracting([key])
-        let next = Self.nextKey(after: key, in: state.sidebarDocument, available: available)
+        let next = firstArrival(in: available, state) ?? Self.nextKey(after: key, in: state.sidebarDocument, available: available)
+        state.arrivals.removeAll { $0 == next }
         state.selection = next.map(Selection.viewKey)
         state.selectedViewKey = next
         state.detailDocument = nil
@@ -651,7 +676,9 @@ public struct MacPresentationFeature: Sendable {
         guard let key = state.selectedViewKey, Self.cardID(forViewKey: key) == id else { return .none }
         let hidden = state
         let available = Set(Self.waitingEntries(in: state.sidebarDocument).filter { !hidden.hides($0.id) }.map(\.key))
-        guard let next = Self.nextKey(after: key, in: state.sidebarDocument, available: available) else { return .none }
+        guard let next = firstArrival(in: available, state) ?? Self.nextKey(after: key, in: state.sidebarDocument, available: available)
+        else { return .none }
+        state.arrivals.removeAll { $0 == next }
         state.selection = .viewKey(next)
         state.selectedViewKey = next
         state.detailDocument = nil
@@ -668,6 +695,10 @@ public struct MacPresentationFeature: Sendable {
             return String(key.dropFirst(prefix.count))
         }
         return nil
+    }
+
+    public static func waitingKeys(in document: ViewDocument?) -> [String] {
+        waitingEntries(in: document).map(\.key)
     }
 
     /// What waits for the person, in the order the sidebar lists it.
