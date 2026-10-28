@@ -10,18 +10,24 @@ extension Snapshotting where Value == AnyView, Format == UIImage {
         precision: Float = 1,
         perceptualPrecision: Float = 1,
         size: CGSize? = nil,
+        settleCompositing: Bool = false,
         traits: UITraitCollection
     ) -> Self {
         Snapshotting<UIImage, UIImage>.image(precision: precision, perceptualPrecision: perceptualPrecision, scale: traits.displayScale)
-            .pullback { view in MainActor.assumeIsolated { drawInKeyWindow(view, size: size, traits: traits) } }
+            .pullback { view in MainActor.assumeIsolated {
+                drawInKeyWindow(view, size: size, traits: traits, settleCompositing: settleCompositing)
+            } }
     }
 }
 
 /// Draws the view in the test host's key window the way swift-snapshot-testing does: placed and laid
-/// out on screen, then moved off it so no safe area applies, then drawn once. `placed` runs once the
+/// out on screen, then moved off it so no safe area applies, then captured. `placed` runs once the
 /// view is laid out in the window.
 @MainActor
-func drawInKeyWindow(_ view: AnyView, size fixedSize: CGSize?, traits: UITraitCollection, placed: () -> Void = {}) -> UIImage {
+func drawInKeyWindow(
+    _ view: AnyView, size fixedSize: CGSize?, traits: UITraitCollection,
+    settleCompositing: Bool = false, placed: () -> Void = {}
+) -> UIImage {
     let host = UIHostingController(rootView: view)
     let size: CGSize
     if let fixedSize {
@@ -77,7 +83,15 @@ func drawInKeyWindow(_ view: AnyView, size fixedSize: CGSize?, traits: UITraitCo
         window.rootViewController = nil
     }
 
-    return UIGraphicsImageRenderer(bounds: host.view.bounds, format: UIGraphicsImageRendererFormat(for: traits)).image { _ in
+    let renderer = UIGraphicsImageRenderer(bounds: host.view.bounds, format: UIGraphicsImageRendererFormat(for: traits))
+    // The first composition after boot can quantize shadows and native button labels differently.
+    // Complete that pass on this host before capturing it, without advancing time or recreating it.
+    if settleCompositing {
+        _ = renderer.image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
+    }
+    return renderer.image { _ in
         host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
     }
 }

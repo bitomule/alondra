@@ -68,6 +68,7 @@ func assertScreen<Content: View>(
     _ variants: [SnapshotVariant] = SnapshotVariant.allCases,
     language: SnapshotLanguage = .english,
     inWindow: Bool = false,
+    settleCompositing: Bool = false,
     pixelPrecision: Float = 1,
     file: StaticString = #filePath,
     testName: String = #function,
@@ -81,7 +82,7 @@ func assertScreen<Content: View>(
             UITraitCollection(displayScale: 1),
         ])
         let strategy: Snapshotting<AnyView, UIImage> = inWindow
-            ? .windowImage(precision: pixelPrecision, perceptualPrecision: 0.98, traits: traits)
+            ? .windowImage(precision: pixelPrecision, perceptualPrecision: 0.98, settleCompositing: settleCompositing, traits: traits)
             : .image(precision: pixelPrecision, perceptualPrecision: 0.98, layout: .sizeThatFits, traits: traits)
         assertAppSnapshot(
             of: screen(variant, language: language, content),
