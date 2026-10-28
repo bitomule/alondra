@@ -869,9 +869,11 @@ mod tests {
         assert!(until > now && until <= now + 24 * 3_600_000 && clock_text(until, now, false).ends_with("23:59"), "{until}");
 
         let (unknown, unknown_home) = self::domain();
+        let before = now_millis();
         unknown.live.observe(&stop_failure("s1", "rate_limit", None));
+        let after = now_millis();
         let until = unknown.live.usage_pause.current().unwrap().until;
-        assert!((until - (now + UNKNOWN_RESET_WAIT_MS)).abs() < 2_000, "no reset known: the default wait");
+        assert!((before + UNKNOWN_RESET_WAIT_MS..=after + UNKNOWN_RESET_WAIT_MS).contains(&until), "no reset known: the default wait");
         for path in [home, named_home, unknown_home] {
             std::fs::remove_dir_all(path).unwrap();
         }
