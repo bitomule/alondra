@@ -102,6 +102,7 @@ mod pr_ids;
 mod pr_viewed;
 mod result_files;
 mod push_gate;
+mod activity_push;
 mod push_retract;
 mod relaunch;
 mod sdk_handover;
@@ -618,6 +619,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     ));
     if let Some(service) = &service {
         tokio::spawn(push_retract::run(domain.clone(), service.clone()));
+        tokio::spawn(activity_push::run(domain.clone(), service.clone()));
     }
     let scheduler = tokio::spawn(domain_schedule_runner::run(
         domain.clone(),

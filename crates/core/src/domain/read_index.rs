@@ -57,6 +57,21 @@ pub struct NodeReading {
     pub sdk_turn_stop: Option<alondra_domain::TurnStop>,
 }
 
+/// What the status header counts and the phone's Live Activity shows: the cards in Waiting for
+/// You, the nodes that wait for an answer of the user, and the nodes that hold a working slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActivityCounts {
+    pub inbox: u32,
+    pub waiting: u32,
+    pub working: u32,
+}
+
+impl ActivityCounts {
+    pub fn any(&self) -> bool {
+        self.inbox > 0 || self.waiting > 0 || self.working > 0
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReadIndex {
     data_epoch: DataEpoch,
@@ -87,6 +102,7 @@ pub struct ReadIndex {
     asks_outside_tasks: bool,
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
+    activity: ActivityCounts,
     mcp_waiting: Vec<McpWaiting>,
     mcp_nodes: Vec<McpNodeReading>,
     accounts: Vec<crate::accounts::AccountStatus>,
@@ -185,6 +201,15 @@ impl ReadIndex {
     }
     pub fn counts(&self) -> &InboxCounts {
         &self.counts
+    }
+    pub fn activity(&self) -> ActivityCounts {
+        self.activity
+    }
+    /// The node wrote a card that waits for the user to answer, act or review, not only to read.
+    fn waits_for_an_answer(&self, node: &AgentId) -> bool {
+        self.nodes.get(node).is_some_and(|node| {
+            node.waiting.iter().filter_map(|id| self.waiting_card(id)).any(|item| item.kind != "information")
+        })
     }
     /// Where a card stands in the queue Waiting for You is drawn from, if it is in it.
     pub fn queue_position(&self, card: &InteractionId) -> Option<usize> {
@@ -476,6 +501,11 @@ impl<'a> Builder<'a> {
             index.tasks.insert(t.id.clone(), facts);
         }
         self.nodes(&mut index, waiting_of_node);
+        index.activity = ActivityCounts {
+            inbox: index.waiting.len() as u32,
+            waiting: state.agents.values().filter(|agent| index.waits_for_an_answer(&agent.id)).count() as u32,
+            working: state.slots().len() as u32,
+        };
         index.cards_before = self.cards_before.into_iter().map(|(delivery, cards)| (delivery.clone(), cards)).collect();
         index.blocks = self.blocks;
         index
@@ -782,6 +812,11 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     }).count() as u64;
     let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
     assert_eq!(index.counts(), &counts, "the counts");
+    let waiting_nodes = state.agents.values()
+        .filter(|agent| waiting.iter().any(|item| item.kind != "information" && item.agent_id.as_ref() == Some(&agent.id)))
+        .count() as u32;
+    let activity = ActivityCounts { inbox: waiting.len() as u32, waiting: waiting_nodes, working: state.slots().len() as u32 };
+    assert_eq!(index.activity(), activity, "the activity counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
     let reported: Vec<(TaskId, Vec<McpServerState>)> = state.tasks.values().filter(|task| !task.over())
         .filter_map(|task| Some((task.id.clone(), state.mcp.get(task.agent_id.as_ref()?)?.servers.clone()))).collect();

@@ -152,6 +152,10 @@ impl QuietHours {
             && value[..2].parse::<u32>().is_ok_and(|h| h < 24)
             && value[3..].parse::<u32>().is_ok_and(|m| m < 60)
     }
+    /// A Live Activity may appear on its own only outside the phone's quiet hours.
+    fn allows_start(&self, now: u32) -> bool {
+        !in_quiet_hours(self.start.as_deref(), self.end.as_deref(), now)
+    }
     fn apply(&self, payload: &Value, with_sound: bool, now: u32) -> (Value, bool) {
         let quiet = in_quiet_hours(self.start.as_deref(), self.end.as_deref(), now);
         let mut payload = payload.clone();
@@ -1679,6 +1683,28 @@ impl Service {
         self.broadcast_to_devices(PushDelivery::Badge, false, |_| payload.clone()).await
     }
 
+    /// The phones a Live Activity report goes to, with their push binding: every approved phone
+    /// actively enrolled with the relay that sent this Mac one.
+    pub(crate) fn activity_phones(&self) -> Result<Vec<(String, String)>> {
+        if self.relay.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut phones = Vec::new();
+        for (id, device) in &self.devices.snapshot() {
+            if !self.auth.approved_key_matches(id, &device.signing) || !self.journal.enrollment_active(id)? {
+                continue;
+            }
+            if let Some(binding) = self.journal.push_binding(id)? {
+                phones.push((id.clone(), binding));
+            }
+        }
+        Ok(phones)
+    }
+
+    pub(crate) fn may_start_activity(&self, id: &str, now: u32) -> Result<bool> {
+        Ok(self.journal.quiet_hours(id)?.allows_start(now))
+    }
+
     async fn broadcast_to_devices(
         &self,
         delivery: PushDelivery,
@@ -1868,25 +1894,7 @@ pub(crate) fn seal_push(
     if plaintext.len() > MAX_PUSH_PLAINTEXT {
         bail!("content exceeds encrypted APNs budget");
     }
-    let mut id_bytes = [0u8; 16];
-    SystemRandom::new()
-        .fill(&mut id_bytes)
-        .map_err(|_| anyhow!("OS randomness failed"))?;
-    let request_id = URL_SAFE_NO_PAD.encode(id_bytes);
-    let envelope = Envelope::seal_random(
-        EnvelopeContext {
-            route: mac_id,
-            sender: mac_id,
-            recipient: device_id,
-            request_id: &request_id,
-            kind: "push",
-            expires_at_ms: now_ms() + 600_000,
-        },
-        &plaintext,
-        signing,
-        agreement,
-    )
-    .map_err(|error| anyhow!("seal push: {error}"))?;
+    let envelope = seal_to_device(mac_id, signing, device_id, agreement, "push", &plaintext)?;
     let mut body = json!({"device_id":device_id,"envelope":envelope});
     match delivery {
         PushDelivery::Alert => {
@@ -1906,6 +1914,61 @@ pub(crate) fn seal_push(
         bail!("envelope exceeds APNs budget");
     }
     Ok(body)
+}
+
+fn seal_to_device(
+    mac_id: &str,
+    signing: &SigningKey,
+    device_id: &str,
+    agreement: &PublicKey,
+    kind: &str,
+    plaintext: &[u8],
+) -> Result<Envelope> {
+    let mut id_bytes = [0u8; 16];
+    SystemRandom::new()
+        .fill(&mut id_bytes)
+        .map_err(|_| anyhow!("OS randomness failed"))?;
+    let request_id = URL_SAFE_NO_PAD.encode(id_bytes);
+    Envelope::seal_random(
+        EnvelopeContext {
+            route: mac_id,
+            sender: mac_id,
+            recipient: device_id,
+            request_id: &request_id,
+            kind,
+            expires_at_ms: now_ms() + 600_000,
+        },
+        plaintext,
+        signing,
+        agreement,
+    )
+    .map_err(|error| anyhow!("seal {kind}: {error}"))
+}
+
+/// The `/v1/mac/activity` body: the relay keeps the latest `envelope` of each Mac for the phone
+/// and hands them all, unopened, to its Live Activity, whose widget extension opens each with the
+/// pairing's agreement key and adds them up. Only the three flags travel in the clear.
+pub(crate) fn seal_activity(
+    mac_id: &str,
+    signing: &SigningKey,
+    device_id: &str,
+    agreement: &PublicKey,
+    binding: &str,
+    payload: &Value,
+    flags: crate::activity_push::Flags,
+) -> Result<Vec<u8>> {
+    let plaintext = serde_json::to_vec(&json!({"push_binding": binding, "payload": payload}))?;
+    if plaintext.len() > MAX_PUSH_PLAINTEXT {
+        bail!("activity exceeds the encrypted APNs budget");
+    }
+    let envelope = seal_to_device(mac_id, signing, device_id, agreement, "activity", &plaintext)?;
+    Ok(serde_json::to_vec(&json!({
+        "device_id": device_id,
+        "envelope": envelope,
+        "active": flags.active,
+        "may_start": flags.may_start,
+        "urgent": flags.urgent,
+    }))?)
 }
 
 /// The generic alert that stands in for content too large to push, keeping the

@@ -140,7 +140,7 @@ fn validate_text(value: &str) -> Result<(), Error> {
 impl Envelope {
     fn validate_shape(&self) -> Result<(), Error> {
         if self.v != 1
-            || !matches!(self.kind.as_str(), "request" | "response" | "push" | "pairing")
+            || !matches!(self.kind.as_str(), "request" | "response" | "push" | "pairing" | "activity")
             || self.expires_at_ms == 0
         {
             return Err(Error::InvalidField);

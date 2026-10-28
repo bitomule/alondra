@@ -66,6 +66,8 @@ mod usage_limit_tests;
 #[cfg(test)]
 mod journal_tests;
 #[cfg(test)]
+mod activity_counts_tests;
+#[cfg(test)]
 pub(crate) mod mcp_wait_tests;
 #[cfg(test)]
 mod decision_tests;

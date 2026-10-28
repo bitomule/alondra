@@ -7,13 +7,14 @@ use super::{
 /// holds what is addressed to the user, the orchestrator's answers and questions included.
 pub(super) fn build(context: &RenderContext<'_>) -> Status {
     let roots = context.waiting();
-    let pending = roots.len() as u32;
+    let activity = super::activity_counts(context.index);
+    let pending = activity.inbox;
     let questions = roots
         .iter()
         .filter(|item| super::home::waits_for(item) == "question")
         .count() as u32;
     let to_read = pending - questions;
-    let working = context.domain.slots().len() as u32;
+    let working = activity.working;
     let mut summary = Vec::new();
     if questions > 0 {
         summary.push(if questions == 1 {
@@ -70,9 +71,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
             Count {
                 id: "waiting".into(),
                 label: t!(context.lang, "waiting", "esperando").into(),
-                value: context.domain.agents.values().filter(|agent| context.index.node(&agent.id).is_some_and(|node| {
-                    node.waiting.iter().filter_map(|id| context.index.waiting_card(id)).any(|item| item.kind != "information")
-                })).count() as u32,
+                value: activity.waiting,
             },
         ],
         gauges: context.live.gauges.clone(),

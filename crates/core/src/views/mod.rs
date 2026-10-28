@@ -132,6 +132,10 @@ impl RenderContext<'_> {
 pub fn inbox_badge(index: &crate::domain::ReadIndex) -> u32 {
     index.waiting().len() as u32
 }
+/// The counts the status header and the phone's Live Activity show, so they never differ.
+pub fn activity_counts(index: &crate::domain::ReadIndex) -> crate::domain::ActivityCounts {
+    index.activity()
+}
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
 pub fn waiting_cards(index: &crate::domain::ReadIndex) -> Vec<String> {
     index.waiting().iter().map(|item| card::public_id(item).to_owned()).collect()

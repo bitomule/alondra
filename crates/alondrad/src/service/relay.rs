@@ -456,4 +456,27 @@ impl Service {
             bail!("relay did not accept encrypted push (HTTP {status}, error {code})");
         }
     }
+
+    /// Hands one Live Activity report to the relay: what it answered, for the caller to decide
+    /// when to send again. A report is never queued: the next one carries the state of then.
+    pub(crate) async fn send_device_activity(
+        &self,
+        id: &str,
+        binding: &str,
+        payload: &Value,
+        flags: crate::activity_push::Flags,
+        epoch: &mut Option<[u8; 16]>,
+    ) -> Result<(reqwest::StatusCode, String)> {
+        let device = self.devices.get(id).ok_or_else(|| anyhow!("device is not configured for the service"))?;
+        self.require_device_approval(id, &device, Transport::Relay)?;
+        let body = super::seal_activity(&self.mac_id, &self.signing, id, &device.agreement, binding, payload, flags)?;
+        let current_epoch = match *epoch {
+            Some(epoch) => epoch,
+            None => *epoch.insert(self.bootstrap().await?),
+        };
+        let response = self.signed(Method::POST, "/v1/mac/activity", body, &current_epoch).await?;
+        let status = response.status();
+        let code = if status.is_success() { String::new() } else { relay_error_code(&response.bytes().await.unwrap_or_default()) };
+        Ok((status, code))
+    }
 }
