@@ -131,10 +131,15 @@ impl Step {
 
     /// Commit, push, open and register PR `number`, and deliver it as final.
     pub fn work(number: u64, file: &str) -> Vec<Step> {
+        Self::work_checked(number, file, Checks::Success)
+    }
+
+    /// The same work, its PR with these checks on the fake GitHub.
+    pub fn work_checked(number: u64, file: &str, checks: Checks) -> Vec<Step> {
         vec![
             Step::Commit { file: file.into(), text: format!("{file} from the sandbox\n") },
             Step::Push,
-            Step::OpenPr { number, draft: false, checks: Checks::Success },
+            Step::OpenPr { number, draft: false, checks },
             Step::RegisterPr { number },
             Step::Deliver { need: format!("Review {file}"), pr: Some(number), is_final: true },
         ]

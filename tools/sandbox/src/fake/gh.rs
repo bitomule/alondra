@@ -16,6 +16,10 @@ pub enum Checks {
     Failure,
     Pending,
     None,
+    /// Five checks the way a real CI leaves them: three passed, one failed after a re-run, one running.
+    Mixed,
+    /// Three checks: two passed, one still running.
+    Running,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -28,6 +32,9 @@ pub struct Pr {
     pub state: String,
     pub draft: bool,
     pub checks: Checks,
+    /// The branch conflicts with its base.
+    #[serde(default)]
+    pub conflicts: bool,
     /// Why `gh pr merge` fails, when it should.
     #[serde(default)]
     pub merge_error: Option<String>,
@@ -122,6 +129,19 @@ fn facts(fakes: &Fakes, pr: &Pr, fields: &str) -> Result<Value, String> {
         Checks::Success => json!([{"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"}]),
         Checks::Failure => json!([{"name": "build", "status": "COMPLETED", "conclusion": "FAILURE"}]),
         Checks::Pending => json!([{"name": "build", "status": "IN_PROGRESS", "conclusion": ""}]),
+        Checks::Mixed => json!([
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "unit tests", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "ui tests", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "ui tests", "status": "COMPLETED", "conclusion": "FAILURE", "startedAt": "2026-10-27T10:20:00Z"},
+            {"name": "preview deploy", "status": "IN_PROGRESS", "conclusion": "", "startedAt": "2026-10-27T10:21:00Z"},
+        ]),
+        Checks::Running => json!([
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "unit tests", "status": "IN_PROGRESS", "conclusion": "", "startedAt": "2026-10-27T10:01:00Z"},
+        ]),
     };
     let remote = fakes.remote();
     let title = git(&remote, &["log", "-1", "--format=%s", &head]).unwrap_or_default();
@@ -133,8 +153,9 @@ fn facts(fakes: &Fakes, pr: &Pr, fields: &str) -> Result<Value, String> {
         files += 1;
     }
     let (mergeable, merge_state) = match (pr.state.as_str(), pr.checks) {
-        ("OPEN", Checks::Failure) => ("MERGEABLE", "UNSTABLE"),
-        ("OPEN", Checks::Pending) => ("MERGEABLE", "BLOCKED"),
+        ("OPEN", _) if pr.conflicts => ("CONFLICTING", "DIRTY"),
+        ("OPEN", Checks::Failure | Checks::Mixed) => ("MERGEABLE", "UNSTABLE"),
+        ("OPEN", Checks::Pending | Checks::Running) => ("MERGEABLE", "BLOCKED"),
         ("OPEN", _) if pr.draft => ("MERGEABLE", "DRAFT"),
         ("OPEN", _) => ("MERGEABLE", "CLEAN"),
         _ => ("UNKNOWN", "UNKNOWN"),
@@ -229,6 +250,7 @@ pub fn open(fakes: &Fakes, worktree: &std::path::Path, number: u64, draft: bool,
         state: "OPEN".into(),
         draft,
         checks,
+        conflicts: false,
         merge_error: None,
         merged: None,
     };

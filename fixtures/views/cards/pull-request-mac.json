@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "v23e16c56047d2163",
+  "version": "v3dfd4a18879c401b",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -61,6 +61,22 @@
   },
   "sections": [
     {
+      "id": "status",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "State",
+              "value": "Checks running",
+              "tone": "info"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "facts",
       "collapsed": false,
       "items": [
@@ -93,7 +109,15 @@
       "items": [
         {
           "type": "checks",
+          "summary": {
+            "text": "2 of 3 passed, 1 running",
+            "tone": "info"
+          },
           "items": [
+            {
+              "name": "Lint",
+              "state": "pending"
+            },
             {
               "name": "Build",
               "state": "pass"
@@ -101,10 +125,6 @@
             {
               "name": "Unit tests",
               "state": "pass"
-            },
-            {
-              "name": "Lint",
-              "state": "pending"
             }
           ]
         }

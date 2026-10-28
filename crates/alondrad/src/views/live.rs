@@ -482,12 +482,10 @@ async fn gather_inner(
                 additions: details.as_ref().map_or(0, |details| details.additions),
                 deletions: details.as_ref().map_or(0, |details| details.deletions),
                 changed_files: details.as_ref().map_or(0, |details| details.changed_files),
-                checks_passed: details.as_ref().map(|details| {
-                    details
-                        .checks
-                        .iter()
-                        .all(|check| check.state == alondra_core::pr::CheckState::Passed)
-                }),
+                fetched: details.is_some(),
+                draft: details.as_ref().is_some_and(|details| details.draft),
+                blocked: details.as_ref().is_some_and(|details| details.blocked),
+                mergeability_unknown: details.as_ref().is_some_and(|details| details.mergeability_unknown),
                 conflicts: details.as_ref().is_some_and(|details| details.conflicts),
                 stacked_on: stacked_below(pr, state).map(|below| below.id.0.clone()),
                 url: Some(crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number)),

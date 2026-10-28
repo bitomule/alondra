@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v7d59e01b93fa78ba",
+  "version": "vb58d010574923b2e",
   "cursor": "cursor-1",
   "status": {
     "version": "vf84c4996f0984c30",
@@ -162,8 +162,8 @@
           "title": "Review the beta candidate",
           "subtitle": "All required checks passed and the branch is up to date with main.",
           "state": {
-            "text": "+120 −30 · ✓",
-            "tone": "success"
+            "text": "Checks running",
+            "tone": "info"
           },
           "detail": "reference"
         },

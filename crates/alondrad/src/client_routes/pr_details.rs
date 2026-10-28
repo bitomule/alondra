@@ -62,6 +62,9 @@ pub(crate) struct Details {
     pub changed_files: u64,
     pub conflicts: bool,
     pub mergeability_unknown: bool,
+    pub draft: bool,
+    /// GitHub's `BLOCKED`: something other than conflicts stops the merge, such as a required review.
+    pub blocked: bool,
     #[serde(skip)]
     observed_at: Option<i64>,
 }
@@ -348,6 +351,8 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
         base_ref: card.base.clone(),
         conflicts: card.conflicts(),
         mergeability_unknown: card.mergeability_unknown(),
+        draft: card.draft,
+        blocked: card.merge_state.as_deref() == Some("BLOCKED"),
         additions: card.additions,
         deletions: card.deletions,
         changed_files: card.changed_files,

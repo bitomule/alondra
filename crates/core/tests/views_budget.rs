@@ -348,7 +348,7 @@ fn live(state: &DomainState) -> LiveSnapshot {
         title: Some(format!("Synthetic PR #{}", pr.number)),
         body: Some("What it changes and why.".into()),
         head_ref: Some("branch".into()),
-        checks_passed: Some(true),
+        fetched: true,
         additions: 40,
         deletions: 12,
         changed_files: 3,

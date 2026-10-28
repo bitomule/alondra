@@ -154,6 +154,14 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
             link: None,
         });
     }
+    let status = super::pr_status::label(super::pr_status::status(pr, live), context.lang);
+    view.sections.push(common::section(
+        "status",
+        None,
+        vec![Item::Facts(Facts {
+            items: vec![Fact { label: t!(context.lang, "State", "Estado").into(), value: status.text, tone: Some(status.tone), link: None }],
+        })],
+    ));
     view.sections.push(common::section(
         "facts",
         None,
@@ -161,7 +169,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
     ));
     if let Some(item) = super::card::item_for_pr(context, &pr.id) {
         let card = super::card::from_item(&item, context, true)?;
-        let (_, checks, _) = super::card::pr_overview(pr, context);
+        let (_, checks) = super::card::pr_overview(pr, context);
         if let Some(checks) = checks {
             view.sections
                 .push(common::section("checks", None, vec![Item::Checks(checks)]));

@@ -13,6 +13,7 @@ pub(super) enum Act {
     Focus(Pane),
     Back,
     Toggle,
+    ToggleChecks,
     Open,
     Diff,
     Documents,
@@ -542,6 +543,11 @@ impl App {
             if view_render::documents_menu(view).is_some() {
                 t.add(vec![char('f')], "f", tr!("documents", "documentos"), Act::Documents);
             }
+            if view_render::summarized_checks(view) {
+                t.add(vec![char('c')], "c",
+                    open_close(self.open_checks.contains(&view.key), tr!("hide checks", "ocultar checks"), tr!("show checks", "ver checks")),
+                    Act::ToggleChecks);
+            }
             self.answer_bindings(t, view, false);
             if !detail && self.detail_view.shown {
                 t.add(vec![char('l'), plain(KeyCode::Right)], "l", tr!("detail", "detalle"), Act::Focus(Pane::Detail));
@@ -630,6 +636,13 @@ impl App {
             }
             Act::Toggle => {
                 let _ = self.toggle_selected_section() || self.toggle_selected_fold();
+            }
+            Act::ToggleChecks => {
+                if let Some(key) = self.current_view().map(|view| view.key.clone())
+                    && !self.open_checks.remove(&key)
+                {
+                    self.open_checks.insert(key);
+                }
             }
             Act::Open => self.open_reader(),
             Act::Diff => self.open_reader(),

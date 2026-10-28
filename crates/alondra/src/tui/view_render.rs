@@ -329,13 +329,23 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
     ];
     let lead_width: usize = lead.iter().map(Span::width).sum();
     let budget = width.saturating_sub(lead_width);
-    let right = [card.meta.clone(), card_age(card)]
+    let rest = [card.meta.clone(), card_age(card)]
         .into_iter()
         .flatten()
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
-    let right_width = super::md::str_width(&right);
+    let mut right = Vec::new();
+    if let Some(state) = pr_state(card) {
+        right.push(Span::styled(state.text.clone(), label_style(state)));
+        if !rest.is_empty() {
+            right.push(Span::styled(" · ", Style::new().fg(DIM)));
+        }
+    }
+    if !rest.is_empty() {
+        right.push(Span::styled(rest, Style::new().fg(DIM)));
+    }
+    let right_width: usize = right.iter().map(Span::width).sum();
     let right_beside = right_width <= budget / 3;
     let column = if right_beside && right_width > 0 { budget.saturating_sub(right_width + 2) } else { budget };
     let need = card.need.as_deref().unwrap_or(&card.title);
@@ -350,10 +360,10 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
         let first = &mut lines[0];
         let padding = width.saturating_sub(first.width() + right_width);
         first.spans.push(Span::raw(" ".repeat(padding)));
-        first.spans.push(Span::styled(right, Style::new().fg(DIM)));
+        first.spans.extend(right);
     } else {
         let mut line = under;
-        line.push(Span::styled(right, Style::new().fg(DIM)));
+        line.extend(right);
         lines.push(Line::from(line));
     }
     for chip in &card.blocked_by {
@@ -365,6 +375,11 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
         ));
     }
     lines.into_iter().map(|line| fit(line.spans, width)).collect()
+}
+
+/// A pull request's one state ("Checks failing", "Ready to merge"), in its tone.
+fn pr_state(card: &Card) -> Option<&Label> {
+    card.state.as_ref().filter(|_| card.icon == Icon::PullRequest)
 }
 
 /// The task or node a card came from, the way its header names it.
@@ -387,6 +402,10 @@ fn card_header(card: &Card) -> Line<'static> {
         format!("{glyph} {name}").trim_end().to_owned(),
         Style::new().fg(color).add_modifier(Modifier::BOLD),
     )];
+    if let Some(state) = pr_state(card) {
+        spans.push(Span::styled(" · ", Style::new().fg(DIM)));
+        spans.push(Span::styled(state.text.clone(), label_style(state)));
+    }
     for part in [card.meta.clone(), card_age(card)].into_iter().flatten() {
         spans.push(Span::styled(format!(" · {part}"), Style::new().fg(DIM)));
     }
@@ -610,7 +629,14 @@ fn content_ref_label(view: &View, content: &alondra_core::views::ContentRef) -> 
     }
 }
 
-pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
+/// Whether the view folds its checks under a summary the user opens with `c`.
+pub fn summarized_checks(view: &View) -> bool {
+    view.sections.iter().flat_map(|section| &section.items)
+        .any(|item| matches!(item, Item::Checks(checks) if checks.summary.is_some()))
+}
+
+/// The view as one document; `open_checks` shows the checks a summary folds.
+pub fn document_lines(view: &View, width: usize, open_checks: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let cards_title = |title: &String| {
         view.sections
@@ -672,17 +698,26 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 Item::Facts(facts) => {
                     for fact in &facts.items {
                         let mut line = vec![Span::styled(format!("{}: ", fact.label), Style::new().fg(DIM))];
-                        line.extend(super::md::inline(&fact.value, Style::new()));
+                        let style = fact.tone.map_or_else(Style::new, |tone| label_style(&Label { text: String::new(), tone, elapsed: None }));
+                        line.extend(super::md::inline(&fact.value, style));
                         lines.push(Line::from(line));
                     }
                 }
                 Item::Checks(checks) => {
+                    if let Some(summary) = &checks.summary {
+                        lines.push(Line::from(vec![
+                            Span::styled(if open_checks { "▾ " } else { "▸ " }, Style::new().fg(DIM)),
+                            Span::styled(summary.text.clone(), label_style(summary)),
+                        ]));
+                        if !open_checks {
+                            continue;
+                        }
+                    }
                     for check in &checks.items {
-                        lines.push(Line::from(format!(
-                            "{} {}",
-                            check_state(check.state),
-                            check.name
-                        )));
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{} ", check_state(check.state)), check_style(check.state)),
+                            Span::raw(check.name.clone()),
+                        ]));
                     }
                 }
                 Item::Timeline(timeline) => {
@@ -1123,6 +1158,14 @@ fn label_style(label: &Label) -> Style {
     })
 }
 
+fn check_style(state: alondra_core::views::CheckState) -> Style {
+    Style::new().fg(match state {
+        alondra_core::views::CheckState::Pass => Color::LightGreen,
+        alondra_core::views::CheckState::Fail => Color::LightRed,
+        alondra_core::views::CheckState::Pending => Color::Cyan,
+    })
+}
+
 fn check_state(state: alondra_core::views::CheckState) -> &'static str {
     match state {
         alondra_core::views::CheckState::Pass => "✓",
@@ -1320,7 +1363,7 @@ mod action_tests {
     #[test]
     fn a_native_model_form_summary_uses_server_labels_and_visible_fields() {
         let view: View = serde_json::from_value(crate::tui::parity::view_fixture("model-profile-codex-tui.json")).unwrap();
-        let text = document_lines(&view, 100).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let text = document_lines(&view, 100, false).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Fixture general"), "{text}");
         assert!(text.contains("Native default"), "{text}");
         assert!(!text.contains("model_profile"), "internal form IDs do not describe the screen: {text}");

@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use super::{Report, User, steps::*};
 use crate::{
     fake::{
-        Fakes,
+        Checks, Fakes,
         script::{RequestScript, Step},
     },
     phone::Phone,
@@ -69,6 +69,26 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         act(report, &fakes, &reviewing, "the node delivers PR #41", &Step::work(41, "greeting.txt"))?;
         review_card(report, &user, &reviewing)?;
 
+        let reviews = [
+            ("failing", "Add the onboarding screen", 45, "onboarding.txt", Checks::Mixed),
+            ("running", "Cache the avatars", 46, "avatars.txt", Checks::Running),
+            ("no-ci", "Document the config file", 47, "config.txt", Checks::None),
+            ("conflicts", "Rename the settings keys", 48, "settings.txt", Checks::Success),
+        ];
+        for (slug, title, number, file, checks) in reviews {
+            let task = format!("t-pr-{slug}");
+            request(report, &fakes, &user, &reworking(&format!("req-pr-{slug}"), &task, title, number, file), title)?;
+            let node = launched(report, &fakes, &task)?;
+            state(report, &user, &task, WORKING)?;
+            act(report, &fakes, &node, &format!("the node delivers PR #{number}"), &Step::work_checked(number, file, checks))?;
+            review_card(report, &user, &node)?;
+        }
+        fakes.update_pr(48, |pr| {
+            if let Some(pr) = pr {
+                pr.conflicts = true;
+            }
+        })?;
+
         let mut done = task_script("req-done", "t-done", "Fix the typo in the README");
         done.summary = Some("The README spells the install command right again: PR #42 merged.".into());
         request(report, &fakes, &user, &done, "Fix the typo in the README")?;
@@ -120,6 +140,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, research with documents, review, finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, question, research with documents, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

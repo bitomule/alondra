@@ -368,20 +368,8 @@ pub(super) fn group_position(group: &QuestionGroup, lang: Lang) -> String {
 fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Label> {
     let lang = context.lang;
     let interaction = interaction?;
-    if let Some(live) = pr_target(interaction, context.domain)
-        .and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0))
-    {
-        let mut parts = vec![];
-        if live.changed_files > 0 {
-            parts.push(format!("+{} −{}", live.additions, live.deletions));
-        }
-        let (mark, tone) = match live.checks_passed {
-            Some(true) => (Some("✓"), Tone::Success),
-            Some(false) => (Some("✗"), Tone::Critical),
-            None => (None, Tone::Neutral),
-        };
-        parts.extend(mark.map(str::to_owned));
-        return (!parts.is_empty()).then(|| Label { text: parts.join(" · "), tone, elapsed: None });
+    if let Some(pr) = pr_target(interaction, context.domain) {
+        return Some(super::pr_status::label(super::pr_status::status(pr, live_pr(pr, context)), lang));
     }
     if matches!(interaction.payload, InteractionPayload::Delivery { .. }) {
         return None;
@@ -527,7 +515,6 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     }
     card.attachments = attachment_refs(interaction);
     if let Some(pr) = pr {
-        card.badges = pr_badges(pr, context);
         let own_title = live_pr(pr, context).and_then(|detail| detail.title.as_deref()).map(str::trim).filter(|title| !title.is_empty());
         if let Some(title) = own_title {
             card.title = title.into();
@@ -1980,12 +1967,8 @@ fn pr_meta(pr: &PullRequest, context: &RenderContext<'_>) -> String {
         None => format!("→ {}", pr.base),
     };
     let size = live.filter(|detail| detail.changed_files > 0).map(|detail| changes_summary(detail, lang));
-    let checks = live.map(|detail| match detail.checks_passed {
-        Some(true) => t!(lang, "Checks passed", "Comprobaciones superadas"),
-        Some(false) => t!(lang, "Checks failing", "Comprobaciones fallidas"),
-        None => t!(lang, "Checking…", "Comprobando…"),
-    });
-    [Some(pr.repository.clone()), Some(branches), size, checks.map(str::to_owned)]
+    let checks = live.and_then(|detail| super::pr_status::checks_summary(&detail.checks, lang)).map(|summary| summary.text);
+    [Some(pr.repository.clone()), Some(branches), size, checks]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -2009,7 +1992,7 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     let domain = context.domain;
     let interaction = interaction_of(item, domain)?;
     let pr = pr_target(interaction, domain)?;
-    let (facts, checks, _) = pr_overview(pr, context);
+    let (facts, checks) = pr_overview(pr, context);
     let shown = interaction.shown_content();
     let content = shown.as_deref().filter(|content| content.kind != DomainContent::Diff);
     let report = content.map(|content| without_pr_link(&content.body, pr)).filter(|text| !text.is_empty());
@@ -2181,20 +2164,8 @@ pub(super) fn changes_summary(detail: &super::LivePullRequest, lang: Lang) -> St
     summary::changes(lang, detail.changed_files, detail.additions, detail.deletions)
 }
 
-fn pr_badges(pr: &PullRequest, context: &RenderContext<'_>) -> Vec<Label> {
-    let lang = context.lang;
-    let live = context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0);
-    let mut badges = vec![];
-    if live.is_some_and(|detail| detail.conflicts) {
-        badges.push(Label { text: t!(lang, "Conflicts", "Conflictos").into(), tone: Tone::Warning, elapsed: None });
-    } else if live.is_some_and(|detail| detail.checks_passed.is_none()) {
-        badges.push(Label { text: t!(lang, "GitHub is checking…", "GitHub está comprobando…").into(), tone: Tone::Info, elapsed: None });
-    }
-    badges
-}
-
-/// A pull request's facts, checks and badges, for its card and for its own view.
-pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Facts, Option<Checks>, Vec<Label>) {
+/// A pull request's facts and checks, for its card and for its own view.
+pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Facts, Option<Checks>) {
     let lang = context.lang;
     let live = context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0);
     let fact = |label: &str, value: String| Fact { label: label.into(), value, tone: None, link: None };
@@ -2220,22 +2191,14 @@ pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Fac
             link: Some(Link::View { key: format!("pull_request:{stacked}") }),
         });
     }
-    let checks = live
-        .filter(|detail| !detail.checks.is_empty())
-        .map(|detail| Checks {
-            items: detail.checks.iter().map(|check| Check { name: check.name.clone(), state: check.state }).collect(),
+    let checks = live.and_then(|detail| {
+        super::pr_status::checks_summary(&detail.checks, lang).map(|summary| Checks {
+            summary: Some(summary),
+            items: super::pr_status::ordered(&detail.checks).into_iter().map(|check| Check { name: check.name, state: check.state }).collect(),
             link: None,
         })
-        .or_else(|| {
-            live.and_then(|detail| detail.checks_passed).map(|passed| Checks {
-                items: vec![Check {
-                    name: t!(lang, "Checks", "Comprobaciones").into(),
-                    state: if passed { CheckState::Pass } else { CheckState::Fail },
-                }],
-                link: None,
-            })
-        });
-    (Facts { items: facts }, checks, pr_badges(pr, context))
+    });
+    (Facts { items: facts }, checks)
 }
 
 #[cfg(test)]

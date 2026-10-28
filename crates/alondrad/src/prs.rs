@@ -70,7 +70,7 @@ pub fn refreshed(pr: &PullRequest, view: &Value, repo: Option<&Value>) -> PullRe
         Some("CLOSED") => PrState::Closed,
         _ => PrState::Open,
     };
-    let checks = view.get("statusCheckRollup").and_then(Value::as_array).map(|list| list.iter().filter_map(check).collect()).unwrap_or_default();
+    let checks = view.get("statusCheckRollup").and_then(Value::as_array).map(|list| latest_runs(list)).unwrap_or_default();
     let allowed = |k: &str| repo.and_then(|r| r.get(k)).and_then(Value::as_bool);
     let merge_methods = match repo {
         Some(_) => [("allow_merge_commit", MergeMethod::Merge), ("allow_squash_merge", MergeMethod::Squash), ("allow_rebase_merge", MergeMethod::Rebase)]
@@ -98,6 +98,32 @@ pub fn refreshed(pr: &PullRequest, view: &Value, repo: Option<&Value>) -> PullRe
         fetched: true,
         ..pr.clone()
     }
+}
+
+fn started(c: &Value) -> Option<&str> {
+    c.get("startedAt").or_else(|| c.get("createdAt")).and_then(Value::as_str).filter(|at| !at.is_empty())
+}
+
+/// Each check once: a check run again keeps only its latest run, as GitHub's own page counts it.
+fn latest_runs(rollup: &[Value]) -> Vec<Check> {
+    let mut latest: Vec<(&Value, Check)> = Vec::new();
+    for entry in rollup {
+        let Some(run) = check(entry) else { continue };
+        match latest.iter_mut().find(|(_, kept)| kept.name == run.name) {
+            Some(kept) => {
+                let later = match (started(entry), started(kept.0)) {
+                    (None, current) => current.is_none(),
+                    (Some(_), None) => true,
+                    (Some(candidate), Some(current)) => candidate >= current,
+                };
+                if later {
+                    *kept = (entry, run);
+                }
+            }
+            None => latest.push((entry, run)),
+        }
+    }
+    latest.into_iter().map(|(_, run)| run).collect()
 }
 
 pub(crate) fn check(c: &Value) -> Option<Check> {
@@ -144,6 +170,20 @@ mod tests {
         assert_eq!(merged.state, PrState::Merged);
         assert_eq!((r.head_sha.as_deref(), merged.head_sha.as_deref()), (Some("abc123"), Some("abc123")), "the head is kept when gh leaves it out");
         assert_eq!(merged.merge_methods, [MergeMethod::Merge, MergeMethod::Rebase], "kept when the repo could not be read");
+    }
+
+    #[test]
+    fn a_check_run_again_counts_once_by_its_latest_run() {
+        let pr = PullRequest::opened(1, "https://github.com/a/b/pull/7", "s", None, 0).unwrap();
+        let r = refreshed(&pr, &json!({"state": "OPEN", "statusCheckRollup": [
+            {"name": "build", "status": "COMPLETED", "conclusion": "FAILURE", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-10-27T10:00:00Z"},
+            {"name": "build", "status": "IN_PROGRESS", "conclusion": "", "startedAt": "2026-10-27T10:05:00Z"},
+            {"context": "deploy", "state": "FAILURE", "createdAt": "2026-10-27T10:06:00Z"},
+            {"context": "deploy", "state": "SUCCESS", "createdAt": "2026-10-27T10:01:00Z"},
+        ]}), None);
+        let checks: Vec<_> = r.checks.iter().map(|check| (check.name.as_str(), check.state)).collect();
+        assert_eq!(checks, [("build", CheckState::Running), ("lint", CheckState::Passed), ("deploy", CheckState::Failed)]);
     }
 
     #[test]

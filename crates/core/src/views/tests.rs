@@ -1080,7 +1080,7 @@ fn golden_live() -> LiveSnapshot {
             LiveCheck { name: "Unit tests".into(), state: CheckState::Pass },
             LiveCheck { name: "Lint".into(), state: CheckState::Pending },
         ],
-        checks_passed: Some(true),
+        fetched: true,
         additions: 120,
         deletions: 30,
         changed_files: 4,
@@ -1152,7 +1152,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     let mut live = LiveSnapshot::default();
     live.pull_requests.push(crate::views::live::LivePullRequest {
         id: pr_id.into(), title: None, body: None, head_ref: None, base_ref: None,
-        checks_passed: Some(true), conflicts: true, stacked_on: None, url: None,
+        fetched: true, conflicts: true, stacked_on: None, url: None,
         ..Default::default()
     });
     let view = render(&state, &live, Client::Ios, Lang::En, &format!("card:{pr_id}"), "");
@@ -1650,13 +1650,13 @@ fn pull_request_detail_uses_live_title_body_and_branch_names() {
     live.pull_requests.push(LivePullRequest {
         id: "pr-1".into(), title: Some("Readable task editor".into()),
         body: Some("Why this change matters".into()), head_ref: Some("task/editor".into()),
-        base_ref: Some("main".into()), checks_passed: None, conflicts: false,
+        base_ref: Some("main".into()), conflicts: false,
         stacked_on: None, url: None,
         ..Default::default()
     });
     let view = render(&state, &live, Client::Tui, Lang::En, "pull_request:pr-1", "");
     assert_eq!(view.title.as_deref(), Some("Readable task editor"));
-    let facts = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+    let facts = section_of(&view, "facts").unwrap().items.iter().find_map(|item| {
         if let Item::Facts(facts) = item { Some(&facts.items) } else { None }
     }).unwrap();
     assert!(facts.iter().any(|fact| fact.label == "Head" && fact.value == "task/editor"));
@@ -3277,7 +3277,6 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
         body: None,
         head_ref: None,
         base_ref: None,
-        checks_passed: None,
         conflicts: false,
         stacked_on: Some("github.com/bitomule/alondra#153".into()),
         url: None,
@@ -4229,20 +4228,25 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert_eq!(card.title, "Add the compact schedule editor", "the detail is titled with the PR's own title");
     assert_eq!(
         card.meta.as_deref(),
-        Some("example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · Checks passed")
+        Some("example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running")
     );
     assert!(card.body.is_none(), "the card holds none of it");
     let row = card.content_row.as_ref().expect("content row");
     assert_eq!((row.kind.as_str(), row.label.as_str(), row.summary.as_str()), ("diff", "Changes", "4 files · +120 −30"));
     assert_eq!(
         content_checks(&view).unwrap().items.iter().map(|check| (check.name.as_str(), check.state)).collect::<Vec<_>>(),
-        [("Build", CheckState::Pass), ("Unit tests", CheckState::Pass), ("Lint", CheckState::Pending)]
+        [("Lint", CheckState::Pending), ("Build", CheckState::Pass), ("Unit tests", CheckState::Pass)],
+        "the ones still running come before the ones that passed"
     );
+    let summary = content_checks(&view).unwrap().summary.clone().unwrap();
+    assert_eq!((summary.text.as_str(), summary.tone), ("2 of 3 passed, 1 running", Tone::Info));
+    let pill = card.state.as_ref().unwrap();
+    assert_eq!((pill.text.as_str(), pill.tone), ("Checks running", Tone::Info));
     let spanish = render(&state, &golden_live(), Client::Ios, Lang::Es, card_key, "");
     assert_eq!(card_of(&spanish).content_row.as_ref().unwrap().summary, "4 archivos · +120 −30");
     assert_eq!(
         card_of(&spanish).meta.as_deref(),
-        Some("example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · Comprobaciones superadas")
+        Some("example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha")
     );
     let mut single = golden_live();
     single.pull_requests[0].changed_files = 1;
@@ -4385,22 +4389,26 @@ fn the_task_whose_node_resolves_conflicts_says_so_with_its_pr_in_both_languages(
 }
 
 #[test]
-fn a_pull_request_without_github_details_keeps_the_aggregate_check_and_names_the_pr() {
+fn a_pull_request_without_ci_shows_no_checks_and_its_state_comes_from_merging() {
     let state = golden_fixture();
     let mut live = golden_live();
-    live.pull_requests[0] = LivePullRequest {
-        id: "github.com/example/repo#12".into(),
-        checks_passed: Some(false),
-        ..Default::default()
-    };
-    let view = render(&state, &live, Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    live.pull_requests[0] = LivePullRequest { id: "github.com/example/repo#12".into(), fetched: true, ..Default::default() };
+    let key = "card:github.com/example/repo#12";
+    let view = render(&state, &live, Client::Ios, Lang::En, key, "");
     let card = card_of(&view);
     assert_eq!(card.content_row.as_ref().unwrap().summary, "example/repo #12");
-    assert_eq!(card.meta.as_deref(), Some("example/repo · → main · Checks failing"));
+    assert_eq!(card.meta.as_deref(), Some("example/repo · → main"), "no checks, so no line about them");
     assert_eq!(card.title, "Review the beta candidate", "without GitHub's title the node's own is kept");
-    let checks = content_checks(&view).unwrap();
-    assert_eq!(checks.items.len(), 1);
-    assert_eq!(checks.items[0].state, CheckState::Fail);
+    assert!(content_checks(&view).is_none(), "no checks section without checks");
+    let ready = card.state.clone().unwrap();
+    assert_eq!((ready.text.as_str(), ready.tone), ("Ready to merge", Tone::Success));
+    live.pull_requests[0].conflicts = true;
+    let conflicts = render(&state, &live, Client::Ios, Lang::Es, key, "");
+    assert_eq!(card_of(&conflicts).state.as_ref().unwrap().text, "Conflictos");
+    let screen = render(&state, &live, Client::Ios, Lang::Es, "pull_request:github.com/example/repo#12", "");
+    assert!(section_of(&screen, "checks").is_none());
+    let Some(Item::Facts(status)) = section_of(&screen, "status").and_then(|section| section.items.first()) else { panic!("a state") };
+    assert_eq!((status.items[0].value.as_str(), status.items[0].tone), ("Conflictos", Some(Tone::Warning)));
 }
 
 #[test]

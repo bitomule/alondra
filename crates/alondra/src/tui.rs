@@ -759,6 +759,8 @@ pub struct App {
     pub open_sections: BTreeSet<String>,
     /// Rows the daemon sends folded, such as a chain of waiting tasks, that the user opened.
     pub open_rows: BTreeSet<String>,
+    /// Views whose checks the user opened under their summary.
+    pub open_checks: BTreeSet<String>,
     /// The rows of each opened section, fetched apart: the list view only says how many there are.
     pub section_pages: BTreeMap<String, alondra_core::views::Section>,
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
@@ -1233,6 +1235,7 @@ impl App {
             task_zoom: false,
             open_sections: BTreeSet::new(),
             open_rows: BTreeSet::new(),
+            open_checks: BTreeSet::new(),
             section_pages: BTreeMap::new(),
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),

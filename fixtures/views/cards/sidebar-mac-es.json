@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v4a0e943ddf87723c",
+  "version": "v74390df76530881b",
   "cursor": "cursor-1",
   "status": {
     "version": "v628d97b17c8156ba",
@@ -676,7 +676,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "v29c87ea83a843ff1",
+      "version": "vafe88867b4261b83",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
@@ -742,7 +742,7 @@
               "kind": "review",
               "need": "Review the beta candidate",
               "why": "All required checks passed and the branch is up to date with main.",
-              "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · Comprobaciones superadas",
+              "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
               "content_row": {
                 "kind": "diff",
                 "icon": "pull_request",
@@ -835,8 +835,8 @@
               "title": "Add the compact schedule editor",
               "subtitle": "All required checks passed and the branch is up to date with main.",
               "state": {
-                "text": "+120 −30 · ✓",
-                "tone": "success"
+                "text": "Checks en marcha",
+                "tone": "info"
               },
               "detail": "included",
               "actions": [
@@ -891,7 +891,15 @@
           "items": [
             {
               "type": "checks",
+              "summary": {
+                "text": "2 de 3 correctos, 1 en marcha",
+                "tone": "info"
+              },
               "items": [
+                {
+                  "name": "Lint",
+                  "state": "pending"
+                },
                 {
                   "name": "Build",
                   "state": "pass"
@@ -899,10 +907,6 @@
                 {
                   "name": "Unit tests",
                   "state": "pass"
-                },
-                {
-                  "name": "Lint",
-                  "state": "pending"
                 }
               ]
             }

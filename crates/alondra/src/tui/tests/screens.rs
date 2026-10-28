@@ -661,8 +661,29 @@ fn a_fact_draws_the_markdown_it_quotes_on_its_line() {
         {"label": "State", "value": "Needs you · “Pick the **parser** for `settings.json`”"},
     ]}]}]);
     let view: views::View = serde_json::from_value(view).unwrap();
-    let drawn = view_render::document_lines(&view, 80).iter().map(text).collect::<Vec<_>>().join("\n");
+    let drawn = view_render::document_lines(&view, 80, false).iter().map(text).collect::<Vec<_>>().join("\n");
     assert!(drawn.contains("State: Needs you · “Pick the parser for settings.json”"), "{drawn}");
+}
+
+#[test]
+fn summarized_checks_show_their_line_and_the_list_only_once_opened() {
+    let mut view = super::parity::view_fixture("card-question.json");
+    view["sections"] = serde_json::json!([
+        {"id": "status", "collapsed": false, "items": [{"type": "facts", "items": [
+            {"label": "State", "value": "Checks failing", "tone": "critical"},
+        ]}]},
+        {"id": "checks", "collapsed": false, "items": [{"type": "checks",
+            "summary": {"text": "1 of 2 passed, 1 failing", "tone": "critical"},
+            "items": [{"name": "ui tests", "state": "fail"}, {"name": "build", "state": "pass"}]}]},
+    ]);
+    let view: views::View = serde_json::from_value(view).unwrap();
+    assert!(view_render::summarized_checks(&view));
+    let folded = view_render::document_lines(&view, 80, false).iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(folded.contains("State: Checks failing"), "{folded}");
+    assert!(folded.contains("▸ 1 of 2 passed, 1 failing"), "{folded}");
+    assert!(!folded.contains("ui tests"), "the list waits until the user opens it: {folded}");
+    let open = view_render::document_lines(&view, 80, true).iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(open.contains("▾ 1 of 2 passed, 1 failing\n✗ ui tests\n✓ build"), "{open}");
 }
 
 fn text(line: &ratatui::text::Line) -> String {

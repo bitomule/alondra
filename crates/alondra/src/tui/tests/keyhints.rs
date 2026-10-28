@@ -448,7 +448,7 @@ fn the_reader_key_column_fits_its_longest_key() {
 #[test]
 fn a_cards_documents_are_lines_of_their_own_and_f_lists_them_to_open_one() {
     let document = view("card-documents-es-tui.json");
-    let lines: Vec<String> = view_render::document_lines(&document, 100).iter().map(ToString::to_string).collect();
+    let lines: Vec<String> = view_render::document_lines(&document, 100, false).iter().map(ToString::to_string).collect();
     assert!(lines.iter().any(|line| line == "▤ Library index design · Documento"), "{lines:#?}");
     assert!(lines.iter().any(|line| line == "▤ How other apps index a library · docs/research/competitors.md"), "{lines:#?}");
     assert!(!lines.iter().any(|line| line.contains("Indexes overnight")), "{lines:#?}");

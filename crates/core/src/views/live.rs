@@ -412,7 +412,17 @@ pub struct LivePullRequest {
     pub base_ref: Option<String>,
     #[serde(default)]
     pub checks: Vec<LiveCheck>,
-    pub checks_passed: Option<bool>,
+    /// GitHub answered about it: until then nothing about its checks or merge is known.
+    #[serde(default)]
+    pub fetched: bool,
+    #[serde(default)]
+    pub draft: bool,
+    /// GitHub refuses the merge for something other than its checks, such as a required review.
+    #[serde(default)]
+    pub blocked: bool,
+    /// GitHub is still working out whether it merges.
+    #[serde(default)]
+    pub mergeability_unknown: bool,
     #[serde(default)]
     pub additions: u64,
     #[serde(default)]

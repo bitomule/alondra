@@ -529,6 +529,10 @@ pub struct Fact {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Checks {
+    /// "3 of 5 passed, 1 failing": a client that knows it shows this line and the items only
+    /// once the user opens it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Label>,
     pub items: Vec<Check>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,

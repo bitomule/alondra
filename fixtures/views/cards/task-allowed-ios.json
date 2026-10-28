@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "vaf37b068de2a9f62",
+  "version": "v722b1a234f1ac258",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -323,8 +323,8 @@
           "title": "Review the beta candidate",
           "subtitle": "All required checks passed and the branch is up to date with main.",
           "state": {
-            "text": "+120 −30 · ✓",
-            "tone": "success"
+            "text": "Checks running",
+            "tone": "info"
           },
           "detail": "reference"
         },

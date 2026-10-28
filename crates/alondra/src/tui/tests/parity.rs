@@ -1069,7 +1069,7 @@ fn text_of(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
 fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let card = question_card();
-    let lines = text_of(&crate::tui::view_render::document_lines(&card, 80));
+    let lines = text_of(&crate::tui::view_render::document_lines(&card, 80, false));
     let header = &lines[0];
     assert!(
         header.starts_with("? DECIDE · Alondra · iOS · Demo Garden · ") && (header.ends_with(" ago") || header.ends_with("Sep 30")),
@@ -2109,7 +2109,7 @@ fn a_card_settled_elsewhere_closes_and_says_why_instead_of_drawing_it() {
 fn a_know_card_detail_shows_its_whole_body_with_the_command_block() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let view = serde_json::from_value(view_fixture("card-know-command-es-tui.json")).unwrap();
-    let lines = text_of(&crate::tui::view_render::document_lines(&view, 100));
+    let lines = text_of(&crate::tui::view_render::document_lines(&view, 100, false));
     let at = |text: &str| lines.iter().position(|line| line.contains(text)).unwrap_or_else(|| panic!("{text} missing: {lines:#?}"));
     let headline = at("Pega este comando en el terminal");
     let intro = at("Ejecútalo una vez en el terminal del Mac");
