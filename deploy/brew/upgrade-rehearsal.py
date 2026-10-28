@@ -808,6 +808,15 @@ class HandoverWorld:
         self.settings('PUT', '/settings/accounts', {'version': listing['version'], 'accounts': config})
         self.settings('POST', '/settings/accounts/check')
 
+    def connect_claude_where_asked(self):
+        """A release from 0.3.8 on runs no request on a new HOME until a provider is connected;
+        one before it has no provider accounts to connect."""
+        try:
+            self.connect_claude()
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+
     def settings(self, method, path, body=None):
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}?capabilities=provider_accounts', method=method,
                                          data=None if body is None else json.dumps(body).encode(),
@@ -1366,6 +1375,7 @@ def run_upgrade(world, old, new):
     fresh_previous(world.rehearsal, world.home, old)
     world.provision()
     world.start(old['version'])
+    world.connect_claude_where_asked()
     world.tool('phone', '--mac', '1', 'pair', '--direct')
     sessions, commands = {}, {}
     for task, title in UPGRADE_SEEDED.items():
