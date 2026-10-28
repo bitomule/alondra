@@ -741,8 +741,8 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "hPfcdmQ7CbdIZeSv5RaiCgACMjrmPr35KBjlWWEMyFk=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "c78c731ee75927b7c1f743da161c7d3e11a3bdbfead3b97a94d099f76926507c",
-          "@@//Cargo.toml": "d4111d9e00539d1c1c37bed1a8dceda2f834014d1ab4b6acbc164e1f61f99e56",
+          "@@//Cargo.lock": "7bb8cfbc1527ae2560bb6aff43d8138089d2202594b415b0ca7cdb04f22e3359",
+          "@@//Cargo.toml": "a14004783be7eacaaa8909228fa647b0978954f8c8458df8d1dad26a01c56b4d",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
           "@@//crates/agent-runtime/Cargo.toml": "82c56108f7d4e5949935ca409dc8e8ee457bf5239bed43281ac2179ebda0290d",
