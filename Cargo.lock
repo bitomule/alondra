@@ -153,6 +153,7 @@ dependencies = [
  "alondra-foundation",
  "libc",
  "proptest",
+ "pulldown-cmark",
  "rpds",
  "serde",
  "serde_json",

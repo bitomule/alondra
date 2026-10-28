@@ -41,6 +41,9 @@ pub struct Pr {
     /// The method and head of the merge that merged it.
     #[serde(default)]
     pub merged: Option<(String, String)>,
+    /// Its description, as a test writes it.
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 pub const REPOSITORY: &str = "sandbox/repo";
@@ -97,6 +100,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
         ["pr", "close", url, ..] => change(fakes, url, |pr| pr.state = "CLOSED".into()),
         ["repo", "view", _, "--json", _] => Ok(json!({"mergeCommitAllowed": false, "squashMergeAllowed": true, "rebaseMergeAllowed": false}).to_string()),
         ["api", "graphql", ..] => Ok("false".into()),
+        ["api", "--hostname", _, "-H", accept, endpoint] => return api(fakes, accept, endpoint),
         _ => Err(format!("the sandbox's gh does not know `gh {}`", args.join(" "))),
     };
     match answer {
@@ -109,6 +113,64 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
             Ok(1)
         }
     }
+}
+
+/// The REST calls that bring a description's images: a file of the remote at a commit, the
+/// repository, and the rendered description, which has no uploads in the sandbox.
+fn api(fakes: &Fakes, accept: &str, endpoint: &str) -> Result<i32> {
+    let not_found = || {
+        eprintln!("gh: Not Found (HTTP 404)");
+        Ok(1)
+    };
+    let (path, query) = endpoint.split_once('?').unwrap_or((endpoint, ""));
+    let Some(rest) = path.strip_prefix(&format!("repos/{REPOSITORY}")) else { return not_found() };
+    if rest.is_empty() {
+        println!("{}", json!({"full_name": REPOSITORY}));
+        return Ok(0);
+    }
+    if let Some(number) = rest.strip_prefix("/pulls/") {
+        return match fakes.pr(number.parse().unwrap_or_default())? {
+            Some(_) => {
+                println!("{}", json!({"body_html": ""}));
+                Ok(0)
+            }
+            None => not_found(),
+        };
+    }
+    let Some(file) = rest.strip_prefix("/contents/") else { return not_found() };
+    let reference = query.strip_prefix("ref=").unwrap_or("HEAD");
+    let object = format!("{}:{}", decoded(reference), decoded(file));
+    let Ok(size) = git(&fakes.remote(), &["cat-file", "-s", &object]) else { return not_found() };
+    if git(&fakes.remote(), &["cat-file", "-t", &object]).ok().as_deref() != Some("blob") {
+        println!("[]");
+        return Ok(0);
+    }
+    if accept.contains("raw") {
+        let out = std::process::Command::new("git").arg("-C").arg(fakes.remote()).args(["cat-file", "blob", &object]).output()?;
+        std::io::Write::write_all(&mut std::io::stdout(), &out.stdout)?;
+        return Ok(0);
+    }
+    println!("{}", json!({"type": "file", "size": size.parse::<u64>().unwrap_or_default(), "path": decoded(file)}));
+    Ok(0)
+}
+
+fn decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = vec![];
+    let mut at = 0;
+    while at < bytes.len() {
+        match (bytes[at], text.get(at + 1..at + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok())) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                at += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn number_of(url: &str) -> Result<u64, String> {
@@ -163,7 +225,7 @@ fn facts(fakes: &Fakes, pr: &Pr, fields: &str) -> Result<Value, String> {
     let all = json!({
         "state": pr.state, "headRefOid": head, "baseRefName": pr.base, "headRefName": pr.branch, "statusCheckRollup": rollup,
         "isDraft": pr.draft, "url": format!("https://github.com/{}/pull/{}", pr.repository, pr.number),
-        "title": title, "body": "Made by a scripted sandbox node.", "additions": additions, "deletions": deletions,
+        "title": title, "body": pr.body.as_deref().unwrap_or("Made by a scripted sandbox node."), "additions": additions, "deletions": deletions,
         "changedFiles": files, "mergeable": mergeable, "mergeStateStatus": merge_state,
     });
     let mut picked = serde_json::Map::new();
@@ -253,6 +315,7 @@ pub fn open(fakes: &Fakes, worktree: &std::path::Path, number: u64, draft: bool,
         conflicts: false,
         merge_error: None,
         merged: None,
+        body: None,
     };
     let stored = pr.clone();
     fakes.update_pr(number, move |slot| *slot = Some(stored))?;

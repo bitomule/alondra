@@ -432,6 +432,9 @@ pub struct LivePullRequest {
     pub conflicts: bool,
     pub stacked_on: Option<String>,
     pub url: Option<String>,
+    /// The images of `body` as the daemon brought them from GitHub.
+    #[serde(default)]
+    pub images: Vec<super::pr_images::PrImage>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveCheck {

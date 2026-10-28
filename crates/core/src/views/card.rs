@@ -581,6 +581,15 @@ fn painted(mut action: Action, worded: &[String]) -> Action {
     action
 }
 
+/// An image by the extension of its stored file or of its name, so the apps preview it.
+fn attachment_kind(name: &str, reference: &str) -> AttachmentKind {
+    let image = [reference, name].iter().any(|text| {
+        text.rsplit_once('.')
+            .is_some_and(|(_, extension)| crate::markdown::images::EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+    });
+    if image { AttachmentKind::Image } else { AttachmentKind::Binary }
+}
+
 fn attachment_refs(interaction: Option<&Interaction>) -> Vec<Attachment> {
     interaction
         .map(|interaction| {
@@ -590,7 +599,7 @@ fn attachment_refs(interaction: Option<&Interaction>) -> Vec<Attachment> {
                 .map(|a| Attachment {
                     id: a.id.clone(),
                     name: a.name.clone(),
-                    kind: AttachmentKind::Binary,
+                    kind: attachment_kind(&a.name, &a.content_reference),
                     size: a.bytes,
                     digest: Some(a.content_digest.clone()),
                     fetch: a.content_reference.clone(),
@@ -1996,11 +2005,14 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     let shown = interaction.shown_content();
     let content = shown.as_deref().filter(|content| content.kind != DomainContent::Diff);
     let report = content.map(|content| without_pr_link(&content.body, pr)).filter(|text| !text.is_empty());
-    let description = live_pr(pr, context)
-        .and_then(|detail| detail.body.clone())
-        .map(|text| text.trim().to_owned())
+    let live = live_pr(pr, context);
+    let body = live.and_then(|detail| detail.body.as_deref()).unwrap_or_default();
+    let images = live.map(|detail| detail.images.as_slice()).unwrap_or_default();
+    let description = Some(body.trim())
         .filter(|text| !text.is_empty())
-        .filter(|text| report.as_deref().is_none_or(|report| !report.contains(text.as_str()) && !text.contains(report)));
+        .filter(|text| report.as_deref().is_none_or(|report| !report.contains(*text) && !text.contains(report)))
+        .map(|text| super::pr_images::show_in(text, body, images, lang));
+    let report = report.map(|report| super::pr_images::show_in(&report, body, images, lang));
     let mut sections = vec![];
     if let Some(failing) = checks.filter(|checks| checks.items.iter().any(|check| check.state != CheckState::Pass)) {
         sections.push(super::common::section("checks", None, vec![Item::Checks(failing)]));

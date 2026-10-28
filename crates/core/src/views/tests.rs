@@ -8637,3 +8637,83 @@ fn an_outcome_card_names_its_request_above_and_not_in_its_headline() {
         ("Cancelada: Documentar las cuentas".to_owned(), Some(Link::View { key: "task:t-docs".into() })),
     ]);
 }
+
+fn with_brought_images(live: &mut LiveSnapshot, body: &str) {
+    use crate::views::pr_images::{ImageProblem, PrImage, Shown};
+    let images = crate::markdown::images::images(body)
+        .into_iter()
+        .map(|image| PrImage {
+            shown: if image.url.contains("secret") {
+                Shown::Unavailable { link: image.url.clone(), problem: ImageProblem::NoAccess { repository: "secret/repo".into() } }
+            } else {
+                Shown::Stored { route: format!("/files?path=files/images/{}.png", "a".repeat(64)) }
+            },
+            span: image.span,
+            dest: image.dest,
+            url: image.url,
+            alt: image.alt,
+            html: image.html,
+        })
+        .collect();
+    live.pull_requests[0].body = Some(body.into());
+    live.pull_requests[0].images = images;
+}
+
+const IMAGES_BODY: &str = "Storage areas:\n\n![storage](https://github.com/example/repo/blob/8d0e5fb7edcc190633b9fc0b868f7051e48bc0f9/docs/a.jpg?raw=true)\n\n![](https://github.com/secret/repo/blob/main/b.png)\n";
+
+#[test]
+fn a_pull_request_card_and_its_detail_show_the_images_the_daemon_brought_and_say_why_for_the_rest() {
+    let state = golden_fixture();
+    let mut live = golden_live();
+    with_brought_images(&mut live, IMAGES_BODY);
+    let stored = format!("![storage](/files?path=files/images/{}.png)", "a".repeat(64));
+    for path in ["card:github.com/example/repo#12", "pull_request:github.com/example/repo#12"] {
+        let view = render(&state, &live, Client::Ios, Lang::Es, path, "");
+        let description = section_of(&view, "description").unwrap();
+        let [Item::Markdown(body)] = &description.items[..] else { panic!("one text: {:?}", description.items) };
+        assert!(body.text.contains(&stored), "{path}: {}", body.text);
+        assert!(
+            body.text.contains("![b.png — GitHub no da acceso a secret/repo](https://github.com/secret/repo/blob/main/b.png)"),
+            "{path}: {}",
+            body.text
+        );
+    }
+}
+
+#[test]
+fn a_report_that_repeats_the_description_shows_its_images_too() {
+    let mut state = golden_fixture();
+    for interaction in state.interactions.values_mut() {
+        if interaction.card.need == "Review the beta candidate" {
+            interaction.card.content = Some(crate::domain::CardContent {
+                kind: crate::domain::ContentKind::Report,
+                summary: None,
+                body: format!("What changed.\n\n{IMAGES_BODY}"),
+            });
+        }
+    }
+    let mut live = golden_live();
+    with_brought_images(&mut live, IMAGES_BODY);
+    let view = render(&state, &live, Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let description = section_of(&view, "description").unwrap();
+    let [Item::Markdown(body)] = &description.items[..] else { panic!("one text: {:?}", description.items) };
+    assert_eq!(body.text.matches("Storage areas").count(), 1, "{}", body.text);
+    assert!(body.text.contains(&format!("![storage](/files?path=files/images/{}.png)", "a".repeat(64))), "{}", body.text);
+    assert!(body.text.contains("![b.png — GitHub gives no access to secret/repo]("), "{}", body.text);
+}
+
+#[test]
+fn an_attachment_whose_file_is_an_image_reaches_the_apps_as_an_image() {
+    let mut state = fixture();
+    let attachment = |id: &str, name: &str, reference: &str| crate::domain::AttachmentRef {
+        id: id.into(), name: name.into(), content_digest: "d".repeat(64), content_reference: reference.into(), bytes: 10,
+    };
+    state.interactions.get_mut(&"i-1".into()).unwrap().attachments = vec![
+        attachment("shot", "iPhone, claro", "files/t/ios-light.JPG"),
+        attachment("named", "dark.webp", "files/t/stored"),
+        attachment("log", "build.log", "files/t/build.log"),
+    ];
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    let kinds: Vec<_> = card_of(&view).attachments.iter().map(|a| (a.id.as_str(), a.kind)).collect();
+    assert_eq!(kinds, [("shot", AttachmentKind::Image), ("named", AttachmentKind::Image), ("log", AttachmentKind::Binary)]);
+}

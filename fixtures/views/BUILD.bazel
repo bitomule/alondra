@@ -40,3 +40,11 @@ filegroup(
     srcs = glob(["metrics/*.json"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+# A private repository's PR as a sandbox daemon served it to the Mac, with the images it brought
+# from GitHub by their SHA256.
+filegroup(
+    name = "pr_images",
+    srcs = glob(["pr-images/*"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

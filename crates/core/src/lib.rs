@@ -23,6 +23,7 @@ pub mod launcher;
 pub mod local_network_card;
 pub mod close_problem;
 pub mod machine_incident;
+pub mod markdown;
 pub mod model;
 pub mod model_label;
 pub mod model_selection;

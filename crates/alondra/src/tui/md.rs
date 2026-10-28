@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-pub(crate) mod html;
+pub(crate) use alondra_core::markdown::html;
 mod mermaid;
 
 pub const QUOTE_MAX: usize = 200;

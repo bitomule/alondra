@@ -95,6 +95,7 @@ mod plugins;
 mod reports;
 mod preflight;
 mod process_watch;
+mod pr_images;
 mod prs;
 mod push;
 mod pr_heads;

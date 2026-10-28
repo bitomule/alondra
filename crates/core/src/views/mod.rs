@@ -19,6 +19,7 @@ mod messages;
 pub mod metrics;
 mod misc;
 mod pacing;
+pub mod pr_images;
 pub mod pr_status;
 mod schedules;
 mod sidebar;

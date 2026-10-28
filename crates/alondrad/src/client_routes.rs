@@ -44,6 +44,7 @@ pub(crate) struct Client {
     pub(crate) views_gauges: std::sync::Mutex<Option<(std::time::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
     pr_view: std::sync::Mutex<Arc<dyn PrView>>,
+    pr_images: std::sync::Mutex<Arc<dyn crate::pr_images::GitHubImages>>,
     pub(crate) views: crate::views::cache::Cache,
     pub(crate) feeds: crate::views::feed::Feeds,
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
@@ -291,6 +292,7 @@ impl Client {
             views_gauges: Default::default(),
             details: Default::default(),
             pr_view: std::sync::Mutex::new(Arc::new(GhView)),
+            pr_images: std::sync::Mutex::new(Arc::new(crate::pr_images::Gh::new())),
             views: Default::default(),
             feeds: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(crate::node_close::Machine)),
@@ -378,6 +380,7 @@ impl Client {
             match self.domain.state() {
                 Ok(state) => {
                     self.details.refresh(&state, &*source).await;
+                    self.bring_pr_images(&state).await;
                     pr_details::hand_back_conflicts(&self.domain, &self.details, &crate::domain_messages::user_name());
                 }
                 Err(error) => log!("could not read pull requests for their details: {error:#}"),

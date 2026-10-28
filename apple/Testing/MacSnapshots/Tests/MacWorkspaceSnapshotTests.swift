@@ -488,6 +488,50 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    /// A private repository's PR as a sandbox daemon served it to the Mac, its description cut to the
+    /// screenshots: the images are the copies the daemon brought from GitHub, and one it could not
+    /// bring says why.
+    func test_card_pullRequestDescriptionShowsTheImagesTheDaemonBrought() async throws {
+        try await assertBroughtImages(spanish: false)
+    }
+
+    func test_card_pullRequestDescriptionShowsTheImagesTheDaemonBrought_spanish() async throws {
+        try await assertBroughtImages(spanish: true)
+    }
+
+    private func assertBroughtImages(spanish: Bool, testName: String = #function) async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let folder = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
+            .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/pr-images")
+        var images: [String: Data] = [:]
+        for file in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) where file.pathExtension != "json" {
+            images[file.deletingPathExtension().lastPathComponent] = try Data(contentsOf: file)
+        }
+        let brought = images
+        let files = StoredFiles { attachment in try XCTUnwrap(brought[attachment.digest ?? ""]) }
+        var state = MacPresentationFeature.State()
+        state.sidebarDocument = try document(spanish ? "sidebar-mac-es" : "sidebar-mac")
+        let detail = try document(spanish ? "card-es-mac" : "card-mac", folder: "pr-images")
+        state.detailDocument = detail
+        state.selection = .viewKey(detail.key)
+        state.selectedViewKey = detail.key
+        let texts = detail.sections.flatMap(\.items).compactMap { item -> String? in
+            if case let .markdown(markdown) = item { markdown.text } else { nil }
+        }
+        let routes = texts.flatMap { $0.matches(of: /\/files\?path=files\/images\/[0-9a-f]{64}\.[a-z]+/).map { String($0.output) } }
+        XCTAssertFalse(routes.isEmpty, "the description points at no image the daemon brought")
+        for route in routes {
+            _ = try await files.fetch(try XCTUnwrap(StoredImage.attachment(try XCTUnwrap(URL(string: route)))))
+        }
+        let store = Store(initialState: state) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchDiff = { _ in try await Task.never() }
+        }
+        assertWindow(size: CGSize(width: 900, height: 2000), spanish: spanish, testName: testName) {
+            MacServiceDetail(presentation: store).environment(\.storedFiles, files)
+        }
+    }
+
     func test_card_clarificationSheet() throws {
         let store = try presentation(detail: "card-question-mac", edit: { state in
             let card = state.detailDocument?.sections.flatMap(\.items).compactMap { item -> Card? in

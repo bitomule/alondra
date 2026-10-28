@@ -6,6 +6,8 @@ use alondra_core::domain::{
     PrState, PullRequest, PROTOCOL_VERSION,
 };
 use alondra_core::pr::Check;
+use alondra_core::views::pr_images::{PrImage, Shown};
+use crate::pr_images::GitHubImages;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -62,6 +64,8 @@ pub(crate) struct Details {
     pub changed_files: u64,
     pub conflicts: bool,
     pub mergeability_unknown: bool,
+    /// The images of `body` as the daemon brought them from GitHub.
+    pub images: Vec<PrImage>,
     pub draft: bool,
     /// GitHub's `BLOCKED`: something other than conflicts stops the merge, such as a required review.
     pub blocked: bool,
@@ -119,6 +123,16 @@ struct Observations {
 struct Observation {
     accepted: u64,
     details: Option<Details>,
+    images: Option<Images>,
+}
+
+/// The images brought for one description at one head, read by request `read`.
+struct Images {
+    body: String,
+    head: String,
+    brought: Vec<PrImage>,
+    retry: bool,
+    read: u64,
 }
 
 impl PrDetails {
@@ -134,8 +148,61 @@ impl PrDetails {
     }
 
     pub(crate) fn get(&self, pr_id: &str) -> Option<Details> {
-        self.cache.lock().expect("pull request details poisoned").entries.get(pr_id)
-            .and_then(|entry| entry.details.clone())
+        let cache = self.cache.lock().expect("pull request details poisoned");
+        let entry = cache.entries.get(pr_id)?;
+        let mut details = entry.details.clone()?;
+        match entry.images.as_ref() {
+            Some(images) if images.read > entry.accepted && !images.brought.is_empty() => {
+                details.body = Some(images.body.clone());
+                details.images = images.brought.clone();
+            }
+            Some(images) if details.body.as_deref() == Some(images.body.as_str()) => details.images = images.brought.clone(),
+            _ => {}
+        }
+        Some(details)
+    }
+
+    /// Brings from GitHub the images of each open pull request's description not brought yet.
+    pub(crate) async fn bring_images(&self, state: &DomainState, github: &dyn GitHubImages, home: &std::path::Path) {
+        for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open) {
+            self.bring(pr, github, home).await;
+        }
+    }
+
+    /// The images of `pr`'s description as last read, brought now when they were not yet.
+    async fn bring(&self, pr: &PullRequest, github: &dyn GitHubImages, home: &std::path::Path) -> Vec<PrImage> {
+        let (body, head, read) = {
+            let cache = self.cache.lock().expect("pull request details poisoned");
+            let Some(entry) = cache.entries.get(&pr.id.0) else { return vec![] };
+            let Some(details) = entry.details.as_ref() else { return vec![] };
+            let Some(body) = details.body.clone() else { return vec![] };
+            (body, details.head_sha.clone().unwrap_or_else(|| pr.head.clone()), entry.accepted)
+        };
+        self.bring_for(pr, &body, &head, read, github, home).await
+    }
+
+    /// The images of `body`, a description of `pr` at `head` read by request `read`, kept for the
+    /// clients: a description read after the details shows in their place until they read it too.
+    async fn bring_for(&self, pr: &PullRequest, body: &str, head: &str, read: u64, github: &dyn GitHubImages, home: &std::path::Path) -> Vec<PrImage> {
+        let target = crate::pr_images::Target { host: &pr.host, repository: &pr.repository, number: pr.number, head };
+        let known: BTreeMap<String, Shown> = {
+            let cache = self.cache.lock().expect("pull request details poisoned");
+            let images = cache.entries.get(&pr.id.0).and_then(|entry| entry.images.as_ref());
+            if let Some(images) = images.filter(|images| images.body == body && images.head == head && !images.retry && images.read >= read) {
+                return images.brought.clone();
+            }
+            images.map(|images| crate::pr_images::lasting(&target, &images.brought, images.head == head)).unwrap_or_default()
+        };
+        let brought = crate::pr_images::bring(github, home, &target, body, &known).await;
+        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let Some(entry) = cache.entries.get_mut(&pr.id.0) else { return brought.images };
+        if entry.images.as_ref().is_some_and(|images| images.read > read) {
+            return brought.images;
+        }
+        let changed = entry.images.as_ref().is_none_or(|images| images.body != body || images.brought != brought.images);
+        entry.images = Some(Images { body: body.to_owned(), head: head.to_owned(), brought: brought.images.clone(), retry: brought.retry, read });
+        if changed { cache.changes += 1; }
+        brought.images
     }
 
     fn begin(&self, pr_id: &str) -> u64 {
@@ -191,6 +258,32 @@ impl super::Client {
         *self.pr_view.lock().expect("pull request view poisoned") = view;
     }
 
+    #[cfg(test)]
+    pub(crate) fn use_pr_images(&self, github: Arc<dyn GitHubImages>) {
+        *self.pr_images.lock().expect("pull request images poisoned") = github;
+    }
+
+    pub(crate) async fn bring_pr_images(&self, state: &DomainState) {
+        let github = self.pr_images.lock().expect("pull request images poisoned").clone();
+        self.details.bring_images(state, &*github, &self.home).await;
+    }
+
+    /// The images `pr`'s description cites that do not exist where it says, read from GitHub now:
+    /// the description may have changed a moment ago.
+    async fn missing_images(&self, pr: &PullRequest) -> Vec<PrImage> {
+        let view = self.pr_view.lock().expect("pull request view poisoned").clone();
+        let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+        let read = self.details.begin(&pr.id.0);
+        let Some(answer) = view.view(&url).await else { return vec![] };
+        let fresh = parse(&pr.id.0, pr.number, &answer);
+        let Some(body) = fresh.body else { return vec![] };
+        let head = fresh.head_sha.unwrap_or_else(|| pr.head.clone());
+        let github = self.pr_images.lock().expect("pull request images poisoned").clone();
+        self.details.bring_for(pr, &body, &head, read, &*github, &self.home).await.into_iter()
+            .filter(|image| matches!(&image.shown, Shown::Unavailable { problem, .. } if problem.missing()))
+            .collect()
+    }
+
     /// Whether `pr` merges at `head`, asked up to `attempts` times while GitHub is still computing.
     /// A recent clean answer for this head and base is trusted; a conflict or unknown is asked again, since a
     /// base that moved can clear either without a new head.
@@ -244,6 +337,10 @@ impl super::Client {
             if self.merge_state(pr, head, PRESENT_ATTEMPTS, PRESENT_PAUSE).await == Merge::Conflicts {
                 return Err(DomainError::new("pr_conflicts", presentation_conflicts_text(pr)));
             }
+            let missing = self.missing_images(pr).await;
+            if !missing.is_empty() {
+                return Err(DomainError::new("pr_images_missing", missing_images_text(pr, &missing)));
+            }
         }
         Ok(())
     }
@@ -294,6 +391,19 @@ fn presentation_conflicts_text(pr: &PullRequest) -> String {
     format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: bring {base} into the branch, \
         resolve the conflicts, run the tests and push, then present the PR again with present_result and its new head. \
         If you cannot resolve them, ask the user.")
+}
+
+fn missing_images_text(pr: &PullRequest, missing: &[PrImage]) -> String {
+    let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+    let mut each: Vec<String> = missing.iter().map(|image| match &image.shown {
+        Shown::Unavailable { problem, .. } => format!("{} ({})", image.url, problem.text(alondra_core::views::Lang::En)),
+        Shown::Stored { .. } => image.url.clone(),
+    }).collect();
+    each.dedup();
+    let host = alondra_core::domain::normalize_pr_host(&pr.host);
+    format!("The description of {url} cites images that do not exist, so nothing was presented: {}. Commit each image to the \
+        branch and cite it at the commit you present (https://{host}/{}/blob/<commit>/<path>?raw=true), or take it out of \
+        the description with gh pr edit, then present the PR again.", each.join("; "), pr.repository)
 }
 
 /// A presented PR that GitHub says conflicts goes back to its Agent with the words of the user's
@@ -357,6 +467,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
         deletions: card.deletions,
         changed_files: card.changed_files,
         checks: card.checks,
+        images: vec![],
         observed_at: None,
     }
 }
@@ -616,6 +727,32 @@ mod tests {
             is_final: true, nothing_to_review: false,
             card: alondra_core::domain::CardSpec::delivery("Review", &targets, true), targets,
         }
+    }
+
+    #[tokio::test]
+    async fn a_presented_pr_whose_description_cites_an_image_missing_from_the_branch_is_refused_naming_it() {
+        use crate::pr_images::tests::{FakeGitHub, PNG};
+        let (_home, client, pr) = foreground_fixture();
+        let view = std::sync::Arc::new(super::FakePrView::default());
+        let answer = |body: &str| json!({
+            "title": "Duo", "body": body, "headRefOid": pr.head, "headRefName": "duo", "baseRefName": "main",
+            "state": "OPEN", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": [],
+        });
+        view.answer(Some(answer("![areas](docs/areas.png)\n\n![gone](docs/gone.png)\n\n![](https://github.com/secret/repo/blob/main/a.png)")));
+        client.use_pr_view(view.clone());
+        client.use_pr_images(std::sync::Arc::new(FakeGitHub::with(&[("fixture/repo", &pr.head, "docs/areas.png", PNG)])));
+        let error = client.verify_presentation(&foreground_presentation(&pr)).await.unwrap_err();
+        assert_eq!(error.code, "pr_images_missing");
+        assert!(error.message.contains("docs/gone.png (not in the branch (aaaaaaa))"), "{}", error.message);
+        assert!(!error.message.contains("areas.png") && !error.message.contains("secret/repo"), "{}", error.message);
+        let shown = client.details.get(&pr.id.0).unwrap().images;
+        assert!(matches!(shown[0].shown, alondra_core::views::pr_images::Shown::Stored { .. }), "{shown:?}");
+
+        view.answer(Some(answer("![areas](docs/areas.png)\n\n![](https://github.com/secret/repo/blob/main/a.png)")));
+        client.verify_presentation(&foreground_presentation(&pr)).await.unwrap();
+        let shown = client.details.get(&pr.id.0).unwrap();
+        assert!(!shown.body.as_deref().unwrap().contains("gone"), "the description read to present it shows at once: {:?}", shown.body);
+        assert!(matches!(shown.images[0].shown, alondra_core::views::pr_images::Shown::Stored { .. }), "{:?}", shown.images);
     }
 
     #[tokio::test]

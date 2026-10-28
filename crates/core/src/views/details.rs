@@ -175,7 +175,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 .push(common::section("checks", None, vec![Item::Checks(checks)]));
         }
         if let Some(body) = live
-            .and_then(|details| details.body.clone())
+            .and_then(|details| Some(super::pr_images::show(details.body.as_deref()?, &details.images, context.lang)))
             .map(|text| super::Markdown {
                 text,
                 truncated: false,
@@ -199,7 +199,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         }
     }
     if !view.sections.iter().any(|section| section.id == "description")
-        && let Some(text) = live.and_then(|details| details.body.clone())
+        && let Some(text) = live.and_then(|details| Some(super::pr_images::show(details.body.as_deref()?, &details.images, context.lang)))
     {
         view.sections.push(common::section(
             "description",

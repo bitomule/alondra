@@ -39,6 +39,7 @@ swift_test(
         "//fixtures/diffs",
         "//fixtures/views:cards",
         "//fixtures/views:newer_daemon",
+        "//fixtures/views:pr_images",
         ":localizations",
     ],
     env = {

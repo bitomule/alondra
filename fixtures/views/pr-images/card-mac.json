@@ -1,0 +1,321 @@
+{
+  "protocol": 1,
+  "data_epoch": "1b72cd9960598761dc0de8a5068414d71ad4e206b63d67958c0b3990e789261c",
+  "view": "card",
+  "key": "card:result-da107100-430ed2",
+  "client": "mac",
+  "version": "vb2b53cbec7233d40",
+  "cursor": "c1.WyIxYjcyY2Q5OTYwNTk4NzYxZGMwZGU4YTUwNjg0MTRkNzFhZDRlMjA2YjYzZDY3OTU4YzBiMzk5MGU3ODkyNjFjIiwxNCwiMmZlYjA4NDY3YTk5YjcxOCIsInY5YmIxYzk5YWU4NWJkOWI0Il0",
+  "title": "Duo",
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "macOS reports memory pressure",
+        "id": "memory",
+        "label": "RAM",
+        "level": "warm",
+        "text": "77%",
+        "value": 0.77
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "55%",
+        "value": 0.5499378967285157
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "hot",
+        "text": "19 GB free (3 GB purgeable)",
+        "value": 0.9619087166475604
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "summary": "1 to read · 0 nodes working",
+    "version": "v9bb1c99ae85bd9b4"
+  },
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "card",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "merge:result-da107100-430ed2@13~2aa1c3bc-result-da107100-430ed2",
+              "input": {
+                "kind": "none"
+              },
+              "key": "1",
+              "label": "Squash and merge",
+              "option_id": "squash",
+              "presentation": "button",
+              "resolves_card": true,
+              "role": "advance",
+              "stamp": "Merging…",
+              "style": "primary"
+            },
+            {
+              "attachments": true,
+              "comments": {
+                "kind": "diff_lines"
+              },
+              "enabled": true,
+              "id": "changes:github.com/sandbox/repo#7@14~2aa1c3bc",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Describe the changes",
+                "required": true
+              },
+              "key": "2",
+              "label": "Request changes",
+              "link": {
+                "key": "pull_request:github.com/sandbox/repo#7",
+                "kind": "view"
+              },
+              "presentation": "button",
+              "resolves_card": true,
+              "role": "neutral",
+              "stamp": "Changes requested",
+              "style": "secondary"
+            }
+          ],
+          "content_row": {
+            "icon": "notice",
+            "kind": "report",
+            "label": "Report",
+            "summary": "1 point"
+          },
+          "context": [
+            {
+              "icon": "task",
+              "link": {
+                "key": "task:t-review",
+                "kind": "view"
+              },
+              "state": {
+                "text": "Ready for review",
+                "tone": "info"
+              },
+              "text": "Migration design"
+            }
+          ],
+          "detail": "included",
+          "eyebrow": {
+            "text": "Review · PR #7",
+            "tone": "accent"
+          },
+          "icon": "pull_request",
+          "id": "result-da107100-430ed2",
+          "kind": "review",
+          "link": {
+            "key": "card:result-da107100-430ed2",
+            "kind": "view"
+          },
+          "meta": "sandbox/repo · worktree-t-review → main · 1 file · +1 −0 · Checks passed",
+          "more": [
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Close PR",
+                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+                "title": "Close PR #7 without merging?"
+              },
+              "enabled": true,
+              "id": "close_unmerged:result-da107100-430ed2@13",
+              "input": {
+                "kind": "none"
+              },
+              "key": "3",
+              "label": "Close without merging",
+              "presentation": "button",
+              "resolves_card": true,
+              "role": "risk",
+              "stamp": "Closing…",
+              "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "key": "w",
+              "label": "Open on GitHub",
+              "link": {
+                "kind": "url",
+                "url": "https://github.com/sandbox/repo/pull/7"
+              },
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "clarify:result-da107100-430ed2@13",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "What should it clarify?",
+                "required": false
+              },
+              "key": "c",
+              "label": "Request clarification",
+              "options": [
+                {
+                  "id": "unclear",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "It is unclear",
+                  "style": "secondary"
+                },
+                {
+                  "id": "contradicts",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "It contradicts something",
+                  "style": "secondary"
+                },
+                {
+                  "id": "missing_context",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "It lacks context",
+                  "style": "secondary"
+                }
+              ],
+              "presentation": "options",
+              "resolves_card": false,
+              "role": "neutral",
+              "stamp": "Clarification requested",
+              "style": "secondary"
+            }
+          ],
+          "need": "Review MealScale for iPhone Duo",
+          "reply": {
+            "attachments": true,
+            "enabled": true,
+            "id": "reply:result-da107100-430ed2@13",
+            "input": {
+              "kind": "text",
+              "multiline": true,
+              "placeholder": "Reply to Migration design…",
+              "required": true
+            },
+            "key": "r",
+            "label": "Reply",
+            "presentation": "button",
+            "resolves_card": true,
+            "role": "neutral",
+            "stamp": "Sent",
+            "style": "secondary"
+          },
+          "state": {
+            "text": "+1 −0 · ✓",
+            "tone": "success"
+          },
+          "timestamps": [
+            {
+              "at": "2026-10-27T03:51:27.054+01:00",
+              "format": "relative",
+              "role": "created"
+            }
+          ],
+          "title": "Duo",
+          "type": "card"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "diff",
+      "items": [
+        {
+          "commentable": true,
+          "digest": "2aa1c3bc5b41403eb84358e260a61035ceabee9e",
+          "fetch": "/pull-requests/github.com%2Fsandbox%2Frepo%237/diff",
+          "kind": "diff",
+          "size": 0,
+          "title": "Diff",
+          "type": "content_ref"
+        }
+      ],
+      "title": "Diff"
+    },
+    {
+      "collapsed": false,
+      "id": "description",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Review MealScale for iPhone Duo: the sandbox node did the scripted work.\n\n## Capturas\n\nEspacios en el Duo abierto, antes y después (español, claro):\n\n![storage-areas-es.jpg](/files?path=files/images/f18bd4958342c6de0a39c568829f02b8228033fb0166cd7f16811de4a10e9dc8.jpg)\n\nInglés, oscuro y claro:\n\n![storage-areas-en.jpg](/files?path=files/images/39e1d803f5a6eff402d6dffcf70aa5fd57aebfbc83da5d9f985624931dc4c675.jpg)\n\nCompartir junto al «+» con el Duo plegado:\n\n![share-folded-es.jpg](/files?path=files/images/1f1abbacab6821ce0f5888002a9b0905383a1313bfb6baa0671d1ac630350e93.jpg)\n\nBienvenida plegada, antes y después:\n\n![welcome-folded.jpg](/files?path=files/images/55f24b895ae0a5f8736380722d0d6170d193feea9a2a5e54514b623dada2f934.jpg)\n\nCompra:\n\n![paywall.jpg](/files?path=files/images/7a8329da04ea21203f3ddd067970bd11ca1daae1330190be1021c775355bd450.jpg)\n\nCapturas de App Store del Duo: [en, abierto](https://github.com/acmecorp-private/MealScale/blob/8d0e5fb7edcc190633b9fc0b868f7051e48bc0f9/AppStore/screenshots/duo/en/iPhone_Duo_-_Night_Sky_-_Inner_Open_Landscape/01_unfold.png) · [es, abierto](https://github.com/acmecorp-private/MealScale/blob/8d0e5fb7edcc190633b9fc0b868f7051e48bc0f9/AppStore/screenshots/duo/es/iPhone_Duo_-_Night_Sky_-_Inner_Open_Landscape/01_unfold.png) · [en, plegado](https://github.com/acmecorp-private/MealScale/blob/8d0e5fb7edcc190633b9fc0b868f7051e48bc0f9/AppStore/screenshots/duo/en/iPhone_Duo_-_Night_Sky_-_Outer_Closed_Portrait/01_unfold.png) · [es, plegado](https://github.com/acmecorp-private/MealScale/blob/8d0e5fb7edcc190633b9fc0b868f7051e48bc0f9/AppStore/screenshots/duo/es/iPhone_Duo_-_Night_Sky_-_Outer_Closed_Portrait/01_unfold.png)\n\n![shot.png — GitHub gives no access to acmecorp-private/not-a-repository](https://github.com/acmecorp-private/not-a-repository/blob/main/shot.png)",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Description"
+    },
+    {
+      "collapsed": false,
+      "id": "context",
+      "items": [
+        {
+          "items": [
+            {
+              "label": "Task",
+              "link": {
+                "key": "task:t-review",
+                "kind": "view"
+              },
+              "value": "Migration design"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Context"
+    }
+  ]
+}
