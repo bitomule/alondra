@@ -159,6 +159,13 @@ rust_inputs_test(
 )
 
 rust_test(
+    name = "lock_policy_test",
+    srcs = ["tests/lock_policy.rs"],
+    data = [":report_sources"],
+    edition = "2024",
+)
+
+rust_test(
     name = "relaunch_test",
     srcs = ["tests/relaunch.rs"],
     data = [":alondrad"],

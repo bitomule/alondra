@@ -5,6 +5,7 @@
 //! It runs when the daemon starts, every 15 minutes for an account nothing else measured meanwhile,
 //! and right after Claude refused work for running out. A probe that fails keeps the last good
 //! reading, which says how old it is.
+use crate::locks::Poisonable as _;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -37,12 +38,14 @@ pub(crate) fn account_of(credential: &str) -> AccountId {
 
 /// The accounts' readings as the domain last committed them, kept where the live view, which has
 /// no domain, reads when a limit Claude reported without a time ends.
+/// A holder that panics leaves it whole, so it is recovered: a copy of the domain's usage, taken
+/// again on every commit.
 #[derive(Default)]
 pub(crate) struct Measured(Mutex<Vec<AccountUsage>>);
 
 impl Measured {
     pub(crate) fn sync(&self, state: &DomainState) {
-        let mut kept = self.0.lock().expect("measured usage poisoned");
+        let mut kept = self.0.lock_or_recover("the measured usage");
         if *kept != state.account_usage {
             kept.clone_from(&state.account_usage);
         }
@@ -51,8 +54,7 @@ impl Measured {
     /// When a limit of `account`, reported without a time, ends.
     pub(crate) fn reset_after_limit(&self, account: &AccountId, now: Millis) -> Option<Millis> {
         self.0
-            .lock()
-            .expect("measured usage poisoned")
+            .lock_or_recover("the measured usage")
             .iter()
             .find(|usage| usage.provider == Provider::Claude && usage.account == *account)
             .and_then(|usage| usage.reset_after_limit(now))

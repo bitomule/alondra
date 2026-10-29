@@ -5,6 +5,7 @@
 //! HOME and with the Claude profile the daemon was set up with (`claude_account::configured_profile`),
 //! so it signs in as the user does and as setup and doctor check; Seatbelt confinement stays
 //! optional.
+use crate::locks::Poisonable as _;
 use alondra_core::accounts::AccountId;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -190,9 +191,13 @@ impl SdkBackend {
     }
 }
 
+/// A holder that panics leaves it whole, so it is recovered: a memo, read or filled one entry at a
+/// time.
 static CHECKED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 type FileState = (PathBuf, u64, std::time::SystemTime);
+/// A holder that panics leaves it whole, so it is recovered: a memo, read or filled one entry at a
+/// time.
 static DIGESTS: Mutex<Option<HashMap<FileState, String>>> = Mutex::new(None);
 
 /// The SHA256 of the host a release installed, read once per file as it is on disk: the daemon
@@ -200,18 +205,18 @@ static DIGESTS: Mutex<Option<HashMap<FileState, String>>> = Mutex::new(None);
 fn installed_digest(host: &Path) -> Result<String> {
     let meta = std::fs::metadata(host).with_context(|| format!("reading {}", host.display()))?;
     let state = (host.to_path_buf(), meta.len(), meta.modified()?);
-    if let Some(known) = DIGESTS.lock().expect("host digests poisoned").as_ref().and_then(|known| known.get(&state).cloned()) {
+    if let Some(known) = DIGESTS.lock_or_recover("the SDK host digests").as_ref().and_then(|known| known.get(&state).cloned()) {
         return Ok(known);
     }
     let sha256 = digest(host)?;
-    DIGESTS.lock().expect("host digests poisoned").get_or_insert_default().insert(state, sha256.clone());
+    DIGESTS.lock_or_recover("the SDK host digests").get_or_insert_default().insert(state, sha256.clone());
     Ok(sha256)
 }
 
 /// The release `claude --version` names, once per binary: a Claude Code older than the one the
 /// pinned SDK needs is refused with what to do.
 fn compatible(native: &Path, sha256: &str) -> Result<String> {
-    if let Some(version) = CHECKED.lock().expect("checked releases poisoned").as_ref().and_then(|known| known.get(sha256).cloned()) {
+    if let Some(version) = CHECKED.lock_or_recover("the checked SDK releases").as_ref().and_then(|known| known.get(sha256).cloned()) {
         return Ok(version);
     }
     let text = version_of(native)?;
@@ -219,7 +224,7 @@ fn compatible(native: &Path, sha256: &str) -> Result<String> {
         bail!("Claude Code {} is older than {}, the release Alondra needs: update it with `claude update`",
             text.trim(), alondra_core::claude_code::MIN_TEXT);
     }
-    CHECKED.lock().expect("checked releases poisoned").get_or_insert_default().insert(sha256.to_owned(), text.clone());
+    CHECKED.lock_or_recover("the checked SDK releases").get_or_insert_default().insert(sha256.to_owned(), text.clone());
     Ok(text)
 }
 
@@ -609,10 +614,10 @@ impl SdkBackend {
 fn is_claude(provider: &alondra_core::accounts::Provider) -> bool { *provider == alondra_core::accounts::Provider::Claude }
 fn compatible_codex(native: &Path, sha256: &str) -> Result<String> {
     let key = format!("codex:{sha256}");
-    if let Some(known) = CHECKED.lock().expect("checked releases poisoned").as_ref().and_then(|known| known.get(&key).cloned()) { return Ok(known); }
+    if let Some(known) = CHECKED.lock_or_recover("the checked SDK releases").as_ref().and_then(|known| known.get(&key).cloned()) { return Ok(known); }
     let release = version_of(native)?;
     ensure!(alondra_core::codex_account::supported_cli_version(&release), "Codex {} is not supported by this Alondra release; Codex 0.163.0 is required", release.trim());
-    CHECKED.lock().expect("checked releases poisoned").get_or_insert_default().insert(key, release.clone());
+    CHECKED.lock_or_recover("the checked SDK releases").get_or_insert_default().insert(key, release.clone());
     Ok(release)
 }
 

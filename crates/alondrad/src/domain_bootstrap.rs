@@ -1,4 +1,5 @@
 //! Local HTTP bootstrap: the routes are the shared domain handlers.
+use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{AttachmentRef, DomainError};
@@ -460,7 +461,7 @@ async fn daemon(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    let (machine, usage) = match &*crate::log::recover(&state.gauges, "the machine gauges") {
+    let (machine, usage) = match &*state.gauges.lock_or_recover("the machine gauges") {
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };
@@ -1049,7 +1050,7 @@ async fn orchestrator_schedule(
 }
 
 fn gauges_json(state:&DomainDaemon)->(Value,Value) {
-    match &*crate::log::recover(&state.gauges,"the machine gauges") {
+    match &*state.gauges.lock_or_recover("the machine gauges") {
         Some((machine,usage))=>(json!(machine),json!(usage)),
         None=>(Value::Null,Value::Null),
     }
@@ -1188,7 +1189,7 @@ async fn orchestrator_machine(
     if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
-    let (machine, usage) = match &*crate::log::recover(&state.gauges, "the machine gauges") {
+    let (machine, usage) = match &*state.gauges.lock_or_recover("the machine gauges") {
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };

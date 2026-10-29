@@ -8,6 +8,7 @@
 //! Settings, and after an update that kept the launcher's path macOS denies the first sends for a
 //! few seconds and then lets them through. So it is checked again after start, on every network
 //! change the reachability watch sees, when Bonjour is refused, and whenever someone reads it.
+use crate::locks::Poisonable as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,11 +58,13 @@ impl Tracker {
     }
 }
 
+/// A holder that panics leaves it whole, so it is recovered: copied fields set one by one; a
+/// panicking probe leaves them as they were.
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
 static WATCHING: AtomicBool = AtomicBool::new(false);
 
 fn tracker() -> std::sync::MutexGuard<'static, Tracker> {
-    TRACKER.lock().expect("local network status poisoned")
+    TRACKER.lock_or_recover("the local network status")
 }
 
 /// The last answer, without checking.

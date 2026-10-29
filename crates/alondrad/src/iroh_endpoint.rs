@@ -4,6 +4,7 @@
 //! iroh endpoint speaks for that device. Every envelope then goes through
 //! `Service::handle_direct`, so it is checked, journaled and answered exactly as on the direct
 //! listener. The wire protocol is in `docs/iroh-protocol.md`.
+use crate::locks::Poisonable as _;
 use crate::service::{DirectRefusal, Service};
 use alondra_e2e::Envelope;
 use anyhow::{Context, Result, anyhow};
@@ -113,16 +114,17 @@ struct Status {
     relay_refusal: Option<String>,
 }
 
+/// A holder that panics leaves it whole, so it is recovered: plain fields set one by one.
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
 
 fn update(change: impl FnOnce(&mut Status)) {
-    change(STATUS.lock().expect("iroh status poisoned").get_or_insert_with(Status::default));
+    change(STATUS.lock_or_recover("the iroh status").get_or_insert_with(Status::default));
 }
 
 /// What `/daemon` reports about the endpoint and macOS's Local Network permission.
 pub(crate) fn status() -> serde_json::Value {
     let reachability = crate::reachability::current();
-    let guard = STATUS.lock().expect("iroh status poisoned");
+    let guard = STATUS.lock_or_recover("the iroh status");
     let local_network = crate::local_network::current();
     match &*guard {
         None => json!({"endpoint": null, "local_network": local_network, "reachability": reachability}),
@@ -136,7 +138,7 @@ pub(crate) fn status() -> serde_json::Value {
 
 /// The iroh relay in use and whether this Mac is connected to it.
 pub(crate) fn relay_state() -> (Option<String>, bool) {
-    match &*STATUS.lock().expect("iroh status poisoned") {
+    match &*STATUS.lock_or_recover("the iroh status") {
         Some(status) => (status.relay.clone(), status.relay_connected),
         None => (None, false),
     }

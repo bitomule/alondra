@@ -1,5 +1,6 @@
 //! Relational authority for domain v2. The legacy event store remains technical
 //! evidence only; these rows are never reconstructed by legacy event replay.
+use crate::locks::Poisonable as _;
 mod canonical;
 mod command;
 mod connection;
@@ -548,7 +549,7 @@ impl DomainStore {
     #[cfg(test)]
     pub(crate) fn end_live_read_trace(&mut self) -> Vec<live_read_trace::LiveStoreRead> {
         let sink = self.live_read_trace.take().expect("live read trace not active");
-        let events = sink.lock().expect("live read trace poisoned").clone();
+        let events = sink.lock_or_recover("the live read trace").clone();
         events
     }
     #[cfg(test)]

@@ -15,6 +15,7 @@
 //!   therefore share one `flock` per file, counted here, and an exclusive holder waits for the
 //!   count to reach zero before it touches `flock`. The kernel sees at most one lock from this
 //!   process per file.
+use crate::locks::{Poisonable as _, AfterPanic as _};
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -30,6 +31,8 @@ pub(crate) struct ApprovalLease {
 
 #[derive(Default)]
 struct Gate {
+    /// A holder that panics leaves it whole, so it is recovered: each step changes one field, and a
+    /// failed `flock` returns before it counts or undoes the exclusive flag.
     holders: Mutex<Holders>,
     released: Condvar,
 }
@@ -41,6 +44,8 @@ struct Holders {
     exclusive: bool,
 }
 
+/// A holder that panics leaves it whole, so it is recovered: weak pointers, pruned and inserted one
+/// by one.
 static GATES: LazyLock<Mutex<HashMap<(u64, u64), Weak<Gate>>>> = LazyLock::new(Default::default);
 
 impl ApprovalLease {
@@ -72,13 +77,13 @@ impl ApprovalLease {
 
 impl Gate {
     fn holders(&self) -> MutexGuard<'_, Holders> {
-        self.holders.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.holders.lock_or_recover("the approval lease holders")
     }
 
     fn wait_while(&self, busy: impl FnMut(&mut Holders) -> bool) -> MutexGuard<'_, Holders> {
         self.released
             .wait_while(self.holders(), busy)
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .or_recover("the approval lease holders", || self.holders.clear_poison())
     }
 }
 
@@ -105,7 +110,7 @@ fn open(home: &Path) -> Result<(File, Arc<Gate>)> {
         metadata.mode() & 0o077 == 0,
         "approval lease is not private"
     );
-    let mut gates = GATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut gates = GATES.lock_or_recover("the approval lease gates");
     gates.retain(|_, gate| gate.strong_count() > 0);
     let gate = gates
         .get(&(metadata.dev(), metadata.ino()))

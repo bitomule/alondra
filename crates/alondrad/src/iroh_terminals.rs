@@ -2,6 +2,7 @@
 //! paired directly has no account to bind its endpoint at the relay with, so the iroh relay would
 //! not let it in; this Mac binds it there instead, carrying the device's own hello as its proof.
 //! Also what devices need to dial this Mac's endpoint: its direct addresses and its iroh relay.
+use crate::locks::Poisonable as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -18,7 +19,10 @@ pub(crate) struct Hello {
 
 pub(crate) struct IrohTerminals {
     path: Option<PathBuf>,
+    /// A holder that panics leaves it whole, so it is recovered: a retain and an insert, then a
+    /// save whose failure memory already outlives.
     hellos: Mutex<BTreeMap<String, Hello>>,
+    /// A holder that panics leaves it whole, so it is recovered: one assignment.
     dial: Mutex<Dial>,
 }
 
@@ -44,7 +48,7 @@ impl IrohTerminals {
 
     /// Notes the endpoint `device_id` proved itself from. True when its endpoint changed.
     pub(crate) fn record(&self, device_id: &str, hello: Hello) -> Result<bool> {
-        let mut hellos = self.hellos.lock().expect("iroh terminals lock poisoned");
+        let mut hellos = self.hellos.lock_or_recover("the iroh terminals");
         if hellos.get(device_id).is_some_and(|known| known.node == hello.node) {
             return Ok(false);
         }
@@ -56,7 +60,7 @@ impl IrohTerminals {
 
     /// The last hello of every device `keep` accepts; the others are forgotten.
     pub(crate) fn hellos(&self, keep: impl Fn(&str) -> bool) -> BTreeMap<String, Hello> {
-        let mut hellos = self.hellos.lock().expect("iroh terminals lock poisoned");
+        let mut hellos = self.hellos.lock_or_recover("the iroh terminals");
         let before = hellos.len();
         hellos.retain(|device_id, _| keep(device_id));
         if hellos.len() != before
@@ -76,11 +80,11 @@ impl IrohTerminals {
     }
 
     pub(crate) fn dial(&self) -> Dial {
-        self.dial.lock().expect("iroh dial lock poisoned").clone()
+        self.dial.lock_or_recover("the iroh dial").clone()
     }
 
     pub(crate) fn set_dial(&self, change: impl FnOnce(&mut Dial)) {
-        change(&mut self.dial.lock().expect("iroh dial lock poisoned"));
+        change(&mut self.dial.lock_or_recover("the iroh dial"));
     }
 }
 

@@ -4,6 +4,7 @@
 //! the domain store by the connection itself and stay pending until acknowledged; the messages
 //! the user or the orchestrator sends directly have no outbox row, so they are kept here until
 //! acknowledged and written again on the session's next connection.
+use crate::locks::Poisonable as _;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,7 +52,10 @@ struct Direct {
 }
 
 pub(crate) struct Pushes {
+    /// A holder that panics leaves it whole, so it is recovered: one insert, remove or send.
     links: Mutex<HashMap<String, Link>>,
+    /// A holder that panics leaves it whole, so it is recovered: inserts and removes one by one; an
+    /// entry left behind is only sent again.
     direct: Mutex<HashMap<String, BTreeMap<u64, Direct>>>,
     counter: AtomicU64,
 }
@@ -73,26 +77,26 @@ impl Pushes {
     /// every direct message it has not acknowledged.
     pub(crate) fn attach(&self, session: &str, number: u64) -> mpsc::UnboundedReceiver<String> {
         let (lines, receiver) = mpsc::unbounded_channel();
-        for waiting in self.direct.lock().expect("direct pushes poisoned").get(session).into_iter().flat_map(BTreeMap::values) {
+        for waiting in self.direct.lock_or_recover("the direct pushes").get(session).into_iter().flat_map(BTreeMap::values) {
             let _ = lines.send(waiting.line.clone());
         }
-        self.links.lock().expect("push links poisoned").insert(session.to_owned(), Link { number, lines });
+        self.links.lock_or_recover("the push links").insert(session.to_owned(), Link { number, lines });
         receiver
     }
 
     pub(crate) fn detach(&self, session: &str, number: u64) {
-        let mut links = self.links.lock().expect("push links poisoned");
+        let mut links = self.links.lock_or_recover("the push links");
         if links.get(session).is_some_and(|link| link.number == number) {
             links.remove(session);
         }
     }
 
     pub(crate) fn connected(&self, session: &str) -> bool {
-        self.links.lock().expect("push links poisoned").contains_key(session)
+        self.links.lock_or_recover("the push links").contains_key(session)
     }
 
     fn write(&self, session: &str, line: String) -> Result<(), Unreachable> {
-        let links = self.links.lock().expect("push links poisoned");
+        let links = self.links.lock_or_recover("the push links");
         links.get(session).ok_or(Unreachable)?.lines.send(line).map_err(|_| Unreachable)
     }
 
@@ -105,7 +109,7 @@ impl Pushes {
         let number = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
         let line = message_line(&format!("{DIRECT_PREFIX}{number}"), &stamped(from, alondra_core::now_millis(), text), as_user);
         let (acked, receiver) = oneshot::channel();
-        self.direct.lock().expect("direct pushes poisoned").entry(session.to_owned()).or_default()
+        self.direct.lock_or_recover("the direct pushes").entry(session.to_owned()).or_default()
             .insert(number, Direct { line: line.clone(), acked: Some(acked) });
         self.write(session, line)?;
         Ok(receiver)
@@ -113,7 +117,7 @@ impl Pushes {
 
     /// Whether a direct message waits for the session to acknowledge it.
     pub(crate) fn waiting(&self, session: &str) -> bool {
-        self.direct.lock().expect("direct pushes poisoned").get(session).is_some_and(|waiting| !waiting.is_empty())
+        self.direct.lock_or_recover("the direct pushes").get(session).is_some_and(|waiting| !waiting.is_empty())
     }
 
     /// An interrupt is only meaningful to the turn running now, so it is never kept or resent.
@@ -123,7 +127,7 @@ impl Pushes {
 
     /// Forgets the acknowledged direct messages and answers the ones waiting for it.
     pub(crate) fn acknowledged(&self, session: &str, ids: &[String]) {
-        let mut direct = self.direct.lock().expect("direct pushes poisoned");
+        let mut direct = self.direct.lock_or_recover("the direct pushes");
         let Some(waiting) = direct.get_mut(session) else { return };
         for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {
             if let Some(Direct { acked: Some(acked), .. }) = waiting.remove(&number) {

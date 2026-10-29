@@ -1,6 +1,7 @@
 //! Asking for new work: the options a request can carry, the projects it can be for, the open
 //! issues it can come from, and the request itself, which is created together with what the
 //! user chose for its launch.
+use crate::locks::Poisonable as _;
 use super::close::Answer;
 use super::{Client, Reply};
 use crate::domain_store::{RequestLaunch, TransportIdentity};
@@ -108,12 +109,12 @@ fn issue_of(body: &Body, file: &OptionsFile) -> Result<Option<(String, u64)>, St
 
 impl Client {
     pub(crate) fn github(&self) -> std::sync::Arc<dyn Github> {
-        self.github.lock().expect("github poisoned").clone()
+        self.github.lock_or_recover("the GitHub backend").clone()
     }
 
     #[cfg(test)]
     pub(crate) fn use_github(&self, github: std::sync::Arc<dyn Github>) {
-        *self.github.lock().expect("github poisoned") = github;
+        *self.github.lock_or_recover("the GitHub backend") = github;
     }
 
     pub(super) fn options_answer(&self, project: Option<String>) -> Response {
@@ -142,7 +143,7 @@ impl Client {
 
     pub(super) async fn issues_answer(&self, refresh: bool) -> Response {
         let file = crate::options::load_in(&self.home, &self.options).file;
-        let github = self.github.lock().expect("github poisoned").clone();
+        let github = self.github.lock_or_recover("the GitHub backend").clone();
         Json(json!(crate::issues::list_in(&self.issue_cache, &file, refresh, &Issues(&*github)).await)).into_response()
     }
 
@@ -214,7 +215,7 @@ impl Client {
         };
         crate::domain_orchestrator_tools::authorize_user_request_selection(&self.domain, &mut resolved, body.options.contains_key("account"));
         if let Err(error) = crate::domain_orchestrator_tools::validate_request_selection(&self.domain, &resolved) { return Ok(refused(error.message)); }
-        let github = self.github.lock().expect("github poisoned").clone();
+        let github = self.github.lock_or_recover("the GitHub backend").clone();
         let issue_text = match &issue {
             Some((repo, number)) => {
                 resolved.issue = Some(format!("{repo}#{number}"));

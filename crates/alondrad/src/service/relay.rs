@@ -1,6 +1,7 @@
 //! The outbound relay connector: a heartbeat that keeps device enrollments, revocations and iroh
 //! bindings at the relay, and hands encrypted pushes to APNs through it. Present only when
 //! `service.toml` names a relay.
+use crate::locks::Poisonable as _;
 use super::{
     Device, EnrollmentDecision, PushDelivery, Service, Transport,
     decoded, now_ms, registration_ended, relay_error_code, without_relay_extensions,
@@ -38,8 +39,12 @@ pub(crate) struct RelayConnector {
     owner_sub: String,
     resync: AtomicBool,
     /// The relay epoch the iroh endpoint was last bound in, and when a failed attempt was.
+    /// A holder that panics leaves it whole, so it is recovered: one assignment of retry
+    /// bookkeeping.
     iroh_bound: std::sync::Mutex<Option<([u8; 16], Option<std::time::Instant>)>>,
     /// The device endpoints bound on this Mac's behalf in that epoch, and when one last failed.
+    /// A holder that panics leaves it whole, so it is recovered: bindings for one epoch, set one by
+    /// one and reset with the next.
     devices_bound: std::sync::Mutex<DevicesBound>,
     wake: tokio::sync::Notify,
 }
@@ -96,7 +101,7 @@ impl RelayConnector {
 
     /// A device said hello from a new iroh endpoint: bind it at the relay on the next iteration.
     pub(super) fn bind_devices_soon(&self) {
-        self.devices_bound.lock().expect("device binding lock poisoned").failed = None;
+        self.devices_bound.lock_or_recover("the device bindings").failed = None;
         self.wake.notify_one();
     }
 
@@ -238,7 +243,7 @@ impl Service {
         if !self.iroh_config().enabled {
             return;
         }
-        let due = match *relay.iroh_bound.lock().expect("iroh binding lock poisoned") {
+        let due = match *relay.iroh_bound.lock_or_recover("the iroh binding") {
             Some((bound, None)) => bound != *epoch,
             Some((bound, Some(failed))) => bound != *epoch || failed.elapsed() >= IROH_BIND_RETRY,
             None => true,
@@ -256,7 +261,7 @@ impl Service {
                 Some(std::time::Instant::now())
             }
         };
-        *relay.iroh_bound.lock().expect("iroh binding lock poisoned") = Some((*epoch, failed));
+        *relay.iroh_bound.lock_or_recover("the iroh binding") = Some((*epoch, failed));
     }
 
     async fn bind_iroh_endpoint(&self, epoch: &[u8; 16]) -> Result<()> {
@@ -275,12 +280,12 @@ impl Service {
     /// reaches the iroh relay only this way. Needs this Mac's own endpoint bound first.
     pub(super) async fn keep_device_iroh_nodes_bound(&self, epoch: &[u8; 16]) {
         let Ok(relay) = self.relay() else { return };
-        let mac_bound = matches!(*relay.iroh_bound.lock().expect("iroh binding lock poisoned"), Some((bound, None)) if bound == *epoch);
+        let mac_bound = matches!(*relay.iroh_bound.lock_or_recover("the iroh binding"), Some((bound, None)) if bound == *epoch);
         if !self.iroh_config().enabled || !mac_bound {
             return;
         }
         let pending: Vec<_> = {
-            let mut bound = relay.devices_bound.lock().expect("device binding lock poisoned");
+            let mut bound = relay.devices_bound.lock_or_recover("the device bindings");
             if bound.epoch != Some(*epoch) {
                 *bound = DevicesBound { epoch: Some(*epoch), ..DevicesBound::default() };
             }
@@ -300,7 +305,7 @@ impl Service {
                 anyhow::Ok(())
             }
             .await;
-            let mut bound = relay.devices_bound.lock().expect("device binding lock poisoned");
+            let mut bound = relay.devices_bound.lock_or_recover("the device bindings");
             match result {
                 Ok(()) => {
                     log!("iroh endpoint of {id} bound at the relay");

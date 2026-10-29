@@ -1,6 +1,7 @@
 //! This Mac's settings the apps show and change: the projects folder and whether the relay is
 //! on. The daemon is the only writer of `options.toml` for them, and a change applies without a
 //! restart because every reader loads the file again.
+use crate::locks::Poisonable as _;
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,8 @@ pub(crate) const FOLDERS: &str = "/settings/folders";
 /// The `config.toml` keys `alondra config set` changes; only this Mac's own CLI reaches it.
 pub(crate) const CONFIG: &str = "/settings/config";
 
+/// A holder that panics leaves it whole, so it is recovered: it holds nothing, and every file it
+/// guards is replaced whole.
 pub(crate) static WRITER: Mutex<()> = Mutex::new(());
 
 #[derive(Deserialize)]
@@ -83,7 +86,7 @@ pub(crate) fn write(home: &Path, user_home: &Path, relay_on: bool, body: &serde_
         None => lang,
         Some(_) => return Reply { status: StatusCode::BAD_REQUEST, body: json!({"error": "invalid_input", "message": "invalid language"}) },
     };
-    let _writing = WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = WRITER.lock_or_recover("the settings writer");
     if let Err(refused) = store(home, user_home, &change.projects_root) {
         return refused.reply(lang);
     }
@@ -103,7 +106,7 @@ pub(crate) fn write_config(home: &Path, body: &serde_json::Value) -> Reply {
     let Ok(change) = serde_json::from_value::<ConfigChange>(body.clone()) else {
         return Reply { status: StatusCode::BAD_REQUEST, body: json!({"error": "invalid_input", "message": "invalid setting"}) };
     };
-    let _writing = WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = WRITER.lock_or_recover("the settings writer");
     use alondra_core::config::{SetError, restarts_daemon, set_key};
     match set_key(home, &change.key, change.value.as_deref()) {
         Ok(()) => Reply { status: StatusCode::OK, body: json!({"key": change.key, "restart": restarts_daemon(&change.key)}) },

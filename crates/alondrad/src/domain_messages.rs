@@ -2,6 +2,7 @@
 //! submitted to its Claude session by the mod. Nothing is recorded in the domain: no
 //! Interaction, no outbox row. Only marking an interaction read, when the user asks for it, is a
 //! domain command.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::delivery::State;
 use alondra_core::domain::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, InteractionId, PrId, TaskId};
@@ -272,7 +273,7 @@ fn read_after(domain: &DomainRuntime, user: &Actor, body: &MessageBody, mut answ
 
 /// What the user wrote to this session while it was in its own terminal, once.
 pub(crate) fn take_held(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
-    domain.held.lock().expect("held messages poisoned").remove(agent).unwrap_or_default()
+    domain.held.lock_or_recover("the held messages").remove(agent).unwrap_or_default()
 }
 
 fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {

@@ -3,6 +3,7 @@
 //! execution. The batch is claimed from the domain outbox before Claude runs
 //! and finished as handed, retryable or uncertain afterwards; finishing an
 //! invocation never completes a Task.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, BatchEnd, Ownership};
@@ -143,7 +144,7 @@ pub(crate) fn read_handed_notices_in_background(domain: &DomainRuntime) {
 const SWEEP_PAUSE: Duration = Duration::from_millis(2);
 
 fn read_handed(domain: &DomainRuntime, pause: impl Fn(Duration)) {
-    let out = match domain.store.lock().expect("domain store poisoned").orchestrator_notices_out() {
+    let out = match domain.store.lock_or_exit("the domain store").orchestrator_notices_out() {
         Ok(out) => out,
         Err(error) => return log!("could not list the orchestrator's handed notices: {error:#}"),
     };
@@ -170,7 +171,7 @@ fn read_handed(domain: &DomainRuntime, pause: impl Fn(Duration)) {
 
 impl Executor {
     fn pending(&self) -> Result<Vec<OutboxMessage>> {
-        let store = self.domain.store.lock().expect("domain store poisoned");
+        let store = self.domain.store.lock_or_exit("the domain store");
         Ok(store.pending_messages()?.into_iter()
             .filter(|message| message.recipient_kind == "orchestrator").collect())
     }
@@ -198,7 +199,7 @@ impl Executor {
                 return load(&self.home);
             }
             let (effects,operations,selection) = {
-                let store = self.domain.store.lock().expect("domain store poisoned");
+                let store = self.domain.store.lock_or_exit("the domain store");
                 (store.batch_effects(&run.id)?,store.tool_operations(&run.id)?,store.batch_selection(&run.id)?)
             };
             if (!effects.is_empty() || !operations.is_empty()) && let Some(selection) = selection {
@@ -220,7 +221,7 @@ impl Executor {
     }
 
     fn give_up(&self, run: &Run, reason: &str) -> Result<()> {
-        let mut store = self.domain.store.lock().expect("domain store poisoned");
+        let mut store = self.domain.store.lock_or_exit("the domain store");
         for (attempt, version) in &run.attempts {
             store.finish_message(*attempt, *version, State::Uncertain, Some(reason))?;
             store.resolve_uncertain(*attempt, *version + 1, false)?;
@@ -229,7 +230,7 @@ impl Executor {
     }
 
     fn finish(&self, run: &Run, state: State, reason: Option<&str>) -> Result<()> {
-        let mut store = self.domain.store.lock().expect("domain store poisoned");
+        let mut store = self.domain.store.lock_or_exit("the domain store");
         for (attempt, version) in &run.attempts {
             store.finish_message(*attempt, *version, state, reason)?;
         }
@@ -242,7 +243,7 @@ impl Executor {
         let Some(run) = runtime.active_run.take().filter(|run| run.id == run_id) else {
             bail!("no ambiguous execution {run_id}");
         };
-        let mut store = self.domain.store.lock().expect("domain store poisoned");
+        let mut store = self.domain.store.lock_or_exit("the domain store");
         for (attempt, version) in &run.attempts {
             store.resolve_uncertain(*attempt, *version + 1, false)?;
         }
@@ -261,7 +262,7 @@ impl Executor {
         let Some(run) = runtime.active_run.take().filter(|run| run.id == run_id) else {
             bail!("no ambiguous execution {run_id}");
         };
-        let mut store = self.domain.store.lock().expect("domain store poisoned");
+        let mut store = self.domain.store.lock_or_exit("the domain store");
         for (attempt, version) in &run.attempts {
             store.resolve_uncertain(*attempt, *version + 1, true)?;
         }
@@ -303,7 +304,7 @@ impl Executor {
             let header = format!("\nCONFIRMED BATCH HANDOFF {}: {}. Continue pending GOALS from current committed state; never replay previous tool calls. Use batch_outcomes for its durable references.\n",handoff.run_id,handoff.reason);
             if transfer.len()+header.len()>8192 {transfer.push_str("More batch references were omitted from this bounded prompt.\n");break;}
             transfer.push_str(&header);
-            let store = self.domain.store.lock().expect("domain store poisoned");
+            let store = self.domain.store.lock_or_exit("the domain store");
             for effect in store.batch_effects(&handoff.run_id)?.into_iter().take(8) {
                 let line = format!("Confirmed domain command {} ({}) at revision {}; receipt {}.\n",effect.command_id,effect.kind,effect.revision,effect.receipt_ref.command_id);
                 if transfer.len()+line.len()>8192 {break;}
@@ -364,7 +365,7 @@ impl Executor {
         if self.domain.live.account_wait.end() { log!("orchestrator resumes with {}", selection.account.wire_id()); }
         if self.domain.live.usage_pause.is_active() { return Ok(()); }
         {
-            let mut store = self.domain.store.lock().expect("domain store poisoned");
+            let mut store = self.domain.store.lock_or_exit("the domain store");
             store.discard_expired_orchestrator_messages(
                 now.saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
             )?;
@@ -395,7 +396,7 @@ impl Executor {
         let asked = crate::orchestrator_inbox::asked(&state);
         drop(state);
         let ids: Vec<i64> = pending.iter().map(|message| message.id).collect();
-        let (claims, owner) = self.domain.store.lock().expect("domain store poisoned")
+        let (claims, owner) = self.domain.store.lock_or_exit("the domain store")
             .claim_selected_orchestrator_batch(&ids, &run_id, &session, epoch, Some(&selection))?;
         let attempts: Vec<(i64, u64)> = claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect();
         let claimed: Vec<OutboxMessage> = claims.into_iter().map(|claim| claim.message).collect();
@@ -546,8 +547,8 @@ impl Executor {
             let _ = self.domain.withdraw_problem(&InteractionId(problem));
         }
         save(&self.home, &runtime)?;
-        for handoff in prior_handoffs { self.domain.store.lock().expect("domain store poisoned").finish_batch(&handoff.run_id)?; }
-        self.domain.store.lock().expect("domain store poisoned").finish_batch(&run.id)?;
+        for handoff in prior_handoffs { self.domain.store.lock_or_exit("the domain store").finish_batch(&handoff.run_id)?; }
+        self.domain.store.lock_or_exit("the domain store").finish_batch(&run.id)?;
         if !self.pending()?.is_empty() {
             return Ok(());
         }

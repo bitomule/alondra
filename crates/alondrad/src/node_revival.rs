@@ -7,6 +7,7 @@
 //! the state `stopped` into its job file (`crashed` for a signal), or removes the job folder, and
 //! restarting it would undo what the user chose. Such a node closes and its task goes back
 //! to not started, waiting for a relaunch.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainState, NodeEvent, NodePhase, TaskId, TaskState, PROTOCOL_VERSION};
 use std::sync::Arc;
@@ -33,6 +34,7 @@ impl Timing {
 /// The sessions that lost their connection, waiting for `run`.
 pub(crate) struct Losses {
     sender: mpsc::UnboundedSender<String>,
+    /// A holder that panics leaves it whole, so it is recovered: one take.
     receiver: std::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
 }
 
@@ -49,7 +51,7 @@ impl Losses {
     }
 
     pub(crate) fn take(&self) -> Option<mpsc::UnboundedReceiver<String>> {
-        self.receiver.lock().expect("losses poisoned").take()
+        self.receiver.lock_or_recover("the lost sessions").take()
     }
 }
 

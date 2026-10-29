@@ -1,4 +1,5 @@
 //! A requested selection stays durable while its current execution drains, is fenced and hands off.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Attached,StoreError};
 use crate::domain_store::provider_transition::{Plan,Phase,Transition};
@@ -16,13 +17,14 @@ use std::sync::{Arc,Mutex};
 #[derive(Default)]
 pub(crate) struct Transitions {
     advancing:tokio::sync::Mutex<()>,
+    /// A holder that panics leaves it whole, so it is recovered: one insert or remove each.
     fences:Mutex<BTreeMap<String,EndedHost>>,
 }
 fn failure(error:impl std::fmt::Display)->DomainError{DomainError::new("selection_transition",error.to_string())}
 fn store_failure(error:StoreError)->DomainError{match error{StoreError::Domain(error)=>error,StoreError::Storage(error)=>failure(error)}}
 fn scope(domain:&DomainRuntime)->Result<AuthorityScope,DomainError>{AuthorityScope::new(domain.read().state().data_epoch.clone()).map_err(failure)}
 fn envelope(domain:&DomainRuntime,id:&str,command:Command)->CommandEnvelope{CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:domain.read().state().data_epoch.clone(),command_id:id.into(),expected_revision:0,command}}
-fn current(domain:&DomainRuntime,task:&TaskId)->Result<Option<Transition>,DomainError>{domain.store.lock().expect("domain store poisoned").provider_transition(task).map_err(failure)}
+fn current(domain:&DomainRuntime,task:&TaskId)->Result<Option<Transition>,DomainError>{domain.store.lock_or_exit("the domain store").provider_transition(task).map_err(failure)}
 
 pub(crate) fn denied_tools(domain:&DomainRuntime,task:&TaskId)->Result<Vec<String>,DomainError>{
     let state=domain.state().map_err(failure)?;
@@ -144,10 +146,10 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
     }).map_err(store_failure).map(|(value,_)|value)
 }
 fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
-    if domain.selection_changes.fences.lock().expect("transition fences poisoned").contains_key(&plan.id){return Ok(())}
+    if domain.selection_changes.fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
     let retained=EndedHost::claim(&plan.source.host_directory).map_err(failure)?;
     let proof=match retained{Retained::Ended(proof)=>proof,Retained::Held=>return Err(failure("The source host still holds its native execution")),Retained::Absent=>return Err(failure("The source host fence is missing; its absence is not continuation proof"))};
-    domain.selection_changes.fences.lock().expect("transition fences poisoned").insert(plan.id.clone(),proof);
+    domain.selection_changes.fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
     Ok(())
 }
 
@@ -209,7 +211,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                 domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
                 crate::sdk_owner::end_unowned_host(Arc::clone(domain),backend,task.clone()).map_err(failure)?;
                 ensure_fence(domain,plan)?;
-                let fences=domain.selection_changes.fences.lock().expect("transition fences poisoned");
+                let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
                 domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure)?;
             }
             Phase::SourceFenced=>{ensure_fence(domain,plan)?;prepare_context(domain,plan)?;}
@@ -229,7 +231,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                 return Ok(change.phase)
             }
             Phase::Consumed=>{phase(domain,&change,Phase::Done,change.facts.clone())?;}
-            Phase::Done|Phase::Aborted=>{domain.selection_changes.fences.lock().expect("transition fences poisoned").remove(&plan.id);return Ok(change.phase)}
+            Phase::Done|Phase::Aborted=>{domain.selection_changes.fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
             Phase::Uncertain=>return Ok(Phase::Uncertain),
         }
     }
@@ -239,17 +241,17 @@ pub(crate) async fn run(domain:Arc<DomainRuntime>){
     let mut changed=domain.subscribe();
     loop{
         release_finished_fences(&domain);
-        let pending=domain.store.lock().expect("domain store poisoned").provider_transitions();
+        let pending=domain.store.lock_or_exit("the domain store").provider_transitions();
         if let Ok(pending)=pending{for change in pending{if let Err(error)=advance(&domain,&change.plan.task).await{log!("selection change of {} needs attention: {}",change.plan.task,error.message);let _=mark_uncertain(&domain,&change.plan.task,&error.message);}}}
         tokio::select!{result=changed.changed()=>if result.is_err(){return},_=tokio::time::sleep(std::time::Duration::from_secs(10))=>{}}
     }
 }
 
 pub(crate) fn release_finished_fences(domain:&DomainRuntime){
-    let ids:Vec<String>=domain.selection_changes.fences.lock().expect("transition fences poisoned").keys().cloned().collect();
+    let ids:Vec<String>=domain.selection_changes.fences.lock_or_recover("the provider transition fences").keys().cloned().collect();
     for id in ids{
-        let ended=domain.store.lock().expect("domain store poisoned").provider_transition_finished(&id).unwrap_or(false);
-        if ended{domain.selection_changes.fences.lock().expect("transition fences poisoned").remove(&id);}
+        let ended=domain.store.lock_or_exit("the domain store").provider_transition_finished(&id).unwrap_or(false);
+        if ended{domain.selection_changes.fences.lock_or_recover("the provider transition fences").remove(&id);}
     }
 }
 fn mark_uncertain(domain:&DomainRuntime,task:&TaskId,reason:&str)->Result<(),DomainError>{

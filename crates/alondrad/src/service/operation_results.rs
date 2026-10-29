@@ -208,8 +208,7 @@ impl Service {
                     Some(ack) => {
                         let live = |id: &str| {
                             inflight
-                                .lock()
-                                .expect("inflight lock poisoned")
+                                .lock_or_recover("the work in flight")
                                 .contains_key(&(approved_sender.clone(), id.to_owned()))
                         };
                         match crate::operation_journal::acknowledge(

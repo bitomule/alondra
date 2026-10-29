@@ -2,6 +2,7 @@
 //! KeepAlive does nothing while the old process lives. Under launchd the daemon watches the path
 //! it was started from; once a different binary there passes `--preflight`, it drains and exits
 //! with `RELAUNCH` so launchd starts the new one. A binary that fails preflight is not run.
+use crate::locks::Poisonable as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -62,11 +63,12 @@ pub struct Rejection {
     pub at: i64,
 }
 
+/// A holder that panics leaves it whole, so it is recovered: one assignment.
 static REJECTED: Mutex<Option<Rejection>> = Mutex::new(None);
 
 /// The newest binary that failed preflight, while this daemon keeps running.
 pub fn rejected() -> Option<Rejection> {
-    REJECTED.lock().expect("rejection lock poisoned").clone()
+    REJECTED.lock_or_recover("the card rejections").clone()
 }
 
 #[derive(Debug, PartialEq)]
@@ -189,7 +191,7 @@ pub async fn watch(mut watcher: Watcher, every: Duration) {
                 log!("{} was replaced by {}, which failed preflight; staying on {}: {}",
                     rejection.path, rejection.version.as_deref().unwrap_or("an unknown version"),
                     env!("CARGO_PKG_VERSION"), rejection.reason);
-                *REJECTED.lock().expect("rejection lock poisoned") = Some(rejection);
+                *REJECTED.lock_or_recover("the card rejections") = Some(rejection);
             }
         }
     }

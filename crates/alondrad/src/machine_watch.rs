@@ -15,6 +15,7 @@
 //!
 //! With the disk full the domain may not be able to write the card, so the user then hears it by
 //! a push, which writes nothing to disk.
+use crate::locks::Poisonable as _;
 use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause};
 use alondra_core::views::Lang;
 use alondra_core::{Machine, MemoryPressure, Millis, now_millis};
@@ -202,6 +203,7 @@ pub(crate) struct MachineWatch {
     pub(crate) sampled: tokio::sync::Notify,
     #[cfg(test)]
     pub(crate) sample_threads: Mutex<Vec<std::thread::ThreadId>>,
+    /// A holder that panics leaves it whole, so it is recovered: see `MachineWatch::record`.
     record: Mutex<Record>,
     file: Option<PathBuf>,
     save_failures: crate::save::Failures,
@@ -232,12 +234,12 @@ impl MachineWatch {
     /// A holder that panicked leaves a valid record: every step replaces one whole field or one
     /// whole entry, and the next sample rewrites what it reads.
     fn record(&self) -> std::sync::MutexGuard<'_, Record> {
-        crate::log::recover(&self.record, "the machine watch")
+        self.record.lock_or_recover("the machine watch")
     }
 
     #[cfg(test)]
     pub(crate) fn poison(&self) {
-        crate::log::poison(&self.record);
+        crate::locks::poison(&self.record);
     }
 
     fn save(&self, record: &Record) {
@@ -310,7 +312,7 @@ impl MachineWatch {
         if freed == 0 {
             return;
         }
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         record.builds.push(freed);
         let over = record.builds.len().saturating_sub(crate::disk::BUILDS_KEPT);
         record.builds.drain(..over);
@@ -319,7 +321,7 @@ impl MachineWatch {
 
     /// Takes the fullest disk's space; returns whether one more build fits again after it did not.
     pub(crate) fn measure_disk(&self, space: crate::disk::Space) -> bool {
-        let mut record = self.record.lock().expect("machine watch poisoned");
+        let mut record = self.record();
         let needed = crate::disk::needed_for_build(&record.builds);
         let was_short = record.short.is_some();
         record.short = space.room_for(needed, was_short).err();
@@ -329,7 +331,7 @@ impl MachineWatch {
 
     /// The disk short of room for one more build, also while its card is open: no node starts.
     pub(crate) fn disk_room(&self) -> Option<crate::disk::Room> {
-        let record = self.record.lock().expect("machine watch poisoned");
+        let record = self.record();
         let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
         record.short.or_else(|| carded.then(|| crate::disk::Room {
             free: record.disk.or_else(|| crate::disk::space(own_disk())).map_or(0, |space| space.shown_free()),
@@ -537,7 +539,7 @@ fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
 pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::machine::Gauges, alerts: impl Alerts) {
-    watch(domain, move || crate::log::recover(&gauges, "the machine gauges").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
+    watch(domain, move || gauges.lock_or_recover("the machine gauges").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
 }
 
 async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
@@ -1029,6 +1031,17 @@ mod tests {
         assert_eq!(saved.declared.len(), 4);
         assert_eq!(logged(&format!("saved {} again", home.join(FILE).display())), 1, "{:?}", disk.lines());
         assert_eq!(logged("could not save"), 1);
+    }
+
+    #[test]
+    fn builds_and_disk_room_are_kept_after_a_panic_holding_the_machine_watch() {
+        let (_home, domain) = world();
+        domain.live.machine_watch.poison();
+        domain.live.machine_watch.record_build(5 * GB);
+        domain.live.machine_watch.poison();
+        domain.live.machine_watch.measure_disk(crate::disk::Space { free: 0, purgeable: 0, total: 500 * GB });
+        domain.live.machine_watch.poison();
+        assert!(domain.live.machine_watch.disk_room().is_some(), "an empty disk has no room for the 5 GB build it kept");
     }
 
     #[tokio::test]

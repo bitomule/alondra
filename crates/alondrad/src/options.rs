@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use std::path::{Path, PathBuf};
 
 use alondra_core::options::{self, OptionsFile};
@@ -11,7 +12,7 @@ pub struct Loaded {
 /// good one in use and says why; no file means only the built-ins.
 pub fn load_in(home: &Path, last: &std::sync::Mutex<Option<OptionsFile>>) -> Loaded {
     let path = options::path_in(home);
-    let mut last = last.lock().expect("options lock poisoned");
+    let mut last = last.lock_or_recover("the options file");
     let parsed = match crate::domain_store::provider_settings::read_options(home) {
         Ok(Some(text)) => OptionsFile::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
         Ok(None) => Ok(OptionsFile::fresh()),

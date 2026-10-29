@@ -5,6 +5,7 @@
 //! Hooks observe sessions the domain already knows. They never create an
 //! Agent, a Task or a decision. The one transition they make is the one a
 //! session's own activity proves: its assigned Task has started.
+use crate::locks::Poisonable as _;
 use crate::domain_agent_lifecycle as lifecycle;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
@@ -381,7 +382,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
 /// The lines for this session's pending outbox messages that this connection has not carried yet.
 /// A session that moves to the SDK with them is carried none: they go with its move.
 fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>) -> Result<Vec<String>> {
-    let pending: Vec<OutboxMessage> = domain.store.lock().expect("domain store poisoned").pending_messages()?.into_iter()
+    let pending: Vec<OutboxMessage> = domain.store.lock_or_exit("the domain store").pending_messages()?.into_iter()
         .filter(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(session)
             && !sent.contains(&message.id))
         .collect();
@@ -390,7 +391,7 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
     }
     let state = domain.state()?;
     let origins: Vec<_> = {
-        let store = domain.store.lock().expect("domain store poisoned");
+        let store = domain.store.lock_or_exit("the domain store");
         pending.iter().map(|message| store.message_origin(message.id)).collect::<Result<_, _>>()?
     };
     Ok(pending.into_iter().zip(origins).map(|(message, origin)| {
@@ -404,7 +405,7 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
 /// What an outbox message says to its node, stamped with who sent it and when, as its node mod
 /// carries it.
 pub(crate) fn node_text(domain: &DomainRuntime, state: &DomainState, message: &OutboxMessage) -> Result<String> {
-    let origin = domain.store.lock().expect("domain store poisoned").message_origin(message.id)?;
+    let origin = domain.store.lock_or_exit("the domain store").message_origin(message.id)?;
     let (at, actor) = origin.unwrap_or_else(|| (alondra_core::now_millis(), String::new()));
     Ok(crate::node_push::stamped(&crate::node_push::author_of(&actor), at, &render(state, message)))
 }
@@ -431,7 +432,7 @@ async fn node_ack(mut stream: UnixStream, domain: &Arc<DomainRuntime>, ack: Valu
 }
 
 fn hand_over(domain: &DomainRuntime, session: &str, ids: &[String]) -> Result<()> {
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     let pending = store.pending_messages()?;
     for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {
         if !pending.iter().any(|message| message.id == id && message.agent_id.as_deref() == Some(session)) {
@@ -686,7 +687,7 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime,
     for (agent_id, agent) in &state.agents {
         let session = agent_id.0.as_str();
         let Some(fact) = domain.live.mods.session(session).map(|reported| (reported.last_event_at, reported.work_gone())) else { continue };
-        let counted = |task: &TaskId| domain.store.lock().expect("domain store poisoned").stop_blocks(task).ok().flatten();
+        let counted = |task: &TaskId| domain.store.lock_or_exit("the domain store").stop_blocks(task).ok().flatten();
         if matches!(agent.phase, alondra_core::domain::NodePhase::Starting { .. } | alondra_core::domain::NodePhase::ThroughSdk) || reminded.get(session) == Some(&fact)
             || stopped_without_delivering(domain, &state, agent_id, counted).is_none()
         {
@@ -753,7 +754,7 @@ fn undelivered_task<'a>(state: &'a DomainState, agent_id: &AgentId) -> Option<(&
 fn hold_back(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<String>> {
     let state = domain.state()?;
     let Some((task, marker)) = undelivered_task(&state, agent_id) else { return Ok(None) };
-    let stored = domain.store.lock().expect("domain store poisoned").stop_blocks(&task.id)?;
+    let stored = domain.store.lock_or_exit("the domain store").stop_blocks(&task.id)?;
     let blocks = match stored {
         Some((blocks, previous)) if previous == marker => blocks,
         Some((blocks, previous)) => {
@@ -767,7 +768,7 @@ fn hold_back(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<String
     if blocks >= STOP_BLOCKS {
         return Ok(None);
     }
-    domain.store.lock().expect("domain store poisoned").set_stop_blocks(&task.id, blocks + 1, marker)?;
+    domain.store.lock_or_exit("the domain store").set_stop_blocks(&task.id, blocks + 1, marker)?;
     Ok(Some(block_text(&crate::domain_messages::user_name(), &task.title)))
 }
 

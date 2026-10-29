@@ -4,6 +4,7 @@
 //! it only opens when the Mac has a way in: a port the router maps (UPnP, NAT-PMP, PCP) or that
 //! is forwarded by hand, a public IPv6 address, or no NAT at all. The daemon reports codes; the
 //! apps and the CLI word them.
+use crate::locks::Poisonable as _;
 use iroh::endpoint::{Connection, PortmapperConfig};
 use iroh::unstable_net_report::NetReport;
 use iroh::{Endpoint, TransportAddr, Watcher};
@@ -308,10 +309,12 @@ struct Live {
     ledger: Ledger,
 }
 
+/// A holder that panics leaves it whole, so it is recovered: a diagnostic snapshot whose inputs the
+/// next loop writes again.
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
 
 fn change(update: impl FnOnce(&mut Live)) {
-    let mut guard = LIVE.lock().expect("reachability poisoned");
+    let mut guard = LIVE.lock_or_recover("the reachability");
     let live = guard.get_or_insert_with(|| Live { inputs: Inputs::default(), ledger: Ledger::default() });
     update(live);
     live.inputs.sessions = live.ledger.sessions();
@@ -334,7 +337,7 @@ pub(crate) fn recorded(kind: PathKind) -> usize {
 
 /// The latest diagnosis, or `None` while the endpoint is not up.
 pub(crate) fn current() -> Option<Reachability> {
-    let inputs = LIVE.lock().expect("reachability poisoned").as_ref()?.inputs.clone();
+    let inputs = LIVE.lock_or_recover("the reachability").as_ref()?.inputs.clone();
     let (relay, relay_connected) = crate::iroh_endpoint::relay_state();
     Some(diagnose(&Inputs {
         relay_configured: relay.is_some(),

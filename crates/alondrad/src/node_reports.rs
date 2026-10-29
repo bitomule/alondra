@@ -5,6 +5,7 @@
 //! session replaces the older one, and only the current one closing makes the node unreachable.
 //! A session binds to its launch by the key of the settings file the launch gave it
 //! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
+use crate::locks::Poisonable as _;
 use crate::node_work::End;
 use alondra_core::views::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
@@ -346,7 +347,11 @@ impl LiveChanges {
 
 #[derive(Default)]
 pub(crate) struct Reports {
+    /// A holder that panics can leave it half-changed, so the daemon exits: `sdk_live::observe`
+    /// takes a session's SDK readings out and puts them back only at the end, and `connect` sets
+    /// many fields in a row.
     sessions: Mutex<HashMap<String, Reported>>,
+    /// A holder that panics leaves it whole, so it is recovered: one insert or lookup.
     launches: Mutex<HashMap<String, String>>,
     connections: std::sync::atomic::AtomicU64,
     started: tokio::sync::Notify,
@@ -361,12 +366,12 @@ impl Reports {
 
     fn apply_on(&self, Envelope { session_id, report }: Envelope, now: Millis) {
         let id = session_id.clone();
-        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let mut sessions = self.sessions.lock_or_exit("the node reports");
         let session = sessions.entry(session_id).or_default();
         session.last_event_at = Some(now);
         if let Report::SessionStart { version, cwd, launch_key } = report {
             if let Some(key) = launch_key {
-                self.launches.lock().expect("launch keys poisoned").insert(key, id);
+                self.launches.lock_or_recover("the launch keys").insert(key, id);
             }
             session.version = Some(version);
             session.cwd = cwd;
@@ -382,7 +387,7 @@ impl Reports {
     /// What a node's Agent SDK host observed, as the SDK gave it, and the steps of the turn it
     /// ends. It never makes the node connected: only a mod's connection does.
     pub(crate) fn apply_sdk(&self, session_id: &str, message: &Value, now: Millis) -> Option<alondra_core::metrics::steps::StepCounts> {
-        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let mut sessions = self.sessions.lock_or_exit("the node reports");
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
         let steps = crate::sdk_live::observe(session, message, now);
@@ -392,7 +397,7 @@ impl Reports {
     }
 
     pub(crate) fn apply_codex(&self, session_id: &str, message: &Value, now: Millis) {
-        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let mut sessions = self.sessions.lock_or_exit("the node reports");
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
         crate::codex_live::observe(session, message, now);
@@ -401,14 +406,14 @@ impl Reports {
     }
 
     pub(crate) fn restore_codex_scope(&self,session_id:&str,scope:alondra_provider_codex::LiveScope,now:Millis){
-        let mut sessions=self.sessions.lock().expect("node reports poisoned");
+        let mut sessions=self.sessions.lock_or_exit("the node reports");
         crate::codex_live::restore_scope(sessions.entry(session_id.to_owned()).or_default(),scope,now);
         drop(sessions);self.changed.publish();
     }
 
     /// The node's Agent SDK host is gone, and with it everything it ran.
     pub(crate) fn sdk_ended(&self, session_id: &str, now: Millis) {
-        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+        if let Some(session) = self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             crate::sdk_live::ended(session, now);
             crate::codex_live::ended(session, now);
         }
@@ -417,9 +422,9 @@ impl Reports {
 
     pub(crate) fn connect(&self, hello: Hello, now: Millis) -> u64 {
         let number = self.connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let mut sessions = self.sessions.lock_or_exit("the node reports");
         if let Some(key) = hello.launch_key {
-            self.launches.lock().expect("launch keys poisoned").insert(key, hello.session_id.clone());
+            self.launches.lock_or_recover("the launch keys").insert(key, hello.session_id.clone());
         }
         let session = sessions.entry(hello.session_id).or_default();
         session.connection = Some(number);
@@ -439,7 +444,7 @@ impl Reports {
     /// Only the connection the session holds now can lose it: one it replaced closing later
     /// changes nothing. True when this was the current connection.
     pub(crate) fn disconnect(&self, session_id: &str, number: u64) -> bool {
-        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        let mut sessions = self.sessions.lock_or_exit("the node reports");
         match sessions.get_mut(session_id) {
             Some(session) if session.connection == Some(number) => {
                 session.connection = None;
@@ -452,12 +457,12 @@ impl Reports {
     }
 
     pub(crate) fn set_peer(&self, session_id: &str, pid: u32) {
-        self.sessions.lock().expect("node reports poisoned").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
+        self.sessions.lock_or_exit("the node reports").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
     }
 
     /// One look at whether the session's own process still runs.
     pub(crate) fn set_session_alive(&self, session_id: &str, alive: Option<bool>) {
-        let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+        let changed = match self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             Some(session) => std::mem::replace(&mut session.session_alive, alive) != alive,
             None => false,
         };
@@ -465,7 +470,7 @@ impl Reports {
     }
 
     pub(crate) fn set_job(&self, session_id: &str, job: Option<crate::job_state::Job>, dir: Option<PathBuf>) {
-        let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+        let changed = match self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             Some(session) => {
                 let changed = session.job != job;
                 session.job = job;
@@ -478,7 +483,7 @@ impl Reports {
     }
 
     pub(crate) fn set_shell_alive(&self, session_id: &str, alive: Option<bool>, now: Millis) {
-        let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+        let changed = match self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             Some(session) => {
                 let halted = session.halt();
                 let after_call = session.tool.as_ref().is_some_and(|tool| now > tool.since);
@@ -494,7 +499,7 @@ impl Reports {
     }
 
     pub(crate) fn connected(&self, session_id: &str) -> bool {
-        self.sessions.lock().expect("node reports poisoned").get(session_id).is_some_and(|session| session.connection.is_some())
+        self.sessions.lock_or_exit("the node reports").get(session_id).is_some_and(|session| session.connection.is_some())
     }
 
     /// What a session whose mod loaded reports first, for tests that launch through a fake Claude.
@@ -520,16 +525,16 @@ impl Reports {
 
     /// The session started with a launch key, which only Alondra's own launches carry.
     pub(crate) fn started_with_a_launch_key(&self, session_id: &str) -> bool {
-        self.launches.lock().expect("launch keys poisoned").values().any(|session| session == session_id)
+        self.launches.lock_or_recover("the launch keys").values().any(|session| session == session_id)
     }
 
     pub(crate) fn session(&self, session_id: &str) -> Option<Reported> {
-        self.sessions.lock().expect("node reports poisoned").get(session_id).cloned()
+        self.sessions.lock_or_exit("the node reports").get(session_id).cloned()
     }
 
     /// Whether the session's mod said it loaded: only Alondra's launches carry the node mod.
     pub(crate) fn is_node(&self, session_id: &str) -> bool {
-        self.sessions.lock().expect("node reports poisoned").get(session_id).is_some_and(|session| session.started_at.is_some())
+        self.sessions.lock_or_exit("the node reports").get(session_id).is_some_and(|session| session.started_at.is_some())
     }
 
     /// Whether the session holds a connection within `deadline`.
@@ -561,6 +566,22 @@ pub(crate) fn local_day(millis: Millis) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[ignore = "run by a_read_after_a_panic_holding_the_node_reports_exits_the_daemon"]
+    fn sessions_child() {
+        if crate::locks::child_home().is_none() { return; }
+        let reports = Reports::default();
+        crate::locks::poison(&reports.sessions);
+        let _ = reports.connected("s");
+        unreachable!("the node reports were read while poisoned");
+    }
+
+    #[test]
+    fn a_read_after_a_panic_holding_the_node_reports_exits_the_daemon() {
+        let home = crate::test_support::Directory::new();
+        crate::locks::assert_exited_for(&crate::locks::in_child("node_reports::tests::sessions_child", &home), "the node reports");
+    }
 
     fn report(value: Value) -> Envelope {
         serde_json::from_value(value).unwrap()

@@ -2,6 +2,7 @@
 //! without typing an address. The TXT record is only a hint: identity comes from the keys
 //! `/direct/hello` returns. A sandbox daemon uses another service type, so real clients never
 //! list test Macs.
+use crate::locks::Poisonable as _;
 use alondra_core::bonjour::{Advertisement, POLICY_DENIED, advertise as register, txt_record};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -12,14 +13,15 @@ const CHECK: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(60);
 
 /// What `/daemon` reports about the advertisement.
+/// A holder that panics leaves it whole, so it is recovered: one assignment.
 static STATUS: Mutex<&str> = Mutex::new("off");
 
 pub(crate) fn status() -> &'static str {
-    *STATUS.lock().expect("bonjour status poisoned")
+    *STATUS.lock_or_recover("the Bonjour status")
 }
 
 fn set_status(value: &'static str) {
-    *STATUS.lock().expect("bonjour status poisoned") = value;
+    *STATUS.lock_or_recover("the Bonjour status") = value;
 }
 
 pub(crate) fn service_type(sandbox: bool) -> &'static str {

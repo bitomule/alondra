@@ -4,6 +4,7 @@
 //! delivered. One automatic launch per task, ever: the claim is a durable row written before
 //! `claude` runs, so a restart or a second pass never starts it twice. A start that fails is tried
 //! again by itself and then put in front of the user (`start_failures`).
+use crate::locks::Poisonable as _;
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
@@ -53,9 +54,9 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
 /// orchestrator is told to create it again with one if it is still needed.
 pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
     let state = domain.state()?;
-    let rows = domain.store.lock().expect("domain store poisoned").auto_launches()?;
+    let rows = domain.store.lock_or_exit("the domain store").auto_launches()?;
     for row in rows.into_iter().filter(|row| row.state == AutoLaunchState::Launching) {
-        let mut store = domain.store.lock().expect("domain store poisoned");
+        let mut store = domain.store.lock_or_exit("the domain store");
         if state.tasks.get(&row.task_id).is_some_and(|task| task.agent_id.is_some()) {
             store.set_auto_launch(&row.task_id, AutoLaunchState::Launched, None, None, alondra_core::now_millis())?;
         } else {
@@ -63,14 +64,14 @@ pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
             store.forget_auto_launch(&row.task_id)?;
         }
     }
-    domain.store.lock().expect("domain store poisoned").forget_planless_blocks()?;
+    domain.store.lock_or_exit("the domain store").forget_planless_blocks()?;
     cancel_planless(domain, &*domain.state()?)
 }
 
 const PLANLESS: &str = "It had no launch plan, so nothing would ever start it";
 
 fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
-    let planned = domain.store.lock().expect("domain store poisoned").planned_tasks()?;
+    let planned = domain.store.lock_or_exit("the domain store").planned_tasks()?;
     let planless: Vec<&Task> = state.tasks.values()
         .filter(|task| matches!(task.state, TaskState::NotStarted | TaskState::WaitingDependency) && !task.started && task.agent_id.is_none() && !task.archived)
         .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
@@ -81,7 +82,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
             log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
             continue;
         }
-        domain.store.lock().expect("domain store poisoned").set_cancel_reason(&task.id, PLANLESS)?;
+        domain.store.lock_or_exit("the domain store").set_cancel_reason(&task.id, PLANLESS)?;
         tell(domain, &format!("planless-cancelled-{}", task.id), format!(
             "Alondra cancelled “{}” ({}): it had no launch plan, so nothing would ever start it. If it is still needed, create it again with create_task and its launch plan.",
             task.title, task.id));
@@ -104,17 +105,17 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     let state = domain.state()?;
     let now = alondra_core::now_millis();
     let (planned, retries) = {
-        let store = domain.store.lock().expect("domain store poisoned");
+        let store = domain.store.lock_or_exit("the domain store");
         (store.planned_tasks()?, store.start_retries()?)
     };
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        if domain.live.closed_task(&task.id.0).is_some() || crate::admission::held_by_user(domain, &task.id) || domain.store.lock().expect("domain store poisoned").task_was_launched(&task.id)? {
+        if domain.live.closed_task(&task.id.0).is_some() || crate::admission::held_by_user(domain, &task.id) || domain.store.lock_or_exit("the domain store").task_was_launched(&task.id)? {
             continue;
         }
         let (row, plan) = {
-            let store = domain.store.lock().expect("domain store poisoned");
+            let store = domain.store.lock_or_exit("the domain store");
             (store.auto_launch(&task.id)?, store.launch_plan(&task.id)?)
         };
         if retries.get(&task.id).is_some_and(|(_, at)| *at > now) {
@@ -131,7 +132,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             Some((AutoLaunchState::Blocked, _)) => continue,
         };
         let block = |reason: AutoLaunchReason, detail: Option<&str>| -> Result<()> {
-            domain.store.lock().expect("domain store poisoned").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
+            domain.store.lock_or_exit("the domain store").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
         };
         let Some(plan) = plan else { continue };
         if usage_out {
@@ -143,11 +144,11 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if domain.live.gate.ask(domain, waiting, now).is_err() {
             continue;
         }
-        if !domain.store.lock().expect("domain store poisoned").claim_auto_launch(&task.id, now, retry)? {
+        if !domain.store.lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
             continue;
         }
         if !domain.live.begin_launch(&task.id.0) {
-            domain.store.lock().expect("domain store poisoned").forget_auto_launch(&task.id)?;
+            domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
             continue;
         }
         let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
@@ -162,17 +163,17 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
 /// a task that ended while it started just leaves, and any other refusal is a failed start.
 fn settle(domain: &DomainRuntime, task: &TaskId, cwd: &str, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
     let block = |reason: AutoLaunchReason| -> Result<()> {
-        domain.store.lock().expect("domain store poisoned").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
+        domain.store.lock_or_exit("the domain store").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
     };
     match launched {
-        Ok(_) => domain.store.lock().expect("domain store poisoned").set_start_retry(task, None)?,
+        Ok(_) => domain.store.lock_or_exit("the domain store").set_start_retry(task, None)?,
         Err(_) if crate::start_failures::ended(domain, task)? => {}
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
-            "disk_low" | "plan_review_pending" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(task)?,
+            "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
             "conflict" => {
                 let taken = domain.state()?.tasks.get(task).is_some_and(|task| task.agent_id.is_some());
-                let mut store = domain.store.lock().expect("domain store poisoned");
+                let mut store = domain.store.lock_or_exit("the domain store");
                 if taken {
                     store.set_auto_launch(task, AutoLaunchState::Launched, None, None, now)?;
                 } else {

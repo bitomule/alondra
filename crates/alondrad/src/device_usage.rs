@@ -2,6 +2,7 @@
 //! knows the device's push registration, and which devices Alondra unpaired on its own. Kept
 //! apart from `devices.json`, which stays the approval list and changes only on pairing and
 //! revocation. Loaded on first use, so a short-lived `Auth` never reads it.
+use crate::locks::Poisonable as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -59,6 +60,8 @@ pub(crate) struct Usage {
 
 pub(crate) struct DeviceUsage {
     path: PathBuf,
+    /// A holder that panics leaves it whole, so it is recovered: memory is the source and the file
+    /// a copy written later; no step between its changes can panic.
     state: Mutex<Option<(Usage, bool)>>,
 }
 
@@ -68,7 +71,7 @@ impl DeviceUsage {
     }
 
     fn with<T>(&self, now: i64, change: impl FnOnce(&mut Usage, &mut bool) -> T) -> T {
-        let mut state = self.state.lock().expect("device usage lock poisoned");
+        let mut state = self.state.lock_or_recover("the device usage");
         let (usage, dirty) = state.get_or_insert_with(|| match std::fs::read(&self.path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(usage) => (usage, false),
@@ -125,7 +128,7 @@ impl DeviceUsage {
 
     /// Writes the record when something changed since the last write.
     pub(crate) fn flush(&self, now: i64) -> Result<()> {
-        let mut state = self.state.lock().expect("device usage lock poisoned");
+        let mut state = self.state.lock_or_recover("the device usage");
         let Some((usage, dirty)) = state.as_mut() else { return Ok(()) };
         if !*dirty {
             return Ok(());

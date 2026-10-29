@@ -1,6 +1,7 @@
 //! What the Mac app on this machine shows as system notifications while it is not in front.
 //! The push gate already decided which cards a phone hears about; the Mac app reads those same
 //! notices here, over loopback, so both tell the user about exactly the same cards.
+use crate::locks::Poisonable as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -59,7 +60,7 @@ pub(crate) fn notices(domain: &DomainRuntime, lang: Lang) -> anyhow::Result<Valu
     let read = domain.read();
     let open = views::waiting_cards(read.index());
     let ids: Vec<InteractionId> = open.iter().map(|id| InteractionId::from(id.as_str())).collect();
-    let handed = domain.store.lock().expect("domain store poisoned").handed_user_notices(&ids)?;
+    let handed = domain.store.lock_or_exit("the domain store").handed_user_notices(&ids)?;
     let notices: Vec<Value> = handed
         .into_iter()
         .map(|(message, card)| {

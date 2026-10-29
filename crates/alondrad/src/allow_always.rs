@@ -4,6 +4,7 @@
 //! the SDK Alondra adds it, and it takes out exactly the rule the user removes, leaving every
 //! other byte as it was.
 
+use crate::locks::Poisonable as _;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -160,7 +161,7 @@ fn remember(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, of
         id: 0, repo: repo.root.to_string_lossy().into_owned(), settings: settings.to_string_lossy().into_owned(), rule: rule.clone(),
         added_at: now, task_id: task_id.map(str::to_owned), interaction_id: interaction_id.to_owned(), machine: machine(), state: RuleState::Pending,
     }).collect();
-    let store = domain.store.lock().expect("domain store poisoned");
+    let store = domain.store.lock_or_exit("the domain store");
     for rule in &recorded {
         if let Err(error) = store.record_allowed_rule(rule) {
             log!("allow always: could not remember {}: {error:#}", rule.rule);
@@ -228,7 +229,7 @@ async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
 /// is active, one it still lacks after Claude Code's time to write it is missing, and an active
 /// rule the file no longer has was removed by hand.
 pub(crate) fn reconcile(domain: &crate::domain_runtime::DomainRuntime) -> Vec<AllowedRule> {
-    let store = domain.store.lock().expect("domain store poisoned");
+    let store = domain.store.lock_or_exit("the domain store");
     let mut rows = store.allowed_rules().unwrap_or_default();
     let now = alondra_core::now_millis();
     let mut files: std::collections::BTreeMap<String, Option<Vec<String>>> = Default::default();
@@ -256,12 +257,12 @@ pub(crate) fn reconcile(domain: &crate::domain_runtime::DomainRuntime) -> Vec<Al
 /// removed.
 pub(crate) fn remove_rule(domain: &crate::domain_runtime::DomainRuntime, id: i64) -> Result<Option<AllowedRule>> {
     let row = {
-        let store = domain.store.lock().expect("domain store poisoned");
+        let store = domain.store.lock_or_exit("the domain store");
         store.allowed_rules()?.into_iter().find(|row| row.id == id)
     };
     let Some(row) = row else { return Ok(None) };
     remove(Path::new(&row.settings), &rules::settings_entry(&row.rule))?;
-    domain.store.lock().expect("domain store poisoned").set_allowed_rule_state(row.id, RuleState::Removed)?;
+    domain.store.lock_or_exit("the domain store").set_allowed_rule_state(row.id, RuleState::Removed)?;
     Ok(Some(row))
 }
 

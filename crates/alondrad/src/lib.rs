@@ -4,6 +4,8 @@ mod test_support;
 
 #[macro_use]
 mod log;
+mod exit;
+mod locks;
 mod account_move;
 mod accounts;
 mod allow_always;
@@ -282,11 +284,10 @@ async fn replaced(config: &Config) {
 }
 
 fn relaunch_now() -> ! {
-    log!(
+    exit::now(relaunch::RELAUNCH, || log!(
         "exiting with {} so launchd starts the new binary",
         relaunch::RELAUNCH
-    );
-    std::process::exit(relaunch::RELAUNCH)
+    ))
 }
 
 /// What approving a direct pairing request does on this Mac: pin the device's keys in
@@ -694,7 +695,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         signal = terminated() => {
             log!("{signal} received: stopping the SDK hosts, then exiting");
             stop_sdk_owners(owners).await;
-            std::process::exit(0)
+            exit::now(0, || ())
         }
     };
     stopped

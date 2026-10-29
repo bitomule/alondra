@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -33,6 +34,6 @@ impl Read {
 impl Drop for Read {
     fn drop(&mut self) {
         self.event.elapsed_ms = self.started.elapsed().as_secs_f64() * 1_000.0;
-        self.sink.lock().expect("live read trace poisoned").push(self.event.clone());
+        self.sink.lock_or_recover("the live read trace").push(self.event.clone());
     }
 }

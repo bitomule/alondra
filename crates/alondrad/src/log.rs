@@ -37,6 +37,7 @@ pub fn after_write() {
 struct Rotation {
     path: PathBuf,
     limit: u64,
+    /// A holder that panics leaves it whole, so it is recovered: it holds nothing.
     lock: Mutex<()>,
 }
 
@@ -51,7 +52,14 @@ impl Rotation {
         if size(fds[0]) < self.limit {
             return;
         }
-        let Ok(_held) = self.lock.try_lock() else { return };
+        let _held = match self.lock.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                self.lock.clear_poison();
+                poisoned.into_inner()
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
         if size(fds[0]) < self.limit {
             return;
         }
@@ -135,34 +143,6 @@ pub fn line(message: std::fmt::Arguments<'_>) {
 /// panics instead, and did so on 25 October holding the machine watch's lock.
 fn write(out: &mut impl std::io::Write, line: &str) {
     let _ = out.write_all(line.as_bytes());
-}
-
-/// The guard of a lock whose holder panicked, for state each holder leaves whole at every step
-/// (the caller says why). The lock is healed, so this is logged once per panic, not per use.
-pub(crate) fn recover<'a, T>(lock: &'a std::sync::Mutex<T>, what: &str) -> std::sync::MutexGuard<'a, T> {
-    lock.lock().unwrap_or_else(|poisoned| healed(poisoned, || lock.clear_poison(), what))
-}
-
-pub(crate) fn healed<'a, T>(
-    poisoned: std::sync::PoisonError<std::sync::MutexGuard<'a, T>>,
-    heal: impl FnOnce(),
-    what: &str,
-) -> std::sync::MutexGuard<'a, T> {
-    log!("{what}: a thread panicked holding it; going on with what it holds");
-    heal();
-    poisoned.into_inner()
-}
-
-/// Leaves `lock` as a thread that panicked holding it does.
-#[cfg(test)]
-pub(crate) fn poison<T: Send>(lock: &std::sync::Mutex<T>) {
-    std::thread::scope(|scope| {
-        let _ = scope.spawn(|| {
-            let _held = lock.lock();
-            panic!("a holder panics");
-        }).join();
-    });
-    assert!(lock.is_poisoned());
 }
 
 pub fn stamp() -> String {

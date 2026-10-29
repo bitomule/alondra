@@ -5,6 +5,7 @@
 //! cancelled task's node has its turn cut. Work it declared after the merge holds the close until
 //! a fact ends it, never a clock. A close that keeps failing ends in a card the user answers.
 //! Nothing is closed while the node waits for the user.
+use crate::locks::Poisonable as _;
 use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::TaskClosing;
@@ -110,7 +111,7 @@ pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
             }
         }
         let dequeued = {
-            let mut store = domain.store.lock().expect("domain store poisoned");
+            let mut store = domain.store.lock_or_exit("the domain store");
             store.dequeue_launch(&task.id).and_then(|()| store.forget_auto_launch(&task.id))
         };
         if let Err(error) = dequeued {
@@ -140,7 +141,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
         }
     }
     {
-        let mut store = domain.store.lock().expect("domain store poisoned");
+        let mut store = domain.store.lock_or_exit("the domain store");
         store.dequeue_launch(&task.id)?;
         store.forget_auto_launch(&task.id)?;
     }
@@ -155,13 +156,13 @@ fn millis(duration: Duration) -> i64 {
 pub(crate) async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64) -> Result<()> {
     let state = domain.state()?;
     let due_tasks: Vec<(TaskId, Due)> = state.tasks.values().filter_map(|task| due(&state, task).map(|kind| (task.id.clone(), kind))).collect();
-    let rows = domain.store.lock().expect("domain store poisoned").task_closings()?;
+    let rows = domain.store.lock_or_exit("the domain store").task_closings()?;
     for row in rows.iter().filter(|row| !due_tasks.iter().any(|(id, _)| id == &row.task_id)) {
         if let Some(card) = &row.problem_id {
             let _ = domain.withdraw_problem(&InteractionId(card.clone()));
         }
         forget_post_merge_check(domain, &row.task_id)?;
-        domain.store.lock().expect("domain store poisoned").forget_task_closing(&row.task_id)?;
+        domain.store.lock_or_exit("the domain store").forget_task_closing(&row.task_id)?;
     }
     let mut failed = Vec::new();
     for (task_id, kind) in due_tasks {
@@ -221,7 +222,7 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
-    domain.store.lock().expect("domain store poisoned").forget_task_closing(&row.task_id)?;
+    domain.store.lock_or_exit("the domain store").forget_task_closing(&row.task_id)?;
     Ok(())
 }
 
@@ -231,7 +232,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if matches!(kind, Due::Unattended) {
         return finish_unattended(domain, task).await;
     }
-    let mut row = domain.store.lock().expect("domain store poisoned").begin_task_closing(task_id, now)?;
+    let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     let Some(agent) = task.agent_id.clone() else {
         return finish(domain, &row, None, NodeEnd::Gone);
     };
@@ -251,7 +252,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
                 row.failures = 0;
                 row.problem_id = None;
                 row.next_attempt = 0;
-                domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
+                domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
             }
             Card::Unanswered => return Ok(()),
         }
@@ -305,7 +306,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     }
     let interrupted = row.rm_started_at.is_some();
     row.rm_started_at = Some(now);
-    let saved = domain.store.lock().expect("domain store poisoned").save_task_closing(&row);
+    let saved = domain.store.lock_or_exit("the domain store").save_task_closing(&row);
     let outcome = match saved {
         Ok(()) => close_node(domain, sessions, &agent, false).await,
         Err(error) => Err(error),
@@ -315,7 +316,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         Ok(outcome) => outcome,
         Err(error) => {
             row.rm_started_at = None;
-            domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
+            domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
             return Err(error);
         }
     };
@@ -496,12 +497,12 @@ async fn finish_with_worktree(
 /// A check an earlier daemon kept on the work after the merge, with the card it may have raised:
 /// gone, as no clock asks about that work any more.
 fn forget_post_merge_check(domain: &DomainRuntime, task_id: &TaskId) -> Result<()> {
-    let check = domain.store.lock().expect("domain store poisoned").post_merge_check(task_id)?;
+    let check = domain.store.lock_or_exit("the domain store").post_merge_check(task_id)?;
     let Some(check) = check else { return Ok(()) };
     if let Some(card) = &check.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
-    domain.store.lock().expect("domain store poisoned").forget_post_merge_check(task_id)
+    domain.store.lock_or_exit("the domain store").forget_post_merge_check(task_id)
 }
 
 /// The node said it still works on something after the merge: its margin starts over from now
@@ -512,7 +513,7 @@ fn hold_while_working_after_merge(domain: &DomainRuntime, now: i64, mut row: Tas
     row.failures = 0;
     row.last_error = None;
     row.next_attempt = 0;
-    domain.store.lock().expect("domain store poisoned").save_task_closing(&row)
+    domain.store.lock_or_exit("the domain store").save_task_closing(&row)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -567,7 +568,7 @@ fn count_failure(domain: &DomainRuntime, task: &Task, mut row: TaskClosing, stop
     if row.failures >= MAX_FAILURES && row.problem_id.is_none() {
         row.problem_id = raise_card(domain, task, stop, detail, cleanup);
     }
-    domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
+    domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
     Ok(())
 }
 

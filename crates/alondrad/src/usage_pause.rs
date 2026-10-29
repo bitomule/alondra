@@ -19,6 +19,7 @@
 //! stream says it with a `rate_limit_event` whose `rate_limit_info.status` is `rejected` and
 //! whose `resetsAt` is Unix seconds, and with an assistant message whose `error` is `rate_limit`
 //! (code.claude.com/docs/en/agent-sdk/python, RateLimitEvent).
+use crate::locks::Poisonable as _;
 use alondra_core::{Millis, now_millis};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -67,6 +68,9 @@ pub(crate) enum Change {
 }
 
 pub(crate) struct UsagePause {
+    /// A holder that panics leaves it whole, so it is recovered: plain assignments of copied values
+    /// with only arithmetic between them; the worst a panic leaves is one notice repeated or
+    /// missed.
     record: Mutex<Record>,
     changed: watch::Sender<Option<Exhausted>>,
 }
@@ -81,7 +85,7 @@ impl Default for UsagePause {
 impl UsagePause {
     /// Capacity on another provider ends a legacy global limit without waking still-limited Claude nodes.
     pub(crate) fn provider_account_back(&self, now: Millis) -> bool {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         if !record.exhausted.as_ref().is_some_and(|standing| !standing.by_user) { return false; }
         record.exhausted = None;
         record.by_margin = false;
@@ -92,7 +96,7 @@ impl UsagePause {
     }
 
     pub(crate) fn current(&self) -> Option<Exhausted> {
-        self.record.lock().expect("usage pause poisoned").exhausted.clone()
+        self.record.lock_or_recover("the usage pause").exhausted.clone()
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -125,7 +129,7 @@ impl UsagePause {
     /// An account can work again before the reset the exhaustion waited for: an exhaustion the
     /// readings started ends now, after the usual jitter, as at its reset. Any other stands.
     pub(crate) fn margin_back(&self, now: Millis) -> bool {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         let by_margin = record.by_margin;
         let Some(standing) = record.exhausted.as_mut().filter(|standing| by_margin && !standing.by_user && standing.until > now) else { return false };
         standing.until = now;
@@ -137,7 +141,7 @@ impl UsagePause {
     /// one. A wait the accounts' readings started becomes this one; the user's pause and a limit
     /// Claude reported stand.
     pub(crate) fn wait_for_session(&self, now: Millis) -> Change {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         let by_margin = record.by_margin;
         let change = match record.exhausted.as_mut() {
             None => {
@@ -162,7 +166,7 @@ impl UsagePause {
 
     /// An account has a session: a wait for one ends now. Any other pause stands.
     pub(crate) fn session_back(&self) -> bool {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         if !record.exhausted.as_ref().is_some_and(|standing| standing.no_session) {
             return false;
         }
@@ -174,7 +178,7 @@ impl UsagePause {
     }
 
     fn exhaust_as(&self, until: Option<Millis>, now: Millis, by_margin: bool) -> Change {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         let standing = record.exhausted.is_some();
         let follows_readings = by_margin && record.by_margin;
         let reported = until.filter(|at| *at > now).unwrap_or(now + UNKNOWN_RESET_WAIT_MS);
@@ -218,7 +222,7 @@ impl UsagePause {
     /// The user chose to pause until `until`. A standing pause or exhaustion is kept, lasting at
     /// least until then.
     pub(crate) fn pause_by_user(&self, until: Millis, now: Millis) -> Change {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         let change = match record.exhausted.as_mut() {
             Some(standing) => {
                 let changed = !standing.by_user || standing.no_session || until > standing.until;
@@ -240,7 +244,7 @@ impl UsagePause {
 
     /// True the first time a pace card's answer is claimed, so it is acted on once.
     pub(crate) fn claim_card(&self, id: &str) -> bool {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         if record.settled_cards.iter().any(|settled| settled == id) {
             return false;
         }
@@ -253,7 +257,7 @@ impl UsagePause {
     /// The exhaustion the user has not been told about yet, marked as told, and whether it
     /// returned after a resume.
     pub(crate) fn claim_announcement(&self) -> Option<(Exhausted, bool)> {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         if record.announced {
             return None;
         }
@@ -272,7 +276,7 @@ impl UsagePause {
     }
 
     fn resume_matching(&self, now: Millis, due_only: bool) -> Option<bool> {
-        let mut record = self.record.lock().expect("usage pause poisoned");
+        let mut record = self.record.lock_or_recover("the usage pause");
         if due_only && record.exhausted.as_ref().is_none_or(|standing| standing.no_session || standing.until > now) {
             return None;
         }
@@ -623,6 +627,14 @@ pub(crate) fn record_from_text(domain: &crate::domain_runtime::DomainRuntime, te
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_usage_pause_goes_on_after_a_panic_holding_it() {
+        let pause = UsagePause::default();
+        crate::locks::poison(&pause.record);
+        pause.exhaust(Some(10_000), 0);
+        assert!(pause.is_active());
+    }
 
     fn at(day: u32, hour: i32, minute: i32) -> Millis {
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };

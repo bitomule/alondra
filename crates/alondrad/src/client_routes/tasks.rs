@@ -1,5 +1,6 @@
 //! What a task's page needs beyond the projection: how it got where it is, and why the user
 //! cancelled it.
+use crate::locks::Poisonable as _;
 use super::{Client, Reply, storage};
 use alondra_core::domain::{DomainError, TaskId};
 use axum::response::{IntoResponse, Response};
@@ -30,7 +31,7 @@ impl Client {
             Ok(_) => return Reply::error(DomainError::new("not_found", "task does not exist")).into_response(),
             Err(_) => return storage(),
         }
-        match self.domain.store.lock().expect("domain store poisoned").task_history(&task) {
+        match self.domain.store.lock_or_exit("the domain store").task_history(&task) {
             Ok(history) => Json(json!({"brief": null, "history": history})).into_response(),
             Err(_) => storage(),
         }
@@ -52,7 +53,7 @@ impl Client {
         if !cancelled {
             return Ok(Reply::error(DomainError::new("task_not_cancelled", "only a cancelled task has a reason")));
         }
-        self.domain.store.lock().expect("domain store poisoned").set_cancel_reason(&task, reason)?;
+        self.domain.store.lock_or_exit("the domain store").set_cancel_reason(&task, reason)?;
         Ok(Reply::ok(json!({})))
     }
 

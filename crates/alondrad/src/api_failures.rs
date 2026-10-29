@@ -5,6 +5,7 @@
 //! card. A card asks the user only when trying again cannot help, or when the API answers other
 //! nodes and this one still fails after every retry. The hook itself cannot make Claude go on
 //! (code.claude.com/docs/en/hooks), so going on is always a message to the node.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Paused, Reason};
 use alondra_core::domain::{
@@ -32,6 +33,8 @@ pub(crate) struct Streak {
 /// When the model last answered each node, and when an API error last cut each one's turn.
 #[derive(Default)]
 pub(crate) struct ApiWatch {
+    /// A holder that panics leaves it whole, so it is recovered: health hints, each change an
+    /// insert and a remove that the next answer or failure writes again.
     inner: Mutex<Watch>,
 }
 
@@ -44,7 +47,7 @@ struct Watch {
 
 impl ApiWatch {
     fn lock(&self) -> std::sync::MutexGuard<'_, Watch> {
-        self.inner.lock().expect("api watch poisoned")
+        self.inner.lock_or_recover("the API watch")
     }
 
     pub(crate) fn answered(&self, session: &str, at: Millis) {
@@ -118,7 +121,7 @@ pub(crate) fn resume_text(error: &str, detail: Option<&str>) -> String {
 
 /// A turn ended normally: the API answers this node again.
 pub(crate) fn turn_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
-    let store = domain.store.lock().expect("domain store poisoned");
+    let store = domain.store.lock_or_exit("the domain store");
     if store.api_failures()?.get(agent).is_some_and(|streak| streak.card.is_none()) {
         store.set_api_failures(agent, None)?;
     }
@@ -142,7 +145,7 @@ pub(crate) fn turn_failed(domain: &DomainRuntime, agent: &AgentId, payload: &Val
         domain.live.api_watch.failed(&agent.0, now);
     }
     let before = {
-        let store = domain.store.lock().expect("domain store poisoned");
+        let store = domain.store.lock_or_exit("the domain store");
         store.api_failures()?.remove(agent)
             .filter(|streak| streak.card.is_none() && !domain.live.api_watch.worked_after(&agent.0, streak.last_at, FRESH_TURN))
             .unwrap_or(Streak { first_at: now, ..Streak::default() })
@@ -154,7 +157,7 @@ pub(crate) fn turn_failed(domain: &DomainRuntime, agent: &AgentId, payload: &Val
     match after {
         AfterApiFailure::Retry(retry) => {
             let failures = if retry.outage { before.failures } else { attempt };
-            domain.store.lock().expect("domain store poisoned").set_api_failures(agent, Some(&Streak { failures, last_at: now, ..before }))?;
+            domain.store.lock_or_exit("the domain store").set_api_failures(agent, Some(&Streak { failures, last_at: now, ..before }))?;
             hold(domain, agent, Reason::ApiError(retry), now)?;
         }
         AfterApiFailure::WaitUsage => hold(domain, agent, Reason::Usage, now)?,
@@ -162,7 +165,7 @@ pub(crate) fn turn_failed(domain: &DomainRuntime, agent: &AgentId, payload: &Val
             let task = task.expect("checked above");
             crate::start_failures::raise(domain, &task, StartProblem::ApiFailed { error, detail, attempts: attempt })?;
             let card = domain.state()?.open_start_problem(&task).map(|card| card.id.clone());
-            domain.store.lock().expect("domain store poisoned").set_api_failures(agent, Some(&Streak { failures: 0, first_at: now, last_at: now, card }))?;
+            domain.store.lock_or_exit("the domain store").set_api_failures(agent, Some(&Streak { failures: 0, first_at: now, last_at: now, card }))?;
             crate::domain_agent_lifecycle::node_event_at(domain, agent, NodeEvent::TurnFailed, now)?;
         }
     }
@@ -183,7 +186,7 @@ fn hold(domain: &DomainRuntime, agent: &AgentId, reason: Reason, now: Millis) ->
 /// now" sends it back at once; any other end of the card (the task cancelled, the card gone)
 /// only forgets the streak.
 pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
-    let streaks = domain.store.lock().expect("domain store poisoned").api_failures()?;
+    let streaks = domain.store.lock_or_exit("the domain store").api_failures()?;
     let state = domain.state()?;
     for (agent, streak) in streaks {
         let Some(card) = streak.card.as_ref().and_then(|card| state.interactions.get(card)) else { continue };
@@ -202,7 +205,7 @@ pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
                 domain.live.losses.report(&agent.0);
             }
         }
-        domain.store.lock().expect("domain store poisoned").set_api_failures(&agent, None)?;
+        domain.store.lock_or_exit("the domain store").set_api_failures(&agent, None)?;
     }
     Ok(())
 }

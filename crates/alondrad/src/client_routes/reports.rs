@@ -1,6 +1,7 @@
 //! A crash report from a screen: the daemon has its own CLI build it (`alondra report`), hands
 //! out the files the preview shows, exactly as they would leave the Mac, and sends it when the
 //! user says so (`alondra report send`). Nothing is sent without that last request.
+use crate::locks::Poisonable as _;
 use super::{Client, Reply};
 use alondra_core::domain::DomainError;
 use serde_json::{Value, json};
@@ -108,13 +109,13 @@ async fn run(cli: PathBuf, home: &Path, lang: &str, args: Vec<String>, input: Op
 
 impl Client {
     fn report_cli(&self) -> Result<PathBuf, Reply> {
-        self.report_cli.lock().expect("report cli poisoned").clone()
+        self.report_cli.lock_or_recover("the report CLI").clone()
             .ok_or_else(|| Reply::error(DomainError::new("unavailable", "Alondra's command line is not beside the daemon")))
     }
 
     #[cfg(test)]
     pub(crate) fn use_report_cli(&self, cli: PathBuf) {
-        *self.report_cli.lock().expect("report cli poisoned") = Some(cli);
+        *self.report_cli.lock_or_recover("the report CLI") = Some(cli);
     }
 
     /// `POST /reports`: builds a new report, with `description` as the user wrote it, and answers

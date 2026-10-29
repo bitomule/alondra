@@ -1,6 +1,7 @@
 //! Update awareness: the newest release in the Homebrew tap, checked at start (with jitter) and
 //! every 6 hours, quietly. With `auto_update`, a launchd daemon installed by Homebrew upgrades
 //! itself once per new version; `relaunch` then restarts it into the new binary.
+use crate::locks::Poisonable as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -19,10 +20,11 @@ struct Known {
     auto_update: bool,
 }
 
+/// A holder that panics leaves it whole, so it is recovered: plain fields every check writes again.
 static KNOWN: Mutex<Known> = Mutex::new(Known { latest: None, checked_at: None, auto_update: false });
 
 pub fn status(home: &Path) -> Status {
-    let known = KNOWN.lock().expect("update state poisoned");
+    let known = KNOWN.lock_or_recover("the update state");
     let current = env!("CARGO_PKG_VERSION").to_string();
     Status {
         available: known.latest.as_deref().is_some_and(|l| update::newer(l, &current)),
@@ -85,7 +87,7 @@ impl Updater {
     pub async fn check_once(&self, upgrade: impl FnOnce(&Path) -> (bool, String) + Send + 'static) {
         let latest = fetch(&self.url).await;
         {
-            let mut known = KNOWN.lock().expect("update state poisoned");
+            let mut known = KNOWN.lock_or_recover("the update state");
             known.auto_update = self.auto_update;
             if latest.is_some() {
                 known.latest = latest.clone();

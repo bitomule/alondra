@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -37,9 +38,16 @@ pub struct Device {
 
 pub struct Auth {
     path: PathBuf,
+    /// A holder that panics leaves it whole, so it is recovered: each writer saves the file first
+    /// and then replaces the list whole, so memory always matches a saved file.
     devices: Mutex<Vec<Device>>,
+    /// A holder that panics leaves it whole, so it is recovered: a retain and an insert, or one
+    /// remove.
     pairing: Mutex<HashMap<String, Instant>>,
+    /// A holder that panics leaves it whole, so it is recovered: a push and a pop.
     seen: Mutex<VecDeque<String>>,
+    /// A holder that panics leaves it whole, so it is recovered: it records a nonce only after the
+    /// signature checks, so a torn change can only refuse a request.
     service_verifier: Mutex<HttpChallengeVerifier>,
     usage: crate::device_usage::DeviceUsage,
 }
@@ -94,7 +102,7 @@ impl Auth {
 
     pub fn new_pairing_code(&self) -> String {
         let code = random_hex(10);
-        let mut p = self.pairing.lock().expect("pairing lock poisoned");
+        let mut p = self.pairing.lock_or_recover("the pairing codes");
         p.retain(|_, t| t.elapsed() < PAIRING_TTL);
         p.insert(code.clone(), Instant::now());
         code
@@ -102,7 +110,7 @@ impl Auth {
 
     pub fn pair(&self, code: &str, name: &str, public_key_b64: &str) -> Result<Device, String> {
         let valid = {
-            let mut p = self.pairing.lock().expect("pairing lock poisoned");
+            let mut p = self.pairing.lock_or_recover("the pairing codes");
             p.remove(code).is_some_and(|t| t.elapsed() < PAIRING_TTL)
         };
         if !valid {
@@ -119,7 +127,7 @@ impl Auth {
         };
         let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().ok_or("approval home missing")?)
             .map_err(|error| error.to_string())?;
-        let mut devices = self.devices.lock().expect("devices lock poisoned");
+        let mut devices = self.devices.lock_or_recover("the paired devices");
         let mut next = self.persisted().map_err(|error| error.to_string())?;
         next.push(device.clone());
         self.save(&next).map_err(|e| e.to_string())?;
@@ -142,7 +150,7 @@ impl Auth {
         let public_key = B64.encode(key.to_sec1_bytes());
         let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().ok_or("approval home missing")?)
             .map_err(|error| error.to_string())?;
-        let mut devices = self.devices.lock().expect("devices lock poisoned");
+        let mut devices = self.devices.lock_or_recover("the paired devices");
         let mut next = self.persisted().map_err(|error| error.to_string())?;
         if let Some(existing) = next.iter().find(|d| d.id == id) {
             let same_key = existing.public_key == public_key;
@@ -157,7 +165,7 @@ impl Auth {
     }
 
     pub fn service_epoch(&self) -> [u8; 16] {
-        self.service_verifier.lock().expect("service verifier lock poisoned").server_epoch()
+        self.service_verifier.lock_or_recover("the service request verifier").server_epoch()
     }
 
     pub fn verify_service_approval(&self, headers: &HeaderMap, body: &[u8]) -> Result<(), String> {
@@ -175,7 +183,7 @@ impl Auth {
         let ts: u64 = h("x-device-timestamp-ms")?.parse().map_err(|_| "invalid service timestamp")?;
         let nonce: [u8; 16] = URL_SAFE_NO_PAD.decode(h("x-device-nonce")?)
             .map_err(|_| "invalid service nonce")?.try_into().map_err(|_| "invalid service nonce")?;
-        self.service_verifier.lock().expect("service verifier lock poisoned")
+        self.service_verifier.lock_or_recover("the service request verifier")
             .verify(&key, h("x-device-signature")?, &public.mac_id, "POST",
                 "/service/approve-device", body, ts, &nonce, now_millis() as u64)
             .map_err(|_| "invalid or replayed service signature".into())
@@ -186,12 +194,12 @@ impl Auth {
     }
 
     pub fn list(&self) -> Vec<Device> {
-        self.devices.lock().expect("devices lock poisoned").clone()
+        self.devices.lock_or_recover("the paired devices").clone()
     }
 
     pub fn revoke(&self, id: &str) -> Result<bool> {
         let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().context("approval home missing")?)?;
-        let mut devices = self.devices.lock().expect("devices lock poisoned");
+        let mut devices = self.devices.lock_or_recover("the paired devices");
         let mut next = self.persisted()?;
         let previous_len = next.len();
         next.retain(|d| d.id != id);
@@ -205,7 +213,7 @@ impl Auth {
 
     /// Service enrollment and work may use only a locally paired device with the same key.
     pub fn approved_key_matches(&self, id: &str, public_key: &VerifyingKey) -> bool {
-        self.devices.lock().expect("devices lock poisoned").iter().any(|device| {
+        self.devices.lock_or_recover("the paired devices").iter().any(|device| {
             device.id == id && B64.decode(&device.public_key).ok()
                 .is_some_and(|raw| raw.as_slice() == public_key.to_sec1_bytes().as_ref())
         })
@@ -226,7 +234,7 @@ impl Auth {
             return Err("timestamp out of range");
         }
         let key_b64 = {
-            let devices = self.devices.lock().expect("devices lock poisoned");
+            let devices = self.devices.lock_or_recover("the paired devices");
             devices.iter().find(|d| d.id == device_id).map(|d| d.public_key.clone())
         }
         .ok_or("device not paired")?;
@@ -236,7 +244,7 @@ impl Auth {
         let message = signed_message(method, path_and_query, timestamp, body);
         key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;
         let canonical_signature = B64.encode(signature.normalize_s().to_der().as_bytes());
-        let mut seen = self.seen.lock().expect("seen lock poisoned");
+        let mut seen = self.seen.lock_or_recover("the seen requests");
         if seen.iter().any(|s| s == &canonical_signature) {
             return Err("replayed request");
         }
@@ -245,7 +253,7 @@ impl Auth {
             seen.pop_front();
         }
         drop(seen);
-        let devices = self.devices.lock().expect("devices lock poisoned");
+        let devices = self.devices.lock_or_recover("the paired devices");
         let device = devices.iter().find(|d| d.id == device_id).ok_or("device not paired")?;
         self.usage.touch(&device.id, now_millis(), local);
         Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: key_b64 })
@@ -313,6 +321,17 @@ mod tests {
         h.insert("x-alondra-timestamp", ts.to_string().parse().unwrap());
         h.insert("x-alondra-signature", B64.encode(sig.to_der().as_bytes()).parse().unwrap());
         h
+    }
+
+    #[test]
+    fn devices_are_listed_and_paired_after_a_panic_holding_them() {
+        let (auth, _key, id) = auth_with_device();
+        crate::locks::poison(&auth.devices);
+        assert_eq!(auth.list().iter().map(|device| device.id.clone()).collect::<Vec<_>>(), [id]);
+        let code = auth.new_pairing_code();
+        let public = B64.encode(SigningKey::from_slice(&[9u8; 32]).unwrap().verifying_key().to_sec1_bytes());
+        auth.pair(&code, "iPad", &public).unwrap();
+        assert_eq!(auth.list().len(), 2);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! The close route: closing a `claude --bg` session of an earlier release by hand, from the apps
 //! or the CLI. A node of the Agent SDK ends with its task.
+use crate::locks::Poisonable as _;
 use super::{Client, Reply};
 pub(crate) use crate::node_close::Answer;
 use crate::node_close::{CloseOutcome, Reason, Sessions, close_node};
@@ -48,6 +49,6 @@ impl Client {
 
     /// What closing a session asks of the machine; the closer of finished tasks shares it.
     pub(crate) fn sessions(&self) -> std::sync::Arc<dyn Sessions> {
-        self.sessions.lock().expect("session control poisoned").clone()
+        self.sessions.lock_or_recover("the session control").clone()
     }
 }

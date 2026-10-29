@@ -9,6 +9,7 @@
 //! and its exit seen by the process's identity, the SDK execution admitted in the transaction
 //! that records it, then the old node closed. A daemon that comes back goes on from the last step
 //! recorded, so no step's effect happens twice, and the task never has two live owners.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Handover, HandoverPlan, HandoverProcess, HandoverStep};
 use crate::node_close::Answer;
@@ -253,7 +254,7 @@ fn movable(domain: &DomainRuntime, state: &DomainState, agent: &AgentId, message
 }
 
 fn handover_of(domain: &DomainRuntime, agent: &AgentId) -> Option<Handover> {
-    match domain.store.lock().expect("domain store poisoned").handovers() {
+    match domain.store.lock_or_exit("the domain store").handovers() {
         Ok(handovers) => handovers.into_iter().rev().find(|handover| handover.node == *agent),
         Err(error) => {
             log!("could not read the SDK handover journal: {error:#}");
@@ -359,7 +360,7 @@ fn record(domain: &DomainRuntime, agent: &AgentId, task: &TaskId, input: String,
     let name = state.agents.get(agent).map(|known| known.name.clone()).unwrap_or_else(|| agent.0.clone());
     let process = domain.handovers.sessions().seen(domain, &agent.0);
     let plan = HandoverPlan { session: agent.0.clone(), cwd, name, process, input, outbox, returning };
-    if !domain.store.lock().expect("domain store poisoned").plan_handover(agent, task, &plan)? {
+    if !domain.store.lock_or_exit("the domain store").plan_handover(agent, task, &plan)? {
         return Ok(false);
     }
     log!("{agent} ({task}) moves to the Agent SDK{}", if returning { " as it comes back" } else { " with its next input" });
@@ -423,7 +424,7 @@ async fn stop(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<bool, 
     if let Some(listed) = sessions.listed(&node.0).await?.filter(|listed| sessions.alive(listed)) {
         return Err(format!("Claude Code still runs {node} as pid {}", listed.pid));
     }
-    domain.store.lock().expect("domain store poisoned").record_bg_stopped(node, &handover.task, processes.first().copied())
+    domain.store.lock_or_exit("the domain store").record_bg_stopped(node, &handover.task, processes.first().copied())
         .map_err(|error| format!("recording that the claude --bg process stopped: {error:#}"))?;
     Ok(true)
 }
@@ -485,7 +486,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
         domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     }
     let node = &handover.node;
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     if let Some(id) = handover.plan.outbox {
         store.hand_carried_message(id).map_err(|error| format!("handing the message the move carried: {error:#}"))?;
     }
@@ -497,7 +498,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
     domain.live.mark_closed(&node.0);
     domain.live.apply(&alondra_core::Event::NodeRemoved { session_id: node.0.clone() });
     domain.forget_ended_session(&node.0).map_err(|error| format!("{error:#}"))?;
-    domain.store.lock().expect("domain store poisoned").record_handover_done(node, &handover.task)
+    domain.store.lock_or_exit("the domain store").record_handover_done(node, &handover.task)
         .map_err(|error| format!("recording the end of the move: {error:#}"))?;
     log!("{node} ({}) moved to the Agent SDK: {agent} resumes its Claude session", handover.task);
     Ok(())
@@ -507,7 +508,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
 pub(crate) fn dry_run(domain: &DomainRuntime) -> anyhow::Result<Vec<Row>> {
     let state = domain.state()?;
     let (handovers, pending) = {
-        let store = domain.store.lock().expect("domain store poisoned");
+        let store = domain.store.lock_or_exit("the domain store");
         (store.handovers()?, store.pending_messages()?)
     };
     let mut rows = vec![];
@@ -549,7 +550,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
 
 async fn tick(domain: &Arc<DomainRuntime>) {
     plan_waiting(domain);
-    let open: Vec<AgentId> = domain.store.lock().expect("domain store poisoned").handovers().unwrap_or_default().into_iter()
+    let open: Vec<AgentId> = domain.store.lock_or_exit("the domain store").handovers().unwrap_or_default().into_iter()
         .filter(|handover| handover.step != HandoverStep::Done).map(|handover| handover.node).collect();
     for node in open {
         if let Err(why) = advance(domain, &node).await {
@@ -560,7 +561,7 @@ async fn tick(domain: &Arc<DomainRuntime>) {
 
 /// Plans the move of each node at rest an outbox message waits for, with that message.
 fn plan_waiting(domain: &DomainRuntime) {
-    let pending = domain.store.lock().expect("domain store poisoned").pending_messages().unwrap_or_default();
+    let pending = domain.store.lock_or_exit("the domain store").pending_messages().unwrap_or_default();
     let Ok(state) = domain.state() else { return };
     let mut planned = std::collections::BTreeSet::new();
     for message in pending.iter().filter(|message| message.recipient_kind == "agent") {

@@ -1,6 +1,7 @@
 //! What GitHub says about each open pull request that the domain does not keep: its
 //! title, checks and whether it merges cleanly. Refreshed in the background and read from
 //! memory, so a client's poll never waits on `gh`.
+use crate::locks::Poisonable as _;
 use alondra_core::domain::{
     Actor, Command, CommandEnvelope, DeliveryTarget, DomainError, DomainState, Instruction, InteractionPayload,
     PrState, PullRequest, PROTOCOL_VERSION,
@@ -106,6 +107,8 @@ impl Details {
 
 #[derive(Default)]
 pub(crate) struct PrDetails {
+    /// A holder that panics leaves it whole, so it is recovered: a cache of GitHub reads the next
+    /// refresh writes again.
     cache: Mutex<Observations>,
     refresh: tokio::sync::Mutex<()>,
     #[cfg(test)]
@@ -138,17 +141,17 @@ struct Images {
 impl PrDetails {
     fn now(&self) -> i64 {
         #[cfg(test)]
-        if let Some(clock) = self.clock.lock().expect("pull request clock poisoned").clone() { return clock(); }
+        if let Some(clock) = self.clock.lock_or_recover("the pull request clock").clone() { return clock(); }
         alondra_core::now_millis()
     }
 
     /// Grows whenever the details any pull request shows change.
     pub(crate) fn version(&self) -> u64 {
-        self.cache.lock().expect("pull request details poisoned").changes
+        self.cache.lock_or_recover("the pull request details").changes
     }
 
     pub(crate) fn get(&self, pr_id: &str) -> Option<Details> {
-        let cache = self.cache.lock().expect("pull request details poisoned");
+        let cache = self.cache.lock_or_recover("the pull request details");
         let entry = cache.entries.get(pr_id)?;
         let mut details = entry.details.clone()?;
         match entry.images.as_ref() {
@@ -172,7 +175,7 @@ impl PrDetails {
     /// The images of `pr`'s description as last read, brought now when they were not yet.
     async fn bring(&self, pr: &PullRequest, github: &dyn GitHubImages, home: &std::path::Path) -> Vec<PrImage> {
         let (body, head, read) = {
-            let cache = self.cache.lock().expect("pull request details poisoned");
+            let cache = self.cache.lock_or_recover("the pull request details");
             let Some(entry) = cache.entries.get(&pr.id.0) else { return vec![] };
             let Some(details) = entry.details.as_ref() else { return vec![] };
             let Some(body) = details.body.clone() else { return vec![] };
@@ -186,7 +189,7 @@ impl PrDetails {
     async fn bring_for(&self, pr: &PullRequest, body: &str, head: &str, read: u64, github: &dyn GitHubImages, home: &std::path::Path) -> Vec<PrImage> {
         let target = crate::pr_images::Target { host: &pr.host, repository: &pr.repository, number: pr.number, head };
         let known: BTreeMap<String, Shown> = {
-            let cache = self.cache.lock().expect("pull request details poisoned");
+            let cache = self.cache.lock_or_recover("the pull request details");
             let images = cache.entries.get(&pr.id.0).and_then(|entry| entry.images.as_ref());
             if let Some(images) = images.filter(|images| images.body == body && images.head == head && !images.retry && images.read >= read) {
                 return images.brought.clone();
@@ -194,7 +197,7 @@ impl PrDetails {
             images.map(|images| crate::pr_images::lasting(&target, &images.brought, images.head == head)).unwrap_or_default()
         };
         let brought = crate::pr_images::bring(github, home, &target, body, &known).await;
-        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let mut cache = self.cache.lock_or_recover("the pull request details");
         let Some(entry) = cache.entries.get_mut(&pr.id.0) else { return brought.images };
         if entry.images.as_ref().is_some_and(|images| images.read > read) {
             return brought.images;
@@ -206,7 +209,7 @@ impl PrDetails {
     }
 
     fn begin(&self, pr_id: &str) -> u64 {
-        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let mut cache = self.cache.lock_or_recover("the pull request details");
         cache.next = cache.next.checked_add(1).expect("pull request observation counter exhausted");
         let request = cache.next;
         cache.entries.entry(pr_id.to_owned()).or_default();
@@ -214,7 +217,7 @@ impl PrDetails {
     }
 
     fn complete(&self, pr_id: &str, request: u64, mut details: Details) -> bool {
-        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let mut cache = self.cache.lock_or_recover("the pull request details");
         let Some(entry) = cache.entries.get_mut(pr_id).filter(|entry| entry.accepted <= request) else { return false };
         entry.accepted = request;
         details.observed_at = Some(self.now());
@@ -229,7 +232,7 @@ impl PrDetails {
     }
 
     fn keep_only(&self, state: &DomainState) {
-        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let mut cache = self.cache.lock_or_recover("the pull request details");
         let before = cache.entries.len();
         cache.entries.retain(|id, _| state.pull_requests.keys().any(|pr| &pr.0 == id));
         if cache.entries.len() != before { cache.changes += 1; }
@@ -241,7 +244,7 @@ impl PrDetails {
         let pending = Mutex::new(state.pull_requests.values().filter(|pr| pr.state == PrState::Open));
         let read = || async {
             loop {
-                let Some(pr) = pending.lock().expect("pull request refresh poisoned").next() else { break };
+                let Some(pr) = pending.lock_or_recover("the pull request refresh").next() else { break };
                 let request = self.begin(&pr.id.0);
                 let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
                 if let Some(view) = source.view(&url).await {
@@ -255,30 +258,30 @@ impl PrDetails {
 
 impl super::Client {
     pub(crate) fn use_pr_view(&self, view: Arc<dyn PrView>) {
-        *self.pr_view.lock().expect("pull request view poisoned") = view;
+        *self.pr_view.lock_or_recover("the pull request view") = view;
     }
 
     #[cfg(test)]
     pub(crate) fn use_pr_images(&self, github: Arc<dyn GitHubImages>) {
-        *self.pr_images.lock().expect("pull request images poisoned") = github;
+        *self.pr_images.lock_or_recover("the pull request images") = github;
     }
 
     pub(crate) async fn bring_pr_images(&self, state: &DomainState) {
-        let github = self.pr_images.lock().expect("pull request images poisoned").clone();
+        let github = self.pr_images.lock_or_recover("the pull request images").clone();
         self.details.bring_images(state, &*github, &self.home).await;
     }
 
     /// The images `pr`'s description cites that do not exist where it says, read from GitHub now:
     /// the description may have changed a moment ago.
     async fn missing_images(&self, pr: &PullRequest) -> Vec<PrImage> {
-        let view = self.pr_view.lock().expect("pull request view poisoned").clone();
+        let view = self.pr_view.lock_or_recover("the pull request view").clone();
         let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
         let read = self.details.begin(&pr.id.0);
         let Some(answer) = view.view(&url).await else { return vec![] };
         let fresh = parse(&pr.id.0, pr.number, &answer);
         let Some(body) = fresh.body else { return vec![] };
         let head = fresh.head_sha.unwrap_or_else(|| pr.head.clone());
-        let github = self.pr_images.lock().expect("pull request images poisoned").clone();
+        let github = self.pr_images.lock_or_recover("the pull request images").clone();
         self.details.bring_for(pr, &body, &head, read, &*github, &self.home).await.into_iter()
             .filter(|image| matches!(&image.shown, Shown::Unavailable { problem, .. } if problem.missing()))
             .collect()
@@ -293,7 +296,7 @@ impl super::Client {
         {
             return Merge::Clean;
         }
-        let view = self.pr_view.lock().expect("pull request view poisoned").clone();
+        let view = self.pr_view.lock_or_recover("the pull request view").clone();
         let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
         for attempt in 0..attempts {
             if attempt > 0 {
@@ -355,7 +358,7 @@ impl super::Client {
         if state.interactions.contains_key(interaction_id) {
             return;
         }
-        let view = self.pr_view.lock().expect("pull request view poisoned").clone();
+        let view = self.pr_view.lock_or_recover("the pull request view").clone();
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open) else { continue };

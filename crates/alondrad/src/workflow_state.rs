@@ -3,6 +3,7 @@
 //! and returns) and `agent-<id>.meta.json` per agent; once it ends, `<session>/workflows/<runId>.json`
 //! sums it up. The script under `<session>/workflows/scripts/` lists the phases from the start.
 //! Every read is bounded and a half-written or unknown file reads as nothing.
+use crate::locks::Poisonable as _;
 use alondra_core::views::{LiveWorkflow, LiveWorkflowAgent, WORKFLOW_AGENT_ROWS};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -78,6 +79,8 @@ struct Started {
 
 type Stamp = Vec<Option<(SystemTime, u64)>>;
 
+/// A holder that panics leaves it whole, so it is recovered: a cache, cleared and filled with
+/// workflows read outside it.
 static CACHE: Mutex<Option<HashMap<PathBuf, (Stamp, Option<LiveWorkflow>)>>> = Mutex::new(None);
 
 /// The run's `<session>` folder and id, when the transcript folder has the shape Claude Code gives it.
@@ -104,11 +107,11 @@ pub(crate) fn read(dir: &Path, finished: bool) -> Option<LiveWorkflow> {
     let stamp: Stamp = vec![stamp_of(dir), stamp_of(&dir.join("journal.jsonl")), summary_path(dir).and_then(|path| stamp_of(&path))];
     stamp[0]?;
     let key = dir.join(if finished { "finished" } else { "running" });
-    if let Some((known, workflow)) = CACHE.lock().expect("workflow cache poisoned").as_ref().and_then(|cache| cache.get(&key)) {
+    if let Some((known, workflow)) = CACHE.lock_or_recover("the workflow cache").as_ref().and_then(|cache| cache.get(&key)) {
         if *known == stamp { return workflow.clone(); }
     }
     let workflow = read_uncached(dir, finished);
-    let mut cache = CACHE.lock().expect("workflow cache poisoned");
+    let mut cache = CACHE.lock_or_recover("the workflow cache");
     let cache = cache.get_or_insert_with(HashMap::new);
     if cache.len() >= CACHE_LIMIT && !cache.contains_key(&key) { cache.clear(); }
     cache.insert(key, (stamp, workflow.clone()));

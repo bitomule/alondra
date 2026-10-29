@@ -1,6 +1,7 @@
 //! Schedule v2's local-calendar and launch preparation adapter. The command
 //! carrying this intent must be committed with its Run, Request, and Task before
 //! a technical launch claim can call Claude.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use crate::launch_worktree::Workplace;
@@ -485,7 +486,7 @@ fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let Some(task) = run.task_id.as_ref().filter(|_| retried) else { continue };
         match execute_system(domain, Command::CancelTask { task_id: task.clone() }) {
             Ok(_) if gone => {
-                if let Err(error) = domain.store.lock().expect("domain store poisoned").set_cancel_reason(task, "Its schedule no longer exists, so it cannot be launched again") {
+                if let Err(error) = domain.store.lock_or_exit("the domain store").set_cancel_reason(task, "Its schedule no longer exists, so it cannot be launched again") {
                     log!("could not say why {task} was cancelled: {error:#}");
                 }
             }

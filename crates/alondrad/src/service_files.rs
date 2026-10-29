@@ -1,4 +1,5 @@
 //! Bounded, device-owned attachment transfers inside the encrypted service channel.
+use crate::locks::Poisonable as _;
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
@@ -16,6 +17,8 @@ pub const CHUNK: usize = 64 * 1024;
 const TTL: Duration = Duration::from_secs(600);
 const SLOTS: usize = 2;
 const UNCERTAIN: &str = "transfer already finalized or interrupted; previous receipt unavailable";
+/// A holder that panics leaves it whole, so it is recovered: an upload that panics while finishing
+/// stays marked attempted without a result, which is refused as uncertain as after a restart.
 #[derive(Default)]
 pub struct Transfers(Mutex<HashMap<(String, String), Transfer>>);
 struct Transfer {
@@ -94,10 +97,7 @@ impl Transfers {
         if route == "/v1/service/files/chunk" {
             return download(home, serde_json::from_value(body)?);
         }
-        let mut transfers = self
-            .0
-            .lock()
-            .map_err(|_| anyhow::anyhow!("transfer lock poisoned"))?;
+        let mut transfers = self.0.lock_or_recover("the file transfers");
         transfers.retain(|_, t| t.touched.elapsed() < TTL);
         if route == "/v1/service/uploads/start" {
             let b: Start = serde_json::from_value(body)?;
@@ -288,6 +288,7 @@ const READ_CACHE_BYTES: usize = 2 * crate::uploads::MAX_UPLOAD_BYTES;
 pub(crate) struct StoredReads {
     hashed_bytes: std::sync::atomic::AtomicU64,
     reserved: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// A holder that panics leaves it whole, so it is recovered: a cache of verified copies.
     copies: Mutex<HashMap<(PathBuf, String), CachedCopy>>,
 }
 struct CachedCopy {
@@ -334,7 +335,7 @@ impl StoredReads {
         let key = (path, current_version.clone());
         let now = Instant::now();
         let (cached, reservation) = {
-            let mut copies = self.copies.lock().map_err(|_| anyhow::anyhow!("read cache lock poisoned"))?;
+            let mut copies = self.copies.lock_or_recover("the stored read cache");
             copies.retain(|_, copy| now.duration_since(copy.touched) < TTL);
             if let Some(entry) = copies.get_mut(&key) {
                 entry.touched = now;
@@ -362,7 +363,7 @@ impl StoredReads {
             ensure!(file_version(&file.metadata()?) == current_version, "file changed during read");
             ensure!(expected.is_none_or(|value| value == digest), "stored document digest does not match revision");
             let copy = std::sync::Arc::new(VerifiedCopy { data, digest, _reservation: reservation });
-            let mut copies = self.copies.lock().map_err(|_| anyhow::anyhow!("read cache lock poisoned"))?;
+            let mut copies = self.copies.lock_or_recover("the stored read cache");
             while copies.len() >= SLOTS {
                 let oldest = copies.iter().min_by_key(|(_, entry)| entry.touched).unwrap().0.clone();
                 copies.remove(&oldest);

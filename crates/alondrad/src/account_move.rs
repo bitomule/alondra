@@ -1,6 +1,7 @@
 //! Reconciles historical account-move journals without selecting another account for a started
 //! node. Pre-admission moves are undone; an already committed destination is recovered only
 //! after positive evidence that its native execution started. The old journal format stays readable.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AccountMove, AccountMovePlan, AccountMoveStep};
 use alondra_core::Millis;
@@ -35,7 +36,7 @@ fn policy(domain: &DomainRuntime) -> Policy {
 }
 
 fn moves(domain: &DomainRuntime) -> Vec<AccountMove> {
-    match domain.store.lock().expect("domain store poisoned").account_moves() {
+    match domain.store.lock_or_exit("the domain store").account_moves() {
         Ok(moves) => moves,
         Err(error) => {
             log!("could not read the journal of account moves: {error:#}");
@@ -94,7 +95,7 @@ fn plan(domain: &DomainRuntime, held: &ClaudeHeld, to: AccountId, now: Millis) -
     let stamp = lifecycle.execution().context("the task has no execution")?;
     anyhow::ensure!(crate::accounts::share_sessions(domain, &held.account, &to),
         "account {to} does not read the conversations of account {}, so the session would not resume there", held.account);
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     let metadata = store.conversation_metadata(&held.task, stamp.conversation().as_str())?.context("its Claude session is not known")?;
     let session = alondra_provider_claude::conversation_session(&metadata).context("its Claude session is not known")?;
     let cwd = store.task_worktree(&held.task)?.context("the folder its session works in is not known")?;
@@ -115,7 +116,7 @@ fn refused(_domain: &DomainRuntime, _moving: &AccountMove) -> Option<String> {
 /// A persisted lock or a preallocated Claude UUID does not prove that the destination native
 /// process ever ran. Available is committed only after native init or positive native consumption.
 pub(crate) fn require_started_destination(domain:&DomainRuntime,task:&TaskId)->Result<(),String>{
-    let moving=domain.store.lock().expect("domain store poisoned").account_moves().map_err(|error|format!("reading historical account moves: {error:#}"))?
+    let moving=domain.store.lock_or_exit("the domain store").account_moves().map_err(|error|format!("reading historical account moves: {error:#}"))?
         .into_iter().rev().find(|moving|moving.task==*task);
     let Some(moving)=moving.filter(|moving|matches!(moving.step,AccountMoveStep::Admitted|AccountMoveStep::Done)) else{return Ok(())};
     let state=domain.state().map_err(|error|format!("reading the admitted destination: {error:#}"))?;
@@ -165,7 +166,7 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, task: &TaskId) -> Resul
 /// The move does not happen: the task stays on its account's limit, and its execution is taken
 /// over again as after a restart, so a host runs it when the limit lets it go on.
 fn undo(domain: &DomainRuntime, moving: &AccountMove, why: &str) -> Result<(), String> {
-    domain.store.lock().expect("domain store poisoned").record_move_undone(&moving.task, moving.number, why)
+    domain.store.lock_or_exit("the domain store").record_move_undone(&moving.task, moving.number, why)
         .map_err(|error| format!("recording that the move was undone: {error:#}"))?;
     log!("{} stays on account {}: {why}", moving.task, moving.plan.from);
     crate::sdk_owner::retake(domain, moving.task.clone());
@@ -187,7 +188,7 @@ async fn stop(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), S
     })
     .await
     .map_err(|error| format!("stopping the host stopped: {error}"))??;
-    domain.store.lock().expect("domain store poisoned").record_move_host_stopped(&moving.task, moving.number)
+    domain.store.lock_or_exit("the domain store").record_move_host_stopped(&moving.task, moving.number)
         .map_err(|error| format!("recording that the host stopped: {error:#}"))
 }
 
@@ -256,7 +257,7 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
     if let Err(failure) = crate::domain_agent_lifecycle::node_event(domain, &moving.plan.node, NodeEvent::SessionClosed) {
         log!("could not close {} after its task moved to account {}: {failure}", moving.plan.node, moving.plan.to);
     }
-    domain.store.lock().expect("domain store poisoned").record_move_done(&moving.task, moving.number)
+    domain.store.lock_or_exit("the domain store").record_move_done(&moving.task, moving.number)
         .map_err(|error| format!("recording the end of the move: {error:#}"))?;
     log!("{} goes on with account {}: {agent} resumes its Claude session after account {} reached its usage limit", moving.task, moving.plan.to, moving.plan.from);
     Ok(())

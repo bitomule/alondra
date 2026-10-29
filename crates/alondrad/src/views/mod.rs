@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 pub(crate) mod cache;
 pub(crate) mod actions;
 pub(crate) mod action_results;
@@ -46,12 +47,13 @@ pub(crate) async fn stamp_version(
 }
 
 fn note_client(version: &str) {
+    /// A holder that panics leaves it whole, so it is recovered: one push.
     static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let service = env!("CARGO_PKG_VERSION");
     if version == service || version.len() > 32 {
         return;
     }
-    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut seen = SEEN.lock_or_recover("the client versions seen");
     if !seen.iter().any(|v| v == version) {
         seen.push(version.to_owned());
         log!("a terminal on {version} talks to service {service}");

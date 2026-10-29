@@ -2,6 +2,7 @@
 //! Agent for a Task, type a message into an Agent's session, press Esc in it and read the
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::launch_worktree::Workplace;
@@ -222,7 +223,7 @@ fn queue_at_gate(domain: &DomainRuntime, body: &LaunchBody, task: &TaskId, title
 }
 
 fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str, Option<&str>)>) {
-    let recorded = domain.store.lock().expect("domain store poisoned")
+    let recorded = domain.store.lock_or_exit("the domain store")
         .set_launch_refusal(task, refusal, alondra_core::now_millis());
     if let Err(error) = recorded {
         log!("could not record why {task} did not start: {error:?}");
@@ -634,7 +635,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             })?;
         record_worktree(domain, launched["agent_id"].as_str(), &workplace, replaced.as_ref().zip(inherited.as_ref()));
         if origin == Origin::Auto {
-            let _ = domain.store.lock().expect("domain store poisoned")
+            let _ = domain.store.lock_or_exit("the domain store")
                 .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
         }
         record(domain, Decision {
@@ -1052,7 +1053,7 @@ pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchP
     }
     crate::launch_plans::validate(domain, home, &task.request_id, &body.launch)?;
     let stored = |error: anyhow::Error| { log!("could not store the launch plan of {}: {error:#}", task.id); DomainError::new("storage_unavailable", "the launch plan could not be stored") };
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     let now = state(domain)?;
     if let Some(refused) = under_review(&now) {
         return Err(refused);

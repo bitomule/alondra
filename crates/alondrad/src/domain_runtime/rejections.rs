@@ -5,13 +5,15 @@ use std::collections::BTreeMap;
 
 pub(super) const REJECTIONS_BEFORE_PROBLEM: u32 = 3;
 
+/// A holder that panics leaves it whole, so it is recovered: one remove or one increment of a
+/// streak.
 #[derive(Default)]
 pub(crate) struct Rejections(Mutex<BTreeMap<(String, String), u32>>);
 
 impl Rejections {
     /// True when this rejection is the one that makes the streak long enough for a Problem.
     fn record(&self, key: (String, String), rejected: bool) -> bool {
-        let mut streaks = self.0.lock().expect("rejections poisoned");
+        let mut streaks = self.0.lock_or_recover("the card rejections");
         if !rejected {
             streaks.remove(&key);
             return false;

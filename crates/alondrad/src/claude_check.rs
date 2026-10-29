@@ -2,6 +2,7 @@
 //! plugin: version 2.1.287 or later, and the plugin passes `claude plugin validate --strict`. A
 //! failure is logged and reported by `/daemon`, and re-checked every ten minutes until it passes;
 //! each host start checks the version again for itself.
+use crate::locks::Poisonable as _;
 use alondra_core::claude_code;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -14,10 +15,12 @@ pub(crate) struct Status {
     pub detail: String,
 }
 
+/// A holder that panics leaves it whole, so it is recovered: one assignment, overwritten every
+/// check.
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
 
 pub(crate) fn status() -> Option<Status> {
-    STATUS.lock().expect("Claude Code check lock poisoned").clone()
+    STATUS.lock_or_recover("the Claude Code check").clone()
 }
 
 /// What each step printed, or `None` when it could not run in time.
@@ -73,7 +76,7 @@ pub(crate) async fn run(plugin: Option<PathBuf>) {
             }
         }
         let wait = next_check(&status);
-        *STATUS.lock().expect("Claude Code check lock poisoned") = Some(status);
+        *STATUS.lock_or_recover("the Claude Code check") = Some(status);
         let Some(wait) = wait else { return };
         tokio::time::sleep(wait).await;
     }

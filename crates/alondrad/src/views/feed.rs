@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use alondra_core::domain::DomainError;
 use alondra_core::views::{Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::{
@@ -18,8 +19,11 @@ use std::{
 use tokio::sync::{oneshot, watch};
 
 pub(crate) struct Feeds {
+    /// A holder that panics leaves it whole, so it is recovered: one insert or remove per device.
     waiters: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
+    /// A holder that panics leaves it whole, so it is recovered: a cache.
     cache: Mutex<HashMap<String, Current>>,
+    /// A holder that panics leaves it whole, so it is recovered: one insert or retain.
     open: Mutex<HashMap<String, (String, Instant)>>,
     next: AtomicU64,
     clock: watch::Sender<u64>,
@@ -48,14 +52,14 @@ impl Feeds {
     }
 
     fn remember_open(&self, device: &str, key: String) {
-        self.open.lock().expect("feed open views poisoned")
+        self.open.lock_or_recover("the open feed views")
             .insert(device.to_owned(), (key, Instant::now()));
     }
 
     fn live_keys_at(&self, now: Instant) -> Vec<String> {
-        let mut open = self.open.lock().expect("feed open views poisoned");
+        let mut open = self.open.lock_or_recover("the open feed views");
         open.retain(|_, (_, seen)| now.saturating_duration_since(*seen) < Duration::from_secs(60));
-        let mut cache = self.cache.lock().expect("feed cache poisoned");
+        let mut cache = self.cache.lock_or_recover("the feed cache");
         cache.retain(|key, _| open.values().any(|(active, _)| active == key));
         let mut keys = cache.values().flat_map(|current| current.live_keys.iter().cloned())
             .collect::<Vec<_>>();
@@ -65,7 +69,7 @@ impl Feeds {
     }
 
     fn cached_current(&self, key: &str, epoch: &str, revision: u64, wake: u64) -> Option<Current> {
-        self.cache.lock().expect("feed cache poisoned").get(key)
+        self.cache.lock_or_recover("the feed cache").get(key)
             .filter(|current| same_input_revision(
                 &current.epoch, current.clock.1, current.wake, epoch, revision, wake,
             ))
@@ -184,8 +188,7 @@ pub(crate) async fn handle(
     if let Some((_, old)) = client
         .feeds
         .waiters
-        .lock()
-        .expect("feed waiters poisoned")
+        .lock_or_recover("the feed waiters")
         .insert(device.to_owned(), (generation, cancel_tx))
     {
         let _ = old.send(());
@@ -266,7 +269,7 @@ async fn current(
     if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake) {
         return Ok(current);
     }
-    let cached = client.feeds.cache.lock().expect("feed cache poisoned")
+    let cached = client.feeds.cache.lock_or_recover("the feed cache")
         .get(&cache_key).cloned();
     let previous = previous.or(cached.as_ref());
     let status_key = status_view_key(kind);
@@ -322,7 +325,7 @@ fn feed_key(kind: Client, lang: Lang, transport: Transport, views: &[(String, St
 }
 
 fn cache_current(client: &crate::client_routes::Client, key: String, current: &Current) {
-    let mut cache = client.feeds.cache.lock().expect("feed cache poisoned");
+    let mut cache = client.feeds.cache.lock_or_recover("the feed cache");
     if cache.len() >= 64 && !cache.contains_key(&key) {
         cache.clear();
     }
@@ -459,7 +462,7 @@ fn valid_key(key: &str) -> bool {
 }
 
 fn remove_waiter(client: &crate::client_routes::Client, device: &str, generation: u64) {
-    let mut waiters = client.feeds.waiters.lock().expect("feed waiters poisoned");
+    let mut waiters = client.feeds.waiters.lock_or_recover("the feed waiters");
     if waiters
         .get(device)
         .is_some_and(|(current, _)| *current == generation)

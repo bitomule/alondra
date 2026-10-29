@@ -16,13 +16,13 @@ pub(crate) struct Operation {
 }
 impl Drop for Operation {
     fn drop(&mut self) {
-        self.domain.operations_live.lock().expect("operation registry poisoned").remove(&(self.run.clone(),self.call.clone()));
+        self.domain.operations_live.lock_or_recover("the operation registry").remove(&(self.run.clone(),self.call.clone()));
         self.domain.operations_changed.send_modify(|version| *version = version.wrapping_add(1));
     }
 }
 impl Operation {
     fn finish(&self, answer: &Answer) -> std::result::Result<(),StoreError> {
-        self.domain.store.lock().expect("domain store poisoned").complete_tool_operation(&self.run,&self.call,answer)?;
+        self.domain.store.lock_or_exit("the domain store").complete_tool_operation(&self.run,&self.call,answer)?;
         Ok(())
     }
 }
@@ -30,8 +30,8 @@ impl Operation {
 impl DomainRuntime {
     fn begin_tool_operation(self: &Arc<Self>, bearer: &str, operation: Option<&str>, kind: &str, request: &Value) -> std::result::Result<Admission,StoreError> {
         let refused = || DomainError::new("forbidden","The current orchestrator execution is required");
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
-        let mut store = self.store.lock().expect("domain store poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
+        let mut store = self.store.lock_or_exit("the domain store");
         let state = store.load()?;
         let principal = authority.resolve(&state.data_epoch.0,bearer).map_err(|_| refused())?;
         let Principal::Orchestrator { generation, execution_id } = &principal else { return Err(refused().into()) };
@@ -46,7 +46,7 @@ impl DomainRuntime {
             return Ok(Admission::Existing { run: execution_id.clone(),call });
         }
         authority.record_change(&principal,kind);
-        self.operations_live.lock().expect("operation registry poisoned").insert((execution_id.clone(),call.clone()));
+        self.operations_live.lock_or_recover("the operation registry").insert((execution_id.clone(),call.clone()));
         self.operations_changed.send_modify(|version| *version = version.wrapping_add(1));
         Ok(Admission::Started(Operation { domain: Arc::clone(self),run: execution_id.clone(),call }))
     }
@@ -54,7 +54,7 @@ impl DomainRuntime {
     async fn operation_answer(&self, run: &str, call: &str) -> Answer {
         let mut changed = self.operations_changed.subscribe();
         loop {
-            let row = self.store.lock().expect("domain store poisoned").tool_operations(run)
+            let row = self.store.lock_or_exit("the domain store").tool_operations(run)
                 .map_err(|_| DomainError::new("storage_unavailable","The operation receipt could not be read"))?
                 .into_iter().find(|row| row.0 == call).ok_or_else(|| DomainError::new("operation_uncertain","The operation receipt is missing"))?;
             match row.2.as_str() {
@@ -63,7 +63,7 @@ impl DomainRuntime {
                 "uncertain" => return Err(row.4.as_deref().and_then(|error| serde_json::from_str(error).ok()).unwrap_or_else(|| DomainError::new("operation_uncertain","Reconcile the earlier operation before trying it again"))),
                 _ => {}
             }
-            if !self.operations_live.lock().expect("operation registry poisoned").contains(&(run.into(),call.into())) {
+            if !self.operations_live.lock_or_recover("the operation registry").contains(&(run.into(),call.into())) {
                 return Err(DomainError::new("operation_uncertain","The earlier operation lost its executor; inspect its committed effects before continuing"));
             }
             if changed.changed().await.is_err() { return Err(DomainError::new("operation_uncertain","The operation stopped before its result was recorded")); }
@@ -73,8 +73,8 @@ impl DomainRuntime {
     pub(crate) async fn drain_batch_operations(&self, run: &str) -> std::result::Result<(),StoreError> {
         let mut changed = self.operations_changed.subscribe();
         loop {
-            let rows = self.store.lock().expect("domain store poisoned").tool_operations(run)?;
-            let live = self.operations_live.lock().expect("operation registry poisoned").iter().any(|(execution,_)| execution == run);
+            let rows = self.store.lock_or_exit("the domain store").tool_operations(run)?;
+            let live = self.operations_live.lock_or_recover("the operation registry").iter().any(|(execution,_)| execution == run);
             if !live { return Ok(()); }
             drop(rows);
             if changed.changed().await.is_err() { return Err(StoreError::Storage(anyhow::anyhow!("The operation drain stopped before its writers finished"))); }
@@ -82,7 +82,7 @@ impl DomainRuntime {
     }
 
     pub(crate) fn confirmed_batch_effects(&self, run: &str, admitted: &[String]) -> std::result::Result<bool,StoreError> {
-        let store = self.store.lock().expect("domain store poisoned");
+        let store = self.store.lock_or_exit("the domain store");
         let operations = store.tool_operations(run)?;
         if operations.iter().any(|row| row.2 != "succeeded") { return Ok(false); }
         let mut confirmed = std::collections::BTreeMap::<String,usize>::new();
@@ -123,6 +123,17 @@ mod tests {
     use crate::test_support::Directory;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize,Ordering};
+
+    #[test]
+    fn an_operation_that_ends_after_a_panic_holding_the_registry_leaves_it() {
+        let home = Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let domain = Arc::new(DomainRuntime::open_at(&home,&home.join("domain.db")).unwrap());
+        domain.operations_live.lock().unwrap().insert(("run".into(),"call".into()));
+        crate::locks::poison(&domain.operations_live);
+        drop(Operation { domain: Arc::clone(&domain),run: "run".into(),call: "call".into() });
+        assert!(domain.operations_live.lock().unwrap().is_empty(), "a stale entry would make its callers wait for it forever");
+    }
 
     #[tokio::test]
     async fn losing_the_http_consumer_does_not_cancel_or_repeat_a_durable_mutation() {

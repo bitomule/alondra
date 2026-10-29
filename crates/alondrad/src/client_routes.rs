@@ -1,6 +1,7 @@
 //! The routes the TUI and the CLI call on a domain daemon beyond the domain itself: the
 //! live runtime of the Mac and its sessions, and what a session is doing. The domain stays
 //! the only authority; nothing here decides an action.
+use crate::locks::Poisonable as _;
 mod close;
 mod live;
 mod mcp;
@@ -41,21 +42,31 @@ pub(crate) struct Client {
     pub(crate) domain: Arc<DomainRuntime>,
     home: PathBuf,
     pub(crate) gauges: crate::machine::Gauges,
+    /// A holder that panics leaves it whole, so it is recovered: `views::live` empties it instead.
     pub(crate) views_gauges: std::sync::Mutex<Option<(std::time::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
+    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     pr_view: std::sync::Mutex<Arc<dyn PrView>>,
+    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     pr_images: std::sync::Mutex<Arc<dyn crate::pr_images::GitHubImages>>,
     pub(crate) views: crate::views::cache::Cache,
     pub(crate) feeds: crate::views::feed::Feeds,
+    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
+    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     github: std::sync::Mutex<Arc<dyn Github>>,
+    /// A holder that panics leaves it whole, so it is recovered: one assignment of a file already
+    /// parsed.
     options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
     pub(crate) live_snapshots: crate::views::live::LiveSnapshots,
     pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
+    /// A holder that panics leaves it whole, so it is recovered: assigned only after the file is
+    /// saved.
     device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
     device_languages_path: PathBuf,
+    /// A holder that panics leaves it whole, so it is recovered: one assignment or clone.
     report_cli: std::sync::Mutex<Option<PathBuf>>,
 }
 
@@ -245,7 +256,7 @@ impl Client {
     }
 
     pub(crate) fn remember_language(&self, device: &str, lang: alondra_core::views::Lang) {
-        let mut languages = self.device_languages.lock().expect("device languages poisoned");
+        let mut languages = self.device_languages.lock_or_recover("the device languages");
         if languages.get(device) == Some(&lang) {
             return;
         }
@@ -262,7 +273,7 @@ impl Client {
     }
 
     pub(crate) fn language_for_device(&self, device: &str) -> alondra_core::views::Lang {
-        self.device_languages.lock().expect("device languages poisoned").get(device).copied()
+        self.device_languages.lock_or_recover("the device languages").get(device).copied()
             .unwrap_or(alondra_core::views::Lang::En)
     }
 
@@ -316,7 +327,7 @@ impl Client {
 
     #[cfg(test)]
     pub(crate) fn use_sessions(&self, sessions: Arc<dyn Sessions>) {
-        *self.sessions.lock().expect("session control poisoned") = sessions;
+        *self.sessions.lock_or_recover("the session control") = sessions;
     }
 
     pub(crate) async fn write(
@@ -443,14 +454,14 @@ impl Client {
             .filter_map(|id| state.interactions.get(id).map(|card| (format!("interaction:{}", id.0), card.order)))
             .collect();
         let (state_times, request_times, revision_times) = {
-            let store = self.domain.store.lock().expect("domain store poisoned");
+            let store = self.domain.store.lock_or_exit("the domain store");
             let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();
             match (store.task_state_times(), store.request_times(), store.revision_times(&revisions)) {
                 (Ok(tasks), Ok(requests), Ok(revisions)) => (tasks, requests, revisions),
                 _ => return storage(),
             }
         };
-        let (machine, usage) = match &*crate::log::recover(&self.gauges, "the machine gauges") {
+        let (machine, usage) = match &*self.gauges.lock_or_recover("the machine gauges") {
             Some((machine, usage)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
@@ -462,7 +473,7 @@ impl Client {
             })
             .collect();
         let (launches, cancel_reasons) = {
-            let store = self.domain.store.lock().expect("domain store poisoned");
+            let store = self.domain.store.lock_or_exit("the domain store");
             match (store.request_launch_summaries(), store.cancel_reasons()) {
                 (Ok(launches), Ok(reasons)) => (launches, reasons),
                 _ => return storage(),

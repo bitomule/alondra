@@ -5,6 +5,7 @@
 //! A device must also remain approved in the local pairing registry. Relay enrollment is a
 //! one-time durable attempt per device ID so a relay-side revocation survives reconnects and
 //! restarts; the direct transport needs only the local approval.
+use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::auth::Auth;
 use crate::push::{in_quiet_hours, valid_push_binding};
 use alondra_e2e::{Context as EnvelopeContext, Envelope};
@@ -53,6 +54,8 @@ type InFlight = Arc<InFlightSet>;
 /// The envelopes executing now, and a wake-up for a direct retry waiting on one of them.
 #[derive(Default)]
 struct InFlightSet {
+    /// A holder that panics leaves it whole, so it is recovered: lookups and one insert, and one
+    /// remove in `WorkGuard::drop`, which runs while unwinding and must not panic again.
     work: Mutex<HashMap<WorkKey, ([u8; 32], bool)>>,
     done: tokio::sync::Notify,
 }
@@ -102,8 +105,7 @@ struct WorkGuard {
 impl Drop for WorkGuard {
     fn drop(&mut self) {
         self.inflight
-            .lock()
-            .expect("inflight lock poisoned")
+            .lock_or_recover("the work in flight")
             .remove(&self.key);
         self.inflight.done.notify_waiters();
     }
@@ -227,29 +229,29 @@ struct Device {
 }
 
 /// The approved phones, replaceable in place when `service.toml` changes.
+/// A holder that panics leaves it whole, so it is recovered: it is only replaced whole, with a map
+/// built outside it.
 #[derive(Default)]
 struct Devices(RwLock<HashMap<String, Arc<Device>>>);
 
 impl Devices {
     fn get(&self, id: &str) -> Option<Arc<Device>> {
         self.0
-            .read()
-            .expect("devices lock poisoned")
+            .read_or_recover("the paired devices")
             .get(id)
             .cloned()
     }
 
     fn snapshot(&self) -> Vec<(String, Arc<Device>)> {
         self.0
-            .read()
-            .expect("devices lock poisoned")
+            .read_or_recover("the paired devices")
             .iter()
             .map(|(id, device)| (id.clone(), device.clone()))
             .collect()
     }
 
     fn replace(&self, devices: HashMap<String, Device>) {
-        *self.0.write().expect("devices lock poisoned") = devices
+        *self.0.write_or_recover("the paired devices") = devices
             .into_iter()
             .map(|(id, device)| (id, Arc::new(device)))
             .collect();
@@ -1089,7 +1091,7 @@ impl Service {
             Some("/v1/changes" | "/changes")
         ) && approved_method(&request).is_ok();
         let key = (e.sender.clone(), e.request_id.clone());
-        let mut inflight = self.inflight.lock().expect("inflight lock poisoned");
+        let mut inflight = self.inflight.lock_or_recover("the work in flight");
         if let Some((prior, _)) = inflight.get(&key) {
             if *prior != digest {
                 return Err(ReusedRequestId.into());
@@ -2883,6 +2885,7 @@ mod tests {
     mod operation_result_tests;
     mod approval_lease_deadlock_tests;
     mod iroh_tests;
+    mod poison_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;

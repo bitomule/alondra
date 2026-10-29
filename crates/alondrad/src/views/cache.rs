@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use alondra_core::domain::{DomainState, ReadSnapshot};
 use alondra_core::views::{
     self, BuildError, Client, ClientCapabilities, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
@@ -81,7 +82,9 @@ impl Input {
 
 #[derive(Default)]
 pub(crate) struct Cache {
+    /// A holder that panics leaves it whole, so it is recovered: a cache of rendered views.
     entries: Mutex<Entries<View>>,
+    /// A holder that panics leaves it whole, so it is recovered: a cache of versions.
     versions: Mutex<Entries<Version>>,
     #[cfg(test)]
     builds: std::sync::atomic::AtomicUsize,
@@ -136,14 +139,14 @@ impl Cache {
 
     #[cfg(test)]
     pub(crate) fn serialized_retention(&self) -> (usize, usize) {
-        let entries = self.entries.lock().expect("view render cache poisoned");
+        let entries = self.entries.lock_or_recover("the view render cache");
         let bytes = entries.values.values().map(|view| serde_json::to_vec(view).expect("view serialization").len()).sum();
         (entries.values.len(), bytes)
     }
 
     /// The version of a view already rendered from these inputs, without rendering it.
     pub(crate) fn version(&self, key: &str, input: &Input, client: Client, lang: Lang, transport: Transport) -> Option<Version> {
-        self.versions.lock().expect("view version cache poisoned").get(&input.key(key, client, lang, transport))
+        self.versions.lock_or_recover("the view version cache").get(&input.key(key, client, lang, transport))
     }
 
     /// The versions of these views, rendering only those never rendered from these inputs.
@@ -193,7 +196,7 @@ impl Cache {
         let domain = read.state();
         let cursor = &input.cursor;
         let cache_key = input.key(key, client, lang, transport);
-        if let Some(view) = self.entries.lock().expect("view render cache poisoned").get(&cache_key) {
+        if let Some(view) = self.entries.lock_or_recover("the view render cache").get(&cache_key) {
             return Ok(view);
         }
         #[cfg(test)]
@@ -222,8 +225,8 @@ impl Cache {
         view.cursor = format!("c1.{}", base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD, feed_clock,
         ));
-        self.versions.lock().expect("view version cache poisoned").insert(cache_key.clone(), Version::of(&view), MAX_VERSIONS);
-        self.entries.lock().expect("view render cache poisoned").insert(cache_key, view.clone(), MAX_ENTRIES);
+        self.versions.lock_or_recover("the view version cache").insert(cache_key.clone(), Version::of(&view), MAX_VERSIONS);
+        self.entries.lock_or_recover("the view render cache").insert(cache_key, view.clone(), MAX_ENTRIES);
         Ok(view)
     }
 }

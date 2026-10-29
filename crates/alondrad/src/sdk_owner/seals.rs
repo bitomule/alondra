@@ -1,12 +1,16 @@
 //! What the store issued with commits whose state readers already see: dispatch and control
 //! permits, claimed attempts, owner grants, recorded commands and observations. Each SDK owner takes only those
 //! of its own task; a commit of the normal command path hands its permits here too.
+use crate::locks::{Poisonable as _, AfterPanic as _};
 use alondra_core::domain::TaskId;
 use alondra_store::Committed;
 use std::sync::{Condvar, Mutex};
 
 #[derive(Default)]
 pub(crate) struct Seals {
+    /// A holder that panics can leave it half-changed, so the daemon exits: `take_of` moves one-
+    /// shot permits out by field; lost ones would strand a task, and a fresh start derives them
+    /// again from the store.
     queued: Mutex<Vec<Committed>>,
     arrived: Condvar,
 }
@@ -14,50 +18,50 @@ pub(crate) struct Seals {
 impl Seals {
     /// Called by the runtime only after it published the commit that issued `committed`.
     pub(crate) fn put(&self, committed: Committed) {
-        self.queued.lock().expect("seals poisoned").push(committed);
+        self.queued.lock_or_exit("the SDK seals").push(committed);
         self.arrived.notify_all();
     }
 
     pub(crate) fn take(&self, task: &TaskId) -> Committed {
-        take_of(&mut self.queued.lock().expect("seals poisoned"), task)
+        take_of(&mut self.queued.lock_or_exit("the SDK seals"), task)
     }
 
     /// Blocks until something of `task` arrives, `stopped` says the owner ends, or `timeout` passes.
     pub(crate) fn wait_for(&self, task: &TaskId, timeout: std::time::Duration, stopped: impl Fn() -> bool) -> Committed {
         let deadline = std::time::Instant::now() + timeout;
-        let mut queued = self.queued.lock().expect("seals poisoned");
+        let mut queued = self.queued.lock_or_exit("the SDK seals");
         loop {
             let taken = take_of(&mut queued, task);
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if !empty(&taken) || stopped() || left.is_zero() {
                 return taken;
             }
-            queued = self.arrived.wait_timeout(queued, left).expect("seals poisoned").0;
+            queued = self.arrived.wait_timeout(queued, left).or_exit("the SDK seals").0;
         }
     }
 
     /// Blocks for `timeout`, or until `stopped` says the owner ends, taking nothing.
     pub(crate) fn pause(&self, timeout: std::time::Duration, stopped: impl Fn() -> bool) {
         let deadline = std::time::Instant::now() + timeout;
-        let mut queued = self.queued.lock().expect("seals poisoned");
+        let mut queued = self.queued.lock_or_exit("the SDK seals");
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if stopped() || left.is_zero() {
                 return;
             }
-            queued = self.arrived.wait_timeout(queued, left).expect("seals poisoned").0;
+            queued = self.arrived.wait_timeout(queued, left).or_exit("the SDK seals").0;
         }
     }
 
     /// Wakes every waiting owner, so one told to stop sees it.
     pub(crate) fn wake(&self) {
-        let _queued = self.queued.lock().expect("seals poisoned");
+        let _queued = self.queued.lock_or_exit("the SDK seals");
         self.arrived.notify_all();
     }
 
     #[cfg(test)]
     pub(crate) fn take_all(&self) -> Vec<Committed> {
-        std::mem::take(&mut *self.queued.lock().expect("seals poisoned"))
+        std::mem::take(&mut *self.queued.lock_or_exit("the SDK seals"))
     }
 }
 
@@ -91,4 +95,26 @@ fn take_of(queued: &mut Vec<Committed>, task: &TaskId) -> Committed {
     }
     queued.retain(|committed| !empty(committed));
     taken
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::locks::{assert_exited_for, child_home, in_child};
+
+    #[test]
+    #[ignore = "run by taking_seals_after_a_panic_holding_them_exits_the_daemon"]
+    fn queued_child() {
+        if child_home().is_none() { return; }
+        let seals = Seals::default();
+        crate::locks::poison(&seals.queued);
+        let _ = seals.take_all();
+        unreachable!("the seals were taken while poisoned");
+    }
+
+    #[test]
+    fn taking_seals_after_a_panic_holding_them_exits_the_daemon() {
+        let home = crate::test_support::Directory::new();
+        assert_exited_for(&in_child("sdk_owner::seals::tests::queued_child", &home), "the SDK seals");
+    }
 }

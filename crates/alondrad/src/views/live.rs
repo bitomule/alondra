@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use super::reset_time;
 use alondra_core::Millis;
 use alondra_core::domain::{DomainState, NodePhase, PrState, PullRequest, TaskId, TaskState};
@@ -23,6 +24,7 @@ fn cache<T: Default>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     })
 }
 
+/// A holder that panics empties it: see `cache`.
 #[derive(Default)]
 pub(crate) struct LiveReadCache(Mutex<HashMap<String, (u64, String, Value)>>);
 
@@ -45,6 +47,7 @@ impl LiveReadCache {
 /// its own data.
 #[derive(Default)]
 pub(crate) struct LiveSnapshots {
+    /// A holder that panics empties it: see `cache`.
     entries: Mutex<HashMap<String, (Facts, LiveSnapshot)>>,
     #[cfg(test)]
     gathered: std::sync::atomic::AtomicUsize,
@@ -84,7 +87,7 @@ impl Facts {
         let sampled = client.feeds.subscribe();
         let pull_requests = client.details.version();
         let contexts = client.domain.contexts.version();
-        let (store_rows, newest) = client.domain.store.lock().expect("domain store poisoned").write_mark().ok()?;
+        let (store_rows, newest) = client.domain.store.lock_or_exit("the domain store").write_mark().ok()?;
         (newest <= state.revision && *domain.borrow() == state.revision).then(|| Self {
             epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests, contexts,
             domain, hooks, reports, usage, gate, sampled,
@@ -113,7 +116,7 @@ struct Marks {
 impl Marks {
     fn now(client: &crate::client_routes::Client) -> Self {
         Self {
-            store_rows: client.domain.store.lock().expect("domain store poisoned").write_mark().ok().map(|(rows, _)| rows),
+            store_rows: client.domain.store.lock_or_exit("the domain store").write_mark().ok().map(|(rows, _)| rows),
             pull_requests: client.details.version(),
             contexts: client.domain.contexts.version(),
         }
@@ -285,11 +288,11 @@ async fn gather_inner(
         standing => (standing, false),
     };
     let (launches, refusals, retries) = {
-        let store = client.domain.store.lock().expect("domain store poisoned");
+        let store = client.domain.store.lock_or_exit("the domain store");
         (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default())
     };
     let start_waits = {
-        let store = client.domain.store.lock().expect("domain store poisoned");
+        let store = client.domain.store.lock_or_exit("the domain store");
         state.tasks.values()
             .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
             .filter(|task| client.domain.live.closed_task(&task.id.0).is_none() && !store.task_was_launched(&task.id).unwrap_or(true))
@@ -526,8 +529,7 @@ async fn gather_inner(
         client
             .domain
             .store
-            .lock()
-            .expect("domain store poisoned")
+            .lock_or_exit("the domain store")
             .revision_times(&revisions)
             .ok()
             .map(|times| {
@@ -543,7 +545,7 @@ async fn gather_inner(
             })
             .unwrap_or_default()
     };
-    let sample = crate::log::recover(&client.gauges, "the machine gauges").clone();
+    let sample = client.gauges.lock_or_recover("the machine gauges").clone();
     let gauges = if let Some((machine, usage)) = sample {
         let mut published = cache(&client.views_gauges);
         published_gauges(&mut published, std::time::Instant::now(), lang, || (
@@ -554,8 +556,7 @@ async fn gather_inner(
     let request_times = if clock_only { BTreeMap::new() } else { client
         .domain
         .store
-        .lock()
-        .expect("domain store poisoned")
+        .lock_or_exit("the domain store")
         .request_times()
         .unwrap_or_default()
         .into_iter()
@@ -563,7 +564,7 @@ async fn gather_inner(
         .collect() };
     let (task_since, task_started, cancel_reasons) = if clock_only { (BTreeMap::new(), BTreeMap::new(), BTreeMap::new()) } else {
         let (times, started, reasons) = {
-            let store = client.domain.store.lock().expect("domain store poisoned");
+            let store = client.domain.store.lock_or_exit("the domain store");
             (store.task_state_times().unwrap_or_default(), store.task_started_times().unwrap_or_default(), store.cancel_reasons().unwrap_or_default())
         };
         let visible = || state.tasks.values().filter(|task| !task.archived);
@@ -765,8 +766,7 @@ async fn gather_keyed(
         if let Ok(history) = client
             .domain
             .store
-            .lock()
-            .expect("domain store poisoned")
+            .lock_or_exit("the domain store")
             .task_history(&task)
         {
             task_history.insert(
@@ -809,7 +809,7 @@ fn allowed_rules(client: &crate::client_routes::Client, keys: &[String]) -> (Vec
     let rows = if keys.iter().any(|key| key == "machine") {
         crate::allow_always::reconcile(&client.domain)
     } else {
-        client.domain.store.lock().expect("domain store poisoned").allowed_rules().unwrap_or_default()
+        client.domain.store.lock_or_exit("the domain store").allowed_rules().unwrap_or_default()
     };
     let mut missing: Vec<String> = rows.iter().filter(|row| row.state == RuleState::Missing).map(|row| row.interaction_id.clone()).collect();
     missing.sort();
@@ -1497,10 +1497,10 @@ mod cache_tests {
         assert!(gather(&client, &state, Lang::En, &["home".into()], false, false).await.pacing.is_some());
         domain.live.gate.poison();
         domain.live.machine_watch.poison();
-        crate::log::poison(&client.live_snapshots.entries);
-        crate::log::poison(&client.live_reads.0);
-        crate::log::poison(&client.views_gauges);
-        crate::log::poison(&client.gauges);
+        crate::locks::poison(&client.live_snapshots.entries);
+        crate::locks::poison(&client.live_reads.0);
+        crate::locks::poison(&client.views_gauges);
+        crate::locks::poison(&client.gauges);
         domain.live.gate.poke();
         let live = gather(&client, &state, Lang::En, &["home".into()], false, false).await;
         assert!(live.pacing.is_some());

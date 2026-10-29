@@ -2,6 +2,7 @@
 //! `AdmitExecution`, launches the host, sends each dispatch the store issued for its task,
 //! stages what the host observes and acknowledges it only once readers see the commit.
 //! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
+use crate::locks::Poisonable as _;
 pub(crate) mod backend;
 pub(crate) mod seals;
 mod worker;
@@ -252,7 +253,7 @@ fn native_recovery(domain:&DomainRuntime,backend:&SdkBackend,task:&TaskId,provid
         || !records.iter().skip(at+1).any(|record|matches!(record,LifecycleRecord::ResourceAvailable)) {return Err(refuse())}
     let task_state=state.tasks.get(task).ok_or_else(refuse)?;
     if task_state.account_key()!=AccountKey::new(provider,account.clone()){return Err(Failed::new("Choose account and provider when creating a node. Recovery must use the original native account".into()))}
-    let (metadata,original_directory)={let store=domain.store.lock().expect("domain store poisoned");
+    let (metadata,original_directory)={let store=domain.store.lock_or_exit("the domain store");
         (store.conversation_metadata(task,&admission.conversation).map_err(|error|Failed::new(format!("Reading the original native conversation: {error:#}")))?,
         store.task_worktree(task).map_err(|error|Failed::new(format!("Reading the original native worktree: {error:#}")))?)};
     if original_directory.as_deref()!=Some(directory){return Err(Failed::new("Native session recovery must use the original task worktree".into()))}
@@ -754,13 +755,13 @@ fn not_taken(domain: &DomainRuntime, task: &TaskId, failed: Failed) {
         return lost(domain, task, &failed.why);
     }
     log!("the SDK execution of {task} waits for disk space to be taken over: {failed}");
-    domain.waiting_for_space.lock().expect("waiting for space poisoned").insert(task.clone());
+    domain.waiting_for_space.lock_or_recover("the tasks waiting for space").insert(task.clone());
 }
 
 /// The machine watch measured space on the disk: each execution whose takeover found it full is
 /// taken over again, unless it ended or another owner took it meanwhile.
 pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
-    let waiting = std::mem::take(&mut *domain.waiting_for_space.lock().expect("waiting for space poisoned"));
+    let waiting = std::mem::take(&mut *domain.waiting_for_space.lock_or_recover("the tasks waiting for space"));
     if waiting.is_empty() {
         return;
     }
@@ -821,7 +822,7 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
         return lost(domain, &task, NO_HOST);
     };
     let backend = backend.clone();
-    let mut retakes = domain.retakes.lock().expect("retakes poisoned");
+    let mut retakes = domain.retakes.lock_or_recover("the retakes");
     retakes.retain(|retake| !retake.is_finished());
     retakes.push(std::thread::spawn(move || {
         if runtime.state().ok().and_then(|state| state.tasks.get(&task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
@@ -1465,6 +1466,7 @@ pub(crate) struct Owner {
     /// The stop it was told is a close: Claude's running turn ends as an interrupted turn first.
     interrupt: Arc<AtomicBool>,
     domain: Arc<DomainRuntime>,
+    /// A holder that panics leaves it whole, so it is recovered: one assignment or a read.
     host: Arc<Mutex<Option<alondra_agent_runtime::owned_host::HostStop>>>,
     agent: AgentId,
     thread: Option<std::thread::JoinHandle<Result<(), Failed>>>,
@@ -1520,7 +1522,7 @@ impl Owner {
                     let controls = std::mem::take(&mut driver.controls);
                     match driver.replace_ended_host(&backend, plugin.as_deref()) {
                         Ok(mut next) => {
-                            *current.lock().expect("host stop poisoned") = next.worker.stopper();
+                            *current.lock_or_recover("the SDK host stop") = next.worker.stopper();
                             next.relaunches = relaunches;
                             if relaunches > 0 {
                                 log!("the new SDK host of {task} ended without taking its input: another host that resumes the same session took its place (attempt {relaunches} of {})", RELAUNCH_WAITS.len());
@@ -1575,7 +1577,7 @@ impl Owner {
         if self.ended() {
             return None;
         }
-        self.host.lock().expect("host stop poisoned").as_ref().and_then(|host| host.process_group())
+        self.host.lock_or_recover("the SDK host stop").as_ref().and_then(|host| host.process_group())
     }
 
     /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits
@@ -1596,7 +1598,7 @@ impl Owner {
         self.stopped.store(true, Ordering::SeqCst);
         self.domain.seals.wake();
         let interrupt = self.interrupt.load(Ordering::SeqCst);
-        if let Some(host) = self.host.lock().expect("host stop poisoned").as_ref()
+        if let Some(host) = self.host.lock_or_recover("the SDK host stop").as_ref()
             && let Err(error) = if interrupt { host.request_after_interrupt() } else { host.request() }
         {
             log!("could not ask the SDK host of {} to stop: {error}", self.agent);

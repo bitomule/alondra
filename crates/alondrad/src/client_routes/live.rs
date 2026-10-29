@@ -1,6 +1,7 @@
 //! What the daemon observes of each Claude session through its hooks and its node mod. The
 //! domain never records it: it is the live state a client shows next to the projection, kept in
 //! memory with the legacy reducer so a node keeps the shape every client already reads.
+use crate::locks::Poisonable as _;
 use alondra_core::{Event, HookEvent, Node, View, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -29,9 +30,12 @@ fn save<T: serde::Serialize>(file: &std::path::Path, value: &T) {
 
 #[derive(Default)]
 pub(crate) struct Live {
+    /// A holder that panics can leave it half-changed, so the daemon exits: `View::apply` changes
+    /// several maps in a row, and the hooks rebuild the whole view after a fresh start.
     view: Mutex<View>,
     sequence: AtomicU64,
     pub(crate) changed: crate::node_reports::LiveChanges,
+    /// A holder that panics leaves it whole, so it is recovered: one insert.
     presence: Mutex<HashMap<String, i64>>,
     pub(crate) mods: crate::node_reports::Reports,
     pub(crate) pushes: crate::node_push::Pushes,
@@ -48,14 +52,20 @@ pub(crate) struct Live {
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
     pub(crate) gate: crate::admission::Admission,
+    /// A holder that panics leaves it whole, so it is recovered: one insert or remove of a marker.
     watching: Mutex<std::collections::HashSet<String>>,
     launching: tokio::sync::watch::Sender<std::collections::HashSet<String>>,
     /// When Alondra last cut the turn of a session it has to close, by session.
+    /// A holder that panics leaves it whole, so it is recovered: one insert or remove.
     close_interrupts: Mutex<HashMap<String, i64>>,
+    /// A holder that panics leaves it whole, so it is recovered: one insert, then a save whose
+    /// failure memory already outlives.
     closed: Mutex<std::collections::BTreeSet<String>>,
     closed_file: Option<std::path::PathBuf>,
+    /// A holder that panics leaves it whole, so it is recovered: as `closed`.
     closed_tasks: Mutex<std::collections::BTreeMap<String, ClosedNode>>,
     closed_tasks_file: Option<std::path::PathBuf>,
+    /// A holder that panics leaves it whole, so it is recovered: as `closed`.
     aborted_replaces: Mutex<std::collections::BTreeMap<String, String>>,
     aborted_replaces_file: Option<std::path::PathBuf>,
 }
@@ -84,7 +94,7 @@ impl Live {
 
     /// The user closed the session: it is not brought back and closes, also after a restart.
     pub(crate) fn mark_closed(&self, session_id: &str) {
-        let mut closed = self.closed.lock().expect("revivals poisoned");
+        let mut closed = self.closed.lock_or_recover("the closed sessions");
         closed.insert(session_id.to_owned());
         if let Some(file) = &self.closed_file {
             save(file, &*closed);
@@ -95,7 +105,7 @@ impl Live {
 
     /// The task the user's closed node worked on waits for a relaunch, which needs this.
     pub(crate) fn remember_closed_task(&self, task_id: &str, node: ClosedNode) {
-        let mut tasks = self.closed_tasks.lock().expect("revivals poisoned");
+        let mut tasks = self.closed_tasks.lock_or_recover("the closed sessions");
         tasks.insert(task_id.to_owned(), node);
         if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
@@ -107,7 +117,7 @@ impl Live {
     /// The orchestrator's replacement of this session's node stopped short because the node could
     /// not be stopped: if it ends later, that is why, not the user closing it.
     pub(crate) fn note_aborted_replace(&self, session_id: &str, why: &str) {
-        let mut aborted = self.aborted_replaces.lock().expect("revivals poisoned");
+        let mut aborted = self.aborted_replaces.lock_or_recover("the closed sessions");
         aborted.insert(session_id.to_owned(), why.to_owned());
         if let Some(file) = &self.aborted_replaces_file {
             save(file, &*aborted);
@@ -115,7 +125,7 @@ impl Live {
     }
 
     pub(crate) fn take_aborted_replace(&self, session_id: &str) -> Option<String> {
-        let mut aborted = self.aborted_replaces.lock().expect("revivals poisoned");
+        let mut aborted = self.aborted_replaces.lock_or_recover("the closed sessions");
         let why = aborted.remove(session_id)?;
         if let Some(file) = &self.aborted_replaces_file {
             save(file, &*aborted);
@@ -124,11 +134,11 @@ impl Live {
     }
 
     pub(crate) fn closed_task(&self, task_id: &str) -> Option<ClosedNode> {
-        self.closed_tasks.lock().expect("revivals poisoned").get(task_id).cloned()
+        self.closed_tasks.lock_or_recover("the closed sessions").get(task_id).cloned()
     }
 
     pub(crate) fn forget_closed_task(&self, task_id: &str) {
-        let mut tasks = self.closed_tasks.lock().expect("revivals poisoned");
+        let mut tasks = self.closed_tasks.lock_or_recover("the closed sessions");
         if tasks.remove(task_id).is_none() { return; }
         if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
@@ -138,15 +148,15 @@ impl Live {
     }
 
     pub(crate) fn closed_task_ids(&self) -> Vec<String> {
-        self.closed_tasks.lock().expect("revivals poisoned").keys().cloned().collect()
+        self.closed_tasks.lock_or_recover("the closed sessions").keys().cloned().collect()
     }
 
     pub(crate) fn closed_sessions(&self) -> Vec<String> {
-        self.closed.lock().expect("revivals poisoned").iter().cloned().collect()
+        self.closed.lock_or_recover("the closed sessions").iter().cloned().collect()
     }
 
     pub(crate) fn is_closed(&self, session_id: &str) -> bool {
-        self.closed.lock().expect("revivals poisoned").contains(session_id)
+        self.closed.lock_or_recover("the closed sessions").contains(session_id)
     }
 
     /// False when something is watching the session's connection back already.
@@ -170,20 +180,20 @@ impl Live {
     }
 
     pub(crate) fn begin_watch(&self, session_id: &str) -> bool {
-        self.watching.lock().expect("revivals poisoned").insert(session_id.to_owned())
+        self.watching.lock_or_recover("the closed sessions").insert(session_id.to_owned())
     }
 
     pub(crate) fn end_watch(&self, session_id: &str) {
-        self.watching.lock().expect("revivals poisoned").remove(session_id);
+        self.watching.lock_or_recover("the closed sessions").remove(session_id);
     }
 
     /// When Alondra last cut the session's turn to close it, if it did.
     pub(crate) fn close_interrupted_at(&self, session_id: &str) -> Option<i64> {
-        self.close_interrupts.lock().expect("close interrupts poisoned").get(session_id).copied()
+        self.close_interrupts.lock_or_recover("the close interrupts").get(session_id).copied()
     }
 
     pub(crate) fn set_close_interrupted(&self, session_id: &str, at: Option<i64>) {
-        let mut interrupts = self.close_interrupts.lock().expect("close interrupts poisoned");
+        let mut interrupts = self.close_interrupts.lock_or_recover("the close interrupts");
         match at {
             Some(at) => interrupts.insert(session_id.to_owned(), at),
             None => interrupts.remove(session_id),
@@ -193,7 +203,7 @@ impl Live {
     pub(crate) fn observe(&self, payload: &Value) {
         let Some(event) = hook_event(payload) else { return };
         let session_id = event.session_id.clone();
-        let mut view = self.view.lock().expect("live sessions poisoned");
+        let mut view = self.view.lock_or_exit("the live sessions");
         let now = now_millis();
         if !view.nodes.contains_key(&session_id) {
             view.apply(self.next(), now, &Event::Joined { session_id });
@@ -216,32 +226,32 @@ impl Live {
     }
 
     pub(crate) fn touch(&self, client: &str) {
-        self.presence.lock().expect("presence poisoned").insert(client.to_owned(), now_millis());
+        self.presence.lock_or_recover("the client presence").insert(client.to_owned(), now_millis());
     }
 
     #[cfg(test)]
     pub(crate) fn last_touched(&self, client: &str) -> Option<i64> {
-        self.presence.lock().expect("presence poisoned").get(client).copied()
+        self.presence.lock_or_recover("the client presence").get(client).copied()
     }
 
     pub(crate) fn apply(&self, event: &Event) {
-        self.view.lock().expect("live sessions poisoned").apply(self.next(), now_millis(), event);
+        self.view.lock_or_exit("the live sessions").apply(self.next(), now_millis(), event);
         self.changed.publish();
     }
 
     pub(crate) fn node(&self, session_id: &str) -> Option<Node> {
-        self.view.lock().expect("live sessions poisoned").nodes.get(session_id).cloned()
+        self.view.lock_or_exit("the live sessions").nodes.get(session_id).cloned()
     }
 
     pub(crate) fn nodes(&self) -> Vec<Node> {
-        self.view.lock().expect("live sessions poisoned").nodes.values().cloned().collect()
+        self.view.lock_or_exit("the live sessions").nodes.values().cloned().collect()
     }
 
     pub(crate) fn threads(&self, session_id: &str) -> Option<Vec<alondra_core::activity::Activity>> {
         if let Some(activity) = self.mods.session(session_id).as_ref().and_then(|session| crate::codex_live::activity(session).or_else(|| crate::sdk_live::activity(session))) {
             return Some(activity);
         }
-        let view = self.view.lock().expect("live sessions poisoned");
+        let view = self.view.lock_or_exit("the live sessions");
         let node = view.nodes.get(session_id)?;
         Some(view.activity(node, now_millis()))
     }
@@ -286,4 +296,34 @@ pub(crate) fn client_node(node: &Node, name: Option<&str>) -> Value {
         fields.insert("project".into(), json!(node.project()));
     }
     value
+}
+
+#[cfg(test)]
+mod poison_tests {
+    use super::*;
+    use crate::locks::{assert_exited_for, child_home, in_child};
+
+    #[test]
+    #[ignore = "run by a_read_after_a_panic_holding_the_live_view_exits_the_daemon"]
+    fn view_child() {
+        if child_home().is_none() { return; }
+        let live = Live::default();
+        crate::locks::poison(&live.view);
+        let _ = live.nodes();
+        unreachable!("the live view was read while poisoned");
+    }
+
+    #[test]
+    fn a_read_after_a_panic_holding_the_live_view_exits_the_daemon() {
+        let home = crate::test_support::Directory::new();
+        assert_exited_for(&in_child("client_routes::live::poison_tests::view_child", &home), "the live sessions");
+    }
+
+    #[test]
+    fn presence_goes_on_after_a_panic_holding_it() {
+        let live = Live::default();
+        crate::locks::poison(&live.presence);
+        live.touch("phone");
+        assert!(live.last_touched("phone").is_some());
+    }
 }

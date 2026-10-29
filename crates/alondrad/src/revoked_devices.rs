@@ -1,6 +1,7 @@
 //! Devices this Mac revoked, kept so a direct request from one can be answered, sealed, with the
 //! reason it failed. A bare 401 proves nothing to the device, so without this a revoked iPhone
 //! would read its Mac as asleep forever. Public keys only; the newest few are kept.
+use crate::locks::Poisonable as _;
 use alondra_e2e::Envelope;
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -39,6 +40,8 @@ impl Tombstone {
 
 pub(crate) struct RevokedDevices {
     path: PathBuf,
+    /// A holder that panics leaves it whole, so it is recovered: tombstones only tell a revoked
+    /// device so, and memory already outlives a failed save.
     kept: Mutex<Vec<Tombstone>>,
 }
 
@@ -54,7 +57,7 @@ impl RevokedDevices {
         if revoked.is_empty() {
             return Ok(());
         }
-        let mut kept = self.kept.lock().expect("revoked devices lock poisoned");
+        let mut kept = self.kept.lock_or_recover("the revoked devices");
         kept.retain(|old| !revoked.iter().any(|new| new.device_id == old.device_id));
         kept.extend(revoked);
         let excess = kept.len().saturating_sub(MAX_KEPT);
@@ -75,8 +78,7 @@ impl RevokedDevices {
     ) -> Option<PublicKey> {
         let tombstone = self
             .kept
-            .lock()
-            .expect("revoked devices lock poisoned")
+            .lock_or_recover("the revoked devices")
             .iter()
             .find(|tombstone| tombstone.device_id == envelope.sender)
             .cloned()?;
@@ -87,7 +89,7 @@ impl RevokedDevices {
 
     /// The remembered signing key of a revoked device.
     pub(crate) fn signing_key(&self, device_id: &str) -> Option<VerifyingKey> {
-        let kept = self.kept.lock().expect("revoked devices lock poisoned");
+        let kept = self.kept.lock_or_recover("the revoked devices");
         kept.iter().find(|tombstone| tombstone.device_id == device_id)?.keys().map(|(signing, _)| signing)
     }
 
@@ -98,6 +100,6 @@ impl RevokedDevices {
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.kept.lock().expect("revoked devices lock poisoned").len()
+        self.kept.lock_or_recover("the revoked devices").len()
     }
 }

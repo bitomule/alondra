@@ -4,6 +4,7 @@
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
 //! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
 //! account the user's distribution picks (`choose_for_launch`).
+use crate::locks::Poisonable as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -285,17 +286,18 @@ pub(crate) fn none_signed_in(accounts: &[AccountStatus]) -> Option<String> {
 
 /// Whether the orchestrator waits for an account or a model, and why: set and cleared once per
 /// change, so the log and the screens say each reason once.
+/// A holder that panics leaves it whole, so it is recovered: one assignment or take.
 #[derive(Default)]
 pub(crate) struct AccountWait(std::sync::Mutex<Option<String>>);
 
 impl AccountWait {
     pub(crate) fn is_waiting(&self) -> bool {
-        self.0.lock().expect("account wait poisoned").is_some()
+        self.0.lock_or_recover("the account wait").is_some()
     }
 
     /// True when the wait starts now.
     pub(crate) fn start(&self) -> bool {
-        let mut wait = self.0.lock().expect("account wait poisoned");
+        let mut wait = self.0.lock_or_recover("the account wait");
         if wait.is_some() { return false; }
         *wait = Some(String::new());
         true
@@ -303,19 +305,19 @@ impl AccountWait {
 
     /// True when the wait starts now or its reason changed.
     pub(crate) fn wait_for(&self, reason: &str) -> bool {
-        let mut wait = self.0.lock().expect("account wait poisoned");
+        let mut wait = self.0.lock_or_recover("the account wait");
         if wait.as_deref() == Some(reason) { return false; }
         *wait = Some(reason.to_owned());
         true
     }
 
     pub(crate) fn reason(&self) -> Option<String> {
-        self.0.lock().expect("account wait poisoned").clone()
+        self.0.lock_or_recover("the account wait").clone()
     }
 
     /// True when a standing wait ends now.
     pub(crate) fn end(&self) -> bool {
-        self.0.lock().expect("account wait poisoned").take().is_some()
+        self.0.lock_or_recover("the account wait").take().is_some()
     }
 }
 
@@ -644,7 +646,7 @@ fn seed_claude_orchestrator(profiles: &mut alondra_core::model_selection::ModelP
 }
 
 pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Result<(), String> {
-    let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = crate::settings::WRITER.lock_or_recover("the settings writer");
     recover_settings(domain, home)?;
     let Some(previous) = crate::domain_store::provider_settings::read_options(home)? else { return Ok(()) };
     let mut file = alondra_core::options::OptionsFile::parse(&previous)?;
@@ -703,7 +705,7 @@ pub(crate) fn change_for_provider_authorized(domain: &DomainRuntime, home: &Path
 pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, seen: &str, proposed: &AccountsConfig,
     authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
 {
-    let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = crate::settings::WRITER.lock_or_recover("the settings writer");
     recover_settings(domain, home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let previous = crate::domain_store::provider_settings::read_options(home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let file = previous.as_deref().map(alondra_core::options::OptionsFile::parse).transpose().map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?.unwrap_or_else(alondra_core::options::OptionsFile::fresh);
@@ -752,7 +754,7 @@ pub(crate) fn set_order(domain: &DomainRuntime, home: &Path, actor: &Actor, orde
 }
 
 pub(crate) fn set_order_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, order: &[AccountKey], expected_config_version: &str, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
-    let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = crate::settings::WRITER.lock_or_recover("the settings writer");
     recover_settings(domain, home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let previous = crate::domain_store::provider_settings::read_options(home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let file = previous.as_deref().map(alondra_core::options::OptionsFile::parse).transpose().map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?.unwrap_or_else(alondra_core::options::OptionsFile::fresh);
@@ -775,7 +777,7 @@ pub(crate) fn set_model_profile(domain: &DomainRuntime, home: &Path, actor: &Act
 pub(crate) fn set_model_profile_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile,
     policy: &alondra_core::model_selection::RoleModelPolicy, expected_config_version: &str, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
 {
-    let _writing = crate::settings::WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _writing = crate::settings::WRITER.lock_or_recover("the settings writer");
     recover_settings(domain, home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let previous = crate::domain_store::provider_settings::read_options(home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let mut file = previous.as_deref().map(alondra_core::options::OptionsFile::parse).transpose().map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?.unwrap_or_else(alondra_core::options::OptionsFile::fresh);

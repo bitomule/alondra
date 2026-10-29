@@ -1,6 +1,7 @@
 //! Pairing requests that arrive over the local network, held until someone on this Mac
 //! approves or denies them. The protocol (commitment, code, signed approval) lives in
 //! `alondra_e2e::pairing`; this module keeps the requests, their limits and the decisions.
+use crate::locks::Poisonable as _;
 use alondra_e2e::Envelope;
 use alondra_e2e::pairing::{self, Approval, Transcript};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -154,6 +155,8 @@ struct Book {
 
 pub(crate) struct PairingBook {
     denied_path: PathBuf,
+    /// A holder that panics leaves it whole, so it is recovered: each request moves on by one
+    /// assignment set last, and persisting an approval twice is allowed.
     book: Mutex<Book>,
 }
 
@@ -245,7 +248,7 @@ impl PairingBook {
         if self.denied().contains(&fingerprint(&plain.signing_key)) {
             return Err(PairingError::Denied);
         }
-        let mut book = self.book.lock().expect("pairing book poisoned");
+        let mut book = self.book.lock_or_recover("the pairing book");
         book.requests.retain(|_, request| !request.stale(now_ms));
         if let Some((id, existing)) = book.requests.iter().find(|(_, r)| r.device_id == plain.device_id) {
             let same = existing.signing_key == plain.signing_key
@@ -305,7 +308,7 @@ impl PairingBook {
         body: RevealBody,
         now_ms: u64,
     ) -> Result<(), PairingError> {
-        let mut book = self.book.lock().expect("pairing book poisoned");
+        let mut book = self.book.lock_or_recover("the pairing book");
         let request = book.requests.get_mut(pairing_id).ok_or(PairingError::NotFound)?;
         if !request.open(now_ms) {
             return Err(PairingError::Expired);
@@ -347,7 +350,7 @@ impl PairingBook {
     }
 
     pub(crate) fn status(&self, pairing_id: &str, now_ms: u64) -> Result<Status, PairingError> {
-        let book = self.book.lock().expect("pairing book poisoned");
+        let book = self.book.lock_or_recover("the pairing book");
         let request = book.requests.get(pairing_id).ok_or(PairingError::NotFound)?;
         Ok(match &request.state {
             State::Approved { approval, signature } => {
@@ -362,7 +365,7 @@ impl PairingBook {
 
     /// The requests that wait for the user, with the code both screens show.
     pub(crate) fn pending(&self, now_ms: u64) -> Vec<Pending> {
-        let book = self.book.lock().expect("pairing book poisoned");
+        let book = self.book.lock_or_recover("the pairing book");
         let mut pending: Vec<Pending> = book
             .requests
             .iter()
@@ -384,7 +387,7 @@ impl PairingBook {
 
     pub(crate) fn deny(&self, pairing_id: &str, now_ms: u64) -> Result<(), PairingError> {
         let signing_key = {
-            let mut book = self.book.lock().expect("pairing book poisoned");
+            let mut book = self.book.lock_or_recover("the pairing book");
             let request = book.requests.get_mut(pairing_id).ok_or(PairingError::NotFound)?;
             if request.state == State::Denied {
                 return Ok(());
@@ -409,7 +412,7 @@ impl PairingBook {
         now_ms: u64,
         persist: impl FnOnce(&ApprovedDevice) -> Result<(), String>,
     ) -> Result<(), PairingError> {
-        let mut book = self.book.lock().expect("pairing book poisoned");
+        let mut book = self.book.lock_or_recover("the pairing book");
         let request = book.requests.get_mut(pairing_id).ok_or(PairingError::NotFound)?;
         if matches!(request.state, State::Approved { .. }) {
             return Ok(());

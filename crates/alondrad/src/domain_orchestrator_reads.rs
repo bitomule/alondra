@@ -1,6 +1,7 @@
 //! The orchestrator's reads, as the `tasks_in_progress` and `node` tools give them: the live
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{body_title, is_stall_case, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, Scope, TaskActivity, TaskId, NODE_PAUSE_PREFIX};
 use alondra_domain::{Capacity, LiveState, Step, Worker};
@@ -212,7 +213,7 @@ pub(crate) fn tasks_in_progress(domain: &DomainRuntime, machine: Value, usage: V
     let state = state(domain)?;
     let nodes = node_rows(domain, &state);
     let reports: Vec<Value> = state.interactions.values().filter(|i| i.recipient == Recipient::User).filter_map(|i| report(i, &state)).collect();
-    let pending = domain.store.lock().expect("domain store poisoned").pending_messages()
+    let pending = domain.store.lock_or_exit("the domain store").pending_messages()
         .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
     let orchestrator_messages: Vec<Value> = pending.iter().filter(|m| m.recipient_kind == "orchestrator")
         .map(|m| json!({"id": m.id, "text": m.message, "handed_at": null})).collect();
@@ -249,13 +250,13 @@ pub(crate) fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainErr
         node["name"] = json!(state.agents[&agent].name);
     }
     let mine = || state.interactions.values().filter(|i| author_session(i) == Some(agent.0.as_str()));
-    let pending = domain.store.lock().expect("domain store poisoned").pending_messages()
+    let pending = domain.store.lock_or_exit("the domain store").pending_messages()
         .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
     let messages: Vec<Value> = pending.iter().filter(|m| m.agent_id.as_deref() == Some(agent.0.as_str()))
         .map(|m| json!({"id": m.id, "from": "alondra", "text": m.message, "handed_at": null})).collect();
     Ok(json!({"node": node, "questions": mine().filter_map(|i| question(i, &state)).collect::<Vec<_>>(),
         "reports": mine().filter_map(|i| report(i, &state)).collect::<Vec<_>>(), "messages": messages,
-        "messages_held_for_turn_end": domain.held.lock().expect("held messages poisoned").get(&agent).map_or(0, Vec::len),
+        "messages_held_for_turn_end": domain.held.lock_or_recover("the held messages").get(&agent).map_or(0, Vec::len),
         "timeline": []}))
 }
 

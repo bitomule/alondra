@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -45,6 +46,7 @@ pub(crate) fn valid_push_binding(value: &str) -> bool {
 }
 
 pub struct Push {
+    /// A holder that panics leaves it whole, so it is recovered: a clone or one retain.
     registrations: Mutex<HashMap<String, Registration>>,
     apns: Option<Apns>,
 }
@@ -55,6 +57,8 @@ struct Apns {
     team_id: String,
     topic: String,
     client: reqwest::Client,
+    /// A holder that panics leaves it whole, so it is recovered: one assignment of a token signed
+    /// before it.
     jwt: Mutex<Option<(String, i64)>>,
 }
 
@@ -76,11 +80,11 @@ impl Push {
     }
 
     fn registrations(&self) -> Vec<Registration> {
-        self.registrations.lock().expect("push lock poisoned").values().cloned().collect()
+        self.registrations.lock_or_recover("the push registrations").values().cloned().collect()
     }
 
     fn forget_token(&self, token: &str) {
-        let mut regs = self.registrations.lock().expect("push lock poisoned");
+        let mut regs = self.registrations.lock_or_recover("the push registrations");
         regs.retain(|_, r| r.token != token);
     }
 
@@ -138,7 +142,7 @@ impl Apns {
     }
 
     fn jwt(&self) -> String {
-        let mut cached = self.jwt.lock().expect("jwt lock poisoned");
+        let mut cached = self.jwt.lock_or_recover("the APNs token");
         if let Some((token, at)) = cached.as_ref()
             && now_millis() - at < JWT_LIFETIME_MS
         {

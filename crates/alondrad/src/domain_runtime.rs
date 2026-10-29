@@ -1,4 +1,5 @@
 //! Serialization boundary for the SQL domain and its authenticated producers.
+use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
 use crate::domain_store::{DomainStore, OwnerTransaction, StagedOutcome, StoreError, TransportIdentity};
@@ -18,12 +19,21 @@ pub struct DomainRuntime {
     pub(crate) allow_always_wait: Mutex<Option<crate::allow_always::ConfirmationWait>>,
     pub(crate) guard_work: crate::blocking_work::BlockingWork,
     home: PathBuf,
+    /// A holder that panics can leave it half-changed, so the daemon exits: the guard stays held
+    /// after the SQLite commit while the snapshot is published, the commit acknowledged, its seals
+    /// kept and the watchers woken; a fresh start rebuilds all of them from the database.
     pub(crate) store: RuntimeMutex<DomainStore>,
     /// The last committed state and the read index built from it. Readers take them without the
     /// store, a transaction or a copy; only a commit replaces them, while it still holds the store.
+    /// A holder that panics leaves it whole, so it is recovered: its only write swaps one `Arc`,
+    /// built outside it.
     snapshot: RwLock<Arc<ReadSnapshot>>,
     approval_home: PathBuf,
+    /// A holder that panics leaves it whole, so it is recovered: each change is one insert, retain
+    /// or remove; what it shares with the store changes under the store's guard, which exits.
     authority: RuntimeMutex<Authority>,
+    /// A holder that panics leaves it whole, so it is recovered: one insert, remove or lookup each,
+    /// also in `Operation::drop`, which runs while unwinding and must not panic again.
     operations_live: Mutex<std::collections::BTreeSet<(String,String)>>,
     operations_changed: watch::Sender<u64>,
     changed: watch::Sender<Revision>,
@@ -32,6 +42,7 @@ pub struct DomainRuntime {
     pub(crate) local_actions: crate::views::actions::LocalActions,
     pub(crate) live: crate::client_routes::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
+    /// A holder that panics leaves it whole, so it is recovered: one remove or lookup each.
     pub(crate) held:
         Mutex<std::collections::BTreeMap<alondra_core::domain::AgentId, Vec<String>>>,
     rejections: rejections::Rejections,
@@ -41,11 +52,17 @@ pub struct DomainRuntime {
     /// Set at startup only in a sandbox daemon whose configuration names one: otherwise no task
     /// ever runs through the SDK.
     sdk: std::sync::OnceLock<(crate::sdk_owner::SdkBackend, std::sync::Weak<DomainRuntime>)>,
+    /// A holder that panics leaves it whole, so it is recovered: `add_sdk_owner` takes, partitions
+    /// and puts back the list with only field and atomic reads in between; the hosts stop outside
+    /// it.
     pub(crate) sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
     /// The executions the user asked to take over again, while that runs.
+    /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
+    /// thread already spawned.
     pub(crate) retakes: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// The executions whose takeover found the disk full: taken over again once the machine watch
     /// measures space, never given up for it.
+    /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
     pub(crate) waiting_for_space: Mutex<std::collections::BTreeSet<TaskId>>,
     /// Makes every write of the capability registry fail as on a full disk.
     #[cfg(test)]
@@ -91,7 +108,7 @@ impl DomainRuntime {
         identity: TransportIdentity<'_>,
         authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
     ) -> Result<Option<CommandOutcome>, StoreError> {
-        let mut store = self.store.lock().expect("domain store poisoned");
+        let mut store = self.store.lock_or_exit("the domain store");
         let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
         authorize()?;
         store.transport_receipt(identity)
@@ -221,7 +238,7 @@ impl DomainRuntime {
     /// daemon that owns it.
     pub(crate) fn stop_sdk_owners(&self) {
         self.join_retakes();
-        let owners = std::mem::take(&mut *self.sdk_owners.lock().expect("SDK owners poisoned"));
+        let owners = std::mem::take(&mut *self.sdk_owners.lock_or_recover("the SDK owners"));
         log!("stopping {} SDK host(s)", owners.len());
         for mut owner in owners {
             match owner.stop() {
@@ -232,7 +249,7 @@ impl DomainRuntime {
     }
     /// Waits until every execution being taken over again is taken, or has its card.
     pub(crate) fn join_retakes(&self) {
-        let retakes = std::mem::take(&mut *self.retakes.lock().expect("retakes poisoned"));
+        let retakes = std::mem::take(&mut *self.retakes.lock_or_recover("the retakes"));
         for retake in retakes {
             let _ = retake.join();
         }
@@ -243,17 +260,17 @@ impl DomainRuntime {
         if self.driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
             return true;
         }
-        self.sdk_owners.lock().expect("SDK owners poisoned").iter().any(|owner| owner.agent() == agent && !owner.ended())
+        self.sdk_owners.lock_or_recover("the SDK owners").iter().any(|owner| owner.agent() == agent && !owner.ended())
     }
     /// The process group of every node host this daemon owns now, which is what a node costs.
     pub(crate) fn node_groups(&self) -> Vec<i32> {
-        self.sdk_owners.lock().expect("SDK owners poisoned").iter().filter_map(crate::sdk_owner::Owner::host_group).collect()
+        self.sdk_owners.lock_or_recover("the SDK owners").iter().filter_map(crate::sdk_owner::Owner::host_group).collect()
     }
     /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
     /// its own. Those are joined once the list is released: their end may read it.
     pub(crate) fn add_sdk_owner(&self, owner: crate::sdk_owner::Owner) {
         let ended: Vec<crate::sdk_owner::Owner> = {
-            let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
+            let mut owners = self.sdk_owners.lock_or_recover("the SDK owners");
             let (ended, kept) = std::mem::take(&mut *owners).into_iter().partition(|held| held.agent() == owner.agent() && held.ended());
             *owners = kept;
             owners.push(owner);
@@ -272,7 +289,7 @@ impl DomainRuntime {
         self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.close())
     }
     fn take_sdk_owner(&self, agent: &AgentId) -> Option<crate::sdk_owner::Owner> {
-        let mut owners = self.sdk_owners.lock().expect("SDK owners poisoned");
+        let mut owners = self.sdk_owners.lock_or_recover("the SDK owners");
         owners.iter().position(|owner| owner.agent() == agent && !owner.ended())
             .or_else(|| owners.iter().position(|owner| owner.agent() == agent))
             .map(|at| owners.remove(at))
@@ -289,7 +306,7 @@ impl DomainRuntime {
     }
     /// The last committed state with its read index: both of the same revision.
     pub fn read(&self) -> Arc<ReadSnapshot> {
-        Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned"))
+        Arc::clone(&self.snapshot.read_or_recover("the domain snapshot"))
     }
     /// Releases the raw provider evidence and the rows of each retention policy no reader needs
     /// any more as of `now`, one bounded pass at a time under the writer lock so other writers run
@@ -298,7 +315,7 @@ impl DomainRuntime {
         const PASS: usize = 256;
         let mut retained = Retained::default();
         loop {
-            let pass = self.store.lock().expect("domain store poisoned").retain_evidence(PASS)?;
+            let pass = self.store.lock_or_exit("the domain store").retain_evidence(PASS)?;
             retained.evidence.released += pass.released;
             retained.evidence.removed += pass.removed;
             retained.evidence.commands_removed += pass.commands_removed;
@@ -308,7 +325,7 @@ impl DomainRuntime {
             }
         }
         loop {
-            let folded = self.store.lock().expect("domain store poisoned").fold_ended_tasks(PASS)?;
+            let folded = self.store.lock_or_exit("the domain store").fold_ended_tasks(PASS)?;
             retained.folded += folded;
             if folded < PASS {
                 break;
@@ -317,7 +334,7 @@ impl DomainRuntime {
         for policy in &crate::domain_store::retention::POLICIES {
             let mut changed = 0;
             loop {
-                let pass = self.store.lock().expect("domain store poisoned").retain(policy, now, PASS)?;
+                let pass = self.store.lock_or_exit("the domain store").retain(policy, now, PASS)?;
                 changed += pass;
                 if pass < PASS {
                     break;
@@ -326,7 +343,7 @@ impl DomainRuntime {
             retained.tables.push((policy.name, changed));
         }
         retained.compacted = self.compact_ended_tasks()?;
-        self.store.lock().expect("domain store poisoned").reclaim_space(4096)?;
+        self.store.lock_or_exit("the domain store").reclaim_space(4096)?;
         Ok(retained)
     }
     /// Compacts the cards of done and cancelled tasks, a batch per command, until none is left. A
@@ -338,7 +355,7 @@ impl DomainRuntime {
             let state = self.state().map_err(StoreError::Storage)?;
             let task_ids = state.compactable_tasks(BATCH);
             if task_ids.is_empty() {
-                self.store.lock().expect("domain store poisoned").ended_tasks_compacted().map_err(anyhow::Error::from)?;
+                self.store.lock_or_exit("the domain store").ended_tasks_compacted().map_err(anyhow::Error::from)?;
                 return Ok(compacted);
             }
             let count = task_ids.len();
@@ -377,7 +394,7 @@ impl DomainRuntime {
         stage: impl FnOnce(&mut OwnerTransaction<'_>) -> Result<T, StoreError>,
         project: impl FnOnce(&mut DomainStore) -> anyhow::Result<()>,
     ) -> Result<(T, Vec<StagedOutcome>), StoreError> {
-        let mut store = self.store.lock().expect("domain store poisoned");
+        let mut store = self.store.lock_or_exit("the domain store");
         let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
         let (value, commit) = store.own(scope, stage)?;
         if let Err(why) = project(&mut store) {
@@ -443,10 +460,10 @@ impl DomainRuntime {
         #[cfg(test)]
         self.index_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
-        *self.snapshot.write().expect("domain snapshot poisoned") = snapshot;
+        *self.snapshot.write_or_recover("the domain snapshot") = snapshot;
     }
     pub(crate) fn publish_batch_report(&self, run: &str, cursor: u64, evidence: &[u8], report: &crate::domain_store::batch_effects::BatchReport) -> Result<(), StoreError> {
-        let mut store = self.store.lock().expect("domain store poisoned");
+        let mut store = self.store.lock_or_exit("the domain store");
         store.record_batch_report(run, cursor, evidence, report)?;
         let committed = store.load()?;
         self.publish(&committed);
@@ -468,14 +485,12 @@ impl DomainRuntime {
         request_id: &RequestId,
     ) -> Result<Option<Vec<String>>> {
         self.store
-            .lock()
-            .expect("domain store poisoned")
+            .lock_or_exit("the domain store")
             .schedule_request_tools(request_id)
     }
     pub(crate) fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
         self.store
-            .lock()
-            .expect("domain store poisoned")
+            .lock_or_exit("the domain store")
             .was_schedule_launch_failed(request_id)
     }
     pub fn subscribe(&self) -> watch::Receiver<Revision> {
@@ -489,7 +504,7 @@ impl DomainRuntime {
     /// bearer across daemon restarts, so the digest is persisted before the
     /// token is handed out.
     pub fn issue(&self, principal: Principal) -> Result<Capability, StoreError> {
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         let capability = authority
             .issue(principal)
             .map_err(|message| DomainError::new("forbidden", message))?;
@@ -501,7 +516,7 @@ impl DomainRuntime {
     /// one imported at cutover or resumed after a restart. Any earlier bearer
     /// for that session stops working the moment the new one is issued.
     pub fn bind_agent(&self, session_id: &str) -> Result<Capability, StoreError> {
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         let state = self.state()?;
         if !state.agents.contains_key(&AgentId(session_id.to_owned())) {
             return Err(DomainError::new("not_found", "Agent does not exist").into());
@@ -535,9 +550,9 @@ impl DomainRuntime {
 
     /// Bind one orchestrator execution to the current generation.
     pub fn bind_orchestrator(&self, execution_id: &str) -> Result<Capability, StoreError> {
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         let state = self.state()?;
-        self.store.lock().expect("domain store poisoned").bind_batch_effects(execution_id, &state.data_epoch)?;
+        self.store.lock_or_exit("the domain store").bind_batch_effects(execution_id, &state.data_epoch)?;
         authority.revoke_execution(execution_id);
         let capability = authority
             .issue(Principal::Orchestrator {
@@ -566,13 +581,13 @@ impl DomainRuntime {
     }
 
     pub fn revoke_agent(&self, session: &str) -> Result<()> {
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         authority.revoke_agent(session);
         self.persist_authority(&authority)
     }
     /// Revokes an orchestrator execution and returns what it was let change.
     pub fn end_execution(&self, execution: &str) -> Vec<String> {
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         let changes = authority.end_execution(execution);
         if let Err(error) = self.persist_authority(&authority) {
             log!("domain: cannot persist the revoked capability of {execution}: {error:#}");
@@ -583,7 +598,7 @@ impl DomainRuntime {
     /// The principal of a bearer let change `what`; an orchestrator execution has it recorded
     /// before it acts, so its end never misses a change already under way.
     pub fn admit_change(&self, bearer: &str, what: &str) -> Result<Principal, StoreError> {
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         let state = self.state()?;
         let principal = authority
             .resolve(&state.data_epoch.0, bearer)
@@ -596,7 +611,7 @@ impl DomainRuntime {
         if operation.is_empty() || operation.len() > 96 || !operation.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(DomainError::new("invalid_input","A bounded native operation identity is required").into());
         }
-        let authority = self.authority.lock().expect("domain authority poisoned");
+        let authority = self.authority.lock_or_recover("the domain authority");
         let epoch = self.read().state().data_epoch.clone();
         let principal = authority.resolve(&epoch.0,bearer).map_err(|_| DomainError::new("forbidden","A current task capability is required"))?;
         let Principal::Agent { session_id,task_binding,provider_agent_id } = principal else { return Err(DomainError::new("forbidden","Only the task's own node requests plan mode").into()) };
@@ -631,8 +646,8 @@ impl DomainRuntime {
     /// Expose only the public protocol cursor to a daemon-authorized producer.
     /// Commands recheck the capability while holding the writer lock.
     pub(crate) fn read_current_task_context(&self, bearer: &str, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> std::result::Result<alondra_store::ContextPage, DomainError> {
-        let authority = self.authority.lock().expect("domain authority poisoned");
-        let store = self.store.lock().expect("domain store poisoned");
+        let authority = self.authority.lock_or_recover("the domain authority");
+        let store = self.store.lock_or_exit("the domain store");
         let read = self.read();
         let principal = authority.resolve(&read.state().data_epoch.0, bearer)
             .map_err(|_| DomainError::new("forbidden", "A current node capability is required"))?;
@@ -650,8 +665,8 @@ impl DomainRuntime {
         if run.is_some_and(|run|run.is_empty() || run.len()>128) || after.len()>if list_runs{128}else{2048} || !(1..=32).contains(&limit) || (list_runs && run.is_some()) {
             return Err(DomainError::new("invalid_input","Invalid outcome page"));
         }
-        let authority=self.authority.lock().expect("domain authority poisoned");
-        let store=self.store.lock().expect("domain store poisoned");
+        let authority=self.authority.lock_or_recover("the domain authority");
+        let store=self.store.lock_or_exit("the domain store");
         let read=self.read();
         let principal=authority.resolve(&read.state().data_epoch.0,bearer).map_err(|_|DomainError::new("forbidden","The current orchestrator is required"))?;
         let Principal::Orchestrator{generation,execution_id}=principal else{return Err(DomainError::new("forbidden","The current orchestrator is required"))};
@@ -662,7 +677,7 @@ impl DomainRuntime {
     }
 
     pub fn resolve_bearer(&self, bearer: &str) -> Result<Principal, StoreError> {
-        let authority = self.authority.lock().expect("domain authority poisoned");
+        let authority = self.authority.lock_or_recover("the domain authority");
         let state = self.state()?;
         let principal = authority.resolve(&state.data_epoch.0,bearer).map_err(|message| DomainError::new("forbidden",message))?;
         if let Principal::Orchestrator { generation, .. } = &principal
@@ -715,27 +730,27 @@ impl DomainRuntime {
     }
 
     pub(crate) fn launched_by_alondra(&self, agent: &AgentId) -> Result<bool> {
-        if self.store.lock().expect("domain store poisoned").launched_by_alondra(&agent.0)? || self.live.mods.started_with_a_launch_key(&agent.0) {
+        if self.store.lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live.mods.started_with_a_launch_key(&agent.0) {
             return Ok(true);
         }
         Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
     }
     pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
-        self.store.lock().expect("domain store poisoned").launch_plan(task_id)
+        self.store.lock_or_exit("the domain store").launch_plan(task_id)
     }
     pub(crate) fn inherited_worktree(&self, agent: &str) -> Result<Option<String>> {
-        self.store.lock().expect("domain store poisoned").inherited_worktree(agent)
+        self.store.lock_or_exit("the domain store").inherited_worktree(agent)
     }
     pub(crate) fn set_inherited_worktree(&self, agent: &str, dir: &str, from_agent: &str) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").set_inherited_worktree(agent, dir, from_agent, alondra_core::now_millis())
+        self.store.lock_or_exit("the domain store").set_inherited_worktree(agent, dir, from_agent, alondra_core::now_millis())
     }
     pub(crate) fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
-        self.store.lock().expect("domain store poisoned").task_worktree(task)
+        self.store.lock_or_exit("the domain store").task_worktree(task)
     }
     /// The worktree the task's node works in, kept for its next launch and recorded as the
     /// task's own, which it ends only once that worktree is gone.
     pub(crate) fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").set_task_worktree(task, dir, alondra_core::now_millis())?;
+        self.store.lock_or_exit("the domain store").set_task_worktree(task, dir, alondra_core::now_millis())?;
         let command = Command::RecordTaskWorktree { task_id: task.clone(), path: dir.to_owned(), origin: WorktreeOrigin::Task, branch: None };
         crate::domain_github::execute_system(self, command).map_err(|error| anyhow::anyhow!("{error}"))
     }
@@ -743,33 +758,33 @@ impl DomainRuntime {
     /// its replacement stopped short.
     pub(crate) fn forget_ended_session(&self, agent: &str) -> Result<()> {
         self.live.take_aborted_replace(agent);
-        self.store.lock().expect("domain store poisoned").forget_inherited_worktree(agent)
+        self.store.lock_or_exit("the domain store").forget_inherited_worktree(agent)
     }
     pub(crate) fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").record_model_decision(decision)
+        self.store.lock_or_exit("the domain store").record_model_decision(decision)
     }
 
     pub(crate) fn record_spend(&self, spent: &crate::domain_store::metrics_fold::Spent<'_>) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").record_spend(spent)
+        self.store.lock_or_exit("the domain store").record_spend(spent)
     }
 
     pub(crate) fn record_release(&self, version: &str, at: alondra_core::Millis) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").record_release(version, at)
+        self.store.lock_or_exit("the domain store").record_release(version, at)
     }
 
     pub(crate) fn prs_without_size(&self, now: alondra_core::Millis, limit: usize) -> Result<Vec<(String, String)>> {
-        self.store.lock().expect("domain store poisoned").prs_without_size(now, limit)
+        self.store.lock_or_exit("the domain store").prs_without_size(now, limit)
     }
 
     pub(crate) fn record_pr_lines(&self, task_id: &str, lines: i64) -> Result<()> {
-        self.store.lock().expect("domain store poisoned").record_pr_lines(task_id, lines)
+        self.store.lock_or_exit("the domain store").record_pr_lines(task_id, lines)
     }
 
     /// What the Metrics screen sums, with the tasks that ended since the last fold folded first.
     pub(crate) fn metrics_inputs(&self, now: alondra_core::Millis) -> Result<alondra_core::metrics::report::MetricsInputs> {
         const PASS: usize = 256;
-        while self.store.lock().expect("domain store poisoned").fold_ended_tasks(PASS)? == PASS {}
-        self.store.lock().expect("domain store poisoned").metrics_inputs(now)
+        while self.store.lock_or_exit("the domain store").fold_ended_tasks(PASS)? == PASS {}
+        self.store.lock_or_exit("the domain store").metrics_inputs(now)
     }
 
     /// What the user chose when asking for the Request, if it was asked for with choices.
@@ -778,8 +793,7 @@ impl DomainRuntime {
         request_id: &RequestId,
     ) -> Result<Option<crate::domain_store::RequestLaunch>> {
         self.store
-            .lock()
-            .expect("domain store poisoned")
+            .lock_or_exit("the domain store")
             .request_launch(request_id)
     }
 
@@ -825,7 +839,7 @@ impl DomainRuntime {
                 hook(self);
             }
         }
-        let mut store = self.store.lock().expect("domain store poisoned");
+        let mut store = self.store.lock_or_exit("the domain store");
         // Lock order is domain store → approval lease. Revocation takes only the
         // exclusive approval lease and never waits for the domain store.
         let _approval = if matches!(actor, Actor::User { .. }) || transport.is_some() {
@@ -913,11 +927,11 @@ impl DomainRuntime {
         envelope: &CommandEnvelope,
     ) -> Result<CommandOutcome, StoreError> {
         // Keep the capability lease until commit: concurrent revocation cannot pass this write.
-        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let mut authority = self.authority.lock_or_recover("the domain authority");
         let principal = authority
             .resolve(&envelope.data_epoch.0, bearer)
             .map_err(|message| DomainError::new("forbidden", message))?;
-        let mut store = self.store.lock().expect("domain store poisoned");
+        let mut store = self.store.lock_or_exit("the domain store");
         let state = store.load()?;
         let actor = match principal.clone() {
             Principal::Agent {
@@ -1459,3 +1473,5 @@ mod mcp_flow_tests;
 mod system_command_tests;
 #[cfg(test)]
 mod wait_review_tests;
+#[cfg(test)]
+mod poison_tests;

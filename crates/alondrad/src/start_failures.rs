@@ -2,6 +2,7 @@
 //! tried again by itself a few times and then put in front of the user, and a node the user closed
 //! asks whether to relaunch. The decisions are the domain's (`after_failure`, `DomainState::react`);
 //! this carries them out.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{NodePhase, 
@@ -17,17 +18,17 @@ pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProble
     if ended(domain, task)? {
         return Ok(());
     }
-    let attempts = domain.store.lock().expect("domain store poisoned").start_retries()?.get(task).map_or(0, |(attempts, _)| *attempts);
+    let attempts = domain.store.lock_or_exit("the domain store").start_retries()?.get(task).map_or(0, |(attempts, _)| *attempts);
     match after_failure(attempts, problem, now) {
         AfterFailure::Retry { attempt, at } => {
-            let mut store = domain.store.lock().expect("domain store poisoned");
+            let mut store = domain.store.lock_or_exit("the domain store");
             store.set_start_retry(task, Some((attempt, at)))?;
             store.forget_auto_launch(task)?;
             log!("the start of {task} failed; Alondra tries again by itself (attempt {attempt})");
         }
         AfterFailure::Ask(problem) => {
             {
-                let mut store = domain.store.lock().expect("domain store poisoned");
+                let mut store = domain.store.lock_or_exit("the domain store");
                 store.set_start_retry(task, None)?;
                 let (reason, detail) = match &problem {
                     StartProblem::Untrusted { folder, .. } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
@@ -51,7 +52,7 @@ pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
         return Ok(false);
     }
     {
-        let mut store = domain.store.lock().expect("domain store poisoned");
+        let mut store = domain.store.lock_or_exit("the domain store");
         store.set_start_retry(task, None)?;
         store.forget_auto_launch(task)?;
         store.dequeue_launch(task)?;
@@ -90,7 +91,7 @@ pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem
 /// What the daemon knows of how every open task gets going.
 pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
     let held = domain.live.gate.pauses(domain).held;
-    let store = domain.store.lock().expect("domain store poisoned");
+    let store = domain.store.lock_or_exit("the domain store");
     let planned = store.planned_tasks()?;
     let autos = store.auto_launches()?;
     let retries = store.start_retries()?;
@@ -159,7 +160,7 @@ async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool)
         return failed(domain, task, StartProblem::Untrusted { folder, error: Some(error) }, alondra_core::now_millis());
     }
     {
-        let mut store = domain.store.lock().expect("domain store poisoned");
+        let mut store = domain.store.lock_or_exit("the domain store");
         store.forget_auto_launch(task)?;
         store.set_start_retry(task, None)?;
         store.set_launch_refusal(task, None, alondra_core::now_millis())?;

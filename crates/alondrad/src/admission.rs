@@ -11,6 +11,7 @@
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep
 //! their own durable claims and only ask the gate, which wakes them when their turn comes. Nodes
 //! paused for the machine (`pauses`) wait here too and the gate tells them to carry on.
+use crate::locks::Poisonable as _;
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Pauses, Paused, Reason};
@@ -193,6 +194,7 @@ impl Told {
 }
 
 pub(crate) struct Admission {
+    /// A holder that panics leaves it whole, so it is recovered: see `Admission::lock`.
     inner: Mutex<Inner>,
     file: Option<PathBuf>,
     save_failures: crate::save::Failures,
@@ -237,7 +239,7 @@ impl Admission {
     /// node machine on every `lock_with`, an admitted start expires after `IN_FLIGHT`, a waiting
     /// start is asked for again by its caller, and the file is only ever replaced whole.
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.recover("the admission gate")
+        self.inner.lock_or_recover("the admission gate")
     }
 
     /// The gate with the pauses the node machine holds now: the only place they live.
@@ -756,7 +758,7 @@ pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
 /// The queued launches whose turn may come: one whose start failed waits out its retry or the
 /// user's answer to its card where it is, keeping its place without holding back the rest.
 fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> Vec<Waiting> {
-    let store = domain.store.lock().expect("domain store poisoned");
+    let store = domain.store.lock_or_exit("the domain store");
     let rows = store.launch_queue().unwrap_or_default();
     if rows.is_empty() {
         return vec![];
@@ -877,7 +879,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
 /// in the durable `launch_queue`, or at the gate for its automatic start with its launch plan.
 pub(crate) fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result<(), &'static str> {
     const NOT_QUEUED: &str = "This task is not queued";
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     let row = store.launch_queue().ok().and_then(|rows| rows.into_iter().find(|row| &row.task_id == task));
     let (body, origin) = match row {
         Some(row) => {
@@ -936,7 +938,7 @@ pub(crate) async fn release_queued(domain: &DomainRuntime, home: &Path, task: &T
 
 /// Queues a launch the orchestrator or the user asked for; the gate starts it when its turn comes.
 pub(crate) fn enqueue(domain: &DomainRuntime, body: &LaunchBody, origin: &str, now: Millis) -> anyhow::Result<()> {
-    domain.store.lock().expect("domain store poisoned").enqueue_launch(body.task_id(), &body.to_queue(), origin, now)?;
+    domain.store.lock_or_exit("the domain store").enqueue_launch(body.task_id(), &body.to_queue(), origin, now)?;
     domain.live.gate.poke();
     Ok(())
 }
@@ -983,9 +985,9 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> anyhow::Result<
 /// telling it to carry on. It never pauses a working node.
 pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow::Result<()> {
     let state = domain.state()?;
-    let rows = domain.store.lock().expect("domain store poisoned").launch_queue()?;
+    let rows = domain.store.lock_or_exit("the domain store").launch_queue()?;
     for row in rows.iter().filter(|row| !still_waits(&state, &Key::Task(row.task_id.clone()))) {
-        domain.store.lock().expect("domain store poisoned").dequeue_launch(&row.task_id)?;
+        domain.store.lock_or_exit("the domain store").dequeue_launch(&row.task_id)?;
     }
     let gate = &domain.live.gate;
     let head = {
@@ -1027,7 +1029,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         }
     };
     let Some(Key::Task(task)) = head else { return Ok(()) };
-    let Some(row) = domain.store.lock().expect("domain store poisoned").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
+    let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());
     };
     let body = LaunchBody::from_queue(&row.body)?;
@@ -1035,7 +1037,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     log!("the admission gate starts {task}, queued since {}", row.enqueued_at);
     match launch_from(domain, home, body, choices, Origin::Admitted).await {
         Ok(_) => {
-            let mut store = domain.store.lock().expect("domain store poisoned");
+            let mut store = domain.store.lock_or_exit("the domain store");
             store.dequeue_launch(&task)?;
             store.set_start_retry(&task, None)?;
         }

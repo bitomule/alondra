@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -154,7 +155,7 @@ pub(crate) fn recover_store(store: &mut DomainStore, home: &Path) -> Result<()> 
 }
 
 pub(crate) fn recover(domain: &DomainRuntime, home: &Path) -> Result<()> {
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     recover_store(&mut store, home)
 }
 
@@ -193,7 +194,7 @@ pub(crate) fn apply_authorized(domain: &DomainRuntime, home: &Path, actor: &Acto
     match result {
         Ok(_) => Ok(()),
         Err(why) => {
-            let was_committed = { let store = domain.store.lock().expect("domain store poisoned"); committed(&store, &identity)? };
+            let was_committed = { let store = domain.store.lock_or_exit("the domain store"); committed(&store, &identity)? };
             recover(domain, home)?;
             if was_committed { Ok(()) } else { Err(why) }
         }

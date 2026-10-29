@@ -10,6 +10,7 @@
 //! not hand anything to says nothing: its events may have waited in its journal, so their time is
 //! not the request's. What is measured lives in memory; a restarted daemon compacts again after
 //! the task's next turn.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};
 use alondra_core::{Millis, now_millis};
@@ -69,6 +70,8 @@ struct Measured {
 /// What each SDK task's driver measured of its conversation.
 #[derive(Default)]
 pub(crate) struct Contexts {
+    /// A holder that panics leaves it whole, so it is recovered: readings in memory only,
+    /// recomputed by the next answer or compaction.
     measured: Mutex<BTreeMap<TaskId, Measured>>,
     /// Counts the changes to what `used` reads, so a cached live view knows it is old.
     version: AtomicU64,
@@ -77,7 +80,7 @@ pub(crate) struct Contexts {
 impl Contexts {
     /// The driver handed the host an input at `at`.
     pub(crate) fn handed(&self, task: &TaskId, at: Millis) {
-        let mut contexts = self.measured.lock().expect("contexts poisoned");
+        let mut contexts = self.measured.lock_or_recover("the measured contexts");
         let measured = contexts.entry(task.clone()).or_default();
         measured.handed = true;
         measured.requested_at = Some(at);
@@ -86,7 +89,7 @@ impl Contexts {
     /// The host said `event` at `at`. Only a conversation this driver handed an input to times its
     /// requests; any says its size.
     pub(crate) fn observed(&self, task: &TaskId, event: ContextEvent, at: Millis) {
-        let mut contexts = self.measured.lock().expect("contexts poisoned");
+        let mut contexts = self.measured.lock_or_recover("the measured contexts");
         let measured = contexts.entry(task.clone()).or_default();
         match event {
             ContextEvent::Requested if measured.handed => measured.requested_at = Some(at),
@@ -108,7 +111,7 @@ impl Contexts {
     }
 
     pub(crate) fn forget(&self, task: &TaskId) {
-        self.measured.lock().expect("contexts poisoned").remove(task);
+        self.measured.lock_or_recover("the measured contexts").remove(task);
         self.version.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -117,19 +120,19 @@ impl Contexts {
     }
 
     pub(crate) fn used(&self, task: &TaskId) -> Option<Used> {
-        let contexts = self.measured.lock().expect("contexts poisoned");
+        let contexts = self.measured.lock_or_recover("the measured contexts");
         let measured = contexts.get(task)?;
         let window = measured.model.as_ref().and_then(|model| measured.windows.get(model)).copied();
         Some(Used { tokens: measured.tokens?, window })
     }
 
     pub(crate) fn readings(&self) -> Vec<(TaskId, Reading)> {
-        self.measured.lock().expect("contexts poisoned").iter().filter_map(|(task, measured)| Some((task.clone(), measured.reading?))).collect()
+        self.measured.lock_or_recover("the measured contexts").iter().filter_map(|(task, measured)| Some((task.clone(), measured.reading?))).collect()
     }
 
     /// The compaction of `reading` was asked for: that rest compacts no more.
     fn spend(&self, task: &TaskId, reading: Reading) {
-        if let Some(measured) = self.measured.lock().expect("contexts poisoned").get_mut(task)
+        if let Some(measured) = self.measured.lock_or_recover("the measured contexts").get_mut(task)
             && measured.reading == Some(reading)
         {
             measured.reading = None;

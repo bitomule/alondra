@@ -6,6 +6,7 @@
 //! that node is never touched. It never closes one that waits for a permission, has work that is
 //! not saved or that the user chose to leave open. It also deletes the worktrees Alondra made for
 //! tasks that ended and whose session is gone, unless they hold work not saved.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
@@ -213,7 +214,7 @@ pub(crate) async fn run(
 async fn closed_task_worktrees(
     domain: &DomainRuntime, state: &DomainState, listing: &str, ended: &[&str], dry_run: bool,
 ) -> (Vec<Value>, Vec<Value>) {
-    let recorded = match domain.store.lock().expect("domain store poisoned").task_worktrees() {
+    let recorded = match domain.store.lock_or_exit("the domain store").task_worktrees() {
         Ok(recorded) => recorded,
         Err(error) => {
             log!("could not read the worktrees of tasks: {error:#}");

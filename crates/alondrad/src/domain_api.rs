@@ -1,5 +1,6 @@
 //! Resource-oriented domain API. Both local HTTP and encrypted transport call the
 //! same runtime through `DomainHost`.
+use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::domain_authority::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
@@ -576,7 +577,7 @@ pub(crate) fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Re
     let Some(after) = delivery_evidence_query(query) else {
         return domain_error(DomainError::new("invalid_input", "after cursor is invalid"));
     };
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     let state = match store.load() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -618,7 +619,7 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
     if body.protocol_version != PROTOCOL_VERSION {
         return Ok(json!({"status":409,"body":DomainError::new("incompatible_protocol", "domain protocol 2 is required")}));
     }
-    let mut store = domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock_or_exit("the domain store");
     // Match DomainRuntime's lock order: domain store → approval lease. A
     // revocation cannot complete after this check but before the resolution
     // and its transport receipt commit.

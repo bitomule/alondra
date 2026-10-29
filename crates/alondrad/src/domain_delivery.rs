@@ -1,5 +1,6 @@
 //! Technical delivery of committed v2 effects. An outbox handoff is not a
 //! business decision, user acceptance, or proof that Claude acted on a turn.
+use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::push::Push;
@@ -31,7 +32,7 @@ pub async fn run(
     loop {
         retry_after.retain(|_, at| at.elapsed() < RETRY_BACKOFF);
         let pending = {
-            let mut store = domain.store.lock().expect("domain store poisoned");
+            let mut store = domain.store.lock_or_exit("the domain store");
             store.discard_expired_orchestrator_messages(
                 alondra_core::now_millis()
                     .saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
@@ -75,7 +76,7 @@ pub(crate) async fn deliver_from_runtime(
         return Ok(());
     }
     let claim = {
-        let mut store = domain.store.lock().expect("domain store poisoned");
+        let mut store = domain.store.lock_or_exit("the domain store");
         store.claim_message(message.id)?
     };
     let Some(claim) = claim else { return Ok(()) };
@@ -89,7 +90,7 @@ pub(crate) async fn deliver_from_runtime(
         Err((state, reason)) => (state, Some(reason)),
     };
     let finished = {
-        let mut store = domain.store.lock().expect("domain store poisoned");
+        let mut store = domain.store.lock_or_exit("the domain store");
         store.finish_message(claim.attempt_id, claim.version, state, reason)?
     };
     anyhow::ensure!(finished, "domain delivery claim changed while finishing");
@@ -187,7 +188,7 @@ async fn deliver_user_runtime(
     }
     if let Some(id) = message.interaction_id.as_deref() {
         let copies = crate::push_gate::earlier_copies(read.state(), &InteractionId::from(id));
-        let told = !copies.is_empty() && domain.store.lock().expect("domain store poisoned").user_push_handed(&copies)
+        let told = !copies.is_empty() && domain.store.lock_or_exit("the domain store").user_push_handed(&copies)
             .map_err(|_| (State::Retryable, "domain_read_failed"))?;
         if told {
             return Err((State::Discarded, "already_notified"));

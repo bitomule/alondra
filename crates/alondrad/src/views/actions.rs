@@ -4,6 +4,7 @@
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
 
+use crate::locks::Poisonable as _;
 #[path = "model_input.rs"]
 mod model_input;
 
@@ -296,10 +297,16 @@ impl LocalActionResource {
     }
 }
 pub(crate) struct LocalActions {
+    /// A holder that panics leaves it whole, so it is recovered: replay receipts, pruned and
+    /// inserted one by one.
     receipts: std::sync::Mutex<std::collections::HashMap<LocalActionKey, std::sync::Arc<LocalActionReceipt>>>,
+    /// A holder that panics leaves it whole, so it is recovered: weak pointers, pruned and inserted
+    /// one by one.
     gates: std::sync::Mutex<std::collections::HashMap<LocalActionKey, std::sync::Weak<LocalActionGate>>>,
     slots: std::sync::Arc<tokio::sync::Semaphore>,
     workers: tokio::sync::Semaphore,
+    /// A holder that panics leaves it whole, so it is recovered: weak pointers, pruned and inserted
+    /// one by one.
     resources: std::sync::Mutex<std::collections::HashMap<LocalActionResource, std::sync::Weak<tokio::sync::RwLock<()>>>>,
     pub(super) journal_admissions: std::sync::Arc<tokio::sync::Semaphore>,
     pub(super) journal_worker: std::sync::Arc<tokio::sync::Semaphore>,
@@ -317,7 +324,7 @@ impl Default for LocalActions {
 }
 impl LocalActions {
     fn gate(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionGate>> {
-        let mut gates = self.gates.lock().expect("local action gates poisoned");
+        let mut gates = self.gates.lock_or_recover("the local action gates");
         gates.retain(|_, gate| gate.strong_count() > 0);
         if let Some(gate) = gates.get(key).and_then(std::sync::Weak::upgrade) { return Some(gate); }
         let slot = self.slots.clone().try_acquire_owned().ok()?;
@@ -326,7 +333,7 @@ impl LocalActions {
         Some(gate)
     }
     fn resource(&self, key: LocalActionResource) -> std::sync::Arc<tokio::sync::RwLock<()>> {
-        let mut resources = self.resources.lock().expect("local action resources poisoned");
+        let mut resources = self.resources.lock_or_recover("the local action resources");
         resources.retain(|_, gate| gate.strong_count() > 0);
         if let Some(gate) = resources.get(&key).and_then(std::sync::Weak::upgrade) { return gate; }
         let gate = std::sync::Arc::new(tokio::sync::RwLock::new(()));
@@ -334,12 +341,12 @@ impl LocalActions {
         gate
     }
     fn cached(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionReceipt>> {
-        let mut receipts = self.receipts.lock().expect("local action receipts poisoned");
+        let mut receipts = self.receipts.lock_or_recover("the local action receipts");
         receipts.retain(|_, entry| entry.at.elapsed() < std::time::Duration::from_secs(600));
         receipts.get(key).cloned()
     }
     fn remember(&self, key: LocalActionKey, receipt: LocalActionReceipt) -> std::sync::Arc<LocalActionReceipt> {
-        let mut receipts = self.receipts.lock().expect("local action receipts poisoned");
+        let mut receipts = self.receipts.lock_or_recover("the local action receipts");
         if receipts.len() >= 1024 {
             let oldest = receipts.iter().min_by_key(|(_, entry)| entry.at).map(|(key, _)| key.clone());
             if let Some(oldest) = oldest { receipts.remove(&oldest); }
