@@ -772,10 +772,16 @@ pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
 }
 
 /// The task's execution could not be taken over and no host runs it: its card tells the user why
-/// and offers to try again or cancel the task. It is never left as it is.
+/// and offers to try again or cancel the task. It is never left as it is. A task the gate holds
+/// paused gets no card: its resume takes it over (`take_if_unowned`), and puts the card if that
+/// fails too.
 pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     log!("the SDK execution of {task} was not taken over: {why}");
     let Ok(state) = domain.state() else { return };
+    if node_paused(&state, task) {
+        log!("{task} is paused: a host that resumes its session takes it over when the pause ends");
+        return;
+    }
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -785,6 +791,22 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     };
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
+    }
+}
+
+fn node_paused(state: &DomainState, task: &TaskId) -> bool {
+    state.lifecycle_of(task).ok().is_some_and(|lifecycle| lifecycle.cards().into_iter()
+        .any(|(card, reason)| reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX)))
+}
+
+/// The gate ended the pause of a task whose execution no owner of this daemon holds, as one whose
+/// host was lost while it was paused: a host that resumes the same session takes it over and is
+/// handed what the task goes on with.
+pub(crate) fn take_if_unowned(domain: &DomainRuntime, task: &TaskId) {
+    let Ok(state) = domain.state() else { return };
+    if to_take(domain, &state, task) {
+        log!("{task} was resumed with no SDK host of its own: one that resumes its session takes it over");
+        retake(domain, task.clone());
     }
 }
 

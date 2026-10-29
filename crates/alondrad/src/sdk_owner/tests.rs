@@ -2044,6 +2044,12 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
 /// The Mac goes down: every process of the host's group is killed, its native Claude included, and
 /// the daemon with them.
 fn kill_host_and_daemon(driver: Driver) {
+    kill_host(&driver);
+    drop(driver);
+}
+
+/// Kills the driver's whole host group and waits until each of its processes exited.
+pub(crate) fn kill_host(driver: &Driver) {
     let group = driver.worker.host_group().unwrap();
     let mut exits = alondra_process_group::Exits::new().unwrap();
     for member in alondra_process_group::members(group).unwrap() {
@@ -2051,7 +2057,6 @@ fn kill_host_and_daemon(driver: Driver) {
     }
     assert!(std::process::Command::new("/bin/kill").args(["-KILL", "--", &format!("-{group}")]).status().unwrap().success());
     exits.wait().unwrap();
-    drop(driver);
 }
 
 impl Slice {
@@ -2084,7 +2089,7 @@ fn lifecycle(domain: &DomainRuntime) -> alondra_domain::TaskLifecycle {
 }
 
 /// The open card of the task whose id starts with `prefix`.
-fn open_card(domain: &DomainRuntime, prefix: &str) -> Option<Interaction> {
+pub(crate) fn open_card(domain: &DomainRuntime, prefix: &str) -> Option<Interaction> {
     domain.read().state().interactions.values()
         .find(|card| card.id.0.starts_with(prefix) && !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
         .cloned()

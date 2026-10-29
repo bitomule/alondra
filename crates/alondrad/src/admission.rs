@@ -597,14 +597,21 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
         events.push((session, NodeEvent::Resumed));
     }
     let ended = events.iter().any(|(_, event)| matches!(event, NodeEvent::Resumed | NodeEvent::PauseReleased));
+    let mut resumed = vec![];
     for (session, event) in events {
         let key = event.key();
-        if let Err(error) = crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.clone()), event) {
-            log!("could not record that {session} {key}: {error}");
+        let resumes = matches!(event, NodeEvent::Resumed) && state.through_sdk(&AgentId(session.clone()));
+        match crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.clone()), event) {
+            Ok(true) if resumes => resumed.extend(open_task_of(&state, session)),
+            Ok(_) => {}
+            Err(error) => log!("could not record that {session} {key}: {error}"),
         }
     }
     if ended {
         domain.seals.wake();
+    }
+    for task in resumed {
+        crate::sdk_owner::take_if_unowned(domain, &task);
     }
 }
 

@@ -65,6 +65,9 @@ pub struct DomainRuntime {
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(test)]
     owner_failures: Mutex<Option<std::sync::mpsc::Sender<String>>>,
+    /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
+    #[cfg(test)]
+    pub(crate) driven_by_hand: Mutex<std::collections::BTreeSet<AgentId>>,
     /// How many read indexes publication built: one per commit that changed the domain.
     #[cfg(test)]
     pub(crate) index_builds: std::sync::atomic::AtomicU64,
@@ -148,6 +151,8 @@ impl DomainRuntime {
             before_acknowledge: Default::default(),
             #[cfg(test)]
             owner_failures: Default::default(),
+            #[cfg(test)]
+            driven_by_hand: Default::default(),
             #[cfg(test)]
             index_builds: Default::default(),
         };
@@ -233,6 +238,10 @@ impl DomainRuntime {
     }
     /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
     pub(crate) fn owns_sdk_host(&self, agent: &AgentId) -> bool {
+        #[cfg(test)]
+        if self.driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
+            return true;
+        }
         self.sdk_owners.lock().expect("SDK owners poisoned").iter().any(|owner| owner.agent() == agent && !owner.ended())
     }
     /// The process group of every node host this daemon owns now, which is what a node costs.

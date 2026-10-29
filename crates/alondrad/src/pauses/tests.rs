@@ -651,6 +651,7 @@ impl SdkNode {
             prompt: "consume-and-hold".into(), plugin: home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
         }).unwrap();
+        domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
         let mut node = Self { driver, domain, capture, home, _state: state };
         while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
             node.driver.observe().unwrap();
@@ -714,6 +715,23 @@ impl SdkNode {
         let state = self.domain.state().unwrap();
         assert!(matches!(state.node_pause(&AgentId(self.agent())), Some(Pause { reason: PauseReason::ByUser, .. })), "{:?}", state.node_pause(&AgentId(self.agent())));
         assert_eq!(state.node_phase(&AgentId(self.agent())), Some(&NodePhase::ThroughSdk), "its task's lifecycle holds the pause, not its phase");
+    }
+
+    /// Each native Claude the hosts started, with the session it runs and the one it resumed.
+    fn starts(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+
+    /// The node's host dies while it is paused and no owner of the daemon is left to replace it.
+    fn lose_host(&mut self) {
+        std::fs::DirBuilder::new().mode(0o700).create(self.home.join("plugin")).unwrap();
+        crate::sdk_owner::tests::kill_host(&self.driver);
+        self.domain.driven_by_hand.lock().unwrap().remove(self.driver.agent());
+        assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
+    }
+
+    fn host_lost_card(&self) -> Option<alondra_core::domain::Interaction> {
+        crate::sdk_owner::tests::open_card(&self.domain, alondra_core::domain::HOST_LOST_PREFIX)
     }
 }
 
@@ -782,4 +800,51 @@ async fn the_users_own_message_to_a_paused_sdk_node_ends_the_pause_and_reaches_c
     node.until_told("Use the short changelog format");
     let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
     assert!(resumed <= 1, "{:?}", node.prompts());
+}
+
+/// The user paused the node and its host died with no owner left to replace it, as when a daemon's
+/// start puts a host the pause's interrupt then closes. Resuming it launches a host that resumes the
+/// same native session, and what the node goes on with reaches it.
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_paused_sdk_node_whose_host_died_resumes_its_session_in_a_new_host() {
+    let mut node = SdkNode::working();
+    let session = node.starts()[0]["session"].as_str().unwrap().to_owned();
+    node.pause();
+    node.lose_host();
+
+    let mut changed = node.domain.subscribe();
+    assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.domain.join_retakes();
+    assert!(node.domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
+    let capture = node.capture.clone();
+    let told = move || crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
+        .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("resumed you"));
+    changed.wait_for(|_| told()).await.unwrap();
+    node.domain.stop_sdk_owners();
+    let starts = node.starts();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
+    assert!(node.host_lost_card().is_none());
+}
+
+/// While the node is paused, a host that could not be replaced puts no card the pause would refuse.
+/// Its resume tries again; when no host can start, the task gets the card to try again or cancel.
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_to_try_again() {
+    let mut node = SdkNode::working();
+    node.pause();
+    node.lose_host();
+    crate::sdk_owner::lost(&node.domain, &SDK_TASK.into(), "its new host stopped before it could take the task's next message");
+    assert!(node.host_lost_card().is_none(), "the pause holds the task: the card waits for its resume");
+
+    use std::os::unix::fs::PermissionsExt;
+    let state_root = node.domain.sdk().unwrap().0.state_root.clone();
+    let refuse = |refused: bool| std::fs::set_permissions(&state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.domain.join_retakes();
+    refuse(false);
+    let card = node.host_lost_card().expect("the task has a card to try again");
+    let alondra_core::domain::InteractionPayload::Question { options, .. } = &card.payload else { panic!("{card:?}") };
+    assert!(options.iter().any(|option| option.id == alondra_core::domain::RETAKE), "{options:?}");
+    assert_eq!(node.domain.state().unwrap().tasks[&TaskId::from(SDK_TASK)].state, alondra_core::domain::TaskState::NeedsYou);
 }
