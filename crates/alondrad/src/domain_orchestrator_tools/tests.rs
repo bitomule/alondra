@@ -1295,6 +1295,14 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     assert_eq!((&sonnet["name"], &sonnet["effort"], &sonnet["figures"]["sums"]["tasks"]), (&json!("sonnet"), &json!("medium"), &json!(1)));
     let sums = &sonnet["figures"]["sums"];
     assert_eq!((&sums["change_rounds"], &sums["reviewer_rounds"], &sums["clean"]), (&json!(2), &json!(2), &json!(0)));
+    let mut inputs = domain.metrics_inputs(0).unwrap();
+    let task = inputs.tasks.iter().find(|task| task.model.as_deref() == Some("sonnet")).expect("the fold kept the completed sonnet task");
+    assert_eq!((task.effort.as_deref(), task.change_rounds, task.reviewer_rounds, task.clean), (Some("medium"), 2, 2, false));
+    inputs.now = task.finished_at;
+    let at_end = alondra_core::metrics::report::report(&inputs, &alondra_core::metrics::report::Query::parse("period=all&compare=none").unwrap());
+    let sonnet = at_end.by_model.iter().find(|group| group.name == "sonnet").expect("a report at the task's end includes its model");
+    assert_eq!((sonnet.effort.as_deref(), sonnet.figures.sums.tasks, sonnet.figures.sums.change_rounds, sonnet.figures.sums.reviewer_rounds),
+        (Some("medium"), 1, 2, 2));
     server.abort();
 }
 

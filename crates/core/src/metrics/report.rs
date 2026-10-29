@@ -455,8 +455,10 @@ impl Query {
         format!("{KEY}?{}", self.query_string())
     }
 
-    /// The window shown and the one it is set beside, as [from, until).
+    /// The window shown and the one it is set beside, as [from, until). The current window
+    /// includes the millisecond of the report; the comparison boundaries do not overlap.
     fn windows(&self, now: Millis, releases: &[Release]) -> (Window, Option<Window>) {
+        let until = now.saturating_add(1);
         let split = match &self.compare {
             Compare::Release(version) => releases.iter().find(|r| &r.version == version).map(|r| r.first_seen_at),
             Compare::Date(day) => day_millis(day),
@@ -464,12 +466,12 @@ impl Query {
         };
         if let Some(split) = split.filter(|split| *split < now) {
             let length = now - split;
-            return (Window { from: Some(split), until: now }, Some(Window { from: Some(split - length), until: split }));
+            return (Window { from: Some(split), until }, Some(Window { from: Some(split - length), until: split }));
         }
-        let Some(days) = self.period.days() else { return (Window { from: None, until: now }, None) };
+        let Some(days) = self.period.days() else { return (Window { from: None, until }, None) };
         let from = now - days * DAY_MS;
         let previous = (self.compare == Compare::Previous).then(|| Window { from: Some(from - days * DAY_MS), until: from });
-        (Window { from: Some(from), until: now }, previous)
+        (Window { from: Some(from), until }, previous)
     }
 }
 

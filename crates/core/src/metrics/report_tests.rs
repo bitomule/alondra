@@ -157,7 +157,7 @@ fn a_release_splits_the_time_since_it_started_from_as_long_before() {
     let mut inputs = inputs(vec![task(1, "sonnet", Some(1)), task(3, "sonnet", Some(1)), task(5, "sonnet", Some(1))], vec![]);
     inputs.releases = vec![Release { version: "0.3.4".into(), first_seen_at: NOW - 10 * DAY_MS }, Release { version: "0.3.5".into(), first_seen_at: NOW - 2 * DAY_MS }];
     let report = report(&inputs, &query("period=30d&compare=release:0.3.5"));
-    assert_eq!(report.window, Window { from: Some(NOW - 2 * DAY_MS), until: NOW });
+    assert_eq!(report.window, Window { from: Some(NOW - 2 * DAY_MS), until: NOW + 1 });
     assert_eq!(report.previous_window, Some(Window { from: Some(NOW - 4 * DAY_MS), until: NOW - 2 * DAY_MS }));
     assert_eq!((report.figures.sums.tasks, report.previous.unwrap().sums.tasks), (1, 1));
     assert_eq!(report.releases.iter().map(|r| r.version.as_str()).collect::<Vec<_>>(), ["0.3.5", "0.3.4"]);
@@ -193,4 +193,57 @@ fn a_day_is_its_midnight_utc() {
     assert_eq!(day_millis("1970-01-01"), Some(0));
     assert_eq!(day_millis("2026-10-26"), Some(20_752 * DAY_MS));
     assert_eq!(day_millis("2024-03-01").unwrap() - day_millis("2024-02-28").unwrap(), 2 * DAY_MS, "2024 is a leap year");
+}
+
+#[test]
+fn a_task_finished_at_the_report_time_keeps_its_model_and_review_rounds() {
+    let mut reviewed = task(0, "sonnet", Some(1));
+    reviewed.change_rounds = 2;
+    reviewed.reviewer_rounds = 2;
+    reviewed.clean = false;
+    let mut future = task(0, "future", Some(1));
+    future.finished_at = NOW + 1;
+    let mut inputs = inputs(vec![reviewed, future], vec![]);
+    inputs.releases = vec![Release { version: "0.3.5".into(), first_seen_at: NOW - 2 * DAY_MS }];
+    for text in [
+        "period=all&compare=none",
+        "period=7d&compare=none",
+        "period=7d&compare=previous",
+        "period=7d&compare=release:0.3.5",
+        "period=7d&compare=date:1972-09-25",
+    ] {
+        let report = report(&inputs, &query(text));
+        let sums = &report.figures.sums;
+        assert_eq!((sums.tasks, sums.change_rounds, sums.reviewer_rounds, sums.clean), (1, 2, 2, 0), "{text}");
+        assert_eq!(report.by_model.iter().map(|group| (group.name.as_str(), group.effort.as_deref(), group.figures.sums.tasks)).collect::<Vec<_>>(),
+            [("sonnet", Some("medium"), 1)], "{text}");
+    }
+}
+
+#[test]
+fn comparisons_keep_their_boundaries_when_the_current_millisecond_is_included() {
+    for (text, split) in [
+        ("period=7d&compare=previous", NOW - 7 * DAY_MS),
+        ("period=7d&compare=release:0.3.5", NOW - 2 * DAY_MS),
+        ("period=7d&compare=date:1972-09-25", NOW - 2 * DAY_MS),
+    ] {
+        let previous_from = split - (NOW - split);
+        let tasks = [
+            (previous_from - 1, "too-old"), (previous_from, "previous"), (split - 1, "previous"),
+            (split, "current"), (NOW, "current"), (NOW + 1, "future"),
+        ].into_iter().map(|(at, model)| {
+            let mut task = task(0, model, Some(1));
+            task.started_at = Some(at - 3_600_000);
+            task.finished_at = at;
+            task
+        }).collect();
+        let mut inputs = inputs(tasks, vec![]);
+        inputs.releases = vec![Release { version: "0.3.5".into(), first_seen_at: NOW - 2 * DAY_MS }];
+        let report = report(&inputs, &query(text));
+        assert_eq!(report.window, Window { from: Some(split), until: NOW + 1 }, "{text}");
+        assert_eq!(report.previous_window, Some(Window { from: Some(previous_from), until: split }), "{text}");
+        assert_eq!((report.figures.sums.tasks, report.previous.unwrap().sums.tasks), (2, 2), "{text}");
+        assert_eq!(report.by_model.iter().map(|group| (group.name.as_str(), group.figures.sums.tasks)).collect::<Vec<_>>(),
+            [("current", 2)], "{text}");
+    }
 }
