@@ -299,8 +299,9 @@ struct Slice {
     backend: SdkBackend,
     /// Every raw host event the daemon committed for the task, by cursor, as it was committed.
     kept: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
-    _home: Directory,
+    /// Before `_home`: the hosts write in the HOME they get, so they end before it is removed.
     _state: HostRoot,
+    _home: Directory,
 }
 
 impl Drop for Slice {
