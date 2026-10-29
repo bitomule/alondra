@@ -368,6 +368,12 @@ class UpgradeCaseTests(Fixture):
         self.assertEqual(u.turns_ended(cards, 't-keeps'), 2)
         self.assertEqual(u.turns_ended(cards, 't-crashes'), 0)
 
+    def test_a_turn_that_ends_without_a_card_counts_from_the_daemon_log(self):
+        log = ("2026-10-29T20:56:25.634+01:00 alondrad: a turn of the SDK host's Claude ended (completed) (sdk-ff7fe887f86da6b5, task t-keeps)\n"
+               "2026-10-29T20:56:25.700+01:00 alondrad: a turn of the SDK host's Claude ended (completed) (sdk-0a, task t-keeps-other)\n")
+        self.assertEqual(u.turns_ended([], 't-keeps', log), 1)
+        self.assertEqual(u.turns_ended([], 't-crashes', log), 0)
+
     def stub(self, name):
         u.write_executable(self.work / name, f'#!{sys.executable}\nimport json, os, sys\n'
                            f'print(json.dumps({{"who": {name!r}, "args": sys.argv[1:], "capture": os.environ.get("FIXTURE_CAPTURE")}}))\n')

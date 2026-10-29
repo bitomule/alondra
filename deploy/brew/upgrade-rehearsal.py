@@ -1189,6 +1189,7 @@ UPGRADE_CRASHES = ('adopted', 'moved')
 # input its host may have lost.
 MOVE_CARDS = ('host-lost-', 'session-ended-', 'handoff-doubt-')
 TURN_ENDED = 'turn-ended-'
+TURN_ENDED_LINE = "a turn of the SDK host's Claude ended ("
 # Claude Code on the daemon's PATH when the release runs its own host and finds `claude` there.
 ROUTER = '''#!/usr/bin/python3
 """A task's session, as the Agent SDK host spawns it, runs the persistent fixture with a capture of
@@ -1303,9 +1304,12 @@ def moved(before, now, old_host_runs):
             and now['release'] not in (None, before['release']) and now['ended'] == 1)
 
 
-def turns_ended(interactions, task):
-    """How many turns of the task's node ended: each leaves a card of its own."""
-    return sum(row['id'].startswith(f'{TURN_ENDED}{task}-') for row in interactions)
+def turns_ended(interactions, task, log=''):
+    """How many turns of the task's node ended. Releases up to 0.3.10 leave a card for each; from
+    0.3.11 a turn that ends raises no card and only the daemon's log says so."""
+    cards = sum(row['id'].startswith(f'{TURN_ENDED}{task}-') for row in interactions)
+    logged = sum(TURN_ENDED_LINE in line and line.rstrip().endswith(f', task {task})') for line in log.splitlines())
+    return max(cards, logged)
 
 
 def move_cards(interactions, task):
@@ -1363,7 +1367,10 @@ def background_node(world, task, title, version, known):
         found = new_sessions(world.runtime, known)
         return (found[0] if len(found) == 1 else None, found)
     session = until(f'{version} starts the node of {task} on its own Agent SDK host', started, within=PATIENCE * 2)
-    until(f'the first turn of {task} ends', lambda: (turns_ended(rows(world.home, 'interactions'), task) >= 1, None))
+    def first_turn_ended():
+        log = world.log.read_text(errors='replace') if world.log.is_file() else ''
+        return (turns_ended(rows(world.home, 'interactions'), task, log) >= 1, None)
+    until(f'the first turn of {task} ends', first_turn_ended)
     world.press(f'task:{task}', 'msg:', BACKGROUND_COMMAND)
     written = world.runtime / f'capture-{session}.background'
 
