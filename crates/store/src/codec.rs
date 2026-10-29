@@ -160,6 +160,10 @@ impl From<PostMergeFactRecord> for PostMergeFact {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum OwnerRecord {
@@ -169,6 +173,7 @@ pub(super) enum OwnerRecord {
     Disk,
     Usage,
     ClaudeApi,
+    Orchestrator,
 }
 impl From<Owner> for OwnerRecord {
     fn from(owner: Owner) -> Self {
@@ -179,6 +184,7 @@ impl From<Owner> for OwnerRecord {
             Owner::Capacity(Capacity::Disk) => Self::Disk,
             Owner::Capacity(Capacity::Usage) => Self::Usage,
             Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
+            Owner::Orchestrator => Self::Orchestrator,
         }
     }
 }
@@ -191,6 +197,7 @@ impl From<OwnerRecord> for Owner {
             OwnerRecord::Disk => Self::Capacity(Capacity::Disk),
             OwnerRecord::Usage => Self::Capacity(Capacity::Usage),
             OwnerRecord::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
+            OwnerRecord::Orchestrator => Self::Orchestrator,
         }
     }
 }
@@ -518,6 +525,8 @@ pub(super) enum FactRecord {
         wake: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         awaits: Option<AwaitRecord>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stalled: bool,
     },
     ConnectionLost {
         problem_card: String,
@@ -588,11 +597,12 @@ impl From<&RuntimeFact> for FactRecord {
             RuntimeFact::ContinuationConsumed { continuation } => Self::ContinuationConsumed {
                 continuation: continuation.as_str().to_owned(),
             },
-            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits } => Self::TurnEnded {
+            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits, stalled } => Self::TurnEnded {
                 turn: turn.as_str().to_owned(),
                 unheard_card: unheard_card.0.clone(),
                 wake: wake.as_ref().map(|input| input.as_str().to_owned()),
                 awaits: awaits.as_ref().map(AwaitRecord::from),
+                stalled: *stalled,
             },
             RuntimeFact::ConnectionLost { problem_card } => Self::ConnectionLost {
                 problem_card: problem_card.0.clone(),
@@ -672,11 +682,12 @@ impl FactRecord {
                     continuation: ContinuationId::new(continuation).map_err(Error::from)?,
                 }
             }
-            FactRecord::TurnEnded { turn, unheard_card, wake, awaits } => RuntimeFact::TurnEnded {
+            FactRecord::TurnEnded { turn, unheard_card, wake, awaits, stalled } => RuntimeFact::TurnEnded {
                 turn: TurnId::new(turn).map_err(Error::from)?,
                 unheard_card: InteractionId(unheard_card),
                 wake: wake.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
                 awaits: awaits.map(AwaitRecord::decode).transpose()?,
+                stalled,
             },
             FactRecord::ConnectionLost { problem_card } => RuntimeFact::ConnectionLost {
                 problem_card: InteractionId(problem_card),
@@ -850,11 +861,15 @@ pub(super) enum EventRecord {
     Discard {
         card: String,
         unheard_card: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stalled: bool,
     },
     AwaitEnded {
         unheard_card: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wake: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stalled: bool,
     },
     RequestControl {
         control: String,
@@ -1002,13 +1017,15 @@ impl From<&Event> for EventRecord {
                 resend: resend.as_ref().map(|value| value.as_str().to_owned()),
                 unheard_card: unheard_card.0.clone(),
             },
-            Event::Discard { card, unheard_card } => Self::Discard {
+            Event::Discard { card, unheard_card, stalled } => Self::Discard {
                 card: card.0.clone(),
                 unheard_card: unheard_card.0.clone(),
+                stalled: *stalled,
             },
-            Event::AwaitEnded { unheard_card, wake } => Self::AwaitEnded {
+            Event::AwaitEnded { unheard_card, wake, stalled } => Self::AwaitEnded {
                 unheard_card: unheard_card.0.clone(),
                 wake: wake.as_ref().map(|input| input.as_str().to_owned()),
+                stalled: *stalled,
             },
             Event::ResendUntaken { input, resend } => Self::ResendUntaken {
                 input: input.as_str().to_owned(),
@@ -1175,13 +1192,15 @@ impl EventRecord {
                     .transpose()?,
                 unheard_card: InteractionId(unheard_card),
             },
-            EventRecord::Discard { card, unheard_card } => Event::Discard {
+            EventRecord::Discard { card, unheard_card, stalled } => Event::Discard {
                 card: InteractionId(card),
                 unheard_card: InteractionId(unheard_card),
+                stalled,
             },
-            EventRecord::AwaitEnded { unheard_card, wake } => Event::AwaitEnded {
+            EventRecord::AwaitEnded { unheard_card, wake, stalled } => Event::AwaitEnded {
                 unheard_card: InteractionId(unheard_card),
                 wake: wake.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
+                stalled,
             },
             EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {
                 input: InputId::new(input).map_err(Error::from)?,
@@ -1623,11 +1642,12 @@ mod tests {
                     unheard_card: "unheard_card".into(),
                     wake: None,
                     awaits: None,
+                    stalled: false,
                 },
             },
         );
-        roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: Some(InputId::new("wake").unwrap()) });
-        roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: None });
+        roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: Some(InputId::new("wake").unwrap()), stalled: false });
+        roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: None, stalled: false });
         for (wake, awaits) in [
             (Some(InputId::new("wake").unwrap()), None),
             (None, Some(Await::User("question".into()))),
@@ -1640,7 +1660,7 @@ mod tests {
                 Event::Runtime {
                     stamp: current.execution().unwrap().clone(),
                     cursor: 1,
-                    fact: RuntimeFact::TurnEnded { turn: TurnId::new("turn").unwrap(), unheard_card: "unheard_card".into(), wake, awaits },
+                    fact: RuntimeFact::TurnEnded { turn: TurnId::new("turn").unwrap(), unheard_card: "unheard_card".into(), wake, awaits, stalled: false },
                 },
             );
         }

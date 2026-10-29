@@ -112,19 +112,14 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
     report.case("S5", "Claude asks to leave plan mode with 41 points from a turn it started by itself while the user's message waits: it gets why, shortens the plan, and the user approves it", |report| {
         request(report, fakes, &user, &task_script("req-s5", "t-s5", S5_TITLE), S5_TITLE)?;
         let node = launched(report, fakes, "t-s5")?;
-        act(report, fakes, &node, "the node's turn ends while its research runs", &[Step::Speak { said: "Waiting for the research report".into(), behind: None, listed: None }])?;
-        let ended = wait(report, "a card asks how it goes on", || card_in_inbox(&user, "turn-ended-t-s5-"))?;
-        let view = user.view(&format!("card:{ended}"))?;
-        report.snapshot("card-long-title", &view)?;
-        report.step("the card says all it asks: the long title is shortened, never the sentence", || {
-            anyhow::ensure!(mentions(&view, "…” stopped without delivering or asking: tell it how to go on"), "{view}");
+        act(report, fakes, &node, "the node's turn ends while its research runs in the background", &[Step::Speak { said: "Waiting for the research report".into(), behind: Some("research".into()), listed: Some("working".into()) }])?;
+        report.step("its research explains what follows: nobody is asked and the node is not woken", || {
+            if let Some(card) = user.inbox()?.into_iter().find(|id| id.starts_with("turn-ended-t-s5-") || id.starts_with("stalled-t-s5-")) {
+                bail!("{card} asks how the task goes on");
+            }
             Ok(())
         })?;
         act(report, fakes, &node, "the research report starts a turn of Claude's own", &[Step::OwnTurn { said: "The report is in: writing the plan".into() }])?;
-        wait(report, "the card that asked how it goes on leaves Inbox: the node works", || {
-            let inbox = user.inbox()?;
-            Ok(((!inbox.contains(&ended)).then_some(()), format!("{inbox:?}")))
-        })?;
         state(report, &user, "t-s5", WORKING)?;
         let agent = wait(report, "the task names its working node", || Ok((node_of(&user, S5_TITLE)?, "no node yet".into())))?;
         report.step("the user writes to the node while its turn runs", || {

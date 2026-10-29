@@ -1,5 +1,6 @@
 use crate::{AuthorityScope, Error, Result, check_epoch, codec};
-use alondra_domain::{Event, InputId, TaskLifecycle};
+use alondra_domain::{Event, InputId, Owner, TaskLifecycle};
+use alondra_foundation::InteractionId;
 use alondra_foundation::{Revision, TaskId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
@@ -146,7 +147,7 @@ pub(super) fn save_relations(connection: &Connection, aggregate: &TaskLifecycle)
         params![task],
     )?;
     for (card, _) in aggregate.cards() {
-        require_card(connection, task, &card.0)?;
+        require_card(connection, task, &card.0, recipient(aggregate, card))?;
         connection.execute(
             "INSERT INTO lifecycle_cards(task_id,card_id) VALUES(?1,?2)",
             params![task, card.0],
@@ -203,9 +204,18 @@ pub(super) fn save_relations(connection: &Connection, aggregate: &TaskLifecycle)
     Ok(())
 }
 
-fn require_card(connection: &Connection, task: &str, card: &str) -> Result<()> {
-    let need: Option<String> = connection.query_row("SELECT json_extract(card,'$.need') FROM interactions WHERE task_id=?1 AND id=?2 AND scope_kind='task' AND recipient_kind='user' AND kind IN('question','action_request') AND answer IS NULL AND withdrawn=0 AND json_type(options)='array' AND json_extract(card,'$.kind') IN('decide','review','authorize','provide','test','do','problem') AND json_type(card,'$.need')='text'",
-        params![task, card], |row| row.get(0)).optional()?;
+/// Who the card the task waits on is for: the orchestrator settles a stopped node's case, the user
+/// every other card.
+fn recipient(aggregate: &TaskLifecycle, card: &InteractionId) -> &'static str {
+    match aggregate.card_owner(card) {
+        Some(Owner::Orchestrator) => "orchestrator",
+        _ => "user",
+    }
+}
+
+fn require_card(connection: &Connection, task: &str, card: &str, recipient: &str) -> Result<()> {
+    let need: Option<String> = connection.query_row("SELECT json_extract(card,'$.need') FROM interactions WHERE task_id=?1 AND id=?2 AND scope_kind='task' AND recipient_kind=?3 AND kind IN('question','action_request') AND answer IS NULL AND withdrawn=0 AND json_type(options)='array' AND json_extract(card,'$.kind') IN('decide','review','authorize','provide','test','do','problem') AND json_type(card,'$.need')='text'",
+        params![task, card, recipient], |row| row.get(0)).optional()?;
     let need = need.ok_or(Error::InvalidCard)?;
     let trimmed = need.trim();
     if need.contains('\0')
@@ -241,7 +251,8 @@ pub(super) fn verify_relations(connection: &Connection, aggregate: &TaskLifecycl
         return Err(Error::CorruptJournal);
     }
     for card in cards {
-        require_card(connection, task, &card)?;
+        let id = InteractionId(card);
+        require_card(connection, task, &id.0, recipient(aggregate, &id))?;
     }
     if values(
         connection,

@@ -29,6 +29,8 @@ pub const UNANSWERED_WITHDRAW: &str = "withdraw_question";
 pub const UNANSWERED_WITHDRAW_LABEL: &str = "Withdraw the question";
 /// Alondra's one reminder to the orchestrator about a node's suggestion it left unsettled.
 pub const UNSETTLED_NOTICE_PREFIX: &str = "suggestion-unsettled-";
+/// Alondra's one reminder to the orchestrator about a stopped node's case it left unsettled.
+pub const STALL_NOTICE_PREFIX: &str = "stall-unsettled-";
 
 /// Alondra's reminder to the orchestrator about a plan review it left unsettled.
 pub const PLAN_REVIEW_NOTICE_PREFIX: &str = "plan-review-unsettled-";

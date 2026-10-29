@@ -4,7 +4,9 @@
 //! scripted tasks of every request the batch names, or closes the request with its scripted
 //! answer, through the MCP server Alondra configured, and ends with the stream Alondra expects
 //! from a successful run. A run that wrote `fakes/orchestrator/ask.json` has the next batch ask
-//! the user that card once, then moves it to `asked.json`.
+//! the user that card once, then moves it to `asked.json`. A run whose batch holds the case of a
+//! stopped node settles it with the outcome `fakes/orchestrator/stall.json` holds, then moves that
+//! file to `stall-settled-<case>.json`; without the file it leaves the case unsettled.
 use std::{
     io::{BufRead, Read, Write},
     path::PathBuf,
@@ -20,7 +22,7 @@ use super::{
 use crate::sandbox::{hex, now_ms, random};
 
 const SERVER: &str = "alondra-orchestrator";
-const TOOLS: [&str; 7] = ["tasks_in_progress", "node", "ask", "create_task", "launch", "close_request", "settle_suggestion"];
+const TOOLS: [&str; 8] = ["tasks_in_progress", "node", "ask", "create_task", "launch", "close_request", "settle_suggestion", "settle_stall"];
 
 pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
     let session = flag_value(args, "--session-id").or_else(|| flag_value(args, "--resume")).context("no session id")?.to_owned();
@@ -68,6 +70,14 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
         std::fs::rename(&read, dir.join("called.json"))?;
         made.push((tool, arguments, reply));
     }
+    let outcome = dir.join("stall.json");
+    if let Some((case, task)) = stall_case(prompt).filter(|_| outcome.exists()) {
+        let call = json!({"case_id": case, "task_id": task, "outcome": serde_json::from_slice::<Value>(&std::fs::read(&outcome)?)?});
+        let reply = mcp::call(&program, &server_args, &[], &[("settle_stall", call.clone())])?.remove(0);
+        append(&dir.join("actions.jsonl"), &json!({"at": now_ms(), "tool": "settle_stall", "arguments": call, "refused": reply.refused, "text": reply.text}))?;
+        std::fs::rename(&outcome, dir.join(format!("stall-settled-{case}.json")))?;
+        made.push(("settle_stall", call, reply));
+    }
     for script in fakes.request_scripts()? {
         let handled = dir.join(format!("{}.handled", script.request_id));
         let summarized = dir.join(format!("{}.summarized", script.request_id));
@@ -101,6 +111,14 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
         std::fs::write(&handled, "")?;
     }
     Ok(made)
+}
+
+/// The case and task of the first stopped node the batch asks to settle.
+fn stall_case(prompt: &str) -> Option<(String, String)> {
+    let rest = prompt.split("settle_stall(case_id: \"").nth(1)?;
+    let (case, rest) = rest.split_once('"')?;
+    let task = rest.split("task_id: \"").nth(1)?.split('"').next()?;
+    Some((case.to_owned(), task.to_owned()))
 }
 
 fn call_all(dir: &std::path::Path, program: &std::path::Path, server_args: &[String], calls: Vec<(&'static str, Value)>) -> Result<Vec<(&'static str, Value, mcp::Reply)>> {

@@ -168,6 +168,14 @@ pub struct Task {
     /// Done or Cancelled back until every receipt of the ending is in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<TaskEnding>,
+    /// The cases about its node stopping with nothing explaining its next step that went to the
+    /// orchestrator since the task last moved on (a delivery, a card of its node to the user, the
+    /// user's word). Counted by turns, never by time.
+    #[serde(default, skip_serializing_if = "is_zero_stalls")]
+    pub stalls: u32,
+    /// How the task closed because its node kept stopping with nothing explaining its next step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_closing: Option<StallClosing>,
     /// Every git worktree the task made or took, by path: its node's own and those of the
     /// subagents it launched. A task ends only once each of them has ended.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -196,6 +204,17 @@ pub struct TaskGrant {
     pub allows: crate::allow_for_task::AllowForTask,
     #[serde(default, skip_serializing_if = "is_zero_uses")]
     pub uses: u32,
+}
+/// How a task whose node kept stopping closed: with what the orchestrator wrote of what got done,
+/// or by Alondra itself when the orchestrator left the case unsettled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StallClosing {
+    Settled { result: String },
+    Unsettled,
+}
+fn is_zero_stalls(stalls: &u32) -> bool {
+    *stalls == 0
 }
 fn is_zero_uses(uses: &u32) -> bool {
     *uses == 0

@@ -576,7 +576,7 @@ fn count_failure(domain: &DomainRuntime, task: &Task, mut row: TaskClosing, stop
 fn tell_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &AgentId, text: &str) {
     if crate::sdk_owner::runs_through_sdk(state, agent) {
         let id = format!("closer-{}-{}", task.id, crate::auth::random_hex(8));
-        if let Err(error) = crate::domain_messages::tell_sdk_node(domain, &task.id, crate::node_push::ALONDRA, text, &id) {
+        if let Err(error) = crate::domain_messages::tell_sdk_node(domain, &task.id, crate::node_push::ALONDRA, text, &id, false) {
             log!("could not tell the node of {} why its task does not close: {error}", task.id);
         }
     } else {

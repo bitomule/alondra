@@ -877,14 +877,22 @@ fn close_sdk_node(f: &Fixture, agent: &AgentId) {
     answer_ended_cards(f);
 }
 
+/// Says how the task goes on where its ended turns left a card open: the user on theirs, the
+/// orchestrator on the case of a stopped node.
 fn answer_ended_cards(f: &Fixture) {
     let state = f.domain.state().unwrap();
-    let cards: Vec<_> = state.interactions.values().filter(|card| {
-        card.scope == (alondra_core::domain::Scope::Task { task_id: "t".into() })
-            && state.open(card)
-            && matches!(&card.payload, alondra_core::domain::InteractionPayload::Question { options, .. }
-                if options.iter().any(|option| option.id == alondra_core::domain::CARRY_ON))
-    }).map(|card| card.id.clone()).collect();
+    let open: Vec<_> = state.interactions.values()
+        .filter(|card| card.scope == (alondra_core::domain::Scope::Task { task_id: "t".into() }) && state.open(card))
+        .collect();
+    let cases: Vec<_> = open.iter().filter(|card| alondra_core::domain::is_stall_case(card)).map(|card| card.id.clone()).collect();
+    let cards: Vec<_> = open.iter().filter(|card| matches!(&card.payload, alondra_core::domain::InteractionPayload::Question { options, .. }
+        if options.iter().any(|option| option.id == alondra_core::domain::CARRY_ON))).map(|card| card.id.clone()).collect();
+    for case in cases {
+        command(&f.domain, Actor::Orchestrator { generation: state.orchestrator_generation }, Command::SettleStall {
+            case_id: case.clone(), task_id: "t".into(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Go on with your task".into() },
+        });
+        assert!(!f.domain.state().unwrap().open(&f.domain.state().unwrap().interactions[&case]), "the orchestrator settled the case");
+    }
     for card in cards {
         command(&f.domain, user(), Command::AnswerQuestion {
             interaction_id: card.clone(), option_id: alondra_core::domain::CARRY_ON.into(),

@@ -140,11 +140,16 @@ impl World {
         self.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap()
     }
 
-    /// Waits until the task's execution of `generation` ended a turn with Claude's answer.
+    /// Waits until the task's execution of `generation` ended a turn with Claude's answer and
+    /// rests on the card that turn ended on.
     async fn until_answered(&self, generation: u64) {
-        let prefix = format!("{TURN_ENDED_PREFIX}{TASK}-{generation}-");
-        self.until(|domain| domain.read().state().interactions.keys().any(|card| card.0.starts_with(&prefix))).await;
+        self.until(|domain| domain.read().state().interactions.keys().any(|card| rested(card, generation))).await;
     }
+}
+
+/// Whether `card` is one a turn of the task's execution of `generation` ended on.
+fn rested(card: &InteractionId, generation: u64) -> bool {
+    [STALLED_PREFIX, TURN_ENDED_PREFIX].iter().any(|prefix| card.0.starts_with(&format!("{prefix}{TASK}-{generation}-")))
 }
 
 impl Drop for World {
@@ -295,8 +300,7 @@ async fn a_historical_started_destination_is_adopted_with_its_existing_physical_
     let mut world=World::with_accounts(true);
     let launch=crate::sdk_owner::Launch{task:TASK.into(),name:"running-destination".into(),directory:world.worktree.to_str().unwrap().into(),prompt:"Write the release notes".into(),plugin:world.home.join(crate::plugins::NODE),options:Default::default(),model:None,account:AccountId::default_account()};
     let mut driver=crate::sdk_owner::start(world.domain.clone(),&world.backend,launch).unwrap();
-    let prefix=format!("{TURN_ENDED_PREFIX}{TASK}-1-");
-    while !world.domain.state().unwrap().interactions.keys().any(|card|card.0.starts_with(&prefix)){driver.step(&||false).unwrap();}
+    while !world.domain.state().unwrap().interactions.keys().any(|card|rested(card,1)){driver.step(&||false).unwrap();}
     world.until_answered(1).await;
     let destination=world.node();let starts=world.starts();let native_pid=starts[0]["pid"].as_i64().unwrap() as i32;
     run(&world.domain,&Actor::System,"historical-source",Command::RegisterAgent{agent_id:"legacy-source".into(),name:"legacy-source".into(),at:0}).unwrap();

@@ -875,7 +875,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
         }
         if interaction.card.kind == alondra_core::domain::CardKind::Propose {
             text.push_str(&format!("\nSettle it with settle_suggestion(\"{}\", decision: new_task, current_task or discard).", interaction.id));
-        } else if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) {
+        } else if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) && !alondra_core::domain::is_stall_case(interaction) {
             text.push_str(&format!("\nAnswer with answer_question(\"{}\", option: \"<option_id>\").", interaction.id));
         }
         return text;

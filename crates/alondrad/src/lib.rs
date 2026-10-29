@@ -67,6 +67,7 @@ mod claude_check;
 mod auto_launch;
 mod launch_plans;
 mod plan_reviews;
+mod stall_context;
 mod start_failures;
 mod launch_worktree;
 mod node_close;

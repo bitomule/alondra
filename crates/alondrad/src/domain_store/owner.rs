@@ -321,7 +321,7 @@ impl<'connection> OwnerTransaction<'connection> {
                         return Err(DomainError::new("invalid_input","The native work continuation is invalid").into());
                     }
                     continuations.insert(commands.len(),(work.clone(),activation.clone()));
-                    commands.push(Command::TellNode{task_id:task_id.clone(),text:text.clone()});
+                    commands.push(Command::TellNode{task_id:task_id.clone(),text:text.clone(), from_user: false});
                 }
                 ObservedFact::ModelAnswered => if account_fresh || same_known_identity{technical.push(RuntimeObservation::ModelAnswered)},
                 ObservedFact::TurnEnded { turn, outcome } => {

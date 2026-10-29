@@ -2,7 +2,8 @@
 //! to its message, a suggestion, a question to the user, another task) is not empty: its lifecycle
 //! records that wait, no card says it stopped, nobody hears of it, every client says what the task
 //! waits for, and the fact that ends the wait reaches the node and moves the task on. A turn with
-//! nothing of that kind wakes the node once, and only the next one asks the user.
+//! nothing of that kind wakes the node once, and the next one is a case for the orchestrator,
+//! never a card for the user.
 use super::lifecycle_tests::{assert_aggregate_rules, must, node, sdk_turn, task, user, woken, world};
 use super::*;
 use crate::views::text::Lang;
@@ -47,13 +48,21 @@ fn shows_waiting(s: &DomainState, waits: &str) {
         }
     }
 }
-/// Starts the turn the last wake opened, `turn-2`, and returns the card its empty end asks on.
+/// Starts the turn the last wake opened, `turn-2`, and returns the case its empty end opens.
 fn woken_again(s: &mut DomainState) -> String {
     let LifecycleRecord::TurnEnded { wake: Some(input), .. } = super::lifecycle_tests::last(s, "t") else { panic!("woken") };
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
-    format!("{TURN_ENDED_PREFIX}t-1-turn-2")
+    format!("{STALLED_PREFIX}t-1-turn-2")
+}
+/// The orchestrator, never the user, hears of the case `case`, and nothing waits for the user.
+fn goes_to_the_orchestrator(s: &DomainState, outcome: &CommandOutcome, case: &InteractionId) {
+    assert!(outcome.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { interaction_id: Some(id), .. } if id == case)), "the orchestrator hears of it");
+    assert!(!outcome.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "the user hears of nothing");
+    assert!(is_stall_case(&s.interactions[case]));
+    assert!(pending(s).is_empty(), "nothing waits for the user: {:?}", pending(s));
+    assert_ne!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
 }
 fn approve_plan(s: &mut DomainState) {
     must(s, Actor::System, Command::RecordDecisionRequest {
@@ -99,7 +108,7 @@ fn wakes(s: &DomainState, outcome: &CommandOutcome, card: &InteractionId) {
 }
 /// What ended the wait reached the node: nothing holds the task and the node goes on.
 fn resumes(s: &mut DomainState, card: &InteractionId) {
-    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered.".into() });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered.".into(), from_user: false });
     assert!(!s.interactions.contains_key(card), "no card ever said it stopped");
     let lifecycle = lifecycle(s);
     assert_eq!(lifecycle.awaits(), None, "what the node is told ends the wait");
@@ -208,7 +217,7 @@ fn a_turn_that_ends_while_the_task_depends_on_another_waits_for_it_and_goes_on_w
 }
 
 /// The node's message was taken back unanswered: nothing explains its next step any more, so the
-/// turn is empty after all and the node is woken; the next empty turn asks the user.
+/// turn is empty after all and the node is woken; the next empty turn goes to the orchestrator.
 #[test]
 fn a_message_to_the_orchestrator_withdrawn_unanswered_leaves_the_turn_empty() {
     let mut s = world();
@@ -222,10 +231,9 @@ fn a_message_to_the_orchestrator_withdrawn_unanswered_leaves_the_turn_empty() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
-    let second = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
+    let second = InteractionId::from(format!("{STALLED_PREFIX}t-1-turn-2").as_str());
     let ended = end_turn(&mut s, "turn-2");
-    assert!(notified(&ended, &second), "the second empty turn asks David");
-    assert_eq!(pending(&s), [second.0.clone()]);
+    goes_to_the_orchestrator(&s, &ended, &second);
 }
 
 /// The tasks the node waited on are no longer its dependencies, and nobody told it: the turn is
@@ -300,9 +308,9 @@ fn the_24_october_turn_that_ended_on_a_request_to_the_user_waits_for_it() {
     assert_aggregate_rules(&s);
 }
 
-/// An approved plan the node did nothing with leaves nothing pending: the user is asked.
+/// An approved plan the node did nothing with leaves nothing pending: the orchestrator settles it.
 #[test]
-fn a_turn_that_ends_right_after_its_plan_is_approved_with_nothing_pending_asks_the_user() {
+fn a_turn_that_ends_right_after_its_plan_is_approved_with_nothing_pending_goes_to_the_orchestrator() {
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     approve_plan(&mut s);
@@ -310,8 +318,7 @@ fn a_turn_that_ends_right_after_its_plan_is_approved_with_nothing_pending_asks_t
     wakes(&s, &ended, &card);
     let second = InteractionId::from(woken_again(&mut s).as_str());
     let ended = end_turn(&mut s, "turn-2");
-    assert!(notified(&ended, &second));
-    assert!(pending(&s).contains(&second.0));
+    goes_to_the_orchestrator(&s, &ended, &second);
 }
 
 /// Work of its own (a subagent, a background shell, a Monitor) is what the task does next: the
@@ -370,7 +377,7 @@ fn a_turn_of_the_work_after_the_merge_ends_without_a_card() {
     });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card) && !s.interactions.contains_key(&card));
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into() });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into(), from_user: false });
     let LifecycleRecord::Told { input, .. } = super::lifecycle_tests::last(&s, "t") else { panic!("told") };
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
@@ -400,7 +407,7 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
         assert!(!render(&s, "tasks", client).contains("sin entregar ni preguntar"), "{client:?}");
     }
     assert!(!s.interactions.contains_key(&card), "the turn ends on the pause its task's lifecycle holds: no card says it stopped");
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The Mac is fine again.".into() });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The Mac is fine again.".into(), from_user: false });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
     let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
     assert!(lifecycle.cards().is_empty(), "nothing holds the task: {:?}", lifecycle.cards());
@@ -464,7 +471,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
     end_turn(&mut s, "turn-1");
     must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
     answer_as_orchestrator(&mut s, "t-85fa-ask-depend-1");
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into() });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into(), from_user: false });
     assert!(!s.interactions.contains_key(&first), "no card ever said it stopped");
     let LifecycleRecord::Told { input, .. } = super::lifecycle_tests::last(&s, "t") else { panic!("told") };
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
@@ -499,9 +506,9 @@ fn a_turn_that_ends_behind_an_open_plan_or_permission_creates_no_card() {
 }
 
 /// With nothing open, the node is woken with what happened; when its next turn ends the same
-/// way, the stop is the user's to decide: the card shows and David hears of it.
+/// way, the stop is Alondra's to fix: the orchestrator gets the case and David hears of nothing.
 #[test]
-fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_asks_the_user() {
+fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_goes_to_the_orchestrator() {
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     let ended = end_turn(&mut s, "turn-1");
@@ -509,9 +516,8 @@ fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_asks_the_user(
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     let second = InteractionId::from(woken_again(&mut s).as_str());
     let ended = end_turn(&mut s, "turn-2");
-    assert!(notified(&ended, &second));
-    assert_eq!(pending(&s), [second.0.clone()]);
-    assert_eq!(s.interactions[&second].card.need, "“Task t” ended two turns without delivering or asking: what next?");
+    goes_to_the_orchestrator(&s, &ended, &second);
+    shows_waiting(&s, "Alondra lo está reconduciendo");
     assert!(matches!(super::lifecycle_tests::last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, .. }), "the second end names no wake: nothing is sent");
     assert_aggregate_rules(&s);
 }
@@ -537,14 +543,14 @@ fn the_26_october_turn_that_ended_with_its_pr_registered_and_unpresented_wakes_t
     });
     let pause = Pause { reason: PauseReason::Usage, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "sigue".into() });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "sigue".into(), from_user: false });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
     let input = lifecycle(&s).pending_inputs().first().map(|input| input.as_str().to_owned()).expect("«sigue» waits for the node");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
     let ended = end_turn(&mut s, "turn-2");
-    let second = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
+    let second = InteractionId::from(format!("{STALLED_PREFIX}t-1-turn-2").as_str());
     assert!(!notified(&ended, &second) && !s.interactions.contains_key(&second) && !s.interactions.contains_key(&card), "nobody is asked yet");
     let LifecycleRecord::TurnEnded { wake: Some(_), text: Some(text), .. } = super::lifecycle_tests::last(&s, "t") else {
         panic!("the empty turn wakes the node: {:?}", super::lifecycle_tests::last(&s, "t"));
@@ -569,21 +575,17 @@ fn a_turn_end_recorded_before_wakes_existed_reads_back_as_the_card() {
     assert!(lifecycle.pending_inputs().len() == 0, "nothing wakes the node");
 }
 
-/// The card and its notification on the iPhone say all they ask in Spanish: the task's title is
-/// what gets shortened, never the verb.
+/// The case of a task with a long title tells the orchestrator what it is about, and no
+/// notification reaches the iPhone for it.
 #[test]
-fn the_stop_of_a_task_with_a_long_title_reads_whole_in_spanish_on_the_card_and_its_notification() {
+fn the_stop_of_a_task_with_a_long_title_reaches_no_phone() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     s.tasks.get_mut(&TaskId::from("t")).unwrap().title = "simpool: un simulador reutilizado no arrastra el estado del teclado".into();
-    let card = woken(&mut s, "t", "turn-1", "turn-2");
+    let case = woken(&mut s, "t", "turn-1", "turn-2");
     end_turn(&mut s, "turn-2");
     let read = ReadSnapshot::build(std::sync::Arc::new(s.clone()));
-    let alert = crate::views::push_content(&read, &card, Lang::Es).unwrap().alert.expect("an alert");
-    let shown = [alert.title.clone(), render(&s, &format!("card:{card}"), Client::Ios)];
-    for said in &shown {
-        assert!(said.contains("«simpool: un") && said.contains("…» acabó dos turnos sin entregar ni preguntar: ¿cómo sigue?"), "{said}");
-        assert!(!said.contains("ended two turns"), "{said}");
-    }
-    assert!(alert.title.chars().count() <= CardSpec::TITLED_NEED_MAX, "{}", alert.title);
+    assert!(!crate::views::push_content(&read, &case, Lang::Es).is_ok_and(|content| content.alert.is_some()), "no alert for the user");
+    let need = &s.interactions[&InteractionId::from(case.as_str())].card.need;
+    assert!(need.starts_with("“simpool: un") && need.chars().count() <= CardSpec::TITLED_NEED_MAX, "{need}");
 }

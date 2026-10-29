@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -7332,7 +7332,7 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
     let answering = [answering, vec![LifecycleRecord::Presented { delivery: "d".into() }]].concat();
     state.lifecycle_journal.insert("t-1".into(), answering.clone());
     assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its turn still runs, on its delivery");
-    state.lifecycle_journal.insert("t-1".into(), [answering, vec![LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into(), wake: None, text: None, awaits: None }]].concat());
+    state.lifecycle_journal.insert("t-1".into(), [answering, vec![LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into(), wake: None, text: None, awaits: None, stalled: false }]].concat());
     assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its session rests on the delivery");
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Entregada");
 }
@@ -7384,14 +7384,14 @@ fn the_task_of_an_sdk_node_that_waits_for_its_background_work_or_its_input_offer
     let background = [handed.clone(), vec![
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
         LifecycleRecord::WorkStarted { turn: "turn".into(), work: "claude-task:snapshots".into() },
-        LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "turn-ended-t-1".into(), wake: None, text: None, awaits: None },
+        LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "turn-ended-t-1".into(), wake: None, text: None, awaits: None, stalled: false },
     ]].concat();
     let waking = [background.clone(), vec![
         LifecycleRecord::WorkEnded { work: "claude-task:snapshots".into(), continuation: "claude-notification:snapshots".into() },
     ]].concat();
     let resting = [waking.clone(), vec![
         LifecycleRecord::TurnResumed { turn: "woken".into(), continuation: "claude-notification:snapshots".into() },
-        LifecycleRecord::TurnEnded { turn: "woken".into(), unheard_card: "turn-ended-t-1-woken".into(), wake: None, text: None, awaits: None },
+        LifecycleRecord::TurnEnded { turn: "woken".into(), unheard_card: "turn-ended-t-1-woken".into(), wake: None, text: None, awaits: None, stalled: false },
     ]].concat();
     let live = pacing_live(vec![], vec![], None);
     for (name, journal, offered) in [
@@ -8268,13 +8268,13 @@ fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_revie
         LifecycleRecord::ResourceAvailable,
         LifecycleRecord::TurnStarted { turn: "turn-1".into(), input: "input:t-1:1".into() },
         LifecycleRecord::Presented { delivery: "published-1".into() },
-        LifecycleRecord::TurnEnded { turn: "turn-1".into(), unheard_card: "unheard-1".into(), wake: None, text: None, awaits: None },
+        LifecycleRecord::TurnEnded { turn: "turn-1".into(), unheard_card: "unheard-1".into(), wake: None, text: None, awaits: None, stalled: false },
     ];
     let told = [delivered.clone(), vec![
         LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Also bump the changelog".into()) },
         LifecycleRecord::TurnStarted { turn: "turn-2".into(), input: "input:t-1:2".into() },
     ]].concat();
-    let ended = [told.clone(), vec![LifecycleRecord::TurnEnded { turn: "turn-2".into(), unheard_card: "unheard-2".into(), wake: None, text: None, awaits: None }]].concat();
+    let ended = [told.clone(), vec![LifecycleRecord::TurnEnded { turn: "turn-2".into(), unheard_card: "unheard-2".into(), wake: None, text: None, awaits: None, stalled: false }]].concat();
     let live = LiveSnapshot::default();
     let shown = |state: &DomainState, client, lang| {
         let row = active_row(state, &live, client, lang, "t-1").1.badges[0].text.clone();

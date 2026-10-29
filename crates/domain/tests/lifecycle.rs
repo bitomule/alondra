@@ -73,6 +73,7 @@ fn last_child_completion_waits_for_its_correlated_root_continuation() {
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     assert_eq!(task.activity(), ActivityView::OwnWork);
@@ -102,6 +103,7 @@ fn last_child_completion_waits_for_its_correlated_root_continuation() {
             unheard_card: "unheard".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     assert_eq!(
@@ -137,6 +139,7 @@ fn a_human_permission_and_owned_background_work_coexist_without_releasing_the_sl
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     assert_eq!(task.activity(), ActivityView::OwnWork);
@@ -752,6 +755,7 @@ fn aborting_the_last_callback_does_not_leave_an_open_task_silently_resting() {
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     fact(
@@ -809,6 +813,7 @@ fn implementation_and_changes_requested_stages_survive_queueing_and_recovery() {
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     apply(
@@ -867,12 +872,12 @@ fn pause_blocks_new_admission_and_cannot_be_answered_as_an_ordinary_question() {
 fn a_turn_that_ends_with_nothing_running_waits_on_the_user_who_is_asked_how_it_goes_on() {
     let mut task = running();
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Turn)));
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.live(), Several::new([InteractionId::from("unheard")]).map(LiveState::WaitingUser));
 }
 
 fn ended(task: &mut TaskLifecycle, root: &str, wake: Option<&str>, awaits: Option<Await>) {
-    fact(task, RuntimeFact::TurnEnded { turn: turn(root), unheard_card: InteractionId::from(format!("unheard-{root}")), wake: wake.map(input), awaits });
+    fact(task, RuntimeFact::TurnEnded { turn: turn(root), unheard_card: InteractionId::from(format!("unheard-{root}")), wake: wake.map(input), awaits, stalled: false });
 }
 fn started(task: &mut TaskLifecycle, root: &str, by: &str) {
     fact(task, RuntimeFact::TurnStarted { turn: turn(root), trigger: Trigger::Input(input(by)) });
@@ -888,7 +893,7 @@ fn the_first_empty_turn_wakes_the_node_and_the_second_asks_the_user() {
     started(&mut task, "woken", "wake");
     let stamp = task.execution().unwrap().clone();
     let cursor = task.cursor().unwrap() + 1;
-    let again = RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: Some(input("wake-again")), awaits: None };
+    let again = RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: Some(input("wake-again")), awaits: None, stalled: false };
     assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: again }), Err(Refusal::InvalidState), "a second wake in a row is never sent");
     ended(&mut task, "woken", None, None);
     assert!(task.pending_inputs().is_empty());
@@ -939,8 +944,51 @@ fn a_wake_the_turn_has_no_use_for_is_refused() {
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
     let stamp = task.execution().unwrap().clone();
     let cursor = task.cursor().unwrap() + 1;
-    let fact = RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: Some(input("wake")), awaits: None };
+    let fact = RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: Some(input("wake")), awaits: None, stalled: false };
     assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact }), Err(Refusal::InvalidState), "work of its own explains the turn");
+}
+
+fn stalled(task: &mut TaskLifecycle, root: &str, wake: Option<&str>) {
+    fact(task, RuntimeFact::TurnEnded { turn: turn(root), unheard_card: InteractionId::from(format!("stalled-{root}")), wake: wake.map(input), awaits: None, stalled: true });
+}
+
+/// A node that stops is Alondra's to fix: the first empty turn wakes it, and the next one waits on
+/// the orchestrator, never on the user, until something tells the node how it goes on.
+#[test]
+fn the_second_empty_turn_waits_on_the_orchestrator_never_on_the_user() {
+    let mut task = running();
+    stalled(&mut task, "root", Some("wake"));
+    assert_eq!(task.pending_inputs(), vec![&input("wake")], "the first stop wakes the node");
+    started(&mut task, "woken", "wake");
+    stalled(&mut task, "woken", None);
+    assert_eq!(task.cards(), [(&InteractionId::from("stalled-woken"), WaitReason::Unheard)]);
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Answering))), "the orchestrator settles it");
+    assert!(!task.holds_slot(), "nothing runs while the orchestrator settles it");
+    apply(&mut task, Event::Answer { card: "stalled-woken".into(), input: input("instruction") });
+    assert_eq!(task.pending_inputs(), vec![&input("instruction")], "its instruction reaches the node");
+}
+
+#[test]
+fn a_delivery_ends_the_case_of_a_stopped_node() {
+    let mut task = running();
+    stalled(&mut task, "root", Some("wake"));
+    started(&mut task, "woken", "wake");
+    stalled(&mut task, "woken", None);
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    assert!(task.cards().is_empty(), "the orchestrator no longer settles anything: {:?}", task.cards());
+    assert_eq!(task.live(), Several::new([InteractionId::from("result")]).map(LiveState::WaitingUser), "the delivery waits for the user's review");
+}
+
+#[test]
+fn a_lapsed_wait_with_nothing_told_waits_on_the_orchestrator_once_the_node_was_woken() {
+    let mut task = running();
+    stalled(&mut task, "root", Some("wake"));
+    started(&mut task, "woken", "wake");
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "stalled-woken".into(), wake: None, awaits: Some(Await::Orchestrator("question".into())), stalled: true });
+    apply(&mut task, Event::AwaitEnded { unheard_card: "stalled-woken".into(), wake: None, stalled: true });
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Answering))));
+    apply(&mut task, Event::Tell { input: input("told") });
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the user's word answers the case too");
 }
 
 #[test]
@@ -963,7 +1011,7 @@ fn a_turn_that_ends_on_a_recorded_wait_is_that_wait_until_its_input_arrives() {
     let mut task = running();
     let stamp = task.execution().unwrap().clone();
     let cursor = task.cursor().unwrap() + 1;
-    let fact = RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::Tasks(Several::new([TaskId::from("task")]).unwrap())) };
+    let fact = RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::Tasks(Several::new([TaskId::from("task")]).unwrap())), stalled: false };
     assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact }), Err(Refusal::SelfDependency));
 }
 
@@ -990,7 +1038,7 @@ fn a_pause_waits_on_who_it_names() {
 fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_with() {
     let mut task = running();
     apply(&mut task, Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Machine) });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.live(), Some(LiveState::WaitingCapacity(Capacity::Machine)));
     assert!(!task.holds_slot(), "a resting execution on a pause takes no slot");
     assert_eq!(task.apply(task.revision(), Event::EndPause { card: "pause".into() }), Err(Refusal::InvalidState),
@@ -1004,7 +1052,7 @@ fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_wi
     let mut task = running();
     apply(&mut task, Event::Pause { card: "pause".into(), owner: Owner::User });
     apply(&mut task, Event::Tell { input: input("resume") });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting, "what it was told inside its turn waits for the pause to end");
     apply(&mut task, Event::EndPause { card: "pause".into() });
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the pause's end hands it what it was told");
@@ -1018,12 +1066,12 @@ fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_wi
 fn a_turn_takes_up_the_notifications_waiting_as_it_starts_and_its_empty_end_wakes_the_node() {
     let mut task = running();
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") });
     assert_eq!(task.activity(), ActivityView::Continuation);
     apply(&mut task, Event::Tell { input: input("told") });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: Some(input("wake")), awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: Some(input("wake")), awaits: None, stalled: false });
     assert_eq!(task.pending_inputs(), vec![&input("wake")], "the empty turn wakes the node");
     assert_eq!(task.activity(), ActivityView::Starting);
     assert!(task.cards().is_empty(), "nobody is asked yet");
@@ -1035,7 +1083,7 @@ fn a_turn_takes_up_the_notifications_waiting_as_it_starts_and_its_empty_end_wake
 fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknown_one_refused() {
     let mut task = running();
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("child-done") });
     apply(&mut task, Event::Tell { input: input("told") });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
@@ -1047,7 +1095,7 @@ fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknow
         Err(Refusal::UnknownObligation),
         "a continuation is read once"
     );
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting);
 }
 
@@ -1059,12 +1107,12 @@ fn a_turn_that_ends_without_a_wake_leaves_the_notifications_it_found_waiting() {
     let mut task = running();
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("first") });
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("second") });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("first"), continuation: continuation("first-done") });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("second"), continuation: continuation("second-done") });
     apply(&mut task, Event::Tell { input: input("told") });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Continuation);
     fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) });
     assert_eq!(task.pending_inputs(), vec![&input("resumed")]);
@@ -1079,7 +1127,7 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(input("initial")) }),
         3 => runtime(RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") }),
         4 => runtime(RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") }),
-        5 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None }),
+        5 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false }),
         6 => runtime(RuntimeFact::Ask { card: "first".into(), callback: CallbackId::new("first").unwrap(), reason: WaitReason::Permission }),
         7 => Some(Event::Decide { card: "first".into(), decision: Decision::Allow }),
         8 => Some(Event::Present { delivery: "result".into() }),
@@ -1103,17 +1151,27 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         43 => Some(Event::PostMergeDeclared { operation: operation("after-merge") }),
         44 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
         45 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(input("resumed")) }),
-        46 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: Some(input("wake")), awaits: None }),
+        46 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: Some(input("wake")), awaits: None, stalled: false }),
         47 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("wake")) }),
-        48 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: Some(input("wake-again")), awaits: None }),
-        49 => runtime(RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: Some(input("wake")), awaits: None }),
-        50 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::User("question".into())) }),
-        51 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap())) }),
-        52 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: None, awaits: Some(Await::Machine) }),
+        48 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: Some(input("wake-again")), awaits: None, stalled: false }),
+        49 => runtime(RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: Some(input("wake")), awaits: None, stalled: false }),
+        50 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::User("question".into())), stalled: false }),
+        51 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap())), stalled: false }),
+        52 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: None, awaits: Some(Await::Machine), stalled: false }),
         53 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("wake-again")) }),
         54 => Some(Event::Pause { card: "pause".into(), owner: Owner::Capacity(Capacity::Machine) }),
         55 => Some(Event::EndPause { card: "pause".into() }),
-        56 => runtime(RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None }),
+        56 => runtime(RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None, stalled: false }),
+        57 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "stalled".into(), wake: Some(input("wake")), awaits: None, stalled: true }),
+        58 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "stalled".into(), wake: None, awaits: None, stalled: true }),
+        59 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "stalled-woken".into(), wake: Some(input("wake-again")), awaits: None, stalled: true }),
+        60 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "stalled-woken".into(), wake: None, awaits: None, stalled: true }),
+        61 => runtime(RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "stalled-woken".into(), wake: None, awaits: Some(Await::Orchestrator("question".into())), stalled: true }),
+        62 => Some(Event::AwaitEnded { unheard_card: "stalled-lapsed".into(), wake: Some(input("wake-lapsed")), stalled: true }),
+        63 => Some(Event::AwaitEnded { unheard_card: "stalled-lapsed".into(), wake: None, stalled: true }),
+        64 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("wake-lapsed")) }),
+        65 => Some(Event::Answer { card: "stalled-woken".into(), input: input("instruction") }),
+        66 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("instruction")) }),
         22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
         23 => runtime(RuntimeFact::Notification),
         24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
@@ -1143,7 +1201,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..56, 1..160)) {
+    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..67, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
@@ -1214,14 +1272,39 @@ proptest! {
         }
     }
 
+    /// A node that stops never puts a card in front of the user: whatever happens around its stops
+    /// (wakes, waits that lapse, instructions, host ends, pauses, model changes), a stop's card is
+    /// the orchestrator's, and the task never waits on the user for it.
+    #[test]
+    fn a_stop_never_waits_on_the_user(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
+        4 => prop::sample::select(vec![2u8, 3, 4, 17, 23, 26, 44, 45, 47, 53, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]),
+        1 => 0u8..67,
+    ], 1..200)) {
+        let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
+        let mut stops = std::collections::BTreeSet::new();
+        for action in actions {
+            let Some(event) = arbitrary_event(&task, action) else { continue };
+            let stop = match &event {
+                Event::Runtime { fact: RuntimeFact::TurnEnded { unheard_card, stalled: true, .. }, .. }
+                | Event::AwaitEnded { unheard_card, stalled: true, .. } => Some(unheard_card.clone()),
+                _ => None,
+            };
+            if task.apply(task.revision(), event).is_err() { continue }
+            stops.extend(stop);
+            if let Some(LiveState::WaitingUser(cards)) = task.live() {
+                prop_assert!(cards.iter().all(|card| !stops.contains(card)), "a stop waits on the user: {:?}", task);
+            }
+        }
+    }
+
     /// No history leaves a task in progress with no turn, no work of its node's own, no input on
     /// its way, no delivery and no wait someone owns. A continuation waiting when a turn starts is
     /// read by that turn; it stays the node's own only when the turn ends neither waking the node
     /// nor waiting on anything, as journals recorded before this rule did.
     #[test]
     fn no_task_in_progress_is_left_without_a_turn_work_a_delivery_or_an_owned_wait(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
-        3 => prop::sample::select(vec![2u8, 3, 4, 5, 6, 7, 17, 36, 37, 38, 46, 47, 49, 56]),
-        1 => 0u8..57,
+        3 => prop::sample::select(vec![2u8, 3, 4, 5, 6, 7, 17, 36, 37, 38, 46, 47, 49, 56, 57, 58, 60, 65]),
+        1 => 0u8..67,
     ], 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         let (mut fresh, mut callback_waits) = (false, false);
@@ -1250,7 +1333,7 @@ proptest! {
     }
 
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..56, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..67, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let event = arbitrary_event(&task, action);
@@ -1305,6 +1388,7 @@ fn abort_after_answer_replaces_the_last_callback_wake_with_an_actionable_card() 
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     apply(
@@ -1350,6 +1434,7 @@ fn callbacks_can_settle_in_reverse_answer_order_without_losing_either_wake() {
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     for id in ["first", "second"] {
@@ -1391,6 +1476,7 @@ fn callbacks_can_settle_in_reverse_answer_order_without_losing_either_wake() {
             unheard_card: "unheard".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     assert_eq!(
@@ -1655,6 +1741,7 @@ fn repeated_pause_cannot_create_two_mutually_blocking_resume_cards() {
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     apply(
@@ -1917,6 +2004,7 @@ fn callback_abort_promotes_a_waiting_business_input_instead_of_inventing_unheard
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     apply(
@@ -2053,6 +2141,7 @@ fn an_actual_dependency_is_a_continuation_after_an_empty_turn() {
             unheard_card: "unused".into(),
             wake: None,
             awaits: None,
+            stalled: false,
         },
     );
     assert_eq!(task.activity(), ActivityView::Resting);
@@ -2254,7 +2343,7 @@ fn card(value: &str) -> InteractionId {
 }
 fn waiting_for_the_next_input() -> TaskLifecycle {
     let mut task = running();
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     apply(&mut task, Event::Answer { card: card("turn-card"), input: input("next") });
     assert_eq!(task.pending_inputs(), [&input("next")]);
     task
@@ -2283,7 +2372,7 @@ fn a_host_that_ends_mid_turn_and_is_replaced_goes_on_with_its_resume_input_inste
 #[test]
 fn a_resume_input_with_nothing_to_explain_is_refused() {
     let mut task = running();
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     let cursor = task.cursor().unwrap() + 1;
     let stamp = task.execution().unwrap().clone();
     assert_eq!(
@@ -2305,7 +2394,7 @@ fn a_doubtful_input_the_resumed_session_gets_again_is_settled_without_a_card() {
 #[test]
 fn a_host_that_ends_while_its_task_waits_on_a_card_adds_no_second_card() {
     let mut task = running();
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     assert_eq!(task.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
 }
@@ -2414,7 +2503,7 @@ fn an_interrupt_names_exactly_what_runs_and_a_model_or_mcp_server_must_be_a_name
         assert_eq!(control(&mut task, "sign-in", Control::StartMcpSignIn { server: server.into() }), Err(Refusal::InvalidMcpServer), "{server:?}");
     }
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::OwnWork);
     assert_eq!(task.turn(), None);
     assert_eq!(control(&mut task, "ended", Control::Interrupt { turn: Some(turn("root")) }), Err(Refusal::CorrelationMismatch));
@@ -2430,7 +2519,7 @@ fn an_execution_waiting_for_its_background_work_or_its_input_is_interrupted_with
     fact(&mut handed, RuntimeFact::ResourceAvailable);
     let mut waking = running();
     fact(&mut waking, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
-    fact(&mut waking, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None });
+    fact(&mut waking, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false });
     fact(&mut waking, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") });
     for (name, mut task, activity) in [("handed", handed, ActivityView::Starting), ("waking", waking, ActivityView::Continuation)] {
         assert_eq!(task.activity(), activity, "{name}");
@@ -2467,7 +2556,7 @@ fn a_control_needs_an_available_execution_of_an_open_task() {
     admit(&mut task, "instance");
     assert_eq!(control(&mut task, "reserved", Control::ReadMcpStatus), Err(Refusal::InvalidState));
     let mut task = running();
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting);
     assert_eq!(control(&mut task, "resting", Control::Interrupt { turn: None }), Err(Refusal::InvalidState), "nothing runs to interrupt");
     control(&mut task, "resting-mode", Control::SetPermissionMode { mode: PermissionMode::DontAsk }).unwrap();
@@ -2484,27 +2573,27 @@ fn a_control_needs_an_available_execution_of_an_open_task() {
 fn compacting_queues_its_input_on_a_resting_execution_and_keeps_every_card() {
     let mut task = running();
     assert_eq!(task.apply(task.revision(), Event::Compact { input: input("busy") }), Err(Refusal::InvalidState), "a turn runs");
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
     apply(&mut task, Event::Compact { input: input("compact") });
     assert_eq!(task.pending_inputs(), vec![&input("compact")]);
     assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
     assert_eq!(task.apply(task.revision(), Event::Compact { input: input("again") }), Err(Refusal::InvalidState), "its input is already pending");
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("compaction"), trigger: Trigger::Input(input("compact")) });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("compaction"), unheard_card: "second".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("compaction"), unheard_card: "second".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting);
     assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)], "no new card");
     assert!(task.pending_inputs().is_empty());
 
     let mut delivered = running();
     apply(&mut delivered, Event::Present { delivery: "delivery".into() });
-    fact(&mut delivered, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None });
+    fact(&mut delivered, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false });
     apply(&mut delivered, Event::Compact { input: input("compact") });
     assert_eq!(delivered.phase(), TaskPhase::Delivered);
     assert_eq!(delivered.delivery(), Some(&InteractionId::from("delivery")));
 
     let mut paused = running();
-    fact(&mut paused, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut paused, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     apply(&mut paused, Event::Pause { card: "pause".into(), owner: Owner::User });
     assert_eq!(paused.apply(paused.revision(), Event::Compact { input: input("compact") }), Err(Refusal::InvalidState));
     let mut unstarted = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
@@ -2644,7 +2733,7 @@ fn a_decided_callback_settles_inside_the_turn_that_asked_it() {
     fact(&mut task, RuntimeFact::CallbackSettled { callback: callback.clone(), continuation: continuation.clone() });
     fact(&mut task, RuntimeFact::ContinuationConsumed { continuation });
     assert_eq!(task.callback(&callback), None);
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting);
     assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
 }
@@ -2660,7 +2749,7 @@ fn an_aborted_callback_takes_its_card_and_refuses_a_late_decision() {
         task.apply(task.revision(), Event::Decide { card: "decision".into(), decision: Decision::Answers { answers: vec!["Yes".into()] } }),
         Err(Refusal::InvalidState)
     );
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.cards(), vec![(&InteractionId::from("unheard"), WaitReason::Unheard)]);
 }
 
@@ -2696,16 +2785,16 @@ fn a_policy_decision_opens_its_callback_answered_without_a_card() {
 #[test]
 fn a_turn_claude_opens_by_itself_takes_the_place_of_the_card_and_of_a_waiting_message() {
     let mut rested = running();
-    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     assert_eq!(rested.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
     fact(&mut rested, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
     assert!(rested.cards().is_empty(), "Claude goes on by itself");
     assert_eq!(rested.activity(), ActivityView::Working);
-    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("own"), unheard_card: card("own-card"), wake: None, awaits: None });
+    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("own"), unheard_card: card("own-card"), wake: None, awaits: None, stalled: false });
     assert_eq!(rested.cards(), [(&card("own-card"), WaitReason::Unheard)], "its end asks again how it goes on");
 
     let mut told = running();
-    fact(&mut told, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut told, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     apply(&mut told, Event::Tell { input: input("told") });
     fact(&mut told, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
     assert_eq!((told.activity(), told.pending_inputs()), (ActivityView::Working, vec![&input("told")]));
@@ -2713,7 +2802,7 @@ fn a_turn_claude_opens_by_itself_takes_the_place_of_the_card_and_of_a_waiting_me
     assert!(told.pending_inputs().is_empty(), "the message joins the turn Claude opened");
 
     let mut asking = running();
-    fact(&mut asking, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut asking, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     apply(&mut asking, Event::Ask { card: card("question") });
     fact(&mut asking, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
     assert_eq!(asking.cards(), [(&card("question"), WaitReason::Question)], "a question the node asked still waits on its answer");
@@ -2732,7 +2821,7 @@ fn a_turn_claude_opens_by_itself_takes_the_place_of_the_card_and_of_a_waiting_me
 fn a_decision_asked_while_what_the_node_was_told_waits_settles_and_the_message_still_starts_its_turn() {
     let told = || {
         let mut task = running();
-        fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+        fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
         apply(&mut task, Event::Tell { input: input("told") });
         assert_eq!(task.activity(), ActivityView::Starting);
         task
@@ -2794,7 +2883,7 @@ fn a_replacement_settles_the_card_an_ended_host_left_but_never_an_open_question(
 
     let mut asked = running();
     apply(&mut asked, Event::Ask { card: card("question") });
-    fact(&mut asked, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut asked, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     fact(&mut asked, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut asked, Event::ExecutionReleased { input: input("replace") });
     let admitted = asked.apply(asked.revision(), Event::Admit {
@@ -2816,7 +2905,7 @@ fn what_someone_tells_the_node_joins_the_running_turn_or_waits_for_the_next_host
     assert!(task.pending_inputs().is_empty(), "and that same turn takes it");
 
     let mut ended = running();
-    fact(&mut ended, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut ended, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     fact(&mut ended, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut ended, Event::Tell { input: input("later") });
     assert_eq!(ended.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
@@ -2830,7 +2919,7 @@ fn what_someone_tells_the_node_joins_the_running_turn_or_waits_for_the_next_host
 #[test]
 fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_question() {
     let mut rested = running();
-    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     assert_eq!(rested.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
     apply(&mut rested, Event::Tell { input: input("deliver") });
     assert!(rested.cards().is_empty(), "being told how to go on is the answer the card waited for");
@@ -2838,7 +2927,7 @@ fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_
     assert_eq!(rested.activity(), ActivityView::Starting, "the node takes it in its next turn");
 
     let mut gone = running();
-    fact(&mut gone, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut gone, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     fact(&mut gone, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     apply(&mut gone, Event::Tell { input: input("later") });
     assert!(gone.cards().is_empty());
@@ -2873,7 +2962,7 @@ proptest! {
                 1 => runtime(RuntimeFact::ResourceAvailable),
                 2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(first) }),
                 3 => runtime(RuntimeFact::InputConsumed { input: first }),
-                4 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None }),
+                4 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false }),
                 5..=8 => Some(Event::Tell { input: named }),
                 9 => Some(Event::ExecutionReleased { input: named }),
                 10 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
@@ -2953,7 +3042,7 @@ fn a_host_that_ends_during_the_work_after_the_merge_asks_the_user_how_it_goes_on
     assert_eq!(task.cards(), [(&card("session-ended"), WaitReason::Unheard)], "the ended session can no longer say the work ended");
 
     let mut task = merged_with_work_after_it();
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     assert!(task.cards().is_empty(), "a resting node may still say the work ended");
     fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
     assert_eq!(task.cards(), [(&card("session-ended"), WaitReason::Unheard)], "once its session ends it cannot");
@@ -2988,12 +3077,12 @@ fn ending_the_work_after_the_merge_or_telling_the_node_settles_the_card_of_its_e
 fn answering_a_reply_with_background_work() -> TaskLifecycle {
     let mut task = running();
     apply(&mut task, Event::Present { delivery: "delivery".into() });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     assert!(task.cards().is_empty() && task.activity() == ActivityView::Resting, "the delivery waits on the user");
     apply(&mut task, Event::Tell { input: input("reply") });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("reply"), trigger: Trigger::Input(input("reply")) });
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("reply"), work: work("snapshots") });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("reply"), unheard_card: card("reply-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("reply"), unheard_card: card("reply-card"), wake: None, awaits: None, stalled: false });
     assert_eq!((task.phase(), task.activity()), (TaskPhase::Delivered, ActivityView::OwnWork));
     task
 }
@@ -3020,7 +3109,7 @@ fn a_host_that_ends_while_the_node_works_on_the_users_reply_without_a_resume_lea
 fn a_host_that_ends_on_a_delivery_at_rest_leaves_it_waiting_for_the_user() {
     let mut task = running();
     apply(&mut task, Event::Present { delivery: "delivery".into() });
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     let cursor = task.cursor().unwrap() + 1;
     let stamp = task.execution().unwrap().clone();
     assert_eq!(
@@ -3043,7 +3132,7 @@ fn a_host_that_ends_on_a_delivery_that_owes_nothing_after_the_merge_asks_nothing
 
 fn delivered_over(cards: &[Event]) -> TaskLifecycle {
     let mut task = running();
-    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     for card in cards {
         apply(&mut task, card.clone());
     }

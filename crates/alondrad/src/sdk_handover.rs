@@ -319,7 +319,7 @@ fn follow(domain: &DomainRuntime, handover: Handover, text: String) {
             match handover_of(&runtime, &node) {
                 Some(Handover { step: HandoverStep::Done, task, .. }) => {
                     let command = format!("tell-moved-{}", crate::auth::random_hex(16));
-                    if let Err(error) = crate::domain_messages::tell_sdk_node(&runtime, &task, crate::node_push::ALONDRA, &text, &command) {
+                    if let Err(error) = crate::domain_messages::tell_sdk_node(&runtime, &task, crate::node_push::ALONDRA, &text, &command, false) {
                         log!("what was said to {node} while it moved did not reach its SDK node: {}", error.message);
                     }
                     return;

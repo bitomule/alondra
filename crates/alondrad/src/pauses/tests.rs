@@ -745,7 +745,7 @@ impl Drop for SdkNode {
 fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resume_text_and_what_it_was_told() {
     let mut node = SdkNode::working();
     node.pause();
-    crate::domain_messages::tell_sdk_node(&node.domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-paused").unwrap();
+    crate::domain_messages::tell_sdk_node(&node.domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-paused", false).unwrap();
     node.step();
     assert_eq!(node.dispatched_inputs(), 0, "the owner hands nothing to the host while the node is paused");
     assert_eq!(node.pending_inputs(), 2, "the resume text and what it was told wait for the end of the pause");
@@ -767,7 +767,9 @@ fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     node.pause();
     node.step();
     let state = node.domain.state().unwrap();
-    let cards: Vec<_> = state.interactions.keys().filter(|id| id.0.starts_with(alondra_core::domain::TURN_ENDED_PREFIX)).collect();
+    let cards: Vec<_> = state.interactions.keys()
+        .filter(|id| [alondra_core::domain::TURN_ENDED_PREFIX, alondra_core::domain::STALLED_PREFIX].iter().any(|prefix| id.0.starts_with(prefix)))
+        .collect();
     assert!(cards.is_empty(), "a pause asks nothing: {cards:?}");
     let read = node.domain.read();
     let live = alondra_core::views::live::LiveSnapshot::default();

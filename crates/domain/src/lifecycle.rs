@@ -196,11 +196,14 @@ pub enum ActivityView {
 pub const CLAUDE_OUTAGE_CARD_PREFIX: &str = "claude-outage-";
 pub const CLAUDE_USAGE_CARD_PREFIX: &str = "claude-usage-limit-";
 
-/// Who a card waits on. Every card but a pause waits on the user.
+/// Who a card waits on. Every card but a pause and a stall waits on the user.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owner {
     User,
     Capacity(Capacity),
+    /// A node that stopped with nothing explaining its next step: the orchestrator settles it,
+    /// never the user.
+    Orchestrator,
 }
 impl Owner {
     /// Who a pause recorded before pauses named it waits on, read from the card it was recorded with.
@@ -247,7 +250,7 @@ pub enum Step {
     Delivering,
     /// Waking the node because work it waited on ended.
     Waking,
-    /// The orchestrator answers what the node asked it.
+    /// The orchestrator answers what the node asked it, or settles a node that stopped.
     Answering,
     Merging,
     Finishing,
@@ -639,17 +642,20 @@ pub enum Event {
         unheard_card: InteractionId,
     },
     /// The user let go of the input the `Dropped` card asked about. When nothing is left to explain
-    /// the task's next step, it waits on `unheard_card`.
+    /// the task's next step, it waits on `unheard_card`, the orchestrator's when `stalled`.
     Discard {
         card: InteractionId,
         unheard_card: InteractionId,
+        stalled: bool,
     },
     /// What the execution's last turn ended waiting for no longer holds, and nothing reached the
     /// node for it: the turn is empty after all, so it wakes the node with `wake` or, when that
-    /// already happened with nothing new since, waits on `unheard_card`.
+    /// already happened with nothing new since, waits on `unheard_card`, the orchestrator's when
+    /// `stalled`.
     AwaitEnded {
         unheard_card: InteractionId,
         wake: Option<InputId>,
+        stalled: bool,
     },
     /// The intent to run `kind` on the current execution, recorded before anything reaches it.
     RequestControl {
@@ -750,12 +756,14 @@ pub enum RuntimeFact {
     /// The root `turn` ended. When it leaves nothing that explains the task's next step, the turn
     /// is empty unless it `awaits` something Alondra recorded: the first empty turn wakes the node
     /// with `wake`, and the next one, with no new fact between them, waits on `unheard_card`. A
-    /// turn without `wake` waits on `unheard_card` at once.
+    /// turn without `wake` waits on `unheard_card` at once. A `stalled` turn ended with nothing
+    /// for the user to decide: its card is the orchestrator's.
     TurnEnded {
         turn: TurnId,
         unheard_card: InteractionId,
         wake: Option<InputId>,
         awaits: Option<Await>,
+        stalled: bool,
     },
     ConnectionLost {
         problem_card: InteractionId,
@@ -944,17 +952,22 @@ impl Execution {
     }
 }
 
-/// The user, when a card waits on them; else the capacity a pause waits on.
+/// The user, when a card waits on them; else the capacity a pause waits on; else the orchestrator,
+/// settling a node that stopped.
 fn waits_on<'a>(cards: impl Iterator<Item = &'a Card>) -> Option<LiveState> {
     let mut capacity = None;
     let mut users = vec![];
+    let mut orchestrator = false;
     for card in cards {
         match card.owner {
             Owner::User => users.push(card.id.clone()),
             Owner::Capacity(held) => capacity = Some(capacity.map_or(held, |kept: Capacity| kept.min(held))),
+            Owner::Orchestrator => orchestrator = true,
         }
     }
-    Several::new(users).map(LiveState::WaitingUser).or(capacity.map(LiveState::WaitingCapacity))
+    Several::new(users).map(LiveState::WaitingUser)
+        .or(capacity.map(LiveState::WaitingCapacity))
+        .or(orchestrator.then_some(LiveState::Working(Worker::Alondra(Step::Answering))))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1248,6 +1261,14 @@ impl TaskLifecycle {
                 .map(|card| (&card.id, card.reason))
                 .collect(),
             _ => vec![],
+        }
+    }
+    /// Who settles the card `id` the task waits on, if it waits on it.
+    pub fn card_owner(&self, id: &InteractionId) -> Option<Owner> {
+        match &self.state {
+            State::InProgress(Progress::Waiting { cards, .. }) => cards.iter().find(|card| card.id == *id).map(|card| card.owner),
+            State::Delivered(Delivered { decisions, .. }) | State::InProgress(Progress::Dependency { decisions, .. }) => decisions.get(id).map(|card| card.owner),
+            _ => None,
         }
     }
     /// What the task is doing, or who it waits on. `None` only before it starts and once it ended.

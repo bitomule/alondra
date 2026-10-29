@@ -1189,7 +1189,7 @@ impl Driver {
             use sha2::Digest;
             let digest=sha2::Sha256::digest(pending.iter().flat_map(|id|id.as_bytes().iter().copied().chain(std::iter::once(0))).collect::<Vec<_>>());
             let key:String=digest.iter().map(|byte|format!("{byte:02x}")).collect();
-            let command=CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:owner.state().data_epoch.clone(),command_id:format!("codex-work-wake:{}:{}:{key}",self.task,stamp.generation()).as_str().into(),expected_revision:0,command:Command::TellNode{task_id:self.task.clone(),text:"Managed native work finished. Inspect its public result, preserve completed work, and continue this task through Alondra.".into()}};
+            let command=CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:owner.state().data_epoch.clone(),command_id:format!("codex-work-wake:{}:{}:{key}",self.task,stamp.generation()).as_str().into(),expected_revision:0,command:Command::TellNode{task_id:self.task.clone(),text:"Managed native work finished. Inspect its public result, preserve completed work, and continue this task through Alondra.".into(), from_user: false}};
             owner.stage_command(&Actor::System,&command,Attached::None)?;Ok(())
         }).map_err(failed("queuing the completed native work"))?;Ok(())
     }

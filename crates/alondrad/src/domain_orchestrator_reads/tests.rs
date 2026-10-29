@@ -147,10 +147,11 @@ fn apply(state: &mut DomainState, actor: Actor, command: Command) {
 /// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
 /// and ended its turn, and the tasks_in_progress answer the orchestrator and Claude read listed a
 /// stop card as an open question, “…” stopped without del…. The turn waits on the question and
-/// creates no card; once nothing explains the stop and the woken node stops again, the card is listed.
+/// creates no card; once nothing explains the stop and the woken node stops again, its case for
+/// the orchestrator is listed, and no card asks the user.
 #[test]
-fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_once_nothing_explains_the_stop() {
-    use alondra_core::domain::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX};
+fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its_case_once_nothing_explains_the_stop() {
+    use alondra_core::domain::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX, stalled_card_id};
     let mut state = DomainState::new("epoch");
     apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
     apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Keyboard".into(), auto_merge: false, maintenance: false, message: false });
@@ -180,7 +181,8 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_it_
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: wake },
     ] });
     apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
-    assert_eq!(open(&state), [format!("{TURN_ENDED_PREFIX}t3-1-turn-2")], "the next empty turn waits on someone");
+    assert_eq!(open(&state), [stalled_card_id(&"t3".into(), 1, "turn-2").0], "the next empty turn is the orchestrator's case");
+    assert!(!state.interactions.contains_key(&format!("{TURN_ENDED_PREFIX}t3-1-turn-2").as_str().into()), "no card asks the user");
 }
 
 /// A node of the Agent SDK is what its task's lifecycle says: alive while its session runs, at work

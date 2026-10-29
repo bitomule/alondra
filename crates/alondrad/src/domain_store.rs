@@ -140,6 +140,12 @@ const TASK_POST_MERGE_TURNS: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_
 const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  priority TEXT NOT NULL CHECK(priority IN('high','normal','low')));";
+/// How many times a task's node stopped since the task last moved on, and how the task closed
+/// when it kept stopping; created on every open like task_relations.
+const TASK_STALLS: &str = "CREATE TABLE IF NOT EXISTS task_stalls(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ stalls INTEGER NOT NULL,\
+ closing TEXT);";
 /// Each task's scope, the points of the last plan the user approved, and the points each final
 /// delivery marked done; created on every open like task_relations.
 const TASK_CHECKLISTS: &str = "CREATE TABLE IF NOT EXISTS task_checklists(\
@@ -637,6 +643,7 @@ impl DomainStore {
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_POST_MERGE_TURNS)?;
         tx.execute_batch(TASK_PRIORITIES)?;
+        tx.execute_batch(TASK_STALLS)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;

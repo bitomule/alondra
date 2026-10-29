@@ -106,7 +106,7 @@ pub(super) fn run(s: &mut DomainState, step: &Step, n: usize) -> Result<CommandO
         Step::Reopen(at) => exec(s, user(), Command::ReopenTask { task_id: of(at).0.into() }),
         Step::Cancel(at) => exec(s, user(), Command::CancelTask { task_id: of(at).0.into() }),
         Step::NodeEnded(at) => exec(s, Actor::System, Command::RecordNodeEnd { task_id: of(at).0.into(), end: NodeEnd::Closed, agent_id: Some(of(at).1.into()) }),
-        Step::Tell => exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Notice {n}") }),
+        Step::Tell => exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Notice {n}"), from_user: false }),
         Step::TakeInput => {
             let lifecycle = s.lifecycle_of(&SDK.into())?;
             let input = lifecycle.pending_inputs().first().map_or_else(|| "input:none".into(), |input| input.as_str().to_owned());
@@ -125,7 +125,7 @@ pub(super) fn run(s: &mut DomainState, step: &Step, n: usize) -> Result<CommandO
         }
         Step::Stale => s.execute(&Actor::System, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("stale-{n}").into(),
-            expected_revision: s.revision.saturating_sub(1), command: Command::TellNode { task_id: SDK.into(), text: "Late".into() },
+            expected_revision: s.revision.saturating_sub(1), command: Command::TellNode { task_id: SDK.into(), text: "Late".into(), from_user: false },
         }),
     }
 }
@@ -157,7 +157,7 @@ proptest! {
 #[test]
 fn a_state_read_without_its_kept_lifecycles_reads_its_journals() {
     let mut s = three_tasks();
-    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into() });
+    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into(), from_user: false });
     let read: DomainState = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
     assert!(read.kept_lifecycles_match_journals().is_err(), "nothing is restored from the DTO");
     for (task, lifecycle) in kept(&s) {

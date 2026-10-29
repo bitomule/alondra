@@ -217,11 +217,11 @@ impl SdkLaunches {
         LaunchOptions::load(&self.state_root.join(agent)).unwrap()
     }
 
-    /// Waits on the domain until `task`'s turn has ended with `turns` turn-end cards.
+    /// Waits on the domain until `task`'s turns have ended on `turns` cards it rested on.
     pub(crate) async fn until_turns_ended(&self, task: &str, turns: usize) {
         let mut changed = self.domain.subscribe();
         let ended = |domain: &DomainRuntime| domain.read().state().interactions.keys()
-            .filter(|card| card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{task}-"))).count() >= turns;
+            .filter(|card| rests_on(task, card)).count() >= turns;
         while !ended(&self.domain) {
             changed.changed().await.unwrap();
         }
@@ -240,6 +240,12 @@ fn advance(driver: &mut Driver) {
     } else {
         driver.observe().unwrap();
     }
+}
+
+/// Whether `card` is one an ended turn of `task` rests on: the case the orchestrator settles when
+/// the node stopped, or the user's card when the turn was interrupted or failed.
+pub(crate) fn rests_on(task: &str, card: &InteractionId) -> bool {
+    card.0.starts_with(&format!("{STALLED_PREFIX}{task}-")) || card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{task}-"))
 }
 
 pub(crate) fn not_wakes(prompts: impl Iterator<Item = String>) -> Vec<String> {
@@ -478,14 +484,15 @@ impl Slice {
         Connection::open(&self.database).unwrap()
     }
 
-    /// Every turn-end card of the task, in the read the clients get, with whether it is answered.
+    /// Every card an ended turn of the task rested on, in the read the clients get, with whether
+    /// it is settled.
     fn read_cards(domain: &DomainRuntime) -> Vec<(String, bool)> {
         let read = domain.read();
         read.state()
             .interactions
             .values()
-            .filter(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-")))
-            .map(|card| (card.id.0.clone(), matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. })))
+            .filter(|card| rests_on(TASK, &card.id))
+            .map(|card| (card.id.0.clone(), card.withdrawn || matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. })))
             .collect()
     }
 
@@ -498,10 +505,16 @@ impl Slice {
     }
 
     fn stored_cards(&self) -> i64 {
-        self.observer()
-            .query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1", [format!("{TURN_ENDED_PREFIX}{TASK}-%")], |row| row.get(0))
-            .unwrap()
+        stored_turn_ends(&self.database)
     }
+}
+
+/// The cards ended turns of the task rested on, committed in SQL.
+fn stored_turn_ends(database: &Path) -> i64 {
+    Connection::open(database).unwrap()
+        .query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1 OR id LIKE ?2",
+            [format!("{STALLED_PREFIX}{TASK}-%"), format!("{TURN_ENDED_PREFIX}{TASK}-%")], |row| row.get(0))
+        .unwrap()
 }
 
 fn committed_revision(database: &Path) -> u64 {
@@ -566,8 +579,8 @@ fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_befor
     slice.settle(&mut driver);
     assert_eq!(slice.prompts(), ["Write the release notes"], "the host's Claude got the launch prompt");
     let cards = Slice::read_cards(&slice.domain);
-    assert_eq!(cards.len(), 1, "one turn-end card: {cards:?}");
-    assert!(!cards[0].1, "the card waits for the user");
+    assert_eq!(cards.len(), 1, "one card: {cards:?}");
+    assert!(cards[0].0.starts_with(STALLED_PREFIX) && !cards[0].1, "the woken node stopped again: its case waits for the orchestrator, never the user: {cards:?}");
     assert_eq!(slice.stored_cards(), 1);
     let acknowledged = acknowledged.lock().unwrap().clone();
     assert!(!acknowledged.is_empty(), "the host's observations were acknowledged");
@@ -606,44 +619,38 @@ fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
     offers
 }
 
-// A2: the user answers the card from a client, through the normal command path. The answer
-// commits with its dispatch prepared, the owner claims and sends it, and the host's Claude gets
-// what it is told; its next turn ends with a card of its own.
+// A2: the node stopped twice, so its case goes to the orchestrator, never the user. The
+// orchestrator's settlement commits with its dispatch prepared, the owner claims and sends it, and
+// the host's Claude gets the instruction as written; its next stop is a case of its own at once.
 #[test]
-fn carrying_on_from_a_client_commits_and_reaches_the_sdk() {
+fn the_orchestrators_instruction_on_a_stopped_node_commits_and_reaches_the_sdk() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    let (card, _) = Slice::read_cards(&slice.domain).pop().unwrap();
+    let (case, _) = Slice::read_cards(&slice.domain).pop().unwrap();
     let state = slice.domain.state().unwrap();
-    let carry_on = Command::AnswerQuestion {
-        interaction_id: card.as_str().into(),
+    let by_user = Command::AnswerQuestion {
+        interaction_id: case.as_str().into(),
         option_id: CARRY_ON.into(),
         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]),
         attachments: vec![],
     };
-    let outcome = slice.domain.execute_with(&user(), &envelope(&state, "client-carry-on", carry_on), None, None, || Ok(()));
-    assert!(outcome.as_ref().is_ok_and(|outcome| outcome.changed), "the client's answer is confirmed: {outcome:?}");
+    let refused = slice.domain.execute_with(&user(), &envelope(&state, "client-carry-on", by_user), None, None, || Ok(()));
+    assert!(matches!(&refused, Err(StoreError::Domain(error)) if error.code == "forbidden"), "the user cannot settle the case: {refused:?}");
+    let settle = Command::SettleStall { case_id: case.as_str().into(), task_id: TASK.into(), outcome: StallOutcome::Instruct { text: "Add the tests first".into() } };
+    let orchestrator = Actor::Orchestrator { generation: state.orchestrator_generation };
+    let outcome = slice.domain.execute_with(&orchestrator, &envelope(&state, "orchestrator-instructs", settle), None, None, || Ok(()));
+    assert!(outcome.as_ref().is_ok_and(|outcome| outcome.changed), "the orchestrator's settlement is confirmed: {outcome:?}");
     assert_eq!(driver.pending_permits(), 1, "its dispatch reached the owner");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let prompts = slice.prompts();
-    assert_eq!(prompts.len(), 2, "{prompts:?}");
-    assert!(prompts[1].starts_with("Go on with your task") && prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
+    assert_eq!(prompts, ["Write the release notes", "Add the tests first"], "it reaches the host's Claude as written");
     let mut cards = Slice::read_cards(&slice.domain);
     cards.sort();
     assert_eq!(cards.len(), 2, "{cards:?}");
-    assert_eq!(cards.iter().filter(|(_, answered)| *answered).count(), 1, "the first card is answered, the second waits: {cards:?}");
-    let (second, _) = cards.iter().find(|(_, answered)| !answered).unwrap().clone();
-    let state = slice.domain.state().unwrap();
-    let written = Command::AnswerQuestion {
-        interaction_id: second.as_str().into(),
-        option_id: String::new(),
-        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Write the changelog too".into()))]),
-        attachments: vec![],
-    };
-    let outcome = slice.domain.execute_with(&user(), &envelope(&state, "client-writes", written), None, None, || Ok(()));
-    assert!(outcome.as_ref().is_ok_and(|outcome| outcome.changed), "what the user writes on the card is confirmed: {outcome:?}");
+    assert_eq!(cards.iter().filter(|(_, settled)| *settled).count(), 1, "the first case is settled, the second waits: {cards:?}");
+    instruct(&slice.domain, "Write the changelog too");
     assert_eq!(driver.pending_permits(), 1);
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
@@ -662,7 +669,7 @@ fn carrying_on_from_a_client_commits_and_reaches_the_sdk() {
 }
 
 // A tool result of 5 MiB, twice in its SDK message, is kept shrunk with the evidence of what it
-// was: its turn ends with its card and the user's answer reaches the same Claude.
+// was: its turn ends with its case and the orchestrator's instruction reaches the same Claude.
 #[test]
 fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
     let slice = Slice::new();
@@ -670,7 +677,7 @@ fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
     slice.settle(&mut driver);
     assert_eq!(slice.observations_with("\"code\":\"truncated_sdk_message\""), 1, "the tool result is kept, shrunk");
     assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its card");
-    carry_on(&slice.domain, "Summarize the log");
+    instruct(&slice.domain, "Summarize the log");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let prompts = slice.prompts();
@@ -732,7 +739,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     slice.settle(&mut driver);
     let inbox = |domain: &DomainRuntime| domain.read().index().waiting().iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     assert_eq!(inbox(&slice.domain), ["interaction:q-name"], "only the node's question waits for the user");
-    assert!(open_card(&slice.domain, TURN_ENDED_PREFIX).is_none(), "no card says it stopped");
+    assert!(open_card(&slice.domain, TURN_ENDED_PREFIX).is_none() && open_card(&slice.domain, STALLED_PREFIX).is_none(), "no card says it stopped");
     assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::User("q-name".into())), "the turn waits on its question");
 
     answer(&slice.domain, &"q-name".into(), "short");
@@ -754,11 +761,7 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     let mut driver = slice.launch();
     let database = slice.database.clone();
     slice.domain.before_owner_publish(move || {
-        let cards: i64 = Connection::open(&database)
-            .unwrap()
-            .query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1", [format!("{TURN_ENDED_PREFIX}{TASK}-%")], |row| row.get(0))
-            .unwrap();
-        if cards > 0 {
+        if stored_turn_ends(&database) > 0 {
             panic!("the daemon stopped after the commit");
         }
     });
@@ -1045,6 +1048,7 @@ async fn a_closing_task_that_owes_nothing_ends_its_unowned_host_without_resuming
     for notice in 0..3 {
         slice.run(&Actor::System, &format!("notice-{notice}"), Command::TellNode {
             task_id: TASK.into(), text: format!("[From Alondra · 03:5{notice}] Alondra could not close this session yet"),
+            from_user: false,
         });
     }
     let (_, stranded) = strand_host(&slice, driver);
@@ -1154,7 +1158,7 @@ async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() 
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-notes".into(), head: "head-a".into() }],
         is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
     });
-    slice.run(&Actor::System, "end-turn", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into() });
+    slice.run(&Actor::System, "end-turn", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into(), from_user: false });
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     slice.run(&Actor::System, "observe", Command::ObservePrState {
@@ -1233,20 +1237,17 @@ fn owner_generation(database: &Path) -> i64 {
     Connection::open(database).unwrap().query_row("SELECT owner_generation FROM provider_execution_owners", [], |row| row.get(0)).unwrap()
 }
 
-fn carry_on(domain: &DomainRuntime, note: &str) {
-    let (card, _) = Slice::read_cards(domain).into_iter().find(|(_, answered)| !answered).expect("an open turn-end card");
+/// The orchestrator settles the case the task rests on: its node gets `instruction`.
+fn instruct(domain: &DomainRuntime, instruction: &str) {
+    let (case, _) = Slice::read_cards(domain).into_iter().find(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)).expect("an open case");
     let state = domain.state().unwrap();
-    let answer = Command::AnswerQuestion {
-        interaction_id: card.as_str().into(),
-        option_id: CARRY_ON.into(),
-        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(note.into()))]),
-        attachments: vec![],
-    };
-    assert!(domain.execute_with(&user(), &envelope(&state, &format!("client-carry-on-{}", card.as_str()), answer), None, None, || Ok(())).unwrap().changed);
+    let settle = Command::SettleStall { case_id: case.as_str().into(), task_id: TASK.into(), outcome: StallOutcome::Instruct { text: instruction.into() } };
+    let orchestrator = Actor::Orchestrator { generation: state.orchestrator_generation };
+    assert!(domain.execute_with(&orchestrator, &envelope(&state, &format!("settle-{case}"), settle), None, None, || Ok(())).unwrap().changed);
 }
 
 // B1: the daemon crashes with the host still running. A fresh daemon on the same database adopts
-// that live host with the next owner generation, and «Carry on» from a client reaches the same
+// that live host with the next owner generation, and the orchestrator's instruction reaches the same
 // native Claude, which starts only once; its next turn ends with a card of its own.
 #[test]
 fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_turn() {
@@ -1262,11 +1263,11 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(owner_generation(&slice.database), 2, "adoption reserved the next owner generation");
-    carry_on(&restarted, "Add the tests first");
+    instruct(&restarted, "Add the tests first");
     adopted.step(&|| false).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
-    assert_eq!(prompts.len(), 2, "the same Claude got the launch and the carry-on, no restart: {prompts:?}");
+    assert_eq!(prompts.len(), 2, "the same Claude got the launch and the instruction, no restart: {prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
     assert_eq!(Slice::read_cards(&restarted).len(), 2, "the adopted turn ended with its own card");
     restarted.sdk_owners.lock().unwrap().push(Owner::spawn(adopted));
@@ -1291,11 +1292,11 @@ fn strand_host(slice: &Slice, driver: Driver) -> (String, Vec<alondra_process_gr
 }
 
 /// The stranded host is gone with its whole group, and a host that resumes the same Claude
-/// session took the execution: what the user says next reaches that session.
+/// session took the execution: what the orchestrator says next reaches that session.
 fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str, stranded: &[alondra_process_group::Member]) {
     let left: Vec<String> = stranded.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
     assert!(left.is_empty(), "the stranded host's processes survived: {left:?}");
-    carry_on(domain, "Add the tests first");
+    instruct(domain, "Add the tests first");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let starts = slice.starts();
@@ -1433,9 +1434,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     let mut driver = slice.launch();
     let database = slice.database.clone();
     slice.domain.before_owner_publish(move || {
-        let cards: i64 = Connection::open(&database).unwrap()
-            .query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1", [format!("{TURN_ENDED_PREFIX}{TASK}-%")], |row| row.get(0)).unwrap();
-        if cards > 0 {
+        if stored_turn_ends(&database) > 0 {
             panic!("the daemon stopped after the commit");
         }
     });
@@ -1459,7 +1458,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     adopted.stop().unwrap();
 }
 
-// B3: a client's answer is claimed and recorded, then the daemon dies before the host receives it.
+// B3: the orchestrator's instruction is claimed and recorded, then the daemon dies before the host receives it.
 // A fresh daemon adopts and reconciles the unsent dispatch by re-sending its exact bytes: the host
 // offers it to the same Claude exactly once.
 #[test]
@@ -1467,7 +1466,7 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first");
+    instruct(&slice.domain, "Add the tests first");
     assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
     drop(driver);
     assert_eq!(slice.prompts().len(), 1, "the host's Claude never got the answer");
@@ -1480,7 +1479,7 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     adopted.stop().unwrap();
 }
 
-// B5: the store issued the permit of a client's answer and the daemon died before claiming it:
+// B5: the store issued the permit of the orchestrator's instruction and the daemon died before claiming it:
 // the permit lived only in that daemon. The adopting owner gets it again and the answer reaches
 // the same Claude once.
 #[test]
@@ -1488,7 +1487,7 @@ fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first");
+    instruct(&slice.domain, "Add the tests first");
     assert_eq!(driver.pending_permits(), 1, "the store issued the answer's permit to this daemon");
     drop(driver);
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
@@ -1502,7 +1501,7 @@ fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_
     adopted.stop().unwrap();
 }
 
-// B4: the host offered a client's answer but the daemon crashed before recording its receipt. A
+// B4: the host offered the orchestrator's instruction but the daemon crashed before recording its receipt. A
 // fresh daemon adopts and reconciles it from the retained receipt: it is handed, and the host is
 // not asked to offer it a second time.
 #[test]
@@ -1510,7 +1509,7 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first");
+    instruct(&slice.domain, "Add the tests first");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     drop(driver);
     let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
@@ -1534,19 +1533,19 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
     slice.settle(&mut driver);
     assert_eq!(slice.observations_with(&"x".repeat(900_000)), 24, "every large answer was committed");
     for turn in 1..=260 {
-        carry_on(&slice.domain, &format!("Next step {turn}"));
+        crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), "David", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
         driver.step(&|| false).unwrap();
         slice.settle(&mut driver);
     }
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 261, "every input reached the same Claude");
     assert!(prompts[260].ends_with("Next step 260"), "{}", prompts[260]);
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 261, "every turn ended with its own card");
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 261, "every stop after its wake ended on its own case");
     driver.stop().unwrap();
 }
 
 // The Mac goes down on a host whose journal was compacted: the launch turn wrote more than the
-// journal keeps once acknowledged, then the host offered a client's answer and everything died
+// journal keeps once acknowledged, then the host offered the orchestrator's instruction and everything died
 // before the daemon recorded the receipt. The next daemon reads the compacted journal from disk:
 // the answer was handed, so it goes to the resumed session flagged as maybe received already, never
 // as an answer the host never got.
@@ -1555,7 +1554,7 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("bulky:6");
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first stall-before-starting");
+    instruct(&slice.domain, "Add the tests first stall-before-starting");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -1823,7 +1822,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
-    carry_on(&restarted, "Add the tests first");
+    instruct(&restarted, "Add the tests first");
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
     let args = launched(&slice);
@@ -1859,7 +1858,7 @@ fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_ge
     let original_account=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key();
     let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&original_account.account,slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
     for (id,text) in [("queued-first","First exact queued instruction"),("queued-second","Second exact queued instruction")]{
-        slice.run(&Actor::System,id,Command::TellNode{task_id:TASK.into(),text:text.into()});
+        slice.run(&Actor::System,id,Command::TellNode{task_id:TASK.into(),text:text.into(), from_user: false});
     }
     driver.stop().unwrap();drop(driver);
     end_unowned_host(Arc::clone(&slice.domain),&slice.backend,TASK.into()).unwrap();
@@ -2102,9 +2101,9 @@ fn answer(domain: &DomainRuntime, card: &InteractionId, option: &str) {
     assert!(domain.execute_with(&user(), &envelope(&state, &format!("client-{option}"), answer), None, None, || Ok(())).unwrap().changed);
 }
 
-// R1: the Mac shuts down after the first turn's card: host, Claude and daemon are gone. The daemon
+// R1: the Mac shuts down after the first turn's case: host, Claude and daemon are gone. The daemon
 // that comes back finds no process holding the host's lock, launches a fresh host for the same
-// execution with the next owner generation, and «Carry on» resumes the same native session with its
+// execution with the next owner generation, and the orchestrator's instruction resumes the same native session with its
 // transcript: one more Claude starts, with --resume of the stored session.
 #[test]
 fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
@@ -2116,10 +2115,10 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
     assert_eq!(owner_generation(&slice.database), 2, "the replacement owns the execution with the next generation");
-    assert_eq!(slice.starts().len(), 1, "no Claude starts before the user answers");
+    assert_eq!(slice.starts().len(), 1, "no Claude starts before the orchestrator settles the case");
     let node = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     assert!(!crate::node_revival::needed(&restarted, &node.0), "no claude respawn, and no card about it, for a node of the SDK");
-    carry_on(&restarted, "Add the tests first");
+    instruct(&restarted, "Add the tests first");
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
     let starts = slice.starts();
@@ -2344,14 +2343,14 @@ fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
 }
 
 // A subagent hands its report back after the turn ended: Claude starts a turn by itself while the
-// task rests. Its owner reads it as it comes: the card that asked how the task goes on is withdrawn
-// and the node works, with nothing sent to it.
+// task rests. Its owner reads it as it comes: the case that asked the orchestrator how the task
+// goes on is withdrawn and the node works, with nothing sent to it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("own-turn-later");
     slice.settle(&mut driver);
-    let card = open_card(&slice.domain, TURN_ENDED_PREFIX).expect("the turn ended with its card").id;
+    let card = open_card(&slice.domain, STALLED_PREFIX).expect("the turn ended on its case").id;
     let owner = Owner::spawn(driver);
     let mut changed = slice.domain.subscribe();
     std::fs::write(format!("{}.own-turn", slice.capture.display()), "").unwrap();
@@ -2524,7 +2523,7 @@ fn a_host_stopped_mid_turn_by_a_normal_shutdown_leaves_evidence_the_next_daemon_
     resumed.stop().unwrap();
 }
 
-// R4: the first turn ended, the user answered and the host offered the answer to a Claude whose
+// R4: the first turn ended, the orchestrator instructed the node and the host offered that to a Claude whose
 // session then ended before it showed it read it; the Mac went down before the receipt was kept.
 // Nobody is asked: the resumed session gets the same words once more, flagged as possibly received
 // already, and its transcript tells Claude whether it was.
@@ -2533,7 +2532,7 @@ fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first unread");
+    instruct(&slice.domain, "Add the tests first unread");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     while slice.prompts().len() < 2 {
         driver.observe().unwrap();
@@ -2553,14 +2552,14 @@ fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
     resumed.stop().unwrap();
 }
 
-// R5: the answer was claimed and recorded, and the Mac went down before the host got it. The ended
+// R5: the orchestrator's instruction was claimed and recorded, and the Mac went down before the host got it. The ended
 // host's journal shows it never took the command, so it goes once to the resumed session, unasked.
 #[test]
 fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "Add the tests first");
+    instruct(&slice.domain, "Add the tests first");
     assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -2618,14 +2617,14 @@ fn a_prompt_claude_never_delivers_asks_whether_to_send_it_again_and_goes_again_o
 }
 
 // The turn of a prompt Claude completes without starting fails, as Claude does with one its
-// transcript already holds. Here the message leaves the queue and «Discard» lets it go: the task
-// asks how to go on and Claude gets nothing more.
+// transcript already holds. Here the message leaves the queue and «Discard» lets it go: the
+// orchestrator gets the case of how the task goes on and Claude gets nothing more.
 #[test]
 fn a_message_claude_completes_without_starting_it_can_be_discarded() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    carry_on(&slice.domain, "complete-unstarted");
+    instruct(&slice.domain, "complete-unstarted");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let card = open_card(&slice.domain, DROPPED_PREFIX).expect("the dropped message asks the user");
@@ -2634,7 +2633,7 @@ fn a_message_claude_completes_without_starting_it_can_be_discarded() {
     answer(&slice.domain, &card.id, DISCARD);
     assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
     assert_eq!(driver.pending_permits(), 0, "nothing is sent");
-    assert!(Slice::read_cards(&slice.domain).iter().any(|(_, answered)| !answered), "the task asks how to go on");
+    assert!(Slice::read_cards(&slice.domain).iter().any(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)), "the orchestrator settles how it goes on");
     assert_eq!(slice.prompts().len(), 2);
     driver.stop().unwrap();
 }
@@ -3202,6 +3201,7 @@ fn asks_again(slice: &Slice, driver: &mut Driver, cwd: &str, command: &str) -> O
     let answered = slice.decisions().len();
     slice.run(&Actor::System, &format!("tell-{answered}"), Command::TellNode {
         task_id: TASK.into(), text: format!("[From David · 09:00] decide:bash@{cwd} {command}"),
+        from_user: false,
     });
     driver.step(&|| false).unwrap();
     slice.until(driver, |slice| slice.decisions().len() > answered || !Slice::open_decision_cards(&slice.domain).is_empty());
@@ -3389,7 +3389,7 @@ fn a_request_alondra_cannot_ask_is_denied_to_claude_with_why_and_the_node_goes_o
     assert_eq!(message, format!("{}: the test refuses it", alondra_core::domain::UNASKABLE));
     assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
     assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its one card");
-    carry_on(&slice.domain, "Ask it again");
+    instruct(&slice.domain, "Ask it again");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert!(slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Ask it again")), "the same Claude goes on");
@@ -3551,7 +3551,7 @@ fn a_response_to_a_request_claude_no_longer_waits_on_is_rejected_and_never_reach
 
 /// The user cancels the task from its open turn-end card, through the action path the clients use.
 fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
-    let (card, _) = Slice::read_cards(&slice.domain).into_iter().find(|(_, answered)| !answered).expect("an open turn-end card");
+    let (card, _) = Slice::read_cards(&slice.domain).into_iter().find(|(card, answered)| !answered && card.starts_with(TURN_ENDED_PREFIX)).expect("an open turn-end card");
     let state = slice.domain.state().unwrap();
     let action = alondra_core::views::action_id::ActionId::new(alondra_core::views::action_id::Verb::Ans, &card, state.revision, None).unwrap();
     let request = crate::views::actions::ActionRequest {
@@ -3582,13 +3582,34 @@ fn assert_cancelled_from_its_card(slice: &Slice, reply: &serde_json::Value) {
     assert!(cards.contains(&(true, false)), "the card keeps the user's choice: {cards:?}");
 }
 
+/// The stopped node's case is the orchestrator's, never a card of the user's: the orchestrator
+/// closes the task from it with its result, which the case keeps.
+fn assert_the_orchestrator_closes_it_from_its_case(slice: &Slice) {
+    let (case, _) = Slice::read_cards(&slice.domain).into_iter().find(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)).expect("an open case");
+    let state = slice.domain.state().unwrap();
+    let open_for_user = |state: &DomainState| state.interactions.values()
+        .filter(|card| card.recipient == alondra_core::domain::Recipient::User && card.scope == alondra_core::domain::Scope::Task { task_id: TASK.into() } && state.open(card))
+        .count();
+    assert_eq!(open_for_user(&state), 0, "no card asks the user how it goes on");
+    let result = "The release notes were never written.";
+    let close = Command::SettleStall { case_id: case.as_str().into(), task_id: TASK.into(), outcome: StallOutcome::Close { result: result.into() } };
+    let orchestrator = Actor::Orchestrator { generation: state.orchestrator_generation };
+    assert!(slice.domain.execute_with(&orchestrator, &envelope(&state, "orchestrator-closes", close), None, None, || Ok(())).unwrap().changed);
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert!(task.over(), "the task ends");
+    assert_eq!(task.stall_closing, Some(alondra_core::domain::StallClosing::Settled { result: result.into() }));
+    assert!(matches!(&state.interactions[&case.as_str().into()].payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == STALL_CLOSE),
+        "the case keeps the orchestrator's outcome");
+    assert_eq!(open_for_user(&state), 0, "nobody asked the user");
+}
+
 #[test]
-fn cancelling_from_the_turn_end_card_of_an_sdk_task_ends_the_task() {
+fn the_orchestrator_closes_a_stopped_sdk_task_from_its_case() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    let reply = cancel_from_turn_end_card(&slice);
-    assert_cancelled_from_its_card(&slice, &reply);
+    assert_the_orchestrator_closes_it_from_its_case(&slice);
     driver.stop().unwrap();
 }
 
@@ -3606,14 +3627,13 @@ fn cancelling_from_the_turn_end_card_after_an_interrupt_ends_the_task() {
 }
 
 #[test]
-fn cancelling_from_the_turn_end_card_after_an_approved_plan_ends_the_task() {
+fn the_orchestrator_closes_a_task_stopped_after_an_approved_plan_from_its_case() {
     let slice = Slice::new();
     let (mut driver, card) = slice.asked("decide:plan");
     slice.answer(&card, Hold::APPROVE, None).unwrap();
     slice.rest(&mut driver);
     assert_eq!(slice.control_rows()[0].2, "handed");
-    let reply = cancel_from_turn_end_card(&slice);
-    assert_cancelled_from_its_card(&slice, &reply);
+    assert_the_orchestrator_closes_it_from_its_case(&slice);
     driver.stop().unwrap();
 }
 
@@ -3867,14 +3887,14 @@ impl Slice {
         (upgraded, adopted, session, old_host)
     }
 
-    /// What the user said after the move reached the same session on a host of this release, the
+    /// What the orchestrator said after the move reached the same session on a host of this release, the
     /// host of the release before is gone, and nothing was asked.
     fn assert_moved_to_this_release(&self, upgraded: &DomainRuntime, session: &str, old_host: &[alondra_process_group::Member]) {
         let starts = self.starts();
         assert_eq!(starts.len(), 2, "one more Claude started, on this release's host: {starts:?}");
         assert_eq!(starts[1]["resume"].as_str(), Some(session), "it resumed the same session");
         let prompts = self.prompts();
-        assert_eq!(prompts.len(), 2, "the new host's Claude got only what the user said, nothing about a cut: {prompts:?}");
+        assert_eq!(prompts.len(), 2, "the new host's Claude got only what the orchestrator said, nothing about a cut: {prompts:?}");
         assert!(prompts[1].ends_with("Add the tests first") && !prompts[1].contains("cut off"), "nothing about a cut: {prompts:?}");
         let left: Vec<String> = old_host.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
         assert!(left.is_empty(), "the host of the release before is gone: {left:?}");
@@ -3884,7 +3904,7 @@ impl Slice {
     /// The cards of the task that are not how a turn ended, open or not.
     fn other_cards(domain: &DomainRuntime) -> Vec<String> {
         domain.read().state().interactions.keys()
-            .filter(|card| card.0.contains(TASK) && !card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-")))
+            .filter(|card| card.0.contains(TASK) && !rests_on(TASK, card))
             .map(|card| card.0.clone())
             .collect()
     }
@@ -3895,7 +3915,7 @@ impl Slice {
 // died with exit 143. A daemon of the next release adopts the host of the release before as it
 // runs, so the command Claude left running goes on; once the command ended and Claude took up its
 // notification, the node rests, and a host of this release that resumes the same session takes the
-// old one's place, with no card. What the user says next reaches that session.
+// old one's place, with no card. What the orchestrator says next reaches that session.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before_and_moves_the_node_once_it_rests() {
     let slice = Slice::new();
@@ -3907,7 +3927,7 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     let gone = |old: &[alondra_process_group::Member]| old.iter().all(|process| !alondra_process_group::alive(process).unwrap());
     changed.wait_for(|_| lifecycle(&reader).activity() == ActivityView::Resting && gone(&old_host)).await.unwrap();
     let rested = Slice::read_cards(&upgraded).len();
-    carry_on(&upgraded, "Add the tests first");
+    instruct(&upgraded, "Add the tests first");
     changed.wait_for(|_| Slice::read_cards(&reader).len() > rested).await.unwrap();
     slice.assert_moved_to_this_release(&upgraded, &session, &old_host);
     upgraded.add_sdk_owner(owner);
@@ -3937,7 +3957,7 @@ async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_
     assert_eq!(lifecycle(&upgraded).activity(), ActivityView::Resting, "the node rests on the host of the release before");
     adopted.moves_to_this_release = false;
     let rested = Slice::read_cards(&upgraded).len();
-    carry_on(&upgraded, "Add the tests first");
+    instruct(&upgraded, "Add the tests first");
     let mut changed = upgraded.subscribe();
     let owner = Owner::spawn(adopted);
     let reader = Arc::clone(&upgraded);
@@ -3972,7 +3992,7 @@ fn a_daemon_gone_while_it_moved_a_resting_node_to_this_release_leaves_it_to_the_
     let started = slice.restart();
     let mut taken = slice.take_over(&started);
     assert!(!taken.worker.runs_another_release(), "the next start launched a host of this release");
-    carry_on(&started, "Add the tests first");
+    instruct(&started, "Add the tests first");
     taken.step(&|| false).unwrap();
     slice.settle(&mut taken);
     let starts = slice.starts();
@@ -3980,7 +4000,7 @@ fn a_daemon_gone_while_it_moved_a_resting_node_to_this_release_leaves_it_to_the_
     assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
-    assert!(!prompts[1].contains("cut off"), "its first prompt is what the user said, nothing about a cut: {prompts:?}");
+    assert!(!prompts[1].contains("cut off"), "its first prompt is what the orchestrator said, nothing about a cut: {prompts:?}");
     assert_eq!(Slice::other_cards(&started), Vec::<String>::new(), "nothing was asked");
     taken.stop().unwrap();
 }

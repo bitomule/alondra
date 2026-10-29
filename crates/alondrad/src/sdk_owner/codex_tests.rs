@@ -300,7 +300,7 @@ async fn codex_transition_model_is_pending_until_the_exact_native_configuration_
     let backend_path=slice._home.join("codex-backend.json");let mut backend:SdkBackend=serde_json::from_slice(&std::fs::read(&backend_path).unwrap()).unwrap();backend.native_environment.insert("ALONDRA_FAKE_MODELS".into(),"fixture-model,fixture-second".into());std::fs::write(backend_path,serde_json::to_vec(&backend).unwrap()).unwrap();
     slice.domain.enable_sdk(slice.backend.clone());let mut driver=launch(&slice);slice.settle(&mut driver);let instance=driver.agent.clone();
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target.clone(),&stamp);
-    slice.run(&system(),"queued-during-model-change",Command::TellNode{task_id:TASK.into(),text:"Use the configured model for this next input".into()});let queued=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
+    slice.run(&system(),"queued-during-model-change",Command::TellNode{task_id:TASK.into(),text:"Use the configured model for this next input".into(), from_user: false});let queued=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
     let (published,mut after_feed)=tokio::sync::watch::channel(false);let weak=Arc::downgrade(&slice.domain);let expected_input=queued.clone();
     slice.on_acknowledge(move||{if let Some(domain)=weak.upgrade() && !Slice::lifecycle(&domain).is_pending(&alondra_foundation::InputId::new(&expected_input).unwrap()){published.send_replace(true);}});
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|value|*value+=1));slice.domain.add_sdk_owner(Owner::spawn(driver));
@@ -608,11 +608,11 @@ fn repeated_same_email_reauthentication_keeps_the_same_native_session_but_identi
     let mut driver=launch(&slice);slice.settle(&mut driver);let original=driver.worker.host_group();let original_execution=Slice::lifecycle(&slice.domain).execution().unwrap().clone();
     for round in [1,2]{
         publish("first@example.test",false,&format!("native-logout-{round}"));publish("FIRST@example.test",true,&format!("native-reauth-{round}"));
-        carry_on(&slice.domain,&format!("Continue the same cached session after reauthentication {round}"));slice.settle(&mut driver);
+        instruct(&slice.domain,&format!("Continue the same cached session after reauthentication {round}"));slice.settle(&mut driver);
         assert_eq!(driver.worker.host_group(),original);assert_eq!(Slice::lifecycle(&slice.domain).execution(),Some(&original_execution));
     }
     let before=transcript(&trace).iter().filter(|request|request["method"]=="turn/start").count();
-    publish("replacement@example.test",true,"native-replaced-identity");carry_on(&slice.domain,"This input must remain queued for explicit user recovery");
+    publish("replacement@example.test",true,"native-replaced-identity");instruct(&slice.domain,"This input must remain queued for explicit user recovery");
     let error=driver.step_once(&||false).unwrap_err();assert!(error.to_string().contains("different known identity"),"{error}");
     assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="turn/start").count(),before);
     assert!(!Slice::lifecycle(&slice.domain).pending_inputs().is_empty());assert_eq!(driver.worker.host_group(),original);
@@ -733,7 +733,7 @@ fn same_cached_managed_session_still_reports_quota_and_authentication_after_same
         }
         assert!(crate::accounts::generation_provider(&slice.domain.state().unwrap(),&AccountKey::new(Provider::Codex,AccountId::default_account()))>generation);
         std::fs::write(slice._home.join("codex-native.account.json"),serde_json::to_vec(&serde_json::json!({"turnMode":outcome})).unwrap()).unwrap();
-        carry_on(&slice.domain,"Continue through the same native session after same-account reauthentication");slice.settle(&mut driver);
+        instruct(&slice.domain,"Continue through the same native session after same-account reauthentication");slice.settle(&mut driver);
         let state=slice.domain.state().unwrap();let account=state.accounts.iter().find(|account|account.provider==Provider::Codex && account.id.is_default()).unwrap();
         if outcome=="auth"{assert_eq!(account.state,AccountState::SignedOut,"a proven same-identity host can report a new native authentication failure");}
         else{assert!(state.account_usage.iter().any(|usage|usage.provider==Provider::Codex && usage.account.is_default() && usage.windows.iter().any(|window|window.reading.kind.is_native_limit_marker() && window.reading.exhausted)),"same-identity login-counter changes do not discard confirmed native quota");}

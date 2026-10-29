@@ -110,14 +110,14 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         return Err(refused("not_found", "agent does not exist"));
     }
     if crate::sdk_owner::runs_through_sdk(&state, agent) {
-        let told = tell_through_sdk(domain, &state, home, user, name, agent, body);
+        let told = tell_through_sdk(domain, &state, home, user, name, agent, body, as_user);
         if as_user && told.is_ok() {
             domain.live.gate.release_by_user_message(domain, &agent.0);
         }
         return told;
     }
     if let Some((_, successor)) = crate::sdk_handover::successor(domain, agent) {
-        return tell_through_sdk(domain, &state, home, user, name, &successor, body);
+        return tell_through_sdk(domain, &state, home, user, name, &successor, body, as_user);
     }
     if domain.live.is_closed(&agent.0) {
         return Err(refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"));
@@ -159,7 +159,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
 /// waits for the host that resumes the session when the host is gone. Its delivery is the
 /// lifecycle's to follow, so it answers `dispatching`, and `reaches` says where it stands.
 fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::DomainState, home: &Path, user: &Actor, name: &str,
-    agent: &AgentId, body: MessageBody) -> Result<Value, DomainError> {
+    agent: &AgentId, body: MessageBody, as_user: bool) -> Result<Value, DomainError> {
     let open = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
     let task = match &body.task_id {
         Some(id) => state.tasks.get(id).filter(|task| task.agent_id.as_ref() == Some(agent))
@@ -169,7 +169,7 @@ fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::Domain
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
     let command_id = format!("tell-{}", crate::auth::random_hex(16));
-    tell_sdk_node(domain, &task.id, &author, &text, &command_id)?;
+    tell_sdk_node(domain, &task.id, &author, &text, &command_id, as_user)?;
     let lifecycle = domain.read().state().lifecycle_of(&task.id)?;
     let reaches = reaches(&lifecycle);
     Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches})))
@@ -195,8 +195,8 @@ fn reaches(lifecycle: &alondra_domain::TaskLifecycle) -> &'static str {
 }
 
 /// Tells the node of the SDK task `task` `text`, stamped with who sent it and when. A retry with
-/// the same `command_id` tells it once.
-pub(crate) fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain::TaskId, author: &str, text: &str, command_id: &str)
+/// the same `command_id` tells it once. `from_user` is for the user's own words.
+pub(crate) fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain::TaskId, author: &str, text: &str, command_id: &str, from_user: bool)
     -> Result<(), DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let envelope = alondra_core::domain::CommandEnvelope {
@@ -207,6 +207,7 @@ pub(crate) fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain:
         command: alondra_core::domain::Command::TellNode {
             task_id: task.clone(),
             text: crate::node_push::stamped(author, alondra_core::now_millis(), text),
+            from_user,
         },
     };
     domain.execute_as_system(envelope).map(|_| ()).map_err(|error| match error {

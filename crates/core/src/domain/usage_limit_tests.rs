@@ -5,7 +5,7 @@
 //! a task left at work with nothing that works for it once a turn of its node ends.
 use super::lifecycle_tests::{exec, sdk_turn, world};
 use super::*;
-use alondra_domain::{Capacity, LiveState, Worker};
+use alondra_domain::{Capacity, LiveState, Step, Worker};
 use proptest::prelude::*;
 
 const TASKS: [(&str, &str); 2] = [("t", "a"), ("u", "b")];
@@ -106,7 +106,7 @@ impl World {
     fn perform(&mut self, act: &Act, n: usize) -> Result<(), String> {
         let node = |at: usize| TASKS[at].1;
         match *act {
-            Act::Tell(at) => drop(exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Notice {n}") })),
+            Act::Tell(at) => drop(exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Notice {n}"), from_user: false })),
             Act::TakeInput(at) => drop(self.take_input(at, n)),
             Act::OwnTurn(at) if self.claude[at].turn.is_none() => {
                 let turn = format!("turn-{n}");
@@ -157,7 +157,7 @@ impl World {
                 let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Paused { pause }, at: n as Millis });
             }
             Act::Resume(at) => {
-                let _ = exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Carry on {n}") });
+                let _ = exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Carry on {n}"), from_user: false });
                 let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Resumed, at: n as Millis });
             }
             Act::LimitOut => self.out = true,
@@ -193,6 +193,10 @@ impl World {
             match &live {
                 Some(LiveState::Working(Worker::Turn)) if claude.turn.is_none() => return Err(format!("{task} is in a turn its Claude does not run")),
                 Some(LiveState::Working(Worker::OwnWork)) if !works => return Err(format!("{task} runs work its Claude does not have")),
+                Some(LiveState::Working(Worker::Alondra(Step::Answering))) if !self.s.interactions.values()
+                    .any(|i| is_stall_case(i) && self.s.open(i) && i.scope == (Scope::Task { task_id: TaskId::from(*task) })) =>
+                    return Err(format!("{task} waits on the orchestrator with no case for it")),
+                Some(LiveState::Working(Worker::Alondra(Step::Answering))) => {}
                 Some(LiveState::Working(_)) if claude.turn.is_none() && !works && !claude.unheard && self.pending(at).is_none() =>
                     return Err(format!("{task} is at work with no turn, no work and nothing to read: {live:?}")),
                 Some(LiveState::WaitingCapacity(Capacity::Usage)) if !self.out => return Err(format!("{task} waits for usage that is back")),

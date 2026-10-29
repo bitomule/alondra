@@ -316,6 +316,9 @@ impl Executor {
             .map(|choices| crate::domain_orchestrator_tools::choices_text(&user, &self.home, &choices))));
         for message in messages {
             text.push_str(&format!("\n{}\n", crate::domain_transport::render(&state, message)));
+            if let Some(case) = message.interaction_id.as_ref().and_then(|id| state.interactions.get(&InteractionId(id.clone()))) {
+                text.push_str(&crate::stall_context::context(&self.domain, &state, case));
+            }
         }
         Ok(text)
     }

@@ -5,17 +5,18 @@
 //! Problem; a node's suggestion goes back once. A decision of the user that holds tasks for a
 //! plan review goes back once too, then becomes the user's Problem. A task that waits for a task
 //! that was cancelled is the orchestrator's to re-plan: it is told, reminded once, and only then
-//! does the user decide whether it starts without it.
+//! does the user decide whether it starts without it. A stopped node's case is never the user's:
+//! the orchestrator is reminded once, then Alondra closes the task.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
     Author, CardKind, DomainState, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
-    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, Task, TaskId,
+    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, Task, TaskId, is_stall_case,
 };
 use alondra_core::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
     UNANSWERED_WITHDRAW_LABEL, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnansweredProblem, UnsplitProblem,
-    PLAN_REVIEW_KEEP_LABEL, PLAN_REVIEW_NOTICE_PREFIX, PLAN_REVIEW_REMIND_LABEL,
+    PLAN_REVIEW_KEEP_LABEL, PLAN_REVIEW_NOTICE_PREFIX, PLAN_REVIEW_REMIND_LABEL, STALL_NOTICE_PREFIX,
 };
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
@@ -38,6 +39,8 @@ pub(crate) enum Step {
     /// The orchestrator was told and reminded and the task still waits for a cancelled task: the
     /// user decides whether it starts without it.
     RaiseDependencyCancelled { task: TaskId, dependency: TaskId },
+    /// The case of a stopped node is still unsettled after its reminder: Alondra closes the task.
+    CloseStall { case: InteractionId, task: TaskId },
 }
 
 /// What is left in the orchestrator's inbox after it handled everything it was handed.
@@ -52,6 +55,9 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
     }
     for (id, review) in &state.plan_reviews {
         steps.extend(unreviewed(state, id, review));
+    }
+    for case in state.interactions.values().filter(|i| is_stall_case(i) && state.open(i)) {
+        steps.extend(stalled(state, case));
     }
     for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
         steps.extend(dependency_cancelled(state, task));
@@ -210,6 +216,20 @@ fn unsettled(state: &DomainState, suggestion: &Interaction) -> Option<Step> {
     })
 }
 
+fn stalled(state: &DomainState, case: &Interaction) -> Option<Step> {
+    let task = task_of(state, case).filter(|task| !task.over())?;
+    let id = format!("{STALL_NOTICE_PREFIX}{}", case.id);
+    if state.interactions.contains_key(&InteractionId(id.clone())) {
+        return Some(Step::CloseStall { case: case.id.clone(), task: task.id.clone() });
+    }
+    Some(Step::Tell {
+        id,
+        text: format!(
+            "Reminder: case {} about the stopped node of Task “{}” ({}) is still unsettled, and nothing else waits for you. Settle it now with settle_stall: instruct with one concrete next step, or close with the result. If you leave it unsettled again, Alondra closes the task itself, without a result of yours. Never ask the user about it.\nCase: {}",
+            case.id, task.title, task.id, quoted(case)),
+    })
+}
+
 fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
     let reminders = numbered(state, UNANSWERED_NOTICE_PREFIX, &question.id.0).len() as u32;
     let problems = numbered(state, UNANSWERED_PROBLEM_PREFIX, &question.id.0);
@@ -345,6 +365,7 @@ pub(crate) fn settle(domain: &DomainRuntime) {
                     Some(PLAN_REVIEW_REMIND),
                 ).map(drop)
             }
+            Step::CloseStall { case, task } => domain.close_unsettled_stall(case, task).map(drop),
             Step::RaiseDependencyCancelled { task, dependency } => {
                 if let Err(error) = crate::start_failures::raise(domain, task, StartProblem::DependencyCancelled { dependency: dependency.clone() }) {
                     log!("could not ask the user about {task}, which waits for the cancelled {dependency}: {error:#}");

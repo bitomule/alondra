@@ -1,6 +1,9 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod plan_review;
+mod stall;
+pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, is_stall_case, stalled_card_id};
+pub(in crate::domain) use stall::stalled_in_place_of;
 pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem};
 #[path = "guards.rs"]
 mod guards;
@@ -2252,7 +2255,8 @@ impl DomainState {
             | Command::ReportFailure { task_id }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. }
-            | Command::SettlePlanReview { task_id, .. } => task(task_id),
+            | Command::SettlePlanReview { task_id, .. }
+            | Command::SettleStall { task_id, .. } => task(task_id),
             Command::PublishInformation { scope, .. }
             | Command::AskQuestion { scope, .. }
             | Command::AskQuestions { scope, .. }
@@ -2343,8 +2347,10 @@ impl DomainState {
         let mut effects = vec![];
         let mut created = vec![];
         let mut lifecycles = Lifecycles::new();
+        next.count_progress(actor, &envelope.command);
         next.apply(actor, &envelope.command, &mut effects, &mut created, &mut lifecycles)?;
         next.end_lapsed_awaits(&mut effects, &mut lifecycles)?;
+        next.withdraw_released_stalls(&mut lifecycles)?;
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
         next.adopt_declared_post_merge(&mut lifecycles)?;
@@ -2981,7 +2987,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -3592,6 +3598,10 @@ impl DomainState {
                     return refuse("suggestion_needs_decision", "interaction_id",
                         "A suggestion is settled with settle_suggestion and one decision: new_task (create it now), current_task (the node does it in its task) or discard (with the reason)");
                 }
+                if is_stall_case(&i) {
+                    return refuse("stall_needs_outcome", "interaction_id",
+                        "A stopped node is settled with settle_stall and one outcome: instruct (the node gets your instruction) or close (the task ends with your result)");
+                }
                 if let Scope::Task { task_id } = &i.scope
                     && !self.tasks.get(task_id).is_some_and(Self::winding_down)
                 {
@@ -3677,6 +3687,9 @@ impl DomainState {
             }
             Command::SettlePlanReview { review_id, task_id, outcome } => {
                 self.settle_plan_review(actor, review_id, task_id, outcome, effects, created, lifecycles)?;
+            }
+            Command::SettleStall { case_id, task_id, outcome } => {
+                self.settle_stall(actor, case_id, task_id, outcome, effects, lifecycles)?;
             }
             Command::CreateDocument {
                 task_id,
@@ -4397,6 +4410,7 @@ impl DomainState {
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.archived = false;
+                t.stall_closing = None;
                 let node_gone = matches!(t.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone));
                 t.wrap_up = WrapUp::default();
                 let kept = self.tasks[task_id].agent_id.clone().filter(|_| !released && !node_gone);
@@ -4651,7 +4665,7 @@ impl DomainState {
                 system(actor)?;
                 self.compact_ended_tasks(task_ids)?;
             }
-            Command::TellNode { task_id, text } => {
+            Command::TellNode { task_id, text, .. } => {
                 system(actor)?;
                 nonempty(text)?;
                 if self.task(task_id)?.state.terminal() {

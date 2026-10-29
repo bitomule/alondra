@@ -6,7 +6,7 @@ use super::{
     text::{t, tf},
 };
 use alondra_domain::{Capacity, LiveState, Step, Worker};
-use crate::domain::{Attention, Instruction, InteractionId, PauseReason, PrState, Task, TaskActivity, TaskEnding, TaskPriority, TaskState, WaitReason};
+use crate::domain::{Attention, Instruction, InteractionId, PauseReason, PrState, StallClosing, Task, TaskActivity, TaskEnding, TaskPriority, TaskState, WaitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Block {
@@ -61,8 +61,12 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
     use Block::*;
     match task.state {
         TaskState::Done => return Presentation::new(t!(lang, "Finished", "Terminada"), Tone::Success, Ended, Some(done_fact(task, context))),
-        TaskState::Cancelled => return Presentation::new(t!(lang, "Cancelled", "Cancelada"), Tone::Neutral, Ended,
-            context.live.cancel_reasons.get(&task.id.0).map(|reason| reason.trim().to_owned()).filter(|reason| !reason.is_empty())),
+        TaskState::Cancelled => return match stall_result(task, lang) {
+            Some(result) => Presentation { fact_in_state: true,
+                ..Presentation::new(t!(lang, "Closed without a delivery", "Cerrada sin entrega"), Tone::Neutral, Ended, Some(result)) },
+            None => Presentation::new(t!(lang, "Cancelled", "Cancelada"), Tone::Neutral, Ended,
+                context.live.cancel_reasons.get(&task.id.0).map(|reason| reason.trim().to_owned()).filter(|reason| !reason.is_empty())),
+        },
         TaskState::Closing => return closing(task, context),
         _ => {}
     }
@@ -275,6 +279,8 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
             ..Presentation::new(t!(lang, "Finishing after the merge", "Terminando tras el merge"), Tone::Info, Block::InProgress,
                 task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())) },
         LiveState::Working(Worker::Alondra(Step::Merging | Step::Finishing)) => closing(task, context),
+        LiveState::Working(Worker::Alondra(Step::Answering)) if task.stalls > 0 => Presentation { active_at,
+            ..Presentation::new(t!(lang, "Alondra is getting it going again", "Alondra lo está reconduciendo"), Tone::Accent, Block::InProgress, step) },
         LiveState::Working(_) => {
             let state = match context.reading(&task.id).and_then(|read| read.handed_back) {
                 Some(Instruction::Changes) => t!(lang, "Making changes", "Corrigiendo"),
@@ -330,8 +336,21 @@ fn with_pending(fact: String, task: &Task, context: &RenderContext<'_>) -> Strin
     format!("{fact} · {pending}")
 }
 
+/// What a task closed because its node kept stopping says got done.
+fn stall_result(task: &Task, lang: super::Lang) -> Option<String> {
+    Some(match task.stall_closing.as_ref()? {
+        StallClosing::Settled { result } => result.trim().to_owned(),
+        StallClosing::Unsettled => t!(lang, "Its node kept stopping without a result or a question, and Alondra closed it",
+            "Su nodo se paraba una y otra vez sin entregar ni preguntar, y Alondra la cerró").to_owned(),
+    })
+}
+
 fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
+    if let Some(result) = stall_result(task, lang) {
+        return Presentation { fact_in_state: true,
+            ..Presentation::new(t!(lang, "Closing without a delivery", "Cerrando sin entrega"), Tone::Neutral, Block::InProgress, Some(result)) };
+    }
     if task.ending == Some(TaskEnding::Cancelling) {
         let fact = if task.agent_id.is_some() && task.wrap_up.node.is_none() {
             t!(lang, "Alondra closes its node", "Alondra cierra su nodo")

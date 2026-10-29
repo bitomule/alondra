@@ -126,8 +126,8 @@ impl TaskLifecycle {
                 self.doubts.insert(card, input);
             }
             Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
-            Event::Discard { card, unheard_card } => self.discard(card, unheard_card)?,
-            Event::AwaitEnded { unheard_card, wake } => self.await_ended(unheard_card, wake)?,
+            Event::Discard { card, unheard_card, stalled } => self.discard(card, unheard_card, unheard_owner(stalled))?,
+            Event::AwaitEnded { unheard_card, wake, stalled } => self.await_ended(unheard_card, wake, unheard_owner(stalled))?,
             Event::ResendUntaken { input, resend } => self.resend(&input, resend)?,
             Event::ResendDoubtful { input, resend } => {
                 self.resend(&input, resend)?;
@@ -226,8 +226,11 @@ impl TaskLifecycle {
                         BTreeMap::new(),
                         DeliveryGate::Review,
                     ),
+                    // A delivery is what a stopped node was missing: the orchestrator's case about it ends.
                     State::InProgress(Progress::Waiting { cards, session, .. }) => {
-                        (session.clone(), cards.map(), DeliveryGate::Review)
+                        let mut cards = cards.map();
+                        cards.retain(|_, card| card.owner != Owner::Orchestrator);
+                        (session.clone(), cards, DeliveryGate::Review)
                     }
                     State::InProgress(Progress::Dependency {
                         tasks,
@@ -839,10 +842,10 @@ impl TaskLifecycle {
         }
         self.doubts.remove(&id);
         self.settled.insert(input);
-        self.leave_card(stage, cards, session, unheard)
+        self.leave_card(stage, cards, session, unheard, Owner::User)
     }
 
-    fn discard(&mut self, id: InteractionId, unheard: InteractionId) -> Result<(), Refusal> {
+    fn discard(&mut self, id: InteractionId, unheard: InteractionId, owner: Owner) -> Result<(), Refusal> {
         valid_id(&unheard.0)?;
         let (stage, mut cards, session) = match &self.state {
             State::InProgress(Progress::Waiting { stage, cards, session }) => (*stage, cards.map(), session.clone()),
@@ -853,10 +856,10 @@ impl TaskLifecycle {
         if cards.remove(&id).is_none_or(|card| card.reason != WaitReason::Dropped) {
             return Err(Refusal::CorrelationMismatch);
         }
-        self.leave_card(stage, cards, session, unheard)
+        self.leave_card(stage, cards, session, unheard, owner)
     }
 
-    fn await_ended(&mut self, unheard: InteractionId, wake: Option<InputId>) -> Result<(), Refusal> {
+    fn await_ended(&mut self, unheard: InteractionId, wake: Option<InputId>, owner: Owner) -> Result<(), Refusal> {
         valid_id(&unheard.0)?;
         if wake.as_ref().is_some_and(|input| self.settled.contains(input)) {
             return Err(Refusal::InvalidState);
@@ -881,7 +884,7 @@ impl TaskLifecycle {
             }
             None => State::InProgress(Progress::Waiting {
                 stage,
-                cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, owner: Owner::User, callback: None }),
+                cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, owner, callback: None }),
                 session: Session::Present(execution),
             }),
         };
@@ -891,7 +894,7 @@ impl TaskLifecycle {
 
     /// The task without the card it no longer waits on: the cards left, else what it goes on with,
     /// else `unheard`, the card that asks how it goes on.
-    fn leave_card(&mut self, stage: WorkStage, cards: BTreeMap<InteractionId, Card>, session: Session, unheard: InteractionId) -> Result<(), Refusal> {
+    fn leave_card(&mut self, stage: WorkStage, cards: BTreeMap<InteractionId, Card>, session: Session, unheard: InteractionId, owner: Owner) -> Result<(), Refusal> {
         if let State::Delivered(delivered) = &mut self.state {
             delivered.decisions = cards;
             delivered.session = session;
@@ -908,7 +911,7 @@ impl TaskLifecycle {
                 }
                 Session::Present(execution) if matches!(execution.activity, Activity::Resting) => State::InProgress(Progress::Waiting {
                     stage,
-                    cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, owner: Owner::User, callback: None }),
+                    cards: Decisions::one(Card { id: unheard, reason: WaitReason::Unheard, owner, callback: None }),
                     session: Session::Present(execution),
                 }),
                 Session::Present(execution) => State::InProgress(Progress::Executing { stage, execution: ActiveExecution::new(execution)? }),
@@ -1098,4 +1101,9 @@ enum Reply {
     Input(InputId),
     Decision(Decision),
     Nothing,
+}
+
+/// Who settles the card of a node left with nothing explaining its next step.
+fn unheard_owner(stalled: bool) -> Owner {
+    if stalled { Owner::Orchestrator } else { Owner::User }
 }

@@ -638,7 +638,7 @@ fn tell_to_go_on(domain: &DomainRuntime, session: &str, text: &str) -> bool {
             return true;
         }
         let command = format!("resume-{session}-{}", crate::auth::random_hex(8));
-        return crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, text, &command).is_ok();
+        return crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, text, &command, false).is_ok();
     }
     crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, text, true).is_ok()
 }

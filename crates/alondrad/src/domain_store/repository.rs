@@ -305,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "stalls", "stall_closing", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -833,6 +833,13 @@ pub(super) fn save_changes(
                 c,
                 "INSERT INTO task_priorities(task_id,priority) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET priority=excluded.priority",
                 params![x.id.0, serde_json::to_value(x.priority)?.as_str().context("priority is a string")?],
+            )?;
+        }
+        if prior.map_or(x.stalls != 0 || x.stall_closing.is_some(), |p| p.stalls != x.stalls || p.stall_closing != x.stall_closing) {
+            exec(
+                c,
+                "INSERT INTO task_stalls(task_id,stalls,closing) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET stalls=excluded.stalls,closing=excluded.closing",
+                params![x.id.0, x.stalls as i64, x.stall_closing.as_ref().map(serde_json::to_string).transpose()?],
             )?;
         }
     }
@@ -1373,6 +1380,15 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     while let Some(row) = stored.next()? {
         let id: String = row.get(0)?;
         state.tasks.get_mut(&TaskId::from(id)).context("priority task missing")?.priority = decode(Value::String(row.get(1)?))?;
+    }
+    drop(stored);
+    let mut stalls = c.prepare("SELECT task_id, stalls, closing FROM task_stalls")?;
+    let mut stored = stalls.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let task = state.tasks.get_mut(&TaskId::from(id)).context("stalled task missing")?;
+        task.stalls = row.get::<_, i64>(1)? as u32;
+        task.stall_closing = row.get::<_, Option<String>>(2)?.as_deref().map(serde_json::from_str).transpose()?;
     }
     drop(stored);
     let mut relations = c.prepare("SELECT task_id, delivered_dependencies, blocks, verdict, review_rounds FROM task_relations")?;

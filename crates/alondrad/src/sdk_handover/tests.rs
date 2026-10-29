@@ -230,10 +230,11 @@ impl World {
         usize::from(self.bg.running()) + usize::from(self.sdk_node().is_some_and(|agent| self.domain.owns_sdk_host(&agent)))
     }
 
-    /// Waits on the domain until the SDK node's first turn ended with Claude's answer.
+    /// Waits on the domain until the SDK node's first turn ended with Claude's answer and the task
+    /// rests on the card it ended on.
     async fn until_answered(&self) {
         let mut changed = self.domain.subscribe();
-        while !self.domain.read().state().interactions.keys().any(|card| card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-"))) {
+        while !self.domain.read().state().interactions.keys().any(|card| crate::sdk_owner::tests::rests_on(TASK, card)) {
             changed.changed().await.unwrap();
         }
     }

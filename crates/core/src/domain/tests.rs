@@ -145,7 +145,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3104,9 +3104,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RequestTaskSelection { .. } => 111,
         Command::ReviewWaits => 112,
         Command::ReportFailure { .. } => 113,
+        Command::SettleStall { .. } => 114,
     }
 }
-const COMMAND_KINDS: usize = 114;
+const COMMAND_KINDS: usize = 115;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3223,6 +3224,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),
         (Command::SettleSuggestion { interaction_id: ids.interaction.into(), decision: SuggestionDecision::Discard { reason: "Covered".into() } }, false),
         (Command::SettlePlanReview { review_id: ids.interaction.into(), task_id: ids.task.into(), outcome: PlanReviewOutcome::Unchanged { reason: "Same plan".into() } }, false),
+        (Command::SettleStall { case_id: ids.interaction.into(), task_id: ids.task.into(), outcome: StallOutcome::Instruct { text: "Present it".into() } }, false),
         (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
         (Command::ConfirmCleanup { task_id: ids.task.into(), discard: Vec::new() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
@@ -3270,7 +3272,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordDecisionAborted { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
         (Command::RecordTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), origin: WorktreeOrigin::Subagent, branch: None }, false),
         (Command::ReleaseTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), end: WorktreeEnd::Removed }, false),
-        (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into() }, false),
+        (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into(), from_user: false }, false),
         (Command::RecordDistribution { policy: crate::accounts::Policy::Chain, move_when_exhausted: true }, true),
         (Command::ChangeAccounts { provider: crate::accounts::Provider::Claude,
             change: crate::accounts::AccountChange::Remove { account: crate::accounts::AccountId::default_account() } }, false),

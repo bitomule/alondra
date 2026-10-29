@@ -4,6 +4,7 @@
 //! no other writer can move them. Every task has a journal; the store keeps it as the events these
 //! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
+use super::rules::stalled_in_place_of;
 use alondra_domain::{
     ActivityView, Await, CLAUDE_BG_HOST, CallbackId, Capacity, LiveState, Owner, Several, Worker, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
     FinishIntent, HostId, InputId, InstanceId, OperationId, PermissionMode, PlanReviewOutcome as ReviewSettlement,
@@ -246,6 +247,7 @@ pub enum PauseOwner {
     Disk,
     Usage,
     ClaudeApi,
+    Orchestrator,
 }
 impl From<Owner> for PauseOwner {
     fn from(owner: Owner) -> Self {
@@ -256,6 +258,7 @@ impl From<Owner> for PauseOwner {
             Owner::Capacity(Capacity::Disk) => Self::Disk,
             Owner::Capacity(Capacity::Usage) => Self::Usage,
             Owner::Capacity(Capacity::ClaudeApi) => Self::ClaudeApi,
+            Owner::Orchestrator => Self::Orchestrator,
         }
     }
 }
@@ -268,6 +271,7 @@ impl From<PauseOwner> for Owner {
             PauseOwner::Disk => Self::Capacity(Capacity::Disk),
             PauseOwner::Usage => Self::Capacity(Capacity::Usage),
             PauseOwner::ClaudeApi => Self::Capacity(Capacity::ClaudeApi),
+            PauseOwner::Orchestrator => Self::Orchestrator,
         }
     }
 }
@@ -296,7 +300,8 @@ pub enum LifecycleRecord {
     WorkContinued { continuation: String },
     /// The root turn of an SDK execution ended. When nothing explains the task's next step and it
     /// `awaits` nothing, the first such turn wakes the node with `wake`, told `text`, and the next
-    /// one, or one recorded before turns woke the node, requires `unheard_card`.
+    /// one, or one recorded before turns woke the node, requires `unheard_card`: the
+    /// orchestrator's when the turn `stalled`, with nothing for the user to decide.
     TurnEnded {
         turn: String,
         unheard_card: InteractionId,
@@ -306,6 +311,8 @@ pub enum LifecycleRecord {
         text: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         awaits: Option<TurnAwait>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stalled: bool,
     },
     /// The user answered a card the lifecycle requires: the task goes on with `input`, whose text
     /// is what it is told.
@@ -401,17 +408,24 @@ pub enum LifecycleRecord {
     /// whether to send it again.
     InputDropped { input: String, card: InteractionId },
     /// The user let go of the input `card` asked about. `unheard_card` is required when nothing
-    /// else explains what follows.
-    DroppedDiscarded { card: InteractionId, unheard_card: InteractionId },
+    /// else explains what follows, the orchestrator's when `stalled`.
+    DroppedDiscarded {
+        card: InteractionId,
+        unheard_card: InteractionId,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stalled: bool,
+    },
     /// What the last turn ended waiting for no longer holds and nothing reached the node for it:
     /// it is woken with `wake`, told `text`, or, woken already with nothing new since, the
-    /// aggregate requires `unheard_card`.
+    /// aggregate requires `unheard_card`, the orchestrator's when `stalled`.
     AwaitEnded {
         unheard_card: InteractionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wake: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stalled: bool,
     },
     /// The intent to run `operation` on the task's SDK execution, recorded before it reaches it.
     ControlRequested { control: String, operation: ControlRecord },
@@ -556,11 +570,12 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
         })?,
-        LifecycleRecord::TurnEnded { turn, unheard_card, wake, awaits, .. } => runtime(RuntimeFact::TurnEnded {
+        LifecycleRecord::TurnEnded { turn, unheard_card, wake, awaits, stalled, .. } => runtime(RuntimeFact::TurnEnded {
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             unheard_card: unheard_card.clone(),
             wake: wake.as_deref().map(|input| input_id(task, input)).transpose()?,
             awaits: awaits.as_ref().map(|awaits| awaits.awaits(task)).transpose()?,
+            stalled: *stalled,
         })?,
         LifecycleRecord::Answered { card, input, .. } => Event::Answer { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::HostEnded { unheard_card, resume, .. } => runtime(RuntimeFact::HostEnded {
@@ -616,10 +631,11 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
         })?,
         LifecycleRecord::InputConsumed { input } => runtime(RuntimeFact::InputConsumed { input: input_id(task, input)? })?,
         LifecycleRecord::InputDropped { input, card } => runtime(RuntimeFact::InputDropped { input: input_id(task, input)?, card: card.clone() })?,
-        LifecycleRecord::DroppedDiscarded { card, unheard_card } => Event::Discard { card: card.clone(), unheard_card: unheard_card.clone() },
-        LifecycleRecord::AwaitEnded { unheard_card, wake, .. } => Event::AwaitEnded {
+        LifecycleRecord::DroppedDiscarded { card, unheard_card, stalled } => Event::Discard { card: card.clone(), unheard_card: unheard_card.clone(), stalled: *stalled },
+        LifecycleRecord::AwaitEnded { unheard_card, wake, stalled, .. } => Event::AwaitEnded {
             unheard_card: unheard_card.clone(),
             wake: wake.as_deref().map(|input| input_id(task, input)).transpose()?,
+            stalled: *stalled,
         },
         LifecycleRecord::ExecutionReleased { input } => Event::ExecutionReleased { input: input_id(task, input)? },
         LifecycleRecord::Told { input, .. } => Event::Tell { input: input_id(task, input)? },
@@ -833,12 +849,13 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         Event::Runtime { fact: RuntimeFact::WorkStarted { turn, work }, .. } => {
             LifecycleRecord::WorkStarted { turn: turn.as_str().into(), work: work.as_str().into() }
         }
-        Event::Runtime { fact: RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits }, .. } => LifecycleRecord::TurnEnded {
+        Event::Runtime { fact: RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits, stalled }, .. } => LifecycleRecord::TurnEnded {
             turn: turn.as_str().into(),
             unheard_card: unheard_card.clone(),
             wake: wake.as_ref().map(|input| input.as_str().into()),
             text: wake.as_ref().and_then(|input| texts.get(input).cloned()),
             awaits: awaits.as_ref().map(TurnAwait::of),
+            stalled: *stalled,
         },
         Event::Tell { input } => LifecycleRecord::Told {
             input: input.as_str().into(),
@@ -896,11 +913,12 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         Event::Runtime { fact: RuntimeFact::InputDropped { input, card }, .. } => {
             LifecycleRecord::InputDropped { input: input.as_str().into(), card: card.clone() }
         }
-        Event::Discard { card, unheard_card } => LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone() },
-        Event::AwaitEnded { unheard_card, wake } => LifecycleRecord::AwaitEnded {
+        Event::Discard { card, unheard_card, stalled } => LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone(), stalled: *stalled },
+        Event::AwaitEnded { unheard_card, wake, stalled } => LifecycleRecord::AwaitEnded {
             unheard_card: unheard_card.clone(),
             wake: wake.as_ref().map(|input| input.as_str().into()),
             text: wake.as_ref().and_then(|input| texts.get(input).cloned()),
+            stalled: *stalled,
         },
         Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
         Event::Present { delivery } => LifecycleRecord::Presented { delivery: delivery.clone() },
@@ -1342,19 +1360,19 @@ impl DomainState {
     /// success: nothing is delivered, finished or released. A turn that ends with nothing that
     /// explains what the task does next (no work of its own, no continuation, no input waiting) is
     /// not empty when its node waits on something Alondra recorded (`turn_await`): the task waits
-    /// for that. Otherwise the turn is empty: the first one wakes the node with what happened, and
-    /// the next, with nothing new between them, requires the card that asks the user how it goes
-    /// on, created in this same step. The lifecycle counts them, by turns, never by time.
+    /// for that. Otherwise the turn is empty, a stop that is Alondra's to fix and never the user's:
+    /// the first one since the task last moved on wakes the node with what happened, and each one
+    /// after it opens a case the orchestrator settles (`open_stall`), created in this same step.
+    /// The lifecycle counts them, by turns, never by time.
     ///
     /// A turn a Claude API error ended is held instead when waiting helps: on the one card that
-    /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on. A
-    /// turn Claude Code ended as `failed`, the API refused or the user interrupted wakes no one:
-    /// its card says so at once.
+    /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on; when
+    /// it is not held, it is a stop like an empty turn. A turn Claude Code ended as `failed`, the
+    /// API refused or the user interrupted wakes no one: its card says so at once.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
-        let card = turn_ended_card_id(task, generation, turn);
-        if self.interactions.contains_key(&card) {
+        if self.interactions.contains_key(&turn_ended_card_id(task, generation, turn)) || self.interactions.contains_key(&stalled_card_id(task, generation, turn)) {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
         let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
@@ -1362,7 +1380,20 @@ impl DomainState {
         if let Some(hold) = kind.and_then(ClaudeHold::for_failure) {
             self.hold_on_claude(task, hold, failure.and_then(|failure| failure.resets_at), effects, lifecycles)?;
         }
-        let unexplained = failure.is_none() && failed.is_none() && !interrupted;
+        let provider = self.tasks[task].provider;
+        let end = match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
+            Some(failure) => Some(TurnEnd::Refused(failure)),
+            None if interrupted => Some(TurnEnd::Interrupted),
+            None => failed.map(|code| match code {
+                "codex_request_rejected" if provider == crate::accounts::Provider::Codex => TurnEnd::NativeRequestRejected,
+                "codex_context_exceeded" if provider == crate::accounts::Provider::Codex => TurnEnd::NativeContextExceeded,
+                code if provider == crate::accounts::Provider::Codex => TurnEnd::NativeFailed(code),
+                code => TurnEnd::Failed(code),
+            }),
+        };
+        let stalled = end.is_none();
+        let card = if stalled { stalled_card_id(task, generation, turn) } else { turn_ended_card_id(task, generation, turn) };
+        let unexplained = stalled && failure.is_none();
         let awaits = self.turn_await(task).filter(|_| unexplained);
         let wake_text = self.empty_turn(task).wake_text();
         let ended = |wake: Option<String>, awaits: Option<TurnAwait>| LifecycleRecord::TurnEnded {
@@ -1371,8 +1402,10 @@ impl DomainState {
             text: wake.as_ref().map(|_| wake_text.clone()),
             wake,
             awaits,
+            stalled,
         };
-        let woke = unexplained && awaits.is_none() && self.decide(lifecycles, task, ended(Some(self.next_input(task)), None)).is_ok();
+        let woke = unexplained && awaits.is_none() && !self.stalled_before(task)
+            && self.decide(lifecycles, task, ended(Some(self.next_input(task)), None)).is_ok();
         if !woke {
             self.decide(lifecycles, task, ended(None, awaits))?;
         }
@@ -1382,21 +1415,14 @@ impl DomainState {
             self.return_replied_delivery(&agent);
         }
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
-            let title = self.tasks[task].title.clone();
-            let end = match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
-                Some(failure) => TurnEnd::Refused(failure),
-                None if interrupted => TurnEnd::Interrupted,
-                None if unexplained => TurnEnd::Twice,
-                None => match failed.filter(|_| failure.is_none()) {
-                    Some("codex_request_rejected") if self.tasks[task].provider == crate::accounts::Provider::Codex => TurnEnd::NativeRequestRejected,
-                    Some("codex_context_exceeded") if self.tasks[task].provider == crate::accounts::Provider::Codex => TurnEnd::NativeContextExceeded,
-                    Some(code) if self.tasks[task].provider == crate::accounts::Provider::Codex => TurnEnd::NativeFailed(code),
-                    Some(code) => TurnEnd::Failed(code),
-                    None => TurnEnd::Unexplained,
-                },
-            };
-            self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
-            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+            match end {
+                None => self.open_stall(task, card, effects),
+                Some(end) => {
+                    let title = self.tasks[task].title.clone();
+                    self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
+                    effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+                }
+            }
         }
         Ok(())
     }
@@ -1422,9 +1448,9 @@ impl DomainState {
 
     /// A wait a turn ended on that ended with nothing told to the node (its question or message
     /// withdrawn unanswered, the tasks it waited on no longer its dependencies) leaves that turn
-    /// empty after all: the node is woken, or the user asked, as for a turn that ends empty. A
-    /// wait the node is told the end of (an answer, the machine's room, a dependency done) ends
-    /// with what it is told.
+    /// empty after all: the node is woken, or the orchestrator gets the case, as for a turn that
+    /// ends empty. A wait the node is told the end of (an answer, the machine's room, a dependency
+    /// done) ends with what it is told.
     pub(super) fn end_lapsed_awaits(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let candidates: Vec<(TaskId, InteractionId)> = self.lifecycle_journal.iter()
             .filter(|(task, _)| self.tasks.get(*task).is_some_and(|t| !t.state.terminal()))
@@ -1436,6 +1462,7 @@ impl DomainState {
             .collect();
         for (task, card) in candidates {
             let Some(awaits) = self.lifecycle(lifecycles, &task)?.awaits().cloned() else { continue };
+            let card = stalled_in_place_of(&card);
             if !self.lapsed(&task, &awaits) || self.interactions.contains_key(&card) {
                 continue;
             }
@@ -1444,14 +1471,13 @@ impl DomainState {
                 unheard_card: card.clone(),
                 text: wake.as_ref().map(|_| wake_text.clone()),
                 wake,
+                stalled: true,
             };
-            if self.decide(lifecycles, &task, ended(Some(self.next_input(&task)))).is_err() {
+            if self.stalled_before(&task) || self.decide(lifecycles, &task, ended(Some(self.next_input(&task)))).is_err() {
                 self.decide(lifecycles, &task, ended(None))?;
             }
             if self.lifecycle(lifecycles, &task)?.cards().iter().any(|(required, _)| **required == card) {
-                let title = self.tasks[&task].title.clone();
-                self.interactions.insert(card.clone(), turn_ended_card(card.clone(), &task, &title, TurnEnd::Twice, self.revision + 1));
-                effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+                self.open_stall(&task, card, effects);
             }
         }
         Ok(())
@@ -1569,7 +1595,7 @@ impl DomainState {
             return Ok(true);
         }
         if self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, reason)| *held == card && *reason == alondra_domain::WaitReason::Dropped) {
-            self.settle_dropped(&task_id, card, option, written, lifecycles)?;
+            self.settle_dropped(&task_id, card, option, written, effects, lifecycles)?;
             return Ok(true);
         }
         let mut text = match (option, after_merge.as_deref()) {
@@ -1754,7 +1780,7 @@ impl DomainState {
 
     /// The user's answer to the card of an input Claude never read: send the same text again (with
     /// what they wrote after it), send what they wrote instead, or let it go.
-    fn settle_dropped(&mut self, task: &TaskId, card: &InteractionId, option: &str, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<()> {
+    fn settle_dropped(&mut self, task: &TaskId, card: &InteractionId, option: &str, written: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let written = written.map(str::trim).filter(|written| !written.is_empty());
         let text = match (option, written) {
             (SEND_AGAIN, written) => {
@@ -1774,11 +1800,10 @@ impl DomainState {
             let record = LifecycleRecord::Answered { card: card.clone(), input: self.next_input(task), text: Some(text) };
             return self.decide(lifecycles, task, record);
         }
-        let unheard_card = InteractionId(format!("{TURN_ENDED_PREFIX}{}", card.0.trim_start_matches(DROPPED_PREFIX)));
-        self.decide(lifecycles, task, LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone() })?;
+        let unheard_card = InteractionId(format!("{STALLED_PREFIX}{}", card.0.trim_start_matches(DROPPED_PREFIX)));
+        self.decide(lifecycles, task, LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone(), stalled: true })?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == unheard_card) {
-            let title = self.tasks[task].title.clone();
-            self.interactions.insert(unheard_card.clone(), turn_ended_card(unheard_card, task, &title, TurnEnd::Unexplained, self.revision + 1));
+            self.open_stall(task, unheard_card, effects);
         }
         Ok(())
     }
@@ -2253,11 +2278,8 @@ pub fn decision_cancelled_card_id(task: &TaskId, generation: u64, epoch: u64) ->
 const DECISION_CANCELLED_WHY: &str = "Claude Code stopped waiting for the decision it asked you for. Tell it to go on, write to it what to do, or cancel the task.";
 
 pub(super) fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
-    let mut card = turn_ended_card(id, task, title, TurnEnd::Unexplained, revision);
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped waiting for your decision: tell it how to go on"));
-    card.body = need.clone();
-    card.card = CardSpec::new(CardKind::Decide, need).why(DECISION_CANCELLED_WHY);
-    card
+    asks_how_it_goes_on(id, task, need, DECISION_CANCELLED_WHY, revision)
 }
 
 /// The cards that ask the user how a task goes on when its SDK turn ended with nothing that
@@ -2285,10 +2307,11 @@ pub const CANCEL_TASK: &str = "cancel_task";
 pub const CANCEL_TASK_LABEL: &str = "Cancel the task";
 const CANCEL_TASK_MEANS: &str = "The task ends and its execution is closed";
 const CARRY_ON_INSTRUCTION: &str = "Go on with your task: deliver your result, or ask the user through a card when you need them.";
-const TURN_ENDED_WHY: &str = "Its turn ended with nothing that explains its next step. Tell it to go on, write to it what to do, or cancel the task.";
+/// Why a card asked the user how a task goes on after two empty turns, before stops went to the
+/// orchestrator: clients still word the cards recorded then.
 pub const TURN_ENDED_TWICE_WHY: &str = "A turn of it ended without a result, a question or work of its own, Alondra told it so, and its next turn ended the same way. Tell it to go on, write to it what to do, or cancel the task.";
-/// Why a turn ended empty: what the node is told when Alondra wakes it, and what whoever settles a
-/// second empty turn reads.
+/// Why a turn ended empty: what the node is told when Alondra wakes it, and what the orchestrator
+/// reads when it settles the next stop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EmptyTurn {
     /// Nothing explains the task's next step.
@@ -2300,12 +2323,19 @@ impl EmptyTurn {
     pub fn wake_text(&self) -> String {
         match self {
             Self::Unexplained => WAKE_INSTRUCTION.to_owned(),
-            Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. If this turn ends the same way, Alondra asks the user how you go on."),
+            Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it."),
+        }
+    }
+    /// What the orchestrator reads of why the node stopped.
+    pub fn stall_text(&self) -> String {
+        match self {
+            Self::Unexplained => "Nothing Alondra knows of explains it.".to_owned(),
+            Self::UnpresentedPr { number } => format!("It registered pull request #{number}, still open, and never presented it."),
         }
     }
 }
 /// What a node is told when its turn ended empty: the first time, Alondra wakes it with this.
-pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, Alondra asks the user how you go on.";
+pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it.";
 
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
 pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";
@@ -2316,11 +2346,8 @@ pub const NATIVE_CONTEXT_EXCEEDED_WHY: &str = "Codex reports that this request e
 /// The longest error code a card names.
 pub const FAILED_CODE_MAX: usize = 40;
 
-/// Why a root turn ended with nothing that explains the task's next step.
+/// Why a root turn ended with a card for the user: something only they decide.
 enum TurnEnd<'a> {
-    Unexplained,
-    /// Alondra woke the node after a turn that ended empty, and this one ended empty too.
-    Twice,
     Interrupted,
     Refused(&'a SdkApiFailure),
     /// Claude Code ended it as failed with this code.
@@ -2344,13 +2371,15 @@ fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, 
             (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped: {refusal}")), REFUSED_WHY)
         }
         TurnEnd::Interrupted => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("You interrupted “{title}”: tell it how to go on")), INTERRUPTED_WHY),
-        TurnEnd::Unexplained => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without delivering or asking: tell it how to go on")), TURN_ENDED_WHY),
-        TurnEnd::Twice => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” ended two turns without delivering or asking: what next?")), TURN_ENDED_TWICE_WHY),
         TurnEnd::NativeFailed(code) => (format!("Codex's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), NATIVE_FAILED_WHY),
         TurnEnd::NativeRequestRejected => ("Codex rejected this task's request: check it before continuing".into(), NATIVE_REQUEST_REJECTED_WHY),
         TurnEnd::NativeContextExceeded => ("This request exceeds the Codex model's context window".into(), NATIVE_CONTEXT_EXCEEDED_WHY),
         TurnEnd::Failed(code) => (format!("Claude's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), FAILED_WHY),
     };
+    asks_how_it_goes_on(id, task, need, why, revision)
+}
+
+fn asks_how_it_goes_on(id: InteractionId, task: &TaskId, need: String, why: &str, revision: u64) -> Interaction {
     let need = clip(&need, CardSpec::NEED_MAX);
     Interaction {
         attachments: vec![],
@@ -2623,4 +2652,8 @@ const HANDOFF_DOUBT_LAUNCH_WHY: &str = "Its session closed before it started on 
 fn refused(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle, refusal: Refusal) -> DomainError {
     DomainError::new("conflict", format!(
         "The lifecycle of task {task} ({:?}) refuses {record:?}: {refusal:?}", lifecycle.phase()))
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }

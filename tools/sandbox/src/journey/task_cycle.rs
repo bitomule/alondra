@@ -1,6 +1,7 @@
 //! A task's life over iroh: request, task, node, delivery, card, merge and close, and the
 //! refusals Alondra owes on the way.
 use anyhow::{Context, bail};
+use serde_json::json;
 
 use super::{Report, User, steps::*};
 use crate::{
@@ -114,39 +115,44 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok((inbox.iter().all(|id| *id != card).then_some(()), format!("{inbox:?}")))
         })
     });
-    report.case("TC6", "A turn that ends empty wakes the node once; the next empty turn asks the user, who tells it to carry on", |report| {
+    report.case("TC6", "A node that stops is Alondra's to fix: the first stop wakes it, the next goes to the orchestrator, which tells it what to do, and the one after closes the task with a result; no card ever asks the user", |report| {
         request(report, fakes, &user, &task_script("req-t6", "t-t6", "Tidy the greeting file"), "Tidy the greeting file")?;
         let node = launched(report, fakes, "t-t6")?;
         state(report, &user, "t-t6", WORKING)?;
         let speak = |said: &str| [Step::Speak { said: said.into(), behind: None, listed: None }];
-        act(report, fakes, &node, "the node ends its turn without delivering or asking", &speak("I looked at the file."))?;
-        wait(report, "Alondra wakes the node with what happened", || told(fakes, &node, "Your turn ended without a result"))?;
-        report.step("no card asks the user after the first empty turn", || {
-            if let Some(unheard) = user.inbox()?.into_iter().find(|id| id.starts_with("turn-ended-t-t6-")) {
-                bail!("{unheard} asks the user after one empty turn");
+        let no_card = |report: &mut Report, when: &str| report.step(&format!("no card asks the user {when}"), || {
+            if let Some(card) = user.inbox()?.into_iter().find(|id| id.starts_with("turn-ended-t-t6-") || id.starts_with("stalled-t-t6-")) {
+                bail!("{card} asks the user {when}");
             }
             Ok(())
-        })?;
+        });
+        act(report, fakes, &node, "the node ends its turn without delivering or asking", &speak("I looked at the file."))?;
+        wait(report, "Alondra wakes the node with what happened", || told(fakes, &node, "Your turn ended without a result"))?;
+        no_card(report, "after the first stop")?;
         state(report, &user, "t-t6", WORKING)?;
-        act(report, fakes, &node, "the woken node ends its turn without delivering or asking again", &speak("Still looking."))?;
-        let card = wait(report, "the second empty turn asks the user in Inbox", || {
-            let inbox = user.inbox()?;
-            Ok((inbox.iter().find(|id| id.starts_with("turn-ended-t-t6-")).cloned(), format!("{inbox:?}")))
-        })?;
-        let view = user.view(&format!("card:{card}"))?;
-        report.snapshot(&format!("card-{card}"), &view)?;
-        report.step("the card says the task ended two turns without delivering or asking", || {
-            let shown = view.to_string();
-            anyhow::ensure!(shown.contains("acabó dos turnos sin entregar ni preguntar") || shown.contains("ended two turns without delivering or asking"), "{shown}");
+        let orchestrator = fakes.dir.join("orchestrator");
+        report.step("the orchestrator will tell the node what to do", || {
+            std::fs::create_dir_all(&orchestrator)?;
+            std::fs::write(orchestrator.join("stall.json"), json!({"kind": "instruct", "text": "Rename greeting.txt to hello.txt and present it with present_result"}).to_string())?;
             Ok(())
         })?;
-        let option = user.action_labeled(&view, "Que siga").or_else(|| user.action_labeled(&view, "Carry on")).context("the card offers no “Que siga”")?;
-        report.step("the user tells it to carry on", || user.press(option["id"].as_str().unwrap_or_default(), option["option_id"].as_str(), None))?;
-        wait(report, "the node is told to go on", || told(fakes, &node, "Go on with your task"))?;
+        act(report, fakes, &node, "the woken node stops again", &speak("Still looking."))?;
+        wait(report, "the orchestrator's instruction reaches the node", || told(fakes, &node, "Rename greeting.txt to hello.txt"))?;
+        no_card(report, "after the second stop")?;
         state(report, &user, "t-t6", WORKING)?;
+        report.step("the orchestrator will close the task with what got done", || {
+            std::fs::write(orchestrator.join("stall.json"), json!({"kind": "close", "result": "The greeting file was read; nothing was renamed."}).to_string())?;
+            Ok(())
+        })?;
+        act(report, fakes, &node, "the node stops a third time", &speak("Not sure what to do."))?;
+        state(report, &user, "t-t6", STALL_CLOSED)?;
+        no_card(report, "when the task closes")?;
         let task = user.view("task:t-t6")?;
-        press(report, &user, &task, "cancel:", None, None, "the user cancels the task")?;
-        state(report, &user, "t-t6", CANCELLED)?;
+        report.snapshot("task-t-t6-closed", &task)?;
+        report.step("the task says what got done", || {
+            anyhow::ensure!(task.to_string().contains("The greeting file was read; nothing was renamed."), "{task}");
+            Ok(())
+        })?;
         ended(report, fakes, &user, &node)
     });
     report.case("F1", "A final delivery with an uncommitted file is refused, naming the file", |report| {

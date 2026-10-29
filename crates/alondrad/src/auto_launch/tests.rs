@@ -453,7 +453,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
         revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: Default::default(), stack: None,
         documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
     };
     command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
         launch: alondra_core::domain::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
@@ -730,14 +730,13 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     crate::node_revival::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into())).unwrap();
     assert!(agent_of(&f, "f1").is_none());
     let state = f.domain.state().unwrap();
-    let ended_cards: Vec<_> = state.interactions.values().filter(|card| {
-        card.scope == (alondra_core::domain::Scope::Task { task_id: "f1".into() })
-            && state.open(card)
-            && matches!(&card.payload, alondra_core::domain::InteractionPayload::Question { options, .. }
-                if options.iter().any(|option| option.id == alondra_core::domain::CARRY_ON))
-    }).map(|card| card.id.clone()).collect();
-    for card in ended_cards {
-        answer(&f, &card, alondra_core::domain::CARRY_ON);
+    let cases: Vec<_> = state.interactions.values()
+        .filter(|card| card.scope == (alondra_core::domain::Scope::Task { task_id: "f1".into() }) && alondra_core::domain::is_stall_case(card) && state.open(card))
+        .map(|card| card.id.clone()).collect();
+    for case in cases {
+        command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettleStall {
+            case_id: case, task_id: "f1".into(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Go on with your task".into() },
+        });
     }
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);
     pass(&f.domain, &f.home).await.unwrap();

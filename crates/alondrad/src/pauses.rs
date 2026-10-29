@@ -153,7 +153,7 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
 pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paused) {
     let text = resume_text(paused, paused.since);
     let command = format!("pause-{session}-{}", paused.since);
-    if let Err(error) = crate::domain_messages::tell_sdk_node(domain, &paused.task, crate::node_push::ALONDRA, &text, &command) {
+    if let Err(error) = crate::domain_messages::tell_sdk_node(domain, &paused.task, crate::node_push::ALONDRA, &text, &command, false) {
         log!("pausing {session}: what it goes on with was not recorded ({error:?})");
     }
     interrupt_sdk_node(domain, session);

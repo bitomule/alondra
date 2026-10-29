@@ -25,6 +25,7 @@ impl TaskLifecycle {
         let mut resting_card = None;
         let mut resume_instead = None;
         let mut wake_instead = None;
+        let mut unheard_owner = Owner::User;
         let mut ended_callbacks = Vec::new();
         let mut host_end = None;
         let mut cut_by_end = false;
@@ -268,7 +269,7 @@ impl TaskLifecycle {
                     _ => return Err(Refusal::InvalidState),
                 }
             }
-            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits } => {
+            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits, stalled } => {
                 let Activity::Turn {
                     id,
                     work,
@@ -311,6 +312,9 @@ impl TaskLifecycle {
                 }
                 resting_card = Some(unheard_card);
                 wake_instead = wake;
+                if stalled {
+                    unheard_owner = Owner::Orchestrator;
+                }
             }
             RuntimeFact::ConnectionLost { problem_card } => {
                 valid_id(&problem_card.0)?;
@@ -492,7 +496,7 @@ impl TaskLifecycle {
                 forced_card = Some(Card {
                     id,
                     reason: WaitReason::Unheard,
-                    owner: Owner::User,
+                    owner: unheard_owner,
                     callback: None,
                 });
             }
@@ -554,7 +558,7 @@ impl TaskLifecycle {
                             Card {
                                 id,
                                 reason: WaitReason::Unheard,
-                                owner: Owner::User,
+                                owner: unheard_owner,
                                 callback: None,
                             },
                         );

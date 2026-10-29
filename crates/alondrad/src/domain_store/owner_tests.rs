@@ -27,11 +27,6 @@ fn agent() -> Actor {
         agent_id: "agent-1".into(),
     }
 }
-fn user() -> Actor {
-    Actor::User {
-        user_id: "composite-user".into(),
-    }
-}
 fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
 }
@@ -220,6 +215,11 @@ const TABLES: [&str; 8] = [
 ];
 fn counts(conn: &Connection) -> [i64; 8] {
     TABLES.map(|table| conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap())
+}
+/// The daemon restarts: the runtime closes and opens again on the same database.
+fn runtime_reopened(fixture: &Fixture, runtime: DomainRuntime) -> DomainRuntime {
+    drop(runtime);
+    DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap()
 }
 fn observer(fixture: &Fixture) -> Connection {
     Connection::open(fixture.path()).unwrap()
@@ -719,6 +719,10 @@ fn turn_ended_card() -> InteractionId {
 fn turn_ended_card_of(turn: &str) -> InteractionId {
     InteractionId::from(format!("{TURN_ENDED_PREFIX}{TASK}-2-{turn}").as_str())
 }
+/// The case the orchestrator gets when turn `turn` of the running execution ends as a stop.
+fn stall_case_of(turn: &str) -> InteractionId {
+    alondra_core::domain::stalled_card_id(&task(), 2, turn)
+}
 /// Ends the first turn of the running execution with nothing that explains its next step (the
 /// fixture's question withdrawn first), which wakes its node, and returns the normalizer of the turn that wake opens, `turn-2`, ending the same way.
 fn woken(store: &mut DomainStore, execution: &ExecutionStamp) -> Normalizer {
@@ -738,9 +742,9 @@ fn woken(store: &mut DomainStore, execution: &ExecutionStamp) -> Normalizer {
 }
 
 // 3d: a new task's turn ends with nothing that explains its next step, and so does the turn the
-// wake opens. The raw observation, its facts, the card that asks the user, the journal and the
-// checkpoint commit together; readers see the card before the acknowledgement; the same
-// observation again adds nothing.
+// wake opens. The raw observation, its facts, the case for the orchestrator, the journal and the
+// checkpoint commit together; readers see the case before the acknowledgement; the same
+// observation again adds nothing, and no card asks the user.
 #[test]
 fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_after_publication() {
     let (fixture, mut store, execution) = running();
@@ -748,16 +752,16 @@ fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_
     let runtime = runtime(&fixture, store);
     let observer = observer(&fixture);
     let state = Arc::clone(runtime.read().state());
-    let card_id = turn_ended_card_of("turn-2");
+    let card_id = stall_case_of("turn-2");
     let (acceptance, outcomes) = runtime
         .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false))
         .unwrap();
     assert_eq!(acceptance, ObservationAcceptance::Accepted);
     assert_eq!(outcomes.len(), 2, "the technical facts and the end of the turn");
     let published = runtime.read();
-    assert!(published.state().interactions.contains_key(&card_id), "readers see the card");
+    assert!(published.state().interactions.contains_key(&card_id), "readers see the case");
     assert_eq!(published.state().tasks[&task()].final_presentation, None, "a native result is not a delivery");
-    assert_eq!(card(&observer, card_id.0.as_str()), Some((None, false)), "the card committed with the observation");
+    assert_eq!(card(&observer, card_id.0.as_str()), Some((None, false)), "the case committed with the observation");
     let acknowledged = runtime.take_acknowledgements();
     assert_eq!(acknowledged.len(), 1);
     assert!(acknowledged[0].observations[0].matches_evidence(b"raw observation 2"));
@@ -769,8 +773,59 @@ fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_
     assert_eq!(again, ObservationAcceptance::Duplicate);
     assert!(replayed.is_empty(), "a duplicate records nothing");
     assert_eq!(counts(&observer), committed, "no second card, fact or row");
-    let cards: i64 = observer.query_row("SELECT count(*) FROM interactions WHERE id LIKE 'turn-ended-%'", [], |r| r.get(0)).unwrap();
-    assert_eq!(cards, 1);
+    let count = |pattern: &str| observer.query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1", [pattern], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!((count("stalled-%"), count("turn-ended-%")), (1, 0), "one case, and no card for the user");
+}
+
+/// A stopped node's case the orchestrator leaves unsettled comes back to it once, and after that
+/// Alondra closes the task itself; the count of stops and the closing outlive a restart, and no
+/// card ever asks the user.
+#[test]
+fn a_stop_left_unsettled_is_reminded_once_then_closed_and_both_outlive_a_restart() {
+    use alondra_core::domain::{STALL_ATTEMPTS, StallClosing};
+    use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
+    let (fixture, mut store, execution) = running();
+    let normalizer = woken(&mut store, &execution);
+    let runtime = runtime(&fixture, store);
+    let state = Arc::clone(runtime.read().state());
+    runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false)).unwrap();
+    let case = stall_case_of("turn-2");
+    crate::orchestrator_inbox::settle(&runtime);
+    let state = runtime.state().unwrap();
+    assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str())), "the orchestrator is reminded");
+    assert!(state.open(&state.interactions[&case]) && !state.tasks[&task()].over(), "it gets one more go first");
+    assert_eq!(state.tasks[&task()].stalls, 1);
+    assert!(STALL_ATTEMPTS > state.tasks[&task()].stalls);
+    let runtime = runtime_reopened(&fixture, runtime);
+    let state = runtime.state().unwrap();
+    assert_eq!(state.tasks[&task()].stalls, 1, "the count outlives the restart");
+    assert!(state.open(&state.interactions[&case]), "and so does the case");
+    crate::orchestrator_inbox::settle(&runtime);
+    let runtime = runtime_reopened(&fixture, runtime);
+    let state = runtime.state().unwrap();
+    assert_eq!(state.tasks[&task()].stall_closing, Some(StallClosing::Unsettled), "Alondra closed it, and that outlives the restart");
+    assert!(state.tasks[&task()].over());
+    let observer = observer(&fixture);
+    let asked: i64 = observer.query_row("SELECT count(*) FROM interactions WHERE task_id=?1 AND recipient_kind='user' AND (id LIKE 'turn-ended-%' OR id LIKE 'stalled-%' OR id LIKE 'problem-%')",
+        [TASK], |r| r.get(0)).unwrap();
+    assert_eq!(asked, 0, "no card ever asked the user");
+}
+
+/// The orchestrator's instruction settles the case for good: no reminder follows it.
+#[test]
+fn a_stop_the_orchestrator_settles_gets_no_reminder() {
+    use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
+    let (fixture, mut store, execution) = running();
+    let normalizer = woken(&mut store, &execution);
+    let runtime = runtime(&fixture, store);
+    let state = Arc::clone(runtime.read().state());
+    runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false)).unwrap();
+    let state = Arc::clone(runtime.read().state());
+    let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Present it".into() } };
+    let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
+    runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
+    crate::orchestrator_inbox::settle(&runtime);
+    assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)));
 }
 
 // 3d: a turn that ends behind work of its own asks nothing, and the work keeps its slot.
@@ -812,10 +867,10 @@ fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
     assert_eq!(runtime.read().state().revision, state.revision);
 }
 
-// 3d and 4: answering the card: the lifecycle lets the card go before the card is answered, in
-// one commit with the dispatch of what the task is told, on the normal command path a client uses.
+// 3d and 4: the orchestrator settles the case: the lifecycle lets the case go before it is settled,
+// in one commit with the dispatch of what the task is told, on the normal command path.
 #[test]
-fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
+fn settling_the_case_of_a_stopped_node_tells_the_task_how_to_go_on_in_one_commit() {
     let (fixture, mut store, execution) = running();
     let normalizer = woken(&mut store, &execution);
     let state = store.load().unwrap();
@@ -823,26 +878,21 @@ fn answering_the_turn_end_card_tells_the_task_how_to_go_on_in_one_commit() {
         .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 2), &normalizer, no_home(), false))
         .unwrap();
     let state = store.load().unwrap();
-    let carry_on = Command::AnswerQuestion {
-        interaction_id: turn_ended_card_of("turn-2"),
-        option_id: CARRY_ON.into(),
-        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Add the tests first".into()))]),
-        attachments: vec![],
+    let instruct = Command::SettleStall {
+        case_id: stall_case_of("turn-2"),
+        task_id: task(),
+        outcome: alondra_core::domain::StallOutcome::Instruct { text: "Add the tests first".into() },
     };
-    let ordinary = store.execute_filling_revision(&user(), &envelope(&state, "carry-on", carry_on)).unwrap();
+    let ordinary = store.execute_filling_revision(&orchestrator(), &envelope(&state, "instruct", instruct)).unwrap();
     let permits = &ordinary.sealed.as_ref().unwrap().permits;
     assert_eq!(permits.len(), 1, "the commit hands the owner the dispatch of what the task is told");
     let prepared: String = store.conn
-        .query_row("SELECT d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.task_id=?1 AND d.kind='input' AND i.body LIKE 'Go on with your task%'", [TASK], |r| r.get(0))
+        .query_row("SELECT d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.task_id=?1 AND d.kind='input' AND i.body = 'Add the tests first'", [TASK], |r| r.get(0))
         .unwrap();
     assert_eq!(prepared, "prepared");
-    assert!(card(&store.conn, turn_ended_card_of("turn-2").0.as_str()).unwrap().0.is_some(), "the card is answered");
+    assert!(card(&store.conn, stall_case_of("turn-2").0.as_str()).unwrap().0.is_some(), "the case is settled");
     let held: i64 = store.conn.query_row("SELECT count(*) FROM lifecycle_cards", [], |r| r.get(0)).unwrap();
     assert_eq!(held, 0, "the lifecycle no longer requires it");
-    let text: String = store.conn
-        .query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND body LIKE 'Go on with your task%'", [TASK], |r| r.get(0))
-        .unwrap();
-    assert!(text.ends_with("Add the tests first"), "{text}");
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
     let (pending, _, cards) = journal_after(&mut reopened);
@@ -1234,7 +1284,7 @@ fn a_live_native_cell_continuation_is_one_durable_input_without_retiring_own_wor
     let observe=|cursor,facts|{let state=runtime.state().unwrap();runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap().0};
     observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()},Observation::WorkStarted{turn:turn.clone(),work:work.clone()}]);
     observe(2,vec![Observation::TurnEnded{turn,outcome:alondra_provider_contract::TurnOutcome::Completed}]);
-    let state=runtime.state().unwrap();runtime.execute_as_system(envelope(&state,"already-queued",Command::TellNode{task_id:task(),text:"Preserve this existing input".into()})).unwrap();
+    let state=runtime.state().unwrap();runtime.execute_as_system(envelope(&state,"already-queued",Command::TellNode{task_id:task(),text:"Preserve this existing input".into(), from_user: false})).unwrap();
     let before=runtime.state().unwrap();let pending=before.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();
     let before_runtime_cursor=before.lifecycle_of(&task()).unwrap().cursor();
     let before_told=before.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_core::domain::LifecycleRecord::Told{..})).count();

@@ -123,7 +123,7 @@ fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result
         .or_else(|| crate::sdk_handover::successor(domain, &AgentId(agent.clone())).map(|(task, _)| task))
         .ok_or((State::Discarded, "no_task"))?;
     let text = crate::domain_transport::render(&state, message);
-    match crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, &text, &format!("tell-outbox-{}", message.id)) {
+    match crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, &text, &format!("tell-outbox-{}", message.id), false) {
         Ok(()) => Ok(()),
         Err(error) if error.code == "idempotency_conflict" => Ok(()),
         Err(error) if matches!(error.code.as_str(), "storage_unavailable" | "stale_revision") => {
@@ -818,7 +818,7 @@ mod tests {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
             started: true, review_prs: false, final_presentation: None, pr_id: None,
-            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
+            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
         });
         let options = vec![
             QuestionOption {

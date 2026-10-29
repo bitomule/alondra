@@ -568,7 +568,7 @@ fn reading_every_view_replays_no_journal() {
     let mut long = Seed(unit(Shape::WaitingMcp));
     let task = id("t", Shape::WaitingMcp);
     for notice in 0..TOLD {
-        long.run(Actor::System, Command::TellNode { task_id: task.as_str().into(), text: format!("Synthetic notice {notice}") });
+        long.run(Actor::System, Command::TellNode { task_id: task.as_str().into(), text: format!("Synthetic notice {notice}"), from_user: false });
     }
     let mut state = real_size();
     absorb(&mut state, &long.0, LONG);
@@ -580,7 +580,7 @@ fn reading_every_view_replays_no_journal() {
         data_epoch: state.data_epoch.clone(),
         command_id: "long-journal-commit".into(),
         expected_revision: state.revision,
-        command: Command::TellNode { task_id: long_task.as_str().into(), text: "One more notice".into() },
+        command: Command::TellNode { task_id: long_task.as_str().into(), text: "One more notice".into(), from_user: false },
     };
     state.execute(&Actor::System, &envelope).expect("one more commit");
     let journal = state.lifecycle_journal[&long_task.as_str().into()].len();

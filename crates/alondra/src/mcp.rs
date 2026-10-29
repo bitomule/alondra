@@ -542,6 +542,15 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
             vec!["task_id", "review_id", "outcome"],
         ),
         (
+            "settle_stall",
+            "Settle the case of a node that stopped with nothing explaining its next step (no result, no question, no work of its own): the message about it gives its case_id, the task, its mission, the node's last words and its worktree. It is never a question for the user. instruct: text is one concrete next step the node gets, and it goes on with its task; close: the task ends without a delivery, and result says what got done and what did not (the user reads it on the task). After three instructions since the task last moved on, close is the only outcome.",
+            json!({"case_id":{"type":"string"},"task_id":{"type":"string"},"outcome":{"type":"object","required":["kind"],"properties":{
+                "kind":{"type":"string","enum":["instruct","close"]},
+                "text":{"type":"string","description":"instruct: required, the instruction the node gets"},
+                "result":{"type":"string","description":"close: required, in the user's language: what got done and what did not"}}}}),
+            vec!["case_id", "task_id", "outcome"],
+        ),
+        (
             "link_task_document",
             "Link a document to a Task with a named role.",
             json!({"task_id":{"type":"string"},"document_id":{"type":"string"},"role":{"type":"string"}}),
@@ -678,6 +687,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "answer_question"
         | "settle_suggestion"
         | "settle_plan_review"
+        | "settle_stall"
         | "link_task_document"
         | "cancel_task"
         | "reopen_task"
@@ -725,6 +735,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "answer_question"
         | "settle_suggestion"
         | "settle_plan_review"
+        | "settle_stall"
         | "create_request"
         | "close_request"
         | "title_request"
@@ -957,6 +968,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "answer_question" => ("POST", format!("/interactions/{}/answers", id("interaction_id")?)),
         "settle_suggestion" => ("POST", format!("/interactions/{}/settlement", id("interaction_id")?)),
         "settle_plan_review" => ("POST", format!("/tasks/{}/plan-review", id("task_id")?)),
+        "settle_stall" => ("POST", format!("/tasks/{}/stall-settlement", id("task_id")?)),
         "mark_read" => ("PUT", format!("/interactions/{}/read-state", id("interaction_id")?)),
         "submit_feedback" => ("POST", format!("/interactions/{}/feedback", id("presentation_id")?)),
         "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", id("presentation_id")?)),
@@ -1001,6 +1013,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "answer_question" => "answer_question",
         "settle_suggestion" => "settle_suggestion",
         "settle_plan_review" => "settle_plan_review",
+        "settle_stall" => "settle_stall",
         "create_request" => "create_request",
         "close_request" => "close_request",
         "title_request" => "title_request",
@@ -2770,6 +2783,23 @@ mod card_tool_tests {
         assert!(domain_envelope("settle_plan_review", &reasonless, "epoch", "id").is_err());
         let kept = json!({"task_id":"t-c","review_id":"q-1","outcome":{"kind":"later","reason":"Ask the user"}});
         assert!(domain_envelope("settle_plan_review", &kept, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"));
+    }
+
+    #[test]
+    fn the_orchestrator_settles_a_stopped_node_with_one_closed_outcome() {
+        assert!(tools(Role::Orchestrator, "Ana").as_array().unwrap().iter().any(|t| t["name"] == "settle_stall"));
+        assert!(tools(Role::Node, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "settle_stall"));
+        let args = json!({"case_id":"stalled-t-1-turn-2","task_id":"t","outcome":{"kind":"instruct","text":"Present PR #12"}});
+        let (method, path, body) = command_request("settle_stall", &args, "epoch").unwrap();
+        assert_eq!((method, path.as_str()), ("POST", "/tasks/t/stall-settlement"));
+        assert_eq!(body["outcome"]["text"], "Present PR #12");
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(domain_envelope("settle_stall", &args, "epoch", "id").unwrap()).unwrap();
+        assert!(matches!(parsed.command, alondra_core::domain::Command::SettleStall {
+            outcome: alondra_core::domain::StallOutcome::Instruct { .. }, .. }));
+        let words = json!({"case_id":"stalled-t-1-turn-2","task_id":"t","outcome":{"kind":"ask_the_user","text":"What next?"}});
+        assert!(domain_envelope("settle_stall", &words, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"), "no free-text outcome");
+        let resultless = json!({"case_id":"stalled-t-1-turn-2","task_id":"t","outcome":{"kind":"close"}});
+        assert!(domain_envelope("settle_stall", &resultless, "epoch", "id").is_err());
     }
 
     #[test]

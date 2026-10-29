@@ -58,6 +58,7 @@ fn call_text(tool: &str, lang: Lang) -> &'static str {
         "answer_question" => t!(lang, "answer a node", "responder a un nodo"),
         "settle_suggestion" => t!(lang, "settle a suggestion", "resolver una sugerencia"),
         "settle_plan_review" => t!(lang, "review a task's plan", "revisar el plan de una tarea"),
+        "settle_stall" => t!(lang, "get a stopped task going", "reconducir una tarea parada"),
         "send" => t!(lang, "message a node", "escribir a un nodo"),
         "interrupt" => t!(lang, "stop a node", "parar un nodo"),
         "withdraw" => t!(lang, "withdraw a card", "retirar una tarjeta"),

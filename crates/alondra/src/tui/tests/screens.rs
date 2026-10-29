@@ -74,7 +74,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     }
 }
 
@@ -337,6 +337,22 @@ fn a_chain_of_waiting_tasks_folds_under_its_first_task_and_enter_opens_it() {
     press(&mut app, KeyCode::Enter);
     let again = rendered(&mut app, 100, 30);
     assert!(again.contains("▸ +8 esperando a esta") && !again.contains("Documentación"), "{again}");
+}
+
+/// A task whose node kept stopping closes without a delivery: the terminal says so, with what
+/// got done, and never as a card in the inbox.
+#[test]
+fn a_task_closed_because_its_node_kept_stopping_says_so_with_its_result() {
+    let (mut domain, live) = busy();
+    domain.requests.insert("r-stop".into(), Request::new("r-stop".into(), "Renombrar el saludo".into()));
+    let mut stopped = task("t-stop", "r-stop", None, "Renombrar el saludo", TaskState::Cancelled);
+    stopped.stall_closing = Some(alondra_core::domain::StallClosing::Settled { result: "Se leyó greeting.txt; no se renombró nada.".into() });
+    domain.tasks.insert("t-stop".into(), stopped);
+    let mut app = task_screen(&domain, &live, "r-stop", "t-stop");
+    let screen = rendered(&mut app, 130, 30);
+    dump("task closed because its node kept stopping", &screen);
+    assert!(screen.contains("Cerrada sin entrega") && screen.contains("no se renombró nada"), "{screen}");
+    assert!(!screen.contains("sin entregar ni preguntar"), "{screen}");
 }
 
 #[test]

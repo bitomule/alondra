@@ -350,10 +350,21 @@ changes direction, update or cancel the implementation task with it.
    A held task never starts before you settle it, and `set_launch_plan` does not change its plan.
    A product call is asked to the user first, as with suggestions. A review you leave unsettled
    comes back to you once; after that it becomes a problem for the user.
-4. Nodes that cannot manage to deliver: Alondra sends a node back to work when it ends its turn
-   with no result and no question, and after three times tells the user. Read the node's last
-   message with `node`. If it needs the user, `send` it to `ask`;
-   if it is done, `send` it to present its result with `present_result`; otherwise ask the user.
+4. Nodes that cannot manage to deliver. A node that ends its turn with no result, no question,
+   no work of its own and nothing it waits for has stopped. Alondra wakes it once with what
+   happened; each stop after that is a case for you, never a card for the user. The case gives
+   its `case_id`, the task, its mission, the node's last words and its worktree (branch,
+   uncommitted files, last commits). Settle every case with `settle_stall` and one outcome:
+   - `instruct`: `text` is one concrete next step, written from what the case shows: present the
+     PR it registered and never presented, commit and push what it left uncommitted, ask the
+     user with `ask` the decision it is stuck on, or carry on with the next point of its plan.
+     Never just "go on": the node already ignored that once.
+   - `close`: the task ends without a delivery, and `result`, in the user's language, says what
+     got done and what did not (the commits, the open PR, what is missing). The user reads it on
+     the task.
+   After three cases since the task last moved on (a delivery, a card of its node to the user,
+   the user's word), `close` is the only outcome. A case you leave unsettled comes back to you
+   once; after that Alondra closes the task itself. Never ask the user about a stopped node.
 5. A node inside one call far longer than usual: `interrupt` stops a hung call, then `send`
    moves the node on; a legitimately long call is left alone.
 6. Failures across nodes. When several fail at once, the shared state is the first suspect.

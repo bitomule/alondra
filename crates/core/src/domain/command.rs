@@ -286,6 +286,14 @@ pub enum Command {
         interaction_id: InteractionId,
         decision: SuggestionDecision,
     },
+    /// The orchestrator's settlement of a node that stopped with nothing explaining its next step:
+    /// one closed outcome, never words alone. Alondra settles it itself, by closing, when the
+    /// orchestrator leaves it unsettled.
+    SettleStall {
+        case_id: InteractionId,
+        task_id: TaskId,
+        outcome: StallOutcome,
+    },
     /// The orchestrator's review of one dependent's plan after the user's decision held it: it
     /// stays as it is, gets a new plan, or is cancelled. The user can only keep the plans.
     SettlePlanReview {
@@ -428,6 +436,9 @@ pub enum Command {
     TellNode {
         task_id: TaskId,
         text: String,
+        /// The user wrote it: their word on the task moves it on.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        from_user: bool,
     },
     /// Alondra saw the task's node, or a subagent it launched, make or take the git worktree at
     /// `path`.

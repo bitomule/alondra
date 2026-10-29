@@ -16,6 +16,7 @@ pub const WORKING: &str = "Working";
 pub const IN_REVIEW: &str = "Ready for review";
 pub const FINISHED: &str = "Finished";
 pub const CANCELLED: &str = "Cancelled";
+pub const STALL_CLOSED: &str = "Closed without a delivery";
 
 /// A step that waits until `probe` finds what it wants; on timeout it says what it saw last.
 pub fn wait<T>(report: &mut Report, what: &str, probe: impl FnMut() -> Result<(Option<T>, String)>) -> Result<T> {
