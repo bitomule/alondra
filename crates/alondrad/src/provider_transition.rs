@@ -52,9 +52,6 @@ pub(crate) fn request(domain:&DomainRuntime,actor:&Actor,task:&TaskId,target_acc
         if effective.reasoning_effort!=target_model.reasoning_effort{return Err(DomainError::new("unsupported_live_effort","This native session cannot change reasoning effort with the verified model control; choose that effort when creating a new node").into())}
         if effective.model!=target_model.model && !source.turn_model{return Err(DomainError::new("unsupported_live_model","This native session cannot change its model in place; create a new node").into())}
         if target_account.provider==alondra_core::accounts::Provider::Codex && !source.disallowed_tools.is_empty(){return Err(DomainError::new("unsupported_tool_policy","Codex cannot enforce this task's tool deny list; keep the current provider or explicitly revise the task policy").into())}
-        if effective.model != target_model.model && owner.source_has_live_code_cells(task)? {
-            return Err(DomainError::new("native_code_cells_active", "Finish the running native code cells before changing this model; their continuation will use the current model").into())
-        }
         owner.stage_command(actor,&command,Attached::None)?;
         owner.request_provider_transition(&Plan{id:id.clone(),task:task.clone(),expected_selection:expected_selection.into(),source,target_account,target_model,intent,reason:reason.into()})
     }).map_err(store_failure)?;
@@ -85,8 +82,6 @@ fn abort_unapplied_model_change(domain: &DomainRuntime, change: &Transition) -> 
         let status = owner.transition_model_control_status(plan)?;
         let code = if status.as_deref() == Some("rejected") {
             "native_model_control_rejected"
-        } else if status.is_none() && owner.source_has_live_code_cells(&plan.task)? {
-            "native_code_cells_active"
         } else { return Ok(false) };
         let task = owner.state().tasks.get(&plan.task).ok_or_else(|| failure("The task is missing"))?;
         let expected_pending = PendingTaskSelection { account: plan.target_account.clone(), model: plan.target_model.clone(), reason: plan.reason.clone() };

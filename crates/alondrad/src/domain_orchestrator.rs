@@ -453,7 +453,7 @@ impl Executor {
             BatchEnd::Cancelled { effects: (!changes.is_empty()).then_some(changes.clone()) }
         } else if output.stream.denied {
             BatchEnd::Denied { calls:changes.clone(),why:output.stream.error.clone().unwrap_or_else(|| "The provider denied an Alondra tool".into()) }
-        } else if output.stream.native_request_rejected || output.stream.native_work_unfinished {
+        } else if output.stream.native_request_rejected {
             BatchEnd::Interrupted { calls: changes.clone(), why: output.stream.error.clone().unwrap_or_else(|| "The native request was rejected; correct it before explicitly retrying".into()) }
         } else if let Some(reset) = output.stream.limit(&output.diagnostic) && effects_confirmed {
             BatchEnd::Limited { reset }

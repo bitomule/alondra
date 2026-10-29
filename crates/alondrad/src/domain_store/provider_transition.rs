@@ -176,13 +176,6 @@ impl OwnerTransaction<'_> {
 }
 
 impl OwnerTransaction<'_> {
-    pub(crate) fn source_has_live_code_cells(&self, task: &TaskId) -> std::result::Result<bool, StoreError> {
-        if self.state().tasks.get(task).is_none_or(|task| task.provider != alondra_core::accounts::Provider::Codex) { return Ok(false) }
-        let lifecycle = self.lifecycle(task)?;
-        let stamp = lifecycle.execution().ok_or_else(|| DomainError::new("native_session_required", "The source native session is unavailable"))?;
-        let Some(checkpoint) = self.normalization_checkpoint(stamp)? else { return Ok(false) };
-        alondra_provider_codex::live_code_cells(checkpoint.bytes()).map_err(|error| StoreError::Storage(anyhow::anyhow!("{error:?}")))
-    }
     pub(crate) fn transition_model_control_status(&mut self, plan: &Plan) -> std::result::Result<Option<String>, StoreError> {
         let change = self.sql(|connection| load(connection, &plan.id))?.context("provider transition missing")?;
         let Some(control) = change.facts["control_id"].as_i64() else { return Ok(None) };

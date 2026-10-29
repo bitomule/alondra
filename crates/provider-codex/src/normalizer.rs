@@ -4,7 +4,7 @@ use alondra_codex_protocol::{Body, ControlResult, DecisionKind, DecisionOutcome,
 use alondra_foundation::{ContinuationId, InputId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
 use alondra_store::{ContextSource, TaskContextItem};
-use serde::{Deserialize, Serialize};
+use serde::{de::IgnoredAny, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap,BTreeSet};
 use std::io::Cursor;
@@ -51,25 +51,22 @@ struct Checkpoint {
     accepted: BTreeMap<String, String>,
     #[serde(default)]
     accepted_plans: BTreeMap<String, PlanAcceptance>,
-    #[serde(default)]
-    code_cells: BTreeMap<String, CodeCell>,
-    /// The native call of each ended cell, with the cursor that ended it: enough to ignore a late
-    /// duplicate, a fraction of the cell, so a long turn keeps the checkpoint within its bound.
-    #[serde(default)]
-    ended_cells: BTreeMap<String, u64>,
-    #[serde(default)]
-    completed_root_turn: Option<String>,
+    /// Written while Alondra followed Code Mode scripts as work: read from older checkpoints, never written.
+    #[serde(default, skip_serializing)]
+    code_cells: Option<IgnoredAny>,
+    #[serde(default, skip_serializing)]
+    ended_cells: Option<IgnoredAny>,
+    #[serde(default, skip_serializing)]
+    completed_root_turn: Option<IgnoredAny>,
 }
-const ENDED_CELLS: usize = 256;
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CodeCell {origin:String,cell:Option<String>,parent:Option<String>,work:String,work_key:String,finished:bool,woken:bool,cursor:u64}
+/// Work keys of the scripts older releases opened; they end on the first observation after an upgrade.
+const LEGACY_CELL_WORK: &str = "code-cell:";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanAcceptance { epoch: u64, request: String, client: String }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Work { id: String, turn: String }
+struct Work { id: String, turn: String, #[serde(default, skip_serializing_if = "std::ops::Not::not")] background: bool }
 
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct LiveScope{pub thread:String,pub turn:Option<String>,pub model:Option<String>,pub model_turn:Option<String>,pub rerouted_turn:Option<String>,pub cwd:Option<String>}
@@ -79,10 +76,6 @@ pub fn live_scope(bytes:&[u8])->Option<LiveScope>{
 }
 
 pub fn blocked_policy(bytes:&[u8])->Option<String>{serde_json::from_slice::<Checkpoint>(bytes).ok()?.blocked_policy.filter(|reason|!reason.is_empty() && reason.len()<=1024)}
-pub fn live_code_cells(bytes: &[u8]) -> Result<bool, AdapterError> {
-    let state: Checkpoint = serde_json::from_slice(bytes).map_err(|_| AdapterError::InvalidObservation)?;
-    Ok(state.code_cells.values().any(|cell| !cell.finished && state.work.contains_key(cell.parent.as_deref().unwrap_or(&cell.work_key))))
-}
 pub fn background_left(bytes: &[u8]) -> Vec<String> {
     serde_json::from_slice::<Checkpoint>(bytes).map(|state| state.work.into_values().map(|work| work.id).collect()).unwrap_or_default()
 }
@@ -121,19 +114,14 @@ impl ObservationNormalizer for Normalizer {
             Some(ref prior) => {
                 let state: Checkpoint = serde_json::from_slice(prior.bytes()).map_err(|_| AdapterError::InvalidObservation)?;
                 if state.cursor != prior.cursor() || state.cursor.checked_add(1) != Some(batch.cursor) { return invalid(); }
-                let mut state = state;
-                let ended: Vec<(String, u64)> = state.code_cells.iter().filter(|(_, cell)| cell.finished).map(|(key, cell)| (key.clone(), cell.cursor)).collect();
-                for (key, cursor) in ended {
-                    state.code_cells.remove(&key);
-                    if let Ok((_, _, call)) = serde_json::from_str::<(String, String, String)>(&key) { end_cell(&mut state, call, cursor); }
-                }
                 state
             }
             None if batch.cursor == 1 => Checkpoint::default(),
             None => return invalid(),
         };
-        if self.first_cursor == Some(batch.cursor) { state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear();state.code_cells.clear();state.completed_root_turn=None; }
+        if self.first_cursor == Some(batch.cursor) { state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear(); }
         let mut facts = Vec::new();
+        end_legacy_cells(batch, &mut state, &mut facts)?;
         match &event.observation {
             WireObservation::DecisionRequested { request_id, tool_use_id, kind, payload } => {
                 if state.asked.len() >= 64 || state.asked.values().any(|id| id == &request_id.0) { return invalid(); }
@@ -168,13 +156,12 @@ impl ObservationNormalizer for Normalizer {
                     state.thread = Some(thread.to_owned());state.blocked_policy=None;
                     let process = string(params, "processGeneration").ok_or(AdapterError::InvalidObservation)?;
                     if state.initialized && state.process != process {
-                        state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.asked.clear(); state.accepted.clear(); state.accepted_plans.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear();state.code_cells.clear();state.completed_root_turn=None;
+                        state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.asked.clear(); state.accepted.clear(); state.accepted_plans.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear();
                     }
                     state.model=string(params,"model").filter(|model|!model.is_empty()).map(str::to_owned);state.cwd=string(params,"cwd").map(str::to_owned);
                     state.process = process.to_owned();
                     if !state.initialized { state.initialized = true; facts.push(Observation::Available); }
-                } else if matches!(method,"alondra/codeCellStarted"|"alondra/codeCellFinished"|"alondra/codeCellContinuation") && state.thread.is_some() {
-                    code_cell(batch,&mut state,method,params,&mut facts)?;
+                } else if method.starts_with("alondra/codeCell") {
                 } else if method == "alondra/transportFailed" && !self.host_ended {
                     facts.push(Observation::TransportLost);
                 } else if method=="alondra/inputRefused" && params.get("nativeSubmitted").and_then(Value::as_bool)==Some(false) {
@@ -191,86 +178,6 @@ impl ObservationNormalizer for Normalizer {
         let bytes = serde_json::to_vec(&state).map_err(|_| AdapterError::InvalidObservation)?;
         Normalization::new(facts, bytes)?.with_context(public_context(batch, &event.observation, state.thread.as_deref(), &state.process)?)
     }
-}
-
-fn end_cell(state: &mut Checkpoint, call: String, cursor: u64) {
-    state.ended_cells.insert(call, cursor);
-    if state.ended_cells.len() > ENDED_CELLS {
-        let oldest = state.ended_cells.iter().min_by_key(|(_, cursor)| **cursor).map(|(key, _)| key.clone());
-        if let Some(oldest) = oldest { state.ended_cells.remove(&oldest); }
-    }
-}
-fn code_cell_identity(thread: &str, origin: &str, call: &str) -> String {
-    serde_json::to_string(&(thread, origin, call)).expect("native identity strings serialize")
-}
-fn cell_id<'a>(params: &'a Value, name: &str) -> Option<&'a str> {
-    string(params, name).filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
-}
-fn code_cell(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params: &Value, facts: &mut Vec<Observation>) -> Result<(), AdapterError> {
-    if string(params, "processGeneration") != Some(state.process.as_str()) { return Ok(()); }
-    let (Some(root), Some(thread), Some(call)) = (state.thread.as_deref(), cell_id(params,"threadId"), cell_id(params,"callId")) else { return Ok(()); };
-    let child = thread != root;
-    let parent = if child {
-        let Some(parent) = cell_id(params,"parentActivationId") else { return Ok(()); };
-        if string(params,"rootThreadId") != Some(root) || !state.child_groups.get(parent).is_some_and(|children| children.contains(thread)) || !state.work.contains_key(parent) { return Ok(()); }
-        Some(parent.to_owned())
-    } else { None };
-    let Some(origin) = cell_id(params, if method=="alondra/codeCellContinuation" {"originTurnId"} else {"turnId"}) else { return Ok(()); };
-    let key = code_cell_identity(thread,origin,call);
-    if state.ended_cells.contains_key(call) { return Ok(()); }
-    if method=="alondra/codeCellStarted" {
-        let cell = cell_id(params,"cellId").map(str::to_owned);
-        if let Some(known)=state.code_cells.get_mut(&key) {
-            if known.finished || known.parent!=parent { return Ok(()); }
-            if let Some(cell)=cell {
-                if known.cell.as_ref().is_some_and(|previous| previous!=&cell) { return Ok(()); }
-                known.cell=Some(cell);
-            }
-            return Ok(());
-        }
-        if !child && state.turn.as_deref()!=Some(origin) { return Ok(()); }
-        if state.code_cells.len()>=128 {
-            let oldest=state.code_cells.iter().filter(|(_,cell)|cell.finished && (cell.parent.as_ref().is_some_and(|parent|!state.work.contains_key(parent)) || cell.parent.is_none() && state.turn.as_deref()!=Some(cell.origin.as_str()))).min_by_key(|(_,cell)|cell.cursor).map(|(key,_)|key.clone());
-            if let Some(oldest)=oldest {state.code_cells.remove(&oldest);} else {return invalid();}
-        }
-        let work_key=format!("code-cell:{key}");
-        let work=if let Some(parent)=&parent {
-            state.work[parent].id.clone()
-        } else {
-            if state.work.len()>=128 {return invalid();}
-            let work=scoped(batch,&state.process,"cell",&key);
-            facts.push(Observation::WorkStarted{turn:native_turn(batch,&state.process,origin)?,work:WorkId::new(&work).map_err(|_|AdapterError::InvalidObservation)?});
-            state.work.insert(work_key.clone(),Work{id:work.clone(),turn:origin.to_owned()});work
-        };
-        state.code_cells.insert(key,CodeCell{origin:origin.to_owned(),cell,parent,work,work_key,finished:false,woken:false,cursor:batch.cursor});
-    } else if method=="alondra/codeCellFinished" {
-        let Some(known)=state.code_cells.get(&key) else {return Ok(());};
-        let terminal=matches!(string(params,"status"),Some("completed"|"failed"|"terminated"));
-        let observed=cell_id(params,"observedCallId");
-        let same_cell=match known.cell.as_deref(){Some(cell)=>cell_id(params,"cellId")==Some(cell),None=>cell_id(params,"cellId").is_none() && observed==Some(call)};
-        if known.finished || known.parent!=parent || !terminal || observed.is_none() || !same_cell {return Ok(());}
-        let work_key=known.work_key.clone();
-        state.code_cells.remove(&key);
-        if !child {end_work(batch,state,&work_key,facts,false)?;}
-        end_cell(state,call.to_owned(),batch.cursor);
-    } else if method=="alondra/codeCellContinuation" {
-        let Some(completed)=state.completed_root_turn.as_deref() else{return Ok(());};
-        if state.turn.is_some() || cell_id(params,"turnId")!=Some(completed) || cell_id(params,"activationId")!=Some(call) {return Ok(());}
-        let Some(known)=state.code_cells.get(&key) else {return Ok(());};
-        let Some(cell)=known.cell.as_deref() else {return Ok(());};
-        if known.finished || known.woken || known.parent!=parent || cell_id(params,"cellId")!=Some(cell) {return Ok(());}
-        let cell_json=serde_json::to_string(cell).map_err(|_|AdapterError::InvalidObservation)?;
-        let text=if child {
-            let child_json=serde_json::to_string(thread).map_err(|_|AdapterError::InvalidObservation)?;
-            format!("Managed native child {child_json} still owns Code Mode cell {cell_json}. Use native child messaging to ask that child to wait on its own cell with functions.wait, then await child completion. Do not wait on this child cell from the root or duplicate its running work.")
-        } else {
-            format!("Code Mode cell {cell_json} is still running. Continue this existing work with functions.wait using cell_id {cell_json} until its native terminal result arrives. Preserve other pending inputs and completed work; do not start duplicate work for this cell.")
-        };
-        let activation=scoped(batch,&state.process,"cell-followup",&key);
-        facts.push(Observation::ContinuationRequested{work:WorkId::new(&known.work).map_err(|_|AdapterError::InvalidObservation)?,activation,text});
-        state.code_cells.get_mut(&key).unwrap().woken=true;
-    }
-    Ok(())
 }
 
 fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params: &Value, facts: &mut Vec<Observation>, lookup: impl FnOnce(&str) -> Result<InputId, AdapterError>) -> Result<(), AdapterError> {
@@ -343,10 +250,16 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
                     _ => None,
                 };
                 if let Some(outcome) = outcome {
-                    state.completed_root_turn=(status=="completed").then(||id.unwrap().to_owned());
+                    let left: Vec<String> = state.work.iter().filter(|(key, work)| work.turn == id.unwrap() && !work.background && !key.starts_with("collab:")).map(|(key, _)| key.clone()).collect();
+                    for key in left { cancel_work(batch, state, &key, facts)?; }
                     facts.push(Observation::TurnEnded { turn: native_turn(batch, &state.process, id.unwrap())?, outcome }); state.turn = None;
                 }
             }
+        }
+        "thread/closed" => {
+            let open: Vec<String> = state.work.keys().cloned().collect();
+            for key in open { cancel_work(batch, state, &key, facts)?; }
+            state.child_groups.clear();
         }
         "item/started" | "item/completed" => {
             let item = params.get("item").unwrap_or(&Value::Null);
@@ -394,11 +307,13 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
             if method == "item/completed" && item_type == "agentMessage" && string(item, "text").is_some() { facts.push(Observation::ModelAnswered); }
             if ["commandExecution", "mcpToolCall", "dynamicToolCall"].contains(&item_type) && !id.is_empty() {
                 let finished = method == "item/completed" && !(item_type=="commandExecution" && string(item,"status")==Some("inProgress"));
-                if !finished && !state.work.contains_key(id) && state.work.len() < 64 {
+                let background = item_type == "commandExecution" && string(item, "processId").is_some_and(|process| !process.is_empty());
+                if !finished && let Some(work) = state.work.get_mut(id) { work.background |= background; }
+                else if !finished && state.work.len() < 64 {
                     if let Some(turn) = state.turn.as_deref() {
                         let work = scoped(batch, &state.process, "work", id);
                         facts.push(Observation::WorkStarted { turn: native_turn(batch, &state.process, turn)?, work: WorkId::new(work.clone()).map_err(|_| AdapterError::InvalidObservation)? });
-                        state.work.insert(id.into(), Work { id: work, turn: turn.into() });
+                        state.work.insert(id.into(), Work { id: work, turn: turn.into(), background });
                     }
                 } else if finished {
                     end_work(batch,state,id,facts,false)?;
@@ -421,7 +336,7 @@ fn start_work(batch:&OrderedObservation,state:&mut Checkpoint,id:&str,facts:&mut
     let Some(turn)=state.turn.as_deref() else{return invalid()};
     let work=scoped(batch,&state.process,"work",id);
     facts.push(Observation::WorkStarted{turn:native_turn(batch,&state.process,turn)?,work:WorkId::new(&work).map_err(|_|AdapterError::InvalidObservation)?});
-    state.work.insert(id.into(),Work{id:work,turn:turn.into()});Ok(())
+    state.work.insert(id.into(),Work{id:work,turn:turn.into(),background:false});Ok(())
 }
 fn end_work(batch:&OrderedObservation,state:&mut Checkpoint,id:&str,facts:&mut Vec<Observation>,await_next_input:bool)->Result<(),AdapterError>{
     if let Some(work)=state.work.remove(id){
@@ -429,6 +344,18 @@ fn end_work(batch:&OrderedObservation,state:&mut Checkpoint,id:&str,facts:&mut V
         facts.push(Observation::WorkEnded{work:WorkId::new(work.id).map_err(|_|AdapterError::InvalidObservation)?,continuation:continuation.clone()});
         if await_next_input{state.child_continuations.insert(value.clone(),batch.cursor);}
         if await_next_input || state.turn.is_none(){state.continuations.insert(value);}else{facts.push(Observation::ContinuationConsumed{continuation});}
+    }Ok(())
+}
+fn end_legacy_cells(batch:&OrderedObservation,state:&mut Checkpoint,facts:&mut Vec<Observation>)->Result<(),AdapterError>{
+    let legacy:Vec<String>=state.work.keys().filter(|key|key.starts_with(LEGACY_CELL_WORK)).cloned().collect();
+    for key in legacy{cancel_work(batch,state,&key,facts)?;}Ok(())
+}
+/// Ends native work Codex will not finish on its own: nothing waits for it, so no turn is woken.
+fn cancel_work(batch:&OrderedObservation,state:&mut Checkpoint,id:&str,facts:&mut Vec<Observation>)->Result<(),AdapterError>{
+    if let Some(work)=state.work.remove(id){
+        let continuation=ContinuationId::new(scoped(batch,&state.process,"continuation",id)).map_err(|_|AdapterError::InvalidObservation)?;
+        facts.push(Observation::WorkEnded{work:WorkId::new(work.id).map_err(|_|AdapterError::InvalidObservation)?,continuation:continuation.clone()});
+        facts.push(Observation::ContinuationConsumed{continuation});
     }Ok(())
 }
 fn public_context(batch: &OrderedObservation, observation: &WireObservation, thread: Option<&str>, process: &str) -> Result<Vec<TaskContextItem>, AdapterError> {
@@ -487,73 +414,42 @@ mod tests {
         OrderedObservation { owner_generation: 1, execution: ExecutionStamp::new(TaskId("task".into()), AgentId("agent".into()), ConversationId::new("conversation").unwrap(), InstanceId::new("instance").unwrap(), HostId::new("alondra-sdk").unwrap(), 1).unwrap(), cursor: 1, evidence: vec![1] }
     }
     #[test]
-    fn a_long_turn_of_ended_cells_keeps_the_checkpoint_within_its_bound_and_ignores_their_duplicates() {
-        let mut batch=batch();let mut state=Checkpoint{thread:Some("019a4f6e-7c2b-7d31-9a55-0f3c2e8b1d40".into()),process:"process".into(),turn:Some("019a4f6e-8d3c-7e42-ab66-1a4d3f9c2e51".into()),..Checkpoint::default()};let mut facts=vec![];
-        for n in 0..400 {
-            let call=format!("call_{n:032x}");
-            let start=json!({"threadId":state.thread,"turnId":state.turn,"callId":call,"cellId":n.to_string(),"processGeneration":"process"});
-            code_cell(&batch,&mut state,"alondra/codeCellStarted",&start,&mut facts).unwrap();
-            let mut finish=start.clone();finish["status"]=json!("completed");finish["observedCallId"]=json!(call);
-            code_cell(&batch,&mut state,"alondra/codeCellFinished",&finish,&mut facts).unwrap();
-            batch.cursor+=1;
-        }
-        assert!(serde_json::to_vec(&state).unwrap().len() < 32_768, "{} bytes", serde_json::to_vec(&state).unwrap().len());
-        assert!(state.code_cells.is_empty() && state.work.is_empty());
-        let started=facts.iter().filter(|fact|matches!(fact,Observation::WorkStarted{..})).count();
-        let last=json!({"threadId":state.thread,"turnId":state.turn,"callId":format!("call_{:032x}",399),"cellId":"399","processGeneration":"process"});
-        code_cell(&batch,&mut state,"alondra/codeCellStarted",&last,&mut facts).unwrap();
-        assert_eq!(facts.iter().filter(|fact|matches!(fact,Observation::WorkStarted{..})).count(),started,"a late duplicate of an ended cell starts no work");
-    }
-
-    #[test]
-    fn native_cells_keep_own_work_across_turns_and_wake_once_until_exact_terminal_evidence() {
-        let mut batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
-        let start=json!({"threadId":"root","turnId":"origin","callId":"exec","processGeneration":"process"});
-        code_cell(&batch,&mut state,"alondra/codeCellStarted",&start,&mut facts).unwrap();
-        assert_eq!(facts.len(),1);assert!(matches!(facts[0],Observation::WorkStarted{..}));
-        assert!(live_code_cells(&serde_json::to_vec(&state).unwrap()).unwrap());
-        let cell_work=state.work.values().next().unwrap().id.clone();
+    fn a_tool_still_open_when_its_turn_ends_is_cancelled_without_waking_a_turn() {
+        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"mcpToolCall","id":"exec-paused","status":"inProgress"}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"commandExecution","id":"server","processId":"42","status":"inProgress"}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"collabAgentToolCall","id":"spawn","tool":"spawnAgent","receiverThreadIds":["child"]}}),&mut facts,|_|invalid()).unwrap();
+        facts.clear();
         fold(&batch,&mut state,"turn/completed",&json!({"threadId":"root","turn":{"id":"origin","status":"completed"}}),&mut facts,|_|invalid()).unwrap();
-        assert_eq!(state.work.len(),1);assert!(!facts.iter().any(|fact|matches!(fact,Observation::WorkEnded{..})));
-        let mut bound=start.clone();bound["cellId"]=json!("cell-7");
-        code_cell(&batch,&mut state,"alondra/codeCellStarted",&bound,&mut facts).unwrap();
-        assert_eq!(facts.iter().filter(|fact|matches!(fact,Observation::WorkStarted{..})).count(),1);
-        let continuation=json!({"threadId":"root","turnId":"origin","originTurnId":"origin","callId":"exec","activationId":"exec","cellId":"cell-7","processGeneration":"process"});
-        code_cell(&batch,&mut state,"alondra/codeCellContinuation",&continuation,&mut facts).unwrap();
-        assert!(matches!(facts.last(),Some(Observation::ContinuationRequested{work,text,..}) if work.as_str()==cell_work && text.contains("functions.wait") && text.contains("cell-7")));
-        let count=facts.len();let bytes=serde_json::to_vec(&state).unwrap();state=serde_json::from_slice(&bytes).unwrap();batch.cursor+=1;
-        code_cell(&batch,&mut state,"alondra/codeCellContinuation",&continuation,&mut facts).unwrap();assert_eq!(facts.len(),count,"replayed or reattached cells cannot enqueue another wake");
-        for (field,value) in [("cellId","other"),("turnId","other"),("threadId","other"),("processGeneration","other"),("status","running")] {
-            let mut finish=json!({"threadId":"root","turnId":"origin","callId":"exec","cellId":"cell-7","observedCallId":"wait-call","status":"completed","processGeneration":"process"});finish[field]=json!(value);
-            code_cell(&batch,&mut state,"alondra/codeCellFinished",&finish,&mut facts).unwrap();assert_eq!(state.work.len(),1,"{field} is not terminal proof for the owned cell");
-        }
-        let finish=json!({"threadId":"root","turnId":"origin","callId":"exec","cellId":"cell-7","observedCallId":"wait-call","status":"completed","processGeneration":"process"});
-        code_cell(&batch,&mut state,"alondra/codeCellFinished",&finish,&mut facts).unwrap();assert!(state.work.is_empty());assert!(!live_code_cells(&serde_json::to_vec(&state).unwrap()).unwrap());assert!(matches!(facts.last(),Some(Observation::WorkEnded{work,..}) if work.as_str()==cell_work));
-        let count=facts.len();code_cell(&batch,&mut state,"alondra/codeCellFinished",&finish,&mut facts).unwrap();code_cell(&batch,&mut state,"alondra/codeCellStarted",&bound,&mut facts).unwrap();assert_eq!(facts.len(),count,"late repeats cannot resurrect ended work");
+        assert!(matches!(&facts[..],[Observation::WorkEnded{work,continuation},Observation::ContinuationConsumed{continuation:consumed},Observation::TurnEnded{..}] if work.as_str()=="codex:1:process:work:exec-paused" && continuation==consumed));
+        assert_eq!(state.work.keys().map(String::as_str).collect::<Vec<_>>(),["collab:spawn","server"],"background commands and children outlive their turn");
+        assert!(state.continuations.is_empty());
+        facts.clear();
+        fold(&batch,&mut state,"item/completed",&json!({"threadId":"root","item":{"type":"mcpToolCall","id":"exec-paused","status":"completed"}}),&mut facts,|_|invalid()).unwrap();
+        assert!(facts.is_empty(),"the late end of a cancelled tool changes nothing");
     }
-
     #[test]
-    fn repeated_exec_call_ids_in_different_turns_own_independent_cells() {
-        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("first".into()),..Checkpoint::default()};let mut facts=vec![];
-        for (turn,cell) in [("first","one"),("second","two")] {
-            state.turn=Some(turn.into());code_cell(&batch,&mut state,"alondra/codeCellStarted",&json!({"threadId":"root","turnId":turn,"callId":"repeated","cellId":cell,"processGeneration":"process"}),&mut facts).unwrap();
-        }
-        assert_eq!(state.work.len(),2);
-        code_cell(&batch,&mut state,"alondra/codeCellFinished",&json!({"threadId":"root","turnId":"first","callId":"repeated","cellId":"one","observedCallId":"wait","status":"terminated","processGeneration":"process"}),&mut facts).unwrap();
-        assert_eq!(state.work.len(),1);assert!(state.work.values().all(|work|work.turn=="second"));
+    fn a_closed_thread_ends_all_its_open_work_without_waking_a_turn() {
+        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"commandExecution","id":"server","processId":"42","status":"inProgress"}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"turn/completed",&json!({"threadId":"root","turn":{"id":"origin","status":"completed"}}),&mut facts,|_|invalid()).unwrap();
+        facts.clear();
+        fold(&batch,&mut state,"thread/closed",&json!({"threadId":"root"}),&mut facts,|_|invalid()).unwrap();
+        assert!(state.work.is_empty() && state.continuations.is_empty());
+        assert!(matches!(&facts[..],[Observation::WorkEnded{..},Observation::ContinuationConsumed{..}]));
     }
-
     #[test]
-    fn child_cell_followups_use_the_proven_parent_work_and_never_root_wait_the_child_cell() {
-        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),completed_root_turn:Some("root-turn".into()),..Checkpoint::default()};let mut facts=vec![];
-        state.work.insert("spawn".into(),Work{id:"owned-parent-work".into(),turn:"root-turn".into()});state.child_groups.insert("spawn".into(),BTreeSet::from(["child".into()]));
-        let started=json!({"threadId":"child","rootThreadId":"root","parentActivationId":"spawn","turnId":"child-turn","callId":"exec","cellId":"child-cell","processGeneration":"process"});
-        code_cell(&batch,&mut state,"alondra/codeCellStarted",&started,&mut facts).unwrap();assert!(facts.is_empty());
-        let continuation=json!({"threadId":"child","rootThreadId":"root","parentActivationId":"spawn","turnId":"root-turn","originTurnId":"child-turn","callId":"exec","activationId":"exec","cellId":"child-cell","processGeneration":"process"});
-        code_cell(&batch,&mut state,"alondra/codeCellContinuation",&continuation,&mut facts).unwrap();assert!(matches!(facts.last(),Some(Observation::ContinuationRequested{work,text,..}) if work.as_str()=="owned-parent-work" && text.contains("native child messaging") && text.contains("Do not wait on this child cell from the root")));
-        let mut finish=started.clone();finish["observedCallId"]=json!("child-wait");finish["status"]=json!("failed");code_cell(&batch,&mut state,"alondra/codeCellFinished",&finish,&mut facts).unwrap();assert_eq!(state.work.len(),1,"only proven child quiescence retires its parent collab work");assert!(!facts.iter().any(|fact|matches!(fact,Observation::WorkEnded{..})));
+    fn a_checkpoint_that_followed_scripts_still_reads_and_its_script_work_ends() {
+        let old=json!({"cursor":4,"initialized":true,"process":"process","thread":"root","turn":null,"work":{"code-cell:[\"root\",\"origin\",\"exec\"]":{"id":"codex:1:process:cell:x","turn":"origin"},"collab:spawn":{"id":"codex:1:process:work:collab:spawn","turn":"origin"}},"asked":{},"continuation":null,
+            "code_cells":{"[\"root\",\"origin\",\"exec\"]":{"origin":"origin","cell":"17","parent":null,"work":"codex:1:process:cell:x","work_key":"code-cell:[\"root\",\"origin\",\"exec\"]","finished":false,"woken":true,"cursor":3}},"ended_cells":{"wait":2},"completed_root_turn":"origin"});
+        let mut state:Checkpoint=serde_json::from_value(old).unwrap();
+        let rewritten=serde_json::to_value(&state).unwrap();
+        assert!(rewritten.get("code_cells").is_none() && rewritten.get("ended_cells").is_none() && rewritten.get("completed_root_turn").is_none());
+        let mut facts=vec![];
+        end_legacy_cells(&batch(),&mut state,&mut facts).unwrap();
+        assert_eq!(state.work.keys().map(String::as_str).collect::<Vec<_>>(),["collab:spawn"]);
+        assert!(matches!(&facts[..],[Observation::WorkEnded{work,..},Observation::ContinuationConsumed{..}] if work.as_str()=="codex:1:process:cell:x"));
     }
-
     #[test]
     fn native_plan_approval_settles_the_ended_turn_before_starting_its_new_turn() {
         for background in [false, true] {
@@ -561,7 +457,7 @@ mod tests {
             let mut state = Checkpoint { thread: Some("root".into()), ..Checkpoint::default() };
             state.asked.insert(7, "plan:request".into());
             if background {
-                state.work.insert("child".into(), Work { id: "background-work".into(), turn: "previous-turn".into() });
+                state.work.insert("child".into(), Work { id: "background-work".into(), turn: "previous-turn".into(), background: true });
             }
             let mut facts = vec![];
             fold(&batch, &mut state, "alondra/inputStarting", &json!({"threadId":"root","inputId":"plan:7"}), &mut facts, |_| invalid()).unwrap();
@@ -593,7 +489,7 @@ mod tests {
         let batch = batch();
         let mut state = Checkpoint { turn: Some("turn".into()), ..Checkpoint::default() };
         let mut facts = Vec::new();
-        fold(&batch, &mut state, "item/started", &json!({"item":{"id":"terminal","type":"commandExecution"}}), &mut facts, |_| invalid()).unwrap();
+        fold(&batch, &mut state, "item/started", &json!({"item":{"id":"terminal","type":"commandExecution","processId":"42"}}), &mut facts, |_| invalid()).unwrap();
         fold(&batch, &mut state, "turn/completed", &json!({"turn":{"id":"other","status":"completed"}}), &mut facts, |_| invalid()).unwrap();
         assert_eq!(state.turn.as_deref(), Some("turn"));
         fold(&batch, &mut state, "turn/completed", &json!({"turn":{"id":"turn","status":"completed"}}), &mut facts, |_| invalid()).unwrap();
@@ -658,7 +554,7 @@ mod tests {
     #[test]
     fn multiple_native_completions_survive_checkpoint_and_are_taken_up_once(){
         let batch=batch();let mut state=Checkpoint{turn:Some("turn".into()),..Default::default()};let mut facts=vec![];
-        for id in ["first","second"]{fold(&batch,&mut state,"item/started",&json!({"item":{"type":"commandExecution","id":id}}),&mut facts,|_|invalid()).unwrap();}
+        for id in ["first","second"]{fold(&batch,&mut state,"item/started",&json!({"item":{"type":"commandExecution","id":id,"processId":id}}),&mut facts,|_|invalid()).unwrap();}
         fold(&batch,&mut state,"turn/completed",&json!({"turn":{"id":"turn","status":"completed"}}),&mut facts,|_|invalid()).unwrap();
         for id in ["first","second"]{fold(&batch,&mut state,"item/completed",&json!({"item":{"type":"commandExecution","id":id,"status":"completed"}}),&mut facts,|_|invalid()).unwrap();}
         assert_eq!(state.continuations.len(),2);
@@ -742,20 +638,4 @@ mod tests {
         let legacy:Checkpoint=serde_json::from_slice(br#"{"cursor":0,"initialized":false,"thread":null,"turn":null,"work":{},"asked":{},"continuation":null}"#).unwrap();assert!(legacy.blocked_policy.is_none());
     }
 
-}
-
-#[cfg(test)]
-mod cell_model_fence_tests {
-    use super::*;
-    #[test]
-    fn a_live_child_cell_is_a_model_fence_even_when_its_owned_work_is_the_parent_collaboration() {
-        let mut state = Checkpoint::default();
-        state.work.insert("parent".into(), Work { id: "codex:1:process:work:parent".into(), turn: "root-turn".into() });
-        state.code_cells.insert("child-cell".into(), CodeCell { origin: "child-turn".into(), cell: Some("7".into()), parent: Some("parent".into()), work: "codex:1:process:work:parent".into(), work_key: "code-cell:child-cell".into(), finished: false, woken: true, cursor: 4 });
-        assert!(live_code_cells(&serde_json::to_vec(&state).unwrap()).unwrap());
-        state.code_cells.get_mut("child-cell").unwrap().finished = true;
-        assert!(!live_code_cells(&serde_json::to_vec(&state).unwrap()).unwrap());
-        assert_eq!(state.work.len(), 1, "ordinary collaboration work is not a cell fence");
-        assert!(live_code_cells(b"invalid checkpoint").is_err());
-    }
 }

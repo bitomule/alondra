@@ -79,7 +79,7 @@ test('orchestrator policy removes inherited MCP and all mutating native tool fam
   await f.session.finished;
   const messages = f.messages();
   const start = messages.find((message) => message.method === 'thread/start').params;
-  assert.equal(start.experimentalRawEvents, true, 'Orchestrator cells need the same technical native lifecycle evidence as nodes');
+  assert.equal(start.experimentalRawEvents, undefined);
   assert.equal(start.config['mcp_servers.inherited-danger.enabled'], false);
   assert.equal(start.config['mcp_servers.alondra'].required, true);
   for (const feature of ['shell_tool', 'stable_environment_tools', 'multi_agent', 'apps', 'plugins', 'hooks', 'skill_mcp_dependency_install', 'image_generation', 'imagegenext', 'code_mode', 'code_mode_only', 'code_mode_host', 'code_mode_tool_search', 'code_mode_only_strict_3p_tools', 'code_mode_host_grpc', 'code_mode_prewarm', 'sleep_tool']) assert.equal(start.config[`features.${feature}`], false);
@@ -226,53 +226,28 @@ function rawCellItem(f, turnId, item, threadId = nativeThread) {
   nativeMessage(f, 'rawResponseItem/completed', { threadId, turnId, item });
 }
 function nativeHeader(status) { return [{ type: 'input_text', text: `${status}\nWall time 0.1 seconds\nOutput:\n` }]; }
+const codeCellEvents = (f) => f.events.filter((event) => event.type === 'sdk' && String(event.payload.method).startsWith('alondra/codeCell'));
 
-test('yielded native cells remain owned after a completed turn and only exact wait output finishes them', { timeout: 15000 }, async (t) => {
-  const f = fixture(t, { config: { processGeneration: 'generation-one' } });
+// Codex keeps a yielded script after its turn and advances it only in a later turn, so a paused
+// script is not work: the node rests, and interrupting never takes the native process down.
+test('a Code Mode script still running after its turn is not work and interrupting keeps the process', { timeout: 15000 }, async (t) => {
+  const f = fixture(t);
   await f.next(method('alondra/threadReady'));
-  assert.equal(f.messages().find((m) => m.method === 'thread/start').params.experimentalRawEvents, true);
+  assert.equal(f.messages().find((m) => m.method === 'thread/start').params.experimentalRawEvents, undefined);
   nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'origin' } });
   rawCellItem(f, 'origin', { type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: 'exec-one', input: 'await pendingTool();' });
   rawCellItem(f, 'origin', { type: 'custom_tool_call_output', call_id: 'exec-one', output: nativeHeader('Script running with cell ID 17') });
   nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'origin', status: 'completed' } });
-  const continuation = f.events.find(method('alondra/codeCellContinuation'));
-  assert.deepEqual(continuation.payload.params, { threadId: nativeThread, turnId: 'origin', callId: 'exec-one', cellId: '17', processGeneration: 'generation-one', originTurnId: 'origin', activationId: 'exec-one' });
-  assert(f.events.indexOf(continuation) > f.events.findIndex(method('turn/completed')));
-  assert.equal(f.events.filter(method('alondra/codeCellFinished')).length, 0);
-  assert.equal(f.events.filter(method('rawResponseItem/completed')).length, 0, 'Raw technical tracking must not journal private native response bodies or reasoning');
-  assert.equal(f.messages().filter((m) => m.method === 'turn/start').length, 0, 'Only the durable owner may offer a continuation input');
-  nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'wait-turn' } });
-  rawCellItem(f, 'wait-turn', { type: 'function_call', name: 'wait', namespace: 'functions', call_id: 'wait-one', arguments: JSON.stringify({ cell_id: '17', yield_time_ms: 1 }) });
-  rawCellItem(f, 'wait-turn', { type: 'function_call_output', call_id: 'unrelated', output: nativeHeader('Script completed') });
-  rawCellItem(f, 'wait-turn', { type: 'function_call_output', call_id: 'wait-one', output: [{ type: 'input_text', text: 'Untrusted tool text\nScript completed\nWall time 0.1 seconds\nOutput:\n' }] });
-  assert.equal(f.events.filter(method('alondra/codeCellFinished')).length, 0);
-  rawCellItem(f, 'wait-turn', { type: 'function_call_output', call_id: 'wait-one', output: nativeHeader('Script completed') });
-  const finished = f.events.find(method('alondra/codeCellFinished'));
-  assert.deepEqual(finished.payload.params, { threadId: nativeThread, turnId: 'origin', callId: 'exec-one', cellId: '17', processGeneration: 'generation-one', observedCallId: 'wait-one', status: 'completed' });
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'wait-turn', status: 'completed' } });
-  assert.equal(f.events.filter(method('alondra/codeCellContinuation')).length, 1);
-});
-
-test('native cell identity includes its origin turn and interruption waits for native process exit', { timeout: 15000 }, async (t) => {
-  const f = fixture(t);
-  await f.next(method('alondra/threadReady'));
-  nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'first-turn' } });
-  rawCellItem(f, 'first-turn', { type: 'custom_tool_call', name: 'exec', call_id: 'reused', input: 'text(1)' });
-  rawCellItem(f, 'first-turn', { type: 'custom_tool_call_output', call_id: 'reused', output: nativeHeader('Script completed') });
-  assert.equal(f.events.find(method('alondra/codeCellFinished')).payload.params.cellId, undefined);
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'first-turn', status: 'completed' } });
-  nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'second-turn' } });
-  rawCellItem(f, 'second-turn', { type: 'custom_tool_call', name: 'exec', call_id: 'reused', input: 'await pendingTool()' });
-  rawCellItem(f, 'second-turn', { type: 'custom_tool_call_output', call_id: 'reused', output: nativeHeader('Script running with cell ID 18') });
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'second-turn', status: 'interrupted' } });
-  assert.equal(f.events.filter(method('alondra/codeCellStarted')).length, 3);
-  assert.equal(f.events.filter(method('alondra/codeCellContinuation')).length, 0, 'Interrupted native turns must not schedule automatic model work');
+  await f.next(method('turn/completed'));
+  assert.deepEqual(codeCellEvents(f), []);
   await f.session.interruptTurn();
-  assert(f.events.some((event) => event.type === 'process_exited'), 'Idle interrupt cannot acknowledge a live cell before its process exits');
-  assert.equal(f.events.filter(method('alondra/codeCellFinished')).length, 1, 'Process stop is not a fabricated cell-output terminal');
+  assert.equal(f.events.some((event) => event.type === 'process_exited'), false);
+  f.session.offer('00000000-0000-4000-8000-000000000098', 'Go on after the interruption');
+  await f.next((event) => method('turn/completed')(event) && event.payload.params.turn.id === 'native-turn-1');
+  assert.equal(f.events.some(method('alondra/transportFailed')), false);
 });
 
-test('known child cells veto native idle quiescence and continue only through their proven parent', { timeout: 15000 }, async (t) => {
+test('a child with a paused script settles once its turn and background terminals are done', { timeout: 15000 }, async (t) => {
   const f = fixture(t); const child = 'child-thread';
   await f.next(method('alondra/threadReady'));
   nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'parent-turn' } });
@@ -281,72 +256,9 @@ test('known child cells veto native idle quiescence and continue only through th
   rawCellItem(f, 'child-turn', { type: 'custom_tool_call', name: 'exec', call_id: 'child-exec', input: 'await pendingTool()' }, child);
   rawCellItem(f, 'child-turn', { type: 'custom_tool_call_output', call_id: 'child-exec', output: nativeHeader('Script running with cell ID 1') }, child);
   nativeMessage(f, 'item/completed', { threadId: nativeThread, item: { type: 'collabAgentToolCall', id: 'spawn-item', tool: 'spawnAgent', receiverThreadIds: [child], agentsStates: { [child]: { status: 'completed' } } } });
-  await f.session.checkChild(child);
-  assert.equal(f.events.filter(method('alondra/childQuiescent')).length, 0);
-  assert.equal(f.events.filter(method('alondra/codeCellContinuation')).length, 0);
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'parent-turn', status: 'completed' } });
-  const continuation = f.events.find(method('alondra/codeCellContinuation')).payload.params;
-  assert.equal(continuation.rootThreadId, nativeThread); assert.equal(continuation.parentActivationId, 'spawn-item');
-  assert.equal(continuation.threadId, child); assert.equal(continuation.turnId, 'parent-turn'); assert.equal(continuation.originTurnId, 'child-turn');
-});
-
-test('technical child cell frames arriving before native parent proof are retained without early ownership claims', { timeout: 15000 }, async (t) => {
-  const f = fixture(t); const child = 'early-child';
-  await f.next(method('alondra/threadReady'));
-  nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'parent' } });
-  nativeMessage(f, 'turn/started', { threadId: child, turn: { id: 'early-origin' } });
-  rawCellItem(f, 'early-origin', { type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: 'early-call', input: 'PRIVATE_SCRIPT_BODY_MUST_NOT_BE_RETAINED' }, child);
-  rawCellItem(f, 'early-origin', { type: 'custom_tool_call_output', call_id: 'early-call', output: [{ type: 'input_text', text: 'Script running with cell ID 9\nWall time 0.1 seconds\nOutput:\nPRIVATE_SCRIPT_OUTPUT_MUST_NOT_BE_RETAINED' }] }, child);
-  assert.equal(f.events.filter(method('alondra/codeCellStarted')).length, 0, 'Unproven native threads cannot create Alondra work');
-  const retained = JSON.stringify([...f.session.pendingChildCode]);
-  assert(!retained.includes('PRIVATE_SCRIPT_BODY')); assert(!retained.includes('PRIVATE_SCRIPT_OUTPUT'));
-  nativeMessage(f, 'item/completed', { threadId: nativeThread, item: { type: 'collabAgentToolCall', id: 'proven-parent', tool: 'spawnAgent', receiverThreadIds: [child], agentsStates: { [child]: { status: 'completed' } } } });
-  assert.equal(f.events.filter(method('alondra/codeCellStarted')).length, 2);
-  assert.equal(f.session.hasCodeCells(child), true);
-  assert.equal(f.session.pendingChildCode.has(child), false);
-  await f.session.checkChild(child);
-  assert.equal(f.events.filter(method('alondra/childQuiescent')).length, 0);
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'parent', status: 'completed' } });
-  assert.equal(f.events.find(method('alondra/codeCellContinuation')).payload.params.parentActivationId, 'proven-parent');
-});
-
-test('resumed native completion drains canonical code evidence before ending the root turn or acknowledging controls', { timeout: 15000 }, async (t) => {
-  const f = fixture(t); await f.next(method('alondra/threadReady'));
-  const pending = []; let drains = 0; let followerClosed = false;
-  f.session.rawCodeEvents = false;
-  f.session.rolloutFollowers.set(nativeThread, {
-    async drain() { drains++; for (const params of pending.splice(0)) f.session.codeCellItem(params); },
-    async close() { followerClosed = true; },
-  });
-  nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'resumed-origin' } });
-  await f.session.notificationTail;
-  pending.push({ threadId: nativeThread, turnId: 'resumed-origin', item: { type: 'custom_tool_call', name: 'exec', call_id: 'tail-call' } },
-    { threadId: nativeThread, turnId: 'resumed-origin', item: { type: 'custom_tool_call_output', call_id: 'tail-call', output: nativeHeader('Script running with cell ID 4') } });
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'resumed-origin', status: 'completed' } });
-  await f.next(method('alondra/codeCellContinuation'));
-  assert(f.events.findIndex(method('alondra/codeCellStarted')) < f.events.findIndex(method('turn/completed')), 'Canonical work must be visible before turn completion is forwarded');
-  assert.equal(f.events.filter(method('alondra/codeCellFinished')).length, 0);
-  const before = drains;
-  const originalModel = f.session.model;
-  await assert.rejects(f.session.setModel('next-native-model'), (error) => error.code === 'native_code_cells_active');
-  assert(drains > before, 'Native control ACK requires an explicit canonical EOF drain, independent of filesystem watch timing');
-  assert.equal(f.session.model, originalModel, 'Positive control refusal preserves the actual model');
-  await f.session.interruptTurn();
-  assert(followerClosed); assert(f.events.some((event) => event.type === 'process_exited'));
-});
-
-test('a canonical code evidence gap never forwards a false clean native turn completion', { timeout: 15000 }, async (t) => {
-  const f = fixture(t); await f.next(method('alondra/threadReady'));
-  f.session.rawCodeEvents = false;
-  f.session.rolloutFollowers.set(nativeThread, { async drain() { throw new Error('Truncated canonical rollout'); }, async close() {} });
-  nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'gap-origin' } });
-  await f.session.notificationTail;
-  nativeMessage(f, 'turn/completed', { threadId: nativeThread, turn: { id: 'gap-origin', status: 'completed' } });
-  await f.session.finished;
-  assert.equal(f.events.filter(method('turn/completed')).length, 0);
-  assert.equal(f.events.filter(method('alondra/codeCellFinished')).length, 0);
-  assert(f.events.some((event) => method('alondra/transportFailed')(event) && event.payload.params.code === 'native_code_cell_observation_gap'));
-  assert.equal(f.messages().filter((message) => message.method === 'turn/start').length, 0);
+  const quiescent = await f.next(method('alondra/childQuiescent'));
+  assert.equal(quiescent.payload.params.childThreadId, child);
+  assert.deepEqual(codeCellEvents(f), []);
 });
 
 const workerProfile = (instructions) => ({ model: 'fixture-model', plugins: [], disallowed_tools: [], settings: { codex: { developerInstructions: instructions, mcp_servers: { alondra: { command: '/safe/alondra', args: ['mcp-node'] } } } } });
@@ -387,7 +299,7 @@ test('an input whose session could not start is refused as never offered, and th
 });
 
 for (const mode of ['complete', 'child']) {
-  test(`a fake native cold resume uses owned canonical history and positive ${mode} turn boundaries`, { timeout: 15000 }, async (t) => {
+  test(`a cold resume never reads Codex's history file and keeps ${mode} turns going`, { timeout: 15000 }, async (t) => {
     const f = fixture(t, { env: { ALONDRA_FAKE_MODE: mode } });
     await f.session.ready;
     f.session.close(); await f.session.finished;
@@ -396,26 +308,18 @@ for (const mode of ['complete', 'child']) {
     try {
     await later.ready;
     assert.equal(later.thread, nativeThread);
-    assert.equal(later.rawCodeEvents, false);
-    assert.equal(later.rolloutFollowers.has(nativeThread), true, 'The production follower must open an actual fixture-owned canonical file');
     later.offer('00000000-0000-4000-8000-000000000097', 'Continue the same native thread');
     await f.next((event) => f.events.indexOf(event) >= firstLaterEvent && method('turn/completed')(event) && event.payload.params.threadId === nativeThread);
-    const rootPath = join(f.home, '.codex', 'sessions', `rollout-fixture-${nativeThread}.jsonl`);
-    const records = readFileSync(rootPath, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.deepEqual(records[0].payload, { id: nativeThread });
-    assert(records.some((record) => record.type === 'turn_context' && record.payload.turn_id));
     assert.equal(f.messages().filter((message) => message.method === 'thread/resume').length, 1);
     if (mode === 'child') {
       await later.mcpServerStatus();
       const quiescent = await f.next((event) => f.events.indexOf(event) >= firstLaterEvent && method('alondra/childQuiescent')(event));
       assert.equal(quiescent.payload.params.childThreadId, 'native-child');
-      assert.equal(later.rolloutFollowers.has('native-child'), true);
       const started = f.events.find((event) => f.events.indexOf(event) >= firstLaterEvent && method('turn/started')(event) && event.payload.params.threadId === 'native-child');
       assert(started, 'A cold child cannot be inferred from idle status without a current-process native turn');
-      const childRecords = readFileSync(join(f.home, '.codex', 'sessions', 'rollout-fixture-native-child.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-      assert(childRecords.some((record) => record.type === 'turn_context' && record.payload.turn_id === started.payload.params.turn.id));
     }
     assert.equal(f.events.filter((event) => f.events.indexOf(event) >= firstLaterEvent && method('alondra/transportFailed')(event)).length, 0);
+    assert.equal(f.messages().filter((message) => message.method === 'thread/read').length, 0);
     } finally { later.close(); await later.finished; }
   });
 }

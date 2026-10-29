@@ -71,7 +71,6 @@ checks:
         - //agent-host:controls_test
         - //agent-host:decisions_test
         - //agent-host:codex_session_test
-        - //agent-host:codex_rollout_test
         - //agent-host:model_probe_test
         - //agent-host:umask_test
         - //agent-host:probe_test

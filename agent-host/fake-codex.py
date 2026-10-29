@@ -1,12 +1,11 @@
 #!/usr/bin/python3
-import json, os, sys, subprocess, threading, pwd, re, stat
+import json, os, sys, subprocess, threading
 if os.environ.get('ALONDRA_FAKE_ARGV'):
     with open(os.environ['ALONDRA_FAKE_ARGV'], 'w') as target: json.dump(sys.argv[1:], target)
 thread = '00000000-0000-4000-8000-000000000001'
 turn = 'native-turn'
 turn_number = 0
 accepted_input = None
-raw_enabled = False
 child_pending = False
 child_turn = 'child-turn-' + str(os.getpid())
 mode = os.environ.get('ALONDRA_FAKE_MODE', 'complete')
@@ -27,56 +26,6 @@ def auth_status(fixture):
 def model_list(fixture):
     models = [{'id': model, 'model': model, 'displayName': model, 'isDefault': i == 0, 'hidden': False, 'supportedReasoningEfforts': [{'reasoningEffort': 'high', 'description': 'High'}], 'defaultReasoningEffort': 'high', 'inputModalities': ['text']} for i, model in enumerate(os.environ.get('ALONDRA_FAKE_MODELS', 'fixture-model').split(','))]
     return fixture.get('models', {'data': models, 'nextCursor': None})
-
-rollout_lock = threading.Lock()
-def rollout_path(native_thread):
-    if not isinstance(native_thread, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', native_thread):
-        raise RuntimeError('Fixture native thread identity is invalid')
-    home = os.environ.get('HOME')
-    if not home or not os.path.isabs(home) or os.path.realpath(home) == os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir):
-        raise RuntimeError('The fake Codex requires an explicit temporary HOME')
-    profile = os.environ.get('CODEX_HOME', os.path.join(home, '.codex'))
-    if not os.path.isabs(profile) or os.path.commonpath([os.path.realpath(home), os.path.realpath(profile)]) != os.path.realpath(home):
-        raise RuntimeError('The fake Codex profile must remain inside its temporary HOME')
-    current = os.path.abspath(home)
-    for component in [None, *os.path.relpath(profile, home).split(os.sep), 'sessions']:
-        if component is not None:
-            if component == '.': continue
-            current = os.path.join(current, component)
-            try: os.mkdir(current, 0o700)
-            except FileExistsError: pass
-        node = os.lstat(current)
-        if not stat.S_ISDIR(node.st_mode) or node.st_uid != os.getuid():
-            raise RuntimeError('The fake Codex refuses an unowned or linked session directory')
-    path = os.path.join(current, 'rollout-fixture-' + native_thread + '.jsonl')
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, 'w') as target:
-            target.write(json.dumps({'timestamp': '2026-01-01T00:00:00Z', 'type': 'session_meta', 'payload': {'id': native_thread}}) + '\n')
-            target.flush()
-            os.fsync(target.fileno())
-    except FileExistsError:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(descriptor) as source:
-            node = os.fstat(source.fileno())
-            if not stat.S_ISREG(node.st_mode) or node.st_nlink != 1 or node.st_uid != os.getuid():
-                raise RuntimeError('The fake Codex refuses an unowned session file')
-            first = json.loads(source.readline())
-            if first.get('type') != 'session_meta' or first.get('payload', {}).get('id') != native_thread:
-                raise RuntimeError('The fake Codex session identity differs')
-    return path
-
-def rollout_record(native_thread, kind, payload):
-    with rollout_lock:
-        path = rollout_path(native_thread)
-        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(descriptor, 'a') as target:
-            node = os.fstat(target.fileno())
-            if not stat.S_ISREG(node.st_mode) or node.st_nlink != 1 or node.st_uid != os.getuid():
-                raise RuntimeError('The fake Codex refuses an unowned session append')
-            target.write(json.dumps({'timestamp': '2026-01-01T00:00:00Z', 'type': kind, 'payload': payload}) + '\n')
-            target.flush()
-            os.fsync(target.fileno())
 
 output_lock = threading.Lock()
 def send(value):
@@ -125,8 +74,7 @@ for line in sys.stdin:
     result = {}
     if method == 'config/read': result = fixture.get('configRead', {'config': {'mcp_servers': {name: {'command': '/untrusted'} for name in json.loads(os.environ.get('ALONDRA_FAKE_INHERITED_MCP_NAMES', '["inherited-danger"]'))}}})
     elif method in ['thread/start', 'thread/resume']:
-        raw_enabled = message.get('params', {}).get('experimentalRawEvents') is True
-        result = {'thread': {'id': thread, 'path': rollout_path(thread)}, 'model': message.get('params', {}).get('model') or 'fixture-model', 'modelProvider': 'openai'}
+        result = {'thread': {'id': thread}, 'model': message.get('params', {}).get('model') or 'fixture-model', 'modelProvider': 'openai'}
     elif method == 'account/read': result = account_read(fixture)
     elif method == 'getAuthStatus':
         if message.get('params') != {'includeToken': False, 'refreshToken': False}: raise RuntimeError('Account checks must not request tokens or refresh authentication')
@@ -142,21 +90,14 @@ for line in sys.stdin:
     elif method == 'thread/turns/list': result = {'data': [{'id': child_turn, 'status': 'completed', 'items': []}], 'nextCursor': None}
     elif method == 'thread/read':
         requested = message.get('params', {}).get('threadId')
-        result = {'thread': {'id': requested, 'path': rollout_path(requested), 'turns': []}}
+        result = {'thread': {'id': requested, 'turns': []}}
     elif method == 'mcpServerStatus/list':
         result = {'data': [{'name': 'alondra', 'runtimeStatus': 'connected'}], 'nextCursor': None}
         if child_pending:
             child_pending = False
-            rollout_record('native-child', 'event_msg', {'type': 'task_complete', 'turn_id': child_turn})
             note('turn/completed', {'threadId': 'native-child', 'turn': {'id': child_turn, 'status': 'completed'}})
             send({'id': identity, 'result': result})
             note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'subAgentActivity', 'id': 'child-completed', 'kind': 'completed', 'agentThreadId': 'native-child', 'agentPath': 'root/child', 'model': None, 'reasoningEffort': None}})
-            continue
-        if fixture.get('codeCellOnStatus') and turn_number == 1:
-            send({'id': identity, 'result': result})
-            note('rawResponseItem/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'pending-before-cell', 'input': 'await fixture_pending_cell();'}})
-            note('rawResponseItem/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'custom_tool_call_output', 'call_id': 'pending-before-cell', 'output': [{'type': 'input_text', 'text': 'Script running with cell ID 17\nWall time 0.1 seconds\nOutput:\n'}]}})
-            note('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'completed'}})
             continue
         if os.environ.get('ALONDRA_FAKE_FINISH_ON_MCP_STATUS') == '1' and turn_number == 1 and mode == 'hold':
             send({'id': identity, 'result': result})
@@ -173,7 +114,6 @@ for line in sys.stdin:
         turn_mode = fixture.get('turnMode', mode)
         turn_number += 1
         turn = 'native-turn-' + str(turn_number)
-        rollout_record(thread, 'turn_context', {'turn_id': turn})
         note('turn/started', {'threadId': thread, 'turn': {'id': turn, 'status': 'inProgress'}})
         send({'id': identity, 'result': {'turn': {'id': turn, 'status': 'inProgress'}}})
         if turn_mode == 'accepted_without_consumption' and turn_number == 1:
@@ -184,11 +124,6 @@ for line in sys.stdin:
             ready = threading.Event()
             threading.Thread(target=checkpoint_after_barrier, args=(fixture['checkpointRelease'], turn, ready), daemon=True).start()
             ready.wait()
-        if fixture.get('codeCellOnStatus') and turn_number == 2:
-            note('rawResponseItem/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'function_call', 'namespace': 'functions', 'name': 'wait', 'call_id': 'wait-existing-cell', 'arguments': json.dumps({'cell_id': '17'})}})
-            note('rawResponseItem/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'function_call_output', 'call_id': 'wait-existing-cell', 'output': [{'type': 'input_text', 'text': 'Script completed\nWall time 0.1 seconds\nOutput:\n'}]}})
-            finish()
-            continue
         if turn_mode == 'permission' and turn_number == 1:
             send({'id': 88, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread, 'turnId': turn, 'itemId': 'pending-permission', 'command': 'alondra-fixture-needs-consent', 'cwd': os.getcwd(), 'reason': 'The fixture waits for explicit user permission', 'availableDecisions': ['accept', 'decline']}})
         elif turn_mode == 'blocked_command' and turn_number == 1:
@@ -205,12 +140,8 @@ for line in sys.stdin:
                 child.stdout.close()
                 note('item/completed', {'threadId': thread, 'turnId': command_turn, 'item': {'type': 'commandExecution', 'id': 'owned-command', 'command': 'fixture command waits on its explicit barrier', 'cwd': os.getcwd(), 'processId': str(pid), 'status': 'completed', 'aggregatedOutput': 'The explicit child barrier was released', 'exitCode': code}})
             threading.Thread(target=completed_owned_command, daemon=True).start()
-        elif turn_mode == 'batch_live_cell':
-            call = {'type': 'custom_tool_call', 'namespace': 'functions', 'name': 'exec', 'call_id': 'batch-live-cell', 'input': 'await new Promise(() => {})', 'internal_chat_message_metadata_passthrough': {'turn_id': turn}}
-            output = {'type': 'custom_tool_call_output', 'call_id': 'batch-live-cell', 'output': [{'type': 'input_text', 'text': 'Script running with cell ID 1\nWall time 0.0 seconds\nOutput:\n'}], 'internal_chat_message_metadata_passthrough': {'turn_id': turn}}
-            for item in [call, output]:
-                rollout_record(thread, 'response_item', item)
-                if raw_enabled: note('rawResponseItem/completed', {'threadId': thread, 'turnId': turn, 'item': item})
+        elif turn_mode == 'paused_cell':
+            note('item/started', {'threadId': thread, 'turnId': turn, 'item': {'type': 'mcpToolCall', 'id': 'exec-paused-' + turn, 'server': 'fixture', 'tool': 'barrier', 'status': 'inProgress', 'arguments': {}}})
             finish()
         elif turn_mode in ('bad_request', 'context_exceeded'):
             kind = 'badRequest' if turn_mode == 'bad_request' else 'contextWindowExceeded'
@@ -222,7 +153,6 @@ for line in sys.stdin:
         elif turn_mode == 'child' and turn_number == 1:
             child_pending = True
             note('item/started', {'threadId': thread, 'turnId': turn, 'item': {'type': 'collabAgentToolCall', 'id': 'spawn-child', 'tool': 'spawnAgent', 'status': 'inProgress', 'senderThreadId': thread, 'receiverThreadIds': [], 'agentsStates': {}}})
-            rollout_record('native-child', 'turn_context', {'turn_id': child_turn})
             note('turn/started', {'threadId': 'native-child', 'turn': {'id': child_turn, 'status': 'inProgress'}})
             note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'collabAgentToolCall', 'id': 'spawn-child', 'tool': 'spawnAgent', 'status': 'completed', 'senderThreadId': thread, 'receiverThreadIds': ['native-child'], 'agentsStates': {'native-child': {'status': 'running', 'message': None}}}})
             note('item/completed', {'threadId': 'native-child', 'turnId': child_turn, 'item': {'type': 'plan', 'id': 'child-plan', 'text': 'This child plan must never become the whole task plan'}})

@@ -28,18 +28,12 @@ pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Resu
 fn failed(why: String) -> Output { Output { stream: Stream::native(None), diagnostic: bounded(why), exit_ok: false } }
 
 #[derive(Default)]
-struct NativeCell {
-    cell: Option<String>,
-    finished: bool,
-}
-#[derive(Default)]
 struct NativeTurn {
     thread: Option<String>,
     turn: Option<String>,
     consumed: bool,
     process: Option<String>,
     completed: bool,
-    cells: BTreeMap<(String, String), NativeCell>,
     accepted_model: Option<String>,
     rerouted: bool,
     usage_baseline: Option<(i64, i64, i64)>,
@@ -85,11 +79,6 @@ impl NativeTurn {
             anyhow::ensure!(self.thread.as_deref() == Some(thread), "A Codex event belongs to a different thread");
         }
         match method {
-            "alondra/codeCellStarted" | "alondra/codeCellFinished" | "alondra/codeCellContinuation" => {
-                self.cell(method, params)?;
-                if method=="alondra/codeCellStarted" { stream.acted=true; }
-                if self.completed && self.has_live_cells() { self.unfinished(stream); }
-            }
             "alondra/inputAccepted" => {
                 self.scope(params, false)?;
                 anyhow::ensure!(params["inputId"] == input, "A native acceptance names a different batch input");
@@ -179,10 +168,6 @@ impl NativeTurn {
                 } else if !stream.denied && !stream.native_request_rejected {
                     stream.error = None;
                 }
-                if stream.native_work_unfinished || self.has_live_cells() {
-                    self.unfinished(stream);
-                    report.turn_completed=false;
-                }
             }
             "error" => failure(&params["error"], stream),
             "alondra/transportFailed" => { stream.error = Some(format!("Codex transport failed: {}", params["code"])); }
@@ -194,46 +179,6 @@ impl NativeTurn {
         Ok(report)
     }
 
-    fn has_live_cells(&self) -> bool { self.cells.values().any(|cell| !cell.finished) }
-    fn unfinished(&self, stream: &mut Stream) {
-        stream.native_work_unfinished=true;
-        stream.acted=true;
-        stream.result=false;
-        stream.success=false;
-        stream.error=Some("The Codex batch ended its turn with native code cells still running. Stop its process and reconcile its recorded operations before explicitly retrying.".into());
-    }
-    fn cell(&mut self, method: &str, params: &Value) -> anyhow::Result<()> {
-        self.scope(params,true)?;
-        let process=native_label(params,"processGeneration").ok_or_else(||anyhow::anyhow!("The native cell process identity is missing"))?;
-        anyhow::ensure!(self.process.as_deref()==Some(process),"The native cell belongs to another process");
-        let turn=native_label(params,"turnId").ok_or_else(||anyhow::anyhow!("The native cell turn is missing"))?;
-        let call=native_label(params,"callId").ok_or_else(||anyhow::anyhow!("The native cell call identity is missing"))?;
-        let id=match params.get("cellId") { None=>None,Some(value)=>Some(value.as_str().filter(|value| !value.is_empty() && value.len()<=20 && value.bytes().all(|byte|byte.is_ascii_digit())).ok_or_else(||anyhow::anyhow!("The native cell identity is invalid"))?) };
-        let key=(turn.to_owned(),call.to_owned());
-        if method=="alondra/codeCellStarted" {
-            anyhow::ensure!(id.is_none_or(|id|!self.cells.iter().any(|(other,known)|other!=&key && !known.finished && known.cell.as_deref()==Some(id))),"A native cell is already bound to another call");
-            if let Some(known)=self.cells.get_mut(&key) {
-                anyhow::ensure!(known.cell.as_deref().is_none_or(|known|Some(known)==id),"The native cell identity changed");
-                anyhow::ensure!(!known.finished || known.cell.as_deref()==id,"A completed native cell cannot acquire a new identity");
-                if let Some(id)=id { known.cell=Some(id.into()); }
-            } else {
-                anyhow::ensure!(self.cells.len()<128,"The native batch cell inventory is full");
-                self.cells.insert(key,NativeCell{cell:id.map(str::to_owned),finished:false});
-            }
-            return Ok(());
-        }
-        let known=self.cells.get_mut(&key).ok_or_else(||anyhow::anyhow!("The native cell was not started by this batch"))?;
-        anyhow::ensure!(known.cell.as_deref()==id,"The native cell terminal names a different cell");
-        if method=="alondra/codeCellContinuation" {
-            anyhow::ensure!(!known.finished && params["originTurnId"]==turn && params["activationId"]==call,"The native cell continuation is not this live batch work");
-            return Ok(());
-        }
-        let observed=native_label(params,"observedCallId").ok_or_else(||anyhow::anyhow!("The native cell terminal has no observed call"))?;
-        anyhow::ensure!(id.is_some() || observed==call,"An unbound native cell needs its original synchronous output");
-        anyhow::ensure!(matches!(params["status"].as_str(),Some("completed"|"failed"|"terminated")),"The native cell terminal has no positive outcome");
-        known.finished=true;
-        Ok(())
-    }
     fn scope(&self, params: &Value, require_turn: bool) -> anyhow::Result<()> {
         let thread = params["threadId"].as_str().filter(|id| !id.is_empty());
         anyhow::ensure!(thread.is_some() && thread == self.thread.as_deref(), "The native metadata belongs to a different or missing thread");
@@ -395,54 +340,6 @@ mod tests {
     fn ready(native: &mut NativeTurn, stream: &mut Stream) {
         native.fold(&json!({"method":"alondra/threadReady","params":{"threadId":"native","logicalConversationId":"batch","processGeneration":"process"}}),"input","batch",stream).unwrap();
         native.fold(&json!({"method":"alondra/inputAccepted","params":{"threadId":"native","turnId":"turn","inputId":"input","model":"advertised-model"}}),"input","batch",stream).unwrap();
-    }
-    fn consumed(native: &mut NativeTurn, stream: &mut Stream) {
-        ready(native,stream);
-        native.fold(&json!({"method":"item/started","params":{"threadId":"native","turnId":"turn","item":{"type":"userMessage","clientId":"input"}}}),"input","batch",stream).unwrap();
-    }
-    fn cell_event(method:&str,call:&str,cell:Option<&str>)->Value {
-        let mut params=json!({"threadId":"native","turnId":"turn","callId":call,"processGeneration":"process"});
-        if let Some(cell)=cell {params["cellId"]=json!(cell);}
-        if method=="alondra/codeCellFinished" {params["observedCallId"]=json!(call);params["status"]=json!("completed");}
-        json!({"method":method,"params":params})
-    }
-    fn completed()->Value {json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"completed"}}})}
-
-    #[test]
-    fn root_completion_with_a_live_native_cell_parks_without_inventing_or_losing_effect_references() {
-        let mut native=NativeTurn::default();let mut stream=Stream::native(Some("input"));consumed(&mut native,&mut stream);
-        native.fold(&cell_event("alondra/codeCellStarted","original",None),"input","batch",&mut stream).unwrap();
-        native.fold(&cell_event("alondra/codeCellStarted","original",Some("1")),"input","batch",&mut stream).unwrap();
-        let report=native.fold(&completed(),"input","batch",&mut stream).unwrap();
-        assert_eq!(report.turn_completed,false,"live cell incorrectly closed the batch as {:?}",stream.end(true,"","batch",false));
-        assert!(stream.native_work_unfinished && stream.acted && !stream.result && !stream.success);
-        assert!(matches!(stream.end(true,"","batch",false),crate::orchestrator_process::BatchEnd::Interrupted{calls,..} if calls.is_empty()),"no observed mutation is invented, but unresolved native work cannot automatically retry");
-        native.fold(&json!({"method":"item/started","params":{"threadId":"native","turnId":"turn","item":{"type":"mcpToolCall","tool":"launch","status":"inProgress"}}}),"input","batch",&mut stream).unwrap();
-        native.fold(&cell_event("alondra/codeCellFinished","original",Some("1")),"input","batch",&mut stream).unwrap();
-        assert!(stream.native_work_unfinished && !stream.result,"late completion cannot retroactively acknowledge a batch stopped with live work");
-        stream.limited=true;
-        assert!(matches!(stream.end(true,"","batch",false),crate::orchestrator_process::BatchEnd::Interrupted{calls,..} if calls==["launch"]),"actual MCP references survive and quota cannot override the required reconciliation");
-    }
-
-    #[test]
-    fn only_positive_terminals_of_this_native_process_turn_and_call_allow_a_clean_batch_end() {
-        let mut native=NativeTurn::default();let mut stream=Stream::native(Some("input"));consumed(&mut native,&mut stream);
-        native.fold(&cell_event("alondra/codeCellStarted","synchronous",None),"input","batch",&mut stream).unwrap();
-        native.fold(&cell_event("alondra/codeCellFinished","synchronous",None),"input","batch",&mut stream).unwrap();
-        native.fold(&cell_event("alondra/codeCellStarted","yielded",Some("2")),"input","batch",&mut stream).unwrap();
-        let mut terminal=cell_event("alondra/codeCellFinished","yielded",Some("2"));terminal["params"]["observedCallId"]=json!("exact-native-wait");
-        native.fold(&terminal,"input","batch",&mut stream).unwrap();
-        let report=native.fold(&completed(),"input","batch",&mut stream).unwrap();
-        assert!(report.turn_completed && stream.success && stream.result && !stream.native_work_unfinished);
-        assert_eq!(stream.end(true,"","batch",false),crate::orchestrator_process::BatchEnd::Handled);
-        for (field,value) in [("threadId","other"),("turnId","other"),("processGeneration","old"),("callId","other"),("cellId","99"),("status","running")] {
-            let mut native=NativeTurn::default();let mut stream=Stream::native(Some("input"));consumed(&mut native,&mut stream);
-            native.fold(&cell_event("alondra/codeCellStarted","original",Some("1")),"input","batch",&mut stream).unwrap();
-            let mut wrong=cell_event("alondra/codeCellFinished","original",Some("1"));wrong["params"][field]=json!(value);
-            assert!(native.fold(&wrong,"input","batch",&mut stream).is_err(),"{field} cannot settle another cell");
-            assert!(!native.fold(&completed(),"input","batch",&mut stream).unwrap().turn_completed);
-            assert!(matches!(stream.end(true,"","batch",false),crate::orchestrator_process::BatchEnd::Interrupted{..}));
-        }
     }
 
     #[test]
@@ -629,7 +526,7 @@ mod policy_integration{
 
     #[tokio::test]
     async fn actual_native_request_rejections_park_the_executor_without_retry_or_account_rotation() {
-        for mode in ["bad_request", "context_exceeded", "batch_live_cell"] {
+        for mode in ["bad_request", "context_exceeded"] {
             let f=crate::domain_orchestrator::testing::fixture();
             let key=AccountKey::native(Provider::Codex);
             let text=r#"[accounts]
@@ -660,15 +557,6 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             assert!(runtime.active_run.is_some(), "the existing actionable interruption remains pending");
             assert!(runtime.batch_handoffs.is_empty(), "request rejection cannot trigger quota account rotation");
             assert_eq!(f.domain().state().unwrap().accounts, accounts); assert_eq!(f.domain().state().unwrap().account_usage, usage);
-            if mode=="batch_live_cell" {
-                let conn=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
-                let mut query=conn.prepare("SELECT report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor").unwrap();
-                let reports:Vec<Value>=query.query_map([runtime.last_run_id.as_deref().unwrap()],|row|row.get::<_,String>(0)).unwrap().map(|row|serde_json::from_str(&row.unwrap()).unwrap()).collect();
-                assert!(reports.iter().any(|report|report["kind"]=="alondra/codeCellStarted"));
-                assert!(reports.iter().any(|report|report["kind"]=="turn/completed" && report["turn_completed"]==false));
-                assert!(reports.iter().any(|report|report["kind"]=="process_exited" && report["turn_completed"]==false),"the exact native process exit must be committed before returning the interrupted batch");
-                assert!(!reports.iter().any(|report|report["turn_completed"]==true));
-            }
             let run = runtime.last_run_id.clone();
             f.tick().await;
             let after = crate::domain_orchestrator::load(&f.executor.home).unwrap(); assert_eq!(after.last_run_id, run); assert!(after.retry_at.is_none());

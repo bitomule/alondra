@@ -2,32 +2,7 @@ use super::*;
 use crate::accounts::{AccountBilling, AccountKey, AccountState};
 use crate::model_selection::{PendingTaskSelection, TaskSelection};
 
-fn scoped_code_cell(turn: &str, work: &str, generation: u64) -> bool {
-    let prefix = format!("codex:{generation}:");
-    let Some((process, kind)) = work.strip_prefix(&prefix).and_then(|rest| rest.split_once(':')) else { return false };
-    let Some(identity) = kind.strip_prefix("cell:") else { return false };
-    let Ok((thread, origin, call)) = serde_json::from_str::<(String, String, String)>(identity) else { return false };
-    !process.is_empty() && !thread.is_empty() && !origin.is_empty() && !call.is_empty()
-        && turn == format!("{prefix}{process}:turn:{origin}")
-}
-
 impl DomainState {
-    pub fn has_live_native_code_cells(&self, task_id: &TaskId) -> bool {
-        if self.tasks.get(task_id).is_none_or(|task| task.provider != crate::accounts::Provider::Codex) { return false }
-        let Ok(lifecycle) = self.lifecycle_of(task_id) else { return false };
-        let Some(execution) = lifecycle.execution() else { return false };
-        let mut live = std::collections::BTreeSet::new();
-        for record in self.lifecycle_journal.get(task_id).into_iter().flatten() {
-            match record {
-                LifecycleRecord::Admitted { .. } | LifecycleRecord::HostEnded { .. } => live.clear(),
-                LifecycleRecord::WorkStarted { turn, work } if scoped_code_cell(turn, work, execution.generation()) => { live.insert(work.clone()); }
-                LifecycleRecord::WorkEnded { work, .. } => { live.remove(work); }
-                _ => {}
-            }
-        }
-        !live.is_empty()
-    }
-
     pub fn task_selection_stamp(&self, task_id: &TaskId) -> Option<String> {
         use sha2::Digest;
         let task = self.tasks.get(task_id)?;
@@ -48,10 +23,6 @@ impl DomainState {
         if selection.account.as_ref()!=task.selection.as_ref().and_then(|previous|previous.account.as_ref())
             || selection.paid_account_grant.as_ref()!=task.selection.as_ref().and_then(|previous|previous.paid_account_grant.as_ref()) {
             return fail("invalid_input","An active model change preserves the original account choice and payment authorization");
-        }
-        if task.selection.as_ref().and_then(|selection| selection.effective.as_ref()).is_some_and(|effective| effective.model != pending.model.model)
-            && self.has_live_native_code_cells(task_id) {
-            return fail("native_code_cells_active", "Finish the running native code cells before changing this model; their continuation will use the current model");
         }
         if task.pending_selection.is_some() { return fail("selection_pending", "A selection change is already pending for this task"); }
         if self.task_selection_stamp(task_id).as_deref() != Some(expected_selection) { return fail("stale_selection", "The task's selection or execution changed; refresh before choosing again"); }
@@ -93,17 +64,3 @@ impl DomainState {
     }
 }
 
-#[cfg(test)]
-mod cell_scope_tests {
-    use super::scoped_code_cell;
-    #[test]
-    fn only_the_canonical_cell_kind_in_the_current_execution_is_a_model_fence() {
-        let cell = r#"codex:4:process:cell:["thread","origin","call:cell:fake"]"#;
-        assert!(scoped_code_cell("codex:4:process:turn:origin", cell, 4));
-        assert!(!scoped_code_cell("codex:4:process:turn:other", cell, 4));
-        assert!(!scoped_code_cell("codex:4:other:turn:origin", cell, 4));
-        assert!(!scoped_code_cell("codex:4:process:turn:origin", cell, 5));
-        assert!(!scoped_code_cell("codex:4:process:turn:origin", r#"codex:4:process:work:item:cell:["thread","origin","call"]"#, 4));
-        assert!(!scoped_code_cell("codex:4:process:turn:origin", "codex:4:process:cell:untrusted code", 4));
-    }
-}

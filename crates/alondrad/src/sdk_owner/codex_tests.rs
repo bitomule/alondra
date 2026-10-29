@@ -270,58 +270,6 @@ fn codex_transition_rechecks_authority_and_stale_selection_without_persisting_a_
     driver.stop().unwrap();
 }
 #[tokio::test]
-async fn a_cell_started_after_a_model_request_aborts_the_change_and_waits_on_the_original_model() {
-    cell_model_request_race(false).await;
-}
-
-#[tokio::test]
-async fn a_catalog_refresh_does_not_trap_a_running_cell_behind_an_unapplied_model_request() {
-    cell_model_request_race(true).await;
-}
-
-async fn cell_model_request_race(refresh_catalog: bool) {
-    use crate::domain_store::provider_transition::Phase;
-    let slice=Slice::new();let trace=configured(&slice,"hold");
-    let backend_path=slice._home.join("codex-backend.json");let mut backend:SdkBackend=serde_json::from_slice(&std::fs::read(&backend_path).unwrap()).unwrap();
-    backend.native_environment.insert("ALONDRA_FAKE_MODELS".into(),"fixture-model,fixture-second".into());
-    backend.native_environment.insert("ALONDRA_FAKE_FINISH_ON_MCP_STATUS".into(),"1".into());
-    let fixture=slice._home.join("cell-model-fixture.json");std::fs::write(&fixture,br#"{"codeCellOnStatus":true}"#).unwrap();backend.native_environment.insert("ALONDRA_FAKE_ACCOUNT_FILE".into(),fixture.display().to_string());
-    std::fs::write(backend_path,serde_json::to_vec(&backend).unwrap()).unwrap();slice.domain.enable_sdk(slice.backend.clone());
-    let mut driver=launch(&slice);slice.until(&mut driver,|slice|Slice::lifecycle(&slice.domain).activity()==ActivityView::Working);let instance=driver.agent.clone();
-    assert!(!slice.domain.state().unwrap().has_live_native_code_cells(&TASK.into()));
-    let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target.clone(),&stamp);
-    let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);let published=pulse.clone();slice.on_acknowledge(move||pulse.send_modify(|count|*count+=1));slice.domain.before_owner_publish(move||published.send_modify(|count|*count+=1));slice.domain.add_sdk_owner(Owner::spawn(driver));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Draining);
-    slice.run(&system(),"create-cell-after-model-request",Command::ReadMcpStatus{task_id:TASK.into()});
-    while slice.observations_with("alondra/codeCellContinuation")==0{changed.changed().await.unwrap();}
-    let state=slice.domain.state().unwrap();assert!(state.tasks[&TaskId::from(TASK)].pending_selection.is_some());assert!(state.has_live_native_code_cells(&TASK.into()));
-    assert_eq!(state.lifecycle_of(&TASK.into()).unwrap().activity(),ActivityView::OwnWork);
-    assert_eq!(state.lifecycle_of(&TASK.into()).unwrap().pending_inputs().len(),1,"exactly one durable cell follow-up waits behind the model fence");
-    if refresh_catalog {
-        let mut catalog = state.model_catalogs.iter().find(|catalog| catalog.account == AccountKey::native(Provider::Codex)).unwrap().clone();
-        catalog.revision = "refreshed-catalog".into();
-        slice.run(&system(), "refresh-catalog-while-cell-running", Command::RecordModelCatalog { catalog });
-    }
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Aborted);
-    let state=slice.domain.state().unwrap();let task=&state.tasks[&TaskId::from(TASK)];
-    assert_eq!(task.selection.as_ref().unwrap().requested,Some(target.model.clone()));assert_eq!(task.selection.as_ref().unwrap().effective,selection().effective);assert!(task.pending_selection.is_none());assert_eq!(task.account_key(),AccountKey::native(Provider::Codex));
-    assert!(state.interactions.values().any(|notice|notice.body=="native_code_cells_active" && !notice.blocking));
-    assert!(!crate::provider_transition::holds_execution(&slice.domain,&TASK.into()));assert!(slice.control_rows().iter().all(|(kind,_,_)|kind!="set_model"));
-    while slice.observations_with("alondra/codeCellFinished")==0 || !Slice::lifecycle(&slice.domain).pending_inputs().is_empty() || Slice::lifecycle(&slice.domain).activity()!=ActivityView::Resting {changed.changed().await.unwrap();}
-    let native=transcript(&trace);let turns:Vec<_>=native.iter().filter(|message|message["method"]=="turn/start").collect();let follow=turns.iter().find(|message|message["params"]["input"][0]["text"].as_str().is_some_and(|text|text.contains("functions.wait"))).unwrap();
-    assert_eq!(follow["params"]["model"],"fixture-model");assert_eq!(follow["params"]["threadId"],turns[0]["params"]["threadId"]);
-    let(intent,mut target,stamp)=transition_target(&slice,"fixture-second","high");
-    target.catalog_revision = slice.domain.state().unwrap().model_catalogs.iter().find(|catalog| catalog.account == AccountKey::native(Provider::Codex)).unwrap().revision.clone();
-    native_transition_request(&slice,intent,target.clone(),&stamp);
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Draining);
-    while !slice.control_rows().iter().any(|(kind,_,status)|kind=="set_model" && status=="handed"){changed.changed().await.unwrap();}
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Done);
-    let state=slice.domain.state().unwrap();let task=&state.tasks[&TaskId::from(TASK)];assert_eq!(task.agent_id,Some(instance));assert!(task.pending_selection.is_none());assert_eq!(task.selection.as_ref().unwrap().effective,Some(target));assert!(!state.has_live_native_code_cells(&TASK.into()));
-    assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="initialize").count(),1);
-    slice.domain.stop_sdk_owners();
-}
-
-#[tokio::test]
 async fn a_positive_native_model_control_rejection_is_aborted_and_can_be_retried_without_a_new_session() {
     use crate::domain_store::provider_transition::Phase;
     let slice=Slice::new();let trace=configured(&slice,"complete");
@@ -628,6 +576,20 @@ fn codex_managed_child_keeps_work_after_parent_turn_and_queues_one_durable_conti
     assert_eq!(journal.iter().filter(|record|matches!(record,LifecycleRecord::TurnStarted{input,..} if input==wakes[0])).count(),1);
     assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkStarted{work,..} if work.contains("spawn-child"))));assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkContinued{..})));
     assert_ne!(Slice::lifecycle(&slice.domain).activity(),alondra_domain::ActivityView::OwnWork);driver.stop().unwrap();
+}
+
+// Codex ends a turn with a Code Mode script still waiting on a tool and advances the script only in
+// a later turn: the node rests instead of owning that tool for good.
+#[test]
+fn a_turn_that_ends_while_its_script_waits_on_a_tool_leaves_the_node_resting(){
+    let slice=Slice::new();configured(&slice,"paused_cell");let mut driver=launch(&slice);
+    let ended=|slice:&Slice|slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().any(|record|matches!(record,LifecycleRecord::TurnEnded{..}));
+    while !ended(&slice) || driver.pending_permits()>0 {advance(&mut driver)}
+    let state=slice.domain.state().unwrap();let journal=&state.lifecycle_journal[&TaskId::from(TASK)];
+    let paused=journal.iter().find_map(|record|match record{LifecycleRecord::WorkStarted{work,..} if work.contains("exec-paused")=>Some(work.clone()),_=>None}).expect("the script's tool started as work");
+    assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkEnded{work,..} if *work==paused)),"the tool still open at the end of its turn ended with it");
+    assert_ne!(Slice::lifecycle(&slice.domain).activity(),alondra_domain::ActivityView::OwnWork);
+    driver.stop().unwrap();
 }
 
 #[test]

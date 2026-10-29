@@ -3,9 +3,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { CodexRolloutFollower } from './codex-rollout.js';
 import type { Decision, DecisionKind } from './frame.js';
-import { ControlNotApplied, InputNotOffered, type DecisionRequest, type HostConfiguration, type HostSession, type Observation } from './host-session.js';
+import { InputNotOffered, type DecisionRequest, type HostConfiguration, type HostSession, type Observation } from './host-session.js';
 
 export const CODEX_VERSION = 'codex-app-server-0.163.0';
 export const CODEX_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_sign_in', 'native_account_policy', 'causal_child_continuations'] as const;
@@ -14,8 +13,6 @@ const MAX_PENDING = 64;
 type Json = Record<string, unknown>;
 type RequestId = string | number;
 type Pending = { method: string; resolve: (value: Json) => void; reject: (error: Error) => void };
-type CodeCell = { thread: string; turn: string; call: string; cell?: string; ended: boolean; continued: boolean; parentActivation?: string };
-type CodeCall = { cell: CodeCell; kind: 'exec' | 'wait'; output?: string };
 type Asked = { id: RequestId; method: string; kind: DecisionKind; epoch: number; payload: Json; tool: string | null };
 const object = (value: unknown): Json => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : {};
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -93,19 +90,6 @@ export class CodexSession implements HostSession {
   private childItems = new Set<string>();
   private childPolls = new Map<string, ReturnType<typeof setTimeout>>();
   private mapping?: string;
-  private codeCells = new Map<string, CodeCell>();
-  private codeCalls = new Map<string, CodeCall>();
-  private nativeTurns = new Map<string, string>();
-  private completedRootTurn?: string;
-  private childCellParents = new Map<string, string>();
-  private pendingChildCode = new Map<string, Json[]>();
-  private pendingChildCodeCount = 0;
-  private rolloutFollowers = new Map<string, CodexRolloutFollower>();
-  private childRolloutOpening = new Map<string, Promise<void>>();
-  private childTurnWitnesses = new Map<string, Set<string>>();
-  private childTurnWitnessCount = 0;
-  private notificationTail: Promise<void> = Promise.resolve();
-  private rawCodeEvents = true;
 
   constructor(private config: HostConfiguration) {
     if (!config.sessionId || !/^[0-9a-f-]{36}$/.test(config.sessionId)) throw new Error('Codex conversation identity absent');
@@ -129,7 +113,7 @@ export class CodexSession implements HostSession {
       this.pending.clear();
       for (const [key, asked] of this.asked) this.settled(key, asked, 'cancelled');
       this.config.observe({ type: 'process_exited', exit_code: code, signal });
-      void Promise.all([...this.rolloutFollowers.values()].map((follower) => follower.close())).then(() => this.finish(), () => this.finish());
+      this.finish();
     });
     this.child.stdin.on('error', () => this.fail('native_input_closed'));
     this.ready = this.initialize();
@@ -180,7 +164,7 @@ export class CodexSession implements HostSession {
             this.notificationBytes += line.length;
             if (this.notifications.length >= 4096 || this.notificationBytes > 16 * MAX_NATIVE_LINE) throw new Error('Native notification capacity');
             this.notifications.push(message);
-          } else this.receiveNotification(message);
+          } else this.notification(message);
         } else if (typeof message.id === 'string' || typeof message.id === 'number') {
           const key = requestKey(message.id); const pending = this.pending.get(key);
           if (!pending) continue;
@@ -334,13 +318,11 @@ export class CodexSession implements HostSession {
     const existing = this.readMapping();
     if (this.config.resume && !existing) throw new Error('Codex native identity unavailable');
     const result = existing ? await this.rpc('thread/resume', { ...args, threadId: existing, excludeTurns: true }) :
-      await this.rpc('thread/start', { ...args, experimentalRawEvents: true, ephemeral: false, environments: this.config.orchestrator ? [] : null });
+      await this.rpc('thread/start', { ...args, ephemeral: false, environments: this.config.orchestrator ? [] : null });
     if (result.modelProvider !== 'openai') throw new NativeAccountRefusal('native_model_provider_unsupported');
     const id = text(object(result.thread).id);
     if (!id || (existing && existing !== id)) throw new Error('Codex thread identity differs');
     this.thread = id;
-    this.rawCodeEvents = !existing;
-    if (existing) await this.openRollout(id);
     this.model ??= text(result.model);
     this.writeMapping(id);
     this.emit('alondra/threadReady', { threadId: id, logicalConversationId: this.config.sessionId, cwd: this.config.cwd, ...(this.model ? { model: this.model } : {}), processGeneration: this.config.processGeneration ?? this.config.sessionId }, 'initialized');
@@ -392,7 +374,6 @@ export class CodexSession implements HostSession {
     let input = this.queue[0];
     try {
       await this.ready;
-      await this.drainCellEvidence();
       if (this.turn || this.closed || this.closing) return;
       await this.verifyAccount();
       if (this.turn || this.closed || this.closing) return;
@@ -412,7 +393,7 @@ export class CodexSession implements HostSession {
         this.emit('alondra/planContinuationAccepted', { threadId: this.thread, turnId: turn, inputId: input.id, requestId: input.plan.key, epoch: input.plan.entry.epoch });
       } else this.emit('alondra/inputAccepted', { threadId: this.thread, turnId: turn, inputId: input.id, ...(this.model ? { model: this.model } : {}) });
       this.starting = false;
-      for (const message of this.notifications.splice(0)) this.receiveNotification(message);
+      for (const message of this.notifications.splice(0)) this.notification(message);
       this.notificationBytes = 0;
     } catch (error) {
       if (error instanceof NativeAccountRefusal) {
@@ -424,75 +405,12 @@ export class CodexSession implements HostSession {
     }
     finally { this.pumping = false; if (!this.turn && this.queue.length > 0 && !this.closed && !this.closing) void this.pump(); }
   }
-  private async openRollout(threadId: string, currentChildTurns?: ReadonlySet<string>): Promise<void> {
-    const home = this.config.env.CODEX_HOME ?? (this.config.env.HOME ? join(this.config.env.HOME, '.codex') : undefined);
-    if (!home || !isAbsolute(home)) throw new Error('Native Code Mode profile home unavailable');
-    const read = await this.rpc('thread/read', { threadId, includeTurns: false });
-    const thread = object(read.thread), path = text(thread.path);
-    if (thread.id !== threadId || !path) throw new Error('Native Code Mode thread history unavailable');
-    const follower = await CodexRolloutFollower.open({ path, codexHome: home, threadId,
-      ...(currentChildTurns ? { anchor: { currentChildTurns } } : {}),
-      onItem: async (params) => {
-        if (this.closed || this.closing) return;
-        const childWitness = this.children.has(params.threadId) && this.childTurnWitnesses.get(params.threadId)?.has(params.turnId) === true;
-        if (this.nativeTurns.get(params.threadId) === params.turnId || childWitness) this.codeCellItem({ ...params }, childWitness);
-        else this.deferChildCode('rawResponseItem/completed', { ...params });
-      },
-      onError: () => this.fail('native_code_cell_observation_gap'),
-    });
-    this.rolloutFollowers.set(threadId, follower);
-  }
-  private ensureChildRollout(threadId: string): void {
-    if (this.rawCodeEvents || !this.children.has(threadId) || this.rolloutFollowers.has(threadId) || this.childRolloutOpening.has(threadId)) return;
-    const turns = new Set(this.childTurnWitnesses.get(threadId) ?? []);
-    if (!turns.size) return;
-    const opening = this.openRollout(threadId, turns).catch(() => this.fail('native_child_code_observation_gap'));
-    this.childRolloutOpening.set(threadId, opening);
-    void opening.finally(() => { this.childRolloutOpening.delete(threadId); if (!this.closed && !this.closing) void this.checkChild(threadId); });
-  }
-  private async drainRollouts(): Promise<void> {
-    if (!this.rawCodeEvents) for (const child of this.children) this.ensureChildRollout(child);
-    await Promise.all(this.childRolloutOpening.values());
-    for (const follower of this.rolloutFollowers.values()) await follower.drain();
-  }
-  private async drainCellEvidence(): Promise<void> {
-    await this.notificationTail;
-    await this.drainRollouts();
-    if (this.closed || this.closing) throw new Error('Native Code Mode session ended');
-  }
-  private receiveNotification(message: Json): void {
-    if (this.rawCodeEvents) { this.notification(message); return; }
-    this.notificationTail = this.notificationTail.then(async () => {
-      if (this.closed || this.closing) return;
-      if (message.method === 'turn/completed') await this.drainRollouts();
-      this.notification(message);
-    }).catch(() => this.fail('native_code_cell_observation_gap'));
-  }
   private notification(message: Json): void {
-    if (message.method !== 'rawResponseItem/completed') this.raw(message);
+    this.raw(message);
     const params = object(message.params);
     const nativeThread = text(params.threadId);
-    if (nativeThread && nativeThread !== this.thread && nativeThread.length <= 256 && message.method === 'turn/started') {
-      const childTurn = text(object(params.turn).id);
-      if (childTurn && childTurn.length <= 256) {
-        const turns = this.childTurnWitnesses.get(nativeThread) ?? new Set<string>();
-        if (!turns.has(childTurn)) {
-          if (this.childTurnWitnessCount >= 4096 || (!this.childTurnWitnesses.has(nativeThread) && this.childTurnWitnesses.size >= 64)) { this.fail('native_child_turn_observation_capacity'); return; }
-          turns.add(childTurn); this.childTurnWitnessCount++; this.childTurnWitnesses.set(nativeThread, turns);
-        }
-      }
-    }
-    if (nativeThread && (nativeThread === this.thread || this.children.has(nativeThread))) {
-      if (message.method === 'turn/started' && text(object(params.turn).id)) {
-        this.nativeTurns.set(nativeThread, String(object(params.turn).id));
-        this.replayChildCode(nativeThread);
-        this.ensureChildRollout(nativeThread);
-        if (nativeThread === this.thread) this.completedRootTurn = undefined;
-      }
-      if (message.method === 'rawResponseItem/completed') this.codeCellItem(params);
-    } else if (nativeThread && nativeThread.length <= 256) this.deferChildCode(String(message.method), params);
-    if (typeof params.threadId === 'string' && (params.threadId === this.thread || this.children.has(params.threadId)) && (message.method === 'item/started' || message.method === 'item/completed')) this.childActivity(object(params.item), message.method === 'item/started', params.threadId);
-    if (typeof params.threadId === 'string' && this.children.has(params.threadId) && message.method === 'item/completed') void this.checkChild(params.threadId);
+    if (nativeThread && (nativeThread === this.thread || this.children.has(nativeThread)) && (message.method === 'item/started' || message.method === 'item/completed')) this.childActivity(object(params.item), message.method === 'item/started', nativeThread);
+    if (nativeThread && this.children.has(nativeThread) && message.method === 'item/completed') void this.checkChild(nativeThread);
     if (message.method === 'item/completed') {
       const item = object(params.item);
       if (item.type === 'plan' && params.threadId === this.thread && !this.config.orchestrator && typeof item.id === 'string' && typeof item.text === 'string') {
@@ -504,110 +422,12 @@ export class CodexSession implements HostSession {
           this.asked.set(key, { id: key, method: 'alondra/planApproval', kind: 'plan', epoch, payload, tool: item.id });
         }
       }
-
     }
     if (message.method === 'turn/started' && params.threadId === this.thread && text(object(params.turn).id)) this.turn = text(object(params.turn).id);
     if (message.method === 'turn/completed' && params.threadId === this.thread && object(params.turn).id === this.turn) {
       this.turn = undefined;
-      this.completedRootTurn = object(params.turn).status === 'completed' ? text(object(params.turn).id) : undefined;
-      this.continueCodeCells();
       if (this.config.orchestrator) this.close();
       else void this.pump();
-    }
-  }
-  private deferChildCode(method: string, params: Json): void {
-    const thread = String(params.threadId); let retained: Json | undefined;
-    if (method === 'turn/started' && text(object(params.turn).id) && String(object(params.turn).id).length <= 256) retained = { turnId: object(params.turn).id };
-    else if (method === 'rawResponseItem/completed' && text(params.turnId) && String(params.turnId).length <= 256) {
-      const item = object(params.item), call = text(item.call_id);
-      if (!call || call.length > 256 || (item.namespace !== undefined && item.namespace !== null && item.namespace !== 'functions')) return;
-      if (item.type === 'custom_tool_call' && item.name === 'exec') retained = { turnId: params.turnId, item: { type: item.type, call_id: call, name: item.name, namespace: item.namespace } };
-      else if (item.type === 'function_call' && item.name === 'wait' && typeof item.arguments === 'string' && item.arguments.length <= 4096) {
-        let args: Json; try { args = object(JSON.parse(item.arguments)); } catch { return; }
-        if (typeof args.cell_id === 'string' && args.cell_id.length <= 20) retained = { turnId: params.turnId, item: { type: item.type, call_id: call, name: item.name, namespace: item.namespace, arguments: JSON.stringify({ cell_id: args.cell_id }) } };
-      } else if (item.type === 'custom_tool_call_output' || item.type === 'function_call_output') {
-        const first = typeof item.output === 'string' ? item.output : Array.isArray(item.output) && object(item.output[0]).type === 'input_text' ? object(item.output[0]).text : undefined;
-        if (typeof first === 'string') {
-          const header = /^(Script running with cell ID [0-9]{1,20}|Script (?:completed|failed|terminated))\nWall time [^\n]{1,256}\nOutput:\n/.exec(first)?.[0];
-          if (header) retained = { turnId: params.turnId, item: { type: item.type, call_id: call, output: header } };
-        }
-      }
-    }
-    if (!retained) return;
-    if (this.pendingChildCodeCount >= 512 || (!this.pendingChildCode.has(thread) && this.pendingChildCode.size >= 64)) { this.fail('native_child_code_observation_capacity'); return; }
-    const pending = this.pendingChildCode.get(thread) ?? [];
-    pending.push(retained); this.pendingChildCode.set(thread, pending); this.pendingChildCodeCount++;
-  }
-  private replayChildCode(thread: string): void {
-    const retained = this.pendingChildCode.get(thread); if (!retained) return;
-    this.pendingChildCode.delete(thread); this.pendingChildCodeCount -= retained.length;
-    for (const entry of retained) {
-      if (entry.item) this.codeCellItem({ ...entry, threadId: thread });
-      else this.nativeTurns.set(thread, String(entry.turnId));
-    }
-  }
-  private codeKey(thread: string, turn: string, call: string): string { return JSON.stringify([thread, turn, call]); }
-  private codeCellParams(cell: CodeCell): Json {
-    return { threadId: cell.thread, turnId: cell.turn, callId: cell.call,
-      ...(cell.cell ? { cellId: cell.cell } : {}), processGeneration: this.config.processGeneration ?? this.config.sessionId,
-      ...(cell.parentActivation ? { rootThreadId: this.thread, parentActivationId: cell.parentActivation } : {}) };
-  }
-  private hasCodeCells(thread?: string): boolean {
-    return [...this.codeCells.values()].some((cell) => !cell.ended && (!thread || cell.thread === thread));
-  }
-  private continueCodeCells(): void {
-    if (!this.completedRootTurn || this.turn || this.starting || this.config.orchestrator) return;
-    for (const cell of this.codeCells.values()) {
-      if (cell.ended || cell.continued || !cell.cell || (cell.thread !== this.thread && !cell.parentActivation)) continue;
-      cell.continued = true;
-      this.emit('alondra/codeCellContinuation', { ...this.codeCellParams(cell), turnId: this.completedRootTurn,
-        originTurnId: cell.turn, activationId: cell.call });
-    }
-  }
-  private codeCellItem(params: Json, provenChildHistory = false): void {
-    const thread = text(params.threadId), turn = text(params.turnId), item = object(params.item), call = text(item.call_id);
-    if (!thread || !turn || !call || thread.length > 256 || turn.length > 256 || call.length > 256 || /[\x00-\x1f]/.test(call)) return;
-    const key = this.codeKey(thread, turn, call);
-    if ((item.type === 'custom_tool_call' || item.type === 'function_call') && (item.namespace === undefined || item.namespace === null || item.namespace === 'functions')) {
-      const previous = this.codeCalls.get(key);
-      if (previous) return;
-      if (this.nativeTurns.get(thread) !== turn && !(provenChildHistory && this.children.has(thread) && this.childTurnWitnesses.get(thread)?.has(turn))) return;
-      if (this.codeCalls.size >= 4096 || this.codeCells.size >= 4096) { this.fail('native_code_cell_capacity'); return; }
-      if (item.type === 'custom_tool_call' && item.name === 'exec') {
-        if ([...this.codeCells.values()].filter((cell) => !cell.ended).length >= 128) { this.fail('native_live_code_cell_capacity'); return; }
-        const parentActivation = this.childCellParents.get(thread);
-        const cell: CodeCell = { thread, turn, call, ended: false, continued: false, ...(parentActivation ? { parentActivation } : {}) };
-        this.codeCells.set(key, cell); this.codeCalls.set(key, { cell, kind: 'exec' });
-        this.emit('alondra/codeCellStarted', this.codeCellParams(cell));
-      } else if (item.type === 'function_call' && item.name === 'wait' && typeof item.arguments === 'string') {
-        let args: Json; try { args = object(JSON.parse(item.arguments)); } catch { return; }
-        const id = text(args.cell_id);
-        const cells = [...this.codeCells.values()].filter((cell) => cell.thread === thread && cell.cell === id && !cell.ended);
-        if (id && cells.length === 1) this.codeCalls.set(key, { cell: cells[0]!, kind: 'wait' });
-      }
-      return;
-    }
-    if (!['custom_tool_call_output', 'function_call_output'].includes(String(item.type))) return;
-    const pending = this.codeCalls.get(key); if (!pending) return;
-    if ((pending.kind === 'exec') !== (item.type === 'custom_tool_call_output')) return;
-    const first = typeof item.output === 'string' ? item.output : Array.isArray(item.output) && object(item.output[0]).type === 'input_text' ? object(item.output[0]).text : undefined;
-    if (typeof first !== 'string') return;
-    const header = /^(Script running with cell ID ([0-9]{1,20})|Script (completed|failed|terminated))\nWall time [^\n]{1,256}\nOutput:\n/.exec(first);
-    if (!header) return;
-    const status = header[3]; const id = header[2]; const cell = pending.cell;
-    const signature = header[0];
-    if (pending.output !== undefined) { if (pending.output !== signature) this.fail('native_code_cell_output_conflict'); return; }
-    pending.output = signature;
-    if (cell.ended) return;
-    if (id) {
-      if ((cell.cell && cell.cell !== id) || [...this.codeCells.values()].some((other) => other !== cell && !other.ended && other.thread === thread && other.cell === id)) { this.fail('native_code_cell_identity_conflict'); return; }
-      cell.cell = id;
-      this.emit('alondra/codeCellStarted', this.codeCellParams(cell));
-      this.continueCodeCells();
-    } else if (status) {
-      cell.ended = true;
-      this.emit('alondra/codeCellFinished', { ...this.codeCellParams(cell), observedCallId: call, status });
-      if (thread !== this.thread) void this.checkChild(thread);
     }
   }
   private childActivity(item: Json, started: boolean, parent: string): void {
@@ -625,13 +445,10 @@ export class CodexSession implements HostSession {
         if (!this.children.has(child) && !activating) continue;
         if (this.children.size >= 64 && !this.children.has(child)) { this.fail('managed_child_capacity'); return; }
         this.children.add(child);
-        if (parent === this.thread && activating) this.childCellParents.set(child, id);
         const old = this.childStates.get(child);
         const state = object(states[child]);
         const status = text(state.status) ?? (started ? 'running' : old?.status ?? 'unknown');
         this.childStates.set(child, { parent, activation: activating ? id : old?.activation ?? id, status, pending: activating && started, ...(text(state.message) ? { report: text(state.message) } : old?.report && (!activating || old.activation === id) ? { report: old.report } : {}) });
-        this.replayChildCode(child);
-        this.ensureChildRollout(child);
         if (!started) void this.checkChild(child);
       }
     } else if (item.type === 'subAgentActivity') {
@@ -683,23 +500,20 @@ export class CodexSession implements HostSession {
   }
   private async checkChild(child: string): Promise<void> {
     const state = this.childStates.get(child);
-    if (!state || (!this.rawCodeEvents && !this.rolloutFollowers.has(child)) || this.hasCodeCells(child) || state.pending || !['completed', 'errored', 'interrupted', 'shutdown', 'quiescent'].includes(state.status) || this.childChecks.has(child) || this.closed || this.closing) return;
+    if (!state || state.pending || !['completed', 'errored', 'interrupted', 'shutdown', 'quiescent'].includes(state.status) || this.childChecks.has(child) || this.closed || this.closing) return;
     this.childChecks.add(child);
     try {
-      await this.rolloutFollowers.get(child)?.drain();
-      if (this.hasCodeCells(child)) return;
       const history = await this.childHistory(child);
       if (history.active) { this.scheduleChild(child); return; }
       const report = history.report ?? state.report;
       const terminals = await this.backgroundTerminals(child);
       const current = this.childStates.get(child);
       if (!current || current.activation !== state.activation || current.status !== state.status || current.pending || this.closed || this.closing) return;
-      await this.rolloutFollowers.get(child)?.drain();
-      if (terminals.length || this.hasCodeCells(child)) { this.scheduleChild(child); return; }
+      if (terminals.length) { this.scheduleChild(child); return; }
       this.childStates.set(child, { ...state, status: 'quiescent', endedStatus: state.endedStatus ?? state.status, ...(report ? { report } : {}) });
       if ([...this.childStates.values()].some((other) => !['quiescent', 'settled'].includes(other.status))) { this.scheduleChild(child); return; }
       for (const [id, completed] of this.childStates) {
-        if (completed.status !== 'quiescent' || this.hasCodeCells(id)) continue;
+        if (completed.status !== 'quiescent') continue;
         this.emit('alondra/childQuiescent', { threadId: this.thread, childThreadId: id, activationKey: completed.activation, status: completed.endedStatus ?? 'unknown', ...(completed.report ? { report: completed.report } : {}) });
         this.childStates.set(id, { ...completed, status: 'settled' });
       }
@@ -793,14 +607,11 @@ export class CodexSession implements HostSession {
   async interrupt(): Promise<void> { await this.interruptTurn(); }
   async interruptTurn(): Promise<void> {
     await this.ready;
-    try { await this.drainCellEvidence(); } catch { this.close(); await this.finished; throw new Error('Native Code Mode observation unavailable'); }
-    if (this.hasCodeCells()) { await this.forceStop(); return; }
     if (this.turn) await this.rpc('turn/interrupt', { threadId: this.thread, turnId: this.turn });
   }
   async forceStop(): Promise<void> {
     await this.ready;
     try {
-      await this.drainCellEvidence();
       if (this.turn) await this.rpc('turn/interrupt', { threadId: this.thread, turnId: this.turn });
       for (const threadId of [this.thread, ...this.children]) {
         if (!threadId) continue;
@@ -826,8 +637,8 @@ export class CodexSession implements HostSession {
     } while (typeof cursor === 'string');
     return models;
   }
-  async setModel(model: string): Promise<void> { await this.ready; await this.drainCellEvidence(); if (this.hasCodeCells()) throw new ControlNotApplied('native_code_cells_active'); this.model = model; }
-  async setPermissionMode(mode: 'default' | 'plan' | 'dontAsk'): Promise<void> { await this.ready; await this.drainCellEvidence(); this.mode = mode; }
+  async setModel(model: string): Promise<void> { await this.ready; this.model = model; }
+  async setPermissionMode(mode: 'default' | 'plan' | 'dontAsk'): Promise<void> { await this.ready; this.mode = mode; }
   async mcpServerStatus(): Promise<{ name: unknown; status: unknown; error?: unknown }[]> {
     await this.ready;
     const servers: { name: unknown; status: unknown; error?: unknown }[] = [];

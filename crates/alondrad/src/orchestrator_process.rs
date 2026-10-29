@@ -179,7 +179,6 @@ pub struct Stream {
     pub missing_session: bool,
     pub denied: bool,
     pub(crate) native_request_rejected: bool,
-    pub(crate) native_work_unfinished: bool,
     /// Claude said the plan's usage ran out, and the reset it reported in Unix milliseconds.
     pub limited: bool,
     pub limit_reset: Option<i64>,
@@ -223,9 +222,6 @@ impl Stream {
         let effects = self.may_have_effects().then(|| self.alondra_calls.clone());
         if resumed && self.session_missing(exit_ok, diagnostic, session) {
             return BatchEnd::SessionMissing;
-        }
-        if self.native_work_unfinished {
-            return BatchEnd::Interrupted { calls: self.alondra_calls.clone(), why: self.error.clone().unwrap_or_else(|| "Native work remains unresolved; reconcile this batch before retrying".into()) };
         }
         if exit_ok && self.success && self.result && self.initialized && self.error.is_none() {
             return BatchEnd::Handled;

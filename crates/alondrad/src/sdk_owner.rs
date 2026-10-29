@@ -265,10 +265,6 @@ fn native_recovery(domain:&DomainRuntime,backend:&SdkBackend,task:&TaskId,provid
         if !identity.as_ref().is_some_and(NativeAccountIdentity::can_resume_managed){return Err(Failed::new("This Codex session has no retained managed-account proof. A fresh native process cannot resume an unverified or API-key identity".into()))}
         require_native_thread_mapping(&selected,&session,account)?;
     }
-    if state.lifecycle_of(task).ok().and_then(|lifecycle|lifecycle.execution().cloned()).is_some(){
-        let scope=AuthorityScope::new(state.data_epoch.clone()).map_err(|error|Failed::new(format!("{error:?}")))?;
-        domain.own(scope,|owner|{if owner.source_has_live_code_cells(task)?{return Err(alondra_core::domain::DomainError::new("native_work_pending","Wait for the native code cells to finish before recovering this host; their live process cannot be replaced").into())}Ok(())}).map_err(failed("checking live native work before recovery"))?;
-    }
     Ok(Some(NativeRecovery{admission,session,identity}))
 }
 

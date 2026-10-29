@@ -12,7 +12,7 @@ pub use adapter::{CodexConfiguration, CodexWorker, Found, WorkerProfile, answere
 pub use batch::{BatchHost, HostEvent, PendingHostEvent, McpServer, OrchestratorProfile};
 pub use context::{ContextEvent, context_event, native_message, account_refusal};
 pub use ended::{EndedJournal, Retained};
-pub use normalizer::{live_code_cells,background_left,live_scope,blocked_policy,LiveScope};
+pub use normalizer::{background_left,live_scope,blocked_policy,LiveScope};
 pub use records::conversation_session;
 pub use wire::HostOwner;
 pub use alondra_codex_protocol::{Execution, OrchestratorExecution, OrchestratorLane};

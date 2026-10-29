@@ -28,7 +28,7 @@ function outputTexts(output) {
   return output.filter((item) => item.type === 'input_text' && typeof item.text === 'string').map((item) => item.text);
 }
 
-for (const coldResume of [false, true]) test(`an actual native code cell remains owned after its root turn and first MCP finish (${coldResume ? 'cold resume' : 'fresh'})`, { timeout: 60000 }, async (t) => {
+for (const coldResume of [false, true]) test(`an actual Codex script paused after its turn is not work and advances only in a later turn (${coldResume ? 'cold resume' : 'fresh'})`, { timeout: 60000 }, async (t) => {
   const native = process.env.CODEX_NATIVE_EXECUTABLE;
   assert(native, 'This opt-in target requires an explicit CODEX_NATIVE_EXECUTABLE');
   const home = mkdtempSync(join(tmpdir(), 'alondra-codex-native-cells-'));
@@ -47,7 +47,7 @@ for (const coldResume of [false, true]) test(`an actual native code cell remains
   const observed = []; const requests = []; const waiters = []; const rpcErrors = []; const waitEvidence = []; const waitSchemas = [];
   let warming = coldResume; let warmupModelRequests = 0;
   const event = (method) => observed.filter((entry) => entry.type === 'sdk' && entry.payload.method === method);
-  const snapshot = () => ({ modelRequests: requests.length, warmupModelRequests, waitEvidence, waitSchemas, rpcErrors, firstEntered, firstReleased, secondEntered, methods: observed.slice(-32).map((entry) => entry.type === 'sdk' ? { method: entry.payload.method, params: ['alondra/codeCellStarted', 'alondra/codeCellFinished', 'alondra/codeCellContinuation'].includes(entry.payload.method) ? entry.payload.params : undefined } : { type: entry.type }) });
+  const snapshot = () => ({ modelRequests: requests.length, warmupModelRequests, waitEvidence, waitSchemas, rpcErrors, firstEntered, firstReleased, secondEntered, methods: observed.slice(-32).map((entry) => entry.type === 'sdk' ? { method: entry.payload.method } : { type: entry.type }) });
   const wake = () => { for (const waiter of waiters.splice(0)) waiter(); };
   t.signal.addEventListener('abort', wake, { once: true });
   let firstEntered = false; let firstReleased = false; let secondEntered = false;
@@ -146,7 +146,6 @@ text('ALONDRA_CELL_DONE:'+JSON.stringify({first,second}));`;
     session.offer('00000000-0000-4000-8000-000000000044', 'Acknowledge this warmup without calling tools.');
     await until(() => event('turn/completed').length === 1);
     assert.equal(warmupModelRequests, 1); assert.equal(firstEntered, false);
-    assert.equal(event('alondra/codeCellStarted').length, 0, 'Warmup performs no native tool effects');
     const retained = await session.rpc('thread/read', { threadId: originalThread, includeTurns: false });
     assert.equal(typeof retained.thread.path, 'string', 'A completed native warmup materializes its canonical rollout');
     session.close(); await session.finished; observed.length = 0; requests.length = 0; warming = false;
@@ -157,27 +156,16 @@ text('ALONDRA_CELL_DONE:'+JSON.stringify({first,second}));`;
   session.offer('00000000-0000-4000-8000-000000000042', 'Start the fixture cell and end this root turn while it stays alive.');
   await until(() => event('turn/completed').length === 1 && firstEntered);
   assert(cellId);
-  assert(event('alondra/codeCellStarted').some((entry) => entry.payload.params.cellId === cellId), 'The model waits the same numeric ID positively reported by the native host');
-  assert.equal(event('alondra/codeCellFinished').length, 0);
+  const idle = event('thread/status/changed').at(-1);
+  assert.equal(idle.payload.params.status.type, 'idle', 'Codex itself counts the thread idle while the script is paused');
   assert.equal(secondEntered, false);
   firstReleased = true; firstResponse.writeHead(200, { 'content-type': 'application/json' }); firstResponse.end('{"phase":"first","released":true}');
   await until(() => observed.some((entry) => entry.type === 'sdk' && entry.payload.method === 'item/completed' && entry.payload.params?.item?.type === 'mcpToolCall' && entry.payload.params.item.tool === 'barrier' && entry.payload.params.item.status === 'completed'));
-  assert.equal(event('alondra/codeCellFinished').length, 0, 'MCP completion and turn completion cannot close the still-live cell');
-  assert.equal(secondEntered, false, 'The later native callback remains queued while no root sampling worker exists');
+  assert.equal(secondEntered, false, 'The paused script advances only in a later turn');
   session.offer('00000000-0000-4000-8000-000000000043', `Continue this same native session and wait for the outstanding cell ${cellId}.`);
   await until(() => event('turn/completed').length === 2);
   assert(!fixtureFailure, fixtureFailure?.stack);
   assert(secondEntered); assert.equal(requests.length, 4);
-  const started = event('alondra/codeCellStarted'); const finished = event('alondra/codeCellFinished');
-  assert(started.length >= 1); assert.equal(new Set(started.map((entry) => entry.payload.params.callId)).size, 1); assert.equal(finished.length, 1);
-  assert.equal(started[0].payload.params.callId, 'fixture-exec');
-  assert.equal(finished[0].payload.params.callId, 'fixture-exec');
-  assert.equal(finished[0].payload.params.cellId, cellId);
-  assert.equal(finished[0].payload.params.observedCallId, 'fixture-wait');
-  assert.equal(finished[0].payload.params.turnId, started[0].payload.params.turnId);
-  assert.equal(finished[0].payload.params.processGeneration, 'fixture-native-cell-generation');
-  assert.equal(finished[0].payload.params.status, 'completed');
-  const continuation = event('alondra/codeCellContinuation');
-  assert.equal(continuation.length, 1); assert.equal(continuation[0].payload.params.callId, 'fixture-exec');
-  assert.equal(continuation[0].payload.params.turnId, event('turn/completed')[0].payload.params.turn.id);
+  assert.deepEqual(observed.filter((entry) => entry.type === 'sdk' && String(entry.payload.method).startsWith('alondra/codeCell')), []);
+  assert.equal(observed.some((entry) => entry.type === 'process_exited'), false);
 });
