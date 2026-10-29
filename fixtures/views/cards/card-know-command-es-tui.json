@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "vf8cc2e5d6126da37",
+  "version": "vc564e73e34ee78aa",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
@@ -69,7 +69,7 @@
           "id": "cc2d034b-249e-4487-a89b-57de38c26372",
           "kind": "know",
           "need": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
-          "meta": "Alondra · iOS · Demo Garden",
+          "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "report",
             "icon": "notice",
@@ -84,7 +84,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a Alondra · iOS…",
+              "placeholder": "Responder a Restore the native review experience…",
               "required": true,
               "multiline": true
             },
@@ -216,7 +216,7 @@
           "items": [
             {
               "label": "Tarea",
-              "value": "Restore the native review experience · Alondra · iOS",
+              "value": "Restore the native review experience",
               "link": {
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"

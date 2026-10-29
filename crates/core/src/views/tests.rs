@@ -989,6 +989,61 @@ fn every_task_shows_its_project_title_and_state_without_a_live_node() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
+#[test]
+fn a_task_shows_the_same_title_folder_cost_model_and_state_with_its_node_gone_closed_or_relaunched() {
+    let mut base = fixture();
+    let task = base.tasks.get_mut(&"t-1".into()).unwrap();
+    task.model = Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::Orchestrator });
+    task.project = Some("Alondra".into());
+    task.worktrees.insert("/work/alondra/.claude/worktrees/subagent".into(), crate::domain::TaskWorktree {
+        origin: crate::domain::WorktreeOrigin::Subagent, branch: None, discard: false, end: None });
+    task.worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(), crate::domain::TaskWorktree {
+        origin: crate::domain::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+    let mut live = LiveSnapshot::default();
+    live.task_costs.insert("t-1".into(), 4_200);
+    let node = |agent: &str, disconnected: bool| LiveNode {
+        agent_id: agent.into(), cwd: Some(format!("/elsewhere/{agent}")), cost_cents: Some(13), model: Some("claude-opus-5-5".into()),
+        project: Some("Elsewhere".into()), disconnected, ..Default::default()
+    };
+
+    let no_node = base.clone();
+    let mut closed = base.clone();
+    closed.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut closed_live = live.clone();
+    closed_live.nodes.push(node("a-1", true));
+    let mut relaunched = base.clone();
+    relaunched.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-2".into());
+    relaunched.agents.insert("a-2".into(), Agent { id: "a-2".into(), name: "Node Two".into(), phase: NodePhase::Working, since: 0 });
+    let mut relaunched_live = live.clone();
+    relaunched_live.nodes.push(node("a-2", false));
+
+    let shown = |state: &DomainState, live: &LiveSnapshot| {
+        let detail = render(state, live, Client::Ios, Lang::En, "task:t-1", "2026-09-30T10:00:00Z");
+        let facts: BTreeMap<String, String> = detail.sections.iter().flat_map(|section| &section.items)
+            .filter_map(|item| if let Item::Facts(facts) = item { Some(&facts.items) } else { None }).flatten()
+            .filter(|fact| ["Folder", "Cost", "Model", "Project"].contains(&fact.label.as_str()))
+            .map(|fact| (fact.label.clone(), fact.value.clone())).collect();
+        let view = render(state, live, Client::Ios, Lang::En, "card:i-1", "2026-09-30T10:00:00Z");
+        let Item::Card(card) = &view.sections[0].items[0] else { panic!("the question's card") };
+        let line = card.context.iter().find(|line| line.icon == Icon::Task).expect("the card names its task");
+        (facts, card.meta.clone(), card.state.as_ref().map(|state| state.text.clone()), line.text.clone(),
+            line.state.as_ref().map(|state| state.text.clone()))
+    };
+    let expected = shown(&no_node, &live);
+    assert_eq!(expected.0, BTreeMap::from([
+        ("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into()),
+        ("Cost".into(), "$42.00".into()),
+        ("Model".into(), "Opus · chosen by the orchestrator".into()),
+        ("Project".into(), "Alondra".into()),
+    ]), "the detail reads the task, not a node");
+    assert_eq!(expected.1.as_deref(), Some("Build a feature · Alondra"), "the card speaks for its task");
+    assert_eq!(expected.2.as_deref(), Some("Blocks Build a feature"));
+    assert_eq!(expected.3, "Build a feature");
+    assert!(expected.4.is_some(), "the card says where its task stands without a node");
+    assert_eq!(shown(&closed, &closed_live), expected, "with its node closed");
+    assert_eq!(shown(&relaunched, &relaunched_live), expected, "relaunched on another node");
+}
+
 const SETTLED_GOLDENS: [(&str, Client, Lang); 4] = [
     ("card-settled-ios.json", Client::Ios, Lang::En),
     ("card-settled-ios-es.json", Client::Ios, Lang::Es),
@@ -1512,19 +1567,19 @@ fn plain_delivery_offers_accept_and_request_changes_with_a_reply_to_the_node() {
     assert_eq!(changes.role, Some(Role::Neutral));
     let reply = reply_to_node(&card);
     assert_eq!(reply.label, "Reply");
-    assert!(matches!(&reply.input, Input::Text { placeholder, required: true, .. } if placeholder == "Reply to Node One…"));
+    assert!(matches!(&reply.input, Input::Text { placeholder, required: true, .. } if placeholder == "Reply to Build a feature…"));
     assert_eq!(reply.stamp.as_deref(), Some("Sent"));
 }
 
 #[test]
-fn delivery_reply_placeholder_is_localized_and_falls_back_to_this_node() {
+fn delivery_reply_placeholder_is_localized_and_names_the_task() {
     let state = fixture();
     let spanish = delivery_card(&state, Lang::Es, "card:i-3");
     let reply = reply_to_node(&spanish);
     assert_eq!(reply.label, "Responder");
-    assert!(matches!(&reply.input, Input::Text { placeholder, .. } if placeholder == "Responder a este nodo…"));
+    assert!(matches!(&reply.input, Input::Text { placeholder, .. } if placeholder == "Responder a Build a feature…"));
     let english = delivery_card(&state, Lang::En, "card:i-3");
-    assert!(matches!(&reply_to_node(&english).input, Input::Text { placeholder, .. } if placeholder == "Reply to this node…"));
+    assert!(matches!(&reply_to_node(&english).input, Input::Text { placeholder, .. } if placeholder == "Reply to Build a feature…"));
 }
 
 #[test]
@@ -3355,7 +3410,7 @@ fn a_tasks_last_message_keeps_its_time_next_to_the_message() {
 }
 
 #[test]
-fn a_task_shows_the_model_its_node_runs_on() {
+fn a_task_launched_without_a_model_never_shows_its_nodes() {
     let mut state = fixture();
     state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
@@ -3364,7 +3419,7 @@ fn a_task_shows_the_model_its_node_runs_on() {
     let detail = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     let facts: Vec<_> = detail.sections.iter().flat_map(|section| &section.items)
         .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
-    assert!(facts.iter().any(|fact| fact.label == "Modelo" && fact.value == "Opus 5.5"));
+    assert!(facts.iter().all(|fact| fact.label != "Modelo"), "{facts:?}");
 }
 
 fn working_node() -> LiveNode {
@@ -3488,6 +3543,9 @@ fn task_working_fixture() -> (DomainState, LiveSnapshot) {
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { model: Some("claude-opus-5-5".into()), ..node_on_its_task() });
     live.nodes[0].steps = working_node().steps;
+    live.task_costs.insert("t-1".into(), 120);
+    state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(),
+        crate::domain::TaskWorktree { origin: crate::domain::WorktreeOrigin::Task, branch: None, discard: false, end: None });
     live.activity.insert("a-1".into(), vec![LiveActivity { agent_id: None, agent_type: None, task: None,
         tool: Some("Edit".into()), summary: Some("Editing views/tasks.rs".into()), since: "2026-09-30T09:59:00Z".into() }]);
     (state, live)
@@ -3561,8 +3619,9 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
 
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     let done = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
-    assert!(done.sections.iter().all(|section| !["readings", "needs", "background", "last_message"].contains(&section.id.as_str())));
-    assert!(section_facts(&done, "header").iter().all(|(label, _)| label != "Folder"));
+    assert!(done.sections.iter().all(|section| !["needs", "background", "last_message"].contains(&section.id.as_str())));
+    assert_eq!(section_facts(&done, "readings"), [("Cost".into(), "$1.20".into())], "an ended task keeps only its cost");
+    assert!(section_facts(&done, "header").contains(&("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into())), "an ended task keeps its folder");
 }
 
 #[test]
@@ -3574,7 +3633,7 @@ fn a_task_detail_says_the_model_its_node_runs_on_when_it_is_not_the_one_it_was_l
         section_facts(&render(state, &live, Client::Ios, Lang::En, "task:t-1", ""), "options").into_iter()
             .find(|(label, _)| label == "Model").map(|(_, value)| value)
     };
-    assert_eq!(model(&state, Some("claude-opus-5-5[1m]")).as_deref(), Some("Opus 5.5"));
+    assert_eq!(model(&state, Some("claude-opus-5-5[1m]")), None, "the model line is the task's, never only its node's");
     state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::User });
     assert_eq!(model(&state, Some("claude-sonnet-5-5")).as_deref(), Some("Sonnet · from your Effort choice"));
     assert_eq!(model(&state, Some("claude-opus-5-5")).as_deref(), Some("Sonnet · from your Effort choice (now: Opus 5.5)"));
@@ -4056,6 +4115,7 @@ fn every_builder_string_has_spanish() {
         "Choose the welcome copy", "Concise:", "- Swipe", "Review the beta candidate", "Ship the compact schedule editor",
         "Swipe navigation, inline", "The pull request checks passed", "The review of the pull request",
         "The simulator pass is clean", "★ Ship the concise copy", "Beta candidate ready",
+        "Restore the native review experience",
     ];
     let state = golden_fixture();
     let live = golden_live();
@@ -4169,9 +4229,9 @@ fn card_context_texts(state: &DomainState) -> Vec<String> {
 }
 
 #[test]
-fn scheduled_run_agent_shows_the_schedule_title_never_the_raw_run_name() {
+fn scheduled_run_agent_shows_the_task_title_never_the_raw_run_name() {
     let texts = card_context_texts(&scheduled_run_fixture(true));
-    assert!(texts.iter().any(|text| text.contains("Morning review")), "{texts:?}");
+    assert!(texts.iter().any(|text| text.contains("Build a feature")), "{texts:?}");
     assert!(!texts.iter().any(|text| text.contains("scheduled/")), "{texts:?}");
 }
 
@@ -4561,7 +4621,8 @@ fn card_task_line_links_to_the_task_with_its_state_next_to_the_project() {
     assert_eq!(line.chip.as_ref().map(|chip| chip.text.as_str()), Some("Demo Garden"));
     let bare = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
-    assert!(card_of(&bare).context.iter().all(|line| line.state.is_none()));
+    let bare_line = card_of(&bare).context.iter().find(|line| line.icon == Icon::Task).unwrap();
+    assert_eq!(bare_line.state.as_ref(), Some(state), "the task's state shows without a live node too");
 }
 
 #[test]
@@ -4580,10 +4641,12 @@ fn a_command_is_a_code_block_in_the_detail_that_survives_backticks() {
 }
 
 #[test]
-fn task_detail_names_its_nodes_folder_and_what_it_is_doing_right_now() {
+fn task_detail_names_its_folder_and_what_its_node_is_doing_right_now() {
     let agent = "d887a34b-249e-4487-a89b-57de38c26372";
     let key = "task:t-651c38484cd2f34e74d5107ba05f7f15";
     let mut in_turn = golden_in_progress();
+    in_turn.tasks.get_mut(&key["task:".len()..].into()).unwrap().worktrees.insert("/demo/Demo Garden/ios".into(),
+        crate::domain::TaskWorktree { origin: crate::domain::WorktreeOrigin::Inherited, branch: None, discard: false, end: None });
     in_turn.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
     let mut stopped = golden_in_progress();
     stopped.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
@@ -4597,7 +4660,7 @@ fn task_detail_names_its_nodes_folder_and_what_it_is_doing_right_now() {
     assert_eq!(row.title, "Reading the localization catalog");
     let idle = render(&in_turn, &LiveSnapshot::default(), Client::Ios, Lang::En, key, "");
     assert!(idle.sections.iter().all(|section| section.id != "activity"));
-    assert!(header_facts(&idle).iter().all(|fact| fact.label != "Folder"));
+    assert!(header_facts(&idle).iter().any(|fact| fact.label == "Folder" && fact.value == "/demo/Demo Garden/ios"), "the folder is the task's");
 }
 
 #[test]

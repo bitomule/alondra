@@ -965,6 +965,19 @@ fn crash_report_action(task: &Task, context: &RenderContext<'_>) -> Option<super
     Some(action)
 }
 
+/// The folder the task works in: the worktree Alondra made for it, else one its node took over or
+/// entered; never a subagent's.
+fn folder(task: &Task) -> Option<&String> {
+    use crate::domain::WorktreeOrigin;
+    let rank = |origin: WorktreeOrigin| match origin {
+        WorktreeOrigin::Task => Some(0),
+        WorktreeOrigin::Inherited => Some(1),
+        WorktreeOrigin::Entered => Some(2),
+        WorktreeOrigin::Subagent => None,
+    };
+    task.worktrees.iter().filter_map(|(path, worktree)| rank(worktree.origin).map(|rank| (rank, path))).min().map(|(_, path)| path)
+}
+
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     let task = context
@@ -1016,13 +1029,16 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
         .and_then(|agent| context.domain.agents.get(agent));
     let live = agent.and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.id.0));
-    facts.extend(live.and_then(|node| super::task_node::folder(node, context)));
+    facts.extend(folder(task).map(|path| Fact { label: t!(context.lang, "Folder", "Carpeta").into(), value: path.clone(), tone: None, link: None }));
     view.sections.push(common::section(
         "header",
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
     model_readings.extend(live.map(|node| super::task_node::node_readings(node, context)).unwrap_or_default());
+    if let Some(&cents) = context.live.task_costs.get(&task.id.0) {
+        model_readings.push(Fact { label: t!(context.lang, "Cost", "Coste").into(), value: super::task_node::cost(cents, context.lang), tone: None, link: None });
+    }
     let readings = model_readings;
     if !readings.is_empty() {
         view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
@@ -1202,8 +1218,6 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             value.push_str(&tf!(context.lang, " (now: {model})", " (ahora: {model})", model = crate::model_label::model_label(now)));
         }
         task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value, tone: None, link: None });
-    } else if let Some(now) = running_model {
-        task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value: crate::model_label::model_label(now), tone: None, link: None });
     }
     if let Some(account) = account_text(task, context) {
         let provider = super::accounts::provider_name(task.provider);

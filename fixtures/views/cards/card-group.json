@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "vc2e0f7afc238c993",
+  "version": "v1fd91d6b10e92d02",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -55,7 +55,7 @@
           "kind": "decide",
           "need": "Ship it today?",
           "why": "The release needs it",
-          "meta": "Node One · 2 of 3",
+          "meta": "Build a feature · 2 of 3",
           "reply": {
             "id": "reply:g-q2@1",
             "label": "Reply",
@@ -64,7 +64,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Reply to Node One…",
+              "placeholder": "Reply to Build a feature…",
               "required": true,
               "multiline": true
             },
@@ -160,11 +160,15 @@
               "link": {
                 "kind": "view",
                 "key": "task:t-1"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
               }
             }
           ],
           "state": {
-            "text": "Blocks Node One",
+            "text": "Blocks Build a feature",
             "tone": "warning"
           },
           "detail": "included",
@@ -213,7 +217,7 @@
           "items": [
             {
               "label": "Task",
-              "value": "Build a feature · Node One",
+              "value": "Build a feature",
               "link": {
                 "kind": "view",
                 "key": "task:t-1"

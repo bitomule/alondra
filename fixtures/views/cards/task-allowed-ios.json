@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v722b1a234f1ac258",
+  "version": "v7fe4cd9e24158ea0",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -75,6 +75,10 @@
             {
               "label": "Request",
               "value": "Polish the Alondra beta"
+            },
+            {
+              "label": "Folder",
+              "value": "/demo/Demo Garden/.claude/worktrees/t-651c38484cd2f34e74d5107ba05f7f15"
             }
           ]
         }
@@ -186,7 +190,7 @@
           "kind": "decide",
           "need": "Choose the welcome copy",
           "why": "The new empty state is ready; the beta ships with the copy you pick.",
-          "meta": "Alondra · iOS · Demo Garden",
+          "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "options",
             "icon": "notice",
@@ -223,7 +227,7 @@
             }
           ],
           "state": {
-            "text": "Blocks Alondra · iOS",
+            "text": "Blocks Restore the native review experience",
             "tone": "warning"
           },
           "detail": "reference"
@@ -246,8 +250,26 @@
           },
           "title": "Ship the compact schedule editor with this beta?",
           "subtitle": "The review of the pull request waits for your answer.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
           "state": {
-            "text": "Blocks this node",
+            "text": "Blocks Restore the native review experience",
             "tone": "warning"
           },
           "detail": "reference"
@@ -257,7 +279,7 @@
           "id": "cc2d034b-249e-4487-a89b-57de38c26372",
           "kind": "authorize",
           "need": "Run `git reset --hard origin/main`",
-          "meta": "Alondra · iOS · Demo Garden",
+          "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "command",
             "icon": "action",
@@ -293,7 +315,7 @@
             }
           ],
           "state": {
-            "text": "Blocks Alondra · iOS",
+            "text": "Blocks Restore the native review experience",
             "tone": "warning"
           },
           "detail": "reference"
@@ -322,6 +344,24 @@
           },
           "title": "Review the beta candidate",
           "subtitle": "All required checks passed and the branch is up to date with main.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
           "state": {
             "text": "Checks running",
             "tone": "info"
@@ -352,6 +392,24 @@
           },
           "title": "The simulator pass is clean",
           "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
           "state": {
             "text": "Doesn't block",
             "tone": "neutral"

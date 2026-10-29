@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "vb7cc1b8d0aadb468",
+  "version": "v5bea3e3904a37517",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -280,10 +280,6 @@
             {
               "label": "PR handling",
               "value": "Auto-merge: Alondra merges it once its checks pass"
-            },
-            {
-              "label": "Model",
-              "value": "Opus 5.5"
             }
           ]
         }

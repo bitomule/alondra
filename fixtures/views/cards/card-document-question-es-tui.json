@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "vf27385d329f3d041",
+  "version": "v40a088854652ab00",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -70,7 +70,7 @@
           "kind": "decide",
           "need": "Choose the welcome copy",
           "why": "The new empty state is ready; the beta ships with the copy you pick.",
-          "meta": "Alondra · iOS · Demo Garden",
+          "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "options",
             "icon": "notice",
@@ -85,7 +85,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a Alondra · iOS…",
+              "placeholder": "Responder a Restore the native review experience…",
               "required": true,
               "multiline": true
             },
@@ -171,7 +171,7 @@
             }
           ],
           "state": {
-            "text": "Bloquea a Alondra · iOS",
+            "text": "Bloquea a Restore the native review experience",
             "tone": "warning"
           },
           "detail": "included",
@@ -276,7 +276,7 @@
           "items": [
             {
               "label": "Tarea",
-              "value": "Restore the native review experience · Alondra · iOS",
+              "value": "Restore the native review experience",
               "link": {
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"

@@ -106,6 +106,7 @@ impl DomainRuntime {
         crate::domain_store::provider_settings::recover_store(&mut store, home)?;
         let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
         store.fill_task_projects(&options.projects_root(&crate::options::user_home()))?;
+        store.fill_task_models()?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
         let (schedule_changed, _) = watch::channel(state.revision);

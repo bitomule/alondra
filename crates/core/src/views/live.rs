@@ -51,6 +51,10 @@ pub struct LiveSnapshot {
     /// When each open or finished task first started running and, once it is over, when it ended.
     #[serde(default)]
     pub task_started: BTreeMap<String, LiveTaskStart>,
+    /// What each shown task's sessions spent in all, in cents, by task id: the ended ones and the
+    /// one running now.
+    #[serde(default)]
+    pub task_costs: BTreeMap<String, u64>,
     /// Why each cancelled task was cancelled, when someone said so.
     #[serde(default)]
     pub cancel_reasons: BTreeMap<String, String>,

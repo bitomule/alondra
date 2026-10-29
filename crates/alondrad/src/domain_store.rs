@@ -1159,6 +1159,26 @@ impl DomainStore {
         tx.commit()?;
         Ok(found.len())
     }
+    /// Gives each task saved without its model the one it can still be told from: the model its
+    /// last launch chose, else, once it ended, the one its sessions spent most on. A running task
+    /// launched on the provider's default keeps none, so a relaunch still leaves the default.
+    pub(crate) fn fill_task_models(&mut self) -> Result<usize> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let filled = tx.execute(
+            "INSERT INTO task_models(task_id,model,chosen_by)
+             SELECT id,model,chosen_by FROM (SELECT t.id,
+               coalesce((SELECT d.model FROM model_decisions d WHERE d.task_id=t.id AND d.kind IN('launch','relaunch') AND d.model IS NOT NULL ORDER BY d.at DESC,d.id DESC LIMIT 1),
+                 CASE WHEN t.state IN('done','cancelled') THEN coalesce(
+                   (SELECT u.model FROM task_model_usage u WHERE u.task_id=t.id ORDER BY u.cost_micros DESC,u.output DESC LIMIT 1),
+                   (SELECT u.model FROM usage_sessions u WHERE u.task_id=t.id GROUP BY u.model ORDER BY sum(u.cost_micros) DESC,sum(u.output) DESC LIMIT 1)) END) AS model,
+               coalesce((SELECT d.chosen_by FROM model_decisions d WHERE d.task_id=t.id AND d.kind IN('launch','relaunch') ORDER BY d.at DESC,d.id DESC LIMIT 1),'orchestrator') AS chosen_by
+              FROM tasks t WHERE NOT EXISTS(SELECT 1 FROM task_models m WHERE m.task_id=t.id))
+             WHERE model IS NOT NULL AND length(model)>0",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(filled)
+    }
     pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
         let plan: Option<String> = self.conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;
         plan.map(|plan| serde_json::from_str(&plan).context("stored launch plan")).transpose()

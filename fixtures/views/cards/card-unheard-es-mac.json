@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "mac",
-  "version": "vb1cc1e595e3f336d",
+  "version": "v49c9f47303daad64",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
@@ -70,7 +70,7 @@
           "kind": "decide",
           "need": "«Restore the native review experience» se ha parado y te escribe",
           "why": "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.",
-          "meta": "Alondra · iOS · Demo Garden",
+          "meta": "Restore the native review experience · Demo Garden",
           "reply": {
             "id": "reply:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90@1",
             "label": "Responder",
@@ -79,7 +79,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a Alondra · iOS…",
+              "placeholder": "Responder a Restore the native review experience…",
               "required": true,
               "multiline": true
             },
@@ -200,7 +200,7 @@
           "items": [
             {
               "label": "Tarea",
-              "value": "Restore the native review experience · Alondra · iOS",
+              "value": "Restore the native review experience",
               "link": {
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"

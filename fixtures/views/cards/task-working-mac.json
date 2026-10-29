@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "v578660d0c46516f8",
+  "version": "vc7b79370a303867e",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -288,10 +288,6 @@
             {
               "label": "PR handling",
               "value": "Auto-merge: Alondra merges it once its checks pass"
-            },
-            {
-              "label": "Model",
-              "value": "Opus 5.5"
             }
           ]
         }

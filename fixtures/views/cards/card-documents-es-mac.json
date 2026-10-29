@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "v3e3861dca6fccc86",
+  "version": "v69cdc8f749fea557",
   "cursor": "cursor-1",
   "title": "Read the report on indexing Redraft's whole library",
   "status": {
@@ -55,7 +55,7 @@
           "kind": "review",
           "need": "Read the report on indexing Redraft's whole library",
           "why": "It ends in a plan: approve it to start building it, or only archive the report.",
-          "meta": "redraft/library-index",
+          "meta": "Redraft: analyse the whole library at once",
           "content_row": {
             "kind": "report",
             "icon": "notice",
@@ -70,7 +70,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a redraft/library-index…",
+              "placeholder": "Responder a Redraft: analyse the whole library at once…",
               "required": true,
               "multiline": true
             },
@@ -144,6 +144,10 @@
               "link": {
                 "kind": "view",
                 "key": "task:t-1"
+              },
+              "state": {
+                "text": "Para revisar",
+                "tone": "info"
               }
             }
           ],
@@ -271,7 +275,7 @@
           "items": [
             {
               "label": "Tarea",
-              "value": "Redraft: analyse the whole library at once · redraft/library-index",
+              "value": "Redraft: analyse the whole library at once",
               "link": {
                 "kind": "view",
                 "key": "task:t-1"

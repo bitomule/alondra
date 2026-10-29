@@ -73,7 +73,7 @@ fn tokens(count: u64) -> String {
     }
 }
 
-fn cost(cents: u64, lang: super::Lang) -> String {
+pub(super) fn cost(cents: u64, lang: super::Lang) -> String {
     let (units, rest) = (cents / 100, cents % 100);
     tf!(lang, "${units}.{rest:02}", "{units},{rest:02} $", units = units, rest = rest)
 }
@@ -282,7 +282,7 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
 }
 
 /// What a live node reads now: the tool it runs, its background work, a last turn that was
-/// interrupted, its context and its cost.
+/// interrupted and its context.
 pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>) -> Vec<Fact> {
     let lang = context.lang;
     let mut readings = vec![];
@@ -309,14 +309,7 @@ pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>)
         };
         readings.push(Fact { label: t!(lang, "Context", "Contexto").into(), value, tone: Some(label.tone), link: None });
     }
-    if let Some(cents) = node.cost_cents {
-        readings.push(Fact { label: t!(lang, "Cost", "Coste").into(), value: cost(cents, lang), tone: None, link: None });
-    }
     readings
-}
-
-pub(super) fn folder(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<Fact> {
-    node.cwd.clone().map(|cwd| Fact { label: t!(context.lang, "Folder", "Carpeta").into(), value: cwd, tone: None, link: None })
 }
 
 pub(super) fn needs_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {

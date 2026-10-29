@@ -1516,6 +1516,37 @@ fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
 }
 
 #[test]
+fn a_task_saved_without_its_model_gets_the_one_its_launches_or_its_sessions_name() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let model = |store: &mut DomainStore| store.load().unwrap().tasks[&"task-1".into()].model.clone()
+        .map(|model| (model.model, model.chosen_by));
+    store.conn.execute_batch(
+        "INSERT INTO model_decisions(task_id,request_id,agent_id,at,kind,model,chosen_by,title) VALUES('task-1','request-1',NULL,1,'launch',NULL,'user','Task');
+         INSERT INTO usage_sessions(session_id,model,provider,task_id,role,cost_micros,input,output,cache_read,cache_write,first_at,last_at)
+           VALUES('s-1','claude-haiku-4-5','claude','task-1','node',100,1,1,0,0,1,1),('s-1','claude-sonnet-5-5','claude','task-1','node',900,1,1,0,0,1,1);").unwrap();
+    assert_eq!(store.fill_task_models().unwrap(), 0, "a running task launched on the default keeps it");
+    assert_eq!(model(&mut store), None);
+
+    let stored = |store: &DomainStore| store.conn.query_row("SELECT model,chosen_by FROM task_models WHERE task_id='task-1'", [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).ok();
+    let running: String = store.conn.query_row("SELECT state FROM tasks WHERE id='task-1'", [], |row| row.get(0)).unwrap();
+    store.conn.execute("UPDATE tasks SET state='done' WHERE id='task-1'", []).unwrap();
+    assert_eq!(store.fill_task_models().unwrap(), 1);
+    assert_eq!(stored(&store), Some(("claude-sonnet-5-5".into(), "user".into())), "an ended task takes the model its sessions spent most on");
+    assert_eq!(store.fill_task_models().unwrap(), 0, "a task that has its model keeps it");
+    store.conn.execute("UPDATE tasks SET state=?1 WHERE id='task-1'", [running]).unwrap();
+
+    store.conn.execute_batch("DELETE FROM task_models;
+        INSERT INTO model_decisions(task_id,request_id,agent_id,at,kind,model,chosen_by,title) VALUES('task-1','request-1',NULL,2,'relaunch','opus','orchestrator','Task');").unwrap();
+    assert_eq!(store.fill_task_models().unwrap(), 1);
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(model(&mut reopened), Some(("opus".into(), alondra_core::domain::ModelChooser::Orchestrator)), "the model its last launch chose comes first and survives a restart");
+}
+
+#[test]
 fn a_tasks_project_survives_restart_and_a_store_made_before_projects_fills_them_in() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();

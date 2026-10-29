@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "v3dfd4a18879c401b",
+  "version": "vc5c6adf0aadfbfec",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -198,7 +198,7 @@
               "presentation": "button",
               "input": {
                 "kind": "text",
-                "placeholder": "Reply to this node…",
+                "placeholder": "Reply to Restore the native review experience…",
                 "required": true,
                 "multiline": true
               },

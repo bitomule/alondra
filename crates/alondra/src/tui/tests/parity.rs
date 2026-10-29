@@ -1072,7 +1072,7 @@ fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
     let lines = text_of(&crate::tui::view_render::document_lines(&card, 80, false));
     let header = &lines[0];
     assert!(
-        header.starts_with("? DECIDE · Alondra · iOS · Demo Garden · ") && (header.ends_with(" ago") || header.ends_with("Sep 30")),
+        header.starts_with("? DECIDE · Restore the native review experience · Demo Garden · ") && (header.ends_with(" ago") || header.ends_with("Sep 30")),
         "{header}"
     );
     assert_eq!(lines[1], "Choose the welcome copy");

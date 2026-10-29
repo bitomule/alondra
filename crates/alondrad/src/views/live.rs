@@ -309,7 +309,7 @@ async fn gather_inner(
             (task.0, alondra_core::views::LiveLaunchRefusal { reason, detail })
         })
         .collect();
-    let nodes = state
+    let nodes: Vec<_> = state
         .agents
         .values()
         .filter_map(|agent| {
@@ -585,6 +585,16 @@ async fn gather_inner(
         let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { effort })
     }).collect();
+    let task_costs = if clock_only { BTreeMap::new() } else {
+        let store = client.domain.store.lock().expect("domain store poisoned");
+        keys.iter().filter_map(|key| key.strip_prefix("task:")).filter_map(|id| {
+            let task = state.tasks.get(&TaskId(id.to_owned()))?;
+            let (sessions, folded) = store.task_spend(id).ok()?;
+            let live = task.agent_id.as_ref().and_then(|agent| nodes.iter().find(|node| node.agent_id == agent.0))
+                .and_then(|node| Some((node.agent_id.as_str(), node.cost_cents?)));
+            Some((id.to_owned(), task_cost_cents(&sessions, folded, live)?))
+        }).collect()
+    };
     let keyed = gather_keyed(client, state, keys, issue_data).await;
     LiveSnapshot {
         observed_at: (keys.iter().any(|key| key == "accounts" || key == "settings" || key.starts_with("account:"))
@@ -611,6 +621,7 @@ async fn gather_inner(
         task_since,
         task_started,
         cancel_reasons,
+        task_costs,
         search_matches: keyed.search_matches,
         usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
             since: timestamp(exhausted.since),
@@ -627,6 +638,18 @@ async fn gather_inner(
         mcp_removed: keyed.mcp_removed,
         metrics: keyed.metrics,
     }
+}
+
+/// What a task's sessions spent in all, in cents: each session's last report, the running one's
+/// own reading when it is ahead of it, and never less than its last fold kept.
+fn task_cost_cents(sessions: &BTreeMap<String, i64>, folded: Option<i64>, live: Option<(&str, u64)>) -> Option<u64> {
+    let mut micros: BTreeMap<&str, u64> = sessions.iter().map(|(session, spent)| (session.as_str(), (*spent).max(0) as u64)).collect();
+    if let Some((session, cents)) = live {
+        let spent = micros.entry(session).or_default();
+        *spent = (*spent).max(cents * 10_000);
+    }
+    let total = micros.values().sum::<u64>().max(folded.unwrap_or_default().max(0) as u64);
+    (!micros.is_empty() || folded.is_some()).then(|| (total + 5_000) / 10_000)
 }
 
 /// The live data only some view keys show; the rest of a snapshot is the same for every key.
@@ -1817,6 +1840,18 @@ fn timestamp(millis: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tasks_cost_adds_every_session_and_the_running_one_as_it_reads_now() {
+        let sessions = BTreeMap::from([("old".to_owned(), 1_500_000), ("now".to_owned(), 200_000)]);
+        assert_eq!(task_cost_cents(&BTreeMap::new(), None, None), None, "a task nothing reported for shows no cost");
+        assert_eq!(task_cost_cents(&sessions, None, None), Some(170));
+        assert_eq!(task_cost_cents(&sessions, None, Some(("now", 50))), Some(200), "the running session counts once, as it reads now");
+        assert_eq!(task_cost_cents(&sessions, None, Some(("now", 10))), Some(170), "a reading behind its last report counts the report");
+        assert_eq!(task_cost_cents(&BTreeMap::new(), None, Some(("new", 30))), Some(30));
+        assert_eq!(task_cost_cents(&BTreeMap::new(), Some(4_000_000), None), Some(400), "the fold keeps it once its sessions are gone");
+        assert_eq!(task_cost_cents(&sessions, Some(4_000_000), None), Some(400));
+    }
 
     fn pr(id: &str, number: u64, head: &str, base: &str) -> PullRequest {
         PullRequest {

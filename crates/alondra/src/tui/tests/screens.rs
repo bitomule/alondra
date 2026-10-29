@@ -552,7 +552,7 @@ fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
     assert!(screen.contains("WAITING FOR YOU 5"), "{screen}");
     let welcome = lines_with(&screen, "Choose the welcome copy");
     assert!(welcome[0].contains("▌? Choose the welcome copy"), "{welcome:?}");
-    assert!(screen.contains("▌  Alondra · iOS · Demo Garden"), "meta that does not fit beside goes whole below: {screen}");
+    assert!(screen.contains("▌  Restore the native review experience · De…"), "meta that does not fit beside goes whole below: {screen}");
     assert!(screen.contains("◎ Review the beta candidate"), "{screen}");
     assert!(screen.contains("· The simulator pass is clean"), "{screen}");
     assert!(!screen.contains("Merge") && !screen.contains("Reply"), "the list has no buttons: {screen}");
@@ -576,7 +576,7 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
     let screen = rendered(&mut app, 120, 40);
     dump("detail: Decide", &screen);
     let at = |needle: &str| screen.find(needle).unwrap_or_else(|| panic!("{needle}: {screen}"));
-    assert!(at("? DECIDE · Alondra") < at("Choose the welcome copy"));
+    assert!(at("? DECIDE · Restore the native review experience") < at("Choose the welcome copy"));
     assert!(at("Choose the welcome copy") < at("The new empty state is ready"));
     assert!(at("The new empty state is ready") < at("Content"));
     assert!(at("Content") < at("Context"));

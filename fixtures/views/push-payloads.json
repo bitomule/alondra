@@ -19,7 +19,7 @@
             {
               "id": "reply:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
               "label": "Reply",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Reply to Split the parser…",
               "text": true
             }
           ],
@@ -61,7 +61,7 @@
             {
               "id": "reply:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1",
               "label": "Reply",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Reply to Split the parser…",
               "text": true
             }
           ],
@@ -97,7 +97,7 @@
             {
               "id": "reply:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1",
               "label": "Reply",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Reply to Split the parser…",
               "text": true
             }
           ],
@@ -128,7 +128,7 @@
             {
               "id": "reply:hf-weekly-2026-10-01@1",
               "label": "Reply",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Reply to Split the parser…",
               "text": true
             }
           ],
@@ -160,7 +160,7 @@
             {
               "id": "reply:hf-weekly-2026-10-02@1",
               "label": "Reply",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Reply to Split the parser…",
               "text": true
             }
           ],

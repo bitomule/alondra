@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vd72624d4fc25f352",
+  "version": "v375c865e4aedd022",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
@@ -85,7 +85,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Reply to Restore the native review experience…",
               "required": true,
               "multiline": true
             },
@@ -105,6 +105,24 @@
           },
           "title": "The simulator pass is clean",
           "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
           "state": {
             "text": "Doesn't block",
             "tone": "neutral"

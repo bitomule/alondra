@@ -8,6 +8,7 @@ use alondra_core::metrics::steps::StepCounts;
 use alondra_core::metrics::{Role, Usage};
 use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
+use std::collections::BTreeMap;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
 /// How long the samples of a folded task stay, so a task reopened meanwhile is folded again with
@@ -31,6 +32,16 @@ pub(crate) struct Spent<'a> {
 }
 
 impl DomainStore {
+    /// What a task's sessions reported spending, in micros, by session, and the total its last fold
+    /// kept, which outlives those sessions' rows.
+    pub(crate) fn task_spend(&self, task: &str) -> Result<(BTreeMap<String, i64>, Option<i64>)> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT session_id,sum(cost_micros) FROM usage_sessions WHERE task_id=?1 AND cost_micros IS NOT NULL GROUP BY session_id")?;
+        let sessions = statement.query_map([task], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        let folded = self.conn.query_row("SELECT sum(cost_micros) FROM task_model_usage WHERE task_id=?1", [task], |row| row.get(0))?;
+        Ok((sessions, folded))
+    }
+
     pub(crate) fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()> {
         let tx = self.conn.transaction()?;
         for usage in spent.usage.iter().filter(|usage| !usage.is_empty()) {

@@ -29,7 +29,7 @@ final class TriageCardGroupTests: XCTestCase {
     func testAQuestionOfAGroupSaysWhereItStandsAndIsAnsweredLikeAnyOtherCard() async throws {
         let feed = FeedStub()
         let store = try store(feed: feed)
-        XCTAssertEqual(store.state.card?.meta, "Node One · 2 of 3")
+        XCTAssertEqual(store.state.card?.meta, "Build a feature · 2 of 3")
         XCTAssertEqual(store.state.card?.eyebrow?.text, "Decide · 2 of 3")
         XCTAssertEqual(store.state.buttons.map(\.optionId), ["o0", "o1"])
 

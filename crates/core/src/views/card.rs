@@ -279,7 +279,11 @@ fn kind_tone(kind: CardKind, pending: bool) -> Tone {
     }
 }
 
+/// Who a card speaks for: its task's title, which outlives any node, else the node's name.
 fn node_name(item: &InboxItem, context: &RenderContext<'_>) -> String {
+    if let Some(task) = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id)) {
+        return task.title.clone();
+    }
     match &item.agent_id {
         Some(agent_id) => super::common::agent_label(agent_id, context),
         None if item.task_id.is_some() => t!(context.lang, "this node", "este nodo").into(),
@@ -349,10 +353,8 @@ fn meta_line(item: &InboxItem, interaction: Option<&Interaction>, context: &Rend
     });
     let who: String = match interaction.map(|i| &i.author) {
         Some(Author::System | Author::Orchestrator { .. }) => request_title().unwrap_or_else(|| "Alondra".into()),
-        _ => match &item.agent_id {
-            Some(agent_id) => super::common::agent_label(agent_id, context),
-            None => request_title().unwrap_or_else(|| "Alondra".into()),
-        },
+        _ if item.agent_id.is_some() || item.task_id.is_some() => node_name(item, context),
+        _ => request_title().unwrap_or_else(|| "Alondra".into()),
     };
     let project = item.task_id.as_ref().and_then(|task| context.domain.tasks.get(task)).and_then(|task| task.project.clone());
     let position = interaction.and_then(|i| i.card.group.as_ref()).filter(|_| context.client == Client::Ios)
@@ -419,23 +421,20 @@ fn review_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLin
 fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLine> {
     let mut lines = vec![];
     let task = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id));
-    if let Some(agent_id) = &item.agent_id {
-        let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
-        let chip = |project: Option<&String>| project.map(|project| Label { text: project.clone(), tone: Tone::Neutral, elapsed: None });
-        lines.push(match task {
-            Some(task) => {
-                let presentation = super::task_state::present(task, context);
-                ContextLine {
-                    icon: Icon::Task,
-                    text: task.title.clone(),
-                    link: Some(Link::View { key: format!("task:{}", task.id) }),
-                    chip: chip(task.project.as_ref()),
-                    state: node.map(|_| Label { text: presentation.state, tone: presentation.tone, elapsed: None }),
-                }
-            }
-            None => ContextLine { icon: Icon::Node, text: super::common::agent_label(agent_id, context), link: None,
-                chip: chip(node.and_then(|node| node.project.as_ref())), state: None },
+    let chip = |project: Option<&String>| project.map(|project| Label { text: project.clone(), tone: Tone::Neutral, elapsed: None });
+    if let Some(task) = task {
+        let presentation = super::task_state::present(task, context);
+        lines.push(ContextLine {
+            icon: Icon::Task,
+            text: task.title.clone(),
+            link: Some(Link::View { key: format!("task:{}", task.id) }),
+            chip: chip(task.project.as_ref()),
+            state: Some(Label { text: presentation.state, tone: presentation.tone, elapsed: None }),
         });
+    } else if let Some(agent_id) = &item.agent_id {
+        let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
+        lines.push(ContextLine { icon: Icon::Node, text: super::common::agent_label(agent_id, context), link: None,
+            chip: chip(node.and_then(|node| node.project.as_ref())), state: None });
     }
     lines.extend(review_lines(item, context));
     lines.extend(merge_unavailable(item, context).map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));

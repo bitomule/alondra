@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vbb0361b04658566a",
+  "version": "v3c2785d4658d843e",
   "cursor": "cursor-1",
   "title": "Run `git reset --hard origin/main`",
   "status": {
@@ -69,7 +69,7 @@
           "id": "cc2d034b-249e-4487-a89b-57de38c26372",
           "kind": "authorize",
           "need": "Run `git reset --hard origin/main`",
-          "meta": "Alondra · iOS · Demo Garden",
+          "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "command",
             "icon": "action",
@@ -123,7 +123,7 @@
             }
           ],
           "state": {
-            "text": "Blocks Alondra · iOS",
+            "text": "Blocks Restore the native review experience",
             "tone": "warning"
           },
           "detail": "included",
@@ -204,7 +204,7 @@
           "items": [
             {
               "label": "Task",
-              "value": "Restore the native review experience · Alondra · iOS",
+              "value": "Restore the native review experience",
               "link": {
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"

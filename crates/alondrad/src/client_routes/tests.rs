@@ -1088,8 +1088,6 @@ async fn the_task_detail_shows_what_its_node_mod_reports() {
     let readings = section_facts(&detail, "readings");
     assert!(readings.iter().any(|fact| fact["label"] == "Ejecutando"
         && fact["value"].as_str().is_some_and(|value| value.starts_with("Bash: bazel test //crates/... · desde las "))), "{readings:?}");
-    let options = section_facts(&detail, "options");
-    assert!(options.iter().any(|fact| fact["label"] == "Modelo" && fact["value"] == "Opus 5.5"), "{options:?}");
 
     report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Stopped halfway through the parser", "aborted": true}));
     crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::TurnEnded).unwrap();

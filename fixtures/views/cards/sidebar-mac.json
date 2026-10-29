@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v096dd59a6e6d3c1d",
+  "version": "v5aa9e639151bcaf5",
   "cursor": "cursor-1",
   "status": {
     "version": "v6aa5809268a89138",
@@ -74,7 +74,7 @@
           },
           "icon": "question",
           "title": "Choose the welcome copy",
-          "subtitle": "Alondra · iOS · Demo Garden",
+          "subtitle": "Restore the native review experience · Demo Garden",
           "badges": [
             {
               "text": "Decide",
@@ -154,7 +154,7 @@
           },
           "icon": "notice",
           "title": "The pull request checks passed",
-          "subtitle": "Alondra · iOS · Demo Garden",
+          "subtitle": "Restore the native review experience · Demo Garden",
           "badges": [
             {
               "text": "FYI",
@@ -261,7 +261,7 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v096bb20068d54385",
+      "version": "v6f9649afdad0f709",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
@@ -327,7 +327,7 @@
               "kind": "decide",
               "need": "Choose the welcome copy",
               "why": "The new empty state is ready; the beta ships with the copy you pick.",
-              "meta": "Alondra · iOS · Demo Garden",
+              "meta": "Restore the native review experience · Demo Garden",
               "content_row": {
                 "kind": "options",
                 "icon": "notice",
@@ -342,7 +342,7 @@
                 "presentation": "button",
                 "input": {
                   "kind": "text",
-                  "placeholder": "Reply to Alondra · iOS…",
+                  "placeholder": "Reply to Restore the native review experience…",
                   "required": true,
                   "multiline": true
                 },
@@ -428,7 +428,7 @@
                 }
               ],
               "state": {
-                "text": "Blocks Alondra · iOS",
+                "text": "Blocks Restore the native review experience",
                 "tone": "warning"
               },
               "detail": "included",
@@ -492,7 +492,7 @@
               "items": [
                 {
                   "label": "Task",
-                  "value": "Restore the native review experience · Alondra · iOS",
+                  "value": "Restore the native review experience",
                   "link": {
                     "kind": "view",
                     "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
@@ -510,7 +510,7 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v31eda8c2b06bfbd1",
+      "version": "ve71012a049f06bd7",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
@@ -585,7 +585,7 @@
                 "presentation": "button",
                 "input": {
                   "kind": "text",
-                  "placeholder": "Reply to this node…",
+                  "placeholder": "Reply to Restore the native review experience…",
                   "required": true,
                   "multiline": true
                 },
@@ -606,8 +606,26 @@
               },
               "title": "Ship the compact schedule editor with this beta?",
               "subtitle": "The review of the pull request waits for your answer.",
+              "context": [
+                {
+                  "icon": "task",
+                  "text": "Restore the native review experience",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+                  },
+                  "chip": {
+                    "text": "Demo Garden",
+                    "tone": "neutral"
+                  },
+                  "state": {
+                    "text": "Needs you",
+                    "tone": "warning"
+                  }
+                }
+              ],
               "state": {
-                "text": "Blocks this node",
+                "text": "Blocks Restore the native review experience",
                 "tone": "warning"
               },
               "detail": "included",
@@ -676,7 +694,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "v85711f27f1a6008b",
+      "version": "v4d1792211bc2d16a",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
@@ -757,7 +775,7 @@
                 "presentation": "button",
                 "input": {
                   "kind": "text",
-                  "placeholder": "Reply to this node…",
+                  "placeholder": "Reply to Restore the native review experience…",
                   "required": true,
                   "multiline": true
                 },
@@ -834,6 +852,24 @@
               },
               "title": "Add the compact schedule editor",
               "subtitle": "All required checks passed and the branch is up to date with main.",
+              "context": [
+                {
+                  "icon": "task",
+                  "text": "Restore the native review experience",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+                  },
+                  "chip": {
+                    "text": "Demo Garden",
+                    "tone": "neutral"
+                  },
+                  "state": {
+                    "text": "Needs you",
+                    "tone": "warning"
+                  }
+                }
+              ],
               "state": {
                 "text": "Checks running",
                 "tone": "info"

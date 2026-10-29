@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "v44013384815f0b09",
+  "version": "vbe137464614a1ef9",
   "cursor": "cursor-1",
   "title": "Read the report on indexing Redraft's whole library",
   "status": {
@@ -55,7 +55,7 @@
           "kind": "review",
           "need": "Read the report on indexing Redraft's whole library",
           "why": "It ends in a plan: approve it to start building it, or only archive the report.",
-          "meta": "redraft/library-index",
+          "meta": "Redraft: analyse the whole library at once",
           "content_row": {
             "kind": "report",
             "icon": "notice",
@@ -70,7 +70,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Reply to redraft/library-index…",
+              "placeholder": "Reply to Redraft: analyse the whole library at once…",
               "required": true,
               "multiline": true
             },
@@ -142,6 +142,10 @@
               "link": {
                 "kind": "view",
                 "key": "task:t-1"
+              },
+              "state": {
+                "text": "Ready for review",
+                "tone": "info"
               }
             }
           ],
@@ -266,7 +270,7 @@
           "items": [
             {
               "label": "Task",
-              "value": "Redraft: analyse the whole library at once · redraft/library-index",
+              "value": "Redraft: analyse the whole library at once",
               "link": {
                 "kind": "view",
                 "key": "task:t-1"

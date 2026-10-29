@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "vd2171d115d7e44a5",
+  "version": "v778456bd369ac6df",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -85,7 +85,7 @@
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a este nodo…",
+              "placeholder": "Responder a Restore the native review experience…",
               "required": true,
               "multiline": true
             },
@@ -158,6 +158,24 @@
           },
           "title": "Add the compact schedule editor",
           "subtitle": "All required checks passed and the branch is up to date with main.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Te necesita",
+                "tone": "warning"
+              }
+            }
+          ],
           "state": {
             "text": "Checks en marcha",
             "tone": "info"
