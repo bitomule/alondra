@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 
 use alondra_core::domain::CardKind;
 use alondra_core::views::{
-    Action, Card, CommentKind, FieldKind, Form, Icon, Input, Item, Label, Link, LocalLink, Notice, Presentation, Row, Section,
-    Trailing, View,
+    Action, Card, CommentKind, Facts, FieldKind, Form, Icon, Input, Item, Label, Link, LocalLink, Notice, Presentation, Row,
+    Section, Tone, Trailing, View,
 };
 use ratatui::{
     style::{Color, Modifier, Style, Stylize},
@@ -1145,6 +1145,81 @@ pub fn icon_color(icon: Icon) -> Color {
         Icon::Warning => Color::LightRed,
         _ => Color::Cyan,
     }
+}
+
+/// How wide the labels and the values of a set of facts are, so several sets share one table.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FactColumns {
+    pub label: usize,
+    pub value: usize,
+}
+
+impl FactColumns {
+    pub fn of<'a>(facts: impl IntoIterator<Item = &'a Facts>) -> Self {
+        facts.into_iter().flat_map(|facts| &facts.items).fold(FactColumns::default(), |columns, fact| FactColumns {
+            label: columns.label.max(super::md::str_width(&fact.label)),
+            value: columns.value.max(super::md::str_width(fact_parts(&fact.value).0)),
+        })
+    }
+}
+
+/// A fact's value split into what it is now and what it is set beside: «A · before B (±x %)».
+fn fact_parts(value: &str) -> (&str, Option<&str>) {
+    match value.split_once(" · ") {
+        Some((now, beside)) => (now, Some(beside)),
+        None => (value, None),
+    }
+}
+
+/// Facts as a table: each label in the label column, its value right-aligned in the value column,
+/// bold and in its tone, and what it is set beside dimmed after it with its change in that tone.
+/// On a line too narrow for all of it the value goes under its label.
+pub fn facts_lines(facts: &Facts, width: usize, columns: FactColumns) -> Vec<Line<'static>> {
+    let columns = FactColumns {
+        label: columns.label.max(FactColumns::of([facts]).label),
+        value: columns.value.max(FactColumns::of([facts]).value),
+    };
+    let mut lines = Vec::new();
+    for fact in &facts.items {
+        let tone = fact.tone.map_or_else(Style::new, tone_style);
+        let (now, beside) = fact_parts(&fact.value);
+        let mut value = vec![Span::styled(now.to_owned(), tone.add_modifier(Modifier::BOLD))];
+        if let Some(beside) = beside {
+            value.push(Span::styled("  ", Style::new()));
+            match beside.rfind(" (").filter(|_| beside.ends_with(')')) {
+                Some(at) => {
+                    value.push(Span::styled(beside[..at].to_owned(), Style::new().fg(DIM)));
+                    value.push(Span::styled(beside[at..].to_owned(), if fact.tone.is_some() { tone } else { Style::new().fg(DIM) }));
+                }
+                None => value.push(Span::styled(beside.to_owned(), Style::new().fg(DIM))),
+            }
+        }
+        let label = Span::styled(fact.label.clone(), Style::new().fg(Color::Gray));
+        let now_width = super::md::str_width(now);
+        let value_width: usize = value.iter().map(Span::width).sum();
+        if 2 + columns.label + 3 + columns.value + value_width - now_width <= width {
+            let mut spans = vec![
+                Span::raw("  "),
+                label,
+                Span::raw(" ".repeat(columns.label - super::md::str_width(&fact.label) + 3 + columns.value - now_width)),
+            ];
+            spans.extend(value);
+            lines.push(Line::from(spans));
+        } else {
+            lines.push(fit(vec![Span::raw("  "), label], width));
+            lines.extend(super::md::wrap(value, width.saturating_sub(4), vec![Span::raw("    ")], vec![Span::raw("    ")]));
+        }
+    }
+    lines
+}
+
+/// A notice on its own line, in its tone.
+pub fn notice_line(notice: &Notice) -> Line<'static> {
+    Line::from(Span::styled(notice.text.clone(), tone_style(notice.tone)))
+}
+
+pub fn tone_style(tone: Tone) -> Style {
+    label_style(&Label { text: String::new(), tone, elapsed: None })
 }
 
 fn label_style(label: &Label) -> Style {

@@ -16,6 +16,12 @@ fn views_fixtures(folder: &str) -> std::path::PathBuf {
     }
 }
 
+/// The Metrics view as the daemon renders it, from `fixtures/views/metrics`.
+pub(in crate::tui) fn metrics_fixture(name: &str) -> serde_json::Value {
+    let path = views_fixtures("metrics").join(name);
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))).unwrap()
+}
+
 /// A view as a daemon newer than this terminal sends it, from `fixtures/views/newer-daemon`.
 pub(in crate::tui) fn newer_daemon_fixture(name: &str) -> String {
     let path = views_fixtures("newer-daemon").join(name);

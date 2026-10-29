@@ -59,7 +59,7 @@ rust_test(
         "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
     ],
     deps = all_crate_deps(normal = True, normal_dev = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
-    data = REPORT_SOURCES + ["//fixtures/report", "//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/domain-v2:text-completion.commands.json"],
+    data = REPORT_SOURCES + ["//fixtures/report", "//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/views:metrics", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
     version = VERSION,
 )

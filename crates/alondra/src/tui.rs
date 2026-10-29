@@ -14,6 +14,7 @@ mod optimistic;
 mod restore;
 mod rules;
 mod mcp_servers;
+mod metrics;
 mod tasks;
 mod title;
 mod updated;
@@ -26,6 +27,9 @@ mod work;
 #[cfg(test)]
 #[path = "tui/tests/keyhints.rs"]
 mod keyhints;
+#[cfg(test)]
+#[path = "tui/tests/metrics.rs"]
+mod metrics_tests;
 #[cfg(test)]
 #[path = "tui/tests/parity.rs"]
 mod parity;
@@ -668,6 +672,8 @@ pub struct App {
     /// Keeps Settings' selected row while a server-owned form uses the normal view navigator.
     pub settings_after_view: Option<(mcp_servers::McpServers, usize)>,
     pub crash_report: Option<crash_report::CrashReport>,
+    /// What ended tasks cost and how they went, open over the list screens and Settings.
+    pub metrics: Option<metrics::Metrics>,
     /// What a key's work leaves the screen to do once it returns, such as an account's sign-in.
     pub pending_flow: Option<Flow>,
     pub sel: Option<Key>,
@@ -1172,6 +1178,7 @@ impl App {
             mcp_servers: None,
             settings_after_view: None,
             crash_report: None,
+            metrics: None,
             pending_flow: None,
             sel: None,
             sel_idx: 0,
@@ -1488,6 +1495,9 @@ impl App {
             open.insert(view.key.clone(), view.version.clone());
         }
         for view in self.mcp_servers.iter().flat_map(|screen| [&screen.view, &screen.general, &screen.accounts]).flatten() {
+            open.insert(view.key.clone(), view.version.clone());
+        }
+        if let Some(view) = self.metrics.as_ref().and_then(metrics::Metrics::view) {
             open.insert(view.key.clone(), view.version.clone());
         }
     }
@@ -2033,6 +2043,9 @@ impl App {
                 if key == mcp_servers::ACCOUNTS {
                     self.accounts_loaded(&view);
                 }
+                if metrics::reads(&key) {
+                    self.metrics_loaded(&key, Ok(&view));
+                }
                 if view.view == alondra_core::views::SETTLED_VIEW {
                     if self.selected_view_key().as_deref() == Some(&key) {
                         self.close_settled_card(&key, view);
@@ -2070,6 +2083,9 @@ impl App {
                 }
                 if key == mcp_servers::VIEW {
                     self.mcp_servers_loaded(Err(&error));
+                }
+                if metrics::reads(&key) {
+                    self.metrics_loaded(&key, Err(&error));
                 }
                 if self.card_view_asked.as_deref() == Some(&key) {
                     if key.starts_with("search") {
@@ -2600,6 +2616,7 @@ impl App {
         self.schedules_open = false;
         self.rules = None;
         self.mcp_servers = None;
+        self.metrics = None;
         self.focus = Pane::List;
         self.agent_zoom = false;
         self.task_zoom = false;
@@ -2681,6 +2698,10 @@ impl App {
             "report" | "informe" => {
                 self.reader = None;
                 self.open_crash_report("other");
+            }
+            "metrics" | "métricas" | "metricas" => {
+                self.reader = None;
+                self.open_metrics();
             }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;

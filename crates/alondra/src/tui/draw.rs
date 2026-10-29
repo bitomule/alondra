@@ -97,6 +97,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_reader(f, app, body);
     } else if app.rules.is_some() {
         draw_rules(f, app, body);
+    } else if app.metrics.is_some() {
+        draw_metrics(f, app, body);
     } else if app.mcp_servers.is_some() {
         draw_mcp_servers(f, app, body);
     } else if let Some(view) = app.shown_home().map(std::borrow::Cow::into_owned) {
@@ -900,6 +902,29 @@ fn draw_crash_report(f: &mut Frame, app: &mut App, area: Rect) {
         highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, start..end, report.scroll);
     }
     scrollbar(f, inner, total, report.scroll);
+}
+
+fn draw_metrics(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(screen) = app.metrics.as_mut() else { return };
+    let shown = screen.shown().map(std::borrow::Cow::into_owned);
+    let title = shown.as_ref().and_then(|view| view.title.clone()).unwrap_or_else(|| tr!("Metrics", "Métricas").to_owned());
+    let block = panel(Line::from(format!(" {title} ").bold()), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some(view) = shown else {
+        let message = screen.failed.clone().unwrap_or_else(|| tr!("Loading…", "Cargando…").to_owned());
+        centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
+        return;
+    };
+    let width = inner.width.saturating_sub(1) as usize;
+    let rendered = super::metrics::lines(&view, screen.sel, width);
+    let total = rendered.lines.len();
+    keep_visible(&mut screen.scroll, rendered.selected, inner.height as usize, total);
+    f.render_widget(Paragraph::new(rendered.lines).scroll((screen.scroll as u16, 0)), inner);
+    if !rendered.tab {
+        highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, rendered.selected.0..rendered.selected.1, screen.scroll);
+    }
+    scrollbar(f, inner, total, screen.scroll);
 }
 
 fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {

@@ -41,6 +41,9 @@ pub(super) enum Act {
     ReportSend,
     ReportKeep,
     CloseReport,
+    Metrics,
+    MetricsOpen,
+    MetricsBack,
     Search,
     Quit,
     Help,
@@ -268,6 +271,8 @@ impl App {
             self.reader_bindings(&mut t);
         } else if self.rules.is_some() {
             self.rules_bindings(&mut t);
+        } else if self.metrics.is_some() {
+            self.metrics_bindings(&mut t);
         } else if self.mcp_servers.is_some() {
             self.mcp_servers_bindings(&mut t);
         } else if self.schedules_open {
@@ -276,8 +281,8 @@ impl App {
             self.list_bindings(&mut t);
         }
         t.help(vec![char('?')], "?", tr!("help", "ayuda"), Act::Help);
-        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :settings :report :<number>",
-            "línea de órdenes: :q :inbox :tasks :ajustes :informe :<número>"), Act::CmdLine);
+        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :settings :metrics :report :<number>",
+            "línea de órdenes: :q :inbox :tasks :ajustes :métricas :informe :<número>"), Act::CmdLine);
         t.help(vec![char(']')], "]", tr!("next Mac, when this terminal is connected to several",
             "siguiente Mac, si este terminal está conectado a varios"), Act::NextMac);
         t
@@ -461,6 +466,18 @@ impl App {
         t.add(vec![plain(KeyCode::Esc), char('q')], "Esc", tr!("close", "cerrar"), Act::CloseReport);
     }
 
+    fn metrics_bindings(&self, t: &mut Table) {
+        let Some(screen) = self.metrics.as_ref() else { return };
+        if screen.rows().len() > 1 {
+            t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
+        }
+        if screen.target().is_some() {
+            t.add(vec![plain(KeyCode::Enter), char('o')], "⏎", tr!("show", "mostrar"), Act::MetricsOpen);
+        }
+        t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back", "volver"), Act::MetricsBack);
+        t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
+    }
+
     fn mcp_servers_bindings(&self, t: &mut Table) {
         let Some(screen) = self.mcp_servers.as_ref() else { return };
         if screen.rows().len() > 1 {
@@ -488,6 +505,8 @@ impl App {
             t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::CrashReport);
         } else if screen.on_servers_row() {
             t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::OpenMcpDetail);
+        } else if screen.on_metrics_row() {
+            t.add(vec![plain(KeyCode::Enter), char('1')], "Enter", tr!("open", "abrir"), Act::Metrics);
         } else if let Some(row) = screen.selected() {
             for (index, action) in super::mcp_servers::actions(row).into_iter().enumerate() {
                 let mut keys: Vec<KeyEvent> = digit(index).into_iter().collect();
@@ -498,6 +517,7 @@ impl App {
             }
         }
         t.add(vec![plain(KeyCode::Esc), char(',')], "Esc", tr!("back", "volver"), Act::CloseMcpServers);
+        t.help(vec![char('M')], "Shift+M", tr!("metrics", "métricas"), Act::Metrics);
         t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
     }
 
@@ -587,6 +607,7 @@ impl App {
             }
         }
         t.add(vec![char(',')], ",", tr!("settings", "ajustes"), Act::McpServers);
+        t.help(vec![char('M')], "Shift+M", tr!("metrics: cost, tokens and how tasks went", "métricas: coste, tokens y cómo fueron las tareas"), Act::Metrics);
         let next = match self.screen {
             Screen::Inbox => tr!("tasks", "tareas"),
             Screen::Tasks => tr!("inbox", "bandeja"),
@@ -619,6 +640,8 @@ impl App {
                     self.reader_cmd(Cmd::Move(motion));
                 } else if let Some(rules) = self.rules.as_mut() {
                     rules.step(motion);
+                } else if let Some(screen) = self.metrics.as_mut() {
+                    screen.step(motion);
                 } else if let Some(screen) = self.mcp_servers.as_mut() {
                     screen.step(motion);
                 } else {
@@ -685,6 +708,9 @@ impl App {
             Act::ReportSend => self.send_crash_report(),
             Act::ReportKeep => self.keep_crash_report(),
             Act::CloseReport => self.close_crash_report(),
+            Act::Metrics => self.open_metrics(),
+            Act::MetricsOpen => self.metrics_open_row(),
+            Act::MetricsBack => self.metrics_back(),
             Act::Search => {
                 self.search = Some(super::Search {
                     input: super::TextInput::default(),

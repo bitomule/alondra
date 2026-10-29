@@ -4,7 +4,8 @@
 //! how new work is spread, and adding one, whose sign-in runs on this screen. Then MCP servers, one
 //! row with how many there are, that opens their own screen (`:mcp` opens it directly): per
 //! project, each server its nodes use with how it is, and the projects no node runs in, each checked
-//! on demand. Its buttons are the view's: Connect opens the sign-in as a card's does, Reconnect,
+//! on demand. Then Metrics, one row that opens that screen (`M` and `:metrics` open it directly).
+//! Its buttons are the view's: Connect opens the sign-in as a card's does, Reconnect,
 //! Sign out, Delete and Check go to the daemon.
 
 use std::borrow::Cow;
@@ -26,6 +27,7 @@ pub const ACCOUNTS: &str = alondra_core::views::accounts::KEY;
 const GENERAL_SECTION: &str = "settings";
 const SERVERS_ROW: &str = "mcp_servers";
 const REPORT_ROW: &str = "crash_report";
+const METRICS_ROW: &str = "metrics";
 const ACCENT: Color = Color::LightCyan;
 
 /// A line of the screen: a project's heading, what a section says of itself, or one of its rows.
@@ -50,6 +52,7 @@ pub struct McpServers {
     pub order: Option<AccountOrderDraft>,
     servers: Option<Row>,
     report: Option<Row>,
+    metrics: Option<Row>,
     /// What the user just picked on a General row, by the action's id: the row says it at once,
     /// until the Mac refuses it or a view of the Mac says how it is now.
     pub chosen: HashMap<String, Chosen>,
@@ -123,6 +126,10 @@ impl McpServers {
             entries.push(Entry::Group(tr!("MCP servers", "Servidores MCP")));
             entries.push(Entry::Row(servers));
         }
+        if let Some(metrics) = &self.metrics {
+            entries.push(Entry::Group(tr!("Metrics", "Métricas")));
+            entries.push(Entry::Row(metrics));
+        }
         if let Some(report) = &self.report {
             entries.push(Entry::Group(tr!("Help", "Ayuda")));
             entries.push(Entry::Row(report));
@@ -144,6 +151,11 @@ impl McpServers {
             ).into()),
             badges: vec![], trailing: None, depth: 0, struck: false, kind: None, children: vec![], folded: false, actions: vec![], account: None, model: None,
         }
+    }
+
+    /// Whether the selected row is the one that opens Metrics.
+    pub fn on_metrics_row(&self) -> bool {
+        !self.detail && self.selected().is_some_and(|row| row.id == METRICS_ROW)
     }
 
     /// Whether the selected row is the one that opens the MCP servers' screen.
@@ -171,6 +183,15 @@ impl McpServers {
         account: None, model: None,
             id: SERVERS_ROW.into(), link: None, icon: Icon::Machine, title, subtitle: None, badges: vec![], trailing: None, depth: 0,
             struck: false, kind: None, children: vec![], folded: false, actions: vec![],
+        }
+    }
+
+    fn metrics_row() -> Row {
+        Row {
+            id: METRICS_ROW.into(), link: None, icon: Icon::History,
+            title: tr!("Cost, tokens and how tasks went", "Coste, tokens y cómo fueron las tareas").to_owned(),
+            subtitle: None, badges: vec![], trailing: None, depth: 0, struck: false, kind: None, children: vec![], folded: false, actions: vec![],
+            account: None, model: None,
         }
     }
 
@@ -314,7 +335,10 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
 
 impl App {
     pub(super) fn open_mcp_servers(&mut self, detail: bool) {
-        self.mcp_servers = Some(McpServers { detail, servers: Some(McpServers::servers_row(None)), report: Some(McpServers::report_row()), ..McpServers::default() });
+        self.mcp_servers = Some(McpServers {
+            detail, servers: Some(McpServers::servers_row(None)), report: Some(McpServers::report_row()),
+            metrics: Some(McpServers::metrics_row()), ..McpServers::default()
+        });
         self.load_mcp_servers();
         self.load_general();
         self.load_accounts();
