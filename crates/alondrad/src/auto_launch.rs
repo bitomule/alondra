@@ -134,7 +134,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let block = |reason: AutoLaunchReason, detail: Option<&str>| -> Result<()> {
             domain.store.lock_or_exit("the domain store").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
         };
-        let Some(plan) = plan else { continue };
+        if plan.is_none() { continue; }
         if usage_out {
             block(AutoLaunchReason::UsageExhausted, None)?;
             continue;
@@ -147,13 +147,16 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if !domain.store.lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
             continue;
         }
-        if !domain.live.begin_launch(&task.id.0) {
+        let Ok(_launching) = crate::domain_orchestrator_tools::Launching::begin(domain, &task.id) else {
             domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
             continue;
-        }
+        };
+        let Some(plan) = domain.launch_plan(&task.id)? else {
+            domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
+            continue;
+        };
         let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
         let launched = launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), &plan), choices, Origin::Auto).await;
-        domain.live.end_launch(&task.id.0);
         settle(domain, &task.id, &plan.cwd, launched, now)?;
     }
     Ok(())

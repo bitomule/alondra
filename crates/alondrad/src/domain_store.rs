@@ -1184,10 +1184,36 @@ impl DomainStore {
         let plan: Option<String> = self.conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;
         plan.map(|plan| serde_json::from_str(&plan).context("stored launch plan")).transpose()
     }
+    #[cfg(test)]
     pub(crate) fn set_launch_plan(&mut self, task_id: &TaskId, plan: &crate::launch_plans::LaunchPlan, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role,at=excluded.at",
             params![task_id.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), now])?;
+        self.note_side_write();
+        Ok(())
+    }
+    /// Updates the queued fields in the same transaction as the stored plan, preserving queue context.
+    pub(crate) fn change_launch_plan(&mut self, task_id: &TaskId, plan: &crate::launch_plans::LaunchPlan,
+        changes: Option<&serde_json::Value>, now: i64) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role",
+            params![task_id.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), now])?;
+        let queued: Option<String> = tx.query_row("SELECT body FROM launch_queue WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;
+        if let Some(queued) = queued {
+            let mut body: serde_json::Value = serde_json::from_str(&queued)?;
+            if let Some(changes) = changes {
+                let fields = body["body"].as_object_mut().ok_or_else(|| anyhow::anyhow!("invalid queued launch body"))?;
+                fields.extend(changes.as_object().unwrap().clone());
+                if changes.get("model").is_some() {
+                    fields.remove("provider");
+                }
+            } else {
+                body = crate::domain_orchestrator_tools::LaunchBody::from_plan(task_id.clone(), plan).to_queue();
+            }
+            tx.execute("UPDATE launch_queue SET body=?2 WHERE task_id=?1", params![task_id.0, serde_json::to_string(&body)?])?;
+        }
+        tx.commit()?;
         self.note_side_write();
         Ok(())
     }

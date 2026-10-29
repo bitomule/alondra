@@ -85,7 +85,9 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "The models you choose from (Available models: each model of an enabled account with its efforts, the accounts' margin, its sheet and Alondra's measured results), the public evidence of each sheet, the account catalogs and profiles; machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "daemon_log", "description": "The last lines of Alondra's daemon log (alondrad.log), to find out why something in Alondra failed.", "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer", "description": "How many lines from the end: 200 by default, at most 1000"}}}}),
-            json!({"name": "set_launch_plan", "description": "Replace the launch plan Alondra starts a task with by itself when the node limit has room and everything it depends on is done.", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "launch": launch_plan_schema()}, "required": ["task_id", "launch"]}}),
+            json!({"name": "get_launch_plan", "description": "Read a task’s complete stored launch plan, including its mission, before reviewing or changing it. Does not modify the task.", "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}),
+            json!({"name": "update_launch_plan", "description": "Change only the supplied model, effort, approach, tags or reason of a task that has never started; preserve the mission, name, folder, role, approved checklist and added context. For a model-only change pass task_id and changes: {model: \"codex/gpt-…\"}. Read get_launch_plan first. Omitted fields stay unchanged; null, empty changes and unknown fields are refused. tags replaces only the tags. A pending plan review must be settled with settle_plan_review; user-fixed effort remains binding.", "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"task_id": {"type": "string"}, "changes": launch_plan_changes_schema()}, "required": ["task_id", "changes"]}}),
+            json!({"name": "set_launch_plan", "description": "Replace the entire launch plan of a task that has never started. Use update_launch_plan to change only its model or other selection fields without losing its mission. A pending plan review must be settled with settle_plan_review; user-fixed effort remains binding.", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "launch": launch_plan_schema()}, "required": ["task_id", "launch"]}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task, which must be the node's own: a node works only on the task it was launched for, and a closed task's node is closed with it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": "With task and an approach: one short line on what the task is and why this approach. Kept to measure how each approach does"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is running now (the node's `tool`, running since its `since`); `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
             json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While the selected account has no available usage, launches wait for an eligible account or its reset. name and cwd are optional when the task has a launch plan."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "replace": {"type": "boolean", "description": "With task, recover a disconnected legacy node only on its original account. Existing SDK nodes cannot be replaced through this tool: use the task options for supported same-session model changes. Account and provider are selected only when creating a node and stay fixed. Unsupported changes require a new task and node."}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "provider": {"type":"string","enum":["claude","codex"]}, "profile": {"type":"string","enum":["implementation","general","design","review"]}, "reasoning_effort":{"type":"string","description":"Native effort advertised by the exact selected model; distinct from inherited work effort"}, "model": {"type": "string", "description": format!("Exact advertised model named with its provider (claude/opus, codex/model-id); a name without provider is refused when both providers offer it. Automatic uses configured profiles; {user}'s explicit choice remains binding")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "description": "Legacy alias for native reasoning_effort; use only an effort advertised for the selected model"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": format!("One short line on what the task is and why this model (and effort) fits it. Required when the request's effort is auto; optional when {user} chose the effort. Kept to measure how each model does")}}, "required": ["task"]}}),
@@ -428,6 +430,15 @@ fn launch_plan_schema() -> Value {
             "tags":tags_schema()}})
 }
 
+fn launch_plan_changes_schema() -> Value {
+    let mut schema = launch_plan_schema();
+    schema["required"] = json!([]);
+    schema["description"] = json!("Only the fields to change; omitted fields remain stored unchanged. Null is not accepted.");
+    schema["properties"].as_object_mut().unwrap().retain(|key, _| matches!(key.as_str(), "model" | "effort" | "approach" | "tags" | "reason"));
+    schema["properties"]["reasoning_effort"] = schema["properties"]["effort"].clone();
+    schema
+}
+
 /// What the task is: kept with each model decision, so the model is chosen and measured by kind.
 fn tags_schema() -> Value {
     use alondra_core::task_tags::{TaskArea, TaskKind, TaskRisk};
@@ -695,6 +706,8 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "send"
         | "interrupt"
         | "set_launch_plan"
+        | "update_launch_plan"
+        | "get_launch_plan"
         | "machine"
         | "daemon_log"
         | "schedule_create"
@@ -770,6 +783,15 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
                 &bearer,
                 args,
             )?)?
+        }
+        "get_launch_plan" => {
+            let bearer = domain_bearer()?;
+            let task = args.get("task_id").and_then(Value::as_str).unwrap_or("");
+            serde_json::to_string_pretty(&client.domain_get(&format!("/orchestrator/launch-plan?task_id={}", urlencode(task)), &bearer)?)?
+        }
+        "update_launch_plan" => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_post("/orchestrator/launch-plan/update", &bearer, args)?)?
         }
         "set_launch_plan" => {
             let bearer = domain_bearer()?;
@@ -1915,6 +1937,28 @@ mod tests {
         let wait = catalog.as_array().unwrap().iter().find(|t| t["name"] == "wait_for_machine").unwrap();
         assert!(wait["description"].as_str().unwrap().contains("never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again"));
         assert!(skill_text(Role::Node).contains("When a turn ends on a usage limit (\"You've hit your session limit\"), never wait for it yourself: no `sleep`, no cron (`CronCreate`), no loop in the background. End your turn; Alondra waits out the limit and wakes you when Claude answers again."), "the node skill says so too");
+    }
+
+    #[test]
+    fn partial_launch_plan_tools_are_orchestrator_only_and_keep_the_mission_out_of_changes() {
+        let catalog = tools(Role::Orchestrator, "Ana");
+        let node = tools(Role::Node, "Ana");
+        for name in ["get_launch_plan", "update_launch_plan"] {
+            assert!(!node.as_array().unwrap().iter().any(|tool| tool["name"] == name));
+            assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == name));
+        }
+        let update = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "update_launch_plan").unwrap();
+        let changes = &update["inputSchema"]["properties"]["changes"];
+        assert_eq!(changes["additionalProperties"], false);
+        assert_eq!(changes["required"], json!([]));
+        for field in ["model", "effort", "reasoning_effort", "approach", "tags", "reason"] {
+            assert!(changes["properties"][field].is_object(), "{field}");
+        }
+        for field in ["name", "mission", "cwd", "role", "project"] {
+            assert!(changes["properties"][field].is_null(), "{field}");
+        }
+        assert!(skill_text(Role::Orchestrator).contains("update_launch_plan({task_id, changes: {model:"));
+        assert!(skill_text(Role::Orchestrator).contains("get_launch_plan({task_id})"));
     }
 
     #[test]

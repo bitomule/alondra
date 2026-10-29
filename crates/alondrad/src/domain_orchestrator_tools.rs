@@ -191,6 +191,15 @@ pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, body: Launc
     let cwd = body.cwd.clone().or_else(|| domain.launch_plan(&task).ok().flatten().map(|plan| plan.cwd));
     let launched = if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
         let _launching = Launching::begin(domain, &body.task)?;
+        let body = if matches!(origin, Origin::Admitted) {
+            let queue = domain.store.lock_or_exit("the domain store").launch_queue()
+                .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?;
+            match queue.into_iter().find(|row| row.task_id == body.task) {
+                Some(row) => LaunchBody::from_queue(&row.body)
+                    .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?,
+                None => body,
+            }
+        } else { body };
         launch_guarded(domain, home, body, choices, origin, None).await
     } else {
         launch_guarded(domain, home, body, choices, origin, None).await
@@ -231,13 +240,13 @@ fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str
 }
 
 /// The right to launch a task's node, given back however the launch ends, a panic included.
-struct Launching<'a> {
+pub(crate) struct Launching<'a> {
     domain: &'a DomainRuntime,
     task: String,
 }
 
 impl<'a> Launching<'a> {
-    fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
+    pub(crate) fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
         if !domain.live.begin_launch(&task.0) {
             return Err(DomainError::new("conflict", format!("{task} is being launched already")));
         }
@@ -1039,27 +1048,105 @@ pub(crate) struct LaunchPlanBody {
     launch: crate::launch_plans::LaunchPlan,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UpdateLaunchPlanBody {
+    task_id: TaskId,
+    changes: LaunchPlanChanges,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchPlanChanges {
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "non_null")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "non_null", alias = "reasoning_effort")]
+    effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "non_null")]
+    approach: Option<alondra_core::options::Approach>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "non_null")]
+    tags: Option<alondra_core::task_tags::TaskTags>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "non_null")]
+    reason: Option<String>,
+}
+
+fn non_null<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
+}
+
+fn plan_storage(error: anyhow::Error) -> DomainError {
+    log!("could not access the launch plan: {error:#}");
+    DomainError::new("storage_unavailable", "the launch plan could not be read or stored")
+}
+
+pub(crate) fn get_launch_plan(domain: &DomainRuntime, task_id: &TaskId) -> Result<Value, DomainError> {
+    let store = domain.store.lock_or_exit("the domain store");
+    if !state(domain)?.tasks.contains_key(task_id) {
+        return Err(DomainError::new("not_found", "task does not exist"));
+    }
+    let launch = store.launch_plan(task_id).map_err(plan_storage)?
+        .ok_or_else(|| DomainError::new("not_found", "task has no stored launch plan"))?;
+    Ok(json!({"task": task_id, "launch": launch}))
+}
+
 /// Replaces the plan Alondra starts a task with by itself.
 pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchPlanBody) -> Result<Value, DomainError> {
-    let current = state(domain)?;
-    let task = current.tasks.get(&body.task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-    if task.over() {
+    change_launch_plan(domain, home, &body.task_id, Some(body.launch), None)
+}
+
+pub(crate) fn update_launch_plan(domain: &DomainRuntime, home: &Path, body: UpdateLaunchPlanBody) -> Result<Value, DomainError> {
+    let changes = serde_json::to_value(body.changes).map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
+    if changes.as_object().is_none_or(|fields| fields.is_empty()) {
+        return Err(DomainError::new("invalid_input", "changes must contain at least one launch-plan field"));
+    }
+    change_launch_plan(domain, home, &body.task_id, None, Some(changes))
+}
+
+fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -> Result<&'a alondra_core::domain::Task, DomainError> {
+    let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    if task.over() || task.archived {
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
     }
-    let under_review = |state: &DomainState| crate::plan_reviews::held(state, &task.id).map(|why| DomainError::new("plan_review_pending", format!(
-        "{why}. Give it its new plan there, with the plan_changed outcome: set_launch_plan does not change a plan under review")));
-    if let Some(refused) = under_review(&current) {
-        return Err(refused);
+    if let Some(why) = crate::plan_reviews::held(state, task_id) {
+        return Err(DomainError::new("plan_review_pending", format!(
+            "{why}. Use settle_plan_review with the plan_changed outcome: launch-plan changes cannot bypass a plan review")));
     }
-    crate::launch_plans::validate(domain, home, &task.request_id, &body.launch)?;
-    let stored = |error: anyhow::Error| { log!("could not store the launch plan of {}: {error:#}", task.id); DomainError::new("storage_unavailable", "the launch plan could not be stored") };
+    let prior_native = state.lifecycle_journal.get(task_id).is_some_and(|records| records.iter().any(|record| matches!(record,
+        alondra_core::domain::LifecycleRecord::Admitted { execution: Some(_), .. } | alondra_core::domain::LifecycleRecord::ResourceAvailable)));
+    if !matches!(task.state, alondra_core::domain::TaskState::NotStarted | alondra_core::domain::TaskState::WaitingDependency) || task.started || task.agent_id.is_some() || launched || prior_native {
+        return Err(DomainError::new("conflict", "the launch plan can only change before the task has started"));
+    }
+    Ok(task)
+}
+
+fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
+    replacement: Option<crate::launch_plans::LaunchPlan>, changes: Option<Value>) -> Result<Value, DomainError> {
+    let _launching = Launching::begin(domain, task_id)?;
+    let current = state(domain)?;
+    let task = editable_plan(&current, task_id, false)?;
+    let original = domain.launch_plan(task_id).map_err(plan_storage)?;
+    let plan = match replacement {
+        Some(plan) => plan,
+        None => {
+            let original = original.as_ref().ok_or_else(|| DomainError::new("not_found", "task has no stored launch plan"))?;
+            let mut merged = serde_json::to_value(original).map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
+            merged.as_object_mut().unwrap().extend(changes.as_ref().unwrap().as_object().unwrap().clone());
+            serde_json::from_value(merged).map_err(|error| DomainError::new("invalid_input", error.to_string()))?
+        }
+    };
+    if let Some(choices) = request_choices(domain, &task.request_id).map_err(plan_storage)?
+        && choices.options.effort != alondra_core::options::AUTO {
+        return Err(DomainError::new("invalid_input", format!("the user chose effort {} for this request, which fixes its launch model and effort", choices.options.effort)));
+    }
+    crate::launch_plans::validate(domain, home, &task.request_id, &plan)?;
     let mut store = domain.store.lock_or_exit("the domain store");
     let now = state(domain)?;
-    if let Some(refused) = under_review(&now) {
-        return Err(refused);
+    editable_plan(&now, task_id, store.task_was_launched(task_id).map_err(plan_storage)?)?;
+    if now.revision != current.revision || store.launch_plan(task_id).map_err(plan_storage)? != original {
+        return Err(DomainError::new("conflict", "the task or its launch plan changed; read it again before updating"));
     }
-    store.set_launch_plan(&task.id, &body.launch, alondra_core::now_millis()).map_err(stored)?;
-    Ok(json!({"task": task.id, "stored": true}))
+    store.change_launch_plan(task_id, &plan, changes.as_ref(), alondra_core::now_millis()).map_err(plan_storage)?;
+    Ok(json!({"task": task_id, "stored": true}))
 }
 
 #[derive(Deserialize)]

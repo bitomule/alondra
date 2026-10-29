@@ -167,6 +167,9 @@ mod tests {
         let body = serde_json::from_value(serde_json::json!({"task_id": "d", "launch": {"name": "d", "cwd": "/tmp", "model": "sonnet", "reason": "r"}})).unwrap();
         let refused = crate::domain_orchestrator_tools::set_launch_plan(&domain, &home, body).unwrap_err();
         assert_eq!(refused.code, "plan_review_pending");
+        let patch = serde_json::from_value(serde_json::json!({"task_id": "d", "changes": {"model": "codex/gpt-6"}})).unwrap();
+        let partial = crate::domain_orchestrator_tools::update_launch_plan(&domain, &home, patch).unwrap_err();
+        assert_eq!(partial.code, "plan_review_pending");
         assert!(refused.message.contains("settle_plan_review"), "{}", refused.message);
         assert_eq!(domain.launch_plan(&"d".into()).unwrap().unwrap().mission.as_deref(), Some("Phase D: 360 px everywhere"));
     }

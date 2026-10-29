@@ -143,7 +143,8 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/orchestrator/acknowledge", post(orchestrator_decision))
         .route("/orchestrator/retry", post(orchestrator_decision))
         .route("/orchestrator/launch", post(orchestrator_launch))
-        .route("/orchestrator/launch-plan", post(orchestrator_launch_plan))
+        .route("/orchestrator/launch-plan", post(orchestrator_launch_plan).get(orchestrator_get_launch_plan))
+        .route("/orchestrator/launch-plan/update", post(orchestrator_update_launch_plan))
         .route("/orchestrator/send", post(orchestrator_send))
         .route("/orchestrator/interrupt", post(orchestrator_interrupt))
         .route("/sandbox/interrupt/{session}", post(sandbox_interrupt))
@@ -982,6 +983,35 @@ async fn orchestrator_launch_plan(
     let domain = state.domain(); let home = state.home.clone();
     let work = async move { crate::domain_orchestrator_tools::set_launch_plan(&domain,&home,body) };
     tool_answer(tracked_tool(&state,&headers,"set_launch_plan",request,work).await)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchPlanQuery {
+    task_id: alondra_core::domain::TaskId,
+}
+
+async fn orchestrator_get_launch_plan(
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    Query(query): Query<LaunchPlanQuery>,
+) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) { return refused; }
+    tool_answer(crate::domain_orchestrator_tools::get_launch_plan(&state.domain, &query.task_id))
+}
+
+async fn orchestrator_update_launch_plan(
+    State(state): State<Arc<DomainDaemon>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers, None) { return refused; }
+    let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid launch-plan changes")); };
+    let body = match serde_json::from_value(request.clone()) {
+        Ok(body) => body,
+        Err(error) => return crate::domain_api::domain_error(DomainError::new("invalid_input", format!("Invalid launch-plan changes: {error}"))),
+    };
+    let domain = state.domain(); let home = state.home.clone();
+    let work = async move { crate::domain_orchestrator_tools::update_launch_plan(&domain, &home, body) };
+    tool_answer(tracked_tool(&state, &headers, "update_launch_plan", request, work).await)
 }
 
 async fn orchestrator_send(
@@ -1928,6 +1958,41 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
+        let plan_path = "/orchestrator/launch-plan?task_id=missing";
+        for token in ["invalid", bearer.as_str()] {
+            assert_eq!(client.get(format!("{base}{plan_path}")).bearer_auth(token).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+            assert_eq!(client.post(format!("{base}/orchestrator/launch-plan/update")).bearer_auth(token)
+                .json(&json!({"task_id": "missing", "changes": {"model": "sonnet"}})).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        }
+        assert_eq!(orchestrator_get(plan_path).await.unwrap().status(), StatusCode::NOT_FOUND);
+        let missing_update = client.post(format!("{base}/orchestrator/launch-plan/update"))
+            .bearer_auth(orchestrator.expose_for_child_environment())
+            .json(&json!({"task_id": "missing", "changes": {"model": "sonnet"}})).send().await.unwrap();
+        assert_eq!(missing_update.status(), StatusCode::NOT_FOUND);
+        use alondra_core::domain::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
+        let execute = |actor, command| {
+            let state = domain.state().unwrap();
+            domain.execute_fixture(&actor, CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+                command_id: crate::auth::random_hex(8).into(), expected_revision: state.revision, command }).unwrap();
+        };
+        execute(Actor::User { user_id: "user".into() }, Command::CreateRequest { request_id: "plan-read".into(), body: "Review stored work".into(),
+            auto_merge: false, maintenance: false, message: false });
+        let plan = LaunchPlan { mission: Some("The saved mission\n\nAdditional context stays here.".into()),
+            model: Some("sonnet".into()), reason: Some("Implementation".into()), ..LaunchPlan::new("stored-node", home.to_str().unwrap()) };
+        execute(Actor::Orchestrator { generation: domain.state().unwrap().orchestrator_generation }, Command::CreateTask {
+            task_id: "plan-read".into(), request_id: "plan-read".into(), title: "Stored work".into(), agent_id: None, review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(plan.clone()), plan_items: None });
+        let stored = orchestrator_get("/orchestrator/launch-plan?task_id=plan-read").await.unwrap();
+        assert_eq!(stored.status(), StatusCode::OK);
+        assert_eq!(stored.json::<Value>().await.unwrap()["launch"], json!(plan));
+        let updated = client.post(format!("{base}/orchestrator/launch-plan/update"))
+            .bearer_auth(orchestrator.expose_for_child_environment())
+            .json(&json!({"task_id": "plan-read", "changes": {"reason": "Better measured fit"}})).send().await.unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+        let stored: Value = orchestrator_get("/orchestrator/launch-plan?task_id=plan-read").await.unwrap().json().await.unwrap();
+        assert_eq!(stored["launch"]["mission"], json!(plan.mission));
+        assert_eq!(stored["launch"]["name"], "stored-node");
+        assert_eq!(stored["launch"]["reason"], "Better measured fit");
         let tasks_in_progress = orchestrator_get("/orchestrator/tasks_in_progress").await.unwrap();
         assert_eq!(tasks_in_progress.status(), StatusCode::OK);
         assert!(tasks_in_progress.json::<serde_json::Value>().await.unwrap()["nodes"].is_array());

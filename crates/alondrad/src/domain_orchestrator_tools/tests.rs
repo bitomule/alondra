@@ -1563,7 +1563,17 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         plan_items: Some(PlanItems { from_task: "t".into(), items: vec!["2".into(), "3".into()] }) });
 
-    launch(&f.domain, &f.home, launch_body(&f, json!({"task": "index", "model": "sonnet"})), |_| None).await.unwrap();
+    connect_claude_and_codex(&f);
+    let original = crate::launch_plans::LaunchPlan { mission: Some("Implement the read index; preserve the approved scope.".into()),
+        model: Some("claude/opus".into()), reason: Some("Implementation".into()),
+        ..crate::launch_plans::LaunchPlan::new("app/index", f.project.to_str().unwrap()) };
+    f.domain.store.lock().unwrap().set_launch_plan(&"index".into(), &original, 1).unwrap();
+    let checklist = f.domain.state().unwrap().checklists[&TaskId::from("index")].clone();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("index")].state, TaskState::WaitingDependency);
+    partial_plan(&f, "index", json!({"model": "claude/sonnet"})).unwrap();
+    assert_eq!(f.domain.state().unwrap().checklists[&TaskId::from("index")], checklist);
+    assert_eq!(get_launch_plan(&f.domain, &"index".into()).unwrap()["launch"]["mission"], original.mission.unwrap());
+    launch(&f.domain, &f.home, launch_body(&f, json!({"task": "index"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
     assert!(prompt.contains("Your part of it is points 2, 3; the other points are other tasks"), "{prompt}");
@@ -1837,4 +1847,156 @@ async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_uniqu
     assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", "“twin” is offered by claude and codex: name it claude/twin or codex/twin"));
     let body: LaunchPlanBody = serde_json::from_value(json!({"task_id": "t", "launch": plan("twin")})).unwrap();
     assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
+}
+
+fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, DomainError> {
+    update_launch_plan(&f.domain, &f.home, serde_json::from_value(json!({"task_id": task, "changes": changes})).unwrap())
+}
+
+fn stored_selection(f: &Fixture) -> crate::launch_plans::LaunchPlan {
+    let plan = crate::launch_plans::LaunchPlan {
+        mission: Some("Keep the full mission\n\nAdded context: preserve colours.".into()),
+        model: Some("claude/sonnet".into()), effort: Some("medium".into()), reason: Some("Implementation".into()),
+        role: Some(alondra_core::domain::TaskRole::Implementation), project: Some("App".into()),
+        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap())
+    };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    plan
+}
+
+#[test]
+fn partial_launch_plan_changes_only_the_model_and_preserves_queued_context() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let before = stored_selection(&f);
+    let mut queued = LaunchBody::from_plan("t".into(), &before).to_queue();
+    queued["body"]["prompt"] = json!("Extra queued context that must survive.");
+    queued["body"]["provider"] = json!("claude");
+    f.domain.store.lock().unwrap().enqueue_launch(&"t".into(), &queued, "orchestrator", 2).unwrap();
+    let before_state = f.domain.state().unwrap();
+    assert_eq!(partial_plan(&f, "t", json!({"model": "codex/gpt-6"})).unwrap(), json!({"task": "t", "stored": true}));
+    let after = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
+    assert_eq!(after, crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), ..before });
+    assert_eq!(*f.domain.state().unwrap(), *before_state, "the task, checklist and lifecycle context are untouched");
+    let store = f.domain.store.lock().unwrap();
+    let queue = store.launch_queue().unwrap();
+    assert_eq!(queue[0].body["body"]["model"], "codex/gpt-6");
+    assert!(queue[0].body["body"].get("provider").is_none(), "the old queue provider must not override the new model");
+    assert_eq!(queue[0].body["body"]["prompt"], "Extra queued context that must survive.");
+    assert_eq!(queue[0].enqueued_at, 2);
+    assert_eq!(store.planned_tasks().unwrap()[&TaskId::from("t")], 1, "keep its place");
+}
+
+#[test]
+fn partial_launch_plan_reads_the_complete_stored_mission_without_writing() {
+    let f = world();
+    let mut before = stored_selection(&f);
+    before.mission = Some("Saved context.\n".repeat(2_000));
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &before, 1).unwrap();
+    let mark = f.domain.store.lock().unwrap().write_mark().unwrap();
+    assert_eq!(get_launch_plan(&f.domain, &"t".into()).unwrap(), json!({"task": "t", "launch": before}));
+    assert_eq!(f.domain.store.lock().unwrap().write_mark().unwrap(), mark);
+    assert_eq!(get_launch_plan(&f.domain, &"missing".into()).unwrap_err().code, "not_found");
+    f.domain.store.lock().unwrap().forget_launch_plan(&"t".into()).unwrap();
+    assert_eq!(get_launch_plan(&f.domain, &"t".into()).unwrap_err().code, "not_found");
+}
+
+#[test]
+fn partial_launch_plan_validates_the_merged_selection_and_changes_nothing_on_refusal() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let before = stored_selection(&f);
+    for changes in [json!({"model": "codex/unknown"}), json!({"model": "codex/gpt-6", "effort": "impossible"}), json!({})] {
+        assert!(partial_plan(&f, "t", changes).is_err());
+        assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
+    }
+    partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high", "approach": "solo", "reason": "Measured results", "tags": {"kind": "feature"}})).unwrap();
+    let read = get_launch_plan(&f.domain, &"t".into()).unwrap();
+    assert_eq!(read["launch"]["effort"], "high");
+    assert_eq!(read["launch"]["approach"], "solo");
+    assert_eq!(read["launch"]["reason"], "Measured results");
+    assert_eq!(read["launch"]["tags"]["kind"], "feature");
+    assert_eq!(partial_plan(&f, "missing", json!({"model": "codex/gpt-6"})).unwrap_err().code, "not_found");
+}
+
+#[test]
+fn partial_launch_plan_refuses_null_unknown_and_duplicate_fields() {
+    for changes in [json!({"mission": "lost"}), json!({"name": "lost"}), json!({"cwd": "/"}),
+        json!({"role": "review"}), json!({"project": "other"}), json!({"model": null}), json!({"effort": null}),
+        json!({"approach": null}), json!({"tags": null}), json!({"reason": null}), json!({"effort": "high", "reasoning_effort": "low"})] {
+        assert!(serde_json::from_value::<UpdateLaunchPlanBody>(json!({"task_id": "t", "changes": changes})).is_err());
+    }
+}
+
+#[test]
+fn partial_launch_plan_and_replacement_refuse_a_started_task_and_an_active_launch() {
+    let f = world();
+    let before = stored_selection(&f);
+    let guard = Launching::begin(&f.domain, &"t".into()).unwrap();
+    assert_eq!(partial_plan(&f, "t", json!({"model": "sonnet"})).unwrap_err().code, "conflict");
+    drop(guard);
+    give(&f, "t", "agent-b");
+    assert_eq!(partial_plan(&f, "t", json!({"model": "sonnet"})).unwrap_err().code, "conflict");
+    let body = serde_json::from_value(json!({"task_id": "t", "launch": before})).unwrap();
+    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().code, "conflict");
+    assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
+    let _released = Launching::begin(&f.domain, &"t".into()).unwrap();
+}
+
+#[test]
+fn partial_launch_plan_refuses_the_users_fixed_work_effort_even_for_a_native_model() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let mut choices = crate::domain_store::RequestLaunch {
+        project: None, options: alondra_core::options::OptionsFile::default().orchestrator_defaults(None, None),
+        issue: None, issue_text: None, attachments: vec![],
+    };
+    choices.options.effort = "high".into();
+    let state = f.domain.state().unwrap();
+    f.domain.execute_with(&user(), &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "scheduled".into(), expected_revision: state.revision,
+        command: Command::CreateRequest { request_id: "scheduled".into(), body: "Scheduled work with a fixed effort".into(), auto_merge: false, maintenance: false, message: false },
+    }, None, Some(&choices), || Ok(())).unwrap();
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+        task_id: "scheduled".into(), request_id: "scheduled".into(), title: "Scheduled".into(), agent_id: None, review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(crate::launch_plans::LaunchPlan::new("scheduled", f.project.to_str().unwrap())) });
+    let before = get_launch_plan(&f.domain, &"scheduled".into()).unwrap();
+    let error = partial_plan(&f, "scheduled", json!({"model": "codex/gpt-6"})).unwrap_err();
+    assert_eq!(error.code, "invalid_input");
+    assert!(error.message.contains("user chose effort high"), "{}", error.message);
+    assert_eq!(get_launch_plan(&f.domain, &"scheduled".into()).unwrap(), before);
+}
+
+#[test]
+fn partial_launch_plan_refuses_a_task_with_historical_start_evidence() {
+    let f = world();
+    let mut state = (*f.domain.state().unwrap()).clone();
+    state.lifecycle_journal.insert("t".into(), vec![alondra_core::domain::LifecycleRecord::ResourceAvailable]);
+    assert_eq!(editable_plan(&state, &"t".into(), false).unwrap_err().code, "conflict");
+    state.lifecycle_journal.remove(&TaskId::from("t"));
+    assert_eq!(editable_plan(&state, &"t".into(), true).unwrap_err().code, "conflict");
+}
+
+#[tokio::test]
+async fn partial_launch_plan_is_reread_after_an_admitted_launch_captured_the_old_queue() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let before = stored_selection(&f);
+    let stale = LaunchBody::from_plan("t".into(), &before);
+    f.domain.store.lock().unwrap().enqueue_launch(&"t".into(), &stale.to_queue(), "orchestrator", 2).unwrap();
+    partial_plan(&f, "t", json!({"model": "claude/opus"})).unwrap();
+    launch_from(&f.domain, &f.home, stale, |_| None, Origin::Admitted).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(f.sdk().flag("--model").as_deref(), Some("opus"));
+    assert!(f.prompt().await.contains("Added context: preserve colours."));
+}
+
+#[test]
+fn partial_launch_plan_storage_rolls_back_when_the_queued_body_is_invalid() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let before = stored_selection(&f);
+    f.domain.store.lock().unwrap().enqueue_launch(&"t".into(), &json!({"body": null}), "orchestrator", 2).unwrap();
+    assert_eq!(partial_plan(&f, "t", json!({"model": "codex/gpt-6"})).unwrap_err().code, "storage_unavailable");
+    assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
 }
