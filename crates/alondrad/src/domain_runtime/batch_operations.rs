@@ -23,6 +23,7 @@ impl Drop for Operation {
 impl Operation {
     fn finish(&self, answer: &Answer) -> std::result::Result<(),StoreError> {
         self.domain.store.lock_or_exit("the domain store").complete_tool_operation(&self.run,&self.call,answer)?;
+        self.domain.orchestrator_progress();
         Ok(())
     }
 }
@@ -46,6 +47,7 @@ impl DomainRuntime {
             return Ok(Admission::Existing { run: execution_id.clone(),call });
         }
         authority.record_change(&principal,kind);
+        self.orchestrator_progress();
         self.operations_live.lock_or_recover("the operation registry").insert((execution_id.clone(),call.clone()));
         self.operations_changed.send_modify(|version| *version = version.wrapping_add(1));
         Ok(Admission::Started(Operation { domain: Arc::clone(self),run: execution_id.clone(),call }))

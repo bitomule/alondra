@@ -120,7 +120,7 @@ def refuse(message, status):
         lifecycle(entry, 'completed')
     pending.clear()
 
-def result(message, failed=False, subtype=None, model_usage=None):
+def result(message, failed=False, subtype=None, model_usage=None, hold_completion=False):
     global serial
     serial += 1
     value = dict(type='result', subtype=subtype or ('error_during_execution' if failed else 'success'), is_error=failed or subtype is not None,
@@ -135,6 +135,9 @@ def result(message, failed=False, subtype=None, model_usage=None):
     else:
         value.update(result='Fixture result', terminal_reason='completed', user_message_uuids=[entry['uuid'] for entry in pending])
     send(value)
+    if hold_completion:
+        with open(os.environ['FIXTURE_COMPLETION_GATE']) as gate:
+            gate.readline()
     for entry in pending:
         lifecycle(entry, 'completed')
     pending.clear()
@@ -440,7 +443,7 @@ for raw in sys.stdin:
             send(dict(type='system', subtype='dev_intent', session_id=session_id, uuid='00000000-0000-4000-8000-000000000104'))
             send(dict(type='system', subtype='future_subtype', session_id=session_id, uuid='00000000-0000-4000-8000-000000000105'))
         if wake:
-            result(message)
+            result(message, hold_completion='FIXTURE_COMPLETION_GATE' in os.environ and not resumed)
             continue
         if text.endswith('signed-out'):
             refused = 401

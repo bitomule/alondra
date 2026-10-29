@@ -459,6 +459,12 @@ enum Leader {
     Adopted(Arc<Mutex<Option<alondra_process_group::Member>>>),
 }
 impl HostStop {
+    /// Interrupts an unresponsive host under the same lease that protects it from PID reuse.
+    /// Its owner still waits for the host and sweeps its descendants before reaping it.
+    pub fn kill(&self) -> io::Result<()> {
+        self.send(rustix::process::Signal::KILL)
+    }
+
     pub fn request(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::TERM)
     }

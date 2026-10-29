@@ -1216,16 +1216,19 @@ impl Driver {
             || matches!(lifecycle.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
     }
 
-    /// Whether the node rests on a host a daemon of another release left running: no turn, no
-    /// work of Claude's own, no answer or event of the host on its way, and no input handed to it.
-    /// Nothing runs in it, so a host of this release can take its place before the node is told
-    /// anything else. An input the user sent as the node came to rest, which this owner has not
-    /// handed yet, goes to that host instead.
-    fn rests_on_another_release(&mut self) -> Result<bool, Failed> {
+    /// A late observation can change whether an old host is idle. Read it before considering any
+    /// unsent input, then reconsider the lifecycle on the next step. Once its observations are
+    /// drained, move the idle host to this release before handing it another instruction.
+    fn advance_idle_host_of_another_release(&mut self) -> Result<bool, Failed> {
         if !self.worker.runs_another_release() || (self.expects_host()? && !self.only_unsent_input()?) {
             return Ok(false);
         }
-        Ok(!self.worker.readable(Duration::ZERO).unwrap_or(true))
+        if self.worker.readable(Duration::ZERO).unwrap_or(true) {
+            self.observe()?;
+        } else {
+            self.moves_to_this_release = true;
+        }
+        Ok(true)
     }
 
     /// Whether all the lifecycle waits for is an input this owner has not handed to its host.
@@ -1255,8 +1258,7 @@ impl Driver {
             return Err(Failed::new("a step of the owner failed".into()));
         }
         self.sealed();
-        if self.rests_on_another_release()? {
-            self.moves_to_this_release = true;
+        if self.advance_idle_host_of_another_release()? {
             return Ok(());
         }
         if let Some(permit) = self.controls.pop_front() {

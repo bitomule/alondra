@@ -3940,7 +3940,11 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
 // stepped by hand up to the step that finds the node at rest; the answer comes before the next.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_reaches_this_release() {
-    let slice = Slice::new();
+    let mut slice = Slice::new();
+    let completion_gate = slice._home.join("wake-completion");
+    let path = std::ffi::CString::new(completion_gate.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    slice.backend.native_environment.insert("FIXTURE_COMPLETION_GATE".into(), completion_gate.to_str().unwrap().into());
     let before = slice.release_before();
     let mut driver = slice.launch_with_backend(&before, "Write the release notes", capabilities());
     slice.settle(&mut driver);
@@ -3958,6 +3962,21 @@ async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_
     adopted.moves_to_this_release = false;
     let rested = Slice::read_cards(&upgraded).len();
     instruct(&upgraded, "Add the tests first");
+    let instruction = lifecycle(&upgraded).pending_inputs().last().unwrap().as_str().to_owned();
+    let dispatch: i64 = slice.observer().query_row(
+        "SELECT id FROM lifecycle_dispatches WHERE task_id=?1 AND input_id=?2 ORDER BY id DESC LIMIT 1",
+        rusqlite::params![TASK, instruction], |row| row.get(0),
+    ).unwrap();
+    // The result already made the node rest; its native completion frame arrives afterward.
+    std::fs::write(&completion_gate, b"release\n").unwrap();
+    assert!(adopted.worker.readable(std::time::Duration::from_secs(slice.backend.io_timeout_seconds)).unwrap());
+    adopted.step(&|| false).unwrap();
+    let status: String = slice.observer().query_row(
+        "SELECT status FROM lifecycle_dispatches WHERE id=?1", [dispatch], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(status, "prepared", "the late completion must be read before the new instruction is handed to the old host");
+    assert!(lifecycle(&upgraded).pending_inputs().iter().any(|input| input.as_str() == instruction), "the new instruction remains pending");
+    assert_eq!(slice.prompts(), ["Write the release notes"], "the old host receives no new instruction");
     let mut changed = upgraded.subscribe();
     let owner = Owner::spawn(adopted);
     let reader = Arc::clone(&upgraded);

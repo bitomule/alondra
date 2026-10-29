@@ -1,0 +1,385 @@
+use super::testing::{Fixture, fixture};
+use super::*;
+use alondra_core::domain::LaunchPlan;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+fn request(f: &Fixture, id: &str) {
+    f.run(
+        Actor::User {
+            user_id: "u".into(),
+        },
+        id,
+        Command::CreateRequest {
+            request_id: id.into(),
+            body: format!("Create the task for {id}"),
+            auto_merge: false,
+            maintenance: false,
+            message: false,
+        },
+    );
+}
+
+fn task_on_next_spawn(f: &Fixture, requests: &[&str]) -> (faults::SpawnHook, Arc<AtomicBool>) {
+    let domain = Arc::clone(&f.executor.domain);
+    let home = f.executor.home.clone();
+    let requests: Vec<String> = requests.iter().map(|id| (*id).to_owned()).collect();
+    let called = Arc::new(AtomicBool::new(false));
+    let done = Arc::clone(&called);
+    let hook = faults::on_spawn(&f.executor.home, move |bearer| {
+        for id in requests {
+            let state = domain.read();
+            if !state
+                .index()
+                .tasks_of_request(&id.as_str().into())
+                .is_empty()
+            {
+                continue;
+            }
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: state.state().data_epoch.clone(),
+                command_id: format!("task-for-{id}").into(),
+                expected_revision: 0,
+                command: Command::CreateTask {
+                    plan_items: None,
+                    task_id: format!("task-{id}").into(),
+                    request_id: id.as_str().into(),
+                    title: format!("Task for {id}"),
+                    agent_id: None,
+                    review_prs: false,
+                    dependencies: Default::default(),
+                    stack: None,
+                    launch: Some(LaunchPlan::new("node", home.display().to_string())),
+                },
+            };
+            drop(state);
+            domain.execute_bearer(bearer, &envelope).unwrap();
+        }
+        done.store(true, Ordering::SeqCst);
+    });
+    (hook, called)
+}
+
+#[tokio::test]
+async fn every_batch_write_failure_recovers_without_a_daemon_restart() {
+    for (point, occurrence) in [
+        ("claim", 1),
+        ("claim_commit", 1),
+        ("runtime_write", 1),
+        ("runtime_write", 2),
+        ("runtime_write", 3),
+        ("runtime_rename", 1),
+        ("runtime_rename", 2),
+        ("runtime_rename", 3),
+        ("capability", 1),
+        ("capability_create", 1),
+        ("capability_write", 1),
+        ("capability_sync", 1),
+        ("capability_rename", 1),
+        ("capability_directory_sync", 1),
+        ("capability", 2),
+        ("capability_create", 2),
+        ("capability_write", 2),
+        ("capability_sync", 2),
+        ("capability_rename", 2),
+        ("capability_directory_sync", 2),
+        ("owner_create", 1),
+        ("owner_write", 1),
+        ("owner_sync", 1),
+        ("owner_rename", 1),
+        ("owner_directory_sync", 1),
+        ("report", 1),
+        ("report", 3),
+        ("report_commit", 1),
+        ("ack", 1),
+        ("ack", 3),
+        ("delivery_finish", 1),
+        ("delivery_finish", 2),
+        ("delivery_commit", 1),
+        ("finish_batch", 1),
+        ("finish_batch_commit", 1),
+    ] {
+        let f = fixture();
+        request(&f, "first");
+        let (first_hook, _) = task_on_next_spawn(&f, &["first"]);
+        let fault = faults::Injection::at(&f.executor.home, point, occurrence);
+        let _ = f.executor.tick().await;
+        assert!(
+            fault.hits() > 0,
+            "{point}/{occurrence} did not fail a write"
+        );
+        drop(fault);
+        drop(first_hook);
+        request(&f, "second");
+        let (_hook, called) = task_on_next_spawn(&f, &["first", "second"]);
+        let (_hold, stop) = tokio::sync::watch::channel(false);
+        for _ in 0..3 {
+            let now = load(&f.executor.home)
+                .unwrap()
+                .retry_at
+                .unwrap_or_else(now_millis);
+            f.executor
+                .tick_with_clock(stop.clone(), Some(now))
+                .await
+                .unwrap();
+            if called.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+        assert!(
+            called.load(Ordering::SeqCst),
+            "{point}/{occurrence}: writes recovered but no batch processed the pending requests"
+        );
+        let prompts = f.prompts();
+        let prompt = prompts.last().unwrap();
+        assert!(
+            prompt.contains("request second:"),
+            "{point}/{occurrence}: the native provider did not see the pending request"
+        );
+        let state = f.domain().read();
+        assert_eq!(state.state().tasks.len(), 2, "{point}/{occurrence}");
+        assert!(
+            f.attempts()
+                .iter()
+                .all(|state| !matches!(state.as_str(), "dispatching" | "uncertain")),
+            "{point}/{occurrence}: {:?}",
+            f.attempts()
+        );
+        assert!(
+            load(&f.executor.home).unwrap().active_run.is_none(),
+            "{point}/{occurrence}"
+        );
+        assert!(
+            f.cards(PROBLEM_PREFIX).is_empty() && f.cards(STUCK_PROBLEM_PREFIX).is_empty(),
+            "{point}/{occurrence}"
+        );
+        assert!(
+            !f.executor
+                .home
+                .join("runtime/orchestrator/owner.json")
+                .exists()
+        );
+        println!("recovered {point}/{occurrence}: 2 requests -> 2 tasks, no restart, no Problem");
+    }
+}
+
+#[tokio::test]
+async fn repeated_recovery_write_failures_keep_the_claim_until_space_returns() {
+    let f = fixture();
+    request(&f, "pending");
+    let fault = faults::Injection::at(&f.executor.home, "runtime_write", 1);
+    assert!(f.executor.tick().await.is_err());
+    drop(fault);
+    let fault = faults::Injection::at(&f.executor.home, "reconcile", 1);
+    for _ in 0..3 {
+        assert!(f.executor.tick().await.is_err());
+    }
+    assert_eq!(fault.hits(), 3);
+    assert!(f.starts().is_empty());
+    drop(fault);
+    let (_hook, called) = task_on_next_spawn(&f, &["pending"]);
+    f.tick().await;
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(f.domain().read().state().tasks.len(), 1);
+}
+
+#[tokio::test]
+async fn confirmed_effects_survive_failed_completion_without_repeating_the_task() {
+    let f = fixture();
+    request(&f, "pending");
+    let (_hook, called) = task_on_next_spawn(&f, &["pending"]);
+    let fault = faults::Injection::at(&f.executor.home, "report", 1);
+    f.executor.tick().await.unwrap();
+    assert!(called.load(Ordering::SeqCst));
+    drop(fault);
+    f.tick().await;
+    assert_eq!(f.domain().read().state().tasks.len(), 1);
+    assert!(
+        f.prompts()
+            .last()
+            .unwrap()
+            .contains("CONFIRMED BATCH HANDOFF")
+    );
+    assert!(load(&f.executor.home).unwrap().active_run.is_none());
+    assert!(f.cards(PROBLEM_PREFIX).is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_handoff_cleanup_does_not_run_completed_goals_again() {
+    let f = fixture();
+    request(&f, "pending");
+    let (_hook, called) = task_on_next_spawn(&f, &["pending"]);
+    let fault = faults::Injection::at(&f.executor.home, "report", 1);
+    f.executor.tick().await.unwrap();
+    assert!(called.load(Ordering::SeqCst));
+    drop(fault);
+    f.executor.repair_incomplete().await.unwrap();
+    assert_eq!(load(&f.executor.home).unwrap().batch_handoffs.len(), 1);
+    let fault = faults::Injection::at(&f.executor.home, "finish_batch", 2);
+    assert!(f.executor.tick().await.is_err());
+    let starts = f.starts().len();
+    drop(fault);
+    f.tick().await;
+    assert_eq!(
+        f.starts().len(),
+        starts,
+        "the continuation already completed"
+    );
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(
+        runtime.batch_handoffs.is_empty()
+            && runtime.pending_resolutions.is_empty()
+            && runtime.active_run.is_none()
+    );
+    assert_eq!(f.domain().read().state().tasks.len(), 1);
+}
+
+#[tokio::test]
+async fn an_already_uncertain_claim_can_be_acknowledged_without_resurrecting_its_problem() {
+    let f = fixture();
+    request(&f, "pending");
+    let epoch = f.domain().read().state().data_epoch.clone();
+    let selection =
+        crate::orchestrator_provider::selection(f.domain(), &f.executor.home, now_millis())
+            .unwrap();
+    let ids: Vec<i64> = f
+        .executor
+        .pending()
+        .unwrap()
+        .iter()
+        .map(|message| message.id)
+        .collect();
+    let (claims, owner) = f
+        .domain()
+        .store
+        .lock()
+        .unwrap()
+        .claim_selected_orchestrator_batch(
+            &ids,
+            "uncertain",
+            "uncertain-session",
+            epoch,
+            Some(&selection),
+        )
+        .unwrap();
+    drop(owner);
+    {
+        let mut store = f.domain().store.lock().unwrap();
+        store
+            .begin_tool_operation(
+                "uncertain",
+                "call",
+                "launch",
+                &serde_json::json!({"task":"unknown"}),
+            )
+            .unwrap();
+        for claim in &claims {
+            store
+                .finish_message(
+                    claim.attempt_id,
+                    claim.version,
+                    State::Uncertain,
+                    Some("interrupted"),
+                )
+                .unwrap();
+        }
+    }
+    f.executor.repair_incomplete().await.unwrap();
+    assert_eq!(
+        load(&f.executor.home).unwrap().failure,
+        Some(Failure::Interrupted)
+    );
+    f.executor.acknowledge("uncertain").unwrap();
+    f.tick().await;
+    f.tick().await;
+    assert!(load(&f.executor.home).unwrap().active_run.is_none());
+    assert!(!f.attempts().iter().any(|state| state == "uncertain"));
+    let state = f.domain().read();
+    assert!(
+        state
+            .state()
+            .interactions
+            .values()
+            .filter(|card| card.id.0.starts_with(PROBLEM_PREFIX))
+            .all(|card| card.withdrawn)
+    );
+}
+
+#[tokio::test]
+async fn explicit_cancellation_wins_over_watchdog_restart_and_failed_finalization() {
+    for (effects, failed_save) in [(false, false), (true, false), (true, true)] {
+        let f = fixture();
+        request(&f, "cancelled");
+        let _hook = effects.then(|| task_on_next_spawn(&f, &["cancelled"]));
+        f.mark_once("fixture:quiet-hold");
+        let (restart, stop) = tokio::sync::watch::channel(false);
+        let during = async {
+            f.held().await;
+            let run = load(&f.executor.home).unwrap().active_run.unwrap();
+            f.executor.cancel(&run.id).unwrap();
+            let fault =
+                failed_save.then(|| faults::Injection::at(&f.executor.home, "runtime_write", 1));
+            restart.send_replace(true);
+            f.executor.interrupt_host().unwrap();
+            fault
+        };
+        let (result, fault) = tokio::join!(f.executor.tick_with_stop(stop), during);
+        if let Some(fault) = &fault {
+            assert!(result.is_err());
+            assert!(fault.hits() > 0);
+        } else {
+            result.unwrap();
+        }
+        drop(fault);
+        let starts = f.starts().len();
+        f.executor.repair_incomplete().await.unwrap();
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(
+            runtime.batch_handoffs.is_empty(),
+            "a user cancellation must not become an automatic continuation"
+        );
+        if effects {
+            assert_eq!(runtime.failure, Some(Failure::Cancelled));
+            assert!(runtime.active_run.is_some());
+            f.tick().await;
+            assert_eq!(
+                f.starts().len(),
+                starts,
+                "cancelled effects require the user's decision"
+            );
+            assert_eq!(f.domain().read().state().tasks.len(), 1);
+        } else {
+            assert!(runtime.active_run.is_none());
+            assert!(f.attempts().iter().all(|state| state == "discarded"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_claude_denial_cannot_be_replayed_after_losing_both_final_writes_and_restarting() {
+    let f = fixture();
+    request(&f, "denied");
+    f.mark_once("fixture:denied");
+    rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap()
+        .execute_batch("CREATE TRIGGER reject_terminal_report BEFORE INSERT ON orchestrator_batch_reports WHEN json_extract(NEW.report,'$.kind')='result' BEGIN SELECT RAISE(ABORT,'injected terminal report failure'); END;").unwrap();
+    let fault = faults::Injection::at(&f.executor.home, "runtime_write", 3);
+    assert!(f.executor.tick().await.is_err());
+    assert!(fault.hits() > 0);
+    drop(fault);
+    let restarted = Executor {
+        domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+        home: f.executor.home.clone(),
+        claude_home: f.executor.claude_home.clone(),
+    };
+    restarted.repair_incomplete().await.unwrap();
+    let runtime = load(&f.executor.home).unwrap();
+    assert_eq!(runtime.failure, Some(Failure::Interrupted));
+    assert!(runtime.active_run.is_some() && runtime.batch_handoffs.is_empty());
+    restarted.tick().await.unwrap();
+    assert_eq!(
+        f.starts().len(),
+        1,
+        "missing terminal evidence cannot erase a possible refusal"
+    );
+    assert!(restarted.pending().unwrap().is_empty());
+}

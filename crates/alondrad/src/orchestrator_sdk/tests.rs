@@ -310,6 +310,40 @@ async fn a_turn_cancelled_after_claude_answered_without_changing_anything_is_set
     assert!(f.cards("problem-orchestrator-").is_empty());
 }
 
+#[tokio::test]
+async fn a_no_effect_cancellation_retires_its_remembered_logical_stop() {
+    use alondra_core::orchestrator_batch::{BatchProblem, BatchStop};
+    let f = fixture();
+    f.tell("cancelled-stop", "Cancel this batch without repeating its decision");
+    f.mark_once("fixture:quiet-hold");
+    let during = async {
+        f.held().await;
+        let run = load(&f.executor.home).unwrap().active_run.unwrap();
+        *f.domain().live.orchestrator_stop.lock().unwrap() = Some((run.clone(), BatchProblem {
+            stop: BatchStop::Denied,
+            calls: vec![],
+            subjects: vec![],
+            error: "A logical refusal remembered before cancellation won".into(),
+        }));
+        f.executor.cancel(&run.id).unwrap();
+    };
+    let (result, ()) = tokio::join!(f.executor.tick(), during);
+    result.unwrap();
+    assert!(f.domain().live.orchestrator_stop.lock().unwrap().is_none(),
+        "a completed cancellation cannot leave a logical stop to resurrect");
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(runtime.active_run.is_none() && runtime.failure.is_none());
+    assert_eq!(runtime.pending_resolutions.len(), 1);
+    assert_eq!(f.attempts(), ["discarded"]);
+    f.executor.repair_incomplete().await.unwrap();
+    assert!(f.cards("problem-orchestrator-").is_empty());
+    f.tell("after-cancelled-stop", "Process the next request");
+    f.tick().await;
+    assert_eq!(f.starts().len(), 2);
+    assert!(f.domain().read().state().requests[&"after-cancelled-stop".into()].closed);
+    assert!(f.cards("problem-orchestrator-").is_empty());
+}
+
 /// One of Claude's Alondra tools changed something before anything Claude said reached the run,
 /// as when its call ran while the message announcing it was on its way: the daemon knows, so it
 /// is the user's call.
@@ -353,11 +387,18 @@ async fn claude_batch_reports_are_durable_before_the_prompt_is_settled(){
     let terminal:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM orchestrator_batch_reports WHERE json_extract(report,'$.kind')='result' AND json_extract(report,'$.input_consumed')=1 AND json_extract(report,'$.turn_completed')=1)",[],|row|row.get(0)).unwrap();assert!(terminal);
 }
 #[tokio::test]
-async fn claude_batch_report_commit_failure_cannot_ack_or_settle_the_prompt(){
+async fn claude_batch_report_commit_failure_retries_after_reports_can_commit(){
     let f=fixture();let db=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
     db.execute_batch("CREATE TRIGGER refuse_native_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report refusal'); END;").unwrap();
     f.tell("report-refusal","Where should the release note go?");f.tick().await;
     assert_ne!(f.attempts(),["handed"],"without the required report transaction the native prompt cannot settle");
-    assert!(load(&f.executor.home).unwrap().last_error.as_deref().is_some_and(|why|why.contains("batch report was not committed")));
+    assert_eq!(f.attempts(),["retryable"]);
+    assert!(load(&f.executor.home).unwrap().active_run.is_none());
+    assert!(f.cards("problem-orchestrator-").is_empty());
     assert_eq!(db.query_row("SELECT count(*) FROM orchestrator_batch_reports",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    db.execute_batch("DROP TRIGGER refuse_native_report").unwrap();
+    f.tick().await;
+    assert_eq!(f.attempts(),["retryable","handed"]);
+    assert!(f.domain().read().state().requests[&"report-refusal".into()].closed);
+    assert!(f.cards("problem-orchestrator-").is_empty());
 }

@@ -103,6 +103,10 @@ pub(crate) struct Retained {
 pub(crate) mod batch_operations;
 
 impl DomainRuntime {
+    pub(crate) fn orchestrator_progress(&self) {
+        self.live.orchestrator_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn transport_receipt(
         &self,
         identity: TransportIdentity<'_>,
@@ -465,6 +469,12 @@ impl DomainRuntime {
     pub(crate) fn publish_batch_report(&self, run: &str, cursor: u64, evidence: &[u8], report: &crate::domain_store::batch_effects::BatchReport) -> Result<(), StoreError> {
         let mut store = self.store.lock_or_exit("the domain store");
         store.record_batch_report(run, cursor, evidence, report)?;
+        if matches!(report.kind.as_str(), "assistant" | "user" | "result" | "process_exited"
+            | "alondra/threadReady" | "alondra/inputAccepted" | "turn/started" | "turn/completed"
+            | "item/started" | "item/completed"
+            | "model/rerouted") {
+            self.orchestrator_progress();
+        }
         let committed = store.load()?;
         self.publish(&committed);
         if !Arc::ptr_eq(self.read().state(), &committed) {
@@ -966,6 +976,7 @@ impl DomainRuntime {
         let mut commit = commit?;
         if !commit.replayed && commit.outcome.changed && matches!(principal, Principal::Orchestrator { .. }) {
             authority.record_change(&principal, &command_kind(&prepared.envelope.command));
+            self.orchestrator_progress();
         }
         self.publish(&commit.state);
         if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {

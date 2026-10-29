@@ -6,7 +6,8 @@ pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestrator_batch_r
 CREATE TABLE IF NOT EXISTS orchestrator_batch_effects(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),attempt INTEGER NOT NULL,call TEXT NOT NULL,actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),kind TEXT NOT NULL,revision INTEGER NOT NULL,changed INTEGER NOT NULL CHECK(changed IN(0,1)),pinned INTEGER NOT NULL DEFAULT 1 CHECK(pinned IN(0,1)),PRIMARY KEY(run,attempt,call,command_id));\
 CREATE INDEX IF NOT EXISTS orchestrator_effect_receipt ON orchestrator_batch_effects(actor,command_id,data_epoch,pinned);\
 CREATE TABLE IF NOT EXISTS orchestrator_batch_reports(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),cursor INTEGER NOT NULL CHECK(cursor>0),digest BLOB NOT NULL CHECK(length(digest)=32),report TEXT NOT NULL CHECK(json_valid(report)),PRIMARY KEY(run,cursor));\
-CREATE TABLE IF NOT EXISTS orchestrator_tool_operations(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),call TEXT NOT NULL,kind TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),request TEXT NOT NULL CHECK(json_valid(request)),state TEXT NOT NULL CHECK(state IN('started','succeeded','uncertain')),result TEXT,error TEXT,PRIMARY KEY(run,call));";
+CREATE TABLE IF NOT EXISTS orchestrator_tool_operations(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),call TEXT NOT NULL,kind TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),request TEXT NOT NULL CHECK(json_valid(request)),state TEXT NOT NULL CHECK(state IN('started','succeeded','uncertain')),result TEXT,error TEXT,PRIMARY KEY(run,call));\
+CREATE TABLE IF NOT EXISTS orchestrator_batch_decisions(run TEXT PRIMARY KEY REFERENCES orchestrator_batch_runs(run),target TEXT NOT NULL CHECK(target IN('discarded','retryable')));";
 
 const OPERATION_BYTES: i64 = 32 * 1024 * 1024;
 const OUTCOME_BYTES: usize = 512 * 1024;
@@ -50,6 +51,8 @@ pub(crate) struct BatchReport {
     pub(crate) native_turn: Option<String>,
     pub(crate) failure: Option<String>,
     pub(crate) public_result: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) stop: Option<alondra_core::orchestrator_batch::BatchStop>,
 }
 
 pub(super) fn record(conn: &Connection, batch: &BatchCommand<'_>, actor: &str, envelope: &CommandEnvelope, digest: &[u8], outcome: &CommandOutcome) -> Result<()> {
@@ -67,6 +70,17 @@ pub(super) fn record(conn: &Connection, batch: &BatchCommand<'_>, actor: &str, e
 }
 
 impl DomainStore {
+    pub(crate) fn batch_completed(&self, run: &str) -> Result<bool> {
+        let completed: Option<bool> = self.conn.query_row("SELECT coalesce(json_extract(report,'$.turn_completed')=1 AND json_extract(report,'$.input_consumed')=1 AND json_extract(report,'$.failure') IS NULL,0) FROM orchestrator_batch_reports WHERE run=?1 AND json_extract(report,'$.kind')!='diagnostic' ORDER BY cursor DESC LIMIT 1", [run], |row| row.get(0)).optional()?;
+        Ok(completed.unwrap_or(false))
+    }
+
+    pub(crate) fn batch_stop(&self, run: &str) -> Result<Option<(alondra_core::orchestrator_batch::BatchStop, String)>> {
+        let report: Option<String> = self.conn.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 AND json_extract(report,'$.kind')!='diagnostic' ORDER BY cursor DESC LIMIT 1", [run], |row| row.get(0)).optional()?;
+        let report = report.as_deref().map(serde_json::from_str::<BatchReport>).transpose()?;
+        Ok(report.and_then(|report| report.stop.map(|stop| (stop, report.failure.unwrap_or_else(|| "The interrupted native batch requires reconciliation before retrying".into())))))
+    }
+
     pub(crate) fn bind_batch_effects(&mut self, run: &str, epoch: &DataEpoch) -> Result<()> {
         let changed = self.conn.execute("INSERT OR IGNORE INTO orchestrator_batch_runs(run,data_epoch) VALUES(?1,?2)", params![run,epoch.0])?;
         let stored: String = self.conn.query_row("SELECT data_epoch FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0))?;
@@ -139,6 +153,8 @@ impl DomainStore {
     }
 
     pub(crate) fn record_batch_report(&mut self, run: &str, cursor: u64, evidence: &[u8], report: &BatchReport) -> Result<()> {
+        #[cfg(test)]
+        self.orchestrator_write_fault("report")?;
         use sha2::Digest;
         ensure!(cursor > 0 && !report.kind.is_empty() && report.kind.len() <= 128, "invalid batch report");
         ensure!(report.failure.as_ref().is_none_or(|failure| failure.len() <= 16384) && report.public_result.as_ref().is_none_or(|result| result.len() <= 256 * 1024), "batch report capacity");
@@ -154,6 +170,8 @@ impl DomainStore {
             ensure!(cursor <= 65536 && bytes.saturating_add(i64::try_from(encoded.len())?) <= 32 * 1024 * 1024, "The batch report journal is full; retain its unacknowledged host evidence");
             tx.execute("INSERT INTO orchestrator_batch_reports(run,cursor,digest,report) VALUES(?1,?2,?3,?4)", params![run,i64::try_from(cursor)?,digest,encoded])?;
         }
+        #[cfg(test)]
+        crate::domain_orchestrator::faults::database_write(&tx, "report_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(())
@@ -213,9 +231,13 @@ impl DomainStore {
     }
 
     pub(crate) fn finish_batch(&mut self, run: &str) -> Result<()> {
+        #[cfg(test)]
+        self.orchestrator_write_fault("finish_batch")?;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("UPDATE orchestrator_batch_runs SET ended=1 WHERE run=?1", [run])?;
         tx.execute("UPDATE orchestrator_batch_effects SET pinned=0 WHERE run=?1", [run])?;
+        #[cfg(test)]
+        crate::domain_orchestrator::faults::database_write(&tx, "finish_batch_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(())

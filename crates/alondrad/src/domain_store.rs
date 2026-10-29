@@ -25,6 +25,7 @@ mod provider_accounts;
 pub(crate) mod provider_settings;
 mod task_context;
 pub(crate) mod batch_effects;
+mod batch_recovery;
 pub(crate) mod retention;
 
 use alondra_core::domain::*;
@@ -1608,6 +1609,8 @@ impl DomainStore {
         epoch: alondra_core::domain::DataEpoch,
         selection: Option<&crate::orchestrator_provider::BatchSelection>,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
+        #[cfg(test)]
+        self.orchestrator_write_fault("claim")?;
         if let Some(selection) = selection {
             let state = self.load()?;
             ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");
@@ -1646,6 +1649,8 @@ impl DomainStore {
             }
         }
         let owner = BatchOwner::issued(run, session, epoch);
+        #[cfg(test)]
+        crate::domain_orchestrator::faults::database_write(&tx, "claim_commit")?;
         tx.commit()?;
         if changed || recorded > 0 {
             self.note_side_write();
@@ -1659,6 +1664,8 @@ impl DomainStore {
         state: alondra_core::delivery::State,
         reason: Option<&str>,
     ) -> Result<bool> {
+        #[cfg(test)]
+        self.orchestrator_write_fault("delivery_finish")?;
         use alondra_core::delivery::State;
         let status = match state {
             State::Uncertain => "uncertain",
@@ -1678,6 +1685,8 @@ impl DomainStore {
             "UPDATE domain_outbox SET state=?2 WHERE message_id=?1",
             params![id, status],
         )?;
+        #[cfg(test)]
+        crate::domain_orchestrator::faults::database_write(&tx, "delivery_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(true)

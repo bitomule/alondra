@@ -80,12 +80,26 @@ impl ProcessOwner {
         };
         let temporary = directory.join(format!("owner-{}.tmp", uuid()?));
         use std::io::Write;
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
-        file.write_all(&serde_json::to_vec(&owner)?)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, directory.join("owner.json"))?;
-        std::fs::File::open(directory)?.sync_all()?;
-        Ok(())
+        let written = (|| -> Result<()> {
+            #[cfg(test)]
+            crate::domain_orchestrator::faults::owner_write(directory, "owner_create")?;
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+            #[cfg(test)]
+            crate::domain_orchestrator::faults::owner_write(directory, "owner_write")?;
+            file.write_all(&serde_json::to_vec(&owner)?)?;
+            #[cfg(test)]
+            crate::domain_orchestrator::faults::owner_write(directory, "owner_sync")?;
+            file.sync_all()?;
+            #[cfg(test)]
+            crate::domain_orchestrator::faults::owner_write(directory, "owner_rename")?;
+            std::fs::rename(&temporary, directory.join("owner.json"))?;
+            #[cfg(test)]
+            crate::domain_orchestrator::faults::owner_write(directory, "owner_directory_sync")?;
+            std::fs::File::open(directory)?.sync_all()?;
+            Ok(())
+        })();
+        if written.is_err() { let _ = std::fs::remove_file(&temporary); }
+        written
     }
 }
 
@@ -109,6 +123,68 @@ pub fn end_recorded(directory: &Path, active_run: &str) -> Result<()> {
         return Err(std::io::Error::last_os_error().into());
     }
     std::fs::remove_file(&path)?;
+    Ok(())
+}
+
+pub(crate) fn recorded_run(directory: &Path) -> Result<Option<String>> {
+    match std::fs::read(directory.join("owner.json")) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice::<ProcessOwner>(&bytes)?.run_id)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Between batches, fence a retained host even when it belonged to this daemon. A provider
+/// worker that failed to reap its host must leave its record until that exact group is gone.
+pub(crate) fn fence_recorded(directory: &Path, run: &str) -> Result<()> {
+    let path = directory.join("owner.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let owner: ProcessOwner = serde_json::from_slice(&bytes)?;
+    if owner.run_id != run { bail!("the retained host belongs to another orchestrator batch"); }
+    let current_daemon = owner.daemon_pid == std::process::id() && identity(owner.daemon_pid, None) == Some(owner.daemon_started);
+    if !current_daemon && identity(owner.daemon_pid, None) == Some(owner.daemon_started) {
+        bail!("another live daemon owns the retained orchestrator host");
+    }
+    if !current_daemon && identity(owner.daemon_pid, None).is_none() {
+        let exists = unsafe { libc::kill(owner.daemon_pid as i32, 0) };
+        if exists == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            bail!("cannot prove that the previous orchestrator daemon exited");
+        }
+    }
+    if identity(owner.child_pid, None) == Some(owner.child_started) {
+        if !current_daemon && identity(owner.child_pid, Some(run)) != Some(owner.child_started) {
+            bail!("the retained orchestrator process no longer has its execution identity");
+        }
+        if unsafe { libc::getpgid(owner.child_pid as i32) } != owner.child_pid as i32 {
+            bail!("the retained orchestrator host is not its process-group leader");
+        }
+        if unsafe { libc::kill(-(owner.child_pid as i32), libc::SIGKILL) } != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if alondra_process_group::members(owner.child_pid as i32)?.iter().any(|member| !member.zombie) {
+            bail!("the retained orchestrator host is still stopping; reconciliation will retry");
+        }
+        if current_daemon {
+            let reaped = unsafe { libc::waitpid(owner.child_pid as i32, std::ptr::null_mut(), libc::WNOHANG) };
+            if reaped == 0 { bail!("the retained orchestrator host has not exited; reconciliation will retry"); }
+            if reaped < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ECHILD) {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+    } else if identity(owner.child_pid, Some(run)).is_none() {
+        let exists = unsafe { libc::kill(owner.child_pid as i32, 0) };
+        if exists == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            bail!("cannot prove that the retained orchestrator host exited");
+        }
+    }
+    if alondra_process_group::members(owner.child_pid as i32)?.iter().any(|member| !member.zombie) {
+        bail!("the retained orchestrator group still has live processes; ownership is retained");
+    }
+    std::fs::remove_file(path)?;
     Ok(())
 }
 
@@ -166,6 +242,8 @@ pub struct Stream {
     pub result: bool,
     pub success: bool,
     pub error: Option<String>,
+    /// Host bookkeeping failed; reconcile durable effects instead of asking about an IO error.
+    pub(crate) storage_failure: bool,
     /// The context of the batch's first model call, and of its latest one.
     pub first_input_tokens: Option<u64>,
     pub input_tokens: Option<u64>,

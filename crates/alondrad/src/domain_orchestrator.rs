@@ -108,10 +108,29 @@ pub(crate) fn load(home: &Path) -> Result<Runtime> {
 
 pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
     let next = home.join(format!("{FILE}.next"));
+    #[cfg(test)]
+    faults::write(home, "runtime_write")?;
     std::fs::write(&next, serde_json::to_vec(runtime)?)?;
+    #[cfg(test)]
+    faults::write(home, "runtime_rename")?;
     std::fs::rename(&next, home.join(FILE))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "domain_orchestrator/tests/faults.rs"]
+pub(crate) mod faults;
+#[path = "domain_orchestrator/recovery.rs"]
+mod recovery;
+#[path = "domain_orchestrator/watchdog.rs"]
+mod watchdog;
+pub(crate) use watchdog::HostGuard;
+#[cfg(test)]
+#[path = "domain_orchestrator/tests/recovery.rs"]
+mod recovery_tests;
+#[cfg(test)]
+#[path = "domain_orchestrator/tests/recovery_decisions.rs"]
+mod recovery_decisions;
 
 /// A failed batch's Problem is `problem-orchestrator-<run id>`; its options are the decisions.
 const PROBLEM_PREFIX: &str = BATCH_PROBLEM_PREFIX;
@@ -244,15 +263,23 @@ impl Executor {
             bail!("no ambiguous execution {run_id}");
         };
         let mut store = self.domain.store.lock_or_exit("the domain store");
-        for (attempt, version) in &run.attempts {
-            store.resolve_uncertain(*attempt, *version + 1, false)?;
+        if !store.settle_orchestrator_batch(&run.id, State::Discarded, Some("explicit_user_reconciliation"))? {
+            for (attempt, version) in &run.attempts {
+                store.resolve_uncertain(*attempt, *version + 1, false)?;
+            }
         }
         drop(store);
+        {
+            let mut pending = self.domain.live.orchestrator_stop.lock_or_recover("the orchestrator stop");
+            if pending.as_ref().is_some_and(|(stopped, _)| stopped.id == run.id) { *pending = None; }
+        }
+        self.domain.live.orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&run.id);
         runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
         runtime.last_error = None;
         runtime.failure = None;
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
+        runtime.cancel_requested = false;
         save(&self.home, &runtime)
     }
 
@@ -263,14 +290,22 @@ impl Executor {
             bail!("no ambiguous execution {run_id}");
         };
         let mut store = self.domain.store.lock_or_exit("the domain store");
-        for (attempt, version) in &run.attempts {
-            store.resolve_uncertain(*attempt, *version + 1, true)?;
+        if !store.settle_orchestrator_batch(&run.id, State::Retryable, Some("explicit_user_reconciliation"))? {
+            for (attempt, version) in &run.attempts {
+                store.resolve_uncertain(*attempt, *version + 1, true)?;
+            }
         }
         drop(store);
+        {
+            let mut pending = self.domain.live.orchestrator_stop.lock_or_recover("the orchestrator stop");
+            if pending.as_ref().is_some_and(|(stopped, _)| stopped.id == run.id) { *pending = None; }
+        }
+        self.domain.live.orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&run.id);
         runtime.last_error = None;
         runtime.failure = None;
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
+        runtime.cancel_requested = false;
         save(&self.home, &runtime)
     }
 
@@ -346,10 +381,26 @@ impl Executor {
     }
 
     /// One batch: claim, bind a bearer to this execution, run Claude, finish.
+    #[cfg(test)]
     pub(crate) async fn tick(&self) -> Result<()> {
+        let (_hold, stop) = tokio::sync::watch::channel(false);
+        self.tick_with_stop(stop).await
+    }
+
+    async fn tick_with_stop(&self, stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+        self.tick_with_clock(stop, None).await
+    }
+
+    async fn tick_with_clock(
+        &self,
+        stop: tokio::sync::watch::Receiver<bool>,
+        now: Option<i64>,
+    ) -> Result<()> {
+        self.repair_incomplete().await?;
+        if *stop.borrow() { return Ok(()); }
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
-        let now = now_millis();
+        let now = now.unwrap_or_else(now_millis);
         crate::usage_probe::follow(&self.domain, now);
         if self.domain.live.usage_pause.current().is_some_and(|pause|pause.by_user) { return Ok(()); }
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
@@ -398,6 +449,7 @@ impl Executor {
         let ids: Vec<i64> = pending.iter().map(|message| message.id).collect();
         let (claims, owner) = self.domain.store.lock_or_exit("the domain store")
             .claim_selected_orchestrator_batch(&ids, &run_id, &session, epoch, Some(&selection))?;
+        self.domain.live.orchestrator_runs.lock_or_recover("the orchestrator runs").insert(run_id.clone());
         let attempts: Vec<(i64, u64)> = claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect();
         let claimed: Vec<OutboxMessage> = claims.into_iter().map(|claim| claim.message).collect();
         if claimed.is_empty() && runtime.pending_resolutions.is_empty() {
@@ -411,6 +463,10 @@ impl Executor {
         runtime.last_run_id = Some(run_id.clone());
         runtime.session_id = Some(session.clone());
         runtime.cancel_requested = false;
+        runtime.last_error = None;
+        runtime.failure = None;
+        runtime.retry_at = None;
+        self.domain.orchestrator_progress();
         save(&self.home, &runtime)?;
         self.bind_session(&session);
         let projects_root = crate::domain_schedule_runner::options_at(&self.home).ok()
@@ -425,15 +481,28 @@ impl Executor {
         };
         let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
+        let spawned_domain = Arc::clone(&self.domain);
+        #[cfg(test)]
+        let spawned_capability = capability.expose_for_child_environment().to_owned();
         let mark_spawned = move || {
             let mut runtime = load(&home)?;
             if let Some(run) = runtime.active_run.as_mut() { run.spawned = true; }
-            save(&home, &runtime)
+            save(&home, &runtime)?;
+            spawned_domain.orchestrator_progress();
+            #[cfg(test)]
+            faults::spawned(&home, &spawned_capability);
+            Ok(())
         };
+        let mut stopped = stop.clone();
         let cancel = async {
             loop {
-                if load(&self.home).is_ok_and(|runtime| runtime.cancel_requested) { break; }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                if *stopped.borrow() || load(&self.home).is_ok_and(|runtime| runtime.cancel_requested) { break; }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    changed = stopped.changed() => {
+                        if changed.is_err() { std::future::pending::<()>().await; }
+                    }
+                }
             }
         };
         let output = match self.domain.sdk() {
@@ -449,12 +518,28 @@ impl Executor {
             }
         };
         let changes = self.domain.end_execution(&run_id);
+        let logical_stop = if output.stream.denied { Some(BatchStop::Denied) }
+            else if output.stream.native_request_rejected { Some(BatchStop::Interrupted) }
+            else { None };
+        if let Some(stop) = logical_stop {
+            self.remember_stop(&run, BatchProblem { stop, calls: changes.clone(), subjects: self.subjects(&claimed),
+                error: output.stream.error.clone().unwrap_or_else(|| "The provider requires explicit reconciliation before retrying".into()) });
+        }
+        #[cfg(test)]
+        watchdog::tests::draining(&run_id);
         self.domain.drain_batch_operations(&run_id).await?;
         let effects_confirmed = self.domain.confirmed_batch_effects(&run_id,&changes)?;
+        let restarted = *stop.borrow();
         let mut runtime = load(&self.home)?;
+        if !runtime.cancel_requested && (output.stream.storage_failure || restarted) && effects_confirmed && !output.stream.denied
+            && !output.stream.native_request_rejected {
+            self.repair_incomplete().await?;
+            return Ok(());
+        }
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
         let end = if runtime.cancel_requested {
-            BatchEnd::Cancelled { effects: (!changes.is_empty()).then_some(changes.clone()) }
+            let has_effects = !changes.is_empty() || !self.domain.store.lock_or_exit("the domain store").tool_operations(&run_id)?.is_empty();
+            BatchEnd::Cancelled { effects: has_effects.then_some(changes.clone()) }
         } else if output.stream.denied {
             BatchEnd::Denied { calls:changes.clone(),why:output.stream.error.clone().unwrap_or_else(|| "The provider denied an Alondra tool".into()) }
         } else if output.stream.native_request_rejected {
@@ -482,23 +567,9 @@ impl Executor {
         }
         let problem = |stop: BatchStop, calls: Vec<String>| BatchProblem { stop, calls, subjects: self.subjects(&claimed), error: String::new() };
         match end {
-            BatchEnd::Cancelled { effects: None } => {
-                self.give_up(&run, "orchestrator_cancelled")?;
-                runtime.active_run = None;
-                runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
-                runtime.last_error = None;
-                runtime.failure = None;
-                runtime.cancel_requested = false;
-                save(&self.home, &runtime)
-            }
+            BatchEnd::Cancelled { effects: None } => self.acknowledge(&run.id),
             BatchEnd::Cancelled { effects: Some(calls) } => {
-                self.finish(&run, State::Uncertain, Some("orchestrator_cancelled"))?;
-                runtime.last_error = Some("Orchestrator execution was cancelled; check its effects before retrying".into());
-                runtime.failure = Some(Failure::Cancelled);
-                runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
-                save(&self.home, &runtime)?;
-                self.raise_batch_problem(&run.id, problem(BatchStop::Cancelled, calls), runtime.last_error.as_deref().unwrap_or_default());
-                Ok(())
+                self.failed(runtime, &run, "Orchestrator execution was cancelled; check its effects before retrying".into(), Some(problem(BatchStop::Cancelled, calls)))
             }
             BatchEnd::SessionMissing => {
                 self.finish(&run, State::Retryable, Some("orchestrator_session_missing"))?;
@@ -534,7 +605,10 @@ impl Executor {
     /// step; a message still waiting is the next batch's, and settling before it would close or
     /// remind about a request the orchestrator has not seen yet.
     fn handled(&self, mut runtime: Runtime, run: &Run, (requests, suggestions): &(Vec<RequestId>, Vec<InteractionId>)) -> Result<()> {
-        self.finish(run, State::Handed, None)?;
+        self.domain.store.lock_or_exit("the domain store").finish_batch(&run.id)?;
+        self.domain.live.orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&run.id);
+        let settled = self.domain.store.lock_or_exit("the domain store").settle_orchestrator_batch(&run.id, State::Handed, None)?;
+        if !settled { self.finish(run, State::Handed, None)?; }
         read_handed_notices(&self.domain);
         runtime.active_run = None;
         runtime.last_error = None;
@@ -546,9 +620,12 @@ impl Executor {
         if let Some(problem) = runtime.stuck_problem.take() {
             let _ = self.domain.withdraw_problem(&InteractionId(problem));
         }
+        for handoff in prior_handoffs {
+            self.domain.store.lock_or_exit("the domain store").finish_batch(&handoff.run_id)?;
+            self.domain.live.orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&handoff.run_id);
+        }
         save(&self.home, &runtime)?;
-        for handoff in prior_handoffs { self.domain.store.lock_or_exit("the domain store").finish_batch(&handoff.run_id)?; }
-        self.domain.store.lock_or_exit("the domain store").finish_batch(&run.id)?;
+        self.domain.orchestrator_progress();
         if !self.pending()?.is_empty() {
             return Ok(());
         }
@@ -601,11 +678,34 @@ impl Executor {
             }
             return save(&self.home, &runtime);
         };
-        self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
+        let mut problem = problem;
+        problem.error = runtime.last_error.clone().unwrap_or_default();
+        self.remember_stop(run, problem.clone());
         runtime.retry_at = None;
-        runtime.failure = Some(if problem.stop == BatchStop::Denied { Failure::Denied } else { Failure::Interrupted });
+        runtime.cancel_requested = false;
+        runtime.failure = Some(match problem.stop { BatchStop::Denied => Failure::Denied, BatchStop::Cancelled => Failure::Cancelled, BatchStop::Interrupted => Failure::Interrupted });
         save(&self.home, &runtime)?;
+        self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
         self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
+        *self.domain.live.orchestrator_stop.lock_or_recover("the orchestrator stop") = None;
+        Ok(())
+    }
+
+    fn remember_stop(&self, run: &Run, problem: BatchProblem) {
+        *self.domain.live.orchestrator_stop.lock_or_recover("the orchestrator stop") = Some((run.clone(), problem));
+    }
+
+    fn resume_stopped(&self) -> Result<()> {
+        let pending = self.domain.live.orchestrator_stop.lock_or_recover("the orchestrator stop").clone();
+        if let Some((run, mut problem)) = pending {
+            let mut runtime = load(&self.home)?;
+            if runtime.cancel_requested {
+                problem.stop = BatchStop::Cancelled;
+                problem.error = "Orchestrator execution was cancelled; check its effects before retrying".into();
+            }
+            runtime.active_run = Some(run.clone());
+            self.failed(runtime, &run, problem.error.clone(), Some(problem))?;
+        }
         Ok(())
     }
 
@@ -783,11 +883,15 @@ pub(crate) fn decide(executor: &Executor, decision: Decision, body: Option<&serd
     let Some(run_id) = body.and_then(|body| body.get("run_id")).and_then(serde_json::Value::as_str) else {
         return serde_json::json!({"status": 422, "body": DomainError::new("invalid_input", "run_id is required")});
     };
-    let applied = match decision {
+    let applicable = load(&executor.home).and_then(|runtime| {
+        anyhow::ensure!(decision == Decision::Cancel || runtime.last_error.is_some(), "the running execution is not awaiting reconciliation");
+        Ok(())
+    });
+    let applied = applicable.and_then(|()| match decision {
         Decision::Cancel => executor.cancel(run_id),
         Decision::Acknowledge => executor.acknowledge(run_id),
         Decision::Retry => executor.retry(run_id),
-    };
+    });
     match applied {
         Ok(()) => serde_json::json!({"status": 200, "body": {}}),
         Err(error) => serde_json::json!({"status": 409, "body": DomainError::new("conflict", error.to_string())}),
@@ -795,7 +899,7 @@ pub(crate) fn decide(executor: &Executor, decision: Decision, body: Option<&serd
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf) -> Result<()> {
-    let executor = Executor { domain, home: home.clone(), claude_home };
+    let executor = Arc::new(Executor { domain, home: home.clone(), claude_home });
     let directory = home.join("runtime/orchestrator");
     let _ownership = loop {
         match Ownership::acquire(&directory) {
@@ -810,16 +914,21 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     };
-    if let Err(error) = executor.recover() {
-        return Err(error.context("orchestrator recovery failed"));
+    loop {
+        match executor.startup_recovery().await {
+            Ok(_) => break,
+            Err(error) => log!("orchestrator recovery will retry: {error:#}"),
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
     if let Some(session) = load(&home).ok().and_then(|runtime| runtime.session_id) {
         executor.bind_session(&session);
     }
     let mut changed = executor.domain.subscribe();
     let mut usage = executor.domain.live.usage_pause.subscribe();
+    let mut watchdog = watchdog::Watchdog::default();
     loop {
-        if let Err(error) = executor.tick().await {
+        if let Err(error) = executor.supervised_tick(&mut watchdog).await {
             log!("orchestrator: {error:#}");
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
@@ -1205,6 +1314,25 @@ mod tests {
         let mut runtime = load(&f.executor.home).unwrap();
         runtime.retry_at = None;
         save(&f.executor.home, &runtime).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_disk_full_finishing_a_batch_does_not_silently_stall_the_next_request() {
+        let f = fixture();
+        f.tell("before-full", "First batch");
+        let fault = faults::Injection::at(&f.executor.home, "runtime_write", 3);
+        let error = f.executor.tick().await.unwrap_err();
+        assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().raw_os_error(), Some(libc::ENOSPC));
+        assert_eq!(fault.hits(), 1);
+        assert!(load(&f.executor.home).unwrap().active_run.is_some());
+        drop(fault);
+        f.tell("after-full", "The request after disk space returns");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "writes recovered but active_run silently blocked the next batch");
+        let evidence = f.domain().store.lock().unwrap().delivery_evidence_page(0).unwrap();
+        assert_eq!(evidence.iter().filter(|attempt| attempt.recipient_kind == "orchestrator").count(), 2, "a finished batch must not be replayed");
+        assert!(load(&f.executor.home).unwrap().active_run.is_none());
+        assert!(f.cards(PROBLEM_PREFIX).is_empty());
     }
 
     #[tokio::test]

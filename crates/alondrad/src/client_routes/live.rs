@@ -45,6 +45,15 @@ pub(crate) struct Live {
     pub(crate) losses: crate::node_revival::Losses,
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
     pub(crate) account_wait: crate::accounts::AccountWait,
+    /// Committed orchestrator work only; unrelated domain activity cannot hide a stuck batch.
+    pub(crate) orchestrator_progress: AtomicU64,
+    /// Recovered after panic: each holder only reads or replaces one complete host lease.
+    pub(crate) orchestrator_host: Mutex<Option<(String, alondra_agent_runtime::owned_host::HostStop)>>,
+    /// Retain a logical stop while storage is unavailable, until its finalization commits.
+    /// Recovered after panic: one complete stop is assigned, cloned or cleared.
+    pub(crate) orchestrator_stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_core::orchestrator_batch::BatchProblem)>>,
+    /// Recovered after panic: each holder inserts or removes one completed-run marker.
+    pub(crate) orchestrator_runs: Mutex<std::collections::BTreeSet<String>>,
     /// Asks the accounts check to run now.
     pub(crate) account_check: tokio::sync::Notify,
     pub(crate) initial_account_check_pending: std::sync::atomic::AtomicBool,

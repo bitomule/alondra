@@ -240,9 +240,14 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     let mut host = match BatchHost::start(batch.owner, &configuration, &batch.session, &profile, &batch.prompt) {
         Ok(value) => value, Err(error) => return failed(format!("The Codex host did not confirm the batch offer: {error:?}")),
     };
+    let _host = match crate::domain_orchestrator::HostGuard::attach(Arc::clone(&batch.domain), &run, host.stopper()) {
+        Ok(guard) => guard,
+        Err(error) => { stop(host, &batch.directory); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
+    };
     let mut output = Output { stream: Stream::native(Some(host.input())), diagnostic: String::new(), exit_ok: false };
     let mut native = NativeTurn::default();
     if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run).and_then(|()| spawned()) {
+        output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("Cannot record the Codex host: {error:#}")));
         stop(host, &batch.directory);
         return output;
@@ -267,18 +272,29 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
             HostEvent::Exited { code, signal } => {
                 output.exit_ok = code == Some(0) || (native.consumed && output.stream.result && output.stream.success && signal.as_deref() == Some("SIGTERM"));
                 exited = true;
-                Ok(BatchReport { kind: "process_exited".into(), input_consumed: native.consumed, turn_completed: output.stream.result, native_turn: native.turn.clone(), failure: output.stream.error.clone(), public_result: None })
+                Ok(BatchReport { kind: "process_exited".into(), input_consumed: native.consumed, turn_completed: output.stream.result, native_turn: native.turn.clone(), failure: output.stream.error.clone(), public_result: None, ..Default::default() })
             }
         };
-        let report = match report { Ok(value) => value, Err(error) => {
+        let mut report = match report { Ok(value) => value, Err(error) => {
             output.stream.error = Some(bounded(error.to_string()));
             BatchReport { kind: "invalid_native_transition".into(), failure: output.stream.error.clone(), ..BatchReport::default() }
         }};
+        report.stop = if output.stream.denied { Some(alondra_core::orchestrator_batch::BatchStop::Denied) }
+            else if output.stream.native_request_rejected { Some(alondra_core::orchestrator_batch::BatchStop::Interrupted) }
+            else { None };
         if let Err(error) = batch.domain.publish_batch_report(&run, pending.cursor, &pending.evidence, &report) {
+            output.stream.storage_failure=true;
             output.stream.error = Some(bounded(format!("The batch report was not committed; its host evidence remains unacknowledged: {error:#}")));
             break;
         }
+        #[cfg(test)]
+        if let Err(error) = crate::domain_orchestrator::faults::write(&batch.home, "ack") {
+            output.stream.storage_failure = true;
+            output.stream.error = Some(format!("The batch ACK could not be written: {error}"));
+            break;
+        }
         if let Err(error) = host.acknowledge(pending.cursor) {
+            output.stream.storage_failure=true;
             output.stream.error = Some(format!("The batch ACK is uncertain: {error:?}"));
             break;
         }
@@ -568,7 +584,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
 
     #[tokio::test]
     async fn actual_batch_host_policy_denial_is_durable_before_ack_and_never_reoffered(){
-        for refuse_report in [false,true]{
+        for (refuse_report, failed_write) in [(false,None),(true,None),(false,Some(("delivery_finish",1))),(false,Some(("runtime_write",3))),(true,Some(("runtime_write",3)))]{
             let f=crate::domain_orchestrator::testing::fixture();
             let key=AccountKey::native(Provider::Codex);
             let text=r#"[accounts]
@@ -592,8 +608,19 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             std::fs::write(f.executor.home.join("codex-backend.json"),serde_json::to_vec(&backend).unwrap()).unwrap();
             f.tell("policy-request","Do not run a model until native payment and identity policy is valid");
             if refuse_report{rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap().execute_batch("CREATE TRIGGER reject_policy_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report failure'); END;").unwrap();}
-            f.tick().await;
-            let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();let run=runtime.last_run_id.as_deref().unwrap();assert_eq!(runtime.failure,Some(crate::domain_orchestrator::Failure::Denied),"actual host diagnostic: {:?}",runtime.last_error);assert!(runtime.retry_at.is_none(),"payment denial requires a user decision, never another automatic provider attempt");
+            let fault = failed_write.map(|(point, occurrence)| crate::domain_orchestrator::faults::Injection::at(&f.executor.home,point,occurrence));
+            let result = f.executor.tick().await;
+            if let Some(fault) = &fault { assert!(result.is_err()); assert!(fault.hits()>0); } else { result.unwrap(); }
+            drop(fault);
+            let cold_restart = refuse_report && failed_write.is_some();
+            if cold_restart {
+                let restarted = crate::domain_orchestrator::Executor { domain: Arc::new(crate::domain_runtime::DomainRuntime::open(&f.executor.home).unwrap()), home: f.executor.home.clone(), claude_home: f.executor.claude_home.clone() };
+                restarted.repair_incomplete().await.unwrap();
+                let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();
+                assert_eq!(runtime.failure,Some(crate::domain_orchestrator::Failure::Interrupted));
+                assert!(runtime.active_run.is_some(),"losing both the refusal report and runtime write still cannot permit native replay after restart");
+            } else if failed_write.is_some() { f.tick().await; }
+            let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();let run=runtime.last_run_id.as_deref().unwrap();assert_eq!(runtime.failure,Some(if cold_restart {crate::domain_orchestrator::Failure::Interrupted} else {crate::domain_orchestrator::Failure::Denied}),"actual host diagnostic: {:?}",runtime.last_error);assert!(runtime.retry_at.is_none(),"payment denial requires a user decision, never another automatic provider attempt");
             let reports:Vec<(u64,Vec<u8>,String)>={let conn=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();let mut query=conn.prepare("SELECT cursor,digest,report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor").unwrap();query.query_map([run],|row|Ok((u64::try_from(row.get::<_,i64>(0)?).unwrap(),row.get(1)?,row.get(2)?))).unwrap().map(|row|row.unwrap()).collect()};
             let directory=std::fs::read_dir(&state_root).unwrap().map(|entry|entry.unwrap().path()).find(|path|path.file_name().unwrap().to_string_lossy().starts_with("orchestrator-")).unwrap();
             let mut reader=alondra_codex_protocol::FramedReader::new(std::fs::File::open(directory.join("outbox")).unwrap());let mut acknowledged=0;let mut refusal=None;

@@ -170,6 +170,10 @@ impl<O: HostOwner> BatchHost<O> {
         Ok(())
     }
 
+    pub fn stopper(&self) -> alondra_agent_runtime::owned_host::HostStop {
+        self.host.stopper()
+    }
+
     /// Stops the host and waits until it has exited.
     pub fn stop(mut self) -> Result<(), AdapterError> {
         self.host.request_stop().map_err(|_| AdapterError::Disconnected)?;
