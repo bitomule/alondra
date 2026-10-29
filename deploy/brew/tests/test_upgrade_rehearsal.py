@@ -215,6 +215,55 @@ class Fixture(unittest.TestCase):
         subprocess.run(['/bin/rm', '-rf', str(self.root)], check=True)
 
 
+class PreviousDoctorTests(Fixture):
+    def run_doctor(self, report, code=0):
+        home = self.work / u.READER_CASE / 'home'
+        daemon = types.SimpleNamespace(port=50000, stop=lambda: None)
+        def written(version, within):
+            self.assertEqual(version, '0.3.8')
+            options = home / 'options.toml'
+            options.write_text(options.read_text() + '[accounts]\nconnected = []\n')
+        daemon.wait_for_version = written
+        self.stopped = False
+        def stopped():
+            self.stopped = True
+        daemon.stop = stopped
+        def run(argv, env, timeout):
+            self.assertEqual(argv, [self.work / 'previous/alondra', 'doctor', '--json', '--only', 'config,projects'])
+            self.assertEqual(env['ALONDRA_HOME'], str(home))
+            self.assertIn('connected = []', (home / 'options.toml').read_text())
+            return subprocess.CompletedProcess(argv, code, report, '')
+        with patch.object(u, 'Daemon', return_value=daemon), patch.object(self.rehearsal, 'run', side_effect=run):
+            return u.previous_doctor(self.rehearsal, {'binary': self.work / 'previous/alondrad'},
+                                     {'binary': self.work / 'new/alondrad', 'version': '0.3.8'})
+
+    def report(self, status='pass', detail='read'):
+        return json.dumps({'checks': [{'id': 'config', 'status': 'warn', 'detail': 'not configured'},
+                                      {'id': 'projects', 'status': status, 'detail': detail}]})
+
+    def test_the_previous_reader_checks_files_written_by_the_new_daemon(self):
+        result = self.run_doctor(self.report())
+        self.assertEqual(result['doctor_exit_code'], 0)
+        self.assertEqual(len(result['options_sha256']), 64)
+        self.assertTrue(self.stopped)
+        self.assertIn(u.READER_CASE, u.chosen_cases('0.3.7', None))
+
+    def test_a_reader_writer_mismatch_blocks_the_release_and_stops_the_daemon(self):
+        with self.assertRaisesRegex(u.Failed, 'unknown field connected'):
+            self.run_doctor(self.report('fail', 'options.toml: unknown field connected'), 1)
+        self.assertTrue(self.stopped)
+
+    def test_a_missing_check_cannot_silently_pass(self):
+        with self.assertRaisesRegex(u.Failed, 'no usable configuration report'):
+            self.run_doctor('{"checks": []}')
+        self.assertTrue(self.stopped)
+
+    def test_an_unsuccessful_doctor_cannot_silently_pass(self):
+        with self.assertRaisesRegex(u.Failed, 'exited 2'):
+            self.run_doctor(self.report(), 2)
+        self.assertTrue(self.stopped)
+
+
 class HandoverWorldTests(Fixture):
     def test_the_daemon_of_a_case_starts_nodes_whatever_the_macs_load(self):
         world = u.HandoverWorld(self.rehearsal, self.work / 'case', None)
@@ -675,6 +724,7 @@ class LauncherMigrationTests(Fixture):
         archive = self.archive(u.release.PRE_LAUNCHER_FILES)
         binary = u.unpack(archive, self.work / 'previous', signed=False, published=True)
         self.assertEqual(binary.read_text(), 'alondrad')
+        self.assertEqual(binary.with_name('alondra').read_text(), 'alondra')
         self.assertFalse(binary.with_name(u.LAUNCHER).exists())
 
     def test_a_keg_holds_the_binaries_and_the_plugins_with_their_cli_wrappers(self):

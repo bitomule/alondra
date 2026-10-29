@@ -74,6 +74,8 @@ enum Cmd {
     #[command(about = tr!("Check everything; --fix repairs or finishes the setup", "Lo comprueba todo; --fix arregla o termina la instalación"),
         after_help = examples(&["alondra doctor", "alondra doctor --fix", "alondra doctor --fix --yes --only service"]))]
     Doctor {
+        #[arg(long, hide = true, conflicts_with_all = ["fix", "yes", "only", "skip", "deep", "test_push", "json"])]
+        after_update: bool,
         #[arg(long, help = tr!("Repair what it can, asking what it needs", "Arregla lo que puede y pregunta lo que necesita"))]
         fix: bool,
         #[arg(long, requires = "fix", help = tr!("Accept every repair that would ask, and the proposed projects folder", "Acepta cada arreglo que preguntaría, y la carpeta de proyectos propuesta"))]
@@ -477,7 +479,13 @@ fn takes_json(command: Option<&Cmd>) -> bool {
 fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
     match command {
         None => doctor::launch(),
-        Some(Cmd::Doctor { fix, yes, only, skip, deep, test_push }) => {
+        Some(Cmd::Doctor { after_update: true, .. }) => {
+            match doctor::after_update() {
+                0 => Ok(()),
+                code => std::process::exit(code),
+            }
+        }
+        Some(Cmd::Doctor { fix, yes, only, skip, deep, test_push, .. }) => {
             let select = match (only.is_empty(), skip.is_empty()) {
                 (false, _) => doctor::Selection::Only(only),
                 (_, false) => doctor::Selection::Skip(skip),
@@ -936,6 +944,14 @@ mod api_tests {
         }
         assert!(takes_json(None) == false);
         assert!(parsed(&["--version", "--json"]).version);
+    }
+
+    #[test]
+    fn doctor_accepts_the_internal_update_report_without_other_modes() {
+        assert!(matches!(parsed(&["doctor", "--after-update"]).command, Some(Cmd::Doctor { after_update: true, .. })));
+        for mode in ["--fix", "--json", "--deep", "--test-push"] {
+            assert!(Cli::try_parse_from(["alondra", "doctor", "--after-update", mode]).is_err());
+        }
     }
 
     #[test]

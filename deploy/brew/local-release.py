@@ -25,6 +25,7 @@ REHEARSAL = 'upgrade-rehearsal.json'
 SDK_HANDOVER = 'sdk-handover'
 FIRST_SDK_RELEASE = (0, 3, 0)
 FRESH_SDK = 'fresh-sdk'
+PREVIOUS_DOCTOR = 'previous-doctor'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
 SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
 # What a release ships, by the name it ships under: the binaries `bazelisk test //crates/...` built
@@ -171,6 +172,9 @@ def verify_rehearsal(ver, output):
         raise RuntimeError('The upgrade rehearsal did not move claude --bg nodes to the Agent SDK with a crash after each step; prepare them again')
     if not (saved.get('cases', {}).get(FRESH_SDK) or {}).get('session'):
         raise RuntimeError('The upgrade rehearsal did not run a task of a fresh install through its own Agent SDK host; prepare them again')
+    reader = saved.get('cases', {}).get(PREVIOUS_DOCTOR) or {}
+    if reader.get('doctor_exit_code') != 0 or not reader.get('options_sha256'):
+        raise RuntimeError('The previous doctor did not read the HOME written by the new daemon; prepare them again')
 
 
 def verify_prepared(ver, source, output):

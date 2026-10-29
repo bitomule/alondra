@@ -46,6 +46,16 @@ fn check<'a>(doc: &'a Value, id: &str) -> &'a Value {
 }
 
 #[test]
+fn the_internal_update_report_keeps_the_compact_output_and_doctor_exit_code() {
+    let (output, _root) = alondra(&["doctor", "--after-update"], Some("unknown_setting = true\n"));
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("unknown field `unknown_setting`"), "{said}");
+    assert!(said.starts_with('\n'), "{said}");
+    assert!(!said.contains("alondra.doctor/1"), "{said}");
+}
+
+#[test]
 fn doctor_json_keeps_todays_shape_and_exits_4_with_the_daemon_down() {
     let (output, doc) = doctor(&["--json"]);
     assert_eq!(output.status.code(), Some(4), "{output:?}");

@@ -32,7 +32,8 @@ def archives(directory, ver='0.1.2'):
 def rehearsed(directory, ver='0.1.2'):
     archive = directory / f'alondra-{ver}-{l.release.TARGETS[0]}.tar.gz'
     record = {'schema': 1, 'from': '0.1.1', 'to': ver, 'archive': {'name': archive.name, 'sha256': l.release.sha(archive)},
-              'cases': {l.SDK_HANDOVER: {'crashed_after': list(l.HANDOVER_CRASHES)}, l.FRESH_SDK: {'session': 'fresh-session'}}}
+              'cases': {l.SDK_HANDOVER: {'crashed_after': list(l.HANDOVER_CRASHES)}, l.FRESH_SDK: {'session': 'fresh-session'},
+                        l.PREVIOUS_DOCTOR: {'doctor_exit_code': 0, 'options_sha256': 'a' * 64}}}
     (directory / l.REHEARSAL).write_text(json.dumps(record))
 
 
@@ -422,6 +423,13 @@ class LocalReleaseTests(unittest.TestCase):
         del record['cases'][l.SDK_HANDOVER]
         (output / l.REHEARSAL).write_text(json.dumps(record))
         l.verify_prepared('0.1.2', 'source', output)  # 0.3.0 leaves no claude --bg node to move
+        for reader in (None, {'doctor_exit_code': 1, 'options_sha256': 'a' * 64}, {'doctor_exit_code': 0}):
+            rehearsed(output)
+            record = json.loads((output / l.REHEARSAL).read_text())
+            record['cases'][l.PREVIOUS_DOCTOR] = reader
+            (output / l.REHEARSAL).write_text(json.dumps(record))
+            with self.assertRaisesRegex(RuntimeError, 'previous doctor'):
+                l.verify_prepared('0.1.2', 'source', output)
         rehearsed(output)
         l.verify_prepared('0.1.2', 'source', output)
         self.assertTrue(archive.exists())

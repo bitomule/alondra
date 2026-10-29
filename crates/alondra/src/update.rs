@@ -61,7 +61,7 @@ pub fn run(check: bool) -> Result<()> {
         Waited::Running => out.pass(&describe(&outcome, &installed)),
         _ => out.fail(&describe(&outcome, &installed)),
     }
-    let code = crate::doctor::after_update();
+    let code = after_update(&prefix)?;
     match (code, outcome) {
         (0, Waited::Running) => Ok(()),
         (0, _) => std::process::exit(1),
@@ -210,6 +210,13 @@ fn service_repair(prefix: &Path) -> (std::path::PathBuf, [&'static str; 5]) {
     (prefix.join("opt/alondra/bin/alondra"), ["doctor", "--fix", "--yes", "--only", "service"])
 }
 
+fn after_update(prefix: &Path) -> Result<i32> {
+    let cli = prefix.join("opt/alondra/bin/alondra");
+    let status = Command::new(&cli).args(["doctor", "--after-update"]).status()
+        .map_err(|error| anyhow::anyhow!("{}: {error}", cli.display()))?;
+    status.code().ok_or_else(|| anyhow::anyhow!("{} doctor --after-update: {status}", cli.display()))
+}
+
 fn apply_service(prefix: &Path) -> Result<(), Vec<String>> {
     let (cli, args) = service_repair(prefix);
     let title = tr!("The service could not be brought up to date", "No se pudo poner al día el servicio");
@@ -308,6 +315,23 @@ mod tests {
         let (cli, args) = service_repair(Path::new("/opt/homebrew"));
         assert_eq!(cli, Path::new("/opt/homebrew/opt/alondra/bin/alondra"));
         assert_eq!(args, ["doctor", "--fix", "--yes", "--only", "service"]);
+    }
+
+    #[test]
+    fn the_final_report_runs_the_installed_cli_and_preserves_its_exit_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let prefix = crate::test_support::Directory::new();
+        let cli = prefix.join("opt/alondra/bin/alondra");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\n[ \"$#\" = 2 ] && [ \"$1\" = doctor ] && [ \"$2\" = --after-update ] || exit 99\nexit 7\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(after_update(&prefix).unwrap(), 7);
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(after_update(&prefix).unwrap(), 0);
+        std::fs::write(&cli, "#!/bin/sh\nkill -TERM $$\n").unwrap();
+        assert!(after_update(&prefix).unwrap_err().to_string().contains("doctor --after-update"));
+        std::fs::remove_file(&cli).unwrap();
+        assert!(after_update(&prefix).unwrap_err().to_string().contains("opt/alondra/bin/alondra"));
     }
 
     struct Clock(Cell<Duration>, Instant);

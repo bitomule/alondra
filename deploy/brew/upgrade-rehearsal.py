@@ -43,7 +43,8 @@ SERVE_WITHIN = 60
 EXIT_WITHIN = 120
 STAY_UP = 10
 PREFLIGHT_TIMEOUT = 300
-CASES = ('live', 'empty-legacy-stores', 'tableless-legacy-store', 'outdated-launcher', 'fresh-previous')
+READER_CASE = 'previous-doctor'
+CASES = ('live', 'empty-legacy-stores', 'tableless-legacy-store', 'outdated-launcher', 'fresh-previous', READER_CASE)
 
 
 class Failed(RuntimeError):
@@ -132,7 +133,7 @@ def unpack(archive, into, signed=True, published=False):
     release.validate_archive(archive, allowed)
     into.mkdir(parents=True)
     with tarfile.open(archive) as tar:
-        names = [name for name in ('alondrad', LAUNCHER) if name in tar.getnames()]
+        names = [name for name in ('alondra', 'alondrad', LAUNCHER) if name in tar.getnames()]
         for name in names:
             (into / name).write_bytes(tar.extractfile(name).read())
             (into / name).chmod(tar.getmember(name).mode & 0o755)
@@ -451,6 +452,45 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
     if bundled.exists():
         check_launcher(rehearsal, home, new['version'], bundled, installed, before)
     return {'exited_after_swap_ms': exited_ms, 'answered_ms': answered_ms}
+
+
+def previous_doctor(rehearsal, old, new):
+    """The old updater's doctor must read the settings the new daemon writes, even when the
+    upgrade itself succeeds. Only config/projects run: unrelated sandbox setup is not a fault."""
+    root = rehearsal.work / READER_CASE
+    home = root / 'home'
+    home.mkdir(parents=True, mode=0o700)
+    projects = root / 'projects'
+    projects.mkdir()
+    options = home / 'options.toml'
+    legacy = f'projects_root = {json.dumps(str(projects))}\n'
+    options.write_text(legacy)
+    daemon = Daemon(rehearsal, new['binary'], home, root / 'alondrad.log')
+    try:
+        daemon.wait_for_version(new['version'], SERVE_WITHIN)
+        until('the new daemon to write options.toml', lambda: (options.read_text() != legacy, options.read_text()))
+        written = checksum(options)
+        cli = old['binary'].with_name('alondra')
+        result = rehearsal.run([cli, 'doctor', '--json', '--only', 'config,projects'],
+                               rehearsal.env(home, daemon.port), PREFLIGHT_TIMEOUT)
+        (root / 'doctor.stdout').write_text(result.stdout)
+        (root / 'doctor.stderr').write_text(result.stderr)
+        try:
+            report = json.loads(result.stdout)
+            checks = {check.get('id', check.get('check')): check for check in report['checks']}
+            for name in ('config', 'projects'):
+                check = checks[name]
+                if check['status'] not in ('pass', 'warn'):
+                    raise Failed(f'previous doctor cannot read the new HOME ({name}): {check["detail"]}')
+        except (ValueError, KeyError, TypeError) as error:
+            raise Failed(f'previous doctor returned no usable configuration report: {result.stdout} {result.stderr}') from error
+        if result.returncode:
+            raise Failed(f'previous doctor exited {result.returncode}: {result.stdout} {result.stderr}')
+        if checksum(options) != written:
+            raise Failed('previous doctor changed options.toml')
+        return {'options_sha256': written, 'doctor_exit_code': result.returncode}
+    finally:
+        daemon.stop()
 
 
 def fresh_previous(rehearsal, home, old):
@@ -1441,7 +1481,7 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         raise Failed(f'The new build reports {old_version}, the version it should replace')
     result = {'schema': 1, 'from': old_version, 'to': new['version'], 'cases': {}}
     chosen = chosen_cases(old_version, sdk, only)
-    generic = [case for case in CASES if case in chosen]
+    generic = [case for case in CASES if case in chosen and case != READER_CASE]
     if generic:
         try:
             result['live_preflight_ms'] = rehearsal.preflight(new_binary, live_home)
@@ -1475,6 +1515,12 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         result['cases'][case] = timings
         print(f'{case}: {old_version} → {new["version"]} restarted {timings["exited_after_swap_ms"]} ms after '
               f'the swap and answered in {timings["answered_ms"]} ms')
+    if READER_CASE in chosen:
+        try:
+            result['cases'][READER_CASE] = previous_doctor(rehearsal, old, new)
+        except Failed as error:
+            raise Failed(f'case {READER_CASE}: {error}') from None
+        print(f'{READER_CASE}: the previous doctor reads the HOME written by {new["version"]}')
     if SDK_CASE in chosen:
         keg = work / SDK_CASE / 'Cellar/alondra' / new['version']
         try:
