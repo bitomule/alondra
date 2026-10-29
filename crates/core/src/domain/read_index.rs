@@ -323,6 +323,10 @@ impl ReadIndex {
     pub fn usage(&self, now: crate::model::Millis, today: &str) -> Option<crate::usage::Usage> {
         crate::usage::summary(&self.accounts, &self.account_usage, self.account_reserve, now, today)
     }
+    /// Every provider's accounts and where each stands, as the usage indicator reads them.
+    pub fn providers(&self, now: crate::model::Millis, today: &str) -> Vec<crate::usage::ProviderUsage> {
+        crate::usage::providers(&self.accounts, &self.account_usage, self.account_reserve, now, today)
+    }
     /// A scheduled run created the task.
     pub fn scheduled(&self, task: &TaskId) -> bool {
         self.scheduled.contains(task)

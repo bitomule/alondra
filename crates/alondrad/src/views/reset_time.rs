@@ -68,6 +68,16 @@ pub(crate) fn reset_day_and_time(
     }
 }
 
+/// The time alone when it is today, else the day and time.
+pub(crate) fn clock_or_day(resets_at: Millis, now: Millis, offset_secs: impl Fn(Millis) -> i64, lang: Lang) -> String {
+    let at = civil(resets_at, offset_secs(resets_at));
+    if at.day == civil(now, offset_secs(now)).day {
+        format!("{:02}:{:02}", at.hour, at.minute)
+    } else {
+        reset_day_and_time(resets_at, now, offset_secs, lang)
+    }
+}
+
 pub(crate) fn five_hour_reset(
     resets_at: Millis,
     now: Millis,
@@ -171,6 +181,13 @@ mod tests {
         assert_eq!(five_hour_reset(far, now, |_| PLUS_TWO, Lang::Es), "hoy a las 17:15");
         assert_eq!(five_hour_reset(far, now, |_| PLUS_TWO, Lang::En), "today at 17:15");
         assert_eq!(five_hour_reset(now - MINUTE, now, |_| PLUS_TWO, Lang::En), "today at 12:14");
+    }
+
+    #[test]
+    fn a_time_today_reads_as_the_clock_alone() {
+        let now = local_midnight_plus(12, 15);
+        assert_eq!(clock_or_day(local_midnight_plus(14, 30), now, |_| PLUS_TWO, Lang::Es), "14:30");
+        assert_eq!(clock_or_day(local_midnight_plus(24 + 9, 0), now, |_| PLUS_TWO, Lang::Es), "mañana a las 09:00");
     }
 
     #[test]

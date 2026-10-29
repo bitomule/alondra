@@ -1,4 +1,4 @@
-//! Pictures of the PR card flow for review. Each state is drawn by the real terminal code into a
+//! Pictures of the PR card flow and the usage indicator for review. Each state is drawn by the real terminal code into a
 //! buffer and saved as an HTML page; `make tui-shots` turns the pages into PNGs.
 
 use super::parity::view_fixture;
@@ -79,6 +79,15 @@ fn tasks(lang: crate::i18n::Lang) -> App {
     app
 }
 
+fn usage(lang: crate::i18n::Lang, sheet: bool) -> App {
+    let mut app = tasks(lang);
+    app.view_status = Some(super::parity::status_with(super::parity::usage_gauges(lang)));
+    if sheet {
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+    }
+    app
+}
+
 #[test]
 #[ignore = "writes the review pictures: make tui-shots"]
 fn tui_shots() {
@@ -109,7 +118,7 @@ fn tui_shots() {
             ("3-refused", answered(lang, Outcome::refused(&Refusal::UpstreamPrOpen { number: 11 }, view_lang))),
             ("4-changed", answered(lang, changed)),
         ];
-        let shots = shots.into_iter().chain([("5-tasks", tasks(lang))]);
+        let shots = shots.into_iter().chain([("5-tasks", tasks(lang)), ("6-usage", usage(lang, false)), ("7-usage-sheet", usage(lang, true))]);
         for (shot, mut app) in shots {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();

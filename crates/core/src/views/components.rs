@@ -235,6 +235,12 @@ pub struct GaugePart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub level: Level,
+    /// The section the part is listed under: the usage indicator's provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// What the part says, one plain sentence each; `detail` joins them for clients that predate them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Label {

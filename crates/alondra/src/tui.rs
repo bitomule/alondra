@@ -753,6 +753,9 @@ pub struct App {
     pub help: bool,
     pub help_scroll: usize,
     pub help_view: View,
+    pub usage_sheet: bool,
+    pub usage_scroll: usize,
+    pub usage_view: View,
     pub focus: Pane,
     pub detail_view: View,
     pub task_sel: Option<tasks::TaskKey>,
@@ -1232,6 +1235,9 @@ impl App {
             help: false,
             help_scroll: 0,
             help_view: View::default(),
+            usage_sheet: false,
+            usage_scroll: 0,
+            usage_view: View::default(),
             focus: Pane::List,
             detail_view: View::default(),
             task_sel: None,
@@ -2569,6 +2575,10 @@ impl App {
             self.help_key(k);
             return Flow::Go;
         }
+        if self.usage_sheet {
+            self.usage_key(k);
+            return Flow::Go;
+        }
         if self.composer.is_some() {
             self.composer_key(k);
             return Flow::Go;
@@ -2647,6 +2657,14 @@ impl App {
             }
             Cmd::Pending => {}
             _ => self.help = false,
+        }
+    }
+
+    fn usage_key(&mut self, k: KeyEvent) {
+        match self.keymap.read(k) {
+            Cmd::Move(m) => self.usage_scroll = keys::scroll(self.usage_scroll, m, self.usage_view.h, self.usage_view.total),
+            Cmd::Pending => {}
+            _ => self.usage_sheet = false,
         }
     }
 

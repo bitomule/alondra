@@ -1419,7 +1419,7 @@ mod tests {
                 at: 1_700_000_000_000, memory_total: 100, memory_available: 50, memory_free_percent: Some(50),
                 disk_total: 500_000_000_000, disk_available: 400_000_000_000, cpus: 8,
                 ..Default::default()
-            }, None))));
+            }, None, vec![]))));
             let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
             domain.live.machine_watch.sampled.notified().await;
             let threads = domain.live.machine_watch.sample_threads.lock().unwrap().clone();
@@ -1480,7 +1480,7 @@ mod tests {
         let gauges = std::sync::Arc::new(std::sync::Mutex::new(Some((alondra_core::Machine {
             at: 1_700_000_000_000, memory_total: 100, memory_available: 50, memory_free_percent: Some(50),
             disk_total: 500_000_000_000, disk_available: 400_000_000_000, cpus: 8, ..Default::default()
-        }, None))));
+        }, None, vec![]))));
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));

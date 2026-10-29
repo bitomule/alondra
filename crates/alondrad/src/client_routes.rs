@@ -462,7 +462,7 @@ impl Client {
             }
         };
         let (machine, usage) = match &*self.gauges.lock_or_recover("the machine gauges") {
-            Some((machine, usage)) => (json!(machine), json!(usage)),
+            Some((machine, usage, _)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
         let nodes = live::runtime_nodes(self.domain.live.nodes(), &state, |task| state_times.get(task).copied());

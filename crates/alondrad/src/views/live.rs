@@ -1,6 +1,8 @@
 use crate::locks::Poisonable as _;
 use super::reset_time;
 use alondra_core::Millis;
+use alondra_core::accounts::Provider;
+use alondra_core::usage::{self, AccountLine, AccountStand, ProviderUsage, UsageState};
 use alondra_core::domain::{DomainState, NodePhase, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
@@ -536,11 +538,11 @@ async fn gather_inner(
             .unwrap_or_default()
     };
     let sample = client.gauges.lock_or_recover("the machine gauges").clone();
-    let gauges = if let Some((machine, usage)) = sample {
+    let gauges = if let Some((machine, _, providers)) = sample {
         let mut published = cache(&client.views_gauges);
         published_gauges(&mut published, std::time::Instant::now(), lang, || (
-            gauges(&machine, usage.as_ref(), Lang::En, machine.at),
-            gauges(&machine, usage.as_ref(), Lang::Es, machine.at),
+            gauges(&machine, &providers, Lang::En, machine.at),
+            gauges(&machine, &providers, Lang::Es, machine.at),
         ))
     } else { vec![] };
     let request_times = if clock_only { BTreeMap::new() } else { client
@@ -1590,155 +1592,196 @@ fn reading_age(measured_at: Millis, now: Millis, lang: Lang) -> Option<String> {
     })
 }
 
-/// The Claude accounts' combined margin, with one part per account. Only a margin from a real
-/// limit (every account at its limit, signed out, off or paid per use) is hot: the reserve and
-/// today's slice rank the accounts but never hold work back.
-fn margin_gauge(
-    usage: &alondra_core::usage::Usage,
-    margin: f64,
-    week_reset: Option<String>,
-    aged: impl Fn(String) -> Option<String>,
-    lang: Lang,
-    now: Millis,
-) -> Gauge {
-    let held = usage.none_can_work();
-    let level = if held { Level::Hot } else if margin < LOW_MARGIN { Level::Warm } else { Level::Calm };
-    let mut detail = if held {
-        match lang {
-            Lang::En => "Every Claude account is at its limit: new work waits".to_owned(),
-            Lang::Es => "Todas las cuentas de Claude están en su límite: el trabajo nuevo espera".to_owned(),
-        }
-    } else {
-        match lang {
-            Lang::En => "Room left in the week, today's share and the 5-hour window; work only waits when every account is at its limit".to_owned(),
-            Lang::Es => "Lo que queda de la semana, de la parte de hoy y de la ventana de 5 h; el trabajo solo espera cuando todas las cuentas llegan a su límite".to_owned(),
+/// Every provider's room in one gauge: a colour and a word for the provider in the worst state,
+/// since a task for one provider cannot run on another, and one part per account.
+fn usage_gauge(providers: &[ProviderUsage], lang: Lang, now: Millis) -> Option<Gauge> {
+    let (worst, state) = usage::worst(providers)?;
+    let name = provider_name(worst.provider);
+    let room_everywhere = state == UsageState::WithRoom && providers.len() > 1;
+    let label = if room_everywhere { match lang { Lang::En => "Usage", Lang::Es => "Uso" }.to_owned() } else { name.to_owned() };
+    let back = worst.back_at().filter(|back| *back > now);
+    let mut text = state_word(state, lang).to_owned();
+    if let (UsageState::Out, Some(back)) = (state, back) {
+        let at = reset_time::clock_or_day(back, now, reset_time::local_offset_secs, lang);
+        text.push_str(&match lang { Lang::En => format!(" · back {at}"), Lang::Es => format!(" · vuelve {at}") });
+    }
+    let names = |providers: &[&ProviderUsage]| {
+        let names: Vec<_> = providers.iter().map(|provider| provider_name(provider.provider)).collect();
+        match (names.split_last(), lang) {
+            (Some((last, [])), _) => (*last).to_owned(),
+            (Some((last, rest)), Lang::En) => format!("{} and {last}", rest.join(", ")),
+            (Some((last, rest)), Lang::Es) => format!("{} y {last}", rest.join(", ")),
+            (None, _) => String::new(),
         }
     };
-    if let Some(reset) = week_reset {
-        detail.push_str(&match lang {
-            Lang::En => format!(" · the week resets {reset}"),
-            Lang::Es => format!(" · la semana se reinicia {reset}"),
+    let mut detail = match (state, lang) {
+        (UsageState::WithRoom, _) => {
+            let all: Vec<_> = providers.iter().filter(|provider| provider.state().is_some()).collect();
+            match (lang, all.len()) {
+                (Lang::En, 1) => format!("You can go on: {} has room", names(&all)),
+                (Lang::En, _) => format!("You can go on: {} have room", names(&all)),
+                (Lang::Es, 1) => format!("Puedes seguir: {} tiene margen", names(&all)),
+                (Lang::Es, _) => format!("Puedes seguir: {} tienen margen", names(&all)),
+            }
+        }
+        (UsageState::OverPace, Lang::En) => format!("{name} is over today's pace: going on spends part of the coming days"),
+        (UsageState::OverPace, Lang::Es) => format!("{name} va por encima del ritmo de hoy: seguir gasta parte de los próximos días"),
+        (UsageState::Low, Lang::En) => format!("{name} is running low: its accounts are close to their limit"),
+        (UsageState::Low, Lang::Es) => format!("A {name} le queda poco margen: sus cuentas están cerca de su límite"),
+        (UsageState::Out, _) => {
+            let until = back.map(|back| reset_time::five_hour_reset(back, now, reset_time::local_offset_secs, lang));
+            match (until, lang) {
+                (Some(until), Lang::En) => format!("{name} has no room: its new tasks wait · back {until}"),
+                (Some(until), Lang::Es) => format!("{name} no tiene margen: sus tareas nuevas esperan · vuelve {until}"),
+                (None, Lang::En) => format!("{name} has no room: its new tasks wait"),
+                (None, Lang::Es) => format!("{name} no tiene margen: sus tareas nuevas esperan"),
+            }
+        }
+    };
+    let going_on: Vec<_> = providers.iter().filter(|provider| provider.provider != worst.provider && provider.state().is_some_and(|state| state != UsageState::Out)).collect();
+    if state == UsageState::Out && !going_on.is_empty() {
+        detail.push_str(&match (lang, going_on.len()) {
+            (Lang::En, 1) => format!(" · {} goes on", names(&going_on)),
+            (Lang::En, _) => format!(" · {} go on", names(&going_on)),
+            (Lang::Es, 1) => format!(" · {} sigue", names(&going_on)),
+            (Lang::Es, _) => format!(" · {} siguen", names(&going_on)),
         });
     }
-    Gauge {
-        id: "claude_margin".into(),
-        label: match lang {
-            Lang::En => "Claude · margin",
-            Lang::Es => "Claude · margen",
-        }
-        .into(),
-        value: margin,
-        text: format!("{}%", (margin * 100.0).round()),
-        detail: aged(detail),
-        level,
-        parts: usage.accounts.iter().map(|line| account_part(line, lang, now)).collect(),
+    let best = worst.accounts.iter().filter(|line| line.state.is_some()).min_by_key(|line| line.state);
+    Some(Gauge {
+        id: "usage".into(),
+        label,
+        value: best.and_then(|line| line.margin).unwrap_or(0.0),
+        text,
+        detail: Some(detail),
+        level: state_level(Some(state)),
+        parts: providers
+            .iter()
+            .flat_map(|provider| provider.accounts.iter().map(|line| account_part(provider.provider, line, lang, now)))
+            .collect(),
+    })
+}
+
+fn provider_name(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "Claude",
+        Provider::Codex => "Codex",
     }
 }
 
-/// Below this margin the gauge warns, though work still starts.
-const LOW_MARGIN: f64 = 0.15;
+fn state_word(state: UsageState, lang: Lang) -> &'static str {
+    match (state, lang) {
+        (UsageState::WithRoom, Lang::En) => "with room",
+        (UsageState::WithRoom, Lang::Es) => "con margen",
+        (UsageState::OverPace, Lang::En) => "over pace",
+        (UsageState::OverPace, Lang::Es) => "por encima del ritmo",
+        (UsageState::Low, Lang::En) => "running low",
+        (UsageState::Low, Lang::Es) => "queda poco",
+        (UsageState::Out, Lang::En) => "no room",
+        (UsageState::Out, Lang::Es) => "sin margen",
+    }
+}
 
-fn account_part(line: &alondra_core::usage::AccountLine, lang: Lang, now: Millis) -> alondra_core::views::GaugePart {
-    use alondra_core::usage::AccountStand;
+fn state_level(state: Option<UsageState>) -> Level {
+    match state {
+        None | Some(UsageState::WithRoom) => Level::Calm,
+        Some(UsageState::OverPace | UsageState::Low) => Level::Warm,
+        Some(UsageState::Out) => Level::Hot,
+    }
+}
+
+fn account_part(provider: Provider, line: &AccountLine, lang: Lang, now: Millis) -> alondra_core::views::GaugePart {
     let whole = |percent: f64| percent.round();
-    let mut windows = Vec::new();
-    if let Some(week) = line.week_percent {
-        windows.push(match lang {
-            Lang::En => format!("week {}%", whole(week)),
-            Lang::Es => format!("semana {}%", whole(week)),
-        });
-    }
-    if let Some(five) = line.five_hour_percent {
-        windows.push(format!("5 h {}%", whole(five)));
-    }
-    if let Some((spent, share)) = line.today_spent.zip(line.today_share) {
-        windows.push(match lang {
-            Lang::En => format!("today {}/{}%", whole(spent), whole(share)),
-            Lang::Es => format!("hoy {}/{}%", whole(spent), whole(share)),
-        });
-    }
-    let windows = (!windows.is_empty()).then(|| windows.join(" · "));
-    let margin = line.margin.unwrap_or(0.0);
-    let (text, detail, level) = match &line.stand {
-        AccountStand::CanWork => (
-            line.margin.map_or_else(|| "—".to_owned(), |margin| format!("{}%", (margin * 100.0).round())),
-            windows.or_else(|| Some(match lang {
-                Lang::En => "Not measured yet".to_owned(),
-                Lang::Es => "Aún sin medir".to_owned(),
-            })),
-            if line.margin.is_some_and(|margin| margin < LOW_MARGIN) { Level::Warm } else { Level::Calm },
-        ),
-        AccountStand::AtLimit { until } => {
-            let limit = match (until, lang) {
-                (Some(until), Lang::En) => format!("At its limit; back {}", reset_time::five_hour_reset(*until, now, reset_time::local_offset_secs, lang)),
-                (Some(until), Lang::Es) => format!("En su límite; vuelve {}", reset_time::five_hour_reset(*until, now, reset_time::local_offset_secs, lang)),
-                (None, Lang::En) => "At its limit".to_owned(),
-                (None, Lang::Es) => "En su límite".to_owned(),
-            };
-            (
-                match lang { Lang::En => "limit", Lang::Es => "límite" }.to_owned(),
-                Some(windows.map_or_else(|| limit.clone(), |windows| format!("{limit} · {windows}"))),
-                Level::Hot,
-            )
-        }
-        AccountStand::SignedOut => (
-            match lang { Lang::En => "signed out", Lang::Es => "sin sesión" }.to_owned(),
-            Some(match lang {
-                Lang::En => format!("Sign in on the Mac: alondra accounts login \"{}\"", line.name),
-                Lang::Es => format!("Inicia sesión en el Mac: alondra accounts login \"{}\"", line.name),
-            }),
-            Level::Hot,
-        ),
-        AccountStand::Disabled => (match lang { Lang::En => "off", Lang::Es => "desactivada" }.to_owned(), None, Level::Calm),
-        AccountStand::PayPerUse => (
-            match lang { Lang::En => "per use", Lang::Es => "por uso" }.to_owned(),
-            Some(match lang {
+    let mut lines = Vec::new();
+    let text = match (&line.stand, line.state) {
+        (AccountStand::PayPerUse, _) => {
+            lines.push(match lang {
                 Lang::En => "Paid per use: only requests that choose it run on it".to_owned(),
                 Lang::Es => "De pago por uso: solo la usan las peticiones que la eligen".to_owned(),
-            }),
-            Level::Calm,
-        ),
+            });
+            match lang { Lang::En => "per use", Lang::Es => "por uso" }.to_owned()
+        }
+        (AccountStand::Disabled, _) => match lang { Lang::En => "off", Lang::Es => "desactivada" }.to_owned(),
+        (AccountStand::SignedOut, _) => {
+            lines.push(match lang {
+                Lang::En => format!("Signed out: sign in on the Mac with alondra accounts login \"{}\"", line.name),
+                Lang::Es => format!("Sin sesión: inicia sesión en el Mac con alondra accounts login \"{}\"", line.name),
+            });
+            match lang { Lang::En => "signed out", Lang::Es => "sin sesión" }.to_owned()
+        }
+        (AccountStand::AtLimit { until }, _) => {
+            lines.push(match (until.filter(|until| *until > now), lang) {
+                (Some(until), Lang::En) => format!("At its limit · back {}", reset_time::five_hour_reset(until, now, reset_time::local_offset_secs, lang)),
+                (Some(until), Lang::Es) => format!("En su límite · vuelve {}", reset_time::five_hour_reset(until, now, reset_time::local_offset_secs, lang)),
+                (None, Lang::En) => "At its limit".to_owned(),
+                (None, Lang::Es) => "En su límite".to_owned(),
+            });
+            state_word(UsageState::Out, lang).to_owned()
+        }
+        (AccountStand::CanWork, None) => {
+            lines.push(match lang {
+                Lang::En => "Alondra has not checked this account yet".to_owned(),
+                Lang::Es => "Alondra aún no ha comprobado esta cuenta".to_owned(),
+            });
+            match lang { Lang::En => "not checked", Lang::Es => "sin comprobar" }.to_owned()
+        }
+        (AccountStand::CanWork, state) => {
+            if let Some(week) = line.week_percent {
+                let left = whole(100.0 - week);
+                let reset = line.week_resets_at.filter(|reset| *reset > now)
+                    .map(|reset| reset_time::reset_day_and_time(reset, now, reset_time::local_offset_secs, lang));
+                lines.push(match (reset, lang) {
+                    (Some(reset), Lang::En) => format!("{left}% of the week left · resets {reset}"),
+                    (Some(reset), Lang::Es) => format!("Le queda el {left} % de la semana · se reinicia {reset}"),
+                    (None, Lang::En) => format!("{left}% of the week left"),
+                    (None, Lang::Es) => format!("Le queda el {left} % de la semana"),
+                });
+            }
+            if let Some((spent, share)) = line.today_spent.zip(line.today_share).filter(|(spent, share)| spent >= share) {
+                lines.push(match lang {
+                    Lang::En => format!("Today's share is spent ({}% of {}%)", whole(spent), whole(share)),
+                    Lang::Es => format!("Hoy ya ha gastado su parte ({} % de {} %)", whole(spent), whole(share)),
+                });
+            }
+            let week_low = line.week_percent.is_some_and(|week| week > 100.0 * (1.0 - usage::LOW_WEEK_LEFT));
+            if state == Some(UsageState::Low) && !week_low {
+                let reset = line.five_hour_resets_at.filter(|reset| *reset > now)
+                    .map(|reset| reset_time::five_hour_reset(reset, now, reset_time::local_offset_secs, lang));
+                lines.push(match (reset, lang) {
+                    (Some(reset), Lang::En) => format!("The 5-hour window is nearly full · frees up {reset}"),
+                    (Some(reset), Lang::Es) => format!("La ventana de 5 h está casi llena · se libera {reset}"),
+                    (None, Lang::En) => "The 5-hour window is nearly full".to_owned(),
+                    (None, Lang::Es) => "La ventana de 5 h está casi llena".to_owned(),
+                });
+            }
+            if line.measured_at.is_none() {
+                lines.push(match lang { Lang::En => "Not measured yet", Lang::Es => "Aún sin medir" }.to_owned());
+            }
+            state_word(state.unwrap_or(UsageState::WithRoom), lang).to_owned()
+        }
     };
-    alondra_core::views::GaugePart { label: line.name.clone(), value: margin, text, detail, level }
+    if let Some(age) = line.measured_at.and_then(|measured_at| reading_age(measured_at, now, lang)) {
+        let mut chars = age.chars();
+        lines.push(chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default());
+    }
+    alondra_core::views::GaugePart {
+        label: line.name.clone(),
+        value: line.week_percent.map_or(if line.state == Some(UsageState::Out) { 0.0 } else { 1.0 }, |week| (1.0 - week / 100.0).clamp(0.0, 1.0)),
+        text,
+        detail: (!lines.is_empty()).then(|| lines.join(" · ")),
+        level: state_level(line.state),
+        group: Some(provider_name(provider).to_owned()),
+        lines,
+    }
 }
 
 fn gauges(
     machine: &alondra_core::Machine,
-    usage: Option<&alondra_core::usage::Usage>,
+    providers: &[ProviderUsage],
     lang: Lang,
     now: Millis,
 ) -> Vec<Gauge> {
-    let mut out = Vec::new();
-    if let Some(usage) = usage {
-        let week_reset = reset_time::reset_day_and_time(usage.week_resets_at, now, reset_time::local_offset_secs, lang);
-        let aged = |detail: String| Some(match reading_age(usage.measured_at, now, lang) {
-            Some(age) => format!("{detail} · {age}"),
-            None => detail,
-        });
-        if let Some(margin) = usage.margin {
-            let week_reset = (usage.week_resets_at > now).then_some(week_reset);
-            out.push(margin_gauge(usage, margin, week_reset, &aged, lang, now));
-        }
-        if let Some(percent) = usage.five_hour_percent {
-            let five_hour_reset = |at| reset_time::five_hour_reset(at, now, reset_time::local_offset_secs, lang);
-            out.push(Gauge {
-                id: "claude_five_hours".into(),
-                label: match lang {
-                    Lang::En => "Claude 5 h",
-                    Lang::Es => "Claude 5 h",
-                }
-                .into(),
-                value: percent / 100.0,
-                text: format!("{}%", percent.round()),
-                detail: usage.five_hour_resets_at.and_then(|at| aged(match lang {
-                    Lang::En => format!("5-hour limit resets {}", five_hour_reset(at)),
-                    Lang::Es => format!("El límite de 5 horas se reinicia {}", five_hour_reset(at)),
-                })),
-                level: if percent >= 85.0 { Level::Hot } else { Level::Calm },
-                parts: vec![],
-            });
-        }
-    }
+    let mut out: Vec<Gauge> = usage_gauge(providers, lang, now).into_iter().collect();
     if let Some(free) = machine.memory_free_percent {
         let used = 100 - free.min(100);
         out.push(Gauge {
@@ -1900,12 +1943,12 @@ mod tests {
     }
 
     #[test]
-    fn every_claude_reading_change_wakes_clients() {
-        let week = |text: &str, detail: &str| Gauge { id: "claude_margin".into(), label: "Claude · margin".into(),
+    fn every_usage_reading_change_wakes_clients() {
+        let usage = |text: &str, detail: &str| Gauge { id: "usage".into(), label: "Claude".into(),
             value: 0.83, text: text.into(), detail: Some(detail.into()), level: Level::Calm, parts: vec![] };
-        assert!(same_visible_gauges(&[week("83%", "resets Monday")], &[week("83%", "resets Monday")]));
-        assert!(!same_visible_gauges(&[week("83%", "resets Monday")], &[week("84%", "resets Monday")]));
-        assert!(!same_visible_gauges(&[week("83%", "resets Monday")], &[week("83%", "resets Monday · measured 2 h ago")]));
+        assert!(same_visible_gauges(&[usage("with room", "You can go on")], &[usage("with room", "You can go on")]));
+        assert!(!same_visible_gauges(&[usage("with room", "You can go on")], &[usage("over pace", "You can go on")]));
+        assert!(!same_visible_gauges(&[usage("with room", "You can go on")], &[usage("with room", "Claude is over today's pace")]));
     }
 
     #[test]
@@ -1913,22 +1956,18 @@ mod tests {
         let machine = |memory_free: u32, cpu: f32| alondra_core::Machine { at: 0, memory_total: 100,
             memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8,
             cpu_usage: cpu, disk_total: 1_000, disk_available: 120, disk_purgeable: 0, unreliable: false };
-        let usage = |week: f64| alondra_core::usage::Usage { week_percent: week, week_resets_at: 0,
-            today_spent: None, today_share: None, per_day_left: 0.0, over_pace: false, five_hour_percent: Some(10.0),
-            five_hour_resets_at: Some(0), measured_at: 0, margin: Some(1.0 - week / 100.0), accounts: vec![] };
-        let sample = |m: &alondra_core::Machine, u: &alondra_core::usage::Usage| {
-            (gauges(m, Some(u), Lang::En, 0), gauges(m, Some(u), Lang::Es, 0))
-        };
+        let usage = |today: f64| vec![provider(Provider::Claude, vec![line("Principal", AccountStand::CanWork, Some(30.0), None, Some((today, 15.0)))])];
+        let sample = |m: &alondra_core::Machine, u: &[ProviderUsage]| (gauges(m, u, Lang::En, NOW), gauges(m, u, Lang::Es, NOW));
         let start = std::time::Instant::now();
         let minute = |n: u64| start + std::time::Duration::from_secs(60 * n);
         let mut published = None;
-        let first = published_gauges(&mut published, start, Lang::En, || sample(&machine(61, 21.0), &usage(83.0)));
-        let wiggled = published_gauges(&mut published, minute(1), Lang::En, || sample(&machine(58, 26.0), &usage(83.0)));
+        let first = published_gauges(&mut published, start, Lang::En, || sample(&machine(61, 21.0), &usage(2.0)));
+        let wiggled = published_gauges(&mut published, minute(1), Lang::En, || sample(&machine(58, 26.0), &usage(2.0)));
         assert_eq!(wiggled, first, "RAM 39→42 % and CPU 21→26 % are not worth waking every phone");
-        let reading = published_gauges(&mut published, minute(2), Lang::En, || sample(&machine(58, 26.0), &usage(84.0)));
-        assert_eq!(reading.iter().find(|gauge| gauge.id == "claude_margin").unwrap().text, "16%");
+        let reading = published_gauges(&mut published, minute(2), Lang::En, || sample(&machine(58, 26.0), &usage(16.0)));
+        assert_eq!(reading.iter().find(|gauge| gauge.id == "usage").unwrap().text, "over pace");
         assert_eq!(reading.iter().find(|gauge| gauge.id == "memory").unwrap().text, "42%",
-            "a published set carries the current machine readings along with the new Claude one");
+            "a published set carries the current machine readings along with the new usage one");
     }
 
     #[test]
@@ -1936,11 +1975,11 @@ mod tests {
         let mut machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
             memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 34.4,
             disk_total: 100, disk_available: 50, disk_purgeable: 0, unreliable: false };
-        let english = gauges(&machine, None, Lang::En, 0);
+        let english = gauges(&machine, &[], Lang::En, 0);
         assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
         let cpu = &english[1];
         assert_eq!((cpu.label.as_str(), cpu.text.as_str(), cpu.level), ("CPU", "34%", Level::Calm));
-        let cpu_level = |machine: &alondra_core::Machine| gauges(machine, None, Lang::En, 0)[1].level;
+        let cpu_level = |machine: &alondra_core::Machine| gauges(machine, &[], Lang::En, 0)[1].level;
         machine.cpu_usage = 74.0;
         assert_eq!(cpu_level(&machine), Level::Calm);
         machine.cpu_usage = 75.0;
@@ -1951,7 +1990,7 @@ mod tests {
         assert_eq!(cpu_level(&machine), Level::Hot);
         machine.cpu_usage = 10.0;
         machine.unreliable = true;
-        assert_eq!(gauges(&machine, None, Lang::En, 0)[1].level, Level::Hot);
+        assert_eq!(gauges(&machine, &[], Lang::En, 0)[1].level, Level::Hot);
     }
 
     #[test]
@@ -1959,7 +1998,7 @@ mod tests {
         const GB: u64 = 1_000_000_000;
         let mut machine = alondra_core::Machine { disk_total: 500 * GB, disk_available: 10_800_000_000,
             disk_purgeable: 16_600_000_000, ..Default::default() };
-        let disk = |machine: &alondra_core::Machine, lang: Lang| gauges(machine, None, lang, 0).into_iter().find(|gauge| gauge.id == "disk").unwrap();
+        let disk = |machine: &alondra_core::Machine, lang: Lang| gauges(machine, &[], lang, 0).into_iter().find(|gauge| gauge.id == "disk").unwrap();
         let english = disk(&machine, Lang::En);
         assert_eq!((english.text.as_str(), english.level), ("27 GB free (17 GB purgeable)", Level::Warm));
         assert_eq!(english.value, 1.0 - 27_400_000_000.0 / 500e9);
@@ -1977,9 +2016,23 @@ mod tests {
         assert!(!same_visible_gauges(&[cpu(0.84, Level::Calm)], &[cpu(0.86, Level::Warm)]));
     }
 
-    fn line(name: &str, stand: alondra_core::usage::AccountStand, margin: Option<f64>) -> alondra_core::usage::AccountLine {
-        alondra_core::usage::AccountLine { name: name.into(), stand, margin, week_percent: Some(30.0), five_hour_percent: Some(10.0),
-            today_spent: Some(2.0), today_share: Some(15.0) }
+    const NOW: Millis = 1_790_192_202_000;
+    const HOUR: Millis = 3_600_000;
+
+    fn line(name: &str, stand: AccountStand, week: Option<f64>, five: Option<f64>, today: Option<(f64, f64)>) -> AccountLine {
+        let mut line = AccountLine { name: name.into(), stand, margin: week.map(|week| 1.0 - week / 100.0), week_percent: week,
+            five_hour_percent: five, today_spent: today.map(|(spent, _)| spent), today_share: today.map(|(_, share)| share),
+            week_resets_at: Some(NOW + 4 * 24 * HOUR), five_hour_resets_at: Some(NOW + 2 * HOUR), measured_at: Some(NOW), state: None };
+        line.state = usage::usage_state(&line, usage::default_reserve());
+        line
+    }
+
+    fn provider(provider: Provider, accounts: Vec<AccountLine>) -> ProviderUsage {
+        ProviderUsage { provider, accounts }
+    }
+
+    fn usage_of(providers: &[ProviderUsage], lang: Lang) -> Gauge {
+        gauges(&at_rest(), providers, lang, NOW).into_iter().find(|gauge| gauge.id == "usage").unwrap()
     }
 
     fn at_rest() -> alondra_core::Machine {
@@ -1988,59 +2041,124 @@ mod tests {
             disk_total: 100, disk_available: 50, disk_purgeable: 0, unreliable: false }
     }
 
-    #[test]
-    fn the_margin_replaces_the_week_and_today_with_one_part_per_account() {
-        use alondra_core::usage::AccountStand;
-        let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
-            today_spent: Some(41.0), today_share: Some(18.0), over_pace: true, margin: Some(0.35),
-            five_hour_percent: Some(10.0), five_hour_resets_at: Some(1_790_959_200_000),
-            accounts: vec![line("Principal", AccountStand::CanWork, Some(0.7)), line("Trabajo", AccountStand::CanWork, Some(0.0)),
-                line("Facturas", AccountStand::PayPerUse, None)],
-            ..Default::default() };
-        let result = gauges(&at_rest(), Some(&usage), Lang::En, 0);
-        assert_eq!(result.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["claude_margin", "claude_five_hours", "memory", "cpu", "disk"]);
-        let margin = &result[0];
-        assert_eq!((margin.label.as_str(), margin.text.as_str(), margin.level), ("Claude · margin", "35%", Level::Calm),
-            "over today's share and with one account past its reserve, work still starts: the margin does not say otherwise");
-        assert!(margin.detail.as_deref().unwrap().contains("work only waits when every account is at its limit"));
-        assert!(!margin.detail.as_deref().unwrap().contains("2026-"), "reset dates are human, not ISO");
-        let parts: Vec<_> = margin.parts.iter().map(|part| (part.label.as_str(), part.text.as_str(), part.level)).collect();
-        assert_eq!(parts, [("Principal", "70%", Level::Calm), ("Trabajo", "0%", Level::Warm), ("Facturas", "per use", Level::Calm)]);
-        assert_eq!(margin.parts[0].detail.as_deref(), Some("week 30% · 5 h 10% · today 2/15%"));
-        let spanish = gauges(&at_rest(), Some(&usage), Lang::Es, 0);
-        assert_eq!((spanish[0].label.as_str(), spanish[0].parts[0].detail.as_deref()), ("Claude · margen", Some("semana 30% · 5 h 10% · hoy 2/15%")));
-        assert_eq!(spanish[0].parts[2].detail.as_deref(), Some("De pago por uso: solo la usan las peticiones que la eligen"));
-        assert_eq!((result[1].text.as_str(), result[1].detail.as_deref().map(|d| d.starts_with("5-hour limit resets "))), ("10%", Some(true)));
+    fn room() -> Vec<ProviderUsage> {
+        vec![
+            provider(Provider::Claude, vec![line("Principal", AccountStand::CanWork, Some(30.0), Some(10.0), Some((2.0, 15.0))),
+                line("Facturas", AccountStand::PayPerUse, None, None, None)]),
+            provider(Provider::Codex, vec![line("Codex", AccountStand::CanWork, Some(20.0), Some(5.0), None)]),
+        ]
     }
 
     #[test]
-    fn the_margin_is_hot_only_while_every_account_is_at_its_real_limit() {
-        use alondra_core::usage::AccountStand;
-        let usage = |accounts| alondra_core::usage::Usage { margin: Some(0.0), accounts, ..Default::default() };
-        let reserve_only = usage(vec![line("Principal", AccountStand::CanWork, Some(0.0))]);
-        let margin = gauges(&at_rest(), Some(&reserve_only), Lang::En, 0).remove(0);
-        assert_eq!(margin.level, Level::Warm, "an account past its reserve or today's share still takes work");
-        let held = usage(vec![line("Principal", AccountStand::AtLimit { until: None }, Some(0.0)), line("Trabajo", AccountStand::SignedOut, Some(0.0))]);
-        let margin = gauges(&at_rest(), Some(&held), Lang::Es, 0).remove(0);
-        assert_eq!(margin.level, Level::Hot);
-        assert!(margin.detail.as_deref().unwrap().starts_with("Todas las cuentas de Claude están en su límite"));
-        let parts: Vec<_> = margin.parts.iter().map(|part| (part.text.as_str(), part.detail.clone().unwrap())).collect();
-        assert_eq!(parts, [("límite", "En su límite · semana 30% · 5 h 10% · hoy 2/15%".to_owned()),
-            ("sin sesión", "Inicia sesión en el Mac: alondra accounts login \"Trabajo\"".to_owned())]);
+    fn one_usage_gauge_replaces_the_claude_ones_and_lists_every_account_by_provider() {
+        let english = gauges(&at_rest(), &room(), Lang::En, NOW);
+        assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["usage", "memory", "cpu", "disk"]);
+        let usage = &english[0];
+        assert_eq!((usage.label.as_str(), usage.text.as_str(), usage.level), ("Usage", "with room", Level::Calm));
+        assert_eq!(usage.detail.as_deref(), Some("You can go on: Claude and Codex have room"));
+        let parts: Vec<_> = usage.parts.iter().map(|part| (part.group.as_deref().unwrap(), part.label.as_str(), part.text.as_str(), part.level)).collect();
+        assert_eq!(parts, [("Claude", "Principal", "with room", Level::Calm), ("Claude", "Facturas", "per use", Level::Calm),
+            ("Codex", "Codex", "with room", Level::Calm)]);
+        assert!(usage.parts[0].lines[0].starts_with("70% of the week left · resets "), "{:?}", usage.parts[0].lines);
+        assert_eq!(usage.parts[0].lines.len(), 1, "within today's share and a free window there is nothing else to say");
+        assert_eq!(usage.parts[0].detail.as_deref(), Some(usage.parts[0].lines[0].as_str()), "older clients read the same sentences");
+        assert!(!usage.parts[0].lines[0].contains("2026-"), "reset dates are human, not ISO");
+        let spanish = usage_of(&room(), Lang::Es);
+        assert_eq!((spanish.label.as_str(), spanish.text.as_str()), ("Uso", "con margen"));
+        assert_eq!(spanish.detail.as_deref(), Some("Puedes seguir: Claude y Codex tienen margen"));
+        assert!(spanish.parts[0].lines[0].starts_with("Le queda el 70 % de la semana · se reinicia "));
+        assert_eq!(spanish.parts[1].lines, ["De pago por uso: solo la usan las peticiones que la eligen"]);
     }
 
     #[test]
-    fn an_old_reading_says_how_old_it_is_in_both_languages() {
-        let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
-            today_spent: Some(3.0), today_share: Some(10.0), five_hour_percent: Some(10.0), margin: Some(0.5),
-            five_hour_resets_at: Some(1_790_959_200_000), measured_at: 1_000, ..Default::default() };
-        let two_hours = 1_000 + 2 * 3_600_000;
-        let details = |lang, now| gauges(&at_rest(), Some(&usage), lang, now).iter().take(2)
-            .map(|gauge| gauge.detail.clone().unwrap()).collect::<Vec<_>>();
-        assert!(details(Lang::En, 1_000 + 3_600_000).iter().all(|detail| !detail.contains("measured")), "within the hour it is current");
-        assert!(details(Lang::En, two_hours).iter().all(|detail| detail.ends_with(" · measured 2 h ago")));
-        assert!(details(Lang::Es, two_hours).iter().all(|detail| detail.ends_with(" · medido hace 2 h")));
-        assert!(details(Lang::Es, 1_000 + 3 * 86_400_000)[0].ends_with("medido hace 3 d"));
+    fn the_gauge_names_the_provider_in_the_worst_state() {
+        let mut over = room();
+        over[0].accounts[0] = line("Principal", AccountStand::CanWork, Some(30.0), Some(10.0), Some((18.0, 15.0)));
+        let usage = usage_of(&over, Lang::Es);
+        assert_eq!((usage.label.as_str(), usage.text.as_str(), usage.level), ("Claude", "por encima del ritmo", Level::Warm));
+        assert_eq!(usage.detail.as_deref(), Some("Claude va por encima del ritmo de hoy: seguir gasta parte de los próximos días"));
+        assert_eq!(usage.parts[0].lines[1], "Hoy ya ha gastado su parte (18 % de 15 %)");
+
+        let mut low = room();
+        low[1].accounts[0] = line("Codex", AccountStand::CanWork, Some(20.0), Some(95.0), None);
+        let usage = usage_of(&low, Lang::En);
+        assert_eq!((usage.label.as_str(), usage.text.as_str(), usage.level), ("Codex", "running low", Level::Warm));
+        assert!(usage.parts[2].lines[1].starts_with("The 5-hour window is nearly full · frees up in 2 h"), "{:?}", usage.parts[2].lines);
+        let mut week = room();
+        week[1].accounts[0] = line("Codex", AccountStand::CanWork, Some(90.0), Some(5.0), None);
+        assert_eq!(usage_of(&week, Lang::Es).parts[2].lines.len(), 1, "a week running low says so in its own line, without the window");
+        assert!(usage_of(&week, Lang::Es).parts[2].lines[0].starts_with("Le queda el 10 % de la semana"));
+
+        let mut both = over.clone();
+        both[1] = low[1].clone();
+        assert_eq!(usage_of(&both, Lang::En).text, "running low", "running low is worse than over pace");
+    }
+
+    #[test]
+    fn a_provider_has_room_while_its_best_account_does() {
+        let mut one_out = room();
+        one_out[0].accounts.insert(0, line("Trabajo", AccountStand::AtLimit { until: Some(NOW + HOUR) }, None, None, None));
+        let usage = usage_of(&one_out, Lang::En);
+        assert_eq!((usage.text.as_str(), usage.level), ("with room", Level::Calm));
+        assert_eq!((usage.parts[0].text.as_str(), usage.parts[0].level), ("no room", Level::Hot));
+        assert!(usage.parts[0].lines[0].starts_with("At its limit · back in 1 h ("), "{:?}", usage.parts[0].lines);
+    }
+
+    #[test]
+    fn with_no_account_able_to_work_the_gauge_is_red_says_when_it_comes_back_and_who_goes_on() {
+        let mut out = room();
+        out[0].accounts = vec![line("Principal", AccountStand::AtLimit { until: Some(NOW + 2 * HOUR) }, None, None, None),
+            line("Trabajo", AccountStand::SignedOut, None, None, None)];
+        let usage = usage_of(&out, Lang::Es);
+        assert_eq!((usage.label.as_str(), usage.level), ("Claude", Level::Hot));
+        assert!(usage.text.starts_with("sin margen · vuelve "), "{}", usage.text);
+        let detail = usage.detail.unwrap();
+        assert!(detail.starts_with("Claude no tiene margen: sus tareas nuevas esperan · vuelve en 2 h (") && detail.ends_with(") · Codex sigue"), "{detail}");
+        assert_eq!(usage.parts[1].lines, ["Sin sesión: inicia sesión en el Mac con alondra accounts login \"Trabajo\""]);
+        let alone = usage_of(&out[..1], Lang::En);
+        assert!(!alone.detail.unwrap().contains("goes on"), "no one else to go on");
+        let signed_out = [provider(Provider::Claude, vec![line("Trabajo", AccountStand::SignedOut, None, None, None)])];
+        let usage = usage_of(&signed_out, Lang::En);
+        assert_eq!((usage.text.as_str(), usage.detail.as_deref()), ("no room", Some("Claude has no room: its new tasks wait")));
+    }
+
+    #[test]
+    fn a_single_provider_is_always_named() {
+        let usage = usage_of(&room()[..1], Lang::Es);
+        assert_eq!((usage.label.as_str(), usage.text.as_str()), ("Claude", "con margen"));
+        assert_eq!(usage.detail.as_deref(), Some("Puedes seguir: Claude tiene margen"));
+    }
+
+    #[test]
+    fn an_account_not_checked_yet_says_so_and_shows_no_gauge_alone() {
+        let mut unchecked = line("Default", AccountStand::CanWork, None, None, None);
+        unchecked.state = None;
+        unchecked.measured_at = None;
+        assert!(gauges(&at_rest(), &[provider(Provider::Claude, vec![unchecked.clone()])], Lang::Es, NOW).iter().all(|gauge| gauge.id != "usage"));
+        let mut both = room();
+        both[0].accounts.push(unchecked);
+        let part = usage_of(&both, Lang::Es).parts.into_iter().find(|part| part.label == "Default").unwrap();
+        assert_eq!((part.text.as_str(), part.lines.as_slice()), ("sin comprobar", ["Alondra aún no ha comprobado esta cuenta".to_owned()].as_slice()));
+    }
+
+    #[test]
+    fn nothing_to_show_without_a_subscription_account() {
+        let per_use = [provider(Provider::Claude, vec![line("Facturas", AccountStand::PayPerUse, None, None, None)])];
+        assert!(gauges(&at_rest(), &per_use, Lang::En, NOW).iter().all(|gauge| gauge.id != "usage"));
+    }
+
+    #[test]
+    fn an_account_not_measured_or_measured_long_ago_says_so() {
+        let mut never = line("Principal", AccountStand::CanWork, None, None, None);
+        never.measured_at = None;
+        let usage = usage_of(&[provider(Provider::Claude, vec![never])], Lang::Es);
+        assert_eq!((usage.text.as_str(), usage.parts[0].lines.clone()), ("con margen", vec!["Aún sin medir".to_owned()]));
+        let mut old = line("Principal", AccountStand::CanWork, Some(30.0), None, None);
+        old.measured_at = Some(NOW - 2 * HOUR);
+        let english = usage_of(&[provider(Provider::Claude, vec![old.clone()])], Lang::En);
+        assert_eq!(english.parts[0].lines.last().map(String::as_str), Some("Measured 2 h ago"));
+        let spanish = usage_of(&[provider(Provider::Claude, vec![old])], Lang::Es);
+        assert_eq!(spanish.parts[0].lines.last().map(String::as_str), Some("Medido hace 2 h"));
     }
 }
 

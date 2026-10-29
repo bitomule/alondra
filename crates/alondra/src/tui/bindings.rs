@@ -47,6 +47,7 @@ pub(super) enum Act {
     Search,
     Quit,
     Help,
+    Usage,
     CmdLine,
     NextMac,
     Button,
@@ -279,6 +280,9 @@ impl App {
             self.schedule_bindings(&mut t);
         } else {
             self.list_bindings(&mut t);
+            if self.view_status.as_ref().is_some_and(|status| status.gauges.iter().any(|gauge| gauge.id == super::draw::USAGE)) {
+                t.add(vec![char('u')], "u", tr!("usage", "uso"), Act::Usage);
+            }
         }
         t.help(vec![char('?')], "?", tr!("help", "ayuda"), Act::Help);
         t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :settings :metrics :report :<number>",
@@ -724,6 +728,10 @@ impl App {
             Act::Help => {
                 self.help = true;
                 self.help_scroll = 0;
+            }
+            Act::Usage => {
+                self.usage_sheet = true;
+                self.usage_scroll = 0;
             }
             Act::CmdLine => self.cmdline = Some(super::TextInput::default()),
             Act::NextMac => return Flow::NextMac,

@@ -27,13 +27,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         status.usage_exhausted.as_ref().map(|usage| super::usage_banner::banner_text(usage, now_millis()))
             .or_else(|| status.session_wait.as_ref().map(|notice| notice.text.clone()))
     });
-    let accounts = if app.loaded { account_lines(app.view_status.as_ref()) } else { vec![] };
     let daemon_mark = app.here.as_ref().and_then(|here| super::identity::mark(here, app.daemon_identity.as_ref()));
-    let [identity, banner, head, accounts_area, body, foot] = Layout::vertical([
+    let [identity, banner, head, body, foot] = Layout::vertical([
         Constraint::Length(u16::from(daemon_mark.is_some())),
         Constraint::Length(u16::from(banner_text.is_some())),
         Constraint::Length(1),
-        Constraint::Length(accounts.len() as u16),
         Constraint::Min(3),
         Constraint::Length(foot_height(app, f.area().width)),
     ])
@@ -62,9 +60,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         );
     }
     draw_head(f, app, head);
-    if !accounts.is_empty() {
-        f.render_widget(Paragraph::new(accounts).alignment(ratatui::layout::Alignment::Right), accounts_area);
-    }
     let body = match app.composer.as_ref() {
         Some(c) => {
             let preview = c
@@ -113,6 +108,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_flash(f, app, body);
     if let Some(modal) = &app.modal {
         draw_modal(f, modal, body);
+    }
+    if app.usage_sheet {
+        draw_usage_sheet(f, app);
     }
     if app.help {
         draw_help(f, app);
@@ -410,9 +408,12 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         }
         spans
     };
+    let usage_only: Vec<_> = status.gauges.iter().filter(|gauge| gauge.id == USAGE).cloned().collect();
     let right = [
         with_notice(bars(&status.gauges, working.as_ref(), true)),
         with_notice(bars(&status.gauges, working.as_ref(), false)),
+        with_notice(bars(&usage_only, None, false)),
+        bars(&usage_only, None, false),
         notice.clone(),
     ]
     .into_iter()
@@ -452,6 +453,11 @@ fn bars(
         out.push(Span::styled(format!("{value} {label}"), Style::new().fg(DIM)));
     }
     for gauge in gauges {
+        if gauge.id == USAGE {
+            out.push(Span::raw(if named { "  " } else { " " }));
+            out.extend(usage_badge(gauge));
+            continue;
+        }
         let hot = gauge.level == alondra_core::views::Level::Hot;
         let color = match gauge.level {
             alondra_core::views::Level::Calm => ACCENT,
@@ -488,36 +494,82 @@ fn bars(
 
 const BAR_CELLS: usize = 4;
 
-/// One line per Claude account under the header, each with its own margin, while there is more
-/// than one: with a single account the header's margin is that account's.
-fn account_lines(status: Option<&alondra_core::views::Status>) -> Vec<Line<'static>> {
-    let Some(margin) = status.and_then(|status| status.gauges.iter().find(|gauge| gauge.id == "claude_margin")) else { return vec![] };
-    if margin.parts.len() < 2 {
-        return vec![];
+pub(super) const USAGE: &str = "usage";
+
+fn usage_color(level: alondra_core::views::Level) -> Color {
+    match level {
+        alondra_core::views::Level::Calm => Color::Green,
+        alondra_core::views::Level::Warm => Color::Yellow,
+        alondra_core::views::Level::Hot => Color::LightRed,
     }
-    margin
-        .parts
-        .iter()
-        .map(|part| {
-            let color = match part.level {
-                alondra_core::views::Level::Calm => ACCENT,
-                alondra_core::views::Level::Warm => Color::Yellow,
-                alondra_core::views::Level::Hot => Color::LightRed,
-            };
-            let filled = ((part.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
-            let mut spans = vec![
-                Span::styled(format!("{} ", part.label), Style::new().fg(SOFT)),
-                Span::styled("▰".repeat(filled), Style::new().fg(color)),
-                Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)),
-                Span::styled(format!(" {}", part.text), Style::new().fg(if part.level == alondra_core::views::Level::Hot { Color::LightRed } else { DIM })),
-            ];
-            if let Some(detail) = &part.detail {
-                spans.push(Span::styled(format!(" · {detail}"), Style::new().fg(DIM)));
-            }
-            spans.push(Span::raw(" "));
-            Line::from(spans)
-        })
-        .collect()
+}
+
+/// `● Claude: over pace`: the colour and the word of the provider in the worst state.
+fn usage_badge(gauge: &alondra_core::views::Gauge) -> Vec<Span<'static>> {
+    let hot = gauge.level == alondra_core::views::Level::Hot;
+    vec![
+        Span::styled("● ", Style::new().fg(usage_color(gauge.level))),
+        Span::styled(format!("{}: ", gauge.label), Style::new().fg(SOFT)),
+        Span::styled(gauge.text.clone(), if hot { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(SOFT) }),
+    ]
+}
+
+fn usage_sheet_lines(gauge: &alondra_core::views::Gauge) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(usage_badge(gauge))];
+    if let Some(detail) = &gauge.detail {
+        lines.push(Line::from(detail.clone()).fg(SOFT));
+    }
+    let mut group: Option<&str> = None;
+    for part in &gauge.parts {
+        if part.group.as_deref() != group {
+            group = part.group.as_deref();
+            lines.push(Line::default());
+            lines.push(Line::from(group.unwrap_or_default().to_owned()).bold());
+        }
+        let filled = (part.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize;
+        lines.push(Line::from(vec![
+            Span::styled("  ● ", Style::new().fg(usage_color(part.level))),
+            Span::styled(format!("{}  ", part.label), Style::new().bold()),
+            Span::styled("▰".repeat(filled), Style::new().fg(usage_color(part.level))),
+            Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)),
+            Span::styled(format!(" {}", part.text), Style::new().fg(SOFT)),
+        ]));
+        let said = if part.lines.is_empty() { part.detail.iter().cloned().collect() } else { part.lines.clone() };
+        lines.extend(said.into_iter().map(|line| Line::from(format!("    {line}")).fg(DIM)));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled("● ", Style::new().fg(Color::Green)),
+        Span::styled(tr!("with room   ", "con margen   "), Style::new().fg(DIM)),
+        Span::styled("● ", Style::new().fg(Color::Yellow)),
+        Span::styled(tr!("over pace or running low   ", "por encima del ritmo o queda poco   "), Style::new().fg(DIM)),
+        Span::styled("● ", Style::new().fg(Color::LightRed)),
+        Span::styled(tr!("no room: new work waits", "sin margen: el trabajo nuevo espera"), Style::new().fg(DIM)),
+    ]));
+    lines
+}
+
+fn draw_usage_sheet(f: &mut Frame, app: &mut App) {
+    let Some(gauge) = app.view_status.as_ref().and_then(|status| status.gauges.iter().find(|gauge| gauge.id == USAGE)) else {
+        app.usage_sheet = false;
+        return;
+    };
+    let lines = usage_sheet_lines(gauge);
+    let area = f.area();
+    let w = 96.min(area.width.saturating_sub(2));
+    let inner = usize::from(w.saturating_sub(2)).max(1);
+    let total: usize = lines.iter().map(|line| line.width().div_ceil(inner).max(1)).sum();
+    let h = (total as u16 + 2).min(area.height.saturating_sub(2));
+    let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
+    let view_h = h.saturating_sub(2) as usize;
+    app.usage_view = View { h: view_h, total, shown: true };
+    app.usage_scroll = app.usage_scroll.min(total.saturating_sub(view_h));
+    let mut block = panel(Line::from(tr!(" Usage · any key closes ", " Uso · cualquier tecla cierra ").bold()), true);
+    if let Some(hint) = more_hint(app.usage_scroll, view_h, lines.len()) {
+        block = block.title_bottom(hint);
+    }
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((app.usage_scroll as u16, 0)).block(block), r);
 }
 
 fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::View, area: Rect) {
@@ -2036,15 +2088,11 @@ pub(super) fn help_lines(app: &App) -> Vec<Line<'static>> {
             "Barras de la cabecera, de izquierda a derecha"
         )),
         row(
-            tr!("margin", "margen"),
+            tr!("● usage", "● uso"),
             tr!(
-                "room left on your Claude accounts (week, today's share, 5-hour window), one line per account below; red only when every account is at its limit and new work waits",
-                "lo que queda en tus cuentas de Claude (semana, parte de hoy, ventana de 5 h), con una línea por cuenta debajo; en rojo solo si todas están en su límite y el trabajo nuevo espera"
+                "room on your accounts of every provider: green with room, yellow over today's pace or running low, red when new work waits; u opens each account",
+                "margen de tus cuentas de cada proveedor: verde con margen, amarillo por encima del ritmo de hoy o queda poco, rojo si el trabajo nuevo espera; u abre cada cuenta"
             ),
-        ),
-        row(
-            "5 h",
-            tr!("the 5-hour window of Claude used", "ventana de 5 horas de Claude usada"),
         ),
         row(
             "RAM",
@@ -2085,7 +2133,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let mut lines = help_lines(app);
     if let Some(status) = &app.view_status {
-        for gauge in &status.gauges {
+        for gauge in status.gauges.iter().filter(|gauge| gauge.id != USAGE) {
             if let Some(detail) = &gauge.detail {
                 lines.push(Line::from(format!("{}: {detail}", gauge.label)).fg(DIM));
             }

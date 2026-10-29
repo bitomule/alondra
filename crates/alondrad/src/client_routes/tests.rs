@@ -228,7 +228,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
             {"name": "ui tests", "status": "COMPLETED", "conclusion": "FAILURE"}]}));
     fixture.client.details.refresh(&fixture.domain.state().unwrap(), &github).await;
     *fixture.client.gauges.lock().unwrap() = Some((serde_json::from_value(fixture_json("runtime.json")["machine"].clone()).unwrap(),
-        serde_json::from_value(fixture_json("runtime.json")["usage"].clone()).ok()));
+        serde_json::from_value(fixture_json("runtime.json")["usage"].clone()).ok(), vec![]));
 
     assert_eq!(fixture.unsigned_get("/runtime").await, StatusCode::NOT_FOUND);
     let runtime = fixture.runtime_json().await;

@@ -368,3 +368,86 @@ fn margin_spreads_new_work_and_a_chain_fills_the_first_account() {
     let only_opus = [record(Some(&usage(0.2, 0.2)[0]), Provider::Claude, &id("main"), &opus, NOW, TODAY), over[1].clone()];
     assert_eq!(choose(Policy::Chain, &only_opus), Some("main".into()), "one model's week alone leaves the others working");
 }
+
+fn line(stand: AccountStand, week: Option<f64>, five: Option<f64>, today: Option<(f64, f64)>) -> AccountLine {
+    let mut line = AccountLine {
+        name: "Principal".into(), stand, margin: None, week_percent: week, five_hour_percent: five,
+        today_spent: today.map(|(spent, _)| spent), today_share: today.map(|(_, share)| share),
+        week_resets_at: None, five_hour_resets_at: None, measured_at: None, state: None,
+    };
+    line.state = usage_state(&line, default_reserve());
+    line
+}
+
+#[test]
+fn an_account_has_room_goes_over_pace_runs_low_or_is_out() {
+    use UsageState::*;
+    let can = || AccountStand::CanWork;
+    assert_eq!(line(can(), Some(30.0), Some(10.0), Some((2.0, 15.0))).state, Some(WithRoom));
+    assert_eq!(line(can(), None, None, None).state, Some(WithRoom), "not measured yet holds nothing back");
+    assert_eq!(line(can(), Some(30.0), Some(10.0), Some((15.0, 15.0))).state, Some(OverPace), "today's share is spent");
+    assert_eq!(line(can(), Some(86.0), Some(10.0), Some((2.0, 15.0))).state, Some(Low), "under 15% of the week left");
+    assert_eq!(line(can(), Some(30.0), Some(91.0), Some((2.0, 15.0))).state, Some(Low), "the 5-hour window past the reserve");
+    assert_eq!(line(can(), Some(90.0), Some(10.0), Some((20.0, 15.0))).state, Some(Low), "running low outweighs the pace");
+    assert_eq!(line(AccountStand::AtLimit { until: Some(NOW) }, None, None, None).state, Some(Out));
+    assert_eq!(line(AccountStand::SignedOut, None, None, None).state, Some(Out));
+    assert_eq!(line(AccountStand::PayPerUse, None, None, None).state, None, "paid per use limits nothing");
+    assert_eq!(line(AccountStand::Disabled, None, None, None).state, None);
+}
+
+#[test]
+fn a_provider_stands_as_its_best_account_and_the_whole_as_its_worst_provider() {
+    use UsageState::*;
+    let provider = |provider, accounts| ProviderUsage { provider, accounts };
+    let claude = provider(Provider::Claude, vec![
+        line(AccountStand::AtLimit { until: Some(NOW + 7_200_000) }, None, None, None),
+        line(AccountStand::CanWork, Some(30.0), None, Some((20.0, 15.0))),
+    ]);
+    let codex = provider(Provider::Codex, vec![line(AccountStand::CanWork, Some(10.0), None, None)]);
+    assert_eq!(claude.state(), Some(OverPace));
+    assert_eq!(codex.state(), Some(WithRoom));
+    let both = [claude, codex];
+    let (worst_provider, state) = worst(&both).unwrap();
+    assert_eq!((worst_provider.provider, state), (Provider::Claude, OverPace));
+
+    let out = provider(Provider::Claude, vec![
+        line(AccountStand::AtLimit { until: Some(NOW + 7_200_000) }, None, None, None),
+        line(AccountStand::AtLimit { until: Some(NOW + 3_600_000) }, None, None, None),
+        line(AccountStand::PayPerUse, None, None, None),
+    ]);
+    assert_eq!((out.state(), out.back_at()), (Some(Out), Some(NOW + 3_600_000)), "back with the soonest account");
+    let per_use = provider(Provider::Codex, vec![line(AccountStand::PayPerUse, None, None, None)]);
+    assert_eq!(per_use.state(), None);
+    assert!(worst(&[per_use]).is_none(), "only accounts paid per use: nothing to show");
+}
+
+#[test]
+fn codex_windows_count_as_its_week_and_its_session_by_how_long_they_last() {
+    let codex = AccountStatus { provider: Provider::Codex, ..status("codex", AccountState::SignedIn, AccountBilling::Subscription { plan: None, weight: None }) };
+    let claude = status("default", AccountState::SignedIn, AccountBilling::Subscription { plan: None, weight: None });
+    let windows = UsageReading { plan: None, complete: true, windows: vec![
+        window(WindowKind::Other("codex:account:primary:300".into()), 0.4, SESSION_RESET),
+        window(WindowKind::Other("codex:account:secondary:10080".into()), 0.2, WEEK_RESET),
+    ] };
+    let usage = vec![record(None, Provider::Codex, &id("codex"), &windows, NOW, TODAY), measured("default")];
+    let providers = providers(&[claude, codex], &usage, default_reserve(), NOW, TODAY);
+    assert_eq!(providers.iter().map(|p| p.provider).collect::<Vec<_>>(), [Provider::Claude, Provider::Codex]);
+    let codex = &providers[1].accounts[0];
+    assert_eq!((codex.week_percent.map(f64::round), codex.week_resets_at), (Some(20.0), Some(WEEK_RESET)));
+    assert_eq!((codex.five_hour_percent.map(f64::round), codex.five_hour_resets_at), (Some(40.0), Some(SESSION_RESET)));
+    assert_eq!((codex.measured_at, codex.state), (Some(NOW), Some(UsageState::WithRoom)));
+    let claude = &providers[0].accounts[0];
+    assert_eq!((claude.week_resets_at, claude.five_hour_resets_at), (Some(WEEK_RESET), Some(SESSION_RESET)));
+    assert_eq!(claude.state, Some(UsageState::OverPace), "41% spent today against a ~18% slice");
+}
+
+#[test]
+fn an_account_not_checked_yet_is_listed_but_stands_nowhere() {
+    let implicit = providers(&[], &[], default_reserve(), NOW, TODAY);
+    assert_eq!(implicit.iter().map(|p| p.provider).collect::<Vec<_>>(), [Provider::Claude], "the implicit Claude account");
+    assert_eq!(implicit[0].accounts[0].state, None);
+    assert!(worst(&implicit).is_none(), "no indicator says there is room while no account was checked");
+    let unchecked = status("default", AccountState::Unchecked, AccountBilling::Subscription { plan: None, weight: None });
+    let measured_unchecked = providers(&[unchecked], &[measured("default")], default_reserve(), NOW, TODAY);
+    assert_eq!(measured_unchecked[0].accounts[0].state, None);
+}

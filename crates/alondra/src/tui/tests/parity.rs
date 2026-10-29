@@ -1223,7 +1223,7 @@ fn enter_on_a_task_or_node_expands_it_and_an_old_attach_link_runs_nothing() {
     assert!(flash.text.contains("no longer opens a node's terminal"), "{}", flash.text);
 }
 
-fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
+pub(super) fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
     serde_json::from_value(serde_json::json!({
         "version": "1", "summary": "", "badge": 0,
         "counts": [
@@ -1310,31 +1310,95 @@ fn the_banner_says_work_waits_for_a_claude_session_while_no_account_has_one() {
     assert!(!shown.contains("margen") && !shown.contains("min más"), "no quota and no countdown: {shown}");
 }
 
+pub(super) fn usage_gauges(lang: crate::i18n::Lang) -> serde_json::Value {
+    let es = lang == crate::i18n::Lang::Es;
+    let t = |es_text: &str, en_text: &str| if es { es_text.to_owned() } else { en_text.to_owned() };
+    serde_json::json!([
+        {"id": "usage", "label": "Claude", "value": 0.7, "text": t("por encima del ritmo", "over pace"), "level": "warm",
+         "detail": t("Claude va por encima del ritmo de hoy: seguir gasta parte de los próximos días",
+                     "Claude is over today's pace: going on spends part of the coming days"),
+         "parts": [
+            {"label": "Principal", "group": "Claude", "value": 0.7, "text": t("por encima del ritmo", "over pace"), "level": "warm",
+             "lines": [t("Le queda el 70 % de la semana · se reinicia el lunes a las 02:00", "70% of the week left · resets Monday at 02:00"),
+                       t("Hoy ya ha gastado su parte (18 % de 15 %)", "Today's share is spent (18% of 15%)")]},
+            {"label": "Trabajo", "group": "Claude", "value": 0.0, "text": t("sin margen", "no room"), "level": "hot",
+             "lines": [t("En su límite · vuelve en 2 h (14:30)", "At its limit · back in 2 h (14:30)")]},
+            {"label": "Codex", "group": "Codex", "value": 0.8, "text": t("con margen", "with room"), "level": "calm",
+             "lines": [t("Le queda el 80 % de la semana · se reinicia el jueves a las 09:00", "80% of the week left · resets Thursday at 09:00")]}
+         ]},
+        {"id": "memory", "label": "RAM", "value": 0.42, "text": "42%", "level": "calm"},
+        {"id": "cpu", "label": "CPU", "value": 0.34, "text": "34%", "level": "calm"},
+        {"id": "disk", "label": t("Disco", "Disk"), "value": 0.72, "text": t("120 GB libres", "120 GB free"), "level": "calm"}
+    ])
+}
+
+fn rows(shown: &str, width: usize) -> Vec<String> {
+    shown.chars().collect::<Vec<_>>().chunks(width).map(|row| row.iter().collect()).collect()
+}
+
 #[test]
-fn the_header_shows_the_claude_margin_and_one_line_per_account() {
+fn the_usage_indicator_is_one_word_in_the_header_of_tasks_and_inbox() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    app.view_status = Some(status_with(usage_gauges(crate::i18n::Lang::Es)));
+    for screen_shown in [Screen::Tasks, Screen::Inbox] {
+        app.screen = screen_shown;
+        let shown = screen(&mut app, 180, 12);
+        let rows = rows(&shown, 180);
+        assert!(rows[0].contains("● Claude: por encima del ritmo  RAM ▰▰▱▱ 42%"), "{shown}");
+        assert!(!rows[1].contains("Principal"), "the accounts wait for the sheet: {shown}");
+        assert!(shown.contains("u uso"), "the key bar offers the sheet: {shown}");
+    }
+    app.screen = Screen::Tasks;
+    let shown = screen(&mut app, 120, 6);
+    assert!(rows(&shown, 120)[0].trim_end().ends_with("● Claude: por encima del ritmo"), "a narrow header drops the other bars, not the word: {shown}");
+}
+
+#[test]
+fn u_opens_the_usage_sheet_with_one_section_per_provider_and_any_key_closes_it() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    app.view_status = Some(status_with(usage_gauges(crate::i18n::Lang::Es)));
+    press(&mut app, KeyCode::Char('u'));
+    let shown = screen(&mut app, 120, 30);
+    for expected in [
+        " Uso · cualquier tecla cierra ",
+        "Claude va por encima del ritmo de hoy: seguir gasta parte de los próximos días",
+        "● Principal  ▰▰▰▱ por encima del ritmo",
+        "Le queda el 70 % de la semana · se reinicia el lunes a las 02:00",
+        "Hoy ya ha gastado su parte (18 % de 15 %)",
+        "● Trabajo  ▱▱▱▱ sin margen",
+        "En su límite · vuelve en 2 h (14:30)",
+        "● Codex  ▰▰▰▱ con margen",
+        "sin margen: el trabajo nuevo espera",
+    ] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+    let rows = rows(&shown, 120);
+    let claude = rows.iter().position(|row| row.contains("│Claude ")).expect("a Claude section");
+    let codex = rows.iter().position(|row| row.contains("│Codex ")).expect("a Codex section");
+    let trabajo = rows.iter().position(|row| row.contains("● Trabajo")).unwrap();
+    assert!(claude < trabajo && trabajo < codex, "each account under its provider: {shown}");
+    press(&mut app, KeyCode::Esc);
+    let shown = screen(&mut app, 120, 30);
+    assert!(!shown.contains(" Uso · cualquier tecla cierra "), "{shown}");
+}
+
+#[test]
+fn without_a_usage_reading_there_is_no_usage_key() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.loaded = true;
-    let margin = |parts: serde_json::Value| serde_json::json!([
-        {"id": "claude_margin", "label": "Claude · margen", "value": 0.35, "text": "35%", "level": "calm", "parts": parts},
-        {"id": "disk", "label": "Disco", "value": 0.72, "text": "120 GB libres", "level": "calm"}
-    ]);
-    app.view_status = Some(status_with(margin(serde_json::json!([
-        {"label": "Principal", "value": 0.7, "text": "70%", "detail": "semana 30% · 5 h 10%", "level": "calm"},
-        {"label": "Trabajo", "value": 0.0, "text": "límite", "detail": "En su límite; vuelve en 2 h (14:30)", "level": "hot"}
-    ]))));
-    let shown = screen(&mut app, 140, 8);
-    let rows: Vec<String> = shown.chars().collect::<Vec<_>>().chunks(140).map(|row| row.iter().collect()).collect();
-    assert!(rows[0].contains("Claude · margen ▰▱▱▱ 35%"), "{shown}");
-    assert!(rows[1].trim_end().ends_with("Principal ▰▰▰▱ 70% · semana 30% · 5 h 10%"), "{shown}");
-    assert!(rows[2].trim_end().ends_with("Trabajo ▰▱▱▱ límite · En su límite; vuelve en 2 h (14:30)"), "{shown}");
-
-    app.view_status = Some(status_with(margin(serde_json::json!([
-        {"label": "Principal", "value": 0.35, "text": "35%", "detail": "semana 30% · 5 h 10%", "level": "calm"}
-    ]))));
-    let shown = screen(&mut app, 140, 8);
-    assert!(!shown.contains("Principal"), "one account adds no line: the header's margin is its own: {shown}");
+    app.view_status = Some(status_with(production_gauges()));
+    press(&mut app, KeyCode::Char('u'));
+    assert!(!app.usage_sheet);
 }
 
 #[test]

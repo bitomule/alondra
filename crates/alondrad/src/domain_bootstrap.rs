@@ -463,7 +463,7 @@ async fn daemon(
         return refused;
     }
     let (machine, usage) = match &*state.gauges.lock_or_recover("the machine gauges") {
-        Some((machine, usage)) => (json!(machine), json!(usage)),
+        Some((machine, usage, _)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };
     Json(
@@ -1081,7 +1081,7 @@ async fn orchestrator_schedule(
 
 fn gauges_json(state:&DomainDaemon)->(Value,Value) {
     match &*state.gauges.lock_or_recover("the machine gauges") {
-        Some((machine,usage))=>(json!(machine),json!(usage)),
+        Some((machine,usage,_))=>(json!(machine),json!(usage)),
         None=>(Value::Null,Value::Null),
     }
 }
@@ -1220,7 +1220,7 @@ async fn orchestrator_machine(
         return refused;
     }
     let (machine, usage) = match &*state.gauges.lock_or_recover("the machine gauges") {
-        Some((machine, usage)) => (json!(machine), json!(usage)),
+        Some((machine, usage, _)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };
     let domain = state.domain();
@@ -2624,6 +2624,7 @@ mod tests {
                 unreliable: false,
             },
             None,
+            vec![],
         ));
         let daemon: serde_json::Value = client
             .get(format!("{base}/daemon"))

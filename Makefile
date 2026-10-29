@@ -59,7 +59,7 @@ snapshots-verify:
 TUI_SHOTS ?= /tmp/alondra-tui-shots
 CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 
-# The PR card flow (merge method, merging, refused, changed) drawn by the TUI, in es and en.
+# The PR card flow (merge method, merging, refused, changed) and the usage sheet drawn by the TUI, in es and en.
 tui-shots:
 	bazelisk test //crates/alondra:alondra_test --test_arg=--ignored --test_arg=tui_shots \
 		--nocache_test_results --zip_undeclared_test_outputs=false --test_output=errors

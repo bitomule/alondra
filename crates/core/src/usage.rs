@@ -12,6 +12,9 @@ use crate::accounts::{AccountBilling, AccountId, AccountKey, AccountState, Accou
 use crate::model::Millis;
 
 const DAY_MILLIS: f64 = 86_400_000.0;
+const DAY_MINUTES: u64 = 24 * 60;
+/// Below this share of its week left an account has little room, though it still works.
+pub const LOW_WEEK_LEFT: f64 = 0.15;
 /// Two readings of the week whose resets are closer than this describe the same week.
 const SAME_WEEK_MILLIS: Millis = 3_600_000;
 const PLAN_LIMIT: usize = 64;
@@ -235,6 +238,19 @@ impl AccountUsage {
         self.window(kind).map(|window| &window.reading).filter(|reading| reading.resets_at.is_none_or(|reset| reset > now))
     }
 
+    /// The account-wide window of a week (`week`) or of a session, as it stands at `now`: Claude
+    /// names them, Codex reports them by how long they last.
+    pub fn plan_window(&self, week: bool, now: Millis) -> Option<&WindowReading> {
+        let named = if week { WindowKind::Weekly } else { WindowKind::Session };
+        self.current(&named, now).or_else(|| {
+            self.windows.iter().map(|window| &window.reading).find(|reading| {
+                reading.kind.account_wide(self.provider)
+                    && reading.kind.duration_minutes().is_some_and(|minutes| (minutes >= DAY_MINUTES) == week)
+                    && reading.resets_at.is_none_or(|reset| reset > now)
+            })
+        })
+    }
+
     /// When the account can work again, when a window it ran out of says so.
     pub fn exhausted_until(&self, now: Millis) -> Option<Millis> {
         self.ran_out(now, |_| true)
@@ -384,7 +400,10 @@ impl Pace {
 
 /// The account's daily pace on the local `today`, when it has a week that has not reset.
 pub fn pace(usage: &AccountUsage, now: Millis, today: &str) -> Option<Pace> {
-    let week = usage.current(&WindowKind::Weekly, now)?;
+    pace_in(usage, usage.current(&WindowKind::Weekly, now)?, now, today)
+}
+
+fn pace_in(usage: &AccountUsage, week: &WindowReading, now: Millis, today: &str) -> Option<Pace> {
     let resets_at = week.resets_at?;
     let days_left = ((resets_at - now).max(0) as f64 / DAY_MILLIS).ceil().max(1.0);
     let used = week.used.fraction();
@@ -608,6 +627,72 @@ pub enum AccountStand {
     PayPerUse,
 }
 
+/// How much room an account, a provider or all of them have, from best to worst.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageState {
+    WithRoom,
+    /// Today's share of the week is spent: going on takes from the days left.
+    OverPace,
+    /// Little of the week is left, or the 5-hour window is nearly full.
+    Low,
+    /// It cannot take work: at its limit or signed out.
+    Out,
+}
+
+/// Where a subscription account stands; none for one that is off or paid per use, which limits nothing.
+pub fn usage_state(line: &AccountLine, reserve: Share) -> Option<UsageState> {
+    match line.stand {
+        AccountStand::Disabled | AccountStand::PayPerUse => None,
+        AccountStand::AtLimit { .. } | AccountStand::SignedOut => Some(UsageState::Out),
+        AccountStand::CanWork => Some(
+            if line.week_percent.is_some_and(|week| week > 100.0 * (1.0 - LOW_WEEK_LEFT))
+                || line.five_hour_percent.is_some_and(|five| five > 100.0 * reserve.fraction())
+            {
+                UsageState::Low
+            } else if line.today_spent.zip(line.today_share).is_some_and(|(spent, share)| spent >= share) {
+                UsageState::OverPace
+            } else {
+                UsageState::WithRoom
+            },
+        ),
+    }
+}
+
+/// One provider's accounts, in the user's order.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProviderUsage {
+    pub provider: Provider,
+    pub accounts: Vec<AccountLine>,
+}
+
+impl ProviderUsage {
+    /// As its best account: Alondra starts new work on the one with the most room.
+    pub fn state(&self) -> Option<UsageState> {
+        self.accounts.iter().filter_map(|line| line.state).min()
+    }
+
+    /// The soonest an account at its limit comes back.
+    pub fn back_at(&self) -> Option<Millis> {
+        self.accounts.iter().filter_map(|line| match line.stand { AccountStand::AtLimit { until } => until, _ => None }).min()
+    }
+}
+
+/// Every provider with accounts, each with its accounts' lines. An account Alondra has not checked
+/// yet stands nowhere: it may have no sign-in at all.
+pub fn providers(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Vec<ProviderUsage> {
+    Provider::ALL
+        .into_iter()
+        .map(|provider| ProviderUsage { provider, accounts: account_lines(provider, accounts, usage, reserve, now, today) })
+        .filter(|provider| !provider.accounts.is_empty())
+        .collect()
+}
+
+/// The provider in the worst state, with that state: a task for one provider cannot run on another.
+pub fn worst(providers: &[ProviderUsage]) -> Option<(&ProviderUsage, UsageState)> {
+    providers.iter().filter_map(|provider| Some((provider, provider.state()?))).max_by_key(|(_, state)| *state)
+}
+
 /// One account in the margin's detail: its own margin and the windows it comes from.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AccountLine {
@@ -623,6 +708,14 @@ pub struct AccountLine {
     pub today_spent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub today_share: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week_resets_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour_resets_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<UsageState>,
 }
 
 /// Every account of `provider`, in the user's order, with where it stands and its own margin.
@@ -642,20 +735,26 @@ pub fn account_lines(provider: Provider, accounts: &[AccountStatus], usage: &[Ac
                 }
                 _ => AccountStand::CanWork,
             };
-            let percent = |kind: WindowKind| measured.and_then(|u| u.current(&kind, now)).map(|reading| 100.0 * reading.used.fraction());
-            let pace = measured.and_then(|u| pace(u, now, today));
-            AccountLine {
+            let window = |week: bool| measured.and_then(|u| u.plan_window(week, now));
+            let pace = measured.zip(window(true)).and_then(|(u, week)| pace_in(u, week, now, today));
+            let mut line = AccountLine {
                 name: account.name.clone(),
                 margin: match stand {
                     AccountStand::Disabled | AccountStand::PayPerUse => None,
                     _ => own_margin(account.state, measured, reserve, now, today),
                 },
-                week_percent: percent(WindowKind::Weekly),
-                five_hour_percent: percent(WindowKind::Session),
+                week_percent: window(true).map(|reading| 100.0 * reading.used.fraction()),
+                five_hour_percent: window(false).map(|reading| 100.0 * reading.used.fraction()),
                 today_spent: pace.and_then(|pace| pace.today_spent).map(|spent| 100.0 * spent),
                 today_share: pace.and_then(|pace| pace.today_share).map(|share| 100.0 * share),
+                week_resets_at: window(true).and_then(|reading| reading.resets_at),
+                five_hour_resets_at: window(false).and_then(|reading| reading.resets_at),
+                measured_at: measured.and_then(AccountUsage::measured_at),
                 stand,
-            }
+                state: None,
+            };
+            line.state = if account.state == AccountState::Unchecked { None } else { usage_state(&line, reserve) };
+            line
         })
         .collect()
 }

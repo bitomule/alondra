@@ -539,7 +539,7 @@ fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
 pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::machine::Gauges, alerts: impl Alerts) {
-    watch(domain, move || gauges.lock_or_recover("the machine gauges").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
+    watch(domain, move || gauges.lock_or_recover("the machine gauges").as_ref().map(|(machine, _, _)| machine.clone()), alerts, TICK).await
 }
 
 async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
