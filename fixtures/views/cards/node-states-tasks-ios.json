@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v4ba25fe5d594579a",
+  "version": "v14f75dd06659d594",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -360,7 +360,7 @@
                   "label": "Resume",
                   "style": "primary",
                   "role": "advance",
-                  "description": "Now, even over the limit",
+                  "description": "As soon as a slot is free",
                   "presentation": "button",
                   "input": {
                     "kind": "none"

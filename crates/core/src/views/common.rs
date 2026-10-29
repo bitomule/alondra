@@ -132,6 +132,14 @@ pub(super) fn coming_back_queued<'a>(task: &crate::domain::Task, context: &'a Re
     gate_queued(task, context)
 }
 
+/// The place in the gate's queue of a task whose node the user resumed: it stays paused until the
+/// gate has a slot for it.
+pub(super) fn resume_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
+    let agent = task.agent_id.as_ref()?;
+    context.domain.node_pause(agent)?;
+    gate_queued(task, context)
+}
+
 /// The place in the gate's queue of a task that waits there, whether it has a node or not.
 pub(super) fn gate_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)

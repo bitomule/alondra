@@ -36,7 +36,7 @@ pub enum Verb {
     Retake,
     /// Pause a working node, or take a queued task out of the queue.
     Pause,
-    /// Resume a paused node or task at once, even over the limit.
+    /// Resume a paused node or task as soon as the limit has a slot for it.
     Resume,
     /// Set how many nodes work at once on this Mac: `auto` or a number, as `option_id`.
     SetLimit,

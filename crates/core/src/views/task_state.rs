@@ -87,6 +87,9 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
         };
         return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Waiting, Some(with_pending(fact, task, context)));
     }
+    if let Some(queued) = common::resume_queued(task, context) {
+        return in_queue(task, queued, lang);
+    }
     let read = context.reading(&task.id);
     if let Some((_, reason)) = read.and_then(|read| read.merge_failure.clone()) {
         return Presentation::new(t!(lang, "Couldn't merge", "No se pudo hacer merge"), Tone::Warning, InProgress, Some(reason));

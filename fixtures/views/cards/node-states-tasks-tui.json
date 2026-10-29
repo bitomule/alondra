@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vd098c14eecd09476",
+  "version": "vc29c9abb8110ffde",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -302,7 +302,7 @@
                   "label": "Reanudar",
                   "style": "primary",
                   "role": "advance",
-                  "description": "Ahora, aunque se pase del límite",
+                  "description": "En cuanto haya hueco",
                   "presentation": "button",
                   "input": {
                     "kind": "none"

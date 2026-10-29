@@ -912,8 +912,10 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
     assert_eq!(refused.code, "conflict");
     assert!(refused.message.contains("The user paused"), "{}", refused.message);
 
-    crate::admission::release_queued(&f.domain, &f.home, &"q2".into()).await.unwrap();
-    assert_eq!(launches(&f), 2);
+    crate::admission::release_queued(&f.domain, &"q2".into()).unwrap();
+    assert!(paused_ids(&f).is_empty());
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    assert_eq!(launches(&f), 2, "the slot q1 left is free: the gate starts it");
     assert!(agent_of(&f, "q2").is_some());
     assert!(paused_ids(&f).is_empty());
     pass(&f.domain, &f.home).await.unwrap();
@@ -921,7 +923,7 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
 }
 
 #[tokio::test]
-async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_until_the_user_resumes_it() {
+async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_until_the_user_resumes_it_and_then_it_waits_for_a_slot() {
     let f = world();
     f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "o1", &[], Some(&plan(&f, "app/o1")));
@@ -937,13 +939,19 @@ async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_unti
     assert!(f.domain.store.lock().unwrap().launch_queue().unwrap().is_empty());
     assert_eq!(paused_ids(&f), ["o2"]);
 
-    finish(&f, "o1", "What o1 delivered", false);
     crate::admission::pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1, "neither the queue nor the automatic start brings o2 back");
 
-    crate::admission::release_queued(&f.domain, &f.home, &"o2".into()).await.unwrap();
-    assert_eq!(launches(&f), 2);
+    crate::admission::release_queued(&f.domain, &"o2".into()).unwrap();
+    assert!(paused_ids(&f).is_empty());
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    assert_eq!(launches(&f), 1, "o1 holds the one slot: o2 waits in the queue");
+    assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
+
+    finish(&f, "o1", "What o1 delivered", false);
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    assert_eq!(launches(&f), 2, "the slot o1 left goes to o2");
     assert!(agent_of(&f, "o2").is_some());
 }
 

@@ -113,7 +113,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     if crate::sdk_owner::runs_through_sdk(&state, agent) {
         let told = tell_through_sdk(domain, &state, home, user, name, agent, body, as_user);
         if as_user && told.is_ok() {
-            domain.live.gate.release_by_user_message(domain, &agent.0);
+            domain.live.gate.resume_by_user_message(domain, &agent.0, alondra_core::now_millis());
         }
         return told;
     }

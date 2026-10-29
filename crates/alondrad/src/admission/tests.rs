@@ -38,7 +38,7 @@ fn fine() -> MacState {
 }
 
 #[test]
-fn memory_holds_every_start_and_the_cpu_only_new_ones() {
+fn memory_and_the_cpu_hold_every_start_and_every_resume() {
     let new = waiting("new", TaskPriority::Normal, false, 0);
     let resumed = waiting("resumed", TaskPriority::Normal, true, 0);
     assert_eq!(decide(&new, 0, 6, &fine(), 0, None, SPACING, MIN), Ok(()));
@@ -50,7 +50,7 @@ fn memory_holds_every_start_and_the_cpu_only_new_ones() {
     let mut busy = fine();
     (busy.cpu_busy, busy.load) = (true, 52.0);
     assert!(matches!(decide(&new, 0, 6, &busy, 0, None, SPACING, MIN), Err(Hold::Cpu { cpus: 11, .. })));
-    assert_eq!(decide(&resumed, 0, 6, &busy, 0, None, SPACING, MIN), Ok(()), "the CPU only holds new starts");
+    assert!(matches!(decide(&resumed, 0, 6, &busy, 0, None, SPACING, MIN), Err(Hold::Cpu { cpus: 11, .. })), "a resume waits for the CPU like a start");
 }
 
 #[test]
@@ -710,4 +710,153 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
         "global Codex capacity cannot release this Claude account");
     assert!(domain.live.gate.snapshot(&domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
         "its own declared reset admits the same node");
+}
+
+/// Starts the node of task `id` and then the user pauses it at `at`: its turn is cut and it holds
+/// no slot.
+fn paused_by_user(domain: &DomainRuntime, id: &str, priority: TaskPriority, at: Millis) {
+    create(domain, id);
+    if !priority.is_normal() {
+        run(domain, Actor::User { user_id: "u".into() }, Command::SetPriority { task_id: id.into(), priority });
+    }
+    start(domain, id, at);
+    domain.live.gate.pause_by_user(domain, &format!("agent-{id}"), at).unwrap();
+    domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: String::new(), aborted: true } }, at);
+}
+
+/// A node the gate let back takes its turn, as its mod and the node machine say.
+fn goes_on(domain: &DomainRuntime, id: &str, now: Millis) {
+    domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnStart }, now);
+    crate::domain_agent_lifecycle::node_event_at(domain, &AgentId(format!("agent-{id}")), alondra_core::domain::NodeEvent::TurnStarted, now).unwrap();
+}
+
+fn still_paused(domain: &DomainRuntime, id: &str) -> bool {
+    domain.live.gate.paused(domain, &format!("agent-{id}")).is_some()
+}
+
+/// One look of the gate at `now`, outside an async test.
+fn look(domain: &DomainRuntime, home: &Path, now: Millis) {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(pass_at(domain, home, now)).unwrap();
+}
+
+fn priority() -> impl proptest::strategy::Strategy<Value = TaskPriority> {
+    use proptest::prelude::*;
+    prop_oneof![Just(TaskPriority::Low), Just(TaskPriority::Normal), Just(TaskPriority::High)]
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 24, ..proptest::prelude::ProptestConfig::default() })]
+
+    /// 27 October: with the limit at 6 the user resumed 19 paused nodes and every one went on at
+    /// once. However many nodes the user resumes together, and whenever the working ones end
+    /// their turns, never more than the limit work, by the gate's count or by the nodes out of
+    /// their pause; they come back by priority, then by the age of their pause, and all of them
+    /// come back in the end.
+    #[test]
+    fn resuming_many_paused_nodes_never_puts_more_than_the_limit_to_work(
+        nodes in proptest::collection::vec(priority(), 1..=16),
+        limit in 1u32..=6,
+        ends in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..64),
+    ) {
+        let (home, domain) = world();
+        let gate = &domain.live.gate;
+        gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(limit)) });
+        gate.ignore_mac();
+        let base = alondra_core::now_millis();
+        let ids: Vec<String> = (0..nodes.len()).map(|index| format!("t{index:02}")).collect();
+        for (index, (id, priority)) in ids.iter().zip(&nodes).enumerate() {
+            paused_by_user(&domain, id, *priority, base + index as Millis);
+        }
+        let resumed_at = base + MIN;
+        for id in &ids {
+            let session = format!("agent-{id}");
+            proptest::prop_assert!(gate.resume_now(&domain, &session, resumed_at), "{}", session);
+        }
+        let mut expected: Vec<(TaskPriority, &String)> = nodes.iter().copied().zip(&ids).collect();
+        expected.sort();
+        let expected: Vec<&String> = expected.into_iter().map(|(_, id)| id).collect();
+
+        let mut back: Vec<&String> = vec![];
+        let mut working: Vec<&String> = vec![];
+        let mut step = 0;
+        while back.len() < ids.len() {
+            proptest::prop_assert!(step < 400, "{} of {} came back", back.len(), ids.len());
+            let now = resumed_at + step as Millis * SAMPLE;
+            look(&domain, &home.0, now);
+            let gone_on: Vec<&String> = ids.iter().filter(|id| !back.contains(id) && !still_paused(&domain, id)).collect();
+            for id in gone_on {
+                goes_on(&domain, id, now);
+                back.push(id);
+                working.push(id);
+            }
+            let counted = gate.snapshot(&domain, now).unwrap().working;
+            proptest::prop_assert!(counted <= limit as usize, "the gate counts {} working over a limit of {}", counted, limit);
+            proptest::prop_assert!(working.len() <= limit as usize, "{} nodes out of their pause over a limit of {}: {:?}", working.len(), limit, working);
+            if ends.get(step).copied().unwrap_or(true) && !working.is_empty() {
+                finish(&domain, working.remove(0), now);
+            }
+            step += 1;
+        }
+        proptest::prop_assert_eq!(back, expected);
+    }
+}
+
+#[test]
+fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
+    const GB: u64 = 1_000_000_000;
+    let (home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    gate.ignore_mac();
+    let base = alondra_core::now_millis();
+    paused_by_user(&domain, "t1", TaskPriority::Normal, base);
+    let watch = &domain.live.machine_watch;
+    watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
+    assert!(gate.resume_now(&domain, "agent-t1", base + MIN));
+    look(&domain, &home.0, base + MIN);
+    assert!(still_paused(&domain, "t1"), "the disk has no room for its build");
+    let queued = gate.live(&domain, base + MIN).unwrap().queued;
+    assert_eq!(queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
+        [("t1", &alondra_core::views::LiveHold::Disk { free: 6 * GB, needed: 10 * GB })], "it waits in the queue, and says why");
+    assert!(gate.live(&domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
+
+    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 9 * GB, total: 500 * GB });
+    look(&domain, &home.0, base + MIN + SAMPLE);
+    assert!(!still_paused(&domain, "t1"), "with room on the disk it goes on");
+}
+
+/// The daemon restarts into a new version while nodes the user resumed wait for a slot: they
+/// still wait, and come back one at a time as slots free up.
+#[test]
+fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
+    let (home, domain) = world();
+    let base = alondra_core::now_millis();
+    for (index, id) in ["t1", "t2", "t3"].iter().enumerate() {
+        paused_by_user(&domain, id, TaskPriority::Normal, base + index as Millis);
+    }
+    create(&domain, "t4");
+    start(&domain, "t4", base);
+    for id in ["t1", "t2", "t3"] {
+        assert!(domain.live.gate.resume_now(&domain, &format!("agent-{id}"), base + MIN));
+    }
+    drop(domain);
+
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    gate.ignore_mac();
+    let now = base + 2 * MIN;
+    look(&domain, &home.0, now);
+    assert!(["t1", "t2", "t3"].iter().all(|id| still_paused(&domain, id)), "t4 holds the one slot");
+    assert_eq!(gate.live(&domain, now).unwrap().queued.iter().map(|queued| queued.task_id.as_str()).collect::<Vec<_>>(), ["t1", "t2", "t3"]);
+
+    finish(&domain, "t4", now);
+    look(&domain, &home.0, now + SAMPLE);
+    look(&domain, &home.0, now + 2 * SAMPLE);
+    assert_eq!(["t1", "t2", "t3"].map(|id| still_paused(&domain, id)), [false, true, true], "the oldest pause first, and one only");
+    goes_on(&domain, "t1", now + 2 * SAMPLE);
+    finish(&domain, "t1", now + 3 * SAMPLE);
+    look(&domain, &home.0, now + 4 * SAMPLE);
+    assert_eq!(["t1", "t2", "t3"].map(|id| still_paused(&domain, id)), [false, false, true]);
 }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v52a80d352f6cddc9",
+  "version": "v9e362efb25cf5c86",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -304,7 +304,7 @@
                   "label": "Resume",
                   "style": "primary",
                   "role": "advance",
-                  "description": "Now, even over the limit",
+                  "description": "As soon as a slot is free",
                   "presentation": "button",
                   "input": {
                     "kind": "none"

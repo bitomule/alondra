@@ -1,8 +1,9 @@
 //! The gate every node start passes through: at most the working-node limit at once, one start
 //! a minute (one every 3 while macOS warns of memory pressure), none while memory has no room for
 //! one more node (`MacState::room`, which reserves free memory for every node admitted in the last
-//! `IN_FLIGHT`), and no new start while the CPU is
-//! overloaded. Memory only ever holds starts and resumes: it never pauses a working node. The
+//! `IN_FLIGHT`), and none while the CPU is overloaded. A paused node coming back, the user's Resume
+//! included, passes the same checks as a start. Memory and the CPU only ever hold starts and
+//! resumes: they never pause a working node. The
 //! limit is the user's number, or in automatic what this Mac's cores and measured nodes take. What does not
 //! fit waits in a queue ordered by priority, then resumed work before new starts, then age. See
 //! docs/pacing.md.
@@ -76,11 +77,11 @@ pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
 }
 
 /// Whether `head` may start now, with `in_flight` nodes admitted in the last `IN_FLIGHT`. Memory
-/// holds every start and resume; the CPU holds only new starts; macOS's warning only spaces them.
+/// and the CPU hold every start and resume; macOS's warning only spaces them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState, in_flight: usize, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     mac.room(in_flight, now).map_err(|why| Hold::Memory { why, free: mac.free_percent })?;
-    if mac.cpu_busy && !head.resuming {
+    if mac.cpu_busy {
         return Err(Hold::Cpu { load: mac.load, cpus: mac.cpus });
     }
     if working >= limit as usize {
@@ -147,6 +148,9 @@ struct Inner {
     admitted: Vec<(Key, Millis)>,
     /// Starts whose caller keeps them durable and asks again when woken.
     asking: BTreeMap<Key, Waiting>,
+    /// Resumes the gate let through whose node was seen at work since: its own phase holds its
+    /// slot from then on, so the admission no longer counts.
+    at_work: BTreeSet<Key>,
     tuning: Tuning,
     told: Told,
     /// A sandbox with fast timing: its fake nodes cost nothing, so the Mac never holds a start.
@@ -320,6 +324,7 @@ impl Admission {
     pub(crate) fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str> {
         let task = domain.state().ok().and_then(|state| open_task_of(&state, session)).ok_or("This node has no open task")?;
         let mut inner = self.lock_with(domain);
+        inner.saved.pauses.resumed.remove(session);
         crate::pauses::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
         self.save_with(domain, &inner);
         let paused = inner.saved.pauses.paused.get(session).cloned();
@@ -330,19 +335,17 @@ impl Admission {
         Ok(())
     }
 
-    /// The user resumed a paused node (D3): it goes on at once, even over the limit, and counts
-    /// toward it from now on.
+    /// The user resumed a paused node: whatever its pause waited for, it waits in the queue like a
+    /// start, by its priority and the age of its pause, and stays paused until the gate admits it.
     pub(crate) fn resume_now(&self, domain: &DomainRuntime, session: &str, now: Millis) -> bool {
         let mut inner = self.lock_with(domain);
         if !inner.saved.pauses.paused.contains_key(session) {
             return false;
         }
-        let user = Paused { reason: Reason::ByUser, ..inner.saved.pauses.paused[session].clone() };
-        inner.saved.pauses.paused.insert(session.to_owned(), user);
-        resume_locked(domain, &mut inner, session, now);
-        inner.admitted.retain(|(_, at)| now - at < IN_FLIGHT);
-        inner.admitted.push((Key::Resume(session.to_owned()), now));
+        inner.saved.pauses.resumed.entry(session.to_owned()).or_insert(now);
         self.save_with(domain, &inner);
+        drop(inner);
+        self.poke();
         true
     }
 
@@ -355,8 +358,17 @@ impl Admission {
         self.lock_with(domain).saved.pauses.paused.get(session).map(|paused| paused.reason.clone()).filter(Reason::holds)
     }
 
-    /// The user wrote to a node paused by them, or for memory by an older daemon: their message is
-    /// what it goes on with, so the pause ends without the resume notice.
+    /// The user wrote to a node of the Agent SDK they paused: their message waits with its task's
+    /// inputs, and the node comes back through the queue as their Resume brings it.
+    pub(crate) fn resume_by_user_message(&self, domain: &DomainRuntime, session: &str, now: Millis) {
+        if self.paused_by_user(domain, session) {
+            self.resume_now(domain, session, now);
+        }
+    }
+
+    /// The user wrote to a `claude --bg` node paused by them, or for memory by an older daemon: the
+    /// message already went down its connection and is what it goes on with, so the pause ends
+    /// without the resume notice.
     pub(crate) fn release_by_user_message(&self, domain: &DomainRuntime, session: &str) {
         let mut inner = self.lock_with(domain);
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
@@ -395,6 +407,7 @@ impl Admission {
         }
         let waiting = inner.asking.get(&key).map_or(waiting.clone(), |known| Waiting { since: known.since, ..waiting });
         inner.asking.insert(key.clone(), waiting);
+        note_at_work(&mut inner, &state);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         let head = snapshot.queue.first().filter(|head| head.key == key);
         let Some(head) = head else {
@@ -444,7 +457,8 @@ impl Admission {
         let snapshot = self.snapshot(domain, now)?;
         let state = domain.state().ok()?;
         let pauses = self.pauses(domain);
-        let is_paused = |waiting: &Waiting| matches!(&waiting.key, Key::Resume(session) if pauses.paused.contains_key(session));
+        let held = |session: &String| pauses.paused.contains_key(session) && !pauses.resumed.contains_key(session);
+        let is_paused = |waiting: &Waiting| matches!(&waiting.key, Key::Resume(session) if held(session));
         let starts: Vec<&Waiting> = snapshot.queue.iter().filter(|waiting| !is_paused(waiting)).collect();
         let total = starts.len();
         let hold = snapshot.hold.as_ref().map(live_hold);
@@ -455,7 +469,7 @@ impl Admission {
         }).collect();
         let mut order: Vec<String> = snapshot.queue.iter().filter(|waiting| is_paused(waiting))
             .filter_map(|waiting| match &waiting.key { Key::Resume(session) => Some(session.clone()), _ => None }).collect();
-        let rest: Vec<String> = pauses.paused.keys().filter(|session| !order.contains(session)).cloned().collect();
+        let rest: Vec<String> = pauses.paused.keys().filter(|session| held(session) && !order.contains(session)).cloned().collect();
         order.extend(rest);
         let paused: Vec<LivePaused> = order.iter().filter_map(|session| {
             let entry = pauses.paused.get(session)?;
@@ -619,9 +633,12 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
 
 /// A paused node's turn came: it is told to carry on, or brought back first if it is not connected.
 fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: Millis) {
-    let Some(paused) = inner.saved.pauses.paused.remove(session) else { return };
+    let Some(mut paused) = inner.saved.pauses.paused.remove(session) else { return };
     if let Reason::ApiError(retry) = &paused.reason && retry.outage {
         domain.live.api_watch.probed(now);
+    }
+    if inner.saved.pauses.resumed.remove(session).is_some() {
+        paused.reason = Reason::ByUser;
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
     let text = crate::pauses::resume_text(&paused, now);
@@ -660,8 +677,20 @@ fn deliver_owed(domain: &DomainRuntime, inner: &mut Inner) {
 
 fn admit(inner: &mut Inner, key: Key, now: Millis) {
     inner.admitted.retain(|(_, at)| now - at < IN_FLIGHT);
+    inner.at_work.remove(&key);
+    let admitted: BTreeSet<&Key> = inner.admitted.iter().map(|(key, _)| key).collect();
+    inner.at_work.retain(|key| admitted.contains(key));
     inner.admitted.push((key, now));
     inner.saved.last_admission = Some(now);
+}
+
+/// Remembers the resumes the gate let through whose node now holds a slot of its own.
+fn note_at_work(inner: &mut Inner, state: &DomainState) {
+    let busy = working_tasks(state);
+    let seen: Vec<Key> = inner.admitted.iter()
+        .filter(|(key, _)| matches!(key, Key::Resume(_)) && task_of(state, key).is_some_and(|task| busy.contains(&task)))
+        .map(|(key, _)| key.clone()).collect();
+    inner.at_work.extend(seen);
 }
 
 fn live_hold(hold: &Hold) -> LiveHold {
@@ -831,13 +860,24 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live.is_launching(&task.0)))
         .map(|waiting| &waiting.key).collect();
     let in_flight: Vec<Option<TaskId>> = inner.admitted.iter()
-        .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key))
-        .map(|(key, _)| task_of(state, key))
-        .filter(|task| task.as_ref().is_none_or(|task| !busy.contains(task) && !paused(task)
-            && state.tasks.get(task).is_none_or(|task| !task.over() && task.agent_id.is_none())))
+        .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key) && !inner.at_work.contains(key))
+        .filter_map(|(key, _)| {
+            let task = task_of(state, key);
+            let counts = match (key, &task) {
+                (Key::Resume(_), None) => false,
+                (Key::Resume(session), Some(task)) => !busy.contains(task) && !paused(task)
+                    && state.tasks.get(task).is_some_and(|task| !task.over())
+                    && !state.node_waits_on_user(&AgentId(session.clone())),
+                (_, None) => true,
+                (_, Some(task)) => !busy.contains(task) && !paused(task)
+                    && state.tasks.get(task).is_none_or(|task| !task.over() && task.agent_id.is_none()),
+            };
+            counts.then_some(task)
+        })
         .collect();
-    // A start counts until its task has a node; from then on the node's own phase says whether it
-    // takes a slot, as a node of the Agent SDK that ends its first turn on a card within seconds.
+    // A start counts until its task has a node, and a resume until its node is seen at work; from
+    // then on the node's own phase says whether it takes a slot, as a node of the Agent SDK that
+    // ends its first turn on a card within seconds.
     let working = busy.len() + in_flight.len();
     let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();
     let working_tasks = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();
@@ -854,7 +894,8 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     }
     let usage_clear = !domain.live.usage_pause.is_active();
     let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live.api_watch, now);
-    let returning = inner.saved.pauses.paused.iter().filter(|(session, paused)| match &paused.reason {
+    let resumed = &inner.saved.pauses.resumed;
+    let returning = inner.saved.pauses.paused.iter().filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
         Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
         _ => paused.returns(usage_clear && (!matches!(paused.reason, Reason::Usage)
             || crate::usage_pause::task_usage_ready(state, &paused.task, paused.since, now)), domain.live.api_watch.answered_since(paused.since), now),
@@ -916,23 +957,18 @@ pub(crate) fn held_by_user(domain: &DomainRuntime, task: &TaskId) -> bool {
     domain.live.gate.lock().saved.pauses.held.contains_key(task)
 }
 
-/// The user resumed a queued task they paused (D3): it starts now, even over the limit.
-pub(crate) async fn release_queued(domain: &DomainRuntime, home: &Path, task: &TaskId) -> Result<(), &'static str> {
-    let held = {
-        let gate = &domain.live.gate;
-        let mut inner = gate.lock();
-        let held = inner.saved.pauses.held.remove(task).ok_or("This node or task is not paused")?;
-        let now = alondra_core::now_millis();
-        admit(&mut inner, Key::Task(task.clone()), now);
-        gate.save(&inner);
-        held
-    };
-    let body = LaunchBody::from_queue(&held.body).map_err(|_| "Alondra could not start the task")?;
-    let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
-    launch_from(domain, home, body, choices, Origin::Admitted).await.map_err(|error| {
-        log!("could not start {task}, which the user resumed: {}", error.message);
-        "Alondra could not start the task"
-    })?;
+/// The user resumed a queued task they paused: it goes back to the queue with its age, and the
+/// gate starts it when its turn comes.
+pub(crate) fn release_queued(domain: &DomainRuntime, task: &TaskId) -> Result<(), &'static str> {
+    let gate = &domain.live.gate;
+    let held = gate.lock().saved.pauses.held.get(task).cloned().ok_or("This node or task is not paused")?;
+    domain.store.lock_or_exit("the domain store").enqueue_launch(task, &held.body, &held.origin, held.since)
+        .map_err(|_| "Alondra could not queue the task")?;
+    let mut inner = gate.lock();
+    inner.saved.pauses.held.remove(task);
+    gate.save(&inner);
+    drop(inner);
+    gate.poke();
     Ok(())
 }
 
@@ -996,6 +1032,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         inner.asking.retain(|key, _| still_waits(&state, key));
         crate::pauses::look(domain, &state, &mut inner.saved.pauses, now);
         deliver_owed(domain, &mut inner);
+        note_at_work(&mut inner, &state);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         gate.save_with(domain, &inner);
         let held = snapshot.queue.first().zip(snapshot.hold.as_ref());

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v629843041621f621",
+  "version": "vababc8b3eea7310c",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -360,7 +360,7 @@
                   "label": "Reanudar",
                   "style": "primary",
                   "role": "advance",
-                  "description": "Ahora, aunque se pase del límite",
+                  "description": "En cuanto haya hueco",
                   "presentation": "button",
                   "input": {
                     "kind": "none"

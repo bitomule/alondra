@@ -91,6 +91,10 @@ pub(crate) struct Pauses {
     /// Queued launches the user paused, with what the queue held for them.
     #[serde(default)]
     pub held: BTreeMap<TaskId, Held>,
+    /// Paused nodes the user resumed, by session, and when: they wait in the gate's queue like a
+    /// start, whatever their pause waited for, and stay paused until the gate admits them.
+    #[serde(default)]
+    pub resumed: BTreeMap<String, Millis>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +202,7 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
         open && !went_on
     });
     pauses.owed.retain(|session, _| pauses.paused.contains_key(session) || state.agents.contains_key(&alondra_core::domain::AgentId(session.clone())));
+    pauses.resumed.retain(|session, _| pauses.paused.contains_key(session));
     clean_up(domain, pauses, now);
 }
 

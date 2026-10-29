@@ -706,7 +706,7 @@ async fn execute_external(
             if domain.live.gate.resume_now(domain, &action.subject, now) {
                 return Ok(to_applied(200, json!({"resumed": action.subject})));
             }
-            match crate::admission::release_queued(domain, home, &TaskId(action.subject.clone())).await {
+            match crate::admission::release_queued(domain, &TaskId(action.subject.clone())) {
                 Ok(()) => Ok(to_applied(200, json!({"resumed": action.subject}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
@@ -1787,7 +1787,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::SchedDelete => Outcome::done(say("Scheduled task deleted.", "Tarea programada eliminada.")),
         Verb::SchedSave => Outcome::done(say("Scheduled task saved.", "Tarea programada guardada.")),
         Verb::Pause => Outcome::done(say("Paused. Alondra does not resume it by itself: only you do.", "En pausa. Alondra no la reanuda sola: solo tú.")),
-        Verb::Resume => Outcome::done(say("Resumed now, even over the limit.", "Reanudada ya, aunque se pase del límite.")),
+        Verb::Resume => Outcome::done(say("Resumes as soon as a slot is free.", "Se reanuda en cuanto haya hueco.")),
         Verb::SetLimit => Outcome::done(say("Limit changed: it counts from now on.", "Límite cambiado: cuenta desde ahora.")),
         Verb::RemoveRule => Outcome::done(say("Removed: the next call of that command asks again.", "Quitado: la próxima llamada de ese comando vuelve a preguntar.")),
         Verb::SetPriority => Outcome::done(say("Priority changed. The queue follows it now.", "Prioridad cambiada. La cola ya la sigue.")),

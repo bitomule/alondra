@@ -85,14 +85,14 @@ fn paused_node<'a>(session: &str, context: &'a RenderContext<'_>) -> Option<&'a 
     context.live.pacing.as_ref()?.paused.iter().find(|paused| paused.session.as_deref() == Some(session))
 }
 
-/// Resumes a paused node or task now, even over the limit (D3).
+/// Puts a paused node or task back in the queue, where it waits for a slot like a start.
 pub(super) fn resume_action(paused: &LivePaused, context: &RenderContext<'_>) -> Option<super::Action> {
     let subject = paused.session.as_deref().unwrap_or(&paused.task_id);
     let lang = context.lang;
     let mut action = common::action(Verb::Resume, subject, context.domain.revision, t!(lang, "Resume", "Reanudar"), Style::Primary)?;
     action.key = (context.client == super::Client::Tui).then(|| "u".into());
     action.stamp = Some(t!(lang, "Resuming…", "Reanudando…").into());
-    action.description = Some(t!(lang, "Now, even over the limit", "Ahora, aunque se pase del límite").into());
+    action.description = Some(t!(lang, "As soon as a slot is free", "En cuanto haya hueco").into());
     Some(action)
 }
 

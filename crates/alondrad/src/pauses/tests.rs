@@ -262,10 +262,10 @@ async fn nodes_an_older_daemon_paused_for_memory_come_back_through_the_gate_a_st
     assert!(bench.events("pause").is_empty());
 }
 
-/// D3: the user's Resume goes through at once, even over the limit, and holds the next slot; a
-/// pause by the user never comes back by itself.
+/// The user's Resume counts toward the limit like a start: with every slot taken the node waits in
+/// the queue, and goes on once a slot is free; a pause by the user never comes back by itself.
 #[tokio::test]
-async fn the_users_resume_goes_through_over_the_limit_and_their_pause_never_returns_by_itself() {
+async fn the_users_resume_waits_for_a_slot_and_their_pause_never_returns_by_itself() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
     let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(2), base - 10 * MIN);
@@ -277,9 +277,17 @@ async fn the_users_resume_goes_through_over_the_limit_and_their_pause_never_retu
     assert_eq!(pacing.paused[0].reason, alondra_core::views::LivePauseReason::User);
 
     assert!(bench.domain.live.gate.resume_now(&bench.domain, "agent-t3", now));
-    bench.tick(50, now).await;
+    let now = bench.hold(50, now, 5 * MIN).await;
+    assert!(bench.events("resume").is_empty(), "t1 and t2 hold the limit of 2");
+    assert_eq!(bench.working(now), 2);
+    let pacing = bench.domain.live.gate.live(&bench.domain, now).unwrap();
+    assert!(pacing.paused.is_empty(), "it no longer waits for the user");
+    assert_eq!(pacing.queued.iter().map(|queued| queued.task_id.as_str()).collect::<Vec<_>>(), ["t3"]);
+
+    bench.end_turn("t1", now);
+    let now = bench.hold(50, now, 2 * MIN).await;
     assert_eq!(tasks(&bench.events("resume")), ["t3"]);
-    assert_eq!(bench.working(now), 3, "over the limit of 2");
+    assert_eq!(bench.working(now), 2, "it took the slot t1 left");
     let waiting = Waiting { key: Key::Task("t-new".into()), priority: Normal, resuming: false, since: now };
     assert!(bench.domain.live.gate.ask(&bench.domain, waiting, now + 5 * MIN).is_err(), "it counts toward the limit");
 }
@@ -652,6 +660,7 @@ impl SdkNode {
             model: None, account: alondra_core::accounts::AccountId::default_account(),
         }).unwrap();
         domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+        domain.live.gate.ignore_mac();
         let mut node = Self { driver, domain, capture, home, _state: state };
         while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
             node.driver.observe().unwrap();
@@ -708,6 +717,11 @@ impl SdkNode {
             .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnEnded { .. }))
     }
 
+    /// One look of the gate, which lets the node go on once it has a slot.
+    async fn gate_look(&self) {
+        crate::admission::pass_at(&self.domain, &self.home, alondra_core::now_millis()).await.unwrap();
+    }
+
     /// The user pauses the node from its task; its turn is interrupted and ends.
     fn pause(&mut self) {
         self.domain.live.gate.pause_by_user(&self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
@@ -741,8 +755,8 @@ impl Drop for SdkNode {
     }
 }
 
-#[test]
-fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resume_text_and_what_it_was_told() {
+#[tokio::test]
+async fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resume_text_and_what_it_was_told() {
     let mut node = SdkNode::working();
     node.pause();
     crate::domain_messages::tell_sdk_node(&node.domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-paused", false).unwrap();
@@ -752,6 +766,7 @@ fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resu
     assert_eq!(node.prompts(), ["consume-and-hold"]);
 
     assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.gate_look().await;
     node.until_told("Use the short changelog format");
     let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
     assert_eq!(resumed, 1, "{:?}", node.prompts());
@@ -761,8 +776,8 @@ fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resu
 
 /// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
 /// how it goes on, its task says it is paused, and resuming it is the user's one step.
-#[test]
-fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
+#[tokio::test]
+async fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     let mut node = SdkNode::working();
     node.pause();
     node.step();
@@ -788,17 +803,39 @@ fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     drop(read);
 
     assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.gate_look().await;
     node.until_told("resumed you");
     assert_eq!(node.prompts().len(), 2, "{:?}", node.prompts());
 }
 
+/// The user's own message to a node they paused resumes it like their Resume: it waits in the
+/// queue while every slot is taken, nothing reaches Claude meanwhile, and the gate lets it go on.
 #[tokio::test]
-async fn the_users_own_message_to_a_paused_sdk_node_ends_the_pause_and_reaches_claude() {
+async fn the_users_own_message_to_a_paused_sdk_node_waits_for_a_slot_and_then_reaches_claude() {
     let mut node = SdkNode::working();
     node.pause();
+    node.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
     let body = serde_json::from_value(serde_json::json!({"text": "Use the short changelog format"})).unwrap();
     crate::domain_messages::deliver(&node.domain, &node.home, &user(), "The user", &AgentId(node.agent()), body, true).await.unwrap();
-    assert!(node.domain.live.gate.paused(&node.domain, &node.agent()).is_none(), "the user's words end the pause");
+    node.gate_look().await;
+    node.step();
+    assert!(node.domain.live.gate.paused(&node.domain, &node.agent()).is_some(), "no slot: it still waits");
+    assert_eq!(node.dispatched_inputs(), 0, "nothing reaches the host before the gate lets it go on");
+    let pacing = node.domain.live.gate.live(&node.domain, alondra_core::now_millis()).unwrap();
+    assert_eq!(pacing.queued.iter().map(|queued| queued.task_id.as_str()).collect::<Vec<_>>(), [SDK_TASK], "it waits in the queue");
+    let read = node.domain.read();
+    let live = alondra_core::views::live::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
+    let tasks = serde_json::to_string(&alondra_core::views::build("tasks", alondra_core::views::RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
+        lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
+    }).unwrap()).unwrap();
+    assert!(tasks.contains("Queued · 1st of 1") && tasks.contains("0 of 0 working") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
+        "its task shows it queued, with no Resume: {tasks}");
+    drop(read);
+
+    node.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    node.gate_look().await;
+    assert!(node.domain.live.gate.paused(&node.domain, &node.agent()).is_none(), "a slot is free: it goes on");
     node.until_told("Use the short changelog format");
     let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
     assert!(resumed <= 1, "{:?}", node.prompts());
@@ -816,6 +853,7 @@ async fn resuming_a_paused_sdk_node_whose_host_died_resumes_its_session_in_a_new
 
     let mut changed = node.domain.subscribe();
     assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.gate_look().await;
     node.domain.join_retakes();
     assert!(node.domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
     let capture = node.capture.clone();
@@ -843,6 +881,7 @@ async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_
     let refuse = |refused: bool| std::fs::set_permissions(&state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
     refuse(true);
     assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.gate_look().await;
     node.domain.join_retakes();
     refuse(false);
     let card = node.host_lost_card().expect("the task has a card to try again");

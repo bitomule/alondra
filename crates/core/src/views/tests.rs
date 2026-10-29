@@ -6369,7 +6369,7 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task() {
     let live = pacing_live(vec![], vec![paused], None);
     let task = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     let resume = find_action(&task, "resume:t-1").expect("a task taken out of the queue resumes by its id");
-    assert_eq!((resume.label.as_str(), resume.description.as_deref()), ("Reanudar", Some("Ahora, aunque se pase del límite")));
+    assert_eq!((resume.label.as_str(), resume.description.as_deref()), ("Reanudar", Some("En cuanto haya hueco")));
     let detail = render(&state, &live, Client::Mac, Lang::En, "task:t-1", "");
     assert!(action_ids(&detail).contains(&"resume:t-1".to_owned()), "{:?}", action_ids(&detail));
     assert!(!action_ids(&detail).iter().any(|id| id.starts_with("pause:")));
