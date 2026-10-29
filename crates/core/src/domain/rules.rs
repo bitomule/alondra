@@ -1776,6 +1776,26 @@ impl DomainState {
         }
         Ok(())
     }
+    /// A request whose tasks the user all cancelled, the last before any node ran it, has nothing
+    /// for the orchestrator to sum up or follow: it closes as withdrawn.
+    fn withdraw_cancelled_requests(&mut self, before: &Self, actor: &Actor) {
+        if !matches!(actor, Actor::User { .. }) {
+            return;
+        }
+        let requests: BTreeSet<RequestId> = before.tasks.values()
+            .filter(|t| !t.cancelled() && !t.started && t.agent_id.is_none() && self.tasks.get(&t.id).is_some_and(Task::cancelled))
+            .map(|t| t.request_id.clone())
+            .collect();
+        for request_id in requests {
+            if !self.tasks.values().filter(|t| t.request_id == request_id).all(Task::cancelled) {
+                continue;
+            }
+            if let Some(request) = self.requests.get_mut(&request_id).filter(|r| !r.closed) {
+                request.closed = true;
+                request.withdrawn = true;
+            }
+        }
+    }
     /// A cancelled task whose node Alondra has not closed yet: its open cards were taken away when
     /// it was cancelled, so any it has now were asked after. Its node can still ask the user what
     /// to do with work it cannot leave as it is.
@@ -2356,6 +2376,7 @@ impl DomainState {
         next.adopt_declared_post_merge(&mut lifecycles)?;
         next.adopt_sdk_nodes(&mut lifecycles)?;
         next.finish_settled_deliveries(&mut lifecycles)?;
+        next.withdraw_cancelled_requests(self, actor);
         next.derive_states();
         if next.cancel_orphan_reviewers(&mut effects, &mut lifecycles)? {
             next.derive_states();

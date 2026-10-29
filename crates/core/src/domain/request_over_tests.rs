@@ -103,7 +103,7 @@ fn a_task_reopened_and_done_again_tells_the_orchestrator_again() {
 fn a_closed_request_tells_nothing() {
     let mut s = request(false);
     ok(&mut s, orchestrator(), task("design", "r"));
-    assert_eq!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "design".into() })).len(), 1);
+    assert_eq!(told(&ok(&mut s, orchestrator(), Command::CancelTask { task_id: "design".into() })).len(), 1);
     let close = ok(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: Some("Not needed after all".into()), withdrawn: false, title: None, headline: None });
     assert!(told(&close).is_empty());
     assert!(s.requests[&"r".into()].closed);
@@ -113,4 +113,39 @@ fn a_closed_request_tells_nothing() {
     assert!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "launch".into() })).is_empty(),
         "a message closes itself when its last task ends");
     assert!(s.requests[&"r".into()].closed);
+}
+
+/// 25 October: the user cancelled «iPhone: los botones de la TUI en el detalle de tarea», the only
+/// task of its request, before any node ran it; the orchestrator was woken only to close the
+/// request as withdrawn.
+#[test]
+fn the_only_task_the_user_cancels_before_it_starts_withdraws_its_request_without_the_orchestrator() {
+    let mut s = request(false);
+    ok(&mut s, orchestrator(), task("design", "r"));
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "design".into() });
+    assert!(!cancelled.effects.iter().any(|e| matches!(e,
+        DomainEffect::RequestTasksOver { .. } | DomainEffect::NotifyOrchestrator { .. } | DomainEffect::NotifyAgent { .. })),
+        "nobody is told: {:?}", cancelled.effects);
+    let request = &s.requests[&"r".into()];
+    assert!(request.closed && request.withdrawn);
+    ok(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "design".into() });
+    let envelope = CommandEnvelope {
+        protocol_version: 2, data_epoch: s.data_epoch.clone(), command_id: "reopen".into(), expected_revision: s.revision,
+        command: Command::ReopenTask { task_id: "design".into() },
+    };
+    assert_eq!(s.execute(&user(), &envelope).unwrap_err().code, "not_found", "a withdrawn request's task is not reopened");
+}
+
+#[test]
+fn a_task_cancelled_after_it_started_or_by_the_orchestrator_still_hands_its_request_to_the_orchestrator() {
+    let mut s = request(false);
+    ok(&mut s, orchestrator(), task("design", "r"));
+    ok(&mut s, orchestrator(), Command::AssignTask { task_id: "design".into(), agent_id: "a".into(), model: None });
+    assert_eq!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "design".into() })), [&RequestId::from("r")]);
+    assert!(!s.requests[&"r".into()].closed);
+
+    let mut s = request(false);
+    ok(&mut s, orchestrator(), task("design", "r"));
+    assert_eq!(told(&ok(&mut s, orchestrator(), Command::CancelTask { task_id: "design".into() })), [&RequestId::from("r")]);
+    assert!(!s.requests[&"r".into()].closed);
 }

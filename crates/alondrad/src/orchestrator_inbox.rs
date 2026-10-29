@@ -466,6 +466,45 @@ mod tests {
         assert!(matches!(domain.state().unwrap().interactions[&"q-1".into()].payload, InteractionPayload::Question { answer: None, .. }));
     }
 
+    fn orchestrator_messages(domain: &DomainRuntime) -> Vec<i64> {
+        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .filter(|message| message.recipient_kind == "orchestrator").map(|message| message.id).collect()
+    }
+
+    /// 25 October: the user cancelled the only task of a request before any node ran it, and the
+    /// orchestrator was woken to close the request. A task that waited for a cancelled one is
+    /// still the orchestrator's to re-plan.
+    #[test]
+    fn a_request_whose_only_task_the_user_cancels_before_it_starts_hands_the_orchestrator_nothing() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = DomainRuntime::open(&home).unwrap();
+        request(&domain, "solo", false);
+        request(&domain, "pair", false);
+        let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None,
+            task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
+            dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        };
+        run(&domain, Actor::Orchestrator { generation: 0 }, "alone", create("alone", "solo", &[]));
+        run(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "first", create("first", "pair", &[]));
+        run(&domain, Actor::Orchestrator { generation: 0 }, "second", create("second", "pair", &["first"]));
+        let before = orchestrator_messages(&domain);
+        run(&domain, Actor::User { user_id: "u".into() }, "cancel-alone", Command::CancelTask { task_id: "alone".into() });
+        assert_eq!(orchestrator_messages(&domain), before, "the cancel leaves no message for the orchestrator");
+        let state = domain.state().unwrap();
+        assert!(state.requests[&"solo".into()].closed && state.requests[&"solo".into()].withdrawn);
+        assert_eq!(steps(&state), []);
+
+        run(&domain, Actor::User { user_id: "u".into() }, "cancel-first", Command::CancelTask { task_id: "first".into() });
+        let state = domain.state().unwrap();
+        assert!(!state.requests[&"pair".into()].closed, "its other task still waits");
+        assert!(state.open_start_problem(&"second".into()).is_none(), "the user is not asked first");
+        assert!(matches!(&steps(&state)[..], [Step::Tell { text, .. }] if text.contains("Re-plan it now")),
+            "the orchestrator re-plans the task that waited for it: {:?}", steps(&state));
+    }
+
     fn node_with_task(domain: &DomainRuntime) {
         run(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Node".into(), at: 0 });
         request(domain, "r", false);

@@ -103,6 +103,7 @@ pub(super) fn assert_aggregate_rules(s: &DomainState) {
 fn cancelling_a_task_without_a_node_ends_only_with_the_cleanup_receipt() {
     let mut s = world();
     task(&mut s, "t", None);
+    task(&mut s, "other", None);
     assert_eq!(kinds(&s, "t"), ["planned"]);
     assert_eq!(lifecycle(&s, "t"), (TaskState::NotStarted, false, None, None));
 
