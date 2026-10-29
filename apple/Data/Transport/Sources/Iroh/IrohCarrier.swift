@@ -83,12 +83,25 @@ public actor IrohCarrier: EnvelopeCarrier {
         linger?.cancel()
         linger = nil
         startedAt = liveLink == nil ? clock.now : nil
-        keepConnected()
+        if onDemandDial != nil {
+            connectingNow = true
+        } else if !connectingNow {
+            keepConnected()
+        }
     }
 
-    /// The app went to the background: close the connection and stop reconnecting.
+    /// Requests already using or opening a connection finish before it becomes idle.
     public func stop() async {
         running = false
+        startedAt = nil
+        if !shut, inUse > 0 {
+            if !connectingNow, link == nil, let keeper {
+                keeper.cancel()
+                self.keeper = nil
+                generation += 1
+            }
+            return
+        }
         keeper?.cancel()
         keeper = nil
         linger?.cancel()
@@ -135,12 +148,12 @@ public actor IrohCarrier: EnvelopeCarrier {
         for attempt in 0..<max(attempts, 2) {
             try MutationScope.check()
             guard lifetime.isActive else { throw CancellationError() }
+            inUse += 1
+            defer { release() }
             guard let link = await readyLink() else { throw IrohCarrierError.unavailable }
             try MutationScope.check()
             let reply: Data
-            inUse += 1
             do {
-                defer { release() }
                 reply = try await Deadline.run(within: timeout) {
                     try await link.exchange(body, answerLimit: DirectHTTP.maxResponse + 64)
                 }
@@ -153,7 +166,7 @@ public actor IrohCarrier: EnvelopeCarrier {
                 throw CancellationError()
             } catch {
                 guard lifetime.isActive else { throw CancellationError() }
-                if link.isClosed {
+                if link.isClosed || (error as? IrohLinkError) == .noAnswer {
                     drop(link)
                     if !mutation, !reconnected {
                         reconnected = true
@@ -208,7 +221,8 @@ public actor IrohCarrier: EnvelopeCarrier {
     private func readyLink() async -> (any IrohLink)? {
         if let liveLink { return liveLink }
         guard !shut else { return nil }
-        guard running else { return await onDemandLink() }
+        if let onDemandDial { return await onDemandDial.value }
+        guard running || (keeper != nil && connectingNow) else { return await onDemandLink() }
         if !connectingNow { keepConnected() }
         let id = UUID()
         let wait = connectWait
@@ -237,16 +251,28 @@ public actor IrohCarrier: EnvelopeCarrier {
         let asked = clock.now
         let connected = await connectOnce()
         onDemandDial = nil
-        guard let connected else { return nil }
-        guard !running, generation == current, !shut else {
-            await connected.close()
+        guard generation == current, !shut else {
+            await connected?.close()
             return running ? await readyLink() : nil
+        }
+        connectingNow = false
+        guard let connected else {
+            resolveWaiters(nil)
+            if running { keepConnected() }
+            return nil
         }
         linger?.cancel()
         linger = nil
         link = connected
         currentRoute = connected.path().route
-        observer?(.connectedOnDemand(currentRoute, after: asked.duration(to: clock.now)))
+        if running {
+            connectingNow = false
+            adopt(connected)
+            resolveWaiters(connected)
+            keepConnected()
+        } else {
+            observer?(.connectedOnDemand(currentRoute, after: asked.duration(to: clock.now)))
+        }
         return connected
     }
 
@@ -300,18 +326,29 @@ public actor IrohCarrier: EnvelopeCarrier {
     }
 
     private func connectLoop(_ current: Int) async {
+        defer {
+            if generation == current {
+                connectingNow = false
+                keeper = nil
+            }
+        }
         var failures = 0
-        while running, generation == current {
+        while running || inUse > 0, generation == current, !shut, !Task.isCancelled {
             if liveLink == nil {
                 connectingNow = true
                 let connected = await connectOnce()
-                guard running, generation == current else {
+                guard running || inUse > 0, generation == current, !shut else {
+                    if generation == current {
+                        connectingNow = false
+                        keeper = nil
+                    }
                     await connected?.close()
                     return
                 }
                 connectingNow = false
                 resolveWaiters(connected)
                 guard let connected else {
+                    guard running else { return }
                     let delay = retryDelays[min(failures, retryDelays.count - 1)]
                     failures += 1
                     try? await Task.sleep(for: delay)
@@ -320,6 +357,7 @@ public actor IrohCarrier: EnvelopeCarrier {
                 failures = 0
                 adopt(connected)
             }
+            guard running else { return }
             guard let watched = link else { continue }
             for await path in watched.pathChanges() {
                 guard link === watched, let route = path.route, route != currentRoute else { continue }

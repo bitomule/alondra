@@ -264,7 +264,9 @@ async fn full_stack_fixture_server() {
         relay_daemon(home, Arc::new(domain), &relay_url, &epoch, &action).await;
         return;
     }
-    if std::env::var_os("ALONDRA_FIXTURE_IROH").is_some() {
+    if std::env::var_os("ALONDRA_FIXTURE_IROH").is_some()
+        || std::env::var_os("ALONDRA_FIXTURE_IROH_RELAY").is_some()
+    {
         iroh_daemon(home, Arc::new(domain), &epoch, &action).await;
         return;
     }
@@ -461,6 +463,24 @@ fn iroh_service(
 }
 
 async fn bind_iroh(service: &crate::service::Service, port: u16) -> iroh::Endpoint {
+    if let Ok(relay) = std::env::var("ALONDRA_FIXTURE_IROH_RELAY") {
+        let relay: iroh::RelayUrl = relay.parse().expect("valid fixture iroh relay URL required");
+        let transport = iroh::endpoint::QuicTransportConfig::builder()
+            .max_concurrent_bidi_streams(iroh::endpoint::VarInt::from_u32(crate::iroh_endpoint::MAX_STREAMS))
+            .max_concurrent_uni_streams(iroh::endpoint::VarInt::from_u32(0))
+            .build();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(service.iroh_key().clone())
+            .alpns(vec![crate::iroh_endpoint::ALPN.to_vec()])
+            .clear_ip_transports()
+            .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
+            .transport_config(transport)
+            .bind()
+            .await
+            .unwrap();
+        endpoint.insert_relay(relay.clone(), Arc::new(iroh::RelayConfig::from(relay))).await;
+        return endpoint;
+    }
     let config = crate::iroh_endpoint::IrohConfig {
         relay: "off".into(),
         listen: Some(std::net::Ipv4Addr::LOCALHOST.into()),
@@ -536,7 +556,9 @@ async fn iroh_stream(
     mut recv: iroh::endpoint::RecvStream,
 ) {
     let Ok(bytes) = recv.read_to_end(crate::iroh_endpoint::MAX_REQUEST).await else { return };
+    let received = std::time::SystemTime::now();
     let request = opened_request(&service, &bytes);
+    timing("received", &request, received);
     let (method, path) = (request["method"].as_str().unwrap_or_default(), request["path"].as_str().unwrap_or_default());
     let action = method == "POST" && path == "/actions";
     if action {
@@ -549,6 +571,7 @@ async fn iroh_stream(
         harness.acknowledgments.fetch_add(1, Ordering::Relaxed);
     }
     let reply = crate::iroh_endpoint::answer(&service, &device_id, &bytes).await;
+    timing("committed", &request, std::time::SystemTime::now());
     if action && harness.hold_action.swap(false, Ordering::Relaxed) {
         let released = harness.release.notified();
         tokio::pin!(released);
@@ -559,6 +582,19 @@ async fn iroh_stream(
     if send.write_all(&reply).await.is_ok() {
         let _ = send.finish();
     }
+}
+
+fn timing(stage: &str, request: &Value, at: std::time::SystemTime) {
+    if std::env::var_os("ALONDRA_FIXTURE_MEASURE").is_none() {
+        return;
+    }
+    let us = at.duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as u64;
+    emit(json!({"event":"timing","stage":stage,"command_id":request["body"]["command_id"],
+        "us":us,"method":request["method"],"path":request["path"]}));
+}
+
+fn fixture_iroh_address(endpoint: &iroh::Endpoint) -> std::net::SocketAddr {
+    endpoint.bound_sockets().first().copied().unwrap_or_else(|| ([127, 0, 0, 1], 0).into())
 }
 
 fn stdin_commands() -> (tokio::sync::mpsc::UnboundedReceiver<Value>, std::thread::JoinHandle<()>) {
@@ -595,14 +631,15 @@ async fn iroh_daemon(
         acknowledgments: AtomicU64::new(0),
     });
     let bound = bind_iroh(&service, port).await;
-    let address = bound.bound_sockets()[0];
+    let address = fixture_iroh_address(&bound);
+    let relay = std::env::var("ALONDRA_FIXTURE_IROH_RELAY").ok();
     let mut serving = tokio::spawn(serve_iroh(bound.clone(), service.clone(), harness.clone()));
     let mut endpoint = Some(bound);
     emit(json!({"event":"ready","data_epoch":epoch,"action_id":action,"option_id":"yes",
         "fixture_home":home.to_str().unwrap(),"mac_id":"mac-1","device_id":"phone-1",
         "signing_seed_base64":STANDARD.encode(PHONE_SIGNING),"agreement_seed_base64":STANDARD.encode(PHONE_AGREEMENT),
         "mac_signing_seed_base64":STANDARD.encode(MAC_SIGNING),"mac_agreement_seed_base64":STANDARD.encode(MAC_AGREEMENT),
-        "iroh_endpoint":service.iroh_key().public().to_string(),"iroh_address":address.to_string()}));
+        "iroh_endpoint":service.iroh_key().public().to_string(),"iroh_address":address.to_string(),"iroh_relay":relay}));
     let (mut incoming, reader) = stdin_commands();
     while let Some(command) = incoming.recv().await {
         match command["command"].as_str().unwrap() {
@@ -626,7 +663,7 @@ async fn iroh_daemon(
             "open_endpoint" => {
                 let opened = bind_iroh(&service, address.port()).await;
                 serving = tokio::spawn(serve_iroh(opened.clone(), service.clone(), harness.clone()));
-                emit(json!({"event":"endpoint_open","iroh_address":opened.bound_sockets()[0].to_string()}));
+                emit(json!({"event":"endpoint_open","iroh_address":fixture_iroh_address(&opened).to_string(),"iroh_relay":relay}));
                 endpoint = Some(opened);
             }
             "stats" => {

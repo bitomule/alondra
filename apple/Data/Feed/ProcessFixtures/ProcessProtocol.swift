@@ -9,6 +9,8 @@ struct ProcessClientConfiguration: Codable, Sendable {
     let signingSeed: String
     var optionID: String? = nil
     var iroh: ProcessIrohConfiguration? = nil
+    var measure: Bool? = nil
+    var startsLive: Bool? = nil
 }
 /// A Mac paired with an account, reached over its iroh endpoint at `address` with no relay.
 struct ProcessIrohConfiguration: Codable, Sendable {
@@ -18,6 +20,12 @@ struct ProcessIrohConfiguration: Codable, Sendable {
     let agreementSeed: String
     let macSigningSeed: String
     let macAgreementSeed: String
+    var relay: String? = nil
+}
+struct ProcessTiming: Codable, Sendable {
+    let stage: String
+    let us: Double
+    var operation: String? = nil
 }
 struct ProcessClientCommand: Codable, Sendable {
     let command: String
@@ -32,6 +40,7 @@ struct ProcessNetworkFaults: Codable, Sendable {
     var cutAnswers = 0
     var lostReplies = 0
     var lostStatus = 0
+    var staleAnswers = 0
 }
 struct ProcessHistorySample: Codable, Sendable {
     let operations: Int
@@ -66,4 +75,5 @@ struct ProcessClientEvent: Codable, Sendable {
     var readErrors: Int? = nil
     var undelivered: [String]? = nil
     var connections: Int? = nil
+    var timings: [ProcessTiming]? = nil
 }

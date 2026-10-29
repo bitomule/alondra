@@ -162,6 +162,9 @@ private struct ServerEvent: Decodable, Sendable {
     var macAgreementSeed: String?
     var irohEndpoint: String?
     var irohAddress: String?
+    var irohRelay: String?
+    var stage: String?
+    var us: Double?
     var commandID: String?
     var effects: Int?
     var actionPosts: Int?
@@ -169,12 +172,13 @@ private struct ServerEvent: Decodable, Sendable {
     var acknowledgments: Int?
     var journalRecords: Int?
     enum CodingKeys: String, CodingKey {
-        case event, effects, acknowledgments
+        case event, effects, acknowledgments, stage, us
         case baseURL = "base_url", dataEpoch = "data_epoch", actionID = "action_id"
         case fixtureHome = "fixture_home", optionID = "option_id", deviceID = "device_id", signingSeed = "signing_seed_base64", commandID = "command_id"
         case macID = "mac_id", agreementSeed = "agreement_seed_base64"
         case macSigningSeed = "mac_signing_seed_base64", macAgreementSeed = "mac_agreement_seed_base64"
         case irohEndpoint = "iroh_endpoint", irohAddress = "iroh_address"
+        case irohRelay = "iroh_relay"
         case actionPosts = "action_posts", resultGets = "result_gets", journalRecords = "journal_records"
     }
 }
@@ -223,7 +227,7 @@ private struct IrohStack {
             signingSeed: try #require(ready.signingSeed), optionID: ready.optionID,
             iroh: .init(endpoint: try #require(ready.irohEndpoint), address: try #require(ready.irohAddress), macID: macID,
                 agreementSeed: try #require(ready.agreementSeed), macSigningSeed: try #require(ready.macSigningSeed),
-                macAgreementSeed: try #require(ready.macAgreementSeed)))
+                macAgreementSeed: try #require(ready.macAgreementSeed), relay: ready.irohRelay))
     }
     private func irohStack() async throws -> IrohStack {
         let daemon = try launchDaemon(home: TestFiles.directory(), environment: ["ALONDRA_FIXTURE_IROH": "1"])
@@ -232,6 +236,98 @@ private struct IrohStack {
         let clientHome = try TestFiles.directory(), config = clientHome.appending(path: "fixture.json")
         try JSONEncoder().encode(irohConfiguration(ready)).write(to: config)
         return IrohStack(daemon: daemon, ready: ready, config: config, clientHome: clientHome)
+    }
+
+    /// Opt-in measurement against a disposable local iroh relay; elapsed time is evidence,
+    /// never a test assertion. The daemon disables its IP transports for the relayed cases.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ALONDRA_MEASURE_RELAY"] != nil),
+          .timeLimit(.minutes(5)),
+          arguments: [false, true], ["cold", "live", "background", "stale"])
+    func measureAnswerThroughEachConnection(relay: Bool, mode: String) async throws {
+        let cold = mode == "cold", background = mode == "background"
+        var environment = ["ALONDRA_FIXTURE_IROH": "1", "ALONDRA_FIXTURE_MEASURE": "1"]
+        if relay { environment["ALONDRA_FIXTURE_IROH_RELAY"] = ProcessInfo.processInfo.environment["ALONDRA_MEASURE_RELAY"] }
+        let daemon = try launchDaemon(home: TestFiles.directory(), environment: environment)
+        defer { daemon.cleanup() }
+        let ready = try await daemon.next(ServerEvent.self)
+        var configuration = try irohConfiguration(ready)
+        configuration.measure = true; configuration.startsLive = !cold
+        let home = try TestFiles.directory(), config = home.appending(path: "fixture.json")
+        try JSONEncoder().encode(configuration).write(to: config)
+        let client = try launchClient(home: home, config: config)
+        defer { client.cleanup() }
+        #expect(try await client.next(ProcessClientEvent.self).event == "ready")
+        if !cold {
+            try client.send(ProcessClientCommand(command: "await_connections", count: 1))
+            #expect(try await client.next(ProcessClientEvent.self).event == "connected")
+        }
+        if background {
+            try daemon.send(ServerCommand(command: "hold_next_action"))
+            #expect(try await daemon.next(ServerEvent.self).event == "armed")
+        }
+        var serverTimes: [String: Double] = [:]
+        var commandID: String?
+        func nextServer() async throws -> ServerEvent {
+            while true {
+                let event = try await daemon.next(ServerEvent.self)
+                guard event.event == "timing" else { return event }
+                if event.commandID == commandID, let stage = event.stage, let us = event.us { serverTimes[stage] = us }
+            }
+        }
+        try client.send(ProcessClientCommand(command: "prepare", nonce: "80000000-0000-4000-8000-000000000001"))
+        let request = try #require(try await client.next(ProcessClientEvent.self).request)
+        commandID = request.commandId
+        if mode == "stale" {
+            try client.send(ProcessClientCommand(command: "network", network: .init(staleAnswers: 1)))
+            #expect(try await client.next(ProcessClientEvent.self).event == "network_set")
+        }
+        if background {
+            try client.send(ProcessClientCommand(command: "start_delivery"))
+            #expect(try await client.next(ProcessClientEvent.self).event == "delivery_started")
+            #expect(try await nextServer().event == "applied")
+            try client.send(ProcessClientCommand(command: "go_idle"))
+            #expect(try await client.next(ProcessClientEvent.self).event == "idle")
+            try daemon.send(ServerCommand(command: "release"))
+            #expect(try await nextServer().event == "released")
+            try client.send(ProcessClientCommand(command: "finish_action"))
+        } else {
+            try client.send(ProcessClientCommand(command: "deliver"))
+        }
+        let answer = try await client.next(ProcessClientEvent.self)
+        #expect(answer.event == "answered" && answer.response?.outcome == .applied)
+        try client.send(ProcessClientCommand(command: "drain"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "retirement_drained")
+        try client.send(ProcessClientCommand(command: "timings"))
+        let measured = try await client.next(ProcessClientEvent.self)
+        let samples = try #require(measured.timings)
+        try daemon.send(ServerCommand(command: "stats"))
+        let final = try await nextServer()
+        #expect(final.event == "stats" && final.effects == 1 && final.actionPosts == 1)
+        func time(_ stage: String, operation: String? = nil) throws -> Double {
+            try #require(samples.first { $0.stage == stage && (operation == nil || $0.operation == operation) }?.us)
+        }
+        let tap = try time("tap"), firstSend = try time("action_send", operation: request.commandId)
+        let sends = samples.filter { $0.stage == "action_send" && $0.operation == request.commandId }
+        let sent = try #require(sends.last?.us)
+        let received = try #require(serverTimes["received"]), committed = try #require(serverTimes["committed"])
+        let dialBegin = try time("dial_begin"), dialEnd = try time("dial_end")
+        let helloBegin = try time("hello_begin"), helloEnd = try time("hello_end")
+        let report: [String: Any] = [
+            "relay": relay, "mode": mode, "connections": measured.connections ?? -1,
+            "tap_to_send_ms": (firstSend - tap) / 1000, "retry_and_recovery_ms": (sent - firstSend) / 1000,
+            "action_attempts": sends.count, "dial_ms": (dialEnd - dialBegin) / 1000,
+            "hello_ms": (helloEnd - helloBegin) / 1000,
+            "send_to_daemon_ms": (received - sent) / 1000, "daemon_ms": (committed - received) / 1000,
+            "tap_to_commit_ms": (committed - tap) / 1000,
+            "tap_to_confirmation_ms": (try time("answered") - tap) / 1000,
+            "client_trace": try JSONSerialization.jsonObject(with: JSONEncoder().encode(samples)),
+            "daemon_trace": serverTimes,
+        ]
+        print("ANSWER_LATENCY " + String(decoding: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), as: UTF8.self))
+        try client.send(ProcessClientCommand(command: "quit"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
+        try daemon.send(ServerCommand(command: "stop"))
+        #expect(try await daemon.next(ServerEvent.self).event == "stopped")
     }
 
     @Test func theMacsIrohEndpointComingBackKeepsDetailsUsableAndRecoversTheAppliedActionWithoutAnotherSend() async throws {

@@ -5,6 +5,7 @@ import AlondraIroh
 import CryptoKit
 import Foundation
 import Darwin
+import Synchronization
 
 private enum ProcessClientError: Error { case invalidCommand, invalidConfiguration, endOfInput, measurementUnavailable }
 
@@ -44,7 +45,8 @@ private final class ClientInput: Sendable {
             keyMaterial: setup.material, scope: setup.scope)
         let api = setup.api
         let sender = ViewActionSender(transport: api, intents: store,
-            retryPolicy: ActionRetryPolicy(delay: { _ in .milliseconds(50) }, sleep: { try await Task.sleep(for: $0) }))
+            retryPolicy: config.measure == true ? .live
+                : ActionRetryPolicy(delay: { _ in .milliseconds(50) }, sleep: { try await Task.sleep(for: $0) }))
         try emit(.init(event: "ready", pid: ProcessInfo.processInfo.processIdentifier,
             pendingIDs: store.restored.map(\.request.commandId), pendingPhases: store.restored.map { $0.phase.rawValue },
             undelivered: sender.undelivered.current.sorted()))
@@ -56,11 +58,22 @@ private final class ClientInput: Sendable {
             let command = try await input.next()
             do {
                 switch command.command {
+                case "go_idle":
+                    await setup.carrier?.stop()
+                    try emit(.init(event: "idle"))
+                case "go_live":
+                    await setup.carrier?.start()
+                    try emit(.init(event: "live"))
+                case "timings":
+                    try emit(.init(event: "timings", connections: await setup.network?.connectionCount(),
+                        timings: await setup.network?.timings()))
                 case "prepare":
                     guard let nonce = command.nonce else { throw ProcessClientError.invalidCommand }
+                    await setup.network?.mark("tap")
                     let draft = ActionRequest(commandId: nonce, dataEpoch: config.dataEpoch, client: client, lang: "en",
                         actionId: config.actionID, optionId: config.optionID, resolvesCard: true)
                     prepared = try await sender.prepare(draft)
+                    await setup.network?.mark("prepared")
                     try emit(.init(event: "prepared", request: prepared))
                 case "send":
                     guard let request = command.request ?? prepared else { throw ProcessClientError.invalidCommand }
@@ -72,7 +85,9 @@ private final class ClientInput: Sendable {
                     try emit(.init(event: "network_set"))
                 case "deliver":
                     guard let request = command.request ?? prepared else { throw ProcessClientError.invalidCommand }
+                    await setup.network?.mark("deliver")
                     let response = try await sender.deliver(request)
+                    await setup.network?.mark("answered")
                     try emit(.init(event: "answered", request: request, response: response,
                         pendingIDs: await sender.unresolvedCommandIDs(), undelivered: sender.undelivered.current.sorted()))
                 case "start_delivery":
@@ -93,6 +108,7 @@ private final class ClientInput: Sendable {
                     guard let task = actionTask else { throw ProcessClientError.invalidCommand }
                     actionTask = nil
                     let response = try await task.value
+                    await setup.network?.mark("answered")
                     try emit(.init(event: "answered", response: response))
                 case "detail_burst":
                     let feed = FeedSession(transport: api, client: client, lang: "en")
@@ -208,6 +224,7 @@ private final class ClientInput: Sendable {
         let scope: ActionIntentScope
         let stop: @Sendable () async -> Void
         var network: FixtureIrohNetwork? = nil
+        var carrier: IrohCarrier? = nil
     }
     private static func setup(config: ProcessClientConfiguration, directory: URL) async throws -> Setup {
         guard let seed = Data(base64Encoded: config.signingSeed) else { throw ProcessClientError.invalidConfiguration }
@@ -217,7 +234,8 @@ private final class ClientInput: Sendable {
                   let agreementSeed = Data(base64Encoded: iroh.agreementSeed),
                   let macSigningSeed = Data(base64Encoded: iroh.macSigningSeed),
                   let macAgreementSeed = Data(base64Encoded: iroh.macAgreementSeed),
-                  let address = IrohMacAddress(endpointID: iroh.endpoint, relay: nil, directAddresses: [iroh.address])
+                  let address = IrohMacAddress(endpointID: iroh.endpoint, relay: iroh.relay.flatMap(URL.init(string:)),
+                    directAddresses: iroh.relay == nil ? [iroh.address] : [])
             else { throw ProcessClientError.invalidConfiguration }
             let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: agreementSeed)
             let macSigning = try P256.Signing.PrivateKey(rawRepresentation: macSigningSeed).publicKey
@@ -226,7 +244,7 @@ private final class ClientInput: Sendable {
                 + macSigning.x963Representation + macAgreement.publicKey.x963Representation).map { String(format: "%02x", $0) }.joined()
             let scope = EnvelopeJournalScope(relay: base, macID: iroh.macID, deviceID: config.deviceID, credentialRevision: revision)
             let network = FixtureIrohNetwork(phoneSigning: signing.publicKey, macAgreement: macAgreement,
-                macID: iroh.macID, deviceID: config.deviceID)
+                macID: iroh.macID, deviceID: config.deviceID, measure: config.measure == true)
             let dialer = FixtureIrohDialer(IrohEndpointDialer(identity: IrohIdentity(pairingSigning: signing, macID: iroh.macID)),
                 network: network)
             // Reconnects at once, so a test that brings the endpoint back does not wait out the app's backoff.
@@ -236,11 +254,11 @@ private final class ClientInput: Sendable {
                 macSigning: macSigning, macAgreement: macAgreement.publicKey, iroh: carrier,
                 journal: try EnvelopeJournal(scope: scope, directory: directory.appending(path: "operations")))
             let routed = RoutedSession(iroh: .init(session: session, carrier: carrier), direct: nil, router: nil)
-            await carrier.start()
+            if config.startsLive != false { await carrier.start() }
             return Setup(api: .init(serviceURL: base, deviceID: config.deviceID, operations: routed),
                 material: agreement.rawRepresentation, scope: .init(service: base.absoluteString + "/" + iroh.macID,
                     device: config.deviceID, credentialRevision: revision),
-                stop: { await routed.deactivate() }, network: network)
+                stop: { await routed.deactivate() }, network: network, carrier: carrier)
         }
         guard let base = URL(string: config.baseURL) else { throw ProcessClientError.invalidConfiguration }
         let identity = LoopbackIdentityStore(directory: directory.appending(path: "identity"), makeKey: { .software(signing) })
@@ -332,7 +350,10 @@ private final class FixtureIrohDialer: IrohDialer {
     }
 
     func dial(_ mac: IrohMacAddress) async throws -> any IrohLink {
-        FixtureIrohLink(try await dialer.dial(mac), network: network)
+        await network.mark("dial_begin")
+        let link = try await dialer.dial(mac)
+        await network.mark("dial_end")
+        return FixtureIrohLink(link, network: network)
     }
 
     func networkMoved() async { await dialer.networkMoved() }
@@ -343,6 +364,7 @@ private final class FixtureIrohDialer: IrohDialer {
 private final class FixtureIrohLink: IrohLink {
     private let link: any IrohLink
     private let network: FixtureIrohNetwork
+    private let stale = Mutex(false)
 
     init(_ link: any IrohLink, network: FixtureIrohNetwork) {
         self.link = link
@@ -351,13 +373,28 @@ private final class FixtureIrohLink: IrohLink {
 
     func exchange(_ request: Data, answerLimit: Int) async throws -> Data {
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: request) else {
+            await network.mark("hello_begin")
             let reply = try await link.exchange(request, answerLimit: answerLimit)
+            await network.mark("hello_end")
             if IrohHello.accepted(reply) { await network.connected() }
             return reply
         }
-        let replyLost = try await network.leaving(envelope)
+        let disposition = try await network.leaving(envelope)
+        if await network.makeStale(envelope) {
+            stale.withLock { $0 = true }
+            throw IrohLinkError.noAnswer
+        }
+        if stale.withLock({ $0 }), disposition.resultRead {
+            await network.mark("stale_wait_begin", operation: envelope.requestID)
+            let held = AsyncStream<Void>.makeStream()
+            for await _ in held.stream {}
+            held.continuation.finish()
+            await network.mark("stale_wait_end", operation: envelope.requestID)
+            throw CancellationError()
+        }
         let reply = try await link.exchange(request, answerLimit: answerLimit)
-        if replyLost { throw IrohLinkError.noAnswer }
+        await network.mark("reply", operation: envelope.requestID)
+        if disposition.replyLost { throw IrohLinkError.noAnswer }
         return reply
     }
 
@@ -383,12 +420,31 @@ private actor FixtureIrohNetwork {
     private var connectionWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var holdAcknowledgments = false
     private var acknowledgmentReleases: [CheckedContinuation<Void, Never>] = []
+    private let measure: Bool
+    private var samples: [ProcessTiming] = []
 
-    init(phoneSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PrivateKey, macID: String, deviceID: String) {
+    init(phoneSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PrivateKey, macID: String, deviceID: String,
+         measure: Bool = false) {
         self.phoneSigning = phoneSigning; self.macAgreement = macAgreement; self.macID = macID; self.deviceID = deviceID
+        self.measure = measure
     }
 
+    func mark(_ stage: String, operation: String? = nil) {
+        guard measure else { return }
+        samples.append(.init(stage: stage, us: Date().timeIntervalSince1970 * 1_000_000, operation: operation))
+    }
+
+    func timings() -> [ProcessTiming] { samples }
+
     func impose(_ faults: ProcessNetworkFaults) { self.faults = faults }
+
+    /// One stream fails without a known outcome; the same connection then silently loses
+    /// recovery reads. A fresh connection still reaches the real daemon over the working network.
+    func makeStale(_ envelope: Envelope) -> Bool {
+        guard faults.staleAnswers > 0, ActionOperationID(rawValue: envelope.requestID) != nil else { return false }
+        faults.staleAnswers -= 1
+        return true
+    }
 
     func connected() {
         connections += 1
@@ -420,11 +476,12 @@ private actor FixtureIrohNetwork {
     }
 
     /// Whether the reply to `envelope` is lost once the Mac has it; throws when it never leaves.
-    func leaving(_ envelope: Envelope) async throws -> Bool {
+    func leaving(_ envelope: Envelope) async throws -> (replyLost: Bool, resultRead: Bool) {
         let bytes = try envelope.open(senderKey: phoneSigning, recipientKey: macAgreement,
             sender: deviceID, recipient: macID, route: macID, nowMilliseconds: nil)
         let path = (try JSONSerialization.jsonObject(with: bytes) as? [String: Any])?["path"] as? String ?? ""
         let answer = ActionOperationID(rawValue: envelope.requestID) != nil
+        mark(answer ? "action_send" : "read_send", operation: envelope.requestID)
         if answer {
             mutations += 1
             for waiter in answerAttempts { waiter.resume() }
@@ -443,13 +500,13 @@ private actor FixtureIrohNetwork {
         }
         if answer, faults.lostReplies > 0 {
             faults.lostReplies -= 1
-            return true
+            return (true, result)
         }
         if result, faults.lostStatus > 0 {
             faults.lostStatus -= 1
-            return true
+            return (true, result)
         }
-        return false
+        return (false, result)
     }
 
     func counts() -> (Int, Int) { (mutations, others) }
