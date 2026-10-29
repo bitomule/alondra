@@ -1095,6 +1095,15 @@ impl DomainState {
     pub(super) fn next_input(&self, task: &TaskId) -> String {
         format!("input:{task}:{}", self.revision + 1)
     }
+    /// Whether the node of `task` was told something, since its last delivery, by a command at or
+    /// after `revision`: each input carries the revision that made it (`next_input`).
+    pub(super) fn told_since(&self, task: &TaskId, revision: u64) -> bool {
+        let prefix = format!("input:{task}:");
+        self.lifecycle_journal.get(task).is_some_and(|journal| journal.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Presented { .. }))
+            .any(|record| matches!(record, LifecycleRecord::Told { input, .. }
+                if input.strip_prefix(&prefix).and_then(|at| at.parse::<u64>().ok()).is_some_and(|at| at >= revision))))
+    }
     pub(super) fn next_operation(&self, kind: &str, task: &TaskId) -> String {
         format!("{kind}:{task}:{}", self.revision + 1)
     }
@@ -1511,6 +1520,9 @@ impl DomainState {
     pub fn live_state(&self, task: &TaskId) -> Option<LiveState> {
         let lifecycle = self.lifecycle_of(task).ok()?;
         if let Some(worker) = lifecycle.working_on_delivery() {
+            return Some(LiveState::Working(worker));
+        }
+        if self.task_handed_back(task) == Some(Instruction::Reply) && let Some(worker) = lifecycle.working_on_reply() {
             return Some(LiveState::Working(worker));
         }
         let live = lifecycle.live()?;

@@ -158,7 +158,7 @@ impl DomainState {
         let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else {
             return None;
         };
-        let reply = feedback.last().filter(|_| self.open_reply(presentation) && self.node_attends(presentation));
+        let reply = feedback.last().filter(|reply| self.open_reply(presentation) && self.node_attends(presentation) && self.reply_in_hand(presentation, reply));
         reply
             .or_else(|| last_hand_back(feedback))
             .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
@@ -179,6 +179,19 @@ impl DomainState {
         };
         self.tasks.get(task_id).and_then(|t| t.agent_id.as_ref()).and_then(|id| self.agents.get(id))
             .is_some_and(|a| !matches!(a.phase, NodePhase::Lost | NodePhase::Closing | NodePhase::Closed) && self.node_pause(&a.id).is_none())
+    }
+    /// A node of the Agent SDK holds the reply until it took it and its session rests with nothing
+    /// to wait for. That alone gives the delivery back, whatever fact
+    /// of its turns reached Alondra, so a delivery is never out of the user's queue while its node
+    /// does nothing for them.
+    fn reply_in_hand(&self, presentation: &Interaction, reply: &Feedback) -> bool {
+        let Scope::Task { task_id } = &presentation.scope else { return false };
+        let sdk = self.tasks.get(task_id).and_then(|t| t.agent_id.as_ref())
+            .is_some_and(|agent| self.node_phase(agent) == Some(&NodePhase::ThroughSdk) || self.through_sdk(agent));
+        if !sdk || !self.told_since(task_id, reply.at_revision) {
+            return true;
+        }
+        self.lifecycle_of(task_id).is_ok_and(|lifecycle| lifecycle.working_on_reply().is_some() || lifecycle.awaits().is_some())
     }
     /// The same for an active Task, through its current final delivery.
     /// The PR number and reason when the current final delivery went back because Alondra

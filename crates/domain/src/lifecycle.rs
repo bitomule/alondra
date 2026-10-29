@@ -1377,6 +1377,18 @@ impl TaskLifecycle {
             Activity::OwnWork { .. } | Activity::Continuation(_) | Activity::Awaiting(_) | Activity::Resting => None,
         }
     }
+    /// Who works, while the delivery waits for the user's review, on what the user replied to it:
+    /// an input still on its way, a turn, or work of its own that outlived its turn and the turn
+    /// its end wakes. Nobody works once the session rests or waits on the user, or while the node
+    /// is paused.
+    pub fn working_on_reply(&self) -> Option<Worker> {
+        let State::Delivered(delivered) = &self.state else { return None };
+        if delivered.gate != DeliveryGate::Review || delivered.decisions.values().any(|card| card.reason == WaitReason::Pause) {
+            return None;
+        }
+        delivered.session.execution().and_then(Execution::worker)
+            .or_else(|| self.has_pending().then_some(Worker::Alondra(Step::Delivering)))
+    }
     pub fn delivery(&self) -> Option<&InteractionId> {
         match &self.state {
             State::Delivered(delivered) => Some(&delivered.delivery),

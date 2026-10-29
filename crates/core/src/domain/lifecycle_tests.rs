@@ -1567,6 +1567,44 @@ fn a_reply_the_node_of_the_sdk_answered_brings_the_same_delivery_back_once_its_s
     assert_aggregate_rules(&s);
 }
 
+// t-duo-parcel: the user replied to its delivery and the node's turn on the reply left two
+// background commands running. Until it presented again, two hours later, the task read
+// «Delivered, waits for your review» with the delivery out of the user's queue, while its node
+// was working on the reply: either a card is in front of the user, or the node works.
+#[test]
+fn a_node_of_the_sdk_working_in_the_background_on_a_reply_reads_as_working_with_the_delivery_out_of_the_queue() {
+    use alondra_domain::{LiveState, Step, Worker};
+    let mut s = world();
+    answering_the_reply_with_background_work(&mut s);
+    assert_eq!(s.live_state(&"t".into()), Some(LiveState::Working(Worker::OwnWork)), "its background work runs for the reply");
+    assert!(!pending_cards(&s).contains(&"result".to_owned()));
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:snapshots".into(), continuation: "claude-notification:snapshots".into() },
+    ] });
+    assert_eq!(s.live_state(&"t".into()), Some(LiveState::Working(Worker::Alondra(Step::Waking))), "its end wakes the node");
+    assert!(!pending_cards(&s).contains(&"result".to_owned()));
+    assert_aggregate_rules(&s);
+}
+
+// A domain whose node rests after it took the reply, with the delivery still out of the user's
+// queue, as a release that never gave it back left it: the delivery is the user's again, on read.
+#[test]
+fn a_delivery_held_by_a_reply_its_resting_node_is_done_with_is_the_users_again() {
+    let mut s = world();
+    answering_the_reply_with_background_work(&mut s);
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::WorkEnded { work: "claude-task:snapshots".into(), continuation: "claude-notification:snapshots".into() },
+        RuntimeObservation::TurnResumed { turn: "turn-3".into(), continuation: "claude-notification:snapshots".into() },
+    ] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-3".into(), failure: None, failed: None });
+    let reply = s.interactions[&InteractionId::from("result")].clone();
+    let InteractionPayload::Delivery { feedback, .. } = &reply.payload else { panic!("a delivery") };
+    s.interactions.get_mut(&InteractionId::from("result")).unwrap().revision = feedback.last().unwrap().at_revision;
+    assert_eq!(s.task_handed_back(&"t".into()), None, "its node rests on nothing");
+    assert_eq!(s.live_state(&"t".into()), alondra_domain::Several::new([InteractionId::from("result")]).map(alondra_domain::LiveState::WaitingUser));
+    assert!(pending_cards(&s).contains(&"result".to_owned()), "the delivery is in front of the user: {:?}", pending_cards(&s));
+}
+
 /// An SDK task delivered while its turn runs; with `feedback`, that turn ended, the user asked it
 /// of the delivery, and the node's turn on it runs.
 fn delivered_through_the_sdk(s: &mut DomainState, feedback: Option<Instruction>) {
