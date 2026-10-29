@@ -1,6 +1,7 @@
 //! The gate every node start passes through: at most the working-node limit at once, one start
-//! a minute, none while memory has no room for one more node (`MacState::room`, which reserves
-//! margin for every node admitted in the last `IN_FLIGHT`), and no new start while the CPU is
+//! a minute (one every 3 while macOS warns of memory pressure), none while memory has no room for
+//! one more node (`MacState::room`, which reserves free memory for every node admitted in the last
+//! `IN_FLIGHT`), and no new start while the CPU is
 //! overloaded. Memory only ever holds starts and resumes: it never pauses a working node. The
 //! limit is the user's number, or in automatic what this Mac's cores and measured nodes take. What does not
 //! fit waits in a queue ordered by priority, then resumed work before new starts, then age. See
@@ -13,7 +14,7 @@
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Pauses, Paused, Reason};
-use crate::machine_state::{MacState, NoRoom};
+use crate::machine_state::{MacState, NoRoom, WARNING_SPACING};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::machine_incident::bytes_text;
@@ -74,7 +75,7 @@ pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
 }
 
 /// Whether `head` may start now, with `in_flight` nodes admitted in the last `IN_FLIGHT`. Memory
-/// holds every start and resume; the CPU holds only new starts.
+/// holds every start and resume; the CPU holds only new starts; macOS's warning only spaces them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState, in_flight: usize, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     mac.room(in_flight, now).map_err(|why| Hold::Memory { why, free: mac.free_percent })?;
@@ -84,6 +85,7 @@ pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState,
     if working >= limit as usize {
         return Err(Hold::Slots { working, limit });
     }
+    let spacing = if mac.warned() { spacing.max(WARNING_SPACING) } else { spacing };
     if let Some(until) = last_admission.map(|at| at + spacing).filter(|until| *until > now) {
         return Err(Hold::Spacing { until });
     }

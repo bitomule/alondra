@@ -1,27 +1,31 @@
 //! Whether the Mac has room for one more node. Memory never stops what already runs: it only
 //! answers, for the admission gate, whether one more node may start or a paused one resume.
 //!
-//! There is room when every sample of the last `ROOM_WINDOW` has macOS at normal pressure and a
-//! margin to macOS's warning that fits what one node costs, measured (`node_cost`), for the node
-//! that starts and for each node admitted in the last 3 minutes, whose memory does not show yet.
-//! The margin is what XNU weighs: it warns once the
-//! compressor holds more pages than all uncompressed memory, so the margin is uncompressed minus
-//! compressor memory (`MemoryCompressor::margin`). Where the system gives no compressor counters,
-//! 20 % free stands in for it. Over 33,145 samples of 10–13 Oct this rule keeps starts open 92 % of
-//! the time with the Mac idle and macOS normal, where the hysteresis it replaced kept them open
-//! 42 %; a start it lets through by mistake costs at most one macOS warning, since nothing is paused.
+//! There is room when, over the last `ROOM_WINDOW`, macOS never reported critical pressure and
+//! free memory, less what the node that starts and each node admitted in the last 3 minutes cost
+//! (`node_cost`), stayed at `FREE_FLOOR` or above, and at `SWAPPING_FLOOR` or above while macOS
+//! swapped out `SWAPPING` or more. macOS's warning alone never holds a start: it lingers for hours
+//! with a third or half of memory free, so it only spaces starts out (`WARNING_SPACING`). Percentages
+//! of the Mac's memory, as macOS reports it, so the rule holds on a Mac of any size.
 //!
-//! The window must be covered: a daemon that just started measures for a minute before it admits.
-//! The CPU load only holds new starts. See docs/pacing.md §1.
+//! A daemon that just started judges the samples it has. The CPU load only holds new starts. See
+//! docs/pacing.md §5.
 use std::collections::VecDeque;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
 
 /// How long memory must have had room before one more node starts.
 pub(crate) const ROOM_WINDOW: Millis = 60_000;
+/// Under macOS's warning, one start every this long, so the memory of each shows before the next.
+pub(crate) const WARNING_SPACING: Millis = 3 * 60_000;
 const GIB: i64 = 1 << 30;
-/// Free memory that counts as room where the system gives no compressor counters.
-const ROOM_FREE: u32 = 20;
+const MIB: u64 = 1 << 20;
+/// Free memory no start may take the Mac under.
+const FREE_FLOOR: u32 = 20;
+/// Free memory no start may take the Mac under while macOS swaps out.
+const SWAPPING_FLOOR: u32 = 30;
+/// What macOS must swap out within `ROOM_WINDOW` to count as swapping.
+const SWAPPING: u64 = 64 * MIB;
 const LOAD_BUSY_PER_CORE: f64 = 4.0;
 const LOAD_CALM_PER_CORE: f64 = 3.0;
 const LOAD_BUSY_HOLDS: Millis = 60_000;
@@ -30,24 +34,20 @@ const LOAD_CALM_HOLDS: Millis = 2 * 60_000;
 /// Why one more node may not start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NoRoom {
-    /// The daemon has not seen a minute of samples yet.
-    Measuring,
+    /// macOS reports critical pressure.
     Pressure(MemoryPressure),
-    /// The margin to macOS's warning, in bytes, and what the node that starts and those in flight
-    /// need, `nodes` of them at `cost` each.
-    Margin { margin: i64, needed: i64, nodes: usize, cost: i64 },
-    /// Free memory, without compressor counters.
-    Free { free: u32 },
+    /// Free memory, and what it must be for `nodes` more at `cost` each to leave `floor` free.
+    Free { free: u32, needed: u32, floor: u32, nodes: usize, cost: i64 },
+    /// What macOS swapped out in the last minute, in bytes, with `free` memory, `needed` to start.
+    Swapping { swapped: u64, free: u32, needed: u32 },
 }
 
 impl std::fmt::Display for NoRoom {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let gib = |bytes: i64| bytes as f64 / GIB as f64;
         match self {
-            NoRoom::Measuring => write!(out, "the daemon is measuring memory for its first minute"),
             NoRoom::Pressure(pressure) => write!(out, "macOS reports {pressure:?} memory pressure"),
-            NoRoom::Margin { margin, needed, nodes, cost } => write!(out, "{:.1} GiB left before macOS's memory warning, {:.1} GiB needed for {nodes} node(s) at {:.2} GiB each", gib(*margin), gib(*needed), gib(*cost)),
-            NoRoom::Free { free } => write!(out, "{free}% free, {ROOM_FREE}% needed"),
+            NoRoom::Free { free, needed, floor, nodes, cost } => write!(out, "{free}% free, {needed}% needed to keep {floor}% free with {nodes} node(s) at {:.2} GiB each", *cost as f64 / GIB as f64),
+            NoRoom::Swapping { swapped, free, needed } => write!(out, "macOS swapped out {} MiB in the last minute with {free}% free, {needed}% needed while it swaps", swapped / MIB),
         }
     }
 }
@@ -57,21 +57,8 @@ struct Sample {
     at: Millis,
     pressure: Option<MemoryPressure>,
     free: u32,
-    margin: Option<i64>,
-}
-
-impl Sample {
-    fn room(&self, nodes: usize, cost: i64) -> Result<(), NoRoom> {
-        if let Some(pressure) = self.pressure.filter(|pressure| *pressure != MemoryPressure::Normal) {
-            return Err(NoRoom::Pressure(pressure));
-        }
-        let needed = cost * nodes as i64;
-        match self.margin {
-            Some(margin) if margin < needed => Err(NoRoom::Margin { margin, needed, nodes, cost }),
-            None if self.free < ROOM_FREE => Err(NoRoom::Free { free: self.free }),
-            _ => Ok(()),
-        }
-    }
+    /// What macOS has swapped out since it booted, in bytes.
+    swapped_out: Option<u64>,
 }
 
 /// The Mac as the gate reads it: the last sample's gauges, the samples of the last minute, and
@@ -87,9 +74,12 @@ pub(crate) struct MacState {
     /// What the gate takes one node to cost, from what the nodes measured; `None` before the
     /// daemon's first measure.
     pub node_cost: Option<u64>,
+    /// The Mac's memory, in bytes; 0 where the system does not say.
+    pub memory_total: u64,
     pub load: f64,
     pub cpus: usize,
-    /// The samples of the last `ROOM_WINDOW` and the one before them, which shows it is covered.
+    /// The samples of the last `ROOM_WINDOW` and the one before them, from which the swap-outs of
+    /// the whole minute are counted.
     samples: VecDeque<Sample>,
     load_high: Option<Millis>,
     load_low: Option<Millis>,
@@ -117,7 +107,9 @@ impl MacState {
         self.free_percent = Some(free);
         self.pressure = machine.memory_pressure;
         self.compressor = machine.compressor;
-        self.samples.push_back(Sample { at: now, pressure: machine.memory_pressure, free, margin: machine.compressor.map(|compressor| compressor.margin()) });
+        self.memory_total = machine.memory_total;
+        let swapped_out = machine.compressor.map(|compressor| compressor.swapouts.saturating_mul(compressor.page_size));
+        self.samples.push_back(Sample { at: now, pressure: machine.memory_pressure, free, swapped_out });
         while self.samples.get(1).is_some_and(|next| next.at <= now - ROOM_WINDOW) {
             self.samples.pop_front();
         }
@@ -128,19 +120,45 @@ impl MacState {
         i64::try_from(self.node_cost.unwrap_or(crate::node_cost::DEFAULT)).unwrap_or(i64::MAX)
     }
 
-    /// Whether one more node may start with `in_flight` nodes admitted in the last 3 minutes. A
-    /// system that never reported memory always has room; one that did needs `ROOM_WINDOW` of it.
-    /// macOS's warning holds every start whatever is free: the margin here only approximates what
-    /// the kernel weighs, and half of the warnings start with it still positive.
+    /// Whether macOS reports its warning, which spaces starts out without holding them.
+    pub(crate) fn warned(&self) -> bool {
+        self.pressure == Some(MemoryPressure::Warning)
+    }
+
+    /// Whether one more node may start with `in_flight` nodes admitted in the last 3 minutes, from
+    /// the samples of the last `ROOM_WINDOW`, or the last one when none is that recent. A system
+    /// that never reported memory always has room.
     pub(crate) fn room(&self, in_flight: usize, now: Millis) -> Result<(), NoRoom> {
-        let Some(first) = self.samples.front() else { return Ok(()) };
-        if first.at > now - ROOM_WINDOW {
-            return Err(NoRoom::Measuring);
-        }
-        let cost = self.node_cost();
+        let Some(last) = self.samples.back() else { return Ok(()) };
         let recent: Vec<&Sample> = self.samples.iter().filter(|sample| sample.at > now - ROOM_WINDOW).collect();
-        let judged = if recent.is_empty() { self.samples.back().into_iter().collect() } else { recent };
-        judged.into_iter().rev().try_for_each(|sample| sample.room(1 + in_flight, cost))
+        let judged = if recent.is_empty() { vec![last] } else { recent };
+        if judged.iter().any(|sample| sample.pressure == Some(MemoryPressure::Critical)) {
+            return Err(NoRoom::Pressure(MemoryPressure::Critical));
+        }
+        let (nodes, cost) = (1 + in_flight, self.node_cost());
+        let reserved = self.percent_of_memory(cost.saturating_mul(nodes as i64));
+        let free = judged.iter().map(|sample| sample.free).min().unwrap_or(last.free);
+        let needed = FREE_FLOOR + reserved;
+        if free < needed {
+            return Err(NoRoom::Free { free, needed, floor: FREE_FLOOR, nodes, cost });
+        }
+        let swapped = self.samples.front().and_then(|first| first.swapped_out).zip(last.swapped_out)
+            .map_or(0, |(first, last)| last.saturating_sub(first));
+        let needed = SWAPPING_FLOOR + reserved;
+        if swapped >= SWAPPING && free < needed {
+            return Err(NoRoom::Swapping { swapped, free, needed });
+        }
+        Ok(())
+    }
+
+    /// `bytes` as a share of the Mac's memory, in whole percent rounded up; 0 where the system
+    /// does not report its memory.
+    fn percent_of_memory(&self, bytes: i64) -> u32 {
+        if self.memory_total == 0 {
+            return 0;
+        }
+        let bytes = u128::try_from(bytes).unwrap_or_default();
+        u32::try_from((bytes * 100).div_ceil(u128::from(self.memory_total))).unwrap_or(u32::MAX).min(100)
     }
 
     fn step_load(&mut self, machine: &Machine, now: Millis) {
@@ -252,10 +270,6 @@ mod tests {
     fn weighed(free: u32, pressure: MemoryPressure, uncompressed: u64, compressor: u64) -> Machine {
         let counters = MemoryCompressor { page_size: PAGE, uncompressed_pages: uncompressed, compressor_pages: compressor, ..MemoryCompressor::default() };
         Machine { compressor: Some(counters), ..pressed(free, pressure) }
-    }
-
-    fn margin_of(margin_gib: f64) -> i64 {
-        with_margin(margin_gib, MemoryPressure::Normal).compressor.unwrap().margin()
     }
 
     /// The Mac with `margin_gib` left before macOS's warning, out of the same memory weighed.
@@ -429,104 +443,154 @@ mod tests {
         assert!(held.is_empty(), "held with no node at work and macOS normal: {held:?}");
     }
 
-    /// Up to six compilers at once: every sample macOS warned in, and the minute after it, has no
-    /// room for one more node; once the builds calm down there is room again.
+    /// Up to six compilers at once on this 18 GB Mac: macOS warned in 39 samples with 29–44 % free
+    /// and no swap counted. Each of them leaves room for one more node and only spaces starts out.
     #[test]
-    fn a_build_that_brings_macos_to_warning_leaves_no_room_until_a_minute_after_it_clears() {
-        let mut state = MacState::default();
+    fn the_october_9_builds_bring_macos_to_warning_with_29_to_44_percent_free_which_only_spaces_starts() {
+        let mut state = MacState { node_cost: Some(410_000_000), ..MacState::default() };
         let mut warned = vec![];
-        let mut last_warning = None;
         for &(seconds, uncompressed, compressor, level, free) in OCTOBER_9_BUILDS {
             let now = seconds * 1000;
             let pressure = MemoryPressure::from_kernel_level(level).unwrap();
-            state.step(&weighed(free, pressure, uncompressed, compressor), now);
-            let room = state.room(0, now);
-            if pressure == MemoryPressure::Warning {
-                assert_eq!(room, Err(NoRoom::Pressure(MemoryPressure::Warning)), "at {seconds} s");
-                warned.push(seconds);
-                last_warning = Some(now);
-            } else if last_warning.is_some_and(|at| now - at < ROOM_WINDOW) {
-                assert!(room.is_err(), "{seconds} s, under a minute after a warning");
+            state.step(&Machine { memory_total: 18 * GIB as u64, ..weighed(free, pressure, uncompressed, compressor) }, now);
+            assert_eq!(state.room(0, now), Ok(()), "at {seconds} s, {free} % free, {pressure:?}");
+            assert_eq!(state.warned(), pressure == MemoryPressure::Warning, "at {seconds} s");
+            if state.warned() {
+                warned.push(free);
             }
         }
         assert_eq!(warned.len(), 39, "the samples macOS warned in: {warned:?}");
-        let end = OCTOBER_9_BUILDS.last().unwrap().0 * 1000;
-        assert_eq!(state.room(0, end), Ok(()), "the builds are over");
+        assert_eq!((warned.iter().min(), warned.iter().max()), (Some(&29), Some(&44)));
     }
 
-    /// 08:39 on 22 October: 4.8 GiB to macOS's warning and 4 nodes admitted in the last 3 minutes,
-    /// while the nodes at work measured 0.13–0.41 GB each. 1 GiB per node held 31 tasks.
+    /// 08:39 on 22 October: 40 % free on this 18 GB Mac and nodes that measured 0.41 GB each. The
+    /// node that starts and each one admitted in the last 3 minutes must leave 20 % free.
     #[test]
-    fn the_margin_needed_is_what_a_node_measures_for_the_one_that_starts_and_each_in_flight() {
+    fn the_free_memory_needed_is_what_a_node_measures_for_the_one_that_starts_and_each_in_flight() {
         let mut state = MacState::default();
-        let now = feed(&mut state, &with_margin(4.8, MemoryPressure::Normal), 0, 2 * MIN);
-        let measured: u64 = 410_000_000;
-        state.node_cost = Some(measured);
-        assert_eq!(state.room(4, now), Ok(()), "5 nodes at 0.41 GB fit in 4.8 GiB");
-        let cost = measured as i64;
-        assert_eq!(state.room(11, now), Ok(()), "12 of them fit");
-        assert_eq!(state.room(12, now), Err(NoRoom::Margin { margin: margin_of(4.8), needed: 13 * cost, nodes: 13, cost }));
+        let mac = |free| Machine { memory_total: 18 * GIB as u64, ..machine(free) };
+        let now = feed(&mut state, &mac(40), 0, 2 * MIN);
+        let measured: i64 = 410_000_000;
+        state.node_cost = Some(measured as u64);
+        assert_eq!(state.room(8, now), Ok(()), "9 nodes at 0.41 GB take 19 % of 18 GiB");
+        assert_eq!(state.room(9, now), Err(NoRoom::Free { free: 40, needed: 42, floor: 20, nodes: 10, cost: measured }));
         state.node_cost = Some(GIB as u64);
-        assert_eq!(state.room(4, now), Err(NoRoom::Margin { margin: margin_of(4.8), needed: 5 * GIB, nodes: 5, cost: GIB }),
-            "the 1 GiB a node was taken to cost held this start");
+        assert_eq!(state.room(4, now), Err(NoRoom::Free { free: 40, needed: 48, floor: 20, nodes: 5, cost: GIB }),
+            "the 1 GiB a node was taken to cost would hold this start");
         state.node_cost = None;
         assert_eq!(state.node_cost(), 512 << 20, "before the daemon measured its nodes, one costs 512 MiB");
-        assert_eq!(state.room(8, now), Ok(()));
-        assert!(matches!(state.room(9, now), Err(NoRoom::Margin { nodes: 10, .. })));
-        let now = feed(&mut state, &with_margin(0.4, MemoryPressure::Normal), now, now + SAMPLE);
-        assert!(matches!(state.room(0, now), Err(NoRoom::Margin { nodes: 1, .. })), "even with nobody starting, the node that starts must fit");
+        assert_eq!(state.room(6, now), Ok(()));
+        assert!(matches!(state.room(7, now), Err(NoRoom::Free { nodes: 8, needed: 43, .. })));
+        let now = feed(&mut state, &mac(22), now, now + SAMPLE);
+        assert!(matches!(state.room(0, now), Err(NoRoom::Free { nodes: 1, needed: 23, .. })), "even with nobody starting, the node that starts must fit");
     }
 
-    /// 11:37:50 to 11:38:50 on 22 October: a build took the memory a simulator had just freed and
-    /// macOS warned with 31–35 % free, the compressor above all uncompressed memory; at 08:46 it
-    /// warned with 1.9 GB of margin left. macOS's level is what holds, not the free figure.
+    /// The work Mac from 12:19 to 14:20 on 28 October: macOS at warning for two hours with 36–51 %
+    /// free and 1–3 nodes working, while the gate held every start. Now each sample has room.
     #[test]
-    fn macos_warning_holds_every_start_with_a_third_of_memory_free_and_margin_left() {
+    fn macos_warning_with_36_to_51_percent_free_on_the_work_mac_has_room_for_one_more_node() {
+        let mut state = MacState { node_cost: Some(512 << 20), ..MacState::default() };
+        let mut now = 0;
+        for free in (36..=51).chain((36..=51).rev()).cycle().take(2 * 60 * 6) {
+            state.step(&Machine { memory_total: 16 * GIB as u64, ..pressed(free, MemoryPressure::Warning) }, now);
+            assert_eq!(state.room(2, now), Ok(()), "{free} % free, 2 nodes in flight");
+            now += SAMPLE;
+        }
+        assert!(state.warned());
+    }
+
+    /// 11:37:50 to 11:38:50 on 22 October: a build took the memory a simulator had just freed, macOS
+    /// warned with 31–35 % free and swapped out 1,000–4,500 pages a second. That is real pressure:
+    /// from the first sample under 33 % free it holds starts by the swap, not by the warning.
+    #[test]
+    fn macos_swapping_out_with_a_third_of_memory_free_holds_starts() {
         const OCTOBER_22: &[(Millis, u64, u64, i32, u32)] = &[
             (0, 633955, 254778, 1, 55), (10, 556964, 308724, 1, 48), (20, 403023, 476013, 2, 35), (30, 365749, 522283, 2, 31),
             (40, 380928, 508170, 2, 33), (50, 396269, 493498, 2, 34), (60, 366324, 524757, 2, 31),
         ];
         let mut state = MacState { node_cost: Some(410_000_000), ..MacState::default() };
-        let now = feed(&mut state, &with_margin(5.8, MemoryPressure::Normal), 0, 2 * MIN);
+        let now = feed(&mut state, &Machine { memory_total: 18 * GIB as u64, ..with_margin(5.8, MemoryPressure::Normal) }, 0, 2 * MIN);
         assert_eq!(state.room(0, now), Ok(()));
+        let mut swapouts = 0;
         for &(seconds, uncompressed, compressor, level, free) in OCTOBER_22 {
             let at = now + seconds * 1000;
-            let pressure = MemoryPressure::from_kernel_level(level).unwrap();
-            state.step(&weighed(free, pressure, uncompressed, compressor), at);
-            if pressure == MemoryPressure::Warning {
-                assert_eq!(state.room(0, at), Err(NoRoom::Pressure(MemoryPressure::Warning)), "at {seconds} s, {free} % free");
+            let mut machine = Machine { memory_total: 18 * GIB as u64, ..weighed(free, MemoryPressure::from_kernel_level(level).unwrap(), uncompressed, compressor) };
+            if free < 40 {
+                swapouts += 2_000 * 10;
+            }
+            machine.compressor.as_mut().unwrap().swapouts = swapouts;
+            state.step(&machine, at);
+            if seconds >= 30 {
+                assert!(matches!(state.room(0, at), Err(NoRoom::Swapping { needed: 33, .. })), "at {seconds} s, {free} % free: {:?}", state.room(0, at));
             }
         }
-        let mut state = MacState { node_cost: Some(410_000_000), ..MacState::default() };
-        let now = feed(&mut state, &weighed(44, MemoryPressure::Warning, 512_794, 387_515), 0, 2 * MIN);
-        assert!(state.compressor.unwrap().margin() > GIB, "margin left: {}", state.compressor.unwrap().margin());
-        assert_eq!(state.room(0, now), Err(NoRoom::Pressure(MemoryPressure::Warning)));
+    }
+
+    /// An 8 GB Mac whose nodes have not been measured yet (512 MiB each): critical pressure, low free
+    /// memory, or a third free while macOS swaps out hold starts; the same Mac calm has room.
+    #[test]
+    fn a_small_mac_under_real_pressure_holds_starts() {
+        let small = |free, pressure, swapouts| {
+            let counters = MemoryCompressor { page_size: PAGE, uncompressed_pages: 300_000, compressor_pages: 100_000, swapouts, ..MemoryCompressor::default() };
+            Machine { memory_total: 8 * GIB as u64, compressor: Some(counters), ..pressed(free, pressure) }
+        };
+        let mut state = MacState::default();
+        let now = feed(&mut state, &small(45, MemoryPressure::Normal, 0), 0, 2 * MIN);
+        assert_eq!(state.room(0, now), Ok(()));
+
+        let now = feed(&mut state, &small(45, MemoryPressure::Critical, 0), now, now + SAMPLE);
+        assert_eq!(state.room(0, now), Err(NoRoom::Pressure(MemoryPressure::Critical)));
+
+        let now = feed(&mut state, &small(26, MemoryPressure::Warning, 0), now, now + 2 * MIN);
+        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 26, needed: 27, floor: 20, nodes: 1, cost: 512 << 20 }));
+
+        let mut swapping = MacState::default();
+        let mut swapouts = 0;
+        let mut now = 0;
+        while now < 2 * MIN {
+            swapouts += 1_000;
+            swapping.step(&small(35, MemoryPressure::Warning, swapouts), now);
+            now += SAMPLE;
+        }
+        assert!(matches!(swapping.room(0, now), Err(NoRoom::Swapping { free: 35, needed: 37, .. })), "{:?}", swapping.room(0, now));
+        let calm = feed(&mut swapping, &small(35, MemoryPressure::Warning, swapouts), now, now + MIN + SAMPLE);
+        assert_eq!(swapping.room(0, calm), Ok(()), "a minute after the swap-outs stop, a third free has room");
+        let now = feed(&mut swapping, &small(50, MemoryPressure::Warning, swapouts + 1_000), calm, calm + SAMPLE);
+        assert_eq!(swapping.room(0, now), Ok(()), "half free has room while macOS swaps out a little");
     }
 
     #[test]
-    fn without_compressor_counters_a_minute_at_20_percent_free_and_normal_pressure_is_room() {
+    fn without_compressor_counters_free_memory_and_critical_pressure_decide() {
         let mut state = MacState::default();
         let now = feed(&mut state, &machine(19), 0, 2 * MIN);
-        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19 }));
+        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19, needed: 20, floor: 20, nodes: 1, cost: 512 << 20 }));
         let now = feed(&mut state, &machine(20), now, now + 4 * SAMPLE);
-        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19 }), "the last sample at 19 % is still within the minute");
+        assert!(matches!(state.room(0, now), Err(NoRoom::Free { free: 19, .. })), "the last sample at 19 % is still within the minute");
         let now = feed(&mut state, &machine(20), now, now + SAMPLE);
         assert_eq!(state.room(0, now), Ok(()));
         let now = feed(&mut state, &pressed(50, MemoryPressure::Warning), now, now + SAMPLE);
-        assert_eq!(state.room(0, now), Err(NoRoom::Pressure(MemoryPressure::Warning)), "macOS's own level counts without counters too");
-        assert_eq!(state.room(0, now + MIN), Err(NoRoom::Pressure(MemoryPressure::Warning)), "the last sample stands while no new one comes");
+        assert_eq!(state.room(0, now), Ok(()), "macOS's warning alone holds nothing");
+        let now = feed(&mut state, &pressed(50, MemoryPressure::Critical), now, now + SAMPLE);
+        assert_eq!(state.room(0, now), Err(NoRoom::Pressure(MemoryPressure::Critical)));
+        assert_eq!(state.room(0, now + MIN), Err(NoRoom::Pressure(MemoryPressure::Critical)), "the last sample stands while no new one comes");
     }
 
+    /// The work Mac's daemon held starts "measuring memory for its first minute" with 61–87 % free.
+    /// A daemon that just started judges the samples it has.
     #[test]
-    fn a_daemon_that_just_started_measures_for_a_minute_and_a_system_without_memory_readings_always_has_room() {
+    fn a_daemon_that_just_started_has_room_at_once_with_plenty_free_and_a_system_without_memory_readings_always_has_room() {
         let mut state = MacState::default();
         assert_eq!(state.room(5, 0), Ok(()));
         state.step(&Machine { memory_free_percent: None, ..machine(0) }, 0);
         assert_eq!(state.room(0, MIN), Ok(()), "a sample without a memory reading only counts for the CPU");
-        let now = feed(&mut state, &machine(60), MIN, MIN + 50_000);
-        assert_eq!(state.room(0, now), Err(NoRoom::Measuring));
-        let now = feed(&mut state, &machine(60), now, now + SAMPLE);
-        assert_eq!(state.room(0, now), Ok(()));
+        for free in [61, 87] {
+            let mut state = MacState::default();
+            state.step(&Machine { memory_total: 16 * GIB as u64, ..pressed(free, MemoryPressure::Warning) }, MIN);
+            assert_eq!(state.room(0, MIN), Ok(()), "{free} % free on the first sample");
+        }
+        let mut state = MacState::default();
+        state.step(&machine(15), MIN);
+        assert!(matches!(state.room(0, MIN), Err(NoRoom::Free { free: 15, .. })), "nor does it start a node into low memory");
     }
 
     #[test]
@@ -562,7 +626,7 @@ mod tests {
         let text = std::fs::read_to_string(day).unwrap();
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some(SAMPLES_HEADER));
-        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,no_room,false,6,warning,,,,,,,,,"));
+        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,room,false,6,warning,,,,,,,,,"));
     }
 
     #[test]

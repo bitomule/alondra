@@ -1147,7 +1147,7 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     assert!(in_progress(&fixture, "task-1").await, "the task of a node being restarted is in progress");
 }
 
-/// The last minute of the Mac as `pace` samples it: macOS at warning, or normal with room.
+/// The last minute of the Mac as `pace` samples it: macOS at critical pressure, or normal with room.
 fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64]) {
     for &at in at {
         let machine = alondra_core::Machine { at, memory_free_percent: Some(50), memory_pressure: Some(pressure), cpus: 11, load: [1.0; 3],
@@ -1173,7 +1173,7 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_b
     fixture.domain.live.mods.disconnect("agent-a", connection);
     crate::domain_agent_lifecycle::node_event(&fixture.domain, &agent, NodeEvent::SessionLost).unwrap();
     let now = alondra_core::now_millis();
-    memory(&fixture, MemoryPressure::Warning, &[now - 120_000, now - 90_000, now - 61_000]);
+    memory(&fixture, MemoryPressure::Critical, &[now - 120_000, now - 90_000, now - 61_000]);
 
     let timing = crate::node_revival::Timing { grace: Duration::from_millis(30) };
     let revival = tokio::spawn({

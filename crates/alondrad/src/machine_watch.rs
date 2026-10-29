@@ -571,7 +571,7 @@ mod tests {
     const SAMPLE: Millis = 10_000;
 
     fn machine(disk_free: u64, memory_free: u32) -> Machine {
-        Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [1.0; 3], cpus: 8,
+        Machine { at: 0, memory_total: 16 * GB, memory_available: 8 * GB, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [1.0; 3], cpus: 8,
             cpu_usage: 10.0, disk_total: 500 * GB, disk_available: disk_free, disk_purgeable: 0, unreliable: false }
     }
 

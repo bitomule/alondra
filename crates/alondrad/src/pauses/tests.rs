@@ -215,16 +215,16 @@ async fn an_hour_at_critical_pressure_pauses_no_working_node_and_only_holds_new_
     assert_eq!(bench.notices, 0, "the orchestrator has nothing to do about memory");
 }
 
-/// A build that brings macOS to warning: the nodes at work go on unpaused, no new node starts
-/// while it lasts, and one does a minute after macOS is back to normal with margin.
+/// A build that brings macOS to critical pressure: the nodes at work go on unpaused, no new node
+/// starts while it lasts, and one does a minute after macOS is back to normal.
 #[tokio::test]
-async fn a_build_that_brings_macos_to_warning_holds_new_starts_while_the_running_nodes_keep_working() {
+async fn a_build_that_brings_macos_to_critical_pressure_holds_new_starts_while_the_running_nodes_keep_working() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
     let mut bench = Bench::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
     let mut now = base;
     while now < base + 10 * MIN {
-        let (margin, pressure) = if now - base < 2 * MIN { (0.5, MemoryPressure::Normal) } else { (-1.5, MemoryPressure::Warning) };
+        let (margin, pressure) = if now - base < 2 * MIN { (0.5, MemoryPressure::Normal) } else { (-1.5, MemoryPressure::Critical) };
         bench.tick_with(building(now, margin, pressure)).await;
         now += SAMPLE;
     }
@@ -232,7 +232,7 @@ async fn a_build_that_brings_macos_to_warning_holds_new_starts_while_the_running
     for task in ["t1", "t2", "t3"] {
         assert_eq!(phase(&bench, task), NodePhase::Working, "{task}");
     }
-    assert!(matches!(ask_new(&bench, now), Err(Hold::Memory { why: NoRoom::Pressure(MemoryPressure::Warning), .. })));
+    assert!(matches!(ask_new(&bench, now), Err(Hold::Memory { why: NoRoom::Pressure(MemoryPressure::Critical), .. })));
     let cleared = now;
     while now < cleared + MIN {
         bench.tick_with(building(now, 3.0, MemoryPressure::Normal)).await;

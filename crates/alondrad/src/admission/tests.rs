@@ -45,7 +45,7 @@ fn memory_holds_every_start_and_the_cpu_only_new_ones() {
 
     let mut short = fine();
     short.step(&Machine { memory_free_percent: Some(3), cpus: 11, ..Machine::default() }, SAMPLE);
-    assert_eq!(decide(&resumed, 0, 6, &short, 0, None, SPACING, MIN), Err(Hold::Memory { why: NoRoom::Free { free: 3 }, free: Some(3) }));
+    assert!(matches!(decide(&resumed, 0, 6, &short, 0, None, SPACING, MIN), Err(Hold::Memory { why: NoRoom::Free { free: 3, .. }, free: Some(3) })));
 
     let mut busy = fine();
     (busy.cpu_busy, busy.load) = (true, 52.0);
@@ -213,35 +213,54 @@ fn a_review_follows_the_priority_of_the_task_it_reviews() {
     assert_eq!(reopened.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::High, "kept in the store");
 }
 
-/// The learned limit is gone: two minutes of macOS warning with 6 nodes working hold new starts,
-/// and the automatic limit stays what the hardware takes.
+/// The work Mac from 12:19 to 14:20 on 28 October: macOS at warning with 36–51 % free and 1–3
+/// nodes working, while the gate held the next task every 10 minutes. The warning now only spaces
+/// starts 3 minutes apart: the next task starts, and the one after it 3 minutes later.
 #[test]
-fn a_macos_warning_with_31_percent_free_and_6_nodes_working_holds_new_starts_and_keeps_the_automatic_limit() {
+fn macos_warning_with_36_to_51_percent_free_and_up_to_3_nodes_working_admits_a_start_every_3_minutes() {
     let (_home, domain) = world();
-    domain.live.gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Auto { max: 6 }) });
-    let base = alondra_core::now_millis();
-    for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
+    domain.live.gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Auto { max: 11 }) });
+    for id in ["t1", "t2", "t3", "t4", "t5"] {
         create(&domain, id);
-        start(&domain, id, base);
     }
+    let base = alondra_core::now_millis();
+    let warned = |from: Millis, to: Millis| {
+        let mut now = from;
+        for free in (36..=51).chain((36..=51).rev()).cycle() {
+            if now >= to {
+                break;
+            }
+            crate::machine_watch::pace(&domain, &Machine { at: now, memory_free_percent: Some(free), memory_total: 16 * GIB as u64,
+                memory_pressure: Some(alondra_core::MemoryPressure::Warning), cpus: 11, load: [6.0; 3], ..Machine::default() });
+            now += SAMPLE;
+        }
+    };
     let mut now = base;
-    while now <= base + 2 * MIN {
-        let machine = Machine { at: now, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Warning),
-            cpus: 11, load: [14.0; 3], ..Machine::default() };
-        crate::machine_watch::pace(&domain, &machine);
-        now += SAMPLE;
+    for (working, id) in ["t1", "t2", "t3"].into_iter().enumerate() {
+        warned(now, now + 2 * MIN);
+        now += 2 * MIN;
+        if working > 0 {
+            assert!(matches!(ask(&domain, id, now), Err(Hold::Spacing { .. })), "{id}: under macOS's warning, 3 minutes between starts");
+            warned(now, now + MIN);
+            now += MIN;
+        }
+        assert_eq!(domain.live.gate.snapshot(&domain, now).unwrap().working, working);
+        assert_eq!(ask(&domain, id, now), Ok(()), "{id} starts with {working} node(s) working");
+        start(&domain, id, now);
     }
+    warned(now, now + 3 * MIN);
+    now += 3 * MIN;
     let snapshot = domain.live.gate.snapshot(&domain, now).unwrap();
-    assert_eq!(snapshot.mac.room(0, now), Err(NoRoom::Pressure(alondra_core::MemoryPressure::Warning)));
-    assert_eq!((snapshot.working, snapshot.limit), (6, 6));
-    assert!(domain.live.gate.live(&domain, now).unwrap().tight, "no room for new starts");
+    assert_eq!((snapshot.mac.room(0, now), snapshot.working), (Ok(()), 3));
+    assert!(!domain.live.gate.live(&domain, now).unwrap().tight, "the Mac is not short of memory");
+    assert_eq!(ask(&domain, "t4", now), Ok(()), "a fourth starts with 3 working");
 }
 
 /// A rehearsal's daemon (`ALONDRA_IGNORE_MAC_LOAD=1`) shares the Mac with the user's nodes and
 /// builds: their memory pressure and load never hold its starts, which the same samples hold for
 /// a daemon that reads the Mac.
 #[test]
-fn a_daemon_that_ignores_the_mac_starts_a_task_under_macos_memory_warning_and_a_busy_cpu() {
+fn a_daemon_that_ignores_the_mac_starts_a_task_under_critical_memory_pressure_and_a_busy_cpu() {
     let base = alondra_core::now_millis();
     let ask = |ignores: bool| {
         let (_home, domain) = world();
@@ -251,14 +270,14 @@ fn a_daemon_that_ignores_the_mac_starts_a_task_under_macos_memory_warning_and_a_
         create(&domain, "t-fresh");
         let mut now = base;
         while now <= base + 2 * MIN {
-            let machine = Machine { at: now, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Warning),
+            let machine = Machine { at: now, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Critical),
                 cpus: 11, load: [60.0; 3], ..Machine::default() };
             crate::machine_watch::pace(&domain, &machine);
             now += SAMPLE;
         }
         domain.live.gate.ask(&domain, waiting("t-fresh", TaskPriority::Normal, false, base), now)
     };
-    assert!(matches!(ask(false), Err(Hold::Memory { why: NoRoom::Pressure(alondra_core::MemoryPressure::Warning), .. })), "the live daemon waits for room");
+    assert!(matches!(ask(false), Err(Hold::Memory { why: NoRoom::Pressure(alondra_core::MemoryPressure::Critical), .. })), "the live daemon waits for room");
     assert_eq!(ask(true), Ok(()), "the rehearsal's daemon starts it");
 }
 
@@ -297,15 +316,18 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     let slots = Hold::Slots { working: 3, limit: 3 };
     assert_eq!(hold_line(4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
         "the admission gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
-    let margin = Hold::Memory { why: NoRoom::Margin { margin: GIB / 2, needed: 1_230_000_000, nodes: 3, cost: 410_000_000 }, free: Some(42) };
-    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &margin, &[], &[], 2).unwrap(),
-        "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 0.5 GiB left before macOS's memory warning, 1.1 GiB needed for 3 node(s) at 0.38 GiB each (42% free); 2 node(s) paused");
+    let short = Hold::Memory { why: NoRoom::Free { free: 22, needed: 27, floor: 20, nodes: 3, cost: 410_000_000 }, free: Some(22) };
+    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &short, &[], &[], 2).unwrap(),
+        "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 22% free, 27% needed to keep 20% free with 3 node(s) at 0.38 GiB each (22% free); 2 node(s) paused");
+    let swapping = Hold::Memory { why: NoRoom::Swapping { swapped: 300 << 20, free: 31, needed: 33 }, free: Some(31) };
+    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &swapping, &[], &[], 0).unwrap(),
+        "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: macOS swapped out 300 MiB in the last minute with 31% free, 33% needed while it swaps (31% free)");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Cpu { load: 52.4, cpus: 11 }, &[], &[], 0).unwrap(),
         "the admission gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
 
     let mut told = Told::default();
-    let tight = |free| Cause::of(&Hold::Memory { why: NoRoom::Free { free }, free: Some(free) });
+    let tight = |free| Cause::of(&Hold::Memory { why: NoRoom::Free { free, needed: 20, floor: 20, nodes: 1, cost: 1 }, free: Some(free) });
     assert!(told.due(tight(12), 0));
     for (second, free) in (10..).step_by(10).zip([11, 9, 13, 8, 12]) {
         assert!(!told.due(tight(free), second * 1_000), "free memory moving from sample to sample is the same cause");
@@ -365,23 +387,19 @@ fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_m
     assert_eq!(domain.live.gate.snapshot(&domain, now).unwrap().working, 4);
 }
 
-/// The Mac with `margin_gib` left before macOS's warning, sampled every 10 s from `from` until `to`.
-fn margin(domain: &DomainRuntime, margin_gib: f64, from: Millis, to: Millis) {
-    const PAGE: u64 = 16_384;
-    const WEIGHED: u64 = 900_000;
-    let compressor = ((WEIGHED as f64 - margin_gib * ((1 << 30) / PAGE) as f64) / 2.0) as u64;
-    let counters = alondra_core::MemoryCompressor { page_size: PAGE, uncompressed_pages: WEIGHED - compressor, compressor_pages: compressor, ..Default::default() };
+/// An 18 GiB Mac with `free` % of its memory free, sampled every 10 s from `from` until `to`.
+fn free_of_18_gib(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
     let mut now = from;
     while now < to {
-        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(40), memory_pressure: Some(alondra_core::MemoryPressure::Normal),
-            compressor: Some(counters), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(free), memory_total: 18 * GIB as u64,
+            memory_pressure: Some(alondra_core::MemoryPressure::Normal), cpus: 11, load: [5.0; 3], ..Machine::default() });
         now += SAMPLE;
     }
 }
 
 /// Nodes admitted in the last 3 minutes do not show their memory yet, so each reserves what a node
-/// measured. With nodes of 0.41 GB, as on 22 October, 2 GiB to macOS's warning takes five starts in
-/// a row, where 1 GiB a node took one.
+/// measured. With nodes of 0.41 GB, as on 22 October, 32 % free on 18 GiB takes five starts in a row
+/// and keeps 20 % free, where 1 GiB a node took two.
 #[test]
 fn each_node_admitted_in_the_last_3_minutes_reserves_what_a_node_measured() {
     let (_home, domain) = world();
@@ -392,14 +410,14 @@ fn each_node_admitted_in_the_last_3_minutes_reserves_what_a_node_measured() {
     let base = alondra_core::now_millis();
     let cost: i64 = 410_000_000;
     domain.live.machine_watch.measure_nodes(base - MIN, vec![cost as u64; 30]);
-    margin(&domain, 2.0, base - MIN, base + SAMPLE);
+    free_of_18_gib(&domain, 32, base - MIN, base + SAMPLE);
     for id in ["t1", "t2", "t3", "t4", "t5"] {
         assert_eq!(ask(&domain, id, base), Ok(()), "{id}");
         start(&domain, id, base);
     }
-    let held = Err(Hold::Memory { why: NoRoom::Margin { margin: 2 * GIB, needed: 6 * cost, nodes: 6, cost }, free: Some(40) });
+    let held = Err(Hold::Memory { why: NoRoom::Free { free: 32, needed: 33, floor: 20, nodes: 6, cost }, free: Some(32) });
     assert_eq!(ask(&domain, "t6", base), held);
-    margin(&domain, 2.0, base + SAMPLE, base + 3 * MIN);
+    free_of_18_gib(&domain, 32, base + SAMPLE, base + 3 * MIN);
     assert_eq!(ask(&domain, "t6", base + 3 * MIN - 1), held);
     assert_eq!(ask(&domain, "t6", base + 3 * MIN), Ok(()), "the five are no longer in flight");
 }
