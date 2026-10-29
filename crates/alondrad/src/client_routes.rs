@@ -465,13 +465,7 @@ impl Client {
             Some((machine, usage)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
-        let nodes: Vec<Value> = self.domain.live.nodes().iter()
-            .filter(|node| state.agents.contains_key(&AgentId(node.session_id.clone())))
-            .map(|node| {
-                let name = state.agents.get(&AgentId(node.session_id.clone())).map(|agent| agent.name.as_str());
-                live::client_node(node, name)
-            })
-            .collect();
+        let nodes = live::runtime_nodes(self.domain.live.nodes(), &state, |task| state_times.get(task).copied());
         let (launches, cancel_reasons) = {
             let store = self.domain.store.lock_or_exit("the domain store");
             match (store.request_launch_summaries(), store.cancel_reasons()) {

@@ -60,6 +60,17 @@ rust_test(
     ],
 )
 
+# The domain and the screens never read what hooks deduced of a node: that deduction is kept only
+# for the `claude --bg` nodes still handed over to the Agent SDK.
+rust_test(
+    name = "hook_deduction_boundary_test",
+    crate_root = "tests/hook_deduction_boundary.rs",
+    srcs = ["tests/hook_deduction_boundary.rs"],
+    data = glob(["src/domain/**/*.rs", "src/views/**/*.rs"]),
+    edition = "2024",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/core"},
+)
+
 # Every family of views renders a real-size domain within its budget, with alondra_core built as
 # the daemon links it: without the checks only its own unit tests compile in.
 rust_test(

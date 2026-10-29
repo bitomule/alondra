@@ -73,14 +73,14 @@ pub(super) fn row(
 pub(super) fn state_tone(state: &str) -> super::Tone {
     use super::Tone;
     match state {
-        "needs_you" | "stalled" => Tone::Warning,
+        "needs_you" => Tone::Warning,
         "your_turn" => Tone::YourTurn,
         "in_review" | "for_your_review" | "awaiting_blocker" | "waiting_merge" | "waiting_machine"
         | "waiting_dependency" | "closing" | "defining" => Tone::Info,
         "running" | "working" | "busy" | "free" | "waiting_answer" => Tone::Accent,
         "done" | "delivered" => Tone::Success,
         "cancelled" | "not_started" | "connected" | "idle" => Tone::Neutral,
-        "offline" | "failed" => Tone::Critical,
+        "offline" => Tone::Critical,
         _ => Tone::Neutral,
     }
 }
@@ -511,18 +511,3 @@ pub(super) fn orchestrator_state(context: &RenderContext<'_>) -> OrchestratorSta
     }
 }
 
-
-/// A node of `claude --bg` whose turn is under way yet stopped processing, or whose session Claude
-/// Code says failed: the node's task says it. A node of the Agent SDK reads its lifecycle instead.
-pub(super) fn halted(agent: &crate::domain::AgentId, context: &RenderContext<'_>) -> Option<super::Label> {
-    use super::Tone;
-    let lang = context.lang;
-    sdk_live(agent, context).is_none().then_some(())?;
-    (context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Working)).then_some(())?;
-    let key = context.live.nodes.iter().find(|node| node.agent_id == agent.0).and_then(|node| node.state_key.as_deref());
-    match key {
-        Some("stalled") => Some(super::Label { text: t!(lang, "Stalled", "Parado").into(), tone: Tone::Critical, elapsed: None }),
-        Some("failed") => Some(super::Label { text: t!(lang, "Failed", "Falló").into(), tone: Tone::Critical, elapsed: None }),
-        _ => None,
-    }
-}

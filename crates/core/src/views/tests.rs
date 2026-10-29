@@ -1997,16 +1997,25 @@ fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
     }
 }
 
-/// A node whose turn stopped processing: its task says «Parado».
+/// What a node's hooks deduced is never a state: a task whose old node reads stalled or failed
+/// says it works, in every client and language.
 #[test]
-fn a_task_whose_node_stalled_says_so() {
+fn no_view_says_a_node_stalled_or_failed_whatever_its_hooks_deduced() {
     let mut state = fixture();
     node_in(&mut state, NodePhase::Working);
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), state_key: Some("stalled".into()), ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Parado");
-    let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Parado") && !detail.contains("Trabajando"), "{detail}");
+    for key in ["stalled", "failed"] {
+        let mut live = LiveSnapshot::default();
+        live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), state_key: Some(key.into()), ..LiveNode::default() });
+        assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
+        let screens = [Client::Tui, Client::Ios, Client::Mac].into_iter().flat_map(|client| ["task:t-1", "tasks"].map(move |screen| (client, screen)))
+            .chain([(Client::Mac, "sidebar")]);
+        for (client, lang, screen) in screens.flat_map(|(client, screen)| [Lang::Es, Lang::En].map(move |lang| (client, lang, screen))) {
+            let shown = serde_json::to_string(&render(&state, &live, client, lang, screen, "")).unwrap();
+            for word in ["Parado", "Stalled", "Falló", "Failed"] {
+                assert!(!shown.contains(word), "{key} {client:?} {lang:?} {screen}: {shown}");
+            }
+        }
+    }
 }
 
 #[test]

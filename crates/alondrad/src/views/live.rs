@@ -164,10 +164,6 @@ fn launched_project(
 
 fn node_label(key: &str, lang: Lang) -> String {
     match (key, lang) {
-        ("stalled", Lang::En) => "stalled",
-        ("stalled", Lang::Es) => "parado",
-        ("failed", Lang::En) => "failed",
-        ("failed", Lang::Es) => "falló",
         ("busy", Lang::En) => "working",
         ("busy", Lang::Es) => "trabajando",
         ("waiting_machine", Lang::En) => "waiting for the machine",
@@ -337,20 +333,14 @@ async fn gather_inner(
             } else {
                 launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let activity = match reported.activity() {
-                Activity::Stalled if crate::domain_holds::waits_on_user(state, &session_id) => Activity::Working,
-                activity => activity,
-            };
             let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| state.sdk_live(&agent.id));
-            let state_key = match (&agent.phase, activity) {
+            let state_key = match (&agent.phase, reported.activity()) {
                 (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
                     Some(live) if alondra_core::domain::node_at_work(live) => "busy",
                     Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(alondra_core::domain::NODE_PAUSE_PREFIX)) => "paused",
                     Some(alondra_domain::LiveState::WaitingCapacity(_)) => "waiting_machine",
                     _ => "free",
                 },
-                (NodePhase::Working | NodePhase::Starting { .. }, Activity::Stalled) => "stalled",
-                (NodePhase::Working | NodePhase::Starting { .. }, Activity::Failed) => "failed",
                 (NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Delivered { in_turn: true }
                     | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. }, _) => "busy",
                 (NodePhase::Paused(alondra_core::domain::Pause { reason: alondra_core::domain::PauseReason::ByUser, .. }), _) => "paused",
@@ -363,7 +353,7 @@ async fn gather_inner(
                 None => tool.name.clone(),
             });
             let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
-            let failure = reported.job.as_ref().filter(|_| activity == Activity::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
+            let failure = reported.job.as_ref().filter(|job| job.phase == crate::job_state::Phase::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
             let summary = failure.or_else(|| tool.clone())
                 .or_else(|| node.daemon_needs.clone())
                 .or_else(|| node.daemon_detail.clone())
@@ -587,7 +577,7 @@ async fn gather_inner(
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { effort })
     }).collect();
     let task_costs = if clock_only { BTreeMap::new() } else {
-        let store = client.domain.store.lock().expect("domain store poisoned");
+        let store = client.domain.store.lock_or_exit("the domain store");
         keys.iter().filter_map(|key| key.strip_prefix("task:")).filter_map(|id| {
             let task = state.tasks.get(&TaskId(id.to_owned()))?;
             let (sessions, folded) = store.task_spend(id).ok()?;
@@ -1259,7 +1249,7 @@ mod cache_tests {
     }
 
     #[tokio::test]
-    async fn report_updates_and_a_call_whose_shell_is_gone_invalidate_unobserved_nodes() {
+    async fn report_updates_invalidate_unobserved_nodes_and_a_call_whose_shell_is_gone_still_works() {
         use alondra_core::views::{Client, Transport};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
@@ -1275,11 +1265,9 @@ mod cache_tests {
         assert_eq!(working.nodes[0].tool_since, Some(crate::usage_pause::clock_text(2_000, limit, false)));
         domain.live.mods.set_shell_alive("reported", Some(false), limit);
         domain.live.mods.set_shell_alive("reported", Some(false), limit + 1);
-        let stalled = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
-        assert_eq!(stalled.nodes[0].state_key.as_deref(), Some("stalled"), "its shell is gone: the call will never end");
+        let halted = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
+        assert_eq!(halted.nodes[0].state_key.as_deref(), Some("busy"), "a lost shell brings the node back; it is never a state");
         let working_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let stalled_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        assert_ne!(stalled_view.cursor, working_view.cursor);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
         assert_eq!(answer.nodes[0].state_key.as_deref(), Some("busy"), "its state is the node machine's, which still has it starting");
@@ -1288,8 +1276,8 @@ mod cache_tests {
         assert!(answer.nodes[0].last_turn_aborted);
         assert_eq!(answer.nodes[0].state_since, None);
         let answer_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        assert_ne!(answer_view.cursor, stalled_view.cursor);
-        assert_eq!(client.views.build_count(), 3);
+        assert_ne!(answer_view.cursor, working_view.cursor);
+        assert_eq!(client.views.build_count(), 2);
     }
 
     #[tokio::test]

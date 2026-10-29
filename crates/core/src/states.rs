@@ -913,13 +913,12 @@ mod tests {
     }
 
     #[test]
-    fn a_state_this_build_does_not_know_is_an_error_reading_it() {
+    fn what_earlier_builds_deduced_reads_as_a_valid_state_and_an_unknown_one_is_an_error() {
         assert!(serde_json::from_str::<NodeState>("\"being_watched\"").is_err());
-        assert!(serde_json::from_str::<NodeState>("\"stalled\"").is_err(), "no node is stalled by the clock any more");
-        let s: NodeState = serde_json::from_str("\"unclear\"").unwrap();
-        assert_eq!(s, NodeState::Idle, "what earlier builds called idle");
-        let s: NodeState = serde_json::from_str("\"your_turn\"").unwrap();
-        assert_eq!(s, NodeState::YourTurn);
+        for (old, state) in [("unclear", NodeState::Idle), ("idle", NodeState::Idle), ("stalled", NodeState::Working),
+            ("background_suspect", NodeState::Working), ("your_turn", NodeState::YourTurn)] {
+            assert_eq!(serde_json::from_str::<NodeState>(&format!("\"{old}\"")).unwrap(), state, "{old}");
+        }
         let o: OrchestratorState = serde_json::from_str("\"asleep\"").unwrap();
         assert_eq!(o, OrchestratorState::Unknown);
     }

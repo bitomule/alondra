@@ -497,10 +497,11 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         return Ok(Reply::Plain(reply));
     }
     let agent_id = AgentId(session_id.clone());
-    if !domain.state()?.agents.contains_key(&agent_id) {
+    let state = domain.state()?;
+    if !state.agents.contains_key(&agent_id) {
         return Ok(Reply::Plain(json!({})));
     }
-    domain.live.observe(payload);
+    domain.live.observe_hook(&state, payload);
     if crate::api_failures::proves_an_answer(&event) {
         domain.live.api_watch.answered(&session_id, alondra_core::now_millis());
         crate::accounts::answered(domain);

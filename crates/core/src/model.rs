@@ -24,7 +24,7 @@ pub enum NodeState {
 impl NodeState {
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
-            "working" => NodeState::Working,
+            "working" | "stalled" | "background_suspect" => NodeState::Working,
             "waiting_answer" => NodeState::WaitingAnswer,
             "your_turn" => NodeState::YourTurn,
             "waiting_merge" => NodeState::WaitingMerge,
@@ -37,8 +37,9 @@ impl NodeState {
     }
 }
 
-/// `unclear` is what earlier builds called `idle`. A state this build does not know is an error
-/// reading it, never a node that shows "unknown".
+/// What earlier builds deduced from hooks reads as a valid state: `unclear` is `idle`, and a node
+/// they said `stalled` or `background_suspect` still had its turn or its own work under way. A
+/// state no build ever sent is an error reading it, never a node that shows "unknown".
 impl<'de> Deserialize<'de> for NodeState {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let value = String::deserialize(d)?;

@@ -1,5 +1,5 @@
 //! David decided nodes are never "awake" or "asleep" to the user: only their state in Alondra's
-//! state machine (working, waiting for an answer, waiting for machine, your turn, stalled, done)
+//! state machine (working, waiting for an answer, waiting for machine, your turn, done)
 //! is user-facing. Whether a Claude Code session is attached is an internal daemon detail. This
 //! scans every user-facing text source for the words that would leak that distinction back in.
 

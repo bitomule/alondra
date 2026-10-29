@@ -174,9 +174,6 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return for_you(task, context);
     }
     let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::Waiting, fact.clone()) };
-    if let Some(halted) = task.agent_id.as_ref().and_then(|agent| common::halted(agent, context)) {
-        return Presentation { active_at, ..Presentation::new(halted.text, Tone::Warning, Block::InProgress, fact) };
-    }
     let behind = match &activity {
         TaskActivity::Live(LiveState::Working(Worker::OwnWork)) => Some(None),
         TaskActivity::WaitingBackground(work) if work.gone.is_none() => Some(Some(work)),

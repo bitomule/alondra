@@ -1126,7 +1126,7 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     assert_eq!(state(&fixture).await, "Working", "a call two days long is still work");
     mods.live.mods.set_shell_alive("agent-a", Some(false), now);
     mods.live.mods.set_shell_alive("agent-a", Some(false), now + 1);
-    assert_eq!(state(&fixture).await, "Stalled", "its shell is gone: the call will never end");
+    assert_eq!(state(&fixture).await, "Working", "a lost shell brings the node back through the Agent SDK; it is never a state");
     report(json!({"event": "tool.end", "tool_use_id": "u1"}), now);
     assert_eq!(state(&fixture).await, "Working");
 

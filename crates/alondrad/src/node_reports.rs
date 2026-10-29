@@ -167,16 +167,13 @@ pub(crate) fn short_label(text: &str) -> String {
 pub(crate) enum Activity {
     /// Inside a turn, a call or background work runs, or Claude Code's job state says it works.
     Working,
-    /// Its turn is under way and a fact says nothing will move it on (`Halt`).
-    Stalled,
-    /// Claude Code's job state says the session failed; its detail says why.
-    Failed,
     Idle,
 }
 
-/// The fact that stopped a turn under way: only these make a node stalled, never how long it has
-/// been quiet. A call or a turn that runs for hours is still work until it, its own timeout or
-/// Claude ends it.
+/// The fact that stopped a turn under way: only these bring a `claude --bg` session back through
+/// the Agent SDK, never how long it has been quiet. It is never a state the user sees: the node
+/// still works until it is back. A call or a turn that runs for hours is still work until it, its
+/// own timeout or Claude ends it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Halt {
     /// The Bash call it waits on has no shell left: two looks after it started found none.
@@ -188,8 +185,7 @@ pub(crate) enum Halt {
 impl Reported {
     pub(crate) fn activity(&self) -> Activity {
         match self.job.as_ref().map(|job| job.phase) {
-            Some(crate::job_state::Phase::Failed) => Activity::Failed,
-            _ if self.halt().is_some() => Activity::Stalled,
+            Some(crate::job_state::Phase::Failed) => Activity::Idle,
             Some(crate::job_state::Phase::Working) => Activity::Working,
             _ if self.working_since.is_some() || self.tool.is_some() || self.background.iter().any(|(_, item)| !self.shell_gone(item)) => Activity::Working,
             _ => Activity::Idle,
@@ -702,7 +698,7 @@ mod tests {
     const HOUR: Millis = 60 * 60 * 1000;
 
     #[test]
-    fn a_quiet_turn_or_a_quiet_call_works_for_two_days_and_only_a_fact_stalls_it() {
+    fn a_quiet_turn_or_a_quiet_call_works_for_two_days() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
@@ -715,7 +711,7 @@ mod tests {
         assert_eq!(session().activity(), Activity::Idle);
     }
 
-    /// A closed connection is not a stall: `node_revival` brings the node back, and the node
+    /// A closed connection is not a halt: `node_revival` brings the node back, and the node
     /// keeps its last factual state meanwhile.
     #[test]
     fn the_connection_closing_mid_turn_stops_nothing_by_itself() {
@@ -729,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn a_foreground_build_works_while_its_shell_lives_and_stalls_once_two_looks_find_it_gone() {
+    fn a_foreground_build_works_and_halts_only_once_two_looks_find_its_shell_gone() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
@@ -743,7 +739,7 @@ mod tests {
         reports.set_shell_alive("s", Some(false), 6);
         assert_eq!(session().activity(), Activity::Working, "the looks in a row start again after one that saw nothing");
         reports.set_shell_alive("s", Some(false), 7);
-        assert_eq!((session().activity(), session().halt()), (Activity::Stalled, Some(Halt::ShellGone)), "the call never ends: its shell is gone");
+        assert_eq!((session().activity(), session().halt()), (Activity::Working, Some(Halt::ShellGone)), "the call never ends: its shell is gone");
         reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "v"})), 8);
         assert_eq!(session().halt(), None, "a new call starts its own looks");
         reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Read", "tool_use_id": "w"})), 9);
@@ -753,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_process_gone_mid_turn_stalls_the_node() {
+    fn the_session_process_gone_mid_turn_halts_the_turn() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
         reports.set_session_alive("s", Some(false));
@@ -784,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_job_is_a_failed_node_and_a_working_one_works_however_still_it_stays() {
+    fn a_failed_job_is_no_work_and_a_working_one_works_however_still_it_stays() {
         use crate::job_state::Phase;
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
@@ -795,10 +791,10 @@ mod tests {
         reports.set_job("s", Some(job(Phase::Failed, 0, 0)), None);
         reports.set_session_alive("s", Some(false));
         let session = reports.session("s").unwrap();
-        assert_eq!((session.activity(), session.halt()), (Activity::Failed, None));
+        assert_eq!((session.activity(), session.halt()), (Activity::Idle, None));
     }
 
-    /// David's rule, 15 October: what a node does (working, stalled, failed or idle), what stopped
+    /// David's rule, 15 October: what a node does (working or idle), what stopped
     /// it, and whether its own work is over follow from what the mod reported, its connection and
     /// what the looks at its processes and its job saw, in their order, never from how long any of
     /// it has run. The same 256 generated histories on a clock that moves a millisecond a fact and
