@@ -23,7 +23,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         busy.tasks[0].on_start = vec![Step::Speak { said: "The tests are running".into(), behind: Some("make test".into()), listed: Some("working".into()) }];
         request(report, fakes, &user, &busy, "Keep the build green")?;
         launched(report, fakes, "t-r1")?;
-        state(report, &user, "t-r1", WORKING)?;
+        state(report, &user, "t-r1", "In the background")?;
         request(report, fakes, &user, &task_script("req-r2", "t-r2", "Remove the mailbox"), "Remove the mailbox")?;
         let first = launched(report, fakes, "t-r2")?;
         state(report, &user, "t-r2", WORKING)?;

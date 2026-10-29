@@ -34,8 +34,13 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     let mut report = Report::new(sandbox.dir.join("seed"))?;
     let user = User::paired(sandbox, "seed", 1, false)?;
     report.case("seed", "A world to explore", |report| {
-        request(report, &fakes, &user, &task_script("req-working", "t-working", "Write the release notes"), "Write the release notes")?;
+        let mut working = task_script("req-working", "t-working", "Write the release notes");
+        working.tasks[0].on_start = vec![Step::Speak {
+            said: "Drafting the release notes while the checks run".into(), behind: Some("make test".into()), listed: Some("working".into()),
+        }];
+        request(report, &fakes, &user, &working, "Write the release notes")?;
         launched(report, &fakes, "t-working")?;
+        state(report, &user, "t-working", "In the background")?;
 
         request(report, &fakes, &user, &task_script("req-question", "t-question", "Choose a name for the CLI flag"), "Choose a name for the CLI flag")?;
         let asking = launched(report, &fakes, "t-question")?;

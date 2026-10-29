@@ -139,6 +139,27 @@ pub struct Session {
     /// The account its latest start signed in with.
     #[serde(default)]
     pub account: String,
+    #[serde(default)]
+    usage: SimulatedUsage,
+}
+
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
+struct SimulatedUsage {
+    input: u64,
+    output: u64,
+}
+
+impl SimulatedUsage {
+    fn record(&mut self, message: &Value) {
+        let usage = &message["message"]["usage"];
+        self.input += usage["input_tokens"].as_u64().unwrap_or(0);
+        self.output += usage["output_tokens"].as_u64().unwrap_or(0);
+    }
+
+    fn models(&self) -> Value {
+        json!({"sandbox": {"inputTokens": self.input, "outputTokens": self.output,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "costBasis": "unknown"}})
+    }
 }
 
 /// One start of the session's process, as the journeys read it.
@@ -470,6 +491,7 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         starts: earlier.as_ref().map_or(0, |earlier| earlier.starts) + 1,
         started_at: now_ms(),
         account: account(),
+        usage: earlier.map(|earlier| earlier.usage).unwrap_or_default(),
     };
     fakes.save_session(&session)?;
     let start = Start { at: now_ms(), pid: std::process::id(), resume, history, cwd, account: account() };
@@ -586,6 +608,12 @@ impl Native<'_> {
         self.out.send(&value)
     }
 
+    fn send_assistant(&mut self, message: Value) -> Result<()> {
+        self.send(message.clone())?;
+        self.session.usage.record(&message);
+        self.fakes.save_session(&self.session)
+    }
+
     fn lifecycle(&self, input: &str, state: &str) -> Result<()> {
         self.send(json!({"type": "command_lifecycle", "command_uuid": input, "state": state, "session_id": self.session.session_id, "uuid": uuid()?}))
     }
@@ -596,10 +624,10 @@ impl Native<'_> {
         (json!(inputs.last()), json!(inputs))
     }
 
-    fn assistant(&self, content: Value) -> Result<()> {
+    fn assistant(&mut self, content: Value) -> Result<()> {
         let (input, inputs) = self.answering();
         let id = uuid()?;
-        self.send(json!({
+        self.send_assistant(json!({
             "type": "assistant", "session_id": self.session.session_id, "uuid": id, "parent_tool_use_id": null,
             "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": "sandbox",
                 "content": content, "stop_reason": null, "stop_sequence": null,
@@ -674,7 +702,7 @@ impl Native<'_> {
         let last = inputs.last().cloned().unwrap_or_default();
         self.send(json!({
             "type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": self.session.session_id, "uuid": uuid()?,
-            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 0, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 0, "total_cost_usd": 0, "usage": {}, "modelUsage": self.session.usage.models(), "permission_denials": [],
             "errors": ["Interrupted by the user"], "user_message_uuid": last,
         }))?;
         for input in &inputs {
@@ -717,8 +745,9 @@ impl Native<'_> {
         let Some(open) = self.turn.take() else { return Ok(()) };
         self.send(json!({
             "type": "result", "subtype": "success", "is_error": true, "session_id": self.session.session_id, "uuid": uuid()?,
-            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "permission_denials": [],
             "result": said, "api_error_status": status, "terminal_reason": terminal, "user_message_uuid": input, "user_message_uuids": inputs,
+            "modelUsage": self.session.usage.models(),
         }))?;
         for input in &open {
             self.lifecycle(input, "completed")?;
@@ -742,8 +771,9 @@ impl Native<'_> {
         let Some(open) = self.turn.take() else { return Ok(()) };
         let mut result = json!({
             "type": "result", "subtype": "success", "is_error": false, "session_id": self.session.session_id, "uuid": uuid()?,
-            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "permission_denials": [],
             "result": said, "terminal_reason": "completed", "user_message_uuid": input, "user_message_uuids": inputs,
+            "modelUsage": self.session.usage.models(),
         });
         if self.fakes.dir.join(FAIL_TURN).exists() {
             result["subtype"] = json!("error_max_turns");
@@ -894,8 +924,8 @@ impl Native<'_> {
     }
 
     /// A root message of the turn Claude started by itself: it answers no input of Alondra's.
-    fn own_message(&self, content: Value) -> Result<()> {
-        self.send(json!({
+    fn own_message(&mut self, content: Value) -> Result<()> {
+        self.send_assistant(json!({
             "type": "assistant", "session_id": self.session.session_id, "uuid": uuid()?, "parent_tool_use_id": null,
             "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": "sandbox",
                 "content": content, "stop_reason": null, "stop_sequence": null,
@@ -950,8 +980,9 @@ impl Native<'_> {
         let queued = self.own.take().context("no turn of its own is open")?;
         self.send(json!({
             "type": "result", "subtype": "success", "is_error": false, "session_id": self.session.session_id, "uuid": uuid()?,
-            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "permission_denials": [],
             "result": "Done.", "terminal_reason": "completed", "user_message_uuid": uuid()?,
+            "modelUsage": self.session.usage.models(),
         }))?;
         self.take_queued(queued)?;
         Ok(work::done("ended its own turn"))
@@ -1073,4 +1104,45 @@ pub fn command(fakes: &Fakes, session: &Session, verb: &str, step: Option<String
 pub fn current_pr(fakes: &Fakes, dir: &Path, short: &str) -> Result<u64> {
     let branch = super::git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     fakes.prs()?.values().find(|pr| pr.branch == branch).map(|pr| pr.number).ok_or_else(|| anyhow!("{short} has no PR yet; use work"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn old_session() -> Value {
+        json!({"session_id": "native", "short": "native", "task_id": "t-working", "cwd": "/sandbox/repo",
+            "env": [], "pid": null, "state": "running", "starts": 1, "started_at": 0})
+    }
+
+    fn assistant(input: u64, output: u64) -> Value {
+        json!({"type": "assistant", "message": {"usage": {"input_tokens": input, "output_tokens": output}}})
+    }
+
+    #[test]
+    fn simulated_usage_survives_resume_and_adds_later_turns_without_inventing_a_price() {
+        let mut session: Session = serde_json::from_value(old_session()).unwrap();
+        session.usage.record(&assistant(1, 1));
+        session.usage.record(&assistant(1, 1));
+        let first = session.usage.models();
+        assert_eq!(first["sandbox"]["inputTokens"], 2);
+        assert_eq!(first["sandbox"]["outputTokens"], 2);
+        assert_eq!(session.usage.models(), first, "reading a completed turn never resets its totals");
+
+        let mut resumed: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+        resumed.usage.record(&assistant(1, 1));
+        let later = resumed.usage.models();
+        assert_eq!(later["sandbox"]["inputTokens"], 3);
+        assert_eq!(later["sandbox"]["outputTokens"], 3);
+        assert_eq!(later["sandbox"]["costBasis"], "unknown");
+        assert!(later["sandbox"]["costUSD"].is_null());
+    }
+
+    #[test]
+    fn sessions_saved_before_usage_tracking_start_with_no_measured_tokens() {
+        let session: Session = serde_json::from_value(old_session()).unwrap();
+        let models = session.usage.models();
+        assert_eq!(models["sandbox"]["inputTokens"], 0);
+        assert_eq!(models["sandbox"]["outputTokens"], 0);
+    }
 }

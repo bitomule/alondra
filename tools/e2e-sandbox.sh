@@ -208,6 +208,7 @@ while [ "$i" -le "$macs" ]; do
 	nohup "$home/start" >>"$home/alondrad.log" 2>&1 &
 	echo $! >"$home/alondrad.pid"
 	wait_until "Mac $i's alondrad" "curl -sf http://127.0.0.1:$port/daemon" "$home/alondrad.log"
+	python3 -I "$repo/tools/sandbox_accounts.py" "$port"
 	[ -n "$macs_json" ] && macs_json="$macs_json,"
 	macs_json="$macs_json
     {\"number\": $i, \"mac_id\": \"$mac_id\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$i"), \"iroh_port\": $(iroh_port "$i")}"

@@ -59,6 +59,10 @@ The daemons run with `$SANDBOX_DIR/fakes` first on their PATH, wake on and
 a busy Mac never holds the fake nodes' starts; only a
 sandbox daemon honours it). No model and no GitHub are involved, and nothing reads `~/.claude`.
 
+Startup connects the Claude provider and checks its accounts on each provisioned Mac before
+journeys or the TUI seed run. The fake Claude is already signed in inside the sandbox; no real
+login is needed. The extra `NEW_MAC=1` Mac stays unconfigured for the setup wizard.
+
 - **Native Claude** (what the SDK host spawns, `claude --output-format stream-json --verbose
   --input-format stream-json …`, `src/fake/native.rs`): speaks the host's stream-json protocol as
   `agent-host/persistent-fake-claude.py` does. An orchestrator batch (`--restricted`) creates and
@@ -70,7 +74,11 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
   or cleans up; it follows its task's script, cleans up when asked, asks the host for a Bash
   command's permission unless the main checkout's `.claude/settings.local.json` allows it, and keeps
   each start, input, step and its transcript in `fakes/sessions/<first 8 of its id>/`, so
-  `--resume` finds the conversation. A journey moves it through `order.sock` there, inside its turn.
+  `--resume` finds the conversation. Results report the cumulative simulated input and output
+  tokens of its assistant messages, including earlier turns and resumes, without a monetary price.
+  The TUI seed completes a turn of `t-working` with work in the background, so it has both a native
+  session and measured tokens while it remains working. A journey moves it through `order.sock`
+  there, inside its turn.
 - **Background session** (`claude --bg`, `src/fake/node.rs`) and **`claude -p`**: what a daemon
   without the SDK backend calls, as the previous release does in `deploy/brew/upgrade-rehearsal.py`.
   The node keeps its job file in `claude-home/jobs`, the plugin's reports and connection (`alondra
@@ -104,6 +112,9 @@ task's detail.
 `scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts` runs one, and
 `alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
 as the user through views and actions, the way the iPhone does.
+
+`bazelisk test //tests/sandbox:seed` separately checks the TUI seed in a fresh sandbox, including
+that its working task has a native session and positive simulated tokens recorded for that session.
 
 - `task-cycle` (over iroh):
   - TC1: request → task → node → PR delivered → review card → merge → clean-up → the node's host

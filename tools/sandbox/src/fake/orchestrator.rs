@@ -105,7 +105,6 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
                 "task_id": task.task_id, "request_id": script.request_id, "title": task.title, "agent_id": null,
                 "review_prs": false, "dependencies": [], "launch": launch,
             })));
-            calls.push(("launch", json!({"task": task.task_id, "title": task.title, "model": "sonnet", "reason": "A scripted sandbox node"})));
         }
         made.extend(call_all(&dir, &program, &server_args, calls)?);
         std::fs::write(&handled, "")?;

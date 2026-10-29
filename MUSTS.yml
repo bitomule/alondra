@@ -26,10 +26,18 @@ checks:
       - "deploy/apple/**"
       - "deploy/pi/**"
       - "tools/shared.bzl"
+      - "tools/e2e-sandbox.sh"
+      - "tools/sandbox_accounts.py"
+      - "tools/sandbox/**"
+      - "tools/tests/test_sandbox_accounts.py"
+      - "tests/sandbox/journeys.sh"
+      - "tests/sandbox/seed.sh"
       - "tests/system/macos/**"
     with:
       targets:
         - //crates/...
+        - //tools:sandbox_accounts_test
+        - //tools/sandbox:alondra-sandbox_test
         - //tests/system/macos:local_daemon_test
         - //apple:no_sleep_wording_test
         - //apple:release_bonjour_test

@@ -8,6 +8,7 @@ exports_files(
         "e2e_sdk_backend.py",
         "e2e-sandbox.sh",
         "e2e-sandbox-stop.sh",
+        "sandbox_accounts.py",
     ],
     visibility = ["//tests/sandbox:__pkg__"],
 )
@@ -15,6 +16,13 @@ exports_files(
 exports_files(
     ["plugin-mod-test.sh"],
     visibility = ["//:__pkg__"],
+)
+
+sh_test(
+    name = "sandbox_accounts_test",
+    srcs = ["tests/test_sandbox_accounts.py"],
+    data = ["sandbox_accounts.py"],
+    size = "small",
 )
 
 sh_test(
