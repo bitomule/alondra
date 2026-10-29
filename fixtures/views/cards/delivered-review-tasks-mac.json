@@ -1,0 +1,117 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "mac",
+  "version": "v5f061a277e78ed15",
+  "cursor": "cursor-1",
+  "title": "Tasks",
+  "status": {
+    "version": "v63843208edea3b28",
+    "summary": "1 to read · 0 nodes working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Active",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:for-you",
+          "icon": "task",
+          "title": "For you",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-1",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "icon": "pull_request",
+              "title": "Release the daemon with the memory pause fix",
+              "badges": [
+                {
+                  "text": "Ready for review",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "text",
+                "text": "1 question"
+              },
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Completed",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}

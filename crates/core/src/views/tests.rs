@@ -7381,8 +7381,8 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
 
 /// t-parcel-open-issues-widget, 23 October: its node's phase still said working from its start
 /// while its session had long rested on its delivery, so the task read «Answering you» for 12
-/// hours. A task whose node runs through the SDK reads what its lifecycle does: working until it
-/// presents its delivery, then delivered, whether its last turn still runs or has ended.
+/// hours. A task whose node runs through the SDK reads what its lifecycle does: working while its
+/// turn runs, also once it presented its delivery, and ready for review once that turn ended.
 #[test]
 fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_something() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
@@ -7403,10 +7403,10 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
     assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "its turn runs");
     let answering = [answering, vec![LifecycleRecord::Presented { delivery: "d".into() }]].concat();
     state.lifecycle_journal.insert("t-1".into(), answering.clone());
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its turn still runs, on its delivery");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "its turn still runs, after its delivery");
     state.lifecycle_journal.insert("t-1".into(), [answering, vec![LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into(), wake: None, text: None, awaits: None, stalled: false }]].concat());
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its session rests on the delivery");
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Entregada");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Ready for review", "its session rests on the delivery");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Para revisar");
 }
 
 #[test]
@@ -8116,10 +8116,10 @@ fn each_live_state_reads_one_way_on_every_client() {
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
     assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
-        "Delivered", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit",
+        "Ready for review", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit",
         "Waiting for the Claude API", "Waiting"]);
     assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
-        "Entregada", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando al límite de uso de Claude",
+        "Para revisar", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando al límite de uso de Claude",
         "Esperando a la API de Claude", "Esperando"]);
 }
 
@@ -8788,4 +8788,72 @@ fn an_attachment_whose_file_is_an_image_reaches_the_apps_as_an_image() {
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     let kinds: Vec<_> = card_of(&view).attachments.iter().map(|a| (a.id.as_str(), a.kind)).collect();
     assert_eq!(kinds, [("shot", AttachmentKind::Image), ("named", AttachmentKind::Image), ("log", AttachmentKind::Binary)]);
+}
+
+/// Task t-1 whose PR #… waits for the review, its node of the Agent SDK in the turn that presented
+/// it, or with that turn ended.
+fn presented_in_a_turn(ended: bool) -> DomainState {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = release_delivered_twice(None);
+    let mut journal = vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn-1".into(), input: "input:t-1:1".into() },
+        LifecycleRecord::Presented { delivery: "published-1".into() },
+    ];
+    if ended {
+        journal.push(LifecycleRecord::TurnEnded { turn: "turn-1".into(), unheard_card: "unheard-1".into(), wake: None, text: None, awaits: None, stalled: false });
+    }
+    state.lifecycle_journal.insert("t-1".into(), journal);
+    state.derive_states();
+    state
+}
+
+/// t-duo-parcel, 25 October: its node presented its PR again and went on working in the same turn,
+/// and the task read «Delivered» beside a node at work. With its delivery open, a running turn reads
+/// «Working», also the one that presented it, and the task reads «Ready for review» once nothing
+/// runs: on the phone, the Mac and the terminal, on the list and on the task's screen.
+#[test]
+fn a_task_that_presents_and_goes_on_in_the_same_turn_reads_working_until_the_turn_ends() {
+    let live = LiveSnapshot::default();
+    let shown = |state: &DomainState, client, lang| {
+        let row = active_row(state, &live, client, lang, "t-1").1.badges[0].text.clone();
+        let screen = serde_json::to_string(&render(state, &live, client, lang, "task:t-1", "")).unwrap();
+        assert!(screen.contains(&serde_json::to_string(&row).unwrap()), "{client:?}: the task's screen says {row}: {screen}");
+        row
+    };
+    for (ended, en, es) in [(false, "Working", "Trabajando"), (true, "Ready for review", "Para revisar")] {
+        let state = presented_in_a_turn(ended);
+        assert_eq!(state.tasks[&"t-1".into()].state, TaskState::ForYourReview, "its delivery waits for the review");
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            assert_eq!(shown(&state, client, Lang::En), en, "{client:?}");
+            assert_eq!(shown(&state, client, Lang::Es), es, "{client:?}");
+        }
+    }
+}
+
+/// The task list and the task's screen of `presented_in_a_turn`, as the iPhone and the Mac draw them.
+#[test]
+fn a_delivery_in_its_turn_and_after_it_matches_goldens() {
+    let live = LiveSnapshot::default();
+    for (ended, name, client, lang, key, expected) in [
+        (false, "delivered-working-tasks-ios.json", Client::Ios, Lang::En, "tasks", include_str!("../../../../fixtures/views/cards/delivered-working-tasks-ios.json")),
+        (false, "delivered-working-tasks-ios-es.json", Client::Ios, Lang::Es, "tasks", include_str!("../../../../fixtures/views/cards/delivered-working-tasks-ios-es.json")),
+        (false, "delivered-working-task-ios.json", Client::Ios, Lang::En, "task:t-1", include_str!("../../../../fixtures/views/cards/delivered-working-task-ios.json")),
+        (false, "delivered-working-task-ios-es.json", Client::Ios, Lang::Es, "task:t-1", include_str!("../../../../fixtures/views/cards/delivered-working-task-ios-es.json")),
+        (false, "delivered-working-tasks-mac.json", Client::Mac, Lang::En, "tasks", include_str!("../../../../fixtures/views/cards/delivered-working-tasks-mac.json")),
+        (false, "delivered-working-tasks-mac-es.json", Client::Mac, Lang::Es, "tasks", include_str!("../../../../fixtures/views/cards/delivered-working-tasks-mac-es.json")),
+        (true, "delivered-review-tasks-ios.json", Client::Ios, Lang::En, "tasks", include_str!("../../../../fixtures/views/cards/delivered-review-tasks-ios.json")),
+        (true, "delivered-review-tasks-ios-es.json", Client::Ios, Lang::Es, "tasks", include_str!("../../../../fixtures/views/cards/delivered-review-tasks-ios-es.json")),
+        (true, "delivered-review-task-ios.json", Client::Ios, Lang::En, "task:t-1", include_str!("../../../../fixtures/views/cards/delivered-review-task-ios.json")),
+        (true, "delivered-review-task-ios-es.json", Client::Ios, Lang::Es, "task:t-1", include_str!("../../../../fixtures/views/cards/delivered-review-task-ios-es.json")),
+        (true, "delivered-review-tasks-mac.json", Client::Mac, Lang::En, "tasks", include_str!("../../../../fixtures/views/cards/delivered-review-tasks-mac.json")),
+        (true, "delivered-review-tasks-mac-es.json", Client::Mac, Lang::Es, "tasks", include_str!("../../../../fixtures/views/cards/delivered-review-tasks-mac-es.json")),
+    ] {
+        assert_golden(name, &render(&presented_in_a_turn(ended), &live, client, lang, key, "2026-09-30T10:00:00Z"), expected);
+    }
 }

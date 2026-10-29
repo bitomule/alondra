@@ -1519,15 +1519,16 @@ impl DomainState {
     /// under review while its node takes up what it was told after it.
     pub fn live_state(&self, task: &TaskId) -> Option<LiveState> {
         let lifecycle = self.lifecycle_of(task).ok()?;
+        let after_merge = self.work_after_merge(task, &lifecycle).is_some();
         if let Some(worker) = lifecycle.working_on_delivery() {
-            return Some(LiveState::Working(worker));
+            return Some(LiveState::Working(if after_merge && worker == Worker::Turn { Worker::AfterMerge } else { worker }));
         }
         if self.task_handed_back(task) == Some(Instruction::Reply) && let Some(worker) = lifecycle.working_on_reply() {
             return Some(LiveState::Working(worker));
         }
         let live = lifecycle.live()?;
         let LiveState::WaitingUser(cards) = &live else { return Some(live) };
-        if cards.iter().eq(lifecycle.delivery()) && self.work_after_merge(task, &lifecycle).is_some() {
+        if cards.iter().eq(lifecycle.delivery()) && after_merge {
             return Some(LiveState::Working(Worker::AfterMerge));
         }
         Some(live)

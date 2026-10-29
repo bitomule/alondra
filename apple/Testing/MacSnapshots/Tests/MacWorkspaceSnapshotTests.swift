@@ -605,6 +605,26 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 1150)) { MacServiceDetail(presentation: store) }
     }
 
+    func test_tasks_board_aDeliveryInTheTurnThatPresentedIt() throws {
+        let store = try presentation(detail: "delivered-working-tasks-mac")
+        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_tasks_board_aDeliveryInTheTurnThatPresentedIt_spanish() throws {
+        let store = try presentation(detail: "delivered-working-tasks-mac-es", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_tasks_board_aDeliveryOnceItsTurnEnded() throws {
+        let store = try presentation(detail: "delivered-review-tasks-mac")
+        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_tasks_board_aDeliveryOnceItsTurnEnded_spanish() throws {
+        let store = try presentation(detail: "delivered-review-tasks-mac-es", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_tasks_board_finishedOpen() throws {
         let finished = try document("tasks-mac-finished").sections.first { $0.id == "finished" }
         let store = try presentation(detail: "tasks-mac") { state in

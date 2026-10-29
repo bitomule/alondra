@@ -1,0 +1,139 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "ios",
+  "version": "v73f8c7e1bc85305e",
+  "cursor": "cursor-1",
+  "title": "Tareas",
+  "status": {
+    "version": "vb7b081b6c72395b1",
+    "summary": "1 por leer · 1 nodo trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Activas",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:in-progress",
+          "icon": "task",
+          "title": "En marcha",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-1",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "icon": "pull_request",
+              "title": "Release the daemon with the memory pause fix",
+              "subtitle": "Trabajando",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 1
+              },
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-1@0",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Completadas",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}

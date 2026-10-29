@@ -1043,8 +1043,6 @@ struct Delivered {
     gate: DeliveryGate,
     decisions: BTreeMap<InteractionId, Card>,
     session: Session,
-    /// The turn that presented the delivery, while it may still run.
-    presented_in: Option<TurnId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Finishing {
@@ -1362,9 +1360,9 @@ impl TaskLifecycle {
             Session::Present(execution) => execution_waiting(execution),
         }
     }
-    /// Who works, while the delivery waits for the user's review, on what the task was told after
-    /// it: the input the session takes up, or a turn other than the one that presented it. Nobody
-    /// works while the node is paused.
+    /// Who works while the delivery waits for the user's review: the input the session takes up,
+    /// a turn (the one that presented it too) or the wake that starts one. Nobody works while the
+    /// node is paused, and work it left running after its turn is not a turn.
     pub fn working_on_delivery(&self) -> Option<Worker> {
         let State::Delivered(delivered) = &self.state else { return None };
         if delivered.gate != DeliveryGate::Review || delivered.decisions.values().any(|card| card.reason == WaitReason::Pause) {
@@ -1372,9 +1370,8 @@ impl TaskLifecycle {
         }
         let execution = delivered.session.execution()?;
         match &execution.activity {
-            Activity::Turn { id, .. } if delivered.presented_in.as_ref() == Some(id) => None,
-            Activity::Launching(_) | Activity::InputPending(_) | Activity::Turn { .. } => execution.worker(),
-            Activity::OwnWork { .. } | Activity::Continuation(_) | Activity::Awaiting(_) | Activity::Resting => None,
+            Activity::Launching(_) | Activity::InputPending(_) | Activity::Turn { .. } | Activity::Continuation(_) => execution.worker(),
+            Activity::OwnWork { .. } | Activity::Awaiting(_) | Activity::Resting => None,
         }
     }
     /// Who works, while the delivery waits for the user's review, on what the user replied to it:

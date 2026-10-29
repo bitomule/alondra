@@ -201,6 +201,46 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 2500) { TaskDetailView(store: task(document)) } }
     }
 
+    func test_tasks_aDeliveryInTheTurnThatPresentedIt() throws {
+        let document = try SampleViews.document("delivered-working-tasks-ios")
+        assertScreen(lightAndDark) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+    }
+
+    func test_taskDetail_aDeliveryInTheTurnThatPresentedIt() throws {
+        let document = try SampleViews.document("delivered-working-task-ios")
+        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_tasks_aDeliveryInTheTurnThatPresentedIt_spanish() throws {
+        let document = try SampleViews.document("delivered-working-tasks-ios-es")
+        assertScreen(lightAndDark, language: .spanish) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+    }
+
+    func test_taskDetail_aDeliveryInTheTurnThatPresentedIt_spanish() throws {
+        let document = try SampleViews.document("delivered-working-task-ios-es")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_tasks_aDeliveryOnceItsTurnEnded() throws {
+        let document = try SampleViews.document("delivered-review-tasks-ios")
+        assertScreen(lightAndDark) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+    }
+
+    func test_taskDetail_aDeliveryOnceItsTurnEnded() throws {
+        let document = try SampleViews.document("delivered-review-task-ios")
+        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_tasks_aDeliveryOnceItsTurnEnded_spanish() throws {
+        let document = try SampleViews.document("delivered-review-tasks-ios-es")
+        assertScreen(lightAndDark, language: .spanish) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+    }
+
+    func test_taskDetail_aDeliveryOnceItsTurnEnded_spanish() throws {
+        let document = try SampleViews.document("delivered-review-task-ios-es")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
     func test_taskDetail_theDaemonsOwnFixture() throws {
         let document = try SampleViews.document("task-ios")
         assertScreen(lightAndDark) { ScreenFrame(height: 1400) { TaskDetailView(store: task(document)) } }

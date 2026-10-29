@@ -979,6 +979,32 @@ fn a_delivery_ends_the_case_of_a_stopped_node() {
     assert_eq!(task.live(), Several::new([InteractionId::from("result")]).map(LiveState::WaitingUser), "the delivery waits for the user's review");
 }
 
+/// t-duo-parcel, 25 October: its node presented its PR and went on working, and the task read
+/// «Delivered» beside a node at work. With its delivery open, a turn that runs, the one that
+/// presented it too, or the wake that starts one, is work; once nothing runs it waits for the review.
+#[test]
+fn a_delivery_under_review_is_work_while_a_turn_runs_and_waits_for_the_user_once_none_does() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    let review = Several::new([InteractionId::from("result")]).map(LiveState::WaitingUser);
+    assert_eq!(task.working_on_delivery(), Some(Worker::Turn), "the turn that presented it goes on");
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("tests") });
+    ended(&mut task, "root", None, None);
+    assert_eq!((task.working_on_delivery(), task.live()), (None, review.clone()), "work left running after the turn is no turn");
+    fact(&mut task, RuntimeFact::WorkEnded { work: work("tests"), continuation: continuation("done") });
+    assert_eq!(task.working_on_delivery(), Some(Worker::Alondra(Step::Waking)), "the wake starts a turn");
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::OwnedContinuation(continuation("done")) });
+    assert_eq!(task.working_on_delivery(), Some(Worker::Turn));
+    ended(&mut task, "woken", None, None);
+    assert_eq!((task.working_on_delivery(), task.live()), (None, review.clone()), "nothing runs: it waits for the review");
+    apply(&mut task, Event::Tell { input: input("told") });
+    assert_eq!(task.working_on_delivery(), Some(Worker::Alondra(Step::Delivering)));
+    started(&mut task, "told", "told");
+    assert_eq!(task.working_on_delivery(), Some(Worker::Turn));
+    ended(&mut task, "told", None, None);
+    assert_eq!((task.working_on_delivery(), task.live()), (None, review));
+}
+
 #[test]
 fn a_lapsed_wait_with_nothing_told_waits_on_the_orchestrator_once_the_node_was_woken() {
     let mut task = running();

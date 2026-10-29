@@ -99,7 +99,7 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
     if let Attention::Wait(reason @ WaitReason::Answer { .. }) = &attention {
         return if waits { for_you(task, context) } else { waiting_for(task, reason, context) };
     }
-    let turn_runs = read.is_some_and(|read| matches!(read.live, Some(LiveState::Working(_))));
+    let turn_runs = read.is_some_and(|read| matches!(read.activity, Some(TaskActivity::Live(LiveState::Working(_)))));
     match task.state {
         TaskState::ForYourReview if turn_runs => running(task, context),
         TaskState::NeedsYou | TaskState::ForYourReview if waits => for_you(task, context),
@@ -126,6 +126,15 @@ fn for_you(task: &Task, context: &RenderContext<'_>) -> Presentation {
     } else {
         Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, Block::ForYou, open_questions(task, context))
     }
+}
+
+/// A delivery that waits for the review with nothing running: listed For You only while its card
+/// is in the inbox, and read the same either way.
+fn in_review(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    if context.waits_for_review(&task.id) {
+        return for_you(task, context);
+    }
+    Presentation::new(t!(context.lang, "Ready for review", "Para revisar"), Tone::Info, Block::InProgress, review_fact(task, context))
 }
 
 /// What a task that needs the user asks: its one open question, or how many it has. Never the task's own title.
@@ -290,8 +299,7 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
             };
             Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
         }
-        LiveState::WaitingUser(cards) if cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)) =>
-            Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
+        LiveState::WaitingUser(cards) if cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)) => in_review(task, context),
         LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) =>
             Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting,
                 Some(with_pending(t!(lang, "You paused it", "La pausaste").to_owned(), task, context))),

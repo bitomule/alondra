@@ -2356,3 +2356,41 @@ fn a_message_claude_never_read_offers_a_crash_report_as_not_delivered() {
     assert!(s.report_failure_action(&"t".into()).enabled);
     assert_eq!(s.task_failure(&"t".into()), Some(ReportedFailure::MessageNotDelivered));
 }
+
+/// t-duo-parcel, 25 October: its node presented its PR and went on working, in that turn, in the
+/// turn its background work woke and in the one the user's message started. The task's live state
+/// is work while any of them runs and waits for the review only once none does.
+#[test]
+fn a_delivery_under_review_reads_working_while_a_turn_runs_and_waits_for_the_user_once_none_does() {
+    use alondra_domain::{LiveState, Several, Step, Worker};
+    let mut s = DomainState::new("epoch");
+    let mut journal = vec![
+        LifecycleRecord::Planned { input: "input:t:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "presenting".into(), input: "input:t:1".into() },
+        LifecycleRecord::Presented { delivery: "result-3".into() },
+    ];
+    let review = Several::new([InteractionId::from("result-3")]).map(LiveState::WaitingUser);
+    let ended = |turn: &str| LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: format!("unheard-{turn}").into(), wake: None, text: None, awaits: None, stalled: false };
+    for (records, live, why) in [
+        (vec![], Some(LiveState::Working(Worker::Turn)), "the turn that presented it goes on"),
+        (vec![LifecycleRecord::WorkStarted { turn: "presenting".into(), work: "tests".into() }, ended("presenting")], review.clone(),
+            "only its own work runs, after the turn"),
+        (vec![LifecycleRecord::WorkEnded { work: "tests".into(), continuation: "done".into() }], Some(LiveState::Working(Worker::Alondra(Step::Waking))),
+            "the work's end wakes a turn"),
+        (vec![LifecycleRecord::TurnResumed { turn: "woken".into(), continuation: "done".into() }], Some(LiveState::Working(Worker::Turn)), "the woken turn runs"),
+        (vec![ended("woken")], review.clone(), "nothing runs"),
+        (vec![LifecycleRecord::Told { input: "input:t:2".into(), text: Some("Also bump the changelog".into()) }],
+            Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the message goes to the node"),
+        (vec![LifecycleRecord::TurnStarted { turn: "told".into(), input: "input:t:2".into() }], Some(LiveState::Working(Worker::Turn)), "the message's turn runs"),
+        (vec![ended("told")], review, "nothing runs again"),
+    ] {
+        journal.extend(records);
+        s.lifecycle_journal.insert("t".into(), journal.clone());
+        assert_eq!(s.live_state(&"t".into()), live, "{why}");
+    }
+}

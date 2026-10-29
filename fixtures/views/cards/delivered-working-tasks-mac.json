@@ -1,0 +1,138 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "mac",
+  "version": "v77c4faa85d48f2fa",
+  "cursor": "cursor-1",
+  "title": "Tasks",
+  "status": {
+    "version": "v887807058841bf6a",
+    "summary": "1 to read · 1 node working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Active",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:in-progress",
+          "icon": "task",
+          "title": "In progress",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-1",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "icon": "pull_request",
+              "title": "Release the daemon with the memory pause fix",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "text",
+                "text": "1 question"
+              },
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-1@0",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Completed",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}

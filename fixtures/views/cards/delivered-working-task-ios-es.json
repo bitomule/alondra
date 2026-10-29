@@ -1,0 +1,253 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-1",
+  "client": "ios",
+  "version": "v584bd3b8acad67e5",
+  "cursor": "cursor-1",
+  "title": "Release the daemon with the memory pause fix",
+  "status": {
+    "version": "vb7b081b6c72395b1",
+    "summary": "1 por leer · 1 nodo trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "Trabajando",
+              "tone": "accent"
+            },
+            {
+              "label": "Solicitud",
+              "value": "Release the daemon with the memory pause fix"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "waiting",
+      "title": "Te espera",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "published-1",
+          "kind": "review",
+          "need": "Body 2",
+          "meta": "Release the daemon with the memory pause fix",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Informe",
+            "summary": "1 punto"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:published-1"
+          },
+          "icon": "document",
+          "eyebrow": {
+            "text": "Revisar",
+            "tone": "accent"
+          },
+          "title": "Body 2",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Release the daemon with the memory pause fix",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "state": {
+                "text": "Trabajando",
+                "tone": "accent"
+              }
+            }
+          ],
+          "detail": "reference"
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Solicitud",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Build a feature",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Opciones",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Prioridad",
+              "value": "Normal"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "Merge automático: Alondra hace el merge al pasar los checks"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "msg:a-1@0~t-1",
+              "label": "Mensaje",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Escribe al nodo de esta tarea…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "interrupt:a-1@0",
+              "label": "Interrumpir",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "button": "Interrumpir"
+              },
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "pause:a-1@0",
+              "label": "Pausar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Pausar este nodo?",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "button": "Pausar"
+              },
+              "enabled": true,
+              "stamp": "En pausa",
+              "resolves_card": false
+            },
+            {
+              "id": "set_priority:t-1@0",
+              "label": "Prioridad",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "Alta",
+                  "description": "Arranca antes que Normal y Baja",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · ahora",
+                  "description": "La de siempre",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Baja",
+                  "description": "Arranca cuando no espera nada más",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

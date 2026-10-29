@@ -1,0 +1,118 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "ios",
+  "version": "vf824df973fa9ff81",
+  "cursor": "cursor-1",
+  "title": "Tareas",
+  "status": {
+    "version": "v3ca84408e03b9580",
+    "summary": "1 por leer · 0 nodos trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Activas",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:for-you",
+          "icon": "task",
+          "title": "Para ti",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-1",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "icon": "pull_request",
+              "title": "Release the daemon with the memory pause fix",
+              "subtitle": "Para revisar",
+              "badges": [
+                {
+                  "text": "Para revisar",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 1
+              },
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Completadas",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}

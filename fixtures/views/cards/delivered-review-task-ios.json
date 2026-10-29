@@ -1,0 +1,216 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-1",
+  "client": "ios",
+  "version": "veee9a22c81c7ff2b",
+  "cursor": "cursor-1",
+  "title": "Release the daemon with the memory pause fix",
+  "status": {
+    "version": "v63843208edea3b28",
+    "summary": "1 to read · 0 nodes working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "State",
+              "value": "Ready for review",
+              "tone": "info"
+            },
+            {
+              "label": "Request",
+              "value": "Release the daemon with the memory pause fix"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "waiting",
+      "title": "Waiting for You",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "published-1",
+          "kind": "review",
+          "need": "Body 2",
+          "meta": "Release the daemon with the memory pause fix",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "1 point"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:published-1"
+          },
+          "icon": "document",
+          "eyebrow": {
+            "text": "Review",
+            "tone": "accent"
+          },
+          "title": "Body 2",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Release the daemon with the memory pause fix",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "state": {
+                "text": "Ready for review",
+                "tone": "info"
+              }
+            }
+          ],
+          "detail": "reference"
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Request",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Build a feature",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Options",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
+              "label": "PR handling",
+              "value": "Auto-merge: Alondra merges it once its checks pass"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "msg:a-1@0~t-1",
+              "label": "Message",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Write to this task's node…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "set_priority:t-1@0",
+              "label": "Priority",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "High",
+                  "description": "Starts before Normal and Low",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · now",
+                  "description": "The default",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Low",
+                  "description": "Starts when nothing else waits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
