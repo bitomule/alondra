@@ -265,33 +265,68 @@ impl Apns {
         delivery: &Delivery,
     ) -> Result<()> {
         let body = serde_json::to_vec(&payload_for(delivery, envelope, &reg.push_binding))?;
+        let mut headers = vec![
+            ("apns-topic", self.topic.clone()),
+            ("apns-expiration", expiration_for(delivery, envelope)),
+        ];
+        headers.extend(headers_for(delivery).map(|(name, value)| (name, value.to_owned())));
+        if let Some(collapse_id) = &delivery.collapse_id {
+            headers.push(("apns-collapse-id", collapse_id.clone()));
+        }
+        self.post(&reg.token, &reg.environment, headers, body).await
+    }
+
+    /// Starts, updates or ends a Live Activity. Apple wants the app's topic with the
+    /// `.push-type.liveactivity` suffix and a priority of 5 or 10.
+    pub async fn send_live_activity(
+        &self,
+        token: &str,
+        environment: &str,
+        payload: &Value,
+        priority: u8,
+        expires_at_s: u64,
+    ) -> Result<()> {
+        if !matches!(priority, 5 | 10) {
+            bail!("a Live Activity push has priority 5 or 10");
+        }
+        let headers = vec![
+            ("apns-topic", live_activity_topic(&self.topic)),
+            ("apns-push-type", "liveactivity".to_owned()),
+            ("apns-priority", priority.to_string()),
+            ("apns-expiration", expires_at_s.to_string()),
+        ];
+        self.post(token, environment, headers, serde_json::to_vec(payload)?).await
+    }
+
+    async fn post(
+        &self,
+        token: &str,
+        environment: &str,
+        headers: Vec<(&'static str, String)>,
+        body: Vec<u8>,
+    ) -> Result<()> {
         if body.len() > APNS_MAX_BYTES {
             bail!("APNs payload exceeds 4096 bytes");
         }
-        let host = if reg.environment == "sandbox" {
+        let host = if environment == "sandbox" {
             "api.sandbox.push.apple.com"
         } else {
             "api.push.apple.com"
         };
-        let url = format!("https://{host}/3/device/{}", reg.token);
+        let url = format!("https://{host}/3/device/{token}");
         #[cfg(test)]
         let url = self
             .test_endpoint
             .as_ref()
-            .map(|base| format!("{base}/3/device/{}", reg.token))
+            .map(|base| format!("{base}/3/device/{token}"))
             .unwrap_or(url);
         let mut request = self
             .client
             .post(url)
             .header("authorization", format!("bearer {}", self.bearer()?))
-            .header("apns-topic", &self.topic)
-            .header("apns-expiration", expiration_for(delivery, envelope))
             .header("content-type", "application/json");
-        for (name, value) in headers_for(delivery) {
+        for (name, value) in headers {
             request = request.header(name, value);
-        }
-        if let Some(collapse_id) = &delivery.collapse_id {
-            request = request.header("apns-collapse-id", collapse_id);
         }
         let response = request
             .body(body)
@@ -310,6 +345,10 @@ impl Apns {
         }
         Ok(())
     }
+}
+
+pub fn live_activity_topic(topic: &str) -> String {
+    format!("{topic}.push-type.liveactivity")
 }
 
 /// APNs refused a push. Carries only Apple's status, reason, apns-id and, for a dead token,

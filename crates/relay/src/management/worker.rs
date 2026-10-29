@@ -27,6 +27,7 @@ pub async fn step(server: &Server) -> Result<bool> {
         server
             .pairing
             .purge_device(&job.subject, &r.kind, &r.device_id);
+        crate::activity::after_revocation(server).await;
         db.complete_device_revocation(&job).await?;
         return Ok(true);
     }
@@ -44,6 +45,7 @@ pub async fn step(server: &Server) -> Result<bool> {
                 let _gate = server.device_gate.write().await;
                 server.auth.revoke_owner(owner)?;
                 server.pairing.purge_owner(owner);
+                crate::activity::after_revocation(server).await;
             }
         }
         _ => anyhow::bail!("unknown reconciliation action"),

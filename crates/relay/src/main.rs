@@ -2,6 +2,7 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
+mod activity;
 mod auth;
 mod management;
 mod pairing;
@@ -31,6 +32,7 @@ use tokio::sync::{RwLock, Semaphore};
 
 struct Server {
     auth: Auth,
+    activity: activity::Store,
     management_keycloak: Option<management::keycloak::Keycloak>,
     web_session: Option<Arc<web_session::WebSession>>,
     web_assets: Option<web_assets::WebAssets>,
@@ -73,6 +75,9 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/push/register", post(register_push))
         .route("/v1/push/unregister", post(unregister_push))
         .route("/v1/mac/push", post(send_push))
+        .route("/v1/activity/register", post(register_activity))
+        .route("/v1/activity/unregister", post(unregister_activity))
+        .route("/v1/mac/activity", post(report_activity))
         .route("/v1/requests", any(mailbox_removed))
         .route("/v1/requests/{*rest}", any(mailbox_removed))
         .route("/v1/changes", any(mailbox_removed))
@@ -277,6 +282,7 @@ async fn revoke_mac(
         .auth
         .revoke_mac(&who)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_revocation_failed"))?;
+    activity::after_revocation(&server).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -357,6 +363,7 @@ async fn revoke(
         .auth
         .revoke(&mac, &id)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "revocation_failed"))?;
+    activity::after_revocation(&server).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -697,6 +704,142 @@ async fn send_push(
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
+/// Signed by one of the phone's pairings. The tokens go only to the relay, never to a Mac.
+async fn register_activity(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    if server.apns.is_none() {
+        return Err(error(StatusCode::SERVICE_UNAVAILABLE, "push_unavailable"));
+    }
+    let _gate = server.device_gate.read().await;
+    let who = server
+        .auth
+        .authenticate_phone(&headers, &method, &uri, &body, now_ms())
+        .await
+        .map_err(authentication_error)?;
+    if body.len() > 4096 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let registration: activity::Registration = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_activity_registration"))?;
+    registration
+        .validate()
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_activity_registration"))?;
+    let mac_id = server
+        .auth
+        .paired_mac_for_phone(&who.device_id, &who.owner_sub)
+        .map_err(authentication_error)?;
+    server
+        .activity
+        .register(&who.owner_sub, &who.device_id, &mac_id, registration)
+        .map_err(activity_store_error)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn unregister_activity(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    let _gate = server.device_gate.read().await;
+    let who = server
+        .auth
+        .authenticate_phone(&headers, &method, &uri, &body, now_ms())
+        .await
+        .map_err(authentication_error)?;
+    if body.len() > 256 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let request: activity::Unregistration = serde_json::from_slice(&body)
+        .ok()
+        .filter(|request: &activity::Unregistration| activity::valid_phone_id(&request.phone_id))
+        .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_activity_unregistration"))?;
+    server
+        .activity
+        .unregister(&who.owner_sub, &who.device_id, &request.phone_id)
+        .map_err(activity_store_error)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+fn activity_store_error(failure: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if failure.is::<activity::Conflict>() {
+        error(StatusCode::CONFLICT, "activity_registration_conflict")
+    } else {
+        error(StatusCode::SERVICE_UNAVAILABLE, "activity_registration_failed")
+    }
+}
+
+/// Never answers 404, which the daemon reads as a relay without this route and sleeps an hour;
+/// a phone the Mac can no longer reach is `410 activity_registration_gone`. APNs failures are
+/// not the Mac's to retry: the report is kept and goes out with the next one.
+async fn report_activity(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    if server.apns.is_none() {
+        return Err(error(StatusCode::SERVICE_UNAVAILABLE, "push_unavailable"));
+    }
+    let _gate = server.device_gate.read().await;
+    let mac = server
+        .auth
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
+        .await
+        .map_err(authentication_error)?;
+    if body.len() > 4096 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let request: activity::ReportRequest = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_activity"))?;
+    let e = &request.envelope;
+    let now = now_ms();
+    if e.kind != "activity"
+        || e.route != mac.device_id
+        || e.sender != mac.device_id
+        || e.recipient != request.device_id
+        || e.expires_at_ms <= now
+        || e.expires_at_ms > now.saturating_add(MAX_PUSH_LIFETIME_MS)
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_activity_route"));
+    }
+    e.verify_signature(
+        &server.auth.mac_key(&mac.device_id).map_err(authentication_error)?,
+        &mac.device_id,
+        &request.device_id,
+        &mac.device_id,
+        now,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
+    let gone = || error(StatusCode::GONE, "activity_registration_gone");
+    server.auth.phone_for_mac(&request.device_id, &mac).map_err(|failure| {
+        if failure.is::<auth::RegistryUnavailable>() {
+            error(StatusCode::SERVICE_UNAVAILABLE, "registry_unavailable")
+        } else {
+            gone()
+        }
+    })?;
+    server
+        .auth
+        .require_live_route(&mac.owner_sub, &mac.device_id, Some(&request.device_id))
+        .await
+        .map_err(authentication_error)?;
+    match server.activity.record(&mac.device_id, request) {
+        Ok(activity::Recorded::Stored { phone_id }) => activity::push(&server, &phone_id).await,
+        Ok(activity::Recorded::Held) => {}
+        Ok(activity::Recorded::Gone) => return Err(gone()),
+        Err(_) => return Err(error(StatusCode::SERVICE_UNAVAILABLE, "activity_unavailable")),
+    }
+    Ok(StatusCode::ACCEPTED.into_response())
+}
+
 fn apns_failure_response(failure: &anyhow::Error) -> (StatusCode, Json<Value>) {
     match failure.downcast_ref::<push::ApnsRejection>() {
         Some(rejection) if rejection.registration_is_dead() => {
@@ -759,6 +902,7 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => None,
     };
     let server = Arc::new(Server {
+        activity: activity::Store::open(&auth.config.device_registry_path)?,
         auth,
         web_assets,
         web_session,
@@ -810,6 +954,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod http_tests {
     include!("pg_fault_tests.rs");
+    include!("activity_http_tests.rs");
     use super::*;
     use alondra_e2e::{Context, Envelope, sign_http_challenge};
     use sha2::{Digest, Sha256};
@@ -929,6 +1074,7 @@ mod http_tests {
         auth.management=management;
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
+            activity: activity::Store::open(&auth.config.device_registry_path).unwrap(),
             auth,
             management_keycloak: None,
             web_session: None,

@@ -1068,6 +1068,14 @@ impl Auth {
         Ok(())
     }
 
+    /// Whether the phone pairing still reaches this Mac: neither revoked, nor re-paired elsewhere.
+    pub fn pairing_is_live(&self, device_id: &str, mac_id: &str) -> bool {
+        let registry = self.devices.lock().unwrap();
+        registry.phone_macs.get(device_id).is_some_and(|mac| mac == mac_id)
+            && registry.devices.contains_key(device_id)
+            && registry.macs.contains_key(mac_id)
+    }
+
     pub fn paired_mac_for_phone(&self, phone_id: &str, owner_sub: &str) -> Result<String> {
         self.ensure_registry_ready()?;
         let registry = self.devices.lock().unwrap();
@@ -1726,7 +1734,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     )
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let parent = path
         .parent()

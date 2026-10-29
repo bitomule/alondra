@@ -755,6 +755,7 @@ mod tests {
             permits: Semaphore::new(2),
         });
         let server = Arc::new(Server {
+            activity: crate::activity::Store::open(&auth.config.device_registry_path)?,
             auth,
             management_keycloak: None,
             web_session: Some(web.clone()),
