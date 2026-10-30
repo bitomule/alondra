@@ -8,7 +8,7 @@ mod normalizer;
 mod records;
 mod wire;
 
-pub use adapter::{CodexConfiguration, CodexWorker, Found, WorkerProfile, answered_by_event, answered_control, native_exited};
+pub use adapter::{CodexConfiguration, CodexWorker, Found, NativeLiveness, WorkerProfile, answered_by_event, answered_control, native_exited};
 pub use batch::{BatchHost, HostEvent, PendingHostEvent, McpServer, OrchestratorProfile};
 pub use context::{ContextEvent, context_event, native_message, account_refusal};
 pub use ended::{EndedJournal, Retained};

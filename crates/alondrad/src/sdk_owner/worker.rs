@@ -77,6 +77,9 @@ impl Worker {
     pub fn host_group(&self) -> Option<i32> { dispatch!(self, host_group) }
     pub fn runs_another_release(&self) -> bool { dispatch!(self, runs_another_release) }
     pub fn host_exited(&mut self) -> bool { dispatch!(self, host_exited) }
+    pub fn native_liveness(&mut self) -> Result<Option<alondra_provider_codex::NativeLiveness>, AdapterError> {
+        match self { Self::Codex(worker) => worker.native_liveness().map(Some), Self::Claude(_) => Ok(None) }
+    }
     pub fn prepare_control(&mut self, attempt: &ControlAttempt) -> Result<PreparedCommand, AdapterError> { dispatch!(self, prepare_control, attempt) }
     pub fn submit_control(&mut self, command: &CommittedControl) -> Result<Handoff, AdapterError> { dispatch!(self, submit_control, command) }
     pub fn stop(&mut self) -> Result<(), AdapterError> { dispatch!(self, stop) }

@@ -125,6 +125,7 @@ pub enum DiagnosticCode {
     ReadinessHint,
     PipeClosed,
     ReaderFailed,
+    ReapFailed,
 }
 struct DiagnosticDrain {
     cancel: UnixStream,
@@ -150,13 +151,19 @@ impl Drop for DiagnosticDrain {
 pub struct OwnedHost<O = OwnerGrant> {
     owner: O,
     identity: LaunchIdentity,
-    child: Child,
+    child: Arc<Mutex<HostChild>>,
+    pid: rustix::process::Pid,
+    exit_status: Arc<Mutex<Option<ExitStatus>>>,
     leader: Arc<Mutex<Option<rustix::process::Pid>>>,
-    reaped: Option<ExitStatus>,
     wake: mpsc::Receiver<Wake>,
     tail: Arc<Mutex<VecDeque<DiagnosticCode>>>,
     drains: Vec<DiagnosticDrain>,
     lock_identity: (u64, u64),
+}
+struct HostChild {
+    child: Child,
+    reaped: Option<ExitStatus>,
+    reap_failure: Option<io::Error>,
 }
 impl<O> OwnedHost<O> {
     /// The builder belongs to the concrete private adapter and validates its bootstrap
@@ -238,6 +245,18 @@ impl<O> OwnedHost<O> {
                     return Err(error);
                 }
             };
+            let leader = Arc::new(Mutex::new(None));
+            let exit_status = Arc::new(Mutex::new(None));
+            let reap_sender = match prepare_reaper(leader.clone(), exit_status.clone(), tail.clone()) {
+                Ok(sender) => sender,
+                Err(error) => {
+                    drop(stdout_sender);
+                    drop(stderr_sender);
+                    drop(stdout_drain);
+                    drop(stderr_drain);
+                    return Err(error);
+                }
+            };
             let spawned = {
                 let mut command = match confinement {
                     Some(profile) => {
@@ -268,7 +287,7 @@ impl<O> OwnedHost<O> {
                     return Err(error);
                 }
             };
-            // All fallible reader-thread creation finished before spawn. Command's source
+            // All fallible monitor-thread creation finished before spawn. Command's source
             // descriptor dropped without unlock; the child retains the inherited lock.
             let stdout = child.stdout.take().expect("piped child stdout");
             let stderr = child.stderr.take().expect("piped child stderr");
@@ -279,13 +298,17 @@ impl<O> OwnedHost<O> {
                 .send(Box::new(stderr))
                 .expect("prepared stderr reader");
             let drains = vec![stdout_drain, stderr_drain];
-            let leader = Arc::new(Mutex::new(Some(rustix::process::Pid::from_child(&child))));
+            let pid = rustix::process::Pid::from_child(&child);
+            *leader.lock().expect("owned host leader poisoned") = Some(pid);
+            let child = Arc::new(Mutex::new(HostChild { child, reaped: None, reap_failure: None }));
+            reap_sender.send(child.clone()).expect("prepared host reaper");
             Ok(Self {
                 owner,
                 identity,
                 child,
+                pid,
+                exit_status,
                 leader,
-                reaped: None,
                 wake,
                 tail,
                 drains,
@@ -321,7 +344,7 @@ impl<O> OwnedHost<O> {
             Err(error) => return Err(error),
         }
         loop {
-            if let Some(status) = self.exit(false)? {
+            if let Some(status) = self.exit()? {
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionAborted,
                     format!("owned host exited before authentication: {status}"),
@@ -367,40 +390,18 @@ impl<O> OwnedHost<O> {
     fn connect(&self, deadline: Instant) -> io::Result<UnixStream> {
         connect_identity(&self.identity.folder, self.lock_identity, deadline)
     }
-    /// The host's exit, observed without reaping it, so its process group stays reserved.
+    /// The host's exit, including the status retained after its group was swept and it was reaped.
     pub fn observed_exit(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.exit(false)
+        self.exit()
     }
-    fn exit(&self, block: bool) -> io::Result<Option<ExitStatus>> {
-        if let Some(status) = self.reaped {
-            return Ok(Some(status));
-        }
-        use rustix::process::{WaitId, WaitIdOptions, waitid};
-        let mut options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
-        if !block {
-            options |= WaitIdOptions::NOHANG;
-        }
-        let pid = rustix::process::Pid::from_child(&self.child);
-        loop {
-            match waitid(WaitId::Pid(pid), options) {
-                Ok(Some(status)) if status.exited() || status.killed() || status.dumped() => {
-                    let raw = match (status.exit_status(), status.terminating_signal()) {
-                        (Some(code), _) => (code & 0xff) << 8,
-                        (None, Some(signal)) => signal | if status.dumped() { 0x80 } else { 0 },
-                        (None, None) => return Err(io::Error::other("owned host exit without status")),
-                    };
-                    return Ok(Some(ExitStatus::from_raw(raw)));
-                }
-                Ok(_) if !block => return Ok(None),
-                Ok(_) => continue,
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
+    fn exit(&self) -> io::Result<Option<ExitStatus>> {
+        let mut observed = self.exit_status.lock().expect("owned host exit status poisoned");
+        if observed.is_none() { *observed = child_exit(self.pid, false)?; }
+        Ok(*observed)
     }
     /// The host's process id: it leads its own process group, which Claude runs in.
     pub fn process_id(&self) -> u32 {
-        self.child.id()
+        self.pid.as_raw_nonzero().get().try_into().expect("positive child pid")
     }
     /// Requests graceful shutdown of this unreaped child. This is fixture cleanup, not
     /// current-owner control after adoption; production control requires authenticated fencing.
@@ -408,9 +409,9 @@ impl<O> OwnedHost<O> {
     pub fn request_stop(&mut self) -> io::Result<()> {
         self.stopper().request()
     }
-    /// The process group this host leads: its own PID, reserved until `wait` reaps it.
+    /// The process group this host led. Use `stopper` for control protected against PID reuse.
     pub fn process_group(&self) -> i32 {
-        rustix::process::Pid::from_child(&self.child).as_raw_nonzero().get()
+        self.pid.as_raw_nonzero().get()
     }
     /// A handle that asks this host to stop from another thread, and never signals it once reaped.
     pub fn stopper(&self) -> HostStop {
@@ -428,17 +429,7 @@ impl<O> OwnedHost<O> {
     /// the unreaped host still reserves the group's number, and only then reaps it. A group that
     /// does not empty keeps the host unreaped and names what is left.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        if let Some(status) = self.reaped {
-            return Ok(status);
-        }
-        let status = self.exit(true)?.ok_or_else(|| io::Error::other("owned host exit unobserved"))?;
-        sweep(rustix::process::Pid::from_child(&self.child))?;
-        {
-            let mut leader = self.leader.lock().expect("owned host leader poisoned");
-            *leader = None;
-            self.child.wait()?;
-        }
-        self.reaped = Some(status);
+        let status = reap_child(&self.child, &self.leader, &self.exit_status)?;
         for drain in &mut self.drains {
             if drain.stop() {
                 push_code(&self.tail, DiagnosticCode::ReaderFailed);
@@ -446,6 +437,70 @@ impl<O> OwnedHost<O> {
         }
         Ok(status)
     }
+}
+fn child_exit(pid: rustix::process::Pid, block: bool) -> io::Result<Option<ExitStatus>> {
+    use rustix::process::{WaitId, WaitIdOptions, waitid};
+    let mut options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+    if !block { options |= WaitIdOptions::NOHANG; }
+    loop {
+        match waitid(WaitId::Pid(pid), options) {
+            Ok(Some(status)) if status.exited() || status.killed() || status.dumped() => {
+                let raw = match (status.exit_status(), status.terminating_signal()) {
+                    (Some(code), _) => (code & 0xff) << 8,
+                    (None, Some(signal)) => signal | if status.dumped() { 0x80 } else { 0 },
+                    (None, None) => return Err(io::Error::other("owned host exit without status")),
+                };
+                return Ok(Some(ExitStatus::from_raw(raw)));
+            }
+            Ok(_) if !block => return Ok(None),
+            Ok(_) => continue,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+fn reap_child(child: &Mutex<HostChild>, leader: &Mutex<Option<rustix::process::Pid>>, exit_status: &Mutex<Option<ExitStatus>>) -> io::Result<ExitStatus> {
+    let mut child = child.lock().expect("owned host child poisoned");
+    if let Some(status) = child.reaped { return Ok(status); }
+    if let Some(error) = child.reap_failure.take() { return Err(error); }
+    let pid = rustix::process::Pid::from_child(&child.child);
+    let status = child_exit(pid, true)?.ok_or_else(|| io::Error::other("owned host exit unobserved"))?;
+    *exit_status.lock().expect("owned host exit status poisoned") = Some(status);
+    sweep(pid)?;
+    let mut leader = leader.lock().expect("owned host leader poisoned");
+    *leader = None;
+    child.child.wait()?;
+    child.reaped = Some(status);
+    Ok(status)
+}
+fn prepare_reaper(leader: Arc<Mutex<Option<rustix::process::Pid>>>, exit_status: Arc<Mutex<Option<ExitStatus>>>, tail: Arc<Mutex<VecDeque<DiagnosticCode>>>) -> io::Result<mpsc::SyncSender<Arc<Mutex<HostChild>>>> {
+    let mut exits = alondra_process_group::Exits::new()?;
+    let (sender, receiver) = mpsc::sync_channel::<Arc<Mutex<HostChild>>>(1);
+    thread::Builder::new().name("owned-host-reaper".into()).spawn(move || {
+        let Ok(child) = receiver.recv() else { return; };
+        let (pid, watched) = {
+            let child = child.lock().expect("owned host child poisoned");
+            if child.reaped.is_some() { return; }
+            let pid = rustix::process::Pid::from_child(&child.child);
+            let watched = alondra_process_group::process(pid.as_raw_nonzero().get()).and_then(|host| {
+                if let Some(host) = host { exits.watch(&host)?; }
+                Ok(())
+            });
+            (pid, watched)
+        };
+        let observed = watched.and_then(|_| exits.wait());
+        // A failed kernel subscription still waits for actual exit without blocking the owner's
+        // child mutex. Dropping an owner never signals its host or waits for its work to finish.
+        if observed.is_err() { let _ = child_exit(pid, true); }
+        if let Err(error) = reap_child(&child, &leader, &exit_status) {
+            let mut child = child.lock().expect("owned host child poisoned");
+            if child.reaped.is_none() {
+                child.reap_failure = Some(error);
+                push_code(&tail, DiagnosticCode::ReapFailed);
+            }
+        }
+    })?;
+    Ok(sender)
 }
 /// Asks a host to stop from another thread. A launched host is signalled only while unreaped: the
 /// reap takes the same lock and clears the leader first. An adopted host is signalled only while
@@ -458,14 +513,40 @@ enum Leader {
     Adopted(Arc<Mutex<Option<alondra_process_group::Member>>>),
 }
 impl HostStop {
+    /// The bound host while it is still the same live process, with its kernel birth identity.
+    pub fn process(&self) -> io::Result<Option<alondra_process_group::Member>> {
+        match &self.0 {
+            Leader::Launched(leader) => {
+                let leader = leader.lock().expect("owned host leader poisoned");
+                match *leader {
+                    Some(pid) => Ok(alondra_process_group::process(pid.as_raw_nonzero().get())?.filter(|host| !host.zombie)),
+                    None => Ok(None),
+                }
+            }
+            Leader::Adopted(peer) => match *peer.lock().expect("adopted host peer poisoned") {
+                Some(host) if alondra_process_group::alive(&host)? => Ok(Some(host)),
+                _ => Ok(None),
+            },
+        }
+    }
     /// Interrupts an unresponsive host under the same lease that protects it from PID reuse.
-    /// Its owner still waits for the host and sweeps its descendants before reaping it.
+    /// Its exit monitor sweeps its descendants before reaping it.
     pub fn kill(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::KILL)
     }
 
     pub fn request(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::TERM)
+    }
+    /// Lets a live host finish draining native output before forced cleanup. A stopped host is
+    /// continued so it can handle TERM; the kernel exit watch bounds how long the caller waits.
+    pub fn request_graceful_stop(&self, timeout: Duration) -> io::Result<bool> {
+        let Some(host) = self.process()? else { return Ok(true); };
+        let mut exits = alondra_process_group::Exits::new()?;
+        exits.watch(&host)?;
+        self.request()?;
+        self.send(rustix::process::Signal::CONT)?;
+        exits.wait_for(timeout)
     }
     /// Asks the host to stop once Claude's running turn, if any, has ended as an interrupted turn.
     pub fn request_after_interrupt(&self) -> io::Result<()> {
@@ -675,6 +756,30 @@ impl AdoptedHost {
     pub fn stopper(&self) -> HostStop {
         HostStop(Leader::Adopted(self.peer.clone()))
     }
+    /// Ends an unusable adopted host and the processes whose group membership a live host or
+    /// retained native identity still proves. Without that anchor, leftover processes are refused.
+    pub fn stop_with_anchor(&mut self, anchor: Option<alondra_process_group::Member>, force: bool) -> io::Result<()> {
+        if !force { return self.stop(); }
+        let Some(host) = *self.peer.lock().expect("adopted host peer poisoned") else { return Ok(()); };
+        let pivot = if alondra_process_group::alive(&host)? { Some(host) } else { anchor };
+        let pivot = pivot.filter(|member| member.pid > 0);
+        let anchored = live_group_anchor(pivot, host.pid)?;
+        let targets = alondra_process_group::members(host.pid)?.into_iter().filter(|member| !member.zombie).collect::<Vec<_>>();
+        if !adopted_snapshot_needs_cleanup(&host, pivot.filter(|_| anchored), &targets)? { return Ok(()); }
+        let mut exits = alondra_process_group::Exits::new()?;
+        for member in &targets { exits.watch(member)?; }
+        self.stopper().request_graceful_stop(Duration::from_secs(5))?;
+        for member in &targets {
+            if alondra_process_group::alive(member)? {
+                signal(rustix::process::Pid::from_raw(member.pid).ok_or_else(|| refused("adopted group member without a process"))?, rustix::process::Signal::KILL)?;
+            }
+        }
+        exits.wait()?;
+        let left = alondra_process_group::members(host.pid)?.into_iter().filter(|member| !member.zombie).map(|member| member.to_string()).collect::<Vec<_>>();
+        if left.is_empty() { Ok(()) } else {
+            Err(io::Error::other(format!("the adopted host's group still holds {}; its cleanup is unresolved", left.join(", "))))
+        }
+    }
     /// Stops the host this daemon adopted and waits for its exit. It is not this daemon's child, so
     /// its exit cannot be held unreaped: whatever of its group outlives it is named, never signalled.
     pub fn stop(&mut self) -> io::Result<()> {
@@ -696,6 +801,21 @@ impl AdoptedHost {
             Err(io::Error::other(format!("the adopted host {host} exited, but its group still holds {}", left.join(", "))))
         }
     }
+}
+fn live_group_anchor(anchor: Option<alondra_process_group::Member>, group: i32) -> io::Result<bool> {
+    match anchor {
+        Some(member) => Ok(alondra_process_group::alive(&member)? && alondra_process_group::group(member.pid)? == Some(group)),
+        None => Ok(false),
+    }
+}
+fn adopted_snapshot_needs_cleanup(host: &alondra_process_group::Member, anchor: Option<alondra_process_group::Member>, targets: &[alondra_process_group::Member]) -> io::Result<bool> {
+    if live_group_anchor(anchor, host.pid)? { return Ok(true); }
+    if !alondra_process_group::alive(host)? {
+        let mut completed = true;
+        for member in targets { completed &= !alondra_process_group::alive(member)?; }
+        if completed && alondra_process_group::members(host.pid)?.iter().all(|member| member.zombie) { return Ok(false); }
+    }
+    Err(io::Error::other("the adopted host's group has no stable live identity anchor and its cleanup is unresolved"))
 }
 /// What a daemon finds in the folder where a host of its execution ran. The kernel releases a
 /// host's lock when its process ends, a reboot included, so taking the lock is the fact that
@@ -1041,6 +1161,72 @@ impl AttemptBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_adopted_snapshot_already_cleaned_by_its_reaper_needs_no_live_anchor() {
+        struct Blocked(Child);
+        impl Blocked {
+            fn spawn(group: i32) -> Self {
+                Self(Command::new("/bin/cat").env_clear().stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(group).spawn().unwrap())
+            }
+            fn end(&mut self) {
+                self.0.kill().unwrap();
+                self.0.wait().unwrap();
+            }
+        }
+        impl Drop for Blocked {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut host = Blocked::spawn(0);
+        let group = i32::try_from(host.0.id()).unwrap();
+        let mut descendant = Blocked::spawn(group);
+        let identity = alondra_process_group::process(group).unwrap().unwrap();
+        let targets = alondra_process_group::members(group).unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(adopted_snapshot_needs_cleanup(&identity, Some(identity), &targets).unwrap());
+        host.end();
+        assert!(adopted_snapshot_needs_cleanup(&identity, Some(identity), &targets).is_err(), "a captured live descendant prevents an unanchored cleanup");
+        descendant.end();
+        assert!(!adopted_snapshot_needs_cleanup(&identity, Some(identity), &targets).unwrap(), "the same snapshot is complete when the original reaper already ended its processes");
+        assert!(!adopted_snapshot_needs_cleanup(&identity, None, &targets).unwrap());
+    }
+    #[test]
+    fn observing_an_exit_does_not_wait_for_the_child_cleanup_mutex() {
+        let executable = Path::new("/usr/bin/true");
+        let digest = file_hash(executable).unwrap();
+        let artifact = VerifiedArtifact::verify(executable, executable, &digest, &digest).unwrap();
+        let child = Command::new(executable).env_clear().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().unwrap();
+        let pid = rustix::process::Pid::from_child(&child);
+        let status = child_exit(pid, true).unwrap().unwrap();
+        let child = Arc::new(Mutex::new(HostChild { child, reaped: None, reap_failure: None }));
+        let cleanup_child = child.clone();
+        let cleanup = cleanup_child.lock().unwrap();
+        let (_, wake) = mpsc::sync_channel(1);
+        let mut host = OwnedHost {
+            owner: (),
+            identity: LaunchIdentity { folder: HostFolder::at(PathBuf::new()), artifact },
+            child,
+            pid,
+            exit_status: Arc::new(Mutex::new(Some(status))),
+            leader: Arc::new(Mutex::new(Some(pid))),
+            wake,
+            tail: Arc::new(Mutex::new(VecDeque::new())),
+            drains: Vec::new(),
+            lock_identity: (0, 0),
+        };
+        let (answer, observed) = mpsc::sync_channel(1);
+        let observer = thread::spawn(move || {
+            answer.send(host.observed_exit()).unwrap();
+            host
+        });
+        let completed = observed.recv_timeout(Duration::from_secs(10));
+        drop(cleanup);
+        let mut host = observer.join().unwrap();
+        assert_eq!(host.wait().unwrap(), status);
+        assert_eq!(completed.expect("observing the exit waited for unrelated descendant cleanup").unwrap(), Some(status));
+    }
     #[test]
     fn fragmented_hint_requires_exact_complete_line_and_oversized_suffix_never_matches() {
         let mut decoder = WakeDecoder::new();

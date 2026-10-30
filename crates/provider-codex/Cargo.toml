@@ -12,6 +12,7 @@ alondra-agent-application.workspace = true
 alondra-provider-contract.workspace = true
 alondra-foundation.workspace = true
 alondra-store.workspace = true
+alondra-process-group.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 getrandom = "0.4.3"

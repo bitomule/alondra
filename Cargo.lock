@@ -228,6 +228,7 @@ dependencies = [
  "alondra-codex-protocol",
  "alondra-domain",
  "alondra-foundation",
+ "alondra-process-group",
  "alondra-provider-contract",
  "alondra-store",
  "getrandom 0.4.3",

@@ -47,12 +47,14 @@ fn launch(slice: &Slice) -> Driver { launch_selected(slice, selection()) }
 fn launch_selected(slice: &Slice, selected: alondra_core::model_selection::TaskSelection) -> Driver {
     let effective = selected.effective.as_ref().unwrap();
     let options = LaunchOptions { provider: Provider::Codex, model: Some(effective.model.model.clone()), effort: effective.reasoning_effort.clone(), selection: Some(selected), ..LaunchOptions::default() };
-    start(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut driver = start(Arc::clone(&slice.domain), &slice.backend, Launch {
         task: TASK.into(), name: "Codex release notes".into(), directory: slice.worktree.display().to_string(),
         prompt: "Write the release notes through Codex".into(), plugin: slice.plugin.clone(),
         options,
         model: None, account: AccountId::default_account(),
-    }).unwrap()
+    }).unwrap();
+    driver.plugin = Some(slice.plugin.clone());
+    driver
 }
 fn transcript(path: &Path) -> Vec<serde_json::Value> {
     std::fs::read_to_string(path).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
@@ -793,6 +795,290 @@ fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
     transcript(trace).into_iter().filter(|message| message["method"] == "thread/resume").collect()
 }
 
+fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
+    match driver.worker.native_liveness().unwrap() {
+        Some(alondra_provider_codex::NativeLiveness::Alive(native)) => native,
+        other => panic!("the fixture must have a live app-server: {other:?}"),
+    }
+}
+
+#[test]
+fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() {
+    let slice = Slice::new();
+    configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    kill_host_and_daemon(driver);
+    let mut replacement = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(replacement.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
+    slice.run(&system(), "cold-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
+    assert!(replacement.claim_and_record_control_without_sending());
+    drop(replacement);
+    let mut adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(slice.control_rows()[0].2, "rejected", "the unopened host explicitly refused a control needing a session");
+    assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted), "a reconciled control cannot prove native startup");
+    adopted.stop().unwrap();
+}
+
+#[test]
+fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconciling_a_control() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let path = slice._home.join("codex-backend.json");
+    let mut backend: SdkBackend = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let host = runfile("FIXTURE_CODEX_LEGACY_HOST");
+    backend.node = host.clone(); backend.node_sha256 = backend::digest(&host).unwrap();
+    backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
+    std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    slice.run(&system(), "legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
+    assert!(driver.claim_and_record_control_without_sending());
+    let old_host = driver.worker.stopper().unwrap();
+    kill_native(&native_process(&mut driver));
+    assert!(old_host.process().unwrap().is_some(), "the legacy host stays alive after native exit");
+    drop(driver);
+    let mut adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    while turns_started(&slice.domain) < 2 { adopted.step(&|| true).unwrap(); }
+    assert!(old_host.process().unwrap().is_none(), "the old host ended before the replacement served");
+    assert_eq!(resumed_threads(&trace).len(), 1);
+    assert_eq!(slice.control_rows()[0].2, "rejected", "the unsubmitted old control is reconciled from its ended journal");
+    adopted.stop().unwrap();
+}
+
+fn kill_native(native: &alondra_process_group::Member) {
+    let mut exits = alondra_process_group::Exits::new().unwrap();
+    exits.watch(native).unwrap();
+    signal_codex_process(native.pid, libc::SIGKILL);
+    exits.wait().unwrap();
+}
+
+#[test]
+fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken_for_an_unopened_host() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let path = slice._home.join("codex-backend.json");
+    let mut backend: SdkBackend = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let host = runfile("FIXTURE_CODEX_LEGACY_HOST");
+    backend.node = host.clone(); backend.node_sha256 = backend::digest(&host).unwrap();
+    backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
+    std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    kill_host_and_daemon(driver);
+    let mut replacement = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let bootstrap: serde_json::Value = serde_json::from_slice(&std::fs::read(replacement.worker.state_directory().join("host.lock")).unwrap()).unwrap();
+    let base = bootstrap["journal_base"].as_u64().unwrap();
+    let observer = slice.observer();
+    let checkpoint = || u64::try_from(observer.query_row("SELECT cursor FROM provider_normalization_checkpoints WHERE task_id=?1", [TASK], |row| row.get::<_, i64>(0)).unwrap()).unwrap();
+    assert_eq!(checkpoint(), base);
+    replacement.step(&|| true).unwrap();
+    assert!(!replacement.replacement, "the continuation was offered to the new native session");
+    assert_eq!(checkpoint(), base, "no observation of this host has committed");
+    assert_eq!(Slice::lifecycle(&slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Available));
+    slice.run(&system(), "unobserved-legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
+    assert!(replacement.claim_and_record_control_without_sending());
+    let old_host = replacement.worker.stopper().unwrap();
+    kill_native(&native_process(&mut replacement));
+    assert!(old_host.process().unwrap().is_some(), "the legacy host stays available for attachment");
+    drop(replacement);
+    let mut adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert!(old_host.process().unwrap().is_none(), "native admission is detected before reconciling the dead control");
+    assert_eq!(slice.control_rows()[0].2, "rejected", "the control never reached the old native process");
+    assert_eq!(resumed_threads(&trace).len(), 1, "the replacement used the original native thread; the next host remains lazy");
+    assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
+    adopted.stop().unwrap();
+}
+
+fn assert_codex_resumed_once(trace: &Path, original_input: &str) {
+    let resumed = resumed_threads(trace);
+    assert_eq!(resumed.len(), 1, "exactly one replacement app-server: {resumed:?}");
+    assert_eq!(resumed[0]["params"]["threadId"], "00000000-0000-4000-8000-000000000001");
+    let submitted = transcript(trace).into_iter().filter(|request| request["method"] == "turn/start" && request["params"]["clientUserMessageId"] == original_input).count();
+    assert_eq!(submitted, 1, "the input the old app-server consumed is not submitted again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_second_writer() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    let original = transcript(&trace).into_iter().find(|request| request["method"] == "turn/start").unwrap()["params"]["clientUserMessageId"].as_str().unwrap().to_owned();
+    let group = driver.worker.host_group().unwrap();
+    let old_host = driver.worker.stopper().unwrap();
+    stop_codex_host(group);
+    kill_native(&native_process(&mut driver));
+    let detected = driver.step(&|| false);
+    if detected.is_ok() { old_host.kill().unwrap(); }
+    assert!(detected.is_err(), "native loss is detected mid-turn even if the host cannot report its child's exit");
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut changed = slice.domain.subscribe();
+    let mut owner = Owner::spawn(driver);
+    changed.wait_for(|_| turns_started(&slice.domain) == 2 || owner.ended()).await.unwrap();
+    assert_eq!(turns_started(&slice.domain), 2, "the cut turn continued automatically");
+    assert_codex_resumed_once(&trace, &original);
+    assert!(alondra_process_group::members(group).unwrap().iter().all(|member| member.zombie), "the old writer and its group ended before the new turn");
+    owner.stop().unwrap();
+}
+
+// Stop the host before killing its app-server: it cannot process the exit or close its socket.
+// This reproduces a legacy host left alive without its native process, including after adoption.
+async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool) {
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let mut driver = launch(&slice);
+    slice.settle(&mut driver);
+    if adopted {
+        drop(driver);
+        driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    }
+    let native = native_process(&mut driver);
+    let old_host = driver.worker.stopper().unwrap();
+    let group = old_host.process_group().unwrap();
+    stop_codex_host(group);
+    kill_native(&native);
+    slice.run(&system(), "message-after-native-loss", Command::TellNode { task_id: TASK.into(), text: "Deliver this after replacing the dead app-server".into(), from_user: true });
+    let result = driver.step(&|| false);
+    if result.is_ok() { old_host.kill().unwrap(); }
+    assert!(result.is_err(), "a live host with a dead app-server must be lost before attempting delivery");
+    assert!(driver.host_closed);
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut changed = slice.domain.subscribe();
+    let mut owner = Owner::spawn(driver);
+    changed.wait_for(|_| turns_started(&slice.domain) >= 3 || owner.ended()).await.unwrap();
+    // The resumed input's acceptance commits after the native transcript is written.
+    changed.wait_for(|_| Slice::lifecycle(&slice.domain).pending_inputs().is_empty() || owner.ended()).await.unwrap();
+    assert!(!owner.ended());
+    let messages: Vec<_> = transcript(&trace).into_iter().filter(|request| request["method"] == "turn/start" && request["params"]["input"][0]["text"].as_str().is_some_and(|text| text.contains("Deliver this after replacing"))).collect();
+    assert_eq!(messages.len(), 1, "the later message is delivered exactly once");
+    assert!(alondra_process_group::members(group).unwrap().iter().all(|member| member.zombie), "the stopped old host cannot still serve");
+    owner.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_codex_host_without_an_app_server_is_replaced_before_delivering_a_later_message() {
+    idle_codex_without_app_server_receives_its_later_message(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_adopted_codex_host_without_an_app_server_is_replaced_before_delivering_a_later_message() {
+    idle_codex_without_app_server_receives_its_later_message(true).await;
+}
+
+struct HostReaped {
+    queue: std::os::fd::OwnedFd,
+    pid: libc::pid_t,
+}
+impl HostReaped {
+    fn watch(pid: libc::pid_t) -> Self {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        // kqueue returns a fresh descriptor owned by this fixture until its child was reaped.
+        let descriptor = unsafe { libc::kqueue() };
+        assert!(descriptor >= 0);
+        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(descriptor) };
+        let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+        change.ident = pid.try_into().unwrap();
+        change.filter = libc::EVFILT_PROC;
+        change.flags = libc::EV_ADD | libc::EV_ONESHOT;
+        change.fflags = libc::NOTE_REAP;
+        // Subscription precedes the signal while the fixture still owns the live child.
+        assert_eq!(unsafe { libc::kevent(queue.as_raw_fd(), &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) }, 0);
+        Self { queue, pid }
+    }
+    fn wait(self) {
+        use std::os::fd::AsRawFd;
+        let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+        let timeout = libc::timespec { tv_sec: 10, tv_nsec: 0 };
+        // NOTE_REAP proves the launching runtime finished wait(), before an owner can help it.
+        assert_eq!(unsafe { libc::kevent(self.queue.as_raw_fd(), std::ptr::null(), 0, &mut event, 1, &timeout) }, 1, "the launching runtime did not reap its host independently");
+        assert_eq!(event.flags & libc::EV_ERROR, 0);
+        assert_ne!(event.fflags & libc::NOTE_REAP, 0);
+        let mut status = 0;
+        // WNOHANG cannot block; ECHILD proves the runtime already consumed this child's status.
+        let result = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
+        let error = std::io::Error::last_os_error();
+        assert_eq!(result, -1, "the host's child status was still owned by the test process");
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+    }
+}
+
+async fn killed_codex_host_is_replaced(signal: libc::c_int, adopted: bool) {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    if adopted {
+        drop(driver);
+        driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    }
+    let native = native_process(&mut driver);
+    let host = driver.worker.stopper().unwrap().process().unwrap().unwrap();
+    let reaped = HostReaped::watch(host.pid);
+    let mut exits = alondra_process_group::Exits::new().unwrap(); exits.watch(&host).unwrap();
+    signal_codex_process(host.pid, signal);
+    exits.wait().unwrap();
+    reaped.wait();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut changed = slice.domain.subscribe();
+    let mut owner = Owner::spawn(driver);
+    changed.wait_for(|_| turns_started(&slice.domain) == 2 || owner.ended()).await.unwrap();
+    assert_eq!(turns_started(&slice.domain), 2, "the killed host's turn resumed");
+    assert_eq!(resumed_threads(&trace).len(), 1);
+    assert!(!alondra_process_group::alive(&native).unwrap(), "the old native writer ended before replacement");
+    owner.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sigterm_killed_codex_host_is_reaped_and_its_session_relaunched() {
+    killed_codex_host_is_replaced(libc::SIGTERM, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sigkill_killed_codex_host_is_reaped_and_its_session_relaunched() {
+    killed_codex_host_is_replaced(libc::SIGKILL, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sigkill_killed_adopted_codex_host_is_detected_and_its_session_relaunched() {
+    killed_codex_host_is_replaced(libc::SIGKILL, true).await;
+}
+
+#[tokio::test]
+async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_message_to_its_replacement() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    let native = native_process(&mut driver);
+    slice.domain.enable_sdk(slice.backend.clone());
+    slice.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+    slice.domain.live.gate.ignore_mac();
+    let agent = driver.agent().0.clone();
+    slice.domain.live.gate.pause_by_user(&slice.domain, &agent, alondra_core::now_millis()).unwrap();
+    while !slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, LifecycleRecord::TurnEnded { .. })) {
+        driver.step(&|| true).unwrap();
+    }
+    std::fs::write(slice._home.join("codex-native.account.json"), r#"{"turnMode":"complete"}"#).unwrap();
+    kill_native(&native);
+    assert!(driver.step(&|| true).is_err());
+    let mut replacement = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), crate::node_push::ALONDRA, "Keep this message through the paused host replacement", "tell-paused-codex", false).unwrap();
+    replacement.step(&|| true).unwrap();
+    assert!(replacement.paused(), "replacing a dead host does not release a user pause");
+    assert_eq!(transcript(&trace).iter().filter(|request| request["method"] == "turn/start").count(), 1);
+    assert!(slice.domain.live.gate.resume_now(&slice.domain, &agent, alondra_core::now_millis()));
+    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    while !Slice::lifecycle(&slice.domain).pending_inputs().is_empty() || turns_started(&slice.domain) < 3 {
+        replacement.step(&|| true).unwrap();
+    }
+    let prompts: Vec<_> = transcript(&trace).into_iter().filter(|request| request["method"] == "turn/start").map(|request| request["params"]["input"][0]["text"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(prompts.iter().filter(|prompt| prompt.contains("Keep this message through")).count(), 1, "{prompts:?}");
+    assert_eq!(prompts.iter().filter(|prompt| prompt.contains("resumed you")).count(), 1, "{prompts:?}");
+    assert_eq!(resumed_threads(&trace).len(), 1);
+    replacement.stop().unwrap();
+}
+
 // Production, 0.3.9: after the release every Codex node stood still for good. Each saved native
 // thread was refused for having been started under the previous release's node instructions, its
 // host never said why, and its owner never looked again.
@@ -843,4 +1129,67 @@ async fn a_codex_session_that_never_starts_ends_in_a_card_to_try_again_after_bou
     assert_eq!(initialized, 2 + RELAUNCH_WAITS.len(), "the first host, the one the restart put in its place and one per relaunch");
     assert_eq!(turns_started(&restarted), 1, "no turn ran after the restart");
     drop(slice);
+}
+
+
+#[test]
+fn stopping_a_codex_host_after_native_death_drains_unread_acceptance_and_final_evidence() {
+    use std::io::{Read as _, Write as _};
+    let slice = Slice::new();
+    configured(&slice, "complete_then_exit");
+    let ready_path = slice._home.join("turn-response-ready");
+    let release_path = slice._home.join("turn-response-release");
+    for path in [&ready_path, &release_path] {
+        assert!(std::process::Command::new("/usr/bin/mkfifo").args(["-m", "600"]).arg(path).status().unwrap().success());
+    }
+    let mut ready = std::fs::OpenOptions::new().read(true).write(true).open(&ready_path).unwrap();
+    let mut release = std::fs::OpenOptions::new().read(true).write(true).open(&release_path).unwrap();
+    std::fs::write(slice._home.join("codex-native.account.json"), serde_json::to_vec(&serde_json::json!({
+        "turnResponseReady": ready_path, "turnResponseBarrier": release_path,
+    })).unwrap()).unwrap();
+    let mut driver = launch(&slice);
+    // The native process has read turn/start, but has not written its response yet.
+    use std::os::fd::AsRawFd as _;
+    let mut descriptor = libc::pollfd { fd: ready.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    // SAFETY: the one pollfd and its open FIFO remain alive through this bounded readiness wait.
+    assert_eq!(unsafe { libc::poll(&mut descriptor, 1, 10000) }, 1, "the native fixture never received turn/start");
+    ready.read_exact(&mut [0]).unwrap();
+    let native = native_process(&mut driver);
+    let host = driver.worker.stopper().unwrap().process().unwrap().unwrap();
+    let directory = driver.worker.state_directory().to_path_buf();
+    stop_codex_host(host.pid);
+    let mut exited = alondra_process_group::Exits::new().unwrap();
+    exited.watch(&native).unwrap();
+    release.write_all(b"R").unwrap();
+    exited.wait().unwrap();
+    // The stopped host cannot have read the response or final item left in its pipe.
+    driver.stop().unwrap();
+    let journal = std::fs::read(directory.join("outbox")).unwrap();
+    let mut frames = Vec::new();
+    let mut bytes = journal.as_slice();
+    while !bytes.is_empty() {
+        let size = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        frames.push(serde_json::from_slice::<serde_json::Value>(&bytes[4..4 + size]).unwrap());
+        bytes = &bytes[4 + size..];
+    }
+    let observations: Vec<_> = frames.iter().filter_map(|frame| (frame["body"]["type"] == "event").then_some(&frame["body"]["observation"])).collect();
+    let accepted = observations.iter().position(|seen| seen["payload"]["method"] == "alondra/inputAccepted").expect("the native acceptance already written before death must remain durable");
+    let final_item = observations.iter().position(|seen| seen["payload"]["method"] == "item/completed" && seen["payload"]["params"]["item"]["text"] == "Codex fixture final answer").expect("the native final answer already written before death must remain durable");
+    let terminal = observations.iter().position(|seen| seen["type"] == "process_exited").expect("the native exit is durable");
+    assert!(accepted < final_item && final_item < terminal, "native evidence drains before the terminal observation");
+    assert!(alondra_process_group::process(host.pid).unwrap().is_none(), "cleanup reaps the host before returning");
+}
+
+
+fn signal_codex_process(pid: libc::pid_t, signal: libc::c_int) {
+    // SAFETY: these tests signal only a kernel-identified process they launched in their fixture.
+    assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "{}", std::io::Error::last_os_error());
+}
+
+fn stop_codex_host(pid: libc::pid_t) {
+    signal_codex_process(pid, libc::SIGSTOP);
+    let mut status = 0;
+    // SAFETY: status is writable, and pid is this test process's child; WUNTRACED consumes no exit.
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) }, pid);
+    assert!(libc::WIFSTOPPED(status));
 }

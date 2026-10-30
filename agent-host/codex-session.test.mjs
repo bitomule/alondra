@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { CodexSession, codexPolicy, alondraMcpEnvironment } from './codex-session.js';
 import { InputNotOffered } from './host-session.js';
+import { failedAdoptedHost } from './codex-host-failure.mjs';
 
 function fixture(t, options = {}) {
   const home = mkdtempSync(join(tmpdir(), 'alondra-codex-'));
@@ -20,6 +23,7 @@ function fixture(t, options = {}) {
     stateDirectory: join(home, 'execution'),
     observe(observation) {
       events.push(observation);
+      options.onObserve?.(observation);
       for (const waiter of waiting.splice(0)) waiter();
       return events.length;
     },
@@ -27,7 +31,16 @@ function fixture(t, options = {}) {
   };
   mkdirSync(config.stateDirectory,{recursive:true,mode:0o700});
   const session = new CodexSession(config);
-  t.after(async () => { session.close(); await session.finished; rmSync(home, { recursive: true, force: true }); });
+  const childClosed = new Promise((resolve) => session.child.once('close', resolve));
+  t.after(async () => {
+    try {
+      session.close();
+      if (options.nativeFailure) {
+        if (session.child.exitCode === null && session.child.signalCode === null) session.child.kill('SIGKILL');
+        await childClosed;
+      } else await session.finished;
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
   const next = async (predicate) => {
     for (;;) {
       const found = events.find(predicate);
@@ -38,6 +51,92 @@ function fixture(t, options = {}) {
   return { session, home, config, accountFile, events, next, messages: () => readFileSync(transcript, 'utf8').trim().split('\n').map(JSON.parse) };
 }
 const method = (name) => (event) => event.type === 'sdk' && event.payload.method === name;
+
+test('an adopted persistent Codex host ends its native command group and retains exit evidence', { timeout: 15000 }, failedAdoptedHost);
+
+test('a normally force-stopped adopted Codex host ends without its owner acknowledging exit', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex.cjs', false, true));
+
+test('a normally ended adopted Codex host keeps its owner lane through terminal ACK', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex.cjs', false, true, true));
+
+test('advancing terminal ACKs renew shutdown inactivity while duplicates do not', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', false, true, true, true));
+
+test('failed-session cleanup keeps ownership through blocked output and a journal-close error', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex-failed-cleanup-fixture.mjs', true));
+
+test('native evidence already written before exit drains before the exit observation', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { nativeFailure: true, env: { ALONDRA_FAKE_MODE: 'hold', ALONDRA_FAKE_FINAL_TEXT: 'Final native evidence' } });
+  f.session.offer('00000000-0000-4000-8000-000000000003', 'Exit after writing final evidence');
+  await f.next(method('alondra/inputAccepted'));
+  f.session.child.stdout.pause();
+  f.session.child.once('exit', () => f.session.child.stdout.resume());
+  writeFileSync(f.accountFile, JSON.stringify({ exitMcpAfterFinal: true }));
+  const control = f.session.mcpServerStatus();
+  const rejected = assert.rejects(control, /Codex process ended/);
+  await f.session.finished;
+  await rejected;
+  const final = f.events.findIndex((event) => method('item/completed')(event) && event.payload.params.item.text === 'Final native evidence');
+  assert(final >= 0, 'the final native item is retained');
+  assert(final < f.events.findIndex((event) => event.type === 'process_exited'));
+});
+
+test('native turn acceptance survives exit while its response is still unread', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, {
+    nativeFailure: true,
+    env: { ALONDRA_FAKE_MODE: 'complete_then_exit', ALONDRA_FAKE_FINAL_TEXT: 'Final accepted turn' },
+    onObserve(observation) { if (method('alondra/inputStarting')(observation)) f.session.child.stdout.pause(); },
+  });
+  await f.next(method('alondra/threadReady'));
+  f.session.child.once('exit', () => f.session.child.stdout.resume());
+  f.session.offer('00000000-0000-4000-8000-000000000003', 'Read acceptance after native exit');
+  await f.session.finished;
+  const exit = f.events.findIndex((event) => event.type === 'process_exited');
+  const accepted = f.events.findIndex(method('alondra/inputAccepted'));
+  const final = f.events.findIndex((event) => method('item/completed')(event) && event.payload.params.item.text === 'Final accepted turn');
+  assert(accepted >= 0 && accepted < exit, 'native acceptance precedes exit evidence');
+  assert(final >= 0 && final < exit, 'the accepted turn retains its final native item');
+});
+
+test('native stdout EOF ends the session even when the app-server process stays alive', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { nativeFailure: true, env: { ALONDRA_FAKE_MODE: 'close_stdout' } });
+  f.session.offer('00000000-0000-4000-8000-000000000003', 'Close only the output pipe');
+  await f.next(method('alondra/inputAccepted'));
+  await f.session.finished;
+  assert.equal(f.session.failure, 'native_output_closed');
+  assert.equal(f.events.filter((event) => event.type === 'process_exited').length, 1);
+  assert.throws(() => f.session.offer('00000000-0000-4000-8000-000000000004', 'Must not disappear'), InputNotOffered);
+});
+
+test('stdout EOF rejects a pending control and kills a native process ignoring SIGTERM', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { nativeFailure: true });
+  await f.next(method('alondra/threadReady'));
+  writeFileSync(f.accountFile, JSON.stringify({ closeMcpStdout: true }));
+  await assert.rejects(f.session.mcpServerStatus(), /Codex process ended/);
+  await f.session.finished;
+  assert.equal(f.session.failure, 'native_output_closed');
+  assert.equal(f.events.find((event) => event.type === 'process_exited').signal, 'SIGKILL');
+});
+
+test('a missing executable finishes the session after an asynchronous spawn failure', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { nativeFailure: true, config: { executable: resolve('agent-host/missing-codex-fixture') } });
+  await f.session.finished;
+  assert.equal(f.session.failure, 'native_spawn_failed');
+  assert.equal(f.events.filter((event) => event.type === 'process_exited').length, 1);
+});
+
+test('native exit releases host pipes inherited by a surviving descendant', { timeout: 15000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'alondra-codex-exit-'));
+  const host = spawn(process.execPath, [resolve('agent-host/codex-exit-fixture.mjs'), home, resolve('agent-host/fake-codex.py')], { stdio: 'ignore' });
+  const exited = once(host, 'exit');
+  t.after(async () => {
+    try {
+      try { process.kill(JSON.parse(readFileSync(join(home, 'descendant'), 'utf8')), 'SIGKILL'); } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
+      if (host.exitCode === null && host.signalCode === null) { host.kill('SIGKILL'); await exited; }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+  const [code, signal] = await exited;
+  assert.equal(code, 0);
+  assert.equal(signal, null);
+  assert.equal(typeof JSON.parse(readFileSync(join(home, 'descendant'), 'utf8')), 'number');
+});
 
 test('raw native final item is authoritative and input acceptance precedes early notifications', { timeout: 15000 }, async (t) => {
   const f = fixture(t);

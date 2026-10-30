@@ -213,6 +213,15 @@ pub fn native_exited(observation: &OrderedObservation) -> bool {
         _ => false,
     }
 }
+
+/// Kernel-backed native availability, independent of the host's control socket. A replacement
+/// opens its app-server lazily, so absence before its first input is not a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeLiveness {
+    NotStarted,
+    Alive(alondra_process_group::Member),
+    Lost,
+}
 struct PreparedDispatch {
     command: PreparedCommand,
     intent: i64,
@@ -290,7 +299,9 @@ impl CodexWorker {
         grant: OwnerGrant,
         state: AdapterState,
     ) -> Result<(), AdapterError> {
-        self.adapter.adopt_owner(grant, state)
+        self.adapter.adopt_owner(grant, state)?;
+        self.native_liveness()?;
+        Ok(())
     }
     /// Whether a host of this execution still runs (adopt it) or ended (what its journal proves).
     pub fn find_host(&mut self, grant: &OwnerGrant, state: &AdapterState) -> Result<Found, AdapterError> {
@@ -305,6 +316,10 @@ impl CodexWorker {
     /// Re-sends the exact recorded bytes of a dispatch whose receipt a crash lost, and returns the
     /// host's definitive answer.
     pub fn reconcile(&mut self, command: &[u8]) -> Result<Handoff, AdapterError> {
+        let frame = decoded(command).ok_or(AdapterError::InvalidObservation)?;
+        if matches!(frame.body, Body::Command(Command { action: Action::Start { .. } | Action::Offer { .. }, .. })) {
+            self.adapter.native_expected = true;
+        }
         self.adapter.reconcile(command)
     }
     /// The conversation this worker stages next continues the existing native session `session`
@@ -365,6 +380,7 @@ impl CodexWorker {
             .prepared
             .take()
             .ok_or(AdapterError::InvalidObservation)?;
+        self.adapter.native_expected = true;
         self.adapter
             .submit(invocation(committed.attempt()), &prepared.command)
     }
@@ -390,6 +406,25 @@ impl CodexWorker {
             Some(Host::Launched(host)) => host.observed_exit().ok().flatten().is_some(),
             _ => false,
         }
+    }
+    /// CodexSession owns exactly one direct child, its stdio app-server. Other native work is
+    /// descended from that process. Keep its birth identity so another child cannot replace it
+    /// as evidence of life after it exits; adopted hosts use their authenticated endpoint identity.
+    pub fn native_liveness(&mut self) -> Result<NativeLiveness, AdapterError> {
+        if self.adapter.native_lost { return Ok(NativeLiveness::Lost); }
+        let Some(host) = self.adapter.host()?.stopper().process().map_err(|_| AdapterError::Disconnected)? else {
+            return Ok(NativeLiveness::Lost);
+        };
+        if let Some(native) = self.adapter.native_process {
+            return alondra_process_group::alive(&native).map(|alive| if alive { NativeLiveness::Alive(native) } else { NativeLiveness::Lost }).map_err(|_| AdapterError::Disconnected);
+        }
+        for member in alondra_process_group::members(host.pid).map_err(|_| AdapterError::Disconnected)? {
+            if !member.zombie && alondra_process_group::parent(member.pid).map_err(|_| AdapterError::Disconnected)? == Some(host) {
+                self.adapter.native_process = Some(member);
+                return Ok(NativeLiveness::Alive(member));
+            }
+        }
+        Ok(if self.adapter.native_expected { NativeLiveness::Lost } else { NativeLiveness::NotStarted })
     }
     /// The exact command of a claimed control, under the current owner. One at a time, like
     /// dispatches: it is sent only once its committed evidence matches it.
@@ -440,20 +475,23 @@ impl CodexWorker {
             .ok_or(AdapterError::InvalidObservation)?;
         self.adapter.send(committed.attempt().execution(), &prepared.command)
     }
-    /// Asks the host to stop and waits until it has exited: a launched host with its whole group,
-    /// an adopted one by its own exit. A worker without a host has none.
+    /// Stops the old writer and its group before another host may resume the session.
     pub fn stop(&mut self) -> Result<(), AdapterError> {
         self.adapter.connection = None;
+        if self.adapter.host.is_none() { return Ok(()); }
+        let lost = self.native_liveness()? == NativeLiveness::Lost;
+        let native = self.adapter.native_process;
         let Some(host) = self.adapter.host.as_mut() else {
             return Ok(());
         };
-        host.stop().map_err(|_| AdapterError::Disconnected)
+        host.stop(native, lost).map_err(|_| AdapterError::Disconnected)
     }
     pub fn poll(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         if let Some(pending) = &self.pending {
             return Ok(Some(pending.clone()));
         }
         let received = self.adapter.next()?;
+        if received.as_ref().is_some_and(native_exited) { self.adapter.native_lost = true; }
         self.pending = received.clone();
         Ok(received)
     }
@@ -542,13 +580,14 @@ impl Host {
             Host::Adopted(host, _) => host.stopper(),
         }
     }
-    fn stop(&mut self) -> std::io::Result<()> {
+    fn stop(&mut self, native: Option<alondra_process_group::Member>, lost: bool) -> std::io::Result<()> {
         match self {
             Host::Launched(host) => {
+                if lost && !host.stopper().request_graceful_stop(Duration::from_secs(5))? { host.stopper().kill()?; }
                 host.request_stop()?;
                 host.wait().map(|_| ())
             }
-            Host::Adopted(host, _) => host.stop(),
+            Host::Adopted(host, _) => host.stop_with_anchor(native, lost),
         }
     }
 }
@@ -563,6 +602,9 @@ struct CodexAdapter {
     ended: Option<(EndedHost, String)>,
     /// The existing native session the conversation this worker stages continues.
     continuing: Option<MessageUuid>,
+    native_expected: bool,
+    native_process: Option<alondra_process_group::Member>,
+    native_lost: bool,
 }
 impl CodexConfiguration {
     /// Checks the configuration and makes the private control material of one host.
@@ -609,6 +651,9 @@ impl CodexAdapter {
             },
             ended: None,
             continuing: None,
+            native_expected: false,
+            native_process: None,
+            native_lost: false,
         })
     }
     fn deadline(&self) -> Result<Instant, AdapterError> {
@@ -713,12 +758,22 @@ impl CodexAdapter {
         if let Some(why) = alondra_codex_protocol::refuses_adoption(&retained.control.host_release, &retained.launched.sdk_version) {
             return Err(AdapterError::Protocol(why));
         }
+        let committed = state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
+        let base = retained.journal_base.unwrap_or(0);
         self.control = retained.control;
+        self.native_expected = committed > base;
         self.host = Some(Host::Adopted(host, retained.launched));
         self.normalizer.session = Some(retained.session);
-        self.normalizer.fence = Some(expected);
+        self.normalizer.fence = Some(expected.clone());
         self.normalizer.first_cursor = retained.journal_base.map(|base| base + 1);
-        self.connect(state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0))
+        self.connect(committed)?;
+        if !self.native_expected {
+            self.native_expected = EndedJournal::read(
+                &self.configuration.state_directory, &expected, &execution(self.host()?.owner()),
+                &self.control.host_instance_id, committed,
+            )?.admitted_native_input();
+        }
+        Ok(())
     }
     /// Whether a host of this execution still runs. When none does, the evidence its journal kept
     /// beyond `state`'s checkpoint; the ended host's folder stays locked until `relaunch`.

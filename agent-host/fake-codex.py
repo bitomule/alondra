@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import json, os, sys, subprocess, threading
+import signal
 if os.environ.get('ALONDRA_FAKE_ARGV'):
     with open(os.environ['ALONDRA_FAKE_ARGV'], 'w') as target: json.dump(sys.argv[1:], target)
 thread = '00000000-0000-4000-8000-000000000001'
@@ -92,6 +93,14 @@ for line in sys.stdin:
         requested = message.get('params', {}).get('threadId')
         result = {'thread': {'id': requested, 'turns': []}}
     elif method == 'mcpServerStatus/list':
+        if fixture.get('exitMcpAfterFinal'):
+            finish()
+            raise SystemExit(23)
+        if fixture.get('exitMcp'): raise SystemExit(23)
+        if fixture.get('closeMcpStdout'):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            os.close(sys.stdout.fileno())
+            signal.pause()
         result = {'data': [{'name': 'alondra', 'runtimeStatus': 'connected'}], 'nextCursor': None}
         if child_pending:
             child_pending = False
@@ -111,6 +120,9 @@ for line in sys.stdin:
             continue
     elif method == 'thread/backgroundTerminals/list': result = {'data': [{'processId': '42'}], 'nextCursor': None}
     elif method == 'turn/start':
+        if fixture.get('turnResponseBarrier'):
+            with open(fixture['turnResponseReady'], 'wb', buffering=0) as ready: ready.write(b'R')
+            with open(fixture['turnResponseBarrier'], 'rb', buffering=0) as release: release.read(1)
         turn_mode = fixture.get('turnMode', mode)
         turn_number += 1
         turn = 'native-turn-' + str(turn_number)
@@ -140,6 +152,21 @@ for line in sys.stdin:
                 child.stdout.close()
                 note('item/completed', {'threadId': thread, 'turnId': command_turn, 'item': {'type': 'commandExecution', 'id': 'owned-command', 'command': 'fixture command waits on its explicit barrier', 'cwd': os.getcwd(), 'processId': str(pid), 'status': 'completed', 'aggregatedOutput': 'The explicit child barrier was released', 'exitCode': code}})
             threading.Thread(target=completed_owned_command, daemon=True).start()
+        elif turn_mode == 'close_stdout':
+            os.close(sys.stdout.fileno())
+        elif turn_mode == 'exit_with_descendant':
+            child = subprocess.Popen(['/usr/bin/python3', '-c', 'import signal; signal.pause()'])
+            with open(os.environ['ALONDRA_FAKE_DESCENDANT'], 'w') as target: json.dump(child.pid, target)
+            raise SystemExit(23)
+        elif turn_mode == 'idle_with_descendant':
+            if turn_number == 1:
+                quiet = subprocess.DEVNULL if os.environ.get('ALONDRA_FAKE_DESCENDANT_QUIET') else None
+                child = subprocess.Popen(['/usr/bin/python3', '-c', 'import signal; signal.pause()'], stdout=quiet, stderr=quiet)
+                with open(os.environ['ALONDRA_FAKE_DESCENDANT'], 'w') as target: json.dump(child.pid, target)
+            finish()
+        elif turn_mode == 'complete_then_exit':
+            finish()
+            raise SystemExit(23)
         elif turn_mode == 'paused_cell':
             note('item/started', {'threadId': thread, 'turnId': turn, 'item': {'type': 'mcpToolCall', 'id': 'exec-paused-' + turn, 'server': 'fixture', 'tool': 'barrier', 'status': 'inProgress', 'arguments': {}}})
             finish()

@@ -8,7 +8,11 @@ import { boundDiagnostics, listeningHint } from './diagnostics.js';
 
 async function main(): Promise<void> {
   const config = loadBootstrap(__filename, CODEX_VERSION);
-  const host = new PersistentHost(config, (configuration) => new CodexSession(configuration), { capabilities: CODEX_CAPABILITIES, endsWithFailedSession: !config.orchestrator });
+  const host = new PersistentHost(config, (configuration) => new CodexSession(configuration), {
+    capabilities: CODEX_CAPABILITIES, endsWithSession: true,
+    // OwnedHost launches this process as its group leader; adoption preserves that group.
+    endHostGroup: () => process.kill(0, 'SIGKILL'),
+  });
   try { await host.listen(); } catch (error) { await host.stop(); throw error; }
   let stopping = false;
   const stop = (interruptTurn: boolean) => { if (!stopping) { stopping = true; void host.stop(interruptTurn).catch(() => { process.exitCode = 1; }); } };

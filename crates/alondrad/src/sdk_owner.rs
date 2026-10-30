@@ -214,7 +214,7 @@ pub(crate) struct Driver {
     /// This replacement was handed an input and did not take it: its end is watched and its place
     /// taken by another host, up to `RELAUNCH_WAITS`.
     untaken: bool,
-    /// Replacements in a row that ended without taking an input, this one's predecessors.
+    /// Earlier replacements in this recovery chain.
     relaunches: usize,
     /// The node plugin this host was taken over with, which the host that replaces it takes too.
     plugin: Option<PathBuf>,
@@ -630,6 +630,11 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             drop(worker);
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
+            return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
+        }
+        if worker.native_liveness().map_err(adapter("checking the adopted native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
+            worker.stop().map_err(adapter("stopping the adopted host without its app-server"))?;
+            drop(worker);
             return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
         }
         if worker.runs_another_release() {
@@ -1135,7 +1140,7 @@ impl Driver {
         };
         if self.worker.native_exited(&batch) {
             self.host_closed = true;
-            return Err(Failed::new("the SDK host's Claude exited".into()));
+            return Err(Failed::new("the SDK host's native process exited".into()));
         }
         let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
         let binding = self.worker.binding().clone();
@@ -1262,6 +1267,10 @@ impl Driver {
         if std::mem::take(&mut self.fail_next_step) {
             return Err(Failed::new("a step of the owner failed".into()));
         }
+        if self.worker.native_liveness().map_err(adapter("checking the native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
+            self.host_closed = true;
+            return Err(Failed::new("the Codex host lost its app-server".into()));
+        }
         self.sealed();
         if self.advance_idle_host_of_another_release()? {
             return Ok(());
@@ -1375,9 +1384,7 @@ impl Driver {
     /// its place, as a daemon that comes back does (`adopt`). The ended host's journal says what it
     /// took; the task asks the user how to go on, and what it is told next reaches that session.
     pub(crate) fn replace_ended_host(mut self, backend: &SdkBackend, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
-        if let Err(Failed { why, .. }) = self.stop() {
-            log!("what was left of the ended SDK host of {} did not end cleanly: {why}", self.task);
-        }
+        self.stop()?;
         let (domain, task) = (Arc::clone(&self.domain), self.task.clone());
         drop(self);
         adopt(domain, backend, task, plugin)
@@ -1385,13 +1392,12 @@ impl Driver {
 
     /// Whether the owner should put a host that resumes the session in place of its own: its host
     /// closed or its connection to it failed, which a host that is dying shows before its exit, or
-    /// a step of the owner itself failed, and it was not itself a replacement handed nothing yet,
-    /// which would only end again. A replacement that ended without taking its input is replaced
-    /// while `RELAUNCH_WAITS` lasts. The
+    /// a step of the owner itself failed. A replacement positively observed dead, or one that
+    /// ended without taking its input, is replaced while `RELAUNCH_WAITS` lasts. The
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken && self.relaunches < RELAUNCH_WAITS.len()) && !crate::provider_transition::holds_execution(&self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || (self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && self.relaunches < RELAUNCH_WAITS.len()) && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 
@@ -1532,7 +1538,7 @@ impl Owner {
                             *current.lock_or_recover("the SDK host stop") = next.worker.stopper();
                             next.relaunches = relaunches;
                             if relaunches > 0 {
-                                log!("the new SDK host of {task} ended without taking its input: another host that resumes the same session took its place (attempt {relaunches} of {})", RELAUNCH_WAITS.len());
+                                log!("the new SDK host of {task} ended: another host that resumes the same session took its place (attempt {relaunches} of {})", RELAUNCH_WAITS.len());
                             } else if moved {
                                 next.controls.extend(controls);
                                 log!("{task} rested on the SDK host of the release before: a host of this release that resumes the same Claude session took its place");

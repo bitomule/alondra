@@ -9,7 +9,7 @@ import { ControlNotApplied, InputNotOffered, type HostSession, type Observation,
 
 type Lane = { channel: Channel; nonce: string; generation?: number; sentCursor: number; receipts: Map<string, string>; flushing: boolean; flushed: Promise<void>; pending: number };
 export { HOST_CAPABILITIES, type Capability } from './frame.js';
-export type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[]; endsWithFailedSession?: boolean };
+export type Hooks = { beforeEffect?: () => Promise<void>; beforeSpawn?: () => void; observation?: (observation: Observation) => void; capabilities?: readonly Capability[]; endsWithFailedSession?: boolean; endsWithSession?: boolean; endHostGroup?: () => void };
 const NATIVE_MODES = { default: 'default', plan: 'plan', dont_ask: 'dontAsk' } as const;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu;
 function bounded(value: unknown): string | undefined {
@@ -69,6 +69,7 @@ export class PersistentHost {
   private journal: Journal;
   private unavailable = false;
   private stopping = false;
+  private sessionEnd?: { cursor: number; acknowledged: number; resolve: () => void; progress?: () => void };
   private stopPromise?: Promise<void>;
   private capabilities: ReadonlySet<Capability>;
   constructor(private config: Bootstrap, private createSession: SessionFactory, private hooks: Hooks = {}) {
@@ -117,7 +118,7 @@ export class PersistentHost {
     const channel = new Channel(socket, (frame, raw) => this.receive(lane, frame, raw), () => this.diagnostic('transport_rejected'));
     const lane: Lane = { channel, nonce: randomBytes(32).toString('hex'), sentCursor: this.journal.acknowledged, receipts: new Map(), flushing: false, flushed: Promise.resolve(), pending: 0 };
     this.lanes.add(lane);
-    socket.on('close', () => { this.lanes.delete(lane); if (this.owner === lane) this.owner = undefined; });
+    socket.on('close', () => { this.lanes.delete(lane); if (this.owner === lane) { this.owner = undefined; this.releaseSessionEnd(); } });
     void (async () => {
       await channel.write({ protocol_version: PROTOCOL_VERSION, body: { type: 'hello', fence: this.config.fence, protocol_versions: [1], capabilities: [...this.capabilities], host_release: this.config.manifest.host_release, host_sha256: this.config.manifest.host_sha256, sdk_version: this.config.manifest.sdk_version } });
       await channel.write({ protocol_version: PROTOCOL_VERSION, body: { type: 'challenge', ...this.identity(), nonce: lane.nonce, executable_sha256: this.config.manifest.executable_sha256 } });
@@ -131,7 +132,13 @@ export class PersistentHost {
       if (body.type === 'acknowledge') {
         this.binding(body);
         if (body.host_instance_id !== this.config.host_instance_id || body.owner_generation !== lane.generation || body.cursor > lane.sentCursor || body.cursor > this.journal.cursor || body.cursor < this.journal.acknowledged) throw new Error('ACK rejected');
-        this.persist(frame); return;
+        this.persist(frame);
+        const ended = this.sessionEnd;
+        if (ended) {
+          if (body.cursor >= ended.cursor) this.releaseSessionEnd();
+          else if (body.cursor > ended.acknowledged) { ended.acknowledged = body.cursor; ended.progress?.(); }
+        }
+        return;
       }
       if (body.type !== 'command') throw new Error('Unexpected owner message');
       this.binding(body);
@@ -301,8 +308,36 @@ export class PersistentHost {
       observe: (observation) => this.observe(observation),
     });
     void session.finished.then(() => {
-      // The owner sees a host whose session failed go and puts one that resumes it in its place.
-      if (this.hooks.endsWithFailedSession && session.failure && !this.stopping) void this.operations.then(() => this.owner?.flushed).then(() => this.stop()).catch(() => { process.exitCode = 1; });
+      if ((this.hooks.endsWithSession || this.hooks.endsWithFailedSession && session.failure) && !this.stopping) {
+        this.unavailable = true;
+        if (session.failure) process.exitCode = 1;
+        const terminal = this.journal.cursor;
+        let acknowledged = Promise.resolve();
+        if (this.hooks.endsWithSession && this.owner && this.journal.acknowledged < terminal) {
+          acknowledged = new Promise<void>((resolve) => { this.sessionEnd = { cursor: terminal, acknowledged: this.journal.acknowledged, resolve }; });
+        }
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        let exitDeadline: ReturnType<typeof setTimeout> | undefined;
+        const bounded = new Promise<void>((resolve) => {
+          const expire = () => { if (this.sessionEnd) this.sessionEnd.progress = undefined; resolve(); };
+          const renew = () => {
+            clearTimeout(deadline);
+            deadline = setTimeout(expire, session.failure ? 1000 : 5000);
+            clearTimeout(exitDeadline);
+            exitDeadline = setTimeout(() => this.hooks.endHostGroup?.(), session.failure ? 2000 : 6000);
+          };
+          renew();
+          if (!session.failure && this.sessionEnd) this.sessionEnd.progress = renew;
+        });
+        void (async () => {
+          try { await Promise.race([Promise.all([this.operations.then(() => this.owner?.flushed).catch(() => {}), acknowledged]), bounded]); }
+          finally {
+            clearTimeout(deadline);
+            try { await this.stop(); }
+            finally { clearTimeout(exitDeadline); }
+          }
+        })().catch(() => { process.exitCode = 1; });
+      }
     }, () => this.storageUncertain());
     return session;
   }
@@ -370,8 +405,14 @@ export class PersistentHost {
     })().catch(() => { lane.channel.socket.destroy(); });
   }
   private diagnostic(code: string): void { process.stderr.write(`Alondra host: ${code}\n`); }
+  private releaseSessionEnd(): void {
+    const ended = this.sessionEnd;
+    this.sessionEnd = undefined;
+    ended?.resolve();
+  }
   /** With `interruptTurn`, a turn Claude is running ends as an interrupted turn before the session closes. */
   stop(interruptTurn = false): Promise<void> {
+    this.releaseSessionEnd();
     this.stopPromise ??= this.stopOwned(interruptTurn);
     return this.stopPromise;
   }
@@ -389,7 +430,11 @@ export class PersistentHost {
       try { await this.operations; } catch (error) { failures.push(error); }
       try { await new Promise<void>((resolve) => this.server.close(() => resolve())); } catch (error) { failures.push(error); }
       try { this.journal.close(); } catch (error) { failures.push(error); }
-      try { releaseBootstrap(this.config); } catch (error) { failures.push(error); }
+      // A Codex host keeps ownership until its whole old group is terminated in the kernel.
+      try {
+        if (this.hooks.endHostGroup) this.hooks.endHostGroup();
+        else releaseBootstrap(this.config);
+      } catch (error) { failures.push(error); }
     }
     if (failures.length) throw new AggregateError(failures, 'Owned host cleanup failed');
   }

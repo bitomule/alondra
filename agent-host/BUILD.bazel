@@ -9,7 +9,7 @@ exports_files(["pnpm-lock.yaml", "package.json"])
 
 ts_project(
     name = "host_lib",
-    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "host-session.ts", "codex-session.ts", "codex-main.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
+    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "host-session.ts", "codex-session.ts", "codex-main.ts", "codex-legacy-fixture.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
     tsconfig = "tsconfig.json",
     declaration = True,
     transpiler = "tsc",
@@ -225,7 +225,22 @@ js_run_binary(
 js_test(
     name = "codex_session_test",
     entry_point = "codex-session.test.mjs",
-    data = [":host_lib", "fake-codex.py", ":node_modules/zod"],
+    data = [":host_lib", ":codex_bundle", "fake-codex.py", "codex-exit-fixture.mjs", "codex-host-failure.mjs", "codex-failed-cleanup-fixture.mjs", "codex-ack-progress-fixture.mjs", ":node_modules/zod"],
+)
+
+js_run_binary(
+    name = "codex_legacy_fixture_bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "codex-legacy-fixture.ts"],
+    outs = ["codex-legacy-fixture.cjs", "codex-legacy-fixture.meta.json"],
+    args = ["$(location codex-legacy-fixture.ts)", "$(location codex-legacy-fixture.cjs)", "$(location codex-legacy-fixture.meta.json)"],
+)
+js_run_binary(
+    name = "codex_legacy_fixture_host",
+    tool = ":sea_tool",
+    srcs = [":codex-legacy-fixture.cjs", "host-entitlements.plist"],
+    outs = ["codex-legacy-fixture", "codex-legacy-fixture.manifest.json"],
+    args = ["$(location codex-legacy-fixture.cjs)", "$(location codex-legacy-fixture)", "$(location codex-legacy-fixture.manifest.json)", "$(location host-entitlements.plist)", "codex-app-server-0.163.0"],
 )
 
 js_test(

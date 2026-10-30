@@ -7,6 +7,7 @@ use std::ffi::{c_int, c_void};
 use std::io;
 use std::mem::{MaybeUninit, size_of};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::time::{Duration, Instant};
 
 /// One process of a group, named by its PID and the moment it started: a PID alone can be reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -302,10 +303,25 @@ impl Exits {
 
     /// Blocks until every watched process has exited.
     pub fn wait(&mut self) -> io::Result<()> {
+        self.wait_until(None).map(|_| ())
+    }
+
+    /// Waits at most `timeout` for the watched exits. A timeout preserves outstanding watches.
+    pub fn wait_for(&mut self, timeout: Duration) -> io::Result<bool> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process exit deadline overflow"))?;
+        self.wait_until(Some(deadline))
+    }
+
+    fn wait_until(&mut self, deadline: Option<Instant>) -> io::Result<bool> {
         while !self.pending.is_empty() {
             let mut fired = event(0, 0);
-            // SAFETY: room for exactly one event; no timeout, so it returns only on an event or a signal.
-            let result = unsafe { libc::kevent(self.queue.as_raw_fd(), std::ptr::null(), 0, &mut fired, 1, std::ptr::null()) };
+            let timeout = deadline.map(|deadline| {
+                let left = deadline.saturating_duration_since(Instant::now());
+                libc::timespec { tv_sec: left.as_secs().try_into().unwrap_or(libc::time_t::MAX), tv_nsec: left.subsec_nanos().into() }
+            });
+            let timeout = timeout.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+            // SAFETY: room for one event; the optional relative timeout outlives this call.
+            let result = unsafe { libc::kevent(self.queue.as_raw_fd(), std::ptr::null(), 0, &mut fired, 1, timeout) };
             if result < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -313,11 +329,15 @@ impl Exits {
                 }
                 return Err(error);
             }
+            if result == 0 {
+                if deadline.is_some() { return Ok(false); }
+                continue;
+            }
             if result == 1 {
                 self.pending.remove(&i32::try_from(fired.ident).unwrap_or(-1));
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -337,6 +357,33 @@ mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn a_bounded_exit_wait_preserves_watches_after_a_timeout() {
+        struct Blocked(std::process::Child);
+        impl Blocked {
+            fn new() -> Self {
+                Self(Command::new("/bin/cat").env_clear().stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap())
+            }
+            fn end(&mut self) { self.0.kill().unwrap(); self.0.wait().unwrap(); }
+        }
+        impl Drop for Blocked {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let mut first = Blocked::new();
+        let mut second = Blocked::new();
+        let mut exits = Exits::new().unwrap();
+        assert!(exits.wait_for(Duration::ZERO).unwrap());
+        for child in [&first.0, &second.0] {
+            exits.watch(&process(i32::try_from(child.id()).unwrap()).unwrap().unwrap()).unwrap();
+        }
+        assert!(!exits.wait_for(Duration::ZERO).unwrap());
+        first.end();
+        assert!(!exits.wait_for(Duration::ZERO).unwrap(), "the second process still owns its open stdin");
+        second.end();
+        assert!(exits.wait_for(Duration::ZERO).unwrap());
+        exits.wait().unwrap();
+    }
 
     #[test]
     fn a_group_lists_its_live_members_and_its_exits_reap_nothing() {

@@ -1,9 +1,9 @@
 //! What the journal of a host that ended proves, read without changing it. The host appends and
 //! fsyncs each command, receipt and event before it acts on it, so the durable journal is the
 //! host's own evidence; a frame cut short at its end is a write that never completed.
-use alondra_codex_protocol::{Body, Execution, Fence, FramedReader, ReceiptOutcome, ReceiptPhase};
+use alondra_codex_protocol::{Action, Body, Execution, Fence, FramedReader, ReceiptOutcome, ReceiptPhase};
 use alondra_provider_contract::AdapterError;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// The last durable receipt the ended host kept for a command.
@@ -32,6 +32,7 @@ pub struct EndedJournal {
     events: Vec<RetainedEvent>,
     last_cursor: u64,
     uncertain: bool,
+    native_input_admitted: bool,
 }
 
 impl EndedJournal {
@@ -45,6 +46,7 @@ impl EndedJournal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(journal),
             Err(_) => return Err(AdapterError::Disconnected),
         };
+        let mut native_inputs = BTreeSet::new();
         let mut reader = FramedReader::new(std::io::BufReader::new(file));
         loop {
             let received = match reader.read_received() {
@@ -70,6 +72,7 @@ impl EndedJournal {
             match &received.frame().body {
                 Body::Command(command) => {
                     let id = command.command_id.0.as_str().to_owned();
+                    if matches!(&command.action, Action::Start { .. } | Action::Offer { .. }) { native_inputs.insert(id.clone()); }
                     match journal.commands.get(&id) {
                         Some((digest, _)) if digest != received.digest() => return Err(AdapterError::InvalidObservation),
                         Some(_) => {}
@@ -84,6 +87,9 @@ impl EndedJournal {
                         return Err(AdapterError::InvalidObservation);
                     }
                     entry.1 = Some(receipt.outcome.clone());
+                    if native_inputs.contains(receipt.command_id.0.as_str())
+                        && matches!(&receipt.outcome, ReceiptOutcome::Accepted { phase: ReceiptPhase::Admitted | ReceiptPhase::Offered })
+                    { journal.native_input_admitted = true; }
                 }
                 Body::Event(event) if event.cursor > committed => {
                     if event.cursor != journal.last_cursor + 1 {
@@ -124,6 +130,9 @@ impl EndedJournal {
             Some((_, _)) => Retained::AdmittedOnly,
         })
     }
+
+    /// Whether a retained admission may have opened the native session, before SQL observed it.
+    pub fn admitted_native_input(&self) -> bool { self.native_input_admitted }
 
     pub fn events(&self) -> &[RetainedEvent] {
         &self.events

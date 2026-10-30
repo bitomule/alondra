@@ -79,6 +79,7 @@ export class CodexSession implements HostSession {
   private notificationBytes = 0;
   private closed = false;
   private closing = false;
+  private stopDeadline?: ReturnType<typeof setTimeout>;
   /** Why the native session ended without being asked to. */
   failure?: string;
   private pumping = false;
@@ -106,16 +107,50 @@ export class CodexSession implements HostSession {
     // Native stderr must always be drained. It is not semantic evidence and may contain credentials.
     this.child.stderr.on('data', () => {});
     this.child.on('error', () => this.fail('native_spawn_failed'));
-    this.child.on('exit', (code, signal) => {
+    let exiting = false;
+    const ended = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (exiting || this.closed) return;
+      exiting = true;
+      if (this.stopDeadline) clearTimeout(this.stopDeadline);
       if (!this.closing) this.failure ??= 'native_process_exited';
-      this.closed = true;
-      for (const pending of this.pending.values()) pending.reject(new Error('Codex process ended'));
-      this.pending.clear();
-      for (const [key, asked] of this.asked) this.settled(key, asked, 'cancelled');
-      this.config.observe({ type: 'process_exited', exit_code: code, signal });
-      this.finish();
-    });
+      this.closing = true;
+      this.queue = [];
+      let drainDeadline: ReturnType<typeof setTimeout> | undefined;
+      let finishing = false;
+      const finish = () => {
+        if (finishing) return;
+        finishing = true;
+        clearTimeout(drainDeadline);
+        queueMicrotask(() => {
+          this.closed = true;
+          this.child.stdout.destroy();
+          this.child.stderr.destroy();
+          this.rejectPending();
+          for (const timer of this.childPolls.values()) clearTimeout(timer); this.childPolls.clear();
+          for (const [key, asked] of this.asked) this.settled(key, asked, 'cancelled');
+          if (this.failure) this.emit('alondra/transportFailed', { code: this.failure }, 'diagnostic');
+          this.config.observe({ type: 'process_exited', exit_code: code, signal });
+          this.finish();
+        });
+      };
+      // Exit precedes pipe EOF: preserve final native evidence, but inherited writers cannot
+      // keep a dead session's descriptors open forever.
+      drainDeadline = setTimeout(finish, 1000);
+      if (this.child.stdout.readableEnded || this.child.stdout.destroyed) finish();
+      else {
+        this.child.stdout.once('end', finish);
+        this.child.stdout.once('close', finish);
+        this.child.stdout.resume();
+      }
+    };
+    this.child.on('exit', ended);
+    this.child.on('close', ended);
     this.child.stdin.on('error', () => this.fail('native_input_closed'));
+    this.child.stdin.on('close', () => this.fail('native_input_closed'));
+    this.child.stdout.on('end', () => this.fail('native_output_closed'));
+    this.child.stdout.on('close', () => this.fail('native_output_closed'));
+    this.child.stdout.on('error', () => this.fail('native_output_closed'));
+    this.child.stderr.on('error', () => {});
     this.ready = this.initialize();
     void this.ready.catch((error: unknown) => { if (error instanceof NativeAccountRefusal) {if(this.queue.length===0)this.emit('alondra/accountBlocked', { code: error.code }, 'diagnostic');} else this.fail('native_initialization_failed'); });
   }
@@ -129,8 +164,11 @@ export class CodexSession implements HostSession {
   private fail(code: string): void {
     if (this.closed || this.closing) return;
     this.failure = code;
-    this.emit('alondra/transportFailed', { code }, 'diagnostic');
     this.close();
+  }
+  private rejectPending(): void {
+    for (const pending of this.pending.values()) pending.reject(new Error('Codex process ended'));
+    this.pending.clear();
   }
   private send(message: Json): Promise<void> {
     if (this.closed || this.child.stdin.destroyed) return Promise.reject(new Error('Codex pipe closed'));
@@ -666,7 +704,9 @@ export class CodexSession implements HostSession {
     if (this.closing || this.closed) return;
     this.closing = true;
     this.queue = [];
-    this.child.stdin.end();
+    this.child.stdin.destroy();
     this.child.kill('SIGTERM');
+    this.stopDeadline = setTimeout(() => { if (!this.closed) this.child.kill('SIGKILL'); }, 1000);
+    this.stopDeadline.unref();
   }
 }

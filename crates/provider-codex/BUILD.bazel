@@ -8,6 +8,7 @@ _DEPS = [
     "//crates/provider-contract:provider_contract",
     "//crates/foundation:foundation",
     "//crates/store:store",
+    "//crates/process-group:process_group",
 ] + all_crate_deps(normal = True)
 
 rust_library(

@@ -28,3 +28,48 @@ What keeps an old host adoptable, each with its test:
 - **Changing a frame that exists takes a new `PROTOCOL_VERSION`**, and the daemon keeps speaking the version before to the hosts it adopts. The shared fixtures are the frozen frames of the version: both sides read and write them byte for byte.
 - **The SDK a host runs is one the daemon reads** (`ADOPTABLE_SDK_VERSIONS`), and **its release is not older than `OLDEST_ADOPTABLE_HOST_RELEASE`**. A release that fixes a host bug no node should keep until its next rest raises it to itself. A host that fails either is ended and replaced by one that resumes its session, as every host was before.
 - The release's upgrade rehearsal (`deploy/brew/upgrade-rehearsal.py`, case `sdk-upgrade`) runs the published host of the release before under the new daemon, with a background command that must survive the upgrade.
+
+## Codex process supervision
+
+The Codex host ends when its native session ends, including planned close and force-stop.
+Native termination tries SIGTERM and escalates to SIGKILL after one second. Stdout drains through
+EOF before the exit observation and unresolved RPC rejection, with a one-second bound for pipes
+held by descendants. The host retains the native exit in its journal and ends its own process
+group with SIGKILL while still holding its ownership lock. Native commands cannot keep serving
+after that lock is released.
+
+Failed sessions get one second to flush operations and terminal evidence; an independent
+two-second deadline bounds cleanup. Normal completion lets the owner acknowledge the terminal
+cursor: five seconds without an advancing ACK starts cleanup, with a six-second watchdog for
+stuck cleanup. Only validated, persisted ACKs advancing toward that fixed cursor renew those
+deadlines. Duplicate ACKs do not. Terminal ACK, owner disconnection or explicit host shutdown
+releases the wait. Claude's failure-only hook keeps its existing ACK behavior.
+
+The daemon may see kernel native death before the host drains stdout. It sends TERM and CONT
+to the bound host and gives it five seconds to finish that drain before KILL. The timeout only
+triggers escalation; replacement still waits for verified exit and cleanup. Retained receipts
+and observations distinguish offered, refused, absent and uncertain inputs before the same
+native thread continues.
+
+`CodexWorker::native_liveness()` exposes `NotStarted`, `Alive(Member)` or `Lost` independently of
+the control socket. `Member` includes the kernel PID and birth identity; zombies are dead even
+when `kill(pid, 0)` succeeds. The host's sole direct child is its stdio app-server; native tools
+descend from it. A replacement opens it lazily on its first input, so an unopened host is
+`NotStarted`. After authenticated adoption fences the old owner, retained Start/Offer admission
+receipts establish possible startup even when no observation of this host has reached SQL.
+Committed progress supplies that evidence after journal compaction. Cold controls do not count
+as native startup. The owner checks this signal before dispatch and while idle, including for
+adopted older hosts. This measures availability, not task progress.
+
+Every launched host has an independent exit reaper. Dropping its owner leaves healthy work
+alive; the reaper retains the child, sweeps its group while the unreaped leader still reserves
+its PID, and calls wait. Explicit waits share that status and cleanup. Exit observation does
+not wait for descendant cleanup. Adopted hosts use the authenticated peer's birth identity;
+the adopting daemon cannot reap another process's child. Forced cleanup snapshots identities
+under a live host or retained native anchor before shutdown, kills and waits those captured
+processes, and refuses replacement if cleanup is unresolved.
+
+The host deliberately does not restart its own app-server. A single replacement authority lets
+the daemon quiesce the old writer and reconcile durable evidence before resuming the thread;
+restarting inside the host would add another recovery path around uncertain input handoff.
+No host-protocol frame, action, capability or version changes here.
