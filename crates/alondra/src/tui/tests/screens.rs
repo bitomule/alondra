@@ -677,7 +677,7 @@ fn a_fact_draws_the_markdown_it_quotes_on_its_line() {
         {"label": "State", "value": "Needs you · “Pick the **parser** for `settings.json`”"},
     ]}]}]);
     let view: views::View = serde_json::from_value(view).unwrap();
-    let drawn = view_render::document_lines(&view, 80, false).iter().map(text).collect::<Vec<_>>().join("\n");
+    let drawn = view_render::document_lines(&view, 80, false, false).iter().map(text).collect::<Vec<_>>().join("\n");
     assert!(drawn.contains("State: Needs you · “Pick the parser for settings.json”"), "{drawn}");
 }
 
@@ -694,12 +694,35 @@ fn summarized_checks_show_their_line_and_the_list_only_once_opened() {
     ]);
     let view: views::View = serde_json::from_value(view).unwrap();
     assert!(view_render::summarized_checks(&view));
-    let folded = view_render::document_lines(&view, 80, false).iter().map(text).collect::<Vec<_>>().join("\n");
+    let folded = view_render::document_lines(&view, 80, false, false).iter().map(text).collect::<Vec<_>>().join("\n");
     assert!(folded.contains("State: Checks failing"), "{folded}");
     assert!(folded.contains("▸ 1 of 2 passed, 1 failing"), "{folded}");
     assert!(!folded.contains("ui tests"), "the list waits until the user opens it: {folded}");
-    let open = view_render::document_lines(&view, 80, true).iter().map(text).collect::<Vec<_>>().join("\n");
+    let open = view_render::document_lines(&view, 80, true, false).iter().map(text).collect::<Vec<_>>().join("\n");
     assert!(open.contains("▾ 1 of 2 passed, 1 failing\n✗ ui tests\n✓ build"), "{open}");
+}
+
+#[test]
+fn sections_the_daemon_sends_folded_show_their_title_and_open_with_z() {
+    let mut view = super::parity::view_fixture("card-question.json");
+    view["sections"] = serde_json::json!([
+        {"id": "subagents", "title": "Subagents", "collapsed": false, "items": [
+            {"type": "row", "id": "subagent:0", "icon": "history", "title": "Explore the parser", "depth": 0, "struck": false}]},
+        {"id": "subagents_finished", "title": "Finished subagents", "count": 2, "collapsed": true, "items": [
+            {"type": "row", "id": "subagent:1", "icon": "history", "title": "Review the diff", "depth": 0, "struck": false},
+            {"type": "row", "id": "subagent:2", "icon": "history", "title": "Audit the tests", "depth": 0, "struck": false}]},
+        {"id": "request", "title": "Request", "collapsed": true, "items": [
+            {"type": "markdown", "text": "Show only what matters", "truncated": false, "commentable": false}]},
+    ]);
+    let view: views::View = serde_json::from_value(view).unwrap();
+    assert!(view_render::folded_sections(&view));
+    let folded = view_render::document_lines(&view, 80, false, false).iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(folded.contains("Explore the parser"), "what runs stays in sight: {folded}");
+    assert!(folded.contains("▸ Finished subagents (2)") && folded.contains("▸ Request"), "{folded}");
+    assert!(!folded.contains("Review the diff") && !folded.contains("Show only what matters"), "{folded}");
+    let open = view_render::document_lines(&view, 80, false, true).iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(open.contains("▾ Finished subagents (2)") && open.contains("Review the diff") && open.contains("Audit the tests"), "{open}");
+    assert!(open.contains("▾ Request\nShow only what matters"), "{open}");
 }
 
 fn text(line: &ratatui::text::Line) -> String {

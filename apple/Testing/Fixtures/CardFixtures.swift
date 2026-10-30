@@ -78,18 +78,6 @@ extension Fixtures {
         }
     }
 
-    /// The sample task detail with a history step summed up in Markdown, as a node writes it.
-    static func taskDetailWithMarkdownHistory() throws -> ViewDocument {
-        try Samples.document("task-detail") { object in
-            guard var sections = object["sections"] as? [[String: Any]],
-                  let index = sections.firstIndex(where: { $0["id"] as? String == "history" }),
-                  var items = sections[index]["items"] as? [[String: Any]], !items.isEmpty else { return }
-            items[items.count - 1]["subtitle"] = "## Waiting\n\n- pick the **welcome copy** for `EmptyState`"
-            sections[index]["items"] = items
-            object["sections"] = sections
-        }
-    }
-
     static let orchestratorDecideID = "memory-pause-livelock-ask"
 
     /// The orchestrator's Decide card as the daemon renders it: its reply field answers it.

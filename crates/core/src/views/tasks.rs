@@ -1067,50 +1067,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(node) = live {
         view.sections.extend(super::task_node::needs_section(node, context));
         view.sections.extend(super::task_node::work_sections(node, context.lang));
-        view.sections.extend(super::task_node::background_section(node, context));
+        view.sections.extend(super::task_node::background_sections(node, context));
         view.sections.extend(super::task_node::last_message_section(node, context));
-    }
-    if let Some(history) = context
-        .live
-        .task_history
-        .get(id)
-        .filter(|items| !items.is_empty())
-    {
-        let rows = history
-            .iter()
-            .map(|step| {
-                let title = match step.state.as_str() {
-                    "not_started" => t!(context.lang, "Not started", "Sin empezar"),
-                    "running" => t!(context.lang, "Working", "Trabajando"),
-                    "needs_you" => t!(context.lang, "Needs you", "Te necesita"),
-                    "in_review" | "for_your_review" => t!(context.lang, "In review", "En revisión"),
-                    "awaiting_blocker" => t!(context.lang, "Waiting", "Esperando"),
-                    "waiting_dependency" => t!(context.lang, "Waiting", "Esperando"),
-                    "closing" => t!(context.lang, "Closing", "Cerrando"),
-                    "done" => t!(context.lang, "Finished", "Terminado"),
-                    "cancelled" => t!(context.lang, "Cancelled", "Cancelado"),
-                    _ => step.state.as_str(),
-                };
-                let mut row = common::row(
-                    &step.at,
-                    "task",
-                    Icon::History,
-                    title.into(),
-                    Some(step.summary.clone()),
-                );
-                row.link = None;
-                row.trailing = Some(Trailing::Time {
-                    at: step.at.clone(),
-                    format: super::TimeFormat::Relative,
-                });
-                Item::Row(row)
-            })
-            .collect();
-        view.sections.push(common::section(
-            "history",
-            Some(t!(context.lang, "History", "Historial").into()),
-            rows,
-        ));
     }
     let waiting: Vec<_> = context.waiting_cards_of(&task.id)
         .map(|item| super::card::from_item(item, context, false).map(Item::Card))
@@ -1123,7 +1081,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         ));
     }
     if let Some(request) = request {
-        view.sections.push(common::section(
+        let mut section = common::section(
             "request",
             Some(t!(context.lang, "Request", "Solicitud").into()),
             vec![Item::Markdown(Markdown {
@@ -1132,7 +1090,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 more: None,
                 commentable: false,
             })],
-        ));
+        );
+        section.collapsed = true;
+        view.sections.push(section);
     }
     let prs: Vec<_> = merge_order(context, task).into_iter()
         .flat_map(|owner| context.index.prs_of_task(&owner.id).iter().filter_map(|id| context.domain.pull_requests.get(id))

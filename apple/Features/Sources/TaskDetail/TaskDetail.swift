@@ -9,13 +9,6 @@ public struct TaskDetail: Equatable, Sendable {
         public let link: AlondraContract.Link?
     }
 
-    public struct Step: Equatable, Sendable, Identifiable {
-        public let id: String
-        public let state: String
-        public let summary: String?
-        public let at: Date?
-    }
-
     /// Something the task's node is doing or left running: a thread in its turn, a shell, a
     /// subagent.
     public struct Activity: Equatable, Sendable, Identifiable {
@@ -42,9 +35,13 @@ public struct TaskDetail: Equatable, Sendable {
         public let revoke: WireAction?
     }
 
+    /// A part of the screen. One the daemon sends `collapsed` starts closed and opens on a tap; a
+    /// daemon older than that sends every section open.
     public struct Section<Element: Equatable & Sendable>: Equatable, Sendable {
         public let title: String?
         public let elements: [Element]
+        public var collapsed = false
+        public var count: Int?
     }
 
     public struct Message: Equatable, Sendable {
@@ -67,8 +64,11 @@ public struct TaskDetail: Equatable, Sendable {
     public let needs: Section<Markdown>
     public let steps: Section<Progress>
     public let subagents: Section<Progress>
+    /// Subagents that ended, once two or more have: folded, so the screen shows what runs.
+    public let subagentsFinished: Section<Progress>
     public let workflows: Section<Progress>
     public let background: Section<Activity>
+    public let backgroundFinished: Section<Activity>
     public let lastMessage: Message?
     public let waiting: Section<AlondraContract.Card>
     public let requestText: Section<String>
@@ -77,7 +77,6 @@ public struct TaskDetail: Equatable, Sendable {
     public let documents: Section<Row>
     public let options: Section<Fact>
     public let allowed: Section<Grant>
-    public let history: Section<Step>
     public let actions: [WireAction]
 
     public var relaunch: WireAction? { action("relaunch") }
@@ -109,7 +108,8 @@ public extension TaskDetail {
             items(id).compactMap { if case .markdown(let markdown) = $0, !markdown.text.isEmpty { markdown } else { nil } }
         }
         func activities(_ id: String) -> Section<Activity> {
-            Section(title: section(id)?.title, elements: rowsOf(id).map(Activity.init(row:)))
+            Section(title: section(id)?.title, elements: rowsOf(id).map(Activity.init(row:)),
+                    collapsed: section(id)?.collapsed ?? false, count: section(id)?.count.map(Int.init))
         }
         func progress(_ id: String) -> Section<Progress> {
             Section(title: section(id)?.title, elements: items(id).compactMap { item -> Progress? in
@@ -118,7 +118,7 @@ public extension TaskDetail {
                 case .row(let row): .row(row)
                 default: nil
                 }
-            })
+            }, collapsed: section(id)?.collapsed ?? false, count: section(id)?.count.map(Int.init))
         }
         let facts = factsOf("header")
         let state = facts.first { $0.link == nil }
@@ -136,8 +136,10 @@ public extension TaskDetail {
             needs: Section(title: section("needs")?.title, elements: markdown("needs")),
             steps: progress("steps"),
             subagents: progress("subagents"),
+            subagentsFinished: progress("subagents_finished"),
             workflows: progress("workflows"),
             background: activities("background"),
+            backgroundFinished: activities("background_finished"),
             lastMessage: markdown("last_message").first.map { markdown in
                 Message(title: section("last_message")?.title, markdown: markdown,
                         at: rowsOf("last_message").compactMap(\.time).first)
@@ -145,16 +147,14 @@ public extension TaskDetail {
             waiting: Section(title: section("waiting")?.title, elements: items("waiting").compactMap {
                 if case .card(let card) = $0 { card } else { nil }
             }),
-            requestText: Section(title: section("request")?.title, elements: markdown("request").map(\.text)),
+            requestText: Section(title: section("request")?.title, elements: markdown("request").map(\.text),
+                                 collapsed: section("request")?.collapsed ?? false),
             pullRequests: rows("pull_requests"),
             dependencies: rows("dependencies"),
             documents: rows("documents"),
             options: Section(title: section("options")?.title, elements: factsOf("options")),
             allowed: Section(title: section("allowed_in_task")?.title, elements: rowsOf("allowed_in_task").map { row in
                 Grant(id: row.id, command: row.title, detail: row.subtitle, revoke: row.actions.first { $0.command == "revoke_grant" && $0.enabled })
-            }),
-            history: Section(title: section("history")?.title, elements: rowsOf("history").map { row in
-                Step(id: row.id, state: row.title, summary: row.subtitle, at: row.trailing?.instant)
             }),
             actions: items("actions").flatMap { item -> [WireAction] in
                 if case .actions(let bar) = item { bar.actions } else { [] }

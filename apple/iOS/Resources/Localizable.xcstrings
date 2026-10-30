@@ -1,6 +1,11 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "since now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "desde ahora"}}}},
+    "Finished subagents": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subagentes terminados"}}}},
+    "Finished in the background": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Terminado en segundo plano"}}}},
+    "Hides it": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "La oculta"}}}},
+    "Shows it": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "La muestra"}}}},
     "Send a crash report": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviar informe de fallo"}}}},
     "Logs of your Mac with everything private left out. You see all of it before it is sent.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Logs de tu Mac con todo lo privado fuera. Lo ves entero antes de enviarlo."}}}},
     "Collecting the report: the logs, the tasks and the nodes of the last hours…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Recogiendo el informe: los logs, las tareas y los nodos de las últimas horas…"}}}},
@@ -1782,16 +1787,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Documentos"
-          }
-        }
-      }
-    },
-    "History": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Historia"
           }
         }
       }

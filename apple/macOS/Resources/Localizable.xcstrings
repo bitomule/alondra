@@ -923,16 +923,6 @@
         }
       }
     },
-    "History": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Historia"
-          }
-        }
-      }
-    },
     "Request": {
       "localizations": {
         "es": {

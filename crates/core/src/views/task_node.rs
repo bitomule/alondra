@@ -102,10 +102,12 @@ pub(super) fn doing(node: &super::LiveNode, working: bool, lang: super::Lang) ->
     ))
 }
 
-/// "Step 3 of 4 · Generate iOS screenshots", while the node's own task list has a step in progress.
+/// "Step 3 of 4 · Generate iOS screenshots", while the node's own task list has a step in progress:
+/// its number counts the steps already completed, wherever they sit in the list.
 pub(super) fn step(node: &super::LiveNode, lang: super::Lang) -> Option<String> {
-    let (index, step) = node.steps.iter().enumerate().find(|(_, step)| step.state == StepState::InProgress)?;
-    let (number, total, subject) = (index + 1, node.steps.len(), &step.subject);
+    let step = node.steps.iter().find(|step| step.state == StepState::InProgress)?;
+    let done = node.steps.iter().filter(|step| step.state == StepState::Completed).count();
+    let (number, total, subject) = (done + 1, node.steps.len(), &step.subject);
     Some(tf!(lang, "Step {number} of {total} · {subject}", "Paso {number} de {total} · {subject}"))
 }
 
@@ -256,14 +258,13 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
         }));
         sections.push(common::section("steps", Some(t!(lang, "Steps", "Pasos").into()), items));
     }
-    if !node.subagents.is_empty() {
-        let rows = node.subagents.iter().enumerate().map(|(index, run)| {
-            let about = [run.kind.clone(), run.model.as_deref().map(crate::model_label::model_label)]
-                .into_iter().flatten().collect::<Vec<_>>().join(" · ");
-            Item::Row(run_row(&format!("subagent:{index}"), run, (!about.is_empty()).then_some(about), lang))
-        }).collect();
-        sections.push(common::section("subagents", Some(t!(lang, "Subagents", "Subagentes").into()), rows));
-    }
+    let subagents = node.subagents.iter().enumerate().map(|(index, run)| {
+        let about = [run.kind.clone(), run.model.as_deref().map(crate::model_label::model_label)]
+            .into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        (run.state, Item::Row(run_row(&format!("subagent:{index}"), run, (!about.is_empty()).then_some(about), lang)))
+    }).collect();
+    sections.extend(running_then_finished("subagents", t!(lang, "Subagents", "Subagentes"),
+        t!(lang, "Finished subagents", "Subagentes terminados"), subagents));
     if !node.workflows.is_empty() {
         let items = node.workflows.iter().enumerate().flat_map(|(index, run)| {
             let agents = run.agents.map(|count| match count {
@@ -318,10 +319,30 @@ pub(super) fn needs_section(node: &super::LiveNode, context: &RenderContext<'_>)
         vec![Item::Markdown(Markdown { text: needs.clone(), truncated: false, more: None, commentable: false })]))
 }
 
-pub(super) fn background_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {
-    if node.background.is_empty() {
-        return None;
+/// What runs now in `id`; once two or more have ended, those go to `{id}_finished`, folded, so the
+/// section shows what is happening. A single ended one stays in place: folding it saves no room.
+fn running_then_finished(id: &str, title: &str, finished_title: &str, rows: Vec<(super::RunState, Item)>) -> Vec<super::Section> {
+    if rows.is_empty() {
+        return vec![];
     }
+    let ended = rows.iter().filter(|(state, _)| *state != super::RunState::Running).count();
+    if ended < 2 {
+        return vec![common::section(id, Some(title.into()), rows.into_iter().map(|(_, item)| item).collect())];
+    }
+    let (running, finished): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(state, _)| *state == super::RunState::Running);
+    let mut sections = vec![];
+    if !running.is_empty() {
+        sections.push(common::section(id, Some(title.into()), running.into_iter().map(|(_, item)| item).collect()));
+    }
+    let mut folded = common::section(&format!("{id}_finished"), Some(finished_title.into()),
+        finished.into_iter().map(|(_, item)| item).collect());
+    folded.collapsed = true;
+    folded.count = Some(ended as u32);
+    sections.push(folded);
+    sections
+}
+
+pub(super) fn background_sections(node: &super::LiveNode, context: &RenderContext<'_>) -> Vec<super::Section> {
     let rows = node.background.iter().map(|background| {
         let mut row = common::row(&background.since, "node", Icon::History, background.label.clone(),
             Some(match background.kind.as_str() {
@@ -331,9 +352,10 @@ pub(super) fn background_section(node: &super::LiveNode, context: &RenderContext
             }.into()));
         row.link = None;
         with_run_state(&mut row, background.state, &background.since, context.lang);
-        Item::Row(row)
+        (background.state, Item::Row(row))
     }).collect();
-    Some(common::section("background", Some(t!(context.lang, "In the background", "En segundo plano").into()), rows))
+    running_then_finished("background", t!(context.lang, "In the background", "En segundo plano"),
+        t!(context.lang, "Finished in the background", "Terminado en segundo plano"), rows)
 }
 
 pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {

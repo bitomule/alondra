@@ -829,7 +829,8 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
         return;
     };
-    let mut lines = super::view_render::document_lines(document, inner.width as usize, app.open_checks.contains(&document.key));
+    let mut lines = super::view_render::document_lines(document, inner.width as usize, app.open_checks.contains(&document.key),
+        app.open_folds.contains(&document.key));
     let mut keys = Vec::new();
     if let Some(card) = super::view_render::typed_card(document) {
         keys = match &app.card_menu {

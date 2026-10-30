@@ -1,0 +1,503 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-1",
+  "client": "mac",
+  "version": "v81e6fa1ecabb3141",
+  "cursor": "cursor-1",
+  "title": "Build a feature",
+  "status": {
+    "version": "v73340bacd6f9082e",
+    "summary": "1 nodo trabajando",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "Trabajando",
+              "tone": "accent"
+            },
+            {
+              "label": "Solicitud",
+              "value": "Build a feature",
+              "link": {
+                "kind": "view",
+                "key": "request:r-1"
+              }
+            },
+            {
+              "label": "Carpeta",
+              "value": "/work/alondra/.claude/worktrees/t-1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "readings",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Ejecutando",
+              "value": "Bash: cargo test"
+            },
+            {
+              "label": "En segundo plano",
+              "value": "2 subagents · 1 shell"
+            },
+            {
+              "label": "Contexto",
+              "value": "84% de 200K tokens",
+              "tone": "warning"
+            },
+            {
+              "label": "Coste",
+              "value": "1,20 $"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "activity",
+      "title": "Ahora mismo",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T09:59:00Z",
+          "icon": "history",
+          "title": "Editing views/tasks.rs",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:59:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "needs",
+      "title": "Qué necesita",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "The staging key",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "steps",
+      "title": "Pasos",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Progreso",
+              "value": "2 de 5",
+              "tone": "info"
+            },
+            {
+              "label": "Ahora",
+              "value": "Running the tests"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "step:0",
+          "icon": "check",
+          "title": "Read the code",
+          "depth": 0,
+          "struck": true
+        },
+        {
+          "type": "row",
+          "id": "step:1",
+          "icon": "check",
+          "title": "Write the fix",
+          "depth": 0,
+          "struck": true
+        },
+        {
+          "type": "row",
+          "id": "step:2",
+          "icon": "task",
+          "title": "Run the tests",
+          "badges": [
+            {
+              "text": "En curso",
+              "tone": "info"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "step:3",
+          "icon": "task",
+          "title": "Open the PR",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "step:4",
+          "icon": "task",
+          "title": "Reply",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "subagents",
+      "title": "Subagentes",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "subagent:0",
+          "icon": "history",
+          "title": "Explore the parser",
+          "subtitle": "Explore · Haiku 4.5",
+          "badges": [
+            {
+              "text": "En marcha",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:58:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "subagents_finished",
+      "title": "Subagentes terminados",
+      "count": 2,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "subagent:1",
+          "icon": "history",
+          "title": "Review the diff",
+          "subtitle": "general-purpose",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "2m 05s"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "subagent:2",
+          "icon": "history",
+          "title": "Audit the tests",
+          "subtitle": "Explore",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "5m 00s"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "background",
+      "title": "En segundo plano",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T09:40:00Z",
+          "icon": "history",
+          "title": "npm run dev",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "En marcha",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:40:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "background_finished",
+      "title": "Terminado en segundo plano",
+      "count": 2,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "swift build",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "Falló",
+              "tone": "critical"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "42s"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:20:00Z",
+          "icon": "history",
+          "title": "cargo fmt",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "3s"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "last_message",
+      "title": "Lo último que dijo",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Tests pass; opening the PR",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Solicitud",
+      "collapsed": true,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Build a feature",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Opciones",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Prioridad",
+              "value": "Normal"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "Merge automático: Alondra hace el merge al pasar los checks"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "msg:a-1@0~t-1",
+              "label": "Mensaje",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Escribe al nodo de esta tarea…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "interrupt:a-1@0",
+              "label": "Interrumpir",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "button": "Interrumpir"
+              },
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "pause:a-1@0",
+              "label": "Pausar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Pausar este nodo?",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "button": "Pausar"
+              },
+              "enabled": true,
+              "stamp": "En pausa",
+              "resolves_card": false
+            },
+            {
+              "id": "set_priority:t-1@0",
+              "label": "Prioridad",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "Alta",
+                  "description": "Arranca antes que Normal y Baja",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · ahora",
+                  "description": "La de siempre",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Baja",
+                  "description": "Arranca cuando no espera nada más",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

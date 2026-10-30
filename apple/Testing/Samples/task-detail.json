@@ -85,41 +85,6 @@
       ]
     },
     {
-      "id": "history",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "2025-12-31T20:00:00Z",
-          "icon": "history",
-          "title": "Working",
-          "depth": 0,
-          "struck": false,
-          "subtitle": "Started",
-          "trailing": {
-            "kind": "time",
-            "at": "2025-12-31T20:00:00Z",
-            "format": "relative"
-          }
-        },
-        {
-          "type": "row",
-          "id": "2025-12-31T21:30:00Z",
-          "icon": "history",
-          "title": "Needs you",
-          "depth": 0,
-          "struck": false,
-          "subtitle": "Waiting for a decision",
-          "trailing": {
-            "kind": "time",
-            "at": "2025-12-31T21:30:00Z",
-            "format": "relative"
-          }
-        }
-      ],
-      "title": "History"
-    },
-    {
       "id": "waiting",
       "collapsed": false,
       "items": [
@@ -158,7 +123,7 @@
     },
     {
       "id": "request",
-      "collapsed": false,
+      "collapsed": true,
       "items": [
         {
           "type": "markdown",

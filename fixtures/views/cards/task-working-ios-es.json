@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v09b902a3e9234071",
+  "version": "vc974f5b8d0b61941",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -198,6 +198,79 @@
       ]
     },
     {
+      "id": "subagents",
+      "title": "Subagentes",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "subagent:0",
+          "icon": "history",
+          "title": "Explore the parser",
+          "subtitle": "Explore · Haiku 4.5",
+          "badges": [
+            {
+              "text": "En marcha",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:58:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "subagents_finished",
+      "title": "Subagentes terminados",
+      "count": 2,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "subagent:1",
+          "icon": "history",
+          "title": "Review the diff",
+          "subtitle": "general-purpose",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "2m 05s"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "subagent:2",
+          "icon": "history",
+          "title": "Audit the tests",
+          "subtitle": "Explore",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "5m 00s"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
       "id": "background",
       "title": "En segundo plano",
       "collapsed": false,
@@ -221,7 +294,15 @@
           },
           "depth": 0,
           "struck": false
-        },
+        }
+      ]
+    },
+    {
+      "id": "background_finished",
+      "title": "Terminado en segundo plano",
+      "count": 2,
+      "collapsed": true,
+      "items": [
         {
           "type": "row",
           "id": "2026-09-30T09:30:00Z",
@@ -237,6 +318,25 @@
           "trailing": {
             "kind": "text",
             "text": "42s"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:20:00Z",
+          "icon": "history",
+          "title": "cargo fmt",
+          "subtitle": "Shell",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "3s"
           },
           "depth": 0,
           "struck": false
@@ -272,7 +372,7 @@
     {
       "id": "request",
       "title": "Solicitud",
-      "collapsed": false,
+      "collapsed": true,
       "items": [
         {
           "type": "markdown",

@@ -38,8 +38,34 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.dependencies.elements.map(\.id), ["t-2", "t-3"])
         XCTAssertEqual(detail.documents.elements.map(\.id), ["rev-1"])
         XCTAssertEqual(detail.options.elements.map(\.label), ["PR handling", "Effort"])
-        XCTAssertEqual(detail.history.elements.map(\.state), ["Working", "Needs you"])
-        XCTAssertEqual(detail.history.elements.first?.summary, "Started")
+        XCTAssertTrue(detail.requestText.collapsed)
+    }
+
+    func testWhatTheDaemonFoldsStartsFoldedWithItsCountAndFinishedWorkLandsApart() throws {
+        let row: (String, String) -> [String: Any] = { id, title in
+            ["type": "row", "id": id, "icon": "history", "title": title, "depth": 0, "struck": false,
+             "badges": [["text": "Finished", "tone": "neutral"]]]
+        }
+        let document = try Samples.document("task-detail", editing: { object in
+            var sections = object["sections"] as! [[String: Any]]
+            let request = sections.firstIndex { $0["id"] as? String == "request" }!
+            sections[request]["collapsed"] = true
+            sections.append(["id": "subagents_finished", "title": "Finished subagents", "count": 2, "collapsed": true,
+                             "items": [row("subagent:1", "Review the diff"), row("subagent:2", "Audit the tests")]])
+            sections.append(["id": "background_finished", "title": "Finished in the background", "count": 2, "collapsed": true,
+                             "items": [row("a", "make lint"), row("b", "make docs")]])
+            object["sections"] = sections
+        })
+        let detail = TaskDetail(document: document)
+
+        XCTAssertTrue(detail.requestText.collapsed)
+        XCTAssertEqual(detail.requestText.elements.count, 1)
+        XCTAssertTrue(detail.subagentsFinished.collapsed)
+        XCTAssertEqual(detail.subagentsFinished.count, 2)
+        XCTAssertEqual(detail.subagentsFinished.elements.count, 2)
+        XCTAssertTrue(detail.backgroundFinished.collapsed)
+        XCTAssertEqual(detail.backgroundFinished.elements.map(\.title), ["make lint", "make docs"])
+        XCTAssertEqual(detail.backgroundFinished.elements.first?.state?.text, "Finished")
     }
 
     func testTheStateIsTheHeaderFactWithoutALinkWhateverLanguageItIsLabelledIn() throws {
@@ -97,15 +123,19 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.steps.elements.count, 6, "the progress line and five steps")
         guard case .facts(let progress)? = detail.steps.elements.first else { return XCTFail("the steps open with their progress") }
         XCTAssertEqual(progress.map(\.value), ["2 of 5", "Running the tests"])
-        XCTAssertEqual(detail.subagents.elements.count, 2)
+        XCTAssertEqual(detail.subagents.elements.count, 1, "what runs")
+        XCTAssertEqual(detail.subagentsFinished.elements.count, 2, "what ended, once two have")
+        XCTAssertTrue(detail.subagentsFinished.collapsed)
         XCTAssertEqual(detail.workflows.title, "Workflows")
         XCTAssertEqual(detail.workflows.elements.count, 5)
-        XCTAssertEqual(detail.background.elements.map(\.title), ["npm run dev", "swift build"])
+        XCTAssertEqual(detail.background.elements.map(\.title), ["npm run dev"])
         XCTAssertEqual(detail.background.elements.first?.detail, "Shell")
         XCTAssertEqual(detail.background.elements.first?.since, "2026-09-30T09:40:00Z")
-        XCTAssertEqual(detail.background.elements.map { $0.state?.text }, ["Running", "Failed"])
-        XCTAssertEqual(detail.background.elements.map { $0.state?.tone }, [.info, .critical])
-        XCTAssertNil(detail.background.elements.last?.since, "an ended task says how long it ran, not since when")
+        XCTAssertEqual(detail.background.elements.map { $0.state?.text }, ["Running"])
+        XCTAssertEqual(detail.backgroundFinished.elements.map(\.title), ["swift build", "cargo fmt"])
+        XCTAssertEqual(detail.backgroundFinished.elements.map { $0.state?.text }, ["Failed", "Finished"])
+        XCTAssertEqual(detail.backgroundFinished.elements.map { $0.state?.tone }, [.critical, .neutral])
+        XCTAssertNil(detail.backgroundFinished.elements.first?.since, "an ended task says how long it ran, not since when")
         XCTAssertEqual(detail.lastMessage?.markdown.text, "Tests pass; opening the PR")
         XCTAssertEqual(detail.lastMessage?.at, "2026-09-30T09:58:00Z")
         XCTAssertEqual(detail.interrupt?.label, "Interrupt")

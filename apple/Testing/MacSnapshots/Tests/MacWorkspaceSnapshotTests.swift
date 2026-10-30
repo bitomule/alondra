@@ -565,6 +565,23 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 2900), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_task_working() throws {
+        let store = try presentation(detail: "task-working-mac")
+        assertWindow(size: CGSize(width: 900, height: 1500)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_task_working_spanish() throws {
+        let store = try presentation(detail: "task-working-es-mac")
+        assertWindow(size: CGSize(width: 900, height: 1500), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_task_working_foldsOpen() throws {
+        let store = try presentation(detail: "task-working-mac") { state in
+            state.openSections = ["subagents_finished", "background_finished", "request"]
+        }
+        assertWindow(size: CGSize(width: 900, height: 1800), variants: [.light]) { MacServiceDetail(presentation: store) }
+    }
+
     func test_pullRequest_detail() throws {
         let store = try presentation(detail: "pull-request-mac")
         assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }

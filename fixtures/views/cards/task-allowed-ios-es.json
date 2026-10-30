@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v48034070e0d2341a",
+  "version": "v541f9daf2bca40c1",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -139,41 +139,6 @@
           },
           "icon": "history",
           "title": "pregunta: Restore the native review experience",
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
-      "id": "history",
-      "title": "Historial",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "2026-09-30T08:00:00Z",
-          "icon": "history",
-          "title": "Trabajando",
-          "subtitle": "Started",
-          "trailing": {
-            "kind": "time",
-            "at": "2026-09-30T08:00:00Z",
-            "format": "relative"
-          },
-          "depth": 0,
-          "struck": false
-        },
-        {
-          "type": "row",
-          "id": "2026-09-30T09:30:00Z",
-          "icon": "history",
-          "title": "Te necesita",
-          "subtitle": "Waiting for a decision",
-          "trailing": {
-            "kind": "time",
-            "at": "2026-09-30T09:30:00Z",
-            "format": "relative"
-          },
           "depth": 0,
           "struck": false
         }
@@ -421,7 +386,7 @@
     {
       "id": "request",
       "title": "Solicitud",
-      "collapsed": false,
+      "collapsed": true,
       "items": [
         {
           "type": "markdown",

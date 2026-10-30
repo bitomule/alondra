@@ -635,8 +635,14 @@ pub fn summarized_checks(view: &View) -> bool {
         .any(|item| matches!(item, Item::Checks(checks) if checks.summary.is_some()))
 }
 
-/// The view as one document; `open_checks` shows the checks a summary folds.
-pub fn document_lines(view: &View, width: usize, open_checks: bool) -> Vec<Line<'static>> {
+/// Whether the view has sections the daemon sends folded, which the user opens with `z`.
+pub fn folded_sections(view: &View) -> bool {
+    view.sections.iter().any(|section| section.collapsed && section.title.is_some() && !section.items.is_empty())
+}
+
+/// The view as one document; `open_checks` shows the checks a summary folds and `open_folds` the
+/// sections the daemon sends folded.
+pub fn document_lines(view: &View, width: usize, open_checks: bool, open_folds: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let cards_title = |title: &String| {
         view.sections
@@ -661,14 +667,24 @@ pub fn document_lines(view: &View, width: usize, open_checks: bool) -> Vec<Line<
         )));
     }
     for section in view.sections.iter().filter(|section| !section.items.is_empty()) {
+        let folds = section.collapsed && section.title.is_some();
         if let Some(title) = &section.title {
             if !lines.is_empty() {
                 lines.push(Line::default());
             }
-            lines.push(Line::from(Span::styled(
-                title.clone(),
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            )));
+            let title = match section.count {
+                Some(count) if folds => format!("{title} ({count})"),
+                _ => title.clone(),
+            };
+            let mut line = vec![];
+            if folds {
+                line.push(Span::styled(if open_folds { "▾ " } else { "▸ " }, Style::new().fg(DIM)));
+            }
+            line.push(Span::styled(title, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
+            lines.push(Line::from(line));
+        }
+        if folds && !open_folds {
+            continue;
         }
         for item in &section.items {
             match item {
@@ -1438,7 +1454,7 @@ mod action_tests {
     #[test]
     fn a_native_model_form_summary_uses_server_labels_and_visible_fields() {
         let view: View = serde_json::from_value(crate::tui::parity::view_fixture("model-profile-codex-tui.json")).unwrap();
-        let text = document_lines(&view, 100, false).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let text = document_lines(&view, 100, false, false).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Fixture general"), "{text}");
         assert!(text.contains("Native default"), "{text}");
         assert!(!text.contains("model_profile"), "internal form IDs do not describe the screen: {text}");

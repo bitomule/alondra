@@ -7,11 +7,13 @@ import SwiftUI
 /// One task: its state, folder and what its node reports, what the node is doing right now and
 /// needs, how far its steps, subagents and workflows have got, what runs in the background and what
 /// it said last, what it waits for from you, its request, pull requests, dependencies, documents,
-/// options, the commands it lets through without asking and history, with interrupt, relaunch,
+/// options and the commands it lets through without asking, with interrupt, relaunch,
 /// cancel and reopen and a composer to
 /// write to its node.
 public struct TaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
+    @Environment(\.referenceDate) private var referenceDate
+    @Environment(\.locale) private var locale
 
     public init(store: StoreOf<TaskDetailFeature>) { self.store = store }
 
@@ -26,6 +28,7 @@ public struct TaskDetailView: View {
                         waiting(detail)
                         progress(detail.steps, fallback: String(localized: "Steps"), symbol: "checklist")
                         progress(detail.subagents, fallback: String(localized: "Subagents"), symbol: "person.2")
+                        progress(detail.subagentsFinished, fallback: String(localized: "Finished subagents"), symbol: "person.2")
                         progress(detail.workflows, fallback: String(localized: "Workflows"), symbol: "flowchart")
                         background(detail)
                         lastMessage(detail)
@@ -35,7 +38,6 @@ public struct TaskDetailView: View {
                         documents(detail)
                         options(detail)
                         allowed(detail)
-                        history(detail)
                         actions(detail)
                     }
                     .padding(.horizontal, 20)
@@ -51,6 +53,12 @@ public struct TaskDetailView: View {
             }
         }
         .background(DawnBackground(glow: TaskStyle.tint(tone: store.detail?.stateTone)))
+        .navigationTitle(store.detail?.title ?? "")
+        .toolbar {
+            if let detail = store.detail {
+                ToolbarItem(placement: .principal) { status(detail) }
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .task { await store.send(.task).finish() }
@@ -62,25 +70,49 @@ public struct TaskDetailView: View {
         if let link { store.send(.open(link)) }
     }
 
-    private func header(_ detail: TaskDetail) -> some View {
+    /// "since 5 min ago", under the task's state in the navigation bar.
+    private func since(_ date: Date) -> Text {
+        let now = referenceDate ?? .now
+        return abs(date.timeIntervalSince(now)) < 45
+            ? Text("since now")
+            : Text("since \(RelativeTime.phrase(for: date, relativeTo: now, locale: locale))")
+    }
+
+    /// The task's state in the navigation bar: its glyph, which pulses while it works, the state in
+    /// its tint and since when. The glyph is drawn at a fixed size: a toolbar grows a symbol to its
+    /// own icon size, which overflowed `Glyph`'s circle.
+    private func status(_ detail: TaskDetail) -> some View {
         let tint = TaskStyle.tint(tone: detail.stateTone)
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Glyph(symbol: TaskStyle.symbol(tone: detail.stateTone), tint: tint, pulse: detail.stateTone == .accent)
+        return HStack(spacing: 8) {
+            Image(systemName: TaskStyle.symbol(tone: detail.stateTone))
+                .resizable()
+                .scaledToFit()
+                .fontWeight(.bold)
+                .foregroundStyle(tint)
+                .frame(width: 11, height: 11)
+                .frame(width: 24, height: 24)
+                .background(tint.opacity(0.15), in: .circle)
+                .symbolEffect(.pulse, options: .repeating, isActive: detail.stateTone == .accent)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 0) {
                 if let state = detail.state {
                     Text(verbatim: state)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(tint)
                 }
-                if let since = detail.since {
-                    HStack(spacing: 4) {
-                        Text("since")
-                        RelativeTime(date: since)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if let date = detail.since {
+                    since(date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private func header(_ detail: TaskDetail) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             Text(verbatim: detail.title)
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
@@ -145,7 +177,7 @@ public struct TaskDetailView: View {
 
     @ViewBuilder private func progress(_ section: TaskDetail.Section<TaskDetail.Progress>, fallback: String, symbol: String) -> some View {
         if !section.elements.isEmpty {
-            DetailSection(title: section.title ?? fallback, symbol: symbol) {
+            DetailSection(title: section.title ?? fallback, symbol: symbol, collapsed: section.collapsed, count: section.count) {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(section.elements.enumerated(), id: \.offset) { _, item in ProgressLine(item: item) }
                 }
@@ -155,10 +187,15 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func background(_ detail: TaskDetail) -> some View {
-        if !detail.background.elements.isEmpty {
-            DetailSection(title: detail.background.title ?? String(localized: "Running in the background"), symbol: "square.stack.3d.up") {
+        activities(detail.background, fallback: String(localized: "Running in the background"))
+        activities(detail.backgroundFinished, fallback: String(localized: "Finished in the background"))
+    }
+
+    @ViewBuilder private func activities(_ section: TaskDetail.Section<TaskDetail.Activity>, fallback: String) -> some View {
+        if !section.elements.isEmpty {
+            DetailSection(title: section.title ?? fallback, symbol: "square.stack.3d.up", collapsed: section.collapsed, count: section.count) {
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(detail.background.elements) { BackgroundRow(activity: $0) }
+                    ForEach(section.elements) { BackgroundRow(activity: $0) }
                 }
                 .padding(16)
             }
@@ -241,7 +278,7 @@ public struct TaskDetailView: View {
 
     @ViewBuilder private func request(_ detail: TaskDetail) -> some View {
         if let text = detail.requestText.elements.first {
-            DetailSection(title: detail.requestText.title ?? String(localized: "Request"), symbol: "text.quote") {
+            DetailSection(title: detail.requestText.title ?? String(localized: "Request"), symbol: "text.quote", collapsed: detail.requestText.collapsed) {
                 Text(verbatim: text)
                     .font(.body)
                     .foregroundStyle(Palette.ink)
@@ -385,19 +422,6 @@ public struct TaskDetailView: View {
         }
     }
 
-    @ViewBuilder private func history(_ detail: TaskDetail) -> some View {
-        if !detail.history.elements.isEmpty {
-            DetailSection(title: detail.history.title ?? String(localized: "History"), symbol: "clock.arrow.circlepath") {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(detail.history.elements.enumerated()), id: \.offset) { index, step in
-                        HistoryLine(step: step, first: index == 0, last: index == detail.history.elements.count - 1)
-                    }
-                }
-                .padding(.vertical, 6)
-            }
-        }
-    }
-
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
         let shown = [detail.interrupt, detail.resume, detail.relaunch, detail.pause, detail.modelSelection, detail.cancel, detail.reopen].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
@@ -502,41 +526,3 @@ private struct DependencyLine: View {
     }
 }
 
-private struct HistoryLine: View {
-    let step: TaskDetail.Step
-    let first: Bool
-    let last: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Group {
-                if let at = step.at {
-                    Text(at, format: .dateTime.hour().minute())
-                } else {
-                    Text(verbatim: "")
-                }
-            }
-            .font(.mono(.caption))
-            .foregroundStyle(.tertiary)
-            .frame(width: 44, alignment: .leading)
-            Glyph(symbol: "circle.fill", tint: Palette.slate, size: .tiny)
-                .background(Palette.card, in: .circle)
-            Text("\(Text(verbatim: step.state).fontWeight(.semibold))\(Text(step.summary.map { AttributedString(" · ") + MarkdownBlock.line($0) } ?? AttributedString()))")
-                .font(.subheadline)
-                .foregroundStyle(Palette.ink.opacity(0.86))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(alignment: .topLeading) {
-            GeometryReader { proxy in
-                Path { path in
-                    let x: CGFloat = 16 + 44 + 10 + 9
-                    path.move(to: CGPoint(x: x, y: first ? 18 : 0))
-                    path.addLine(to: CGPoint(x: x, y: last ? 18 : proxy.size.height))
-                }
-                .stroke(Palette.hairline, lineWidth: 2)
-            }
-        }
-    }
-}

@@ -3514,6 +3514,80 @@ fn a_task_detail_shows_its_nodes_steps_subagents_and_workflows() {
 }
 
 #[test]
+fn the_current_step_counts_every_completed_step_wherever_it_sits() {
+    let node = LiveNode {
+        steps: vec![
+            LiveStep { subject: "Read the code".into(), state: StepState::InProgress, active_form: None },
+            LiveStep { subject: "Write the fix".into(), state: StepState::Completed, active_form: None },
+            LiveStep { subject: "Run the tests".into(), state: StepState::Completed, active_form: None },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(super::task_node::step(&node, Lang::En).as_deref(), Some("Step 3 of 3 · Read the code"));
+    assert_eq!(super::task_node::step(&node, Lang::Es).as_deref(), Some("Paso 3 de 3 · Read the code"));
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), working: true, ..node }], ..Default::default() };
+    let view = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
+    assert_eq!(section_facts(&view, "steps"), [("Progress".into(), "2 of 3".into()), ("Now".into(), "Read the code".into())]);
+}
+
+#[test]
+fn a_task_detail_folds_what_ended_once_two_have_ended_and_shows_what_runs() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let ended = RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 60 };
+    let run = |label: &str, state| LiveRun { label: label.into(), since: "2026-09-30T09:58:00Z".into(), state, ..Default::default() };
+    let shell = |label: &str, state| LiveBackground { kind: "shell".into(), label: label.into(), since: "2026-09-30T09:58:00Z".into(), state };
+    let view = |subagents: Vec<LiveRun>, background: Vec<LiveBackground>| {
+        let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), working: true, subagents, background, ..Default::default() }], ..Default::default() };
+        render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "")
+    };
+    let titles = |view: &View, id: &str| node_work_rows(view, id).iter().map(|row| row.title.clone()).collect::<Vec<_>>();
+    let folded = |view: &View, id: &str| view.sections.iter().find(|section| section.id == id)
+        .map(|section| (section.title.clone().unwrap_or_default(), section.collapsed, section.count));
+
+    let none = view(vec![run("Explore", RunState::Running)], vec![shell("make test", RunState::Running)]);
+    assert_eq!(titles(&none, "subagents"), ["Explore"]);
+    assert_eq!(titles(&none, "background"), ["make test"]);
+    assert!(none.sections.iter().all(|section| !section.id.ends_with("_finished")));
+
+    let one = view(vec![run("Explore", RunState::Running), run("Review", ended)], vec![shell("make test", ended)]);
+    assert_eq!(titles(&one, "subagents"), ["Explore", "Review"], "a single ended run stays where it was");
+    assert_eq!(titles(&one, "background"), ["make test"]);
+    assert!(one.sections.iter().all(|section| !section.id.ends_with("_finished")));
+
+    let two = view(vec![run("Explore", RunState::Running), run("Review", ended), run("Audit", ended)],
+        vec![shell("make test", RunState::Running), shell("make lint", ended), shell("make docs", ended)]);
+    assert_eq!(titles(&two, "subagents"), ["Explore"]);
+    assert_eq!(titles(&two, "subagents_finished"), ["Review", "Audit"]);
+    assert_eq!(folded(&two, "subagents_finished"), Some(("Subagentes terminados".into(), true, Some(2))));
+    assert_eq!(titles(&two, "background"), ["make test"]);
+    assert_eq!(titles(&two, "background_finished"), ["make lint", "make docs"]);
+    assert_eq!(folded(&two, "background_finished"), Some(("Terminado en segundo plano".into(), true, Some(2))));
+    assert!(!two.sections.iter().find(|section| section.id == "subagents").unwrap().collapsed);
+
+    let all = view(vec![run("Review", ended), run("Audit", ended)], vec![]);
+    assert!(all.sections.iter().all(|section| section.id != "subagents" && section.id != "background"));
+    assert_eq!(folded(&all, "subagents_finished"), Some(("Subagentes terminados".into(), true, Some(2))));
+}
+
+#[test]
+fn a_task_detail_has_no_history_and_folds_its_request() {
+    let id = "task:t-651c38484cd2f34e74d5107ba05f7f15";
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&golden_fixture(), &golden_live(), client, Lang::En, id, "");
+        assert!(view.sections.iter().all(|section| section.id != "history"), "{client:?}");
+        assert!(view.sections.iter().any(|section| section.id == "since"), "{client:?}");
+        let request = view.sections.iter().find(|section| section.id == "request").expect("request section");
+        assert!(request.collapsed, "{client:?}");
+        assert!(!request.items.is_empty(), "a folded request still carries its text: {client:?}");
+    }
+}
+
+#[test]
 fn the_task_a_node_works_shows_the_nodes_progress_and_a_finished_task_does_not() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
@@ -3552,6 +3626,11 @@ fn task_working_fixture() -> (DomainState, LiveSnapshot) {
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { model: Some("claude-opus-5-5".into()), ..node_on_its_task() });
     live.nodes[0].steps = working_node().steps;
+    live.nodes[0].subagents = working_node().subagents;
+    live.nodes[0].subagents.push(LiveRun { label: "Audit the tests".into(), kind: Some("Explore".into()), since: "2026-09-30T09:35:00Z".into(),
+        state: RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 300 }, ..Default::default() });
+    live.nodes[0].background.push(LiveBackground { kind: "shell".into(), label: "cargo fmt".into(), since: "2026-09-30T09:20:00Z".into(),
+        state: RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 3 } });
     live.task_costs.insert("t-1".into(), 120);
     state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(),
         crate::domain::TaskWorktree { origin: crate::domain::WorktreeOrigin::Task, branch: None, discard: false, end: None });
@@ -3560,10 +3639,11 @@ fn task_working_fixture() -> (DomainState, LiveSnapshot) {
     (state, live)
 }
 
-const TASK_WORKING_GOLDENS: [(&str, Client, Lang); 4] = [
+const TASK_WORKING_GOLDENS: [(&str, Client, Lang); 5] = [
     ("task-working-ios.json", Client::Ios, Lang::En),
     ("task-working-ios-es.json", Client::Ios, Lang::Es),
     ("task-working-mac.json", Client::Mac, Lang::En),
+    ("task-working-es-mac.json", Client::Mac, Lang::Es),
     ("task-working-tui.json", Client::Tui, Lang::En),
 ];
 
@@ -3575,6 +3655,7 @@ fn task_working_views_match_goldens() {
             "task-working-ios.json" => include_str!("../../../../fixtures/views/cards/task-working-ios.json"),
             "task-working-ios-es.json" => include_str!("../../../../fixtures/views/cards/task-working-ios-es.json"),
             "task-working-mac.json" => include_str!("../../../../fixtures/views/cards/task-working-mac.json"),
+            "task-working-es-mac.json" => include_str!("../../../../fixtures/views/cards/task-working-es-mac.json"),
             _ => include_str!("../../../../fixtures/views/cards/task-working-tui.json"),
         };
         assert_golden(filename, &render(&state, &live, client, lang, "task:t-1", "2026-09-30T10:00:00Z"), expected);
@@ -3613,7 +3694,8 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
             assert!(ids.contains(&id), "{client:?} shows {id}: {ids:?}");
         }
         assert_eq!(node_work_rows(&view, "activity")[0].title, "Editing views/tasks.rs");
-        assert_eq!(node_work_rows(&view, "background").iter().map(|row| badges(row)).collect::<Vec<_>>(), [["Running"], ["Failed"]]);
+        assert_eq!(node_work_rows(&view, "background").iter().map(|row| badges(row)).collect::<Vec<_>>(), [["Running"]]);
+        assert_eq!(node_work_rows(&view, "background_finished").iter().map(|row| badges(row)).collect::<Vec<_>>(), [["Failed"], ["Finished"]]);
         assert!(action_ids(&view).iter().any(|id| id == "interrupt:a-1"), "{client:?}: {:?}", action_ids(&view));
     }
     let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
@@ -4412,21 +4494,11 @@ fn a_review_that_ran_out_of_rounds_says_how_many_failures_are_left_and_lists_the
 }
 
 #[test]
-fn the_sidebar_groups_a_task_waiting_for_its_reviewer_and_the_history_names_the_new_states() {
+fn the_sidebar_groups_a_task_waiting_for_its_reviewer() {
     let mut state = golden_fixture();
     let task = "t-651c38484cd2f34e74d5107ba05f7f15";
     state.tasks.get_mut(&task.into()).unwrap().state = TaskState::AwaitingBlocker;
-    let mut live = golden_live();
-    live.task_history.insert(task.into(), vec![
-        LiveHistoryStep { at: "2026-09-30T08:00:00Z".into(), state: "awaiting_blocker".into(), summary: "Delivered".into() },
-        LiveHistoryStep { at: "2026-09-30T09:00:00Z".into(), state: "for_your_review".into(), summary: "Reviewed".into() },
-    ]);
-    let tasks = render(&state, &live, Client::Ios, Lang::Es, &format!("task:{task}"), "");
-    let titles: Vec<String> = tasks.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
-        Item::Row(row) => Some(row.title.clone()), _ => None,
-    }).collect();
-    assert!(titles.contains(&"Esperando".to_owned()) && titles.contains(&"En revisión".to_owned()), "{titles:?}");
-    assert!(!titles.iter().any(|title| title.contains("awaiting_blocker") || title.contains("for_your_review")), "never a raw state name: {titles:?}");
+    let live = golden_live();
     let sidebar = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "");
     let group = sidebar.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
         Item::Row(row) if row.id == "awaiting_blocker" => Some(row),
@@ -8010,7 +8082,7 @@ fn background_work_shows_only_that_it_runs_or_how_it_ended() {
             for client in [Client::Ios, Client::Mac, Client::Tui] {
                 for key in ["task:t-1"] {
                     let view = render(&state, &live, client, lang, key, "");
-                    let rows: Vec<&Row> = ["subagents", "workflows", "background"].iter().flat_map(|id| node_work_rows(&view, id)).collect();
+                    let rows: Vec<&Row> = ["subagents", "subagents_finished", "workflows", "background", "background_finished"].iter().flat_map(|id| node_work_rows(&view, id)).collect();
                     assert!(!rows.is_empty(), "{client:?} {key} shows the background work");
                     for row in rows {
                         let [badge] = row.badges.as_slice() else { panic!("{client:?} {key} {run:?}: one state, one badge: {:?}", row.badges) };

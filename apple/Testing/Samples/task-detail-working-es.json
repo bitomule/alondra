@@ -221,7 +221,15 @@
           },
           "depth": 0,
           "struck": false
-        },
+        }
+      ]
+    },
+    {
+      "id": "subagents_finished",
+      "title": "Subagentes terminados",
+      "count": 2,
+      "collapsed": true,
+      "items": [
         {
           "type": "row",
           "id": "subagent:1",
@@ -237,6 +245,25 @@
           "trailing": {
             "kind": "text",
             "text": "2 min"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "subagent:2",
+          "icon": "history",
+          "title": "Auditar los tests",
+          "subtitle": "Explore",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "5 min"
           },
           "depth": 0,
           "struck": false
@@ -357,7 +384,15 @@
               "tone": "info"
             }
           ]
-        },
+        }
+      ]
+    },
+    {
+      "id": "background_finished",
+      "title": "Terminado en segundo plano",
+      "count": 2,
+      "collapsed": true,
+      "items": [
         {
           "type": "row",
           "id": "2026-09-30T09:30:00Z",
@@ -374,6 +409,25 @@
             {
               "text": "Falló",
               "tone": "critical"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:20:00Z",
+          "icon": "history",
+          "title": "cargo fmt",
+          "subtitle": "Shell",
+          "trailing": {
+            "kind": "text",
+            "text": "3s"
+          },
+          "depth": 0,
+          "struck": false,
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "neutral"
             }
           ]
         }
@@ -408,7 +462,7 @@
     {
       "id": "request",
       "title": "Solicitud",
-      "collapsed": false,
+      "collapsed": true,
       "items": [
         {
           "type": "markdown",
