@@ -336,7 +336,7 @@ final class CardDetailFeatureTests: XCTestCase {
         let feed = FeedStub()
         let store = try await planStore(feed: feed)
         let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
-        guard case .text(_, let required, _) = changes.input else { return XCTFail("the server asks for text") }
+        guard case .text(_, let required, _, _) = changes.input else { return XCTFail("the server asks for text") }
         XCTAssertTrue(required)
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
         await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))

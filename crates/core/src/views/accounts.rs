@@ -188,7 +188,7 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&crate
         row.actions.push(off);
     }
     if let Some(mut rename) = scoped_action(Verb::AccountRename, account, t!(lang, "Rename", "Renombrar"), Style::Secondary, context) {
-        rename.input = Input::Text { placeholder: shown.clone(), required: true, multiline: false };
+        rename.input = Input::Text { placeholder: shown.clone(), required: true, multiline: false, secret: false };
         row.actions.push(rename);
     }
     if let Some(refresh) = scoped_action(Verb::AccountModels, account, t!(lang, "Refresh models", "Actualizar modelos"), Style::Secondary, context) { row.actions.push(refresh); }

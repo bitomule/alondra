@@ -40,6 +40,7 @@ pub mod orchestrator_batch;
 pub mod orchestrator_cards;
 pub mod pr;
 pub mod request_outcome;
+pub mod secret_destination;
 pub mod sessions;
 pub mod stack;
 pub mod start_problem;

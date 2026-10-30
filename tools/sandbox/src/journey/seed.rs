@@ -68,6 +68,15 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         ];
         act(report, &fakes, &researching, "the node asks with the two documents it cites", &documents)?;
 
+        request(report, &fakes, &user, &task_script("req-secret", "t-secret", "Run the payments test against Stripe"), "Run the payments test against Stripe")?;
+        let secret = launched(report, &fakes, "t-secret")?;
+        state(report, &user, "t-secret", WORKING)?;
+        let ask_secret = Step::Call { tool: "request_input".into(), arguments: serde_json::json!({
+            "scope": {"kind": "task", "task_id": "t-secret"}, "interaction_id": "q-stripe-key", "need": "Send the Stripe test key", "why": "The payments test calls Stripe with it",
+            "kind": "secret", "blocking": false, "destination": {"file": ".env", "variable": "STRIPE_KEY"},
+        }) };
+        act(report, &fakes, &secret, "the node asks for a secret that goes to .env", &[ask_secret])?;
+
         request(report, &fakes, &user, &reworking("req-review", "t-review", "Add a greeting file", 41, "greeting.txt"), "Add a greeting file")?;
         let reviewing = launched(report, &fakes, "t-review")?;
         state(report, &user, "t-review", WORKING)?;
@@ -145,6 +154,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, research with documents, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, question, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

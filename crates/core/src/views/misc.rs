@@ -406,7 +406,7 @@ pub(super) fn orchestrator(key: &str, context: &RenderContext<'_>) -> View {
     if let Some(mut message) = common::action(super::action_id::Verb::Msg, "view", context.domain.revision,
         t!(context.lang, "Message", "Mensaje"), super::Style::Primary) {
         message.input = super::Input::Text { placeholder: t!(context.lang, "Write to Alondra…", "Escribe a Alondra…").into(),
-            required: true, multiline: true };
+            required: true, multiline: true, secret: false };
         message.attachments = true;
         view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: vec![message] })]));
     }

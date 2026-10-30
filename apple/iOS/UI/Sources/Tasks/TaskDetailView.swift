@@ -242,7 +242,7 @@ public struct TaskDetailView: View {
     }
 
     private func composerPlaceholder(_ action: WireAction?) -> String {
-        if case .text(let placeholder, _, _)? = action?.input, let placeholder { return placeholder }
+        if case .text(let placeholder, _, _, _)? = action?.input, let placeholder { return placeholder }
         return String(localized: "Write a message")
     }
 

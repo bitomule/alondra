@@ -1026,6 +1026,13 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
+        if let (Principal::Agent { session_id, .. }, Command::AskQuestion { scope: Scope::Task { task_id }, card, .. }) = (&principal, &envelope.command)
+            && let Some(destination) = &card.secret_destination
+            && let Ok(state) = host.domain().state()
+            && let Some(refusal) = crate::secret_files::ask_refusal(&state, session_id, task_id, destination)
+        {
+            return domain_error(refusal);
+        }
         if let (Principal::Agent { .. }, Command::ConfirmCleanup { task_id, discard }) = (&principal, &envelope.command)
             && let Ok(state) = host.domain().state()
             && let Some(task) = state.tasks.get(task_id)

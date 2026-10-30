@@ -194,7 +194,7 @@ import Testing
             return
         }
         let context = try #require(card.more.first { $0.id?.hasPrefix("clarify:") == true })
-        guard case let .text(_, required, _) = context.input else {
+        guard case let .text(_, required, _, _) = context.input else {
             Issue.record("The clarification must retain its optional note")
             return
         }

@@ -166,6 +166,7 @@ if [ "$fakes" = 1 ]; then
 	git init -q --bare -b main "$dir/remote.git"
 	git init -q -b main "$dir/repo"
 	printf '# Sandbox repository\n' >"$dir/repo/README.md"
+	printf '.env\n' >>"$dir/repo/.git/info/exclude"
 	git -C "$dir/repo" add README.md
 	git -C "$dir/repo" -c user.name="Alondra Sandbox" -c user.email=sandbox@alondra.invalid -c commit.gpgsign=false commit -q -m "Start the sandbox repository"
 	git -C "$dir/repo" remote add origin "$dir/remote.git"

@@ -117,7 +117,7 @@ public struct CompositionSheet: View {
     }
 
     private var placeholder: String {
-        if case .text(let placeholder, _, _) = composition.action.input, let placeholder { return placeholder }
+        if case .text(let placeholder, _, _, _) = composition.action.input, let placeholder { return placeholder }
         return String(localized: "Write your answer")
     }
 

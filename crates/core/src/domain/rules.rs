@@ -157,6 +157,14 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
         (Some(v), _) if v.trim().is_empty() => return refuse("invalid_input", "card.verify", "Say how you will check the user did it"),
         _ => {}
     }
+    if let Some(destination) = &card.secret_destination {
+        if card.kind != CardKind::Provide || source != Source::Question {
+            return refuse("invalid_input", "card.secret_destination", "Only request_input with kind secret says where the secret goes");
+        }
+        if let Some(problem) = destination.shape_problem() {
+            return refuse("invalid_input", "card.secret_destination", problem);
+        }
+    }
     if let Some(recommended) = &card.recommended
         && !options.iter().any(|o| &o.id == recommended)
     {
@@ -679,6 +687,9 @@ impl DomainState {
             _ => &[],
         };
         validate_card(card, options, source, blocking)?;
+        if card.secret_destination.is_some() && !matches!((scope, actor), (Scope::Task { .. }, Actor::Agent { .. })) {
+            return refuse("invalid_input", "card.secret_destination", "Only a task's node asks for a secret written to a file of its repository");
+        }
         let author = match source {
             Source::Hold => Author::Agent { agent_id: match actor {
                 Actor::Agent { agent_id } => agent_id.clone(),
@@ -3645,6 +3656,7 @@ impl DomainState {
                     return fail("withdrawn", "Its author withdrew this question");
                 }
                 validate_answer(options, option_id, inputs, attachments)?;
+                secret_answer_guard(&i.card, option_id, inputs, attachments)?;
                 self.mcp_answer_guard(&i, option_id)?;
                 validate_attachments(attachments)?;
                 if let (Some(Hold::Plan), Scope::Task { task_id }) = (self.holds.get(interaction_id), &i.scope)
@@ -5313,6 +5325,17 @@ fn validate_options(options: &[QuestionOption]) -> Result<()> {
 }
 /// An option is a button: its answer carries at most the words the user wrote on the card. With no
 /// option, the answer is those words or the files the user attached.
+/// A card whose secret goes to a file is answered only with where it was written, or with one of
+/// its options: its value never enters the domain.
+fn secret_answer_guard(card: &CardSpec, option: &str, inputs: &BTreeMap<String, InputValue>, attachments: &[AttachmentRef]) -> Result<()> {
+    let Some(destination) = &card.secret_destination else { return Ok(()) };
+    let written = destination.written();
+    let only_written = inputs.values().all(|value| matches!(value, InputValue::Text(text) if *text == written));
+    if !attachments.is_empty() || !only_written || (option.is_empty() && inputs.is_empty()) {
+        return refuse("invalid_input", "inputs", &format!("Alondra writes the secret to {} and answers with where it went: the value never goes in an answer", destination.file));
+    }
+    Ok(())
+}
 fn validate_answer(
     options: &[QuestionOption],
     option: &str,

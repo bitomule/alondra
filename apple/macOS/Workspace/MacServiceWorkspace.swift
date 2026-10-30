@@ -540,7 +540,7 @@ private struct MacClarifyForm: View {
     }
 
     private var placeholder: String {
-        if case let .text(placeholder, _, _) = action.input, let placeholder { return placeholder }
+        if case let .text(placeholder, _, _, _) = action.input, let placeholder { return placeholder }
         return String(localized: "What should it clarify?")
     }
 

@@ -882,6 +882,9 @@ pub struct CardSpec {
     /// session. Only the daemon sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept_at: Option<String>,
+    /// Where the secret a Provide card asks for is written: the answer then only says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_destination: Option<crate::secret_destination::SecretDestination>,
 }
 /// A place that holds one open card at a time: a new card in it replaces the open one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -974,6 +977,7 @@ impl CardSpec {
             allow_for_task: None,
             plan: None,
             kept_at: None,
+            secret_destination: None,
         }
     }
     pub fn plan(mut self, plan: impl Into<String>) -> Self {

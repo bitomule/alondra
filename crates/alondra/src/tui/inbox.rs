@@ -442,7 +442,7 @@ impl App {
             return Flow::Go;
         }
         match input {
-            alondra_core::views::Input::Text { required, .. } => {
+            alondra_core::views::Input::Text { required, secret, .. } => {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
@@ -453,6 +453,7 @@ impl App {
                         allow_attachments: action.attachments,
                         acting: Some(acting.clone()),
                         review: None,
+                        secret: *secret,
                     },
                     "",
                 );

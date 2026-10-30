@@ -225,6 +225,16 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    func test_secretCard_saysWhereTheValueGoes() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-secret")))
+        assertDetail(store)
+    }
+
+    func test_secretCard_saysWhereTheValueGoes_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-secret-es"))))
+        assertDetail(store, language: .spanish)
+    }
+
     func test_cardWithItsDocuments() throws {
         assertDetail(proposedPlan(try Fixtures.unblocked(try Fixtures.document("card-documents"))))
     }

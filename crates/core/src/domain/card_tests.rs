@@ -1340,3 +1340,27 @@ fn a_node_never_asks_whether_to_stop_for_usage() {
     ok(&mut s, agent(), ask("u2", "t", false, decide("Should I wait for the token refresh fix to land?")));
     ok(&mut s, agent(), ask("u3", "t", false, decide("Memory usage is at 95%: wait before building?")));
 }
+
+#[test]
+fn a_secret_card_is_answered_only_with_where_its_value_was_written() {
+    let mut s = fixture();
+    let destination = crate::secret_destination::SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
+    let card = CardSpec { secret_destination: Some(destination.clone()), ..CardSpec::new(CardKind::Provide, "Send the Stripe key").why("The build needs it") };
+    let mut outside = card.clone();
+    outside.secret_destination = Some(crate::secret_destination::SecretDestination { file: "../.env".into(), variable: "STRIPE_KEY".into() });
+    assert_eq!(refused(&mut s, agent(), ask("outside", "t", false, outside)), ("invalid_input".into(), Some("card.secret_destination".into())));
+    let decide_with_secret = CardSpec { secret_destination: Some(destination.clone()), ..decide("Pick a name") };
+    assert_eq!(refused(&mut s, agent(), ask("decide", "t", false, decide_with_secret)).1, Some("card.secret_destination".into()));
+    let skip = vec![option("skip", "I can't provide it")];
+    let ask_secret = |id: &str| Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope: scope("t"), recipient: Recipient::User,
+        body: "Send the Stripe key".into(), blocking: false, options: skip.clone(), card: card.clone() };
+    ok(&mut s, agent(), ask_secret("secret"));
+    let typed = |text: &str| Command::AnswerQuestion { attachments: vec![], interaction_id: "secret".into(), option_id: String::new(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(text.into()))]) };
+    assert_eq!(refused(&mut s, user(), typed("sk_live_123")), ("invalid_input".into(), Some("inputs".into())));
+    ok(&mut s, user(), typed(&destination.written()));
+    let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&"secret".into()].payload else { panic!("unanswered") };
+    assert_eq!(answer.inputs[ANSWER_TEXT], InputValue::Text("STRIPE_KEY written to .env".into()));
+    ok(&mut s, agent(), ask_secret("again"));
+    ok(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "again".into(), option_id: "skip".into(), inputs: BTreeMap::new() });
+}

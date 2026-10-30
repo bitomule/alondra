@@ -834,6 +834,21 @@ fn r_replies_to_the_node_with_a_text_box() {
 }
 
 #[test]
+fn a_secret_card_names_its_file_and_its_value_is_typed_hidden() {
+    let mut app = card_screen(fixture_view("card-secret-es-tui.json"), crate::i18n::Lang::Es);
+    let screen = rendered(&mut app, 120, 34);
+    dump("secret card", &screen);
+    assert!(screen.contains(".env") && screen.contains("STRIPE_KEY"), "{screen}");
+    press(&mut app, KeyCode::Char('r'));
+    assert!(matches!(app.composer.as_ref().map(|composer| &composer.target), Some(Target::ViewAction { secret: true, .. })));
+    typed(&mut app, "sk_test_4eC39HqLyjWDarjtT1zdp7dc");
+    let screen = rendered(&mut app, 120, 34);
+    dump("secret composer", &screen);
+    assert!(!screen.contains("sk_test_4eC39HqLyjWDarjtT1zdp7dc") && screen.contains("••••••••"), "{screen}");
+    assert!(app.to_restore().composer.is_none(), "a secret is never kept for the next process");
+}
+
+#[test]
 fn clarify_is_a_reason_picker_then_an_optional_text() {
     let mut app = english(fixture_view("card-question.json"));
     press(&mut app, KeyCode::Char('m'));

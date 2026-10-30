@@ -20,9 +20,14 @@ struct CardComposer: View {
             if action.attachments {
                 AttachButton(store: store.scope(state: \.attachments, action: \.attachments)).padding(.leading, 6).padding(.bottom, 4)
             }
-            TextField(action.replyPlaceholder, text: Binding(
-                get: { store.reply }, set: { store.send(.replyChanged($0)) }
-            ), axis: .vertical)
+            let reply = Binding(get: { store.reply }, set: { store.send(.replyChanged($0)) })
+            Group {
+                if action.repliesSecret {
+                    SecureField(action.replyPlaceholder, text: reply).textContentType(.password)
+                } else {
+                    TextField(action.replyPlaceholder, text: reply, axis: .vertical)
+                }
+            }
                 .lineLimit(1...5).focused(focus)
                 .padding(.leading, 16).padding(.vertical, 12)
                 .accessibilityIdentifier("triage.reply.\(cardID)")

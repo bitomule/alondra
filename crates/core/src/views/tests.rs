@@ -8844,6 +8844,50 @@ fn an_outcome_card_names_its_request_above_and_not_in_its_headline() {
     ]);
 }
 
+/// A node asks for the Stripe key: the card says which file it goes to and its field types it hidden,
+/// with no attachments.
+#[test]
+fn a_secret_card_says_where_the_value_goes_and_types_it_hidden() {
+    use crate::domain::{Actor, CardKind, CardSpec, Command, CommandEnvelope, LaunchPlan, QuestionOption, Recipient, Scope};
+    let mut state = DomainState::new("epoch");
+    let mut run = |state: &mut DomainState, actor: Actor, command: Command| {
+        let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
+            command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command };
+        state.execute(&actor, &envelope).unwrap();
+    };
+    run(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "shop/payments".into(), at: 0 });
+    run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r-1".into(),
+        body: "Run the payments test against Stripe".into(), auto_merge: false, maintenance: false, message: false });
+    run(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t-1".into(), request_id: "r-1".into(),
+        title: "Run the payments test against Stripe".into(), agent_id: Some("a-1".into()), review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("shop/payments", "/tmp/shop")) });
+    let destination = crate::secret_destination::SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
+    run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q-key".into(),
+        scope: Scope::Task { task_id: "t-1".into() }, recipient: Recipient::User, body: "Send the Stripe test key".into(), blocking: false,
+        options: vec![QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
+        card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe test key").why("The payments test calls Stripe with it") } });
+    let live = LiveSnapshot::default();
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "card-secret.json", include_str!("../../../../fixtures/views/cards/card-secret.json")),
+        (Client::Ios, Lang::Es, "card-secret-es.json", include_str!("../../../../fixtures/views/cards/card-secret-es.json")),
+        (Client::Mac, Lang::En, "card-secret-mac.json", include_str!("../../../../fixtures/views/cards/card-secret-mac.json")),
+        (Client::Mac, Lang::Es, "card-secret-es-mac.json", include_str!("../../../../fixtures/views/cards/card-secret-es-mac.json")),
+        (Client::Tui, Lang::Es, "card-secret-es-tui.json", include_str!("../../../../fixtures/views/cards/card-secret-es-tui.json")),
+    ] {
+        let actual = render(&state, &live, client, lang, "card:q-key", "2026-10-15T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+    let view = render(&state, &live, Client::Ios, Lang::Es, "card:q-key", "");
+    let [Item::Card(card)] = view.sections[0].items.as_slice() else { panic!("{:?}", view.sections[0]) };
+    let reply = Action::from(card.reply.clone().expect("the card is answered by writing"));
+    assert_eq!(reply.input, Input::Text { placeholder: "Valor de STRIPE_KEY…".into(), required: true, multiline: false, secret: true });
+    assert!(!reply.attachments, "a secret never goes as a file");
+    assert_eq!(card.content_row.as_ref().map(|row| row.summary.as_str()), Some("STRIPE_KEY en .env, nunca en el chat"));
+    let secret = view.sections.iter().find(|section| section.id == "secret").expect("a section says where it goes");
+    let [Item::Facts(facts)] = secret.items.as_slice() else { panic!("{:?}", secret.items) };
+    assert_eq!(facts.items.iter().map(|fact| fact.value.as_str()).collect::<Vec<_>>(), ["`.env`", "`STRIPE_KEY`"]);
+}
+
 fn with_brought_images(live: &mut LiveSnapshot, body: &str) {
     use crate::views::pr_images::{ImageProblem, PrImage, Shown};
     let images = crate::markdown::images::images(body)

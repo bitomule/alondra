@@ -65,7 +65,7 @@ public struct ActionInputView: View {
     /// tab and the node composer do.
     private func embedsAttachments(_ input: AlondraContract.Input) -> Bool {
         #if os(iOS)
-        if case .text(_, _, true) = input { return true }
+        if case .text(_, _, true, _) = input { return true }
         #endif
         return false
     }
@@ -107,8 +107,11 @@ public struct ActionInputView: View {
     @ViewBuilder private func input(_ input: AlondraContract.Input, attaches: Bool) -> some View {
         switch input {
         case .none: EmptyView()
-        case let .text(placeholder, _, multiline):
-            if multiline {
+        case let .text(placeholder, _, multiline, secret):
+            if secret {
+                SecureField(placeholder ?? "", text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
+                    .textFieldStyle(.roundedBorder)
+            } else if multiline {
                 VStack(alignment: .leading, spacing: 12) {
                     MultilineTextField(placeholder ?? store.action?.label ?? "",
                                        text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }),

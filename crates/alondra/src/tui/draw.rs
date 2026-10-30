@@ -1583,6 +1583,10 @@ fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
 fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option<Rect> {
     let c = app.composer.as_ref()?;
     let mut title = match &c.target {
+        Target::ViewAction { label, secret: true, .. } => {
+            let l = md::one_line(label);
+            trf!("{l} · the value stays hidden", "{l} · el valor no se muestra")
+        }
         Target::ViewAction { label, .. } => md::one_line(label),
         Target::Message {
             name,
@@ -1690,7 +1694,10 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
     if let Some(o) = c.form.as_ref().filter(|_| form_h > 0) {
         f.render_widget(Paragraph::new(form_lines(o)), form);
     }
-    let (lines, (row, col)) = c.input.layout(text.width as usize);
+    let (mut lines, (row, col)) = c.input.layout(text.width as usize);
+    if matches!(c.target, Target::ViewAction { secret: true, .. }) {
+        lines = lines.iter().map(|line| "•".repeat(line.chars().count())).collect();
+    }
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
     if c.input.text().is_empty() {
         f.render_widget(

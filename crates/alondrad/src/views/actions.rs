@@ -1136,7 +1136,7 @@ fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Valu
 fn execute_value(
     domain: &crate::domain_runtime::DomainRuntime,
     device: &str,
-    request: ActionRequest,
+    mut request: ActionRequest,
     attachments: &[alondra_core::domain::AttachmentRef],
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
@@ -1162,6 +1162,15 @@ fn execute_value(
     };
     if state.data_epoch.0 != request.data_epoch {
         return Ok(no_longer_available(lang, "This item is no longer available"));
+    }
+    if let Some(interaction) = secret_card(&state, &action, &request) {
+        if !attachments.is_empty() {
+            return Ok(rejected_field(lang, "attachments", "Write the secret: it cannot go as a file"));
+        }
+        match crate::secret_files::write(&state, interaction, request.input.text.as_deref().unwrap_or_default()) {
+            Ok(written) => request.input.text = Some(written),
+            Err(problem) => return Ok(rejected_field(lang, "text", &format!("{}: {problem}", localize(lang, "Alondra could not save the secret")))),
+        }
     }
     let (command, stamp) = match map_domain_action(&state, &action, &request, attachments, lang) {
         Ok(mapped) => mapped,
@@ -1193,6 +1202,19 @@ fn execute_value(
     };
     let response = json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":outcome.revision});
     Ok(response)
+}
+
+/// The open card whose secret this action's text is: the text goes to the card's file, never to
+/// the domain.
+fn secret_card<'a>(state: &'a alondra_core::domain::DomainState, action: &ActionId, request: &ActionRequest) -> Option<&'a alondra_core::domain::Interaction> {
+    let typed = match action.verb {
+        Verb::Reply => true,
+        Verb::Ans => request.option_id.as_deref().is_none_or(str::is_empty),
+        _ => false,
+    };
+    let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+    let open = matches!(&interaction.payload, InteractionPayload::Question { answer: None, .. });
+    (typed && open && interaction.card.secret_destination.is_some()).then_some(interaction)
 }
 
 /// The command an action asks for, or why Alondra will not do it. Every action is judged against
@@ -1976,6 +1998,8 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
     if lang != Lang::Es { return message; }
     match message {
         "invalid action_id" => "Acción no válida",
+        "Alondra could not save the secret" => "Alondra no pudo guardar el secreto",
+        "Write the secret: it cannot go as a file" => "Escribe el secreto: no puede ir como archivo",
         "Update Alondra" => "Actualiza Alondra",
         "invalid action request" => "Solicitud de acción no válida",
         "Alondra has too many pending actions. Try again." => "Alondra tiene demasiadas acciones pendientes. Vuelve a intentarlo.",
@@ -3699,6 +3723,94 @@ mod tests {
                 assert!(told.contains("(card decide)"), "the orchestrator knows which card: {told}");
             }
         }
+    }
+
+    fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+        let mut found = vec![];
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                found.extend(files_holding(&path, needle));
+            } else if std::fs::read(&path).unwrap_or_default().windows(needle.len()).any(|window| window == needle) {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    /// David types the Stripe key on the node's card: it lands in the ignored `.env` of the
+    /// worktree and of the main checkout, and the domain, its database and the node only learn
+    /// where it went.
+    #[tokio::test]
+    async fn a_secret_goes_to_its_file_and_never_to_the_domain_or_the_node() {
+        use alondra_core::domain::{CardKind, CardSpec, QuestionOption, Recipient, Scope, WorktreeOrigin};
+        use alondra_core::secret_destination::SecretDestination;
+        const SECRET: &str = "sk_live_never_in_the_domain_42";
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let root = crate::test_support::Directory::new();
+        let worktree = crate::worktree::testing::task_worktree(&root, "secret");
+        let main = root.join("repo");
+        std::fs::write(main.join(".git/info/exclude"), ".env\n").unwrap();
+        apply_seed_command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
+            task_id: "task".into(), path: worktree.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
+        let destination = SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
+        let not_ignored = SecretDestination { file: "config.env".into(), variable: "STRIPE_KEY".into() };
+        let state = domain.state().unwrap();
+        let refused = crate::secret_files::ask_refusal(&state, "agent-a", &"task".into(), &not_ignored).expect("a file git keeps is refused");
+        assert!(refused.message.contains("does not ignore"), "{}", refused.message);
+        assert!(crate::secret_files::ask_refusal(&state, "agent-a", &"task".into(), &destination).is_none());
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
+            attachments: vec![], interaction_id: "secret".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
+            body: "Send the Stripe key".into(), blocking: false,
+            options: vec![QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
+            card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe key").why("The payments test needs it") },
+        });
+        let revision = domain.state().unwrap().interactions[&"secret".into()].revision;
+        let reply = ActionId::new(Verb::Reply, "secret", revision, None).unwrap();
+        let applied = act(&home, &domain, &client, FIRST, reply, None, Some(SECRET)).await;
+        assert_eq!(applied["outcome"], "applied", "{applied}");
+        assert!(!applied.to_string().contains(SECRET), "{applied}");
+        for checkout in [&worktree, &main] {
+            let env = checkout.join(".env");
+            assert_eq!(std::fs::read_to_string(&env).unwrap(), format!("STRIPE_KEY={SECRET}\n"), "{}", env.display());
+            assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&env).unwrap().permissions()) & 0o777, 0o600);
+        }
+        let state = domain.state().unwrap();
+        let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"secret".into()].payload else { panic!("unanswered") };
+        assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text("STRIPE_KEY written to .env".into()));
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("secret")).expect("the node is told");
+        let told = crate::domain_transport::render(&state, &message);
+        assert!(told.ends_with("STRIPE_KEY written to .env") && !told.contains(SECRET), "{told}");
+        assert_eq!(files_holding(&home.0, SECRET.as_bytes()), Vec::<std::path::PathBuf>::new(), "the value is in no file of Alondra's");
+    }
+
+    /// The file stopped being ignored after the card was asked: nothing is written and the card
+    /// stays open.
+    #[tokio::test]
+    async fn a_secret_whose_file_git_no_longer_ignores_is_refused_and_written_nowhere() {
+        use alondra_core::domain::{CardKind, CardSpec, Recipient, Scope, WorktreeOrigin};
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let root = crate::test_support::Directory::new();
+        let worktree = crate::worktree::testing::task_worktree(&root, "secret");
+        apply_seed_command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
+            task_id: "task".into(), path: worktree.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
+        let destination = alondra_core::secret_destination::SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
+            attachments: vec![], interaction_id: "secret".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
+            body: "Send the Stripe key".into(), blocking: false,
+            options: vec![alondra_core::domain::QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
+            card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe key").why("The payments test needs it") },
+        });
+        let revision = domain.state().unwrap().interactions[&"secret".into()].revision;
+        let reply = ActionId::new(Verb::Reply, "secret", revision, None).unwrap();
+        let refused = act(&home, &domain, &client, FIRST, reply, None, Some("sk_live_1")).await;
+        assert_eq!((refused["outcome"].as_str(), refused["field"].as_str()), (Some("rejected"), Some("text")), "{refused}");
+        assert!(!worktree.join(".env").exists() && !root.join("repo/.env").exists());
+        let state = domain.state().unwrap();
+        assert!(matches!(&state.interactions[&"secret".into()].payload, InteractionPayload::Question { answer: None, .. }));
     }
 
     #[tokio::test]

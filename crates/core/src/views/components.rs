@@ -371,7 +371,7 @@ pub struct Card {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentRow {
-    /// `plan`, `document`, `diff`, `command`, `report`, `steps`, `options`, `diagnosis` or `attachments`.
+    /// `plan`, `document`, `diff`, `command`, `report`, `steps`, `options`, `diagnosis`, `attachments` or `secret`.
     pub kind: String,
     pub icon: Icon,
     pub label: String,
@@ -671,6 +671,9 @@ pub enum Input {
         placeholder: String,
         required: bool,
         multiline: bool,
+        /// A secret: typed hidden, never shown back or kept in a draft.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
     },
     /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
     #[serde(other, skip_serializing)]

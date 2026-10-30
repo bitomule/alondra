@@ -482,6 +482,9 @@ pub enum Target {
         /// The reader whose comments this sends.
         #[serde(default)]
         review: Option<Key>,
+        /// A secret: drawn hidden, and never kept for the next process.
+        #[serde(default)]
+        secret: bool,
     },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
     Message {
@@ -3469,6 +3472,7 @@ impl App {
                     allow_attachments: action.attachments,
                     acting: Some(acting),
                     review: Some(key.clone()),
+                    secret: false,
                 },
                 &text,
             );

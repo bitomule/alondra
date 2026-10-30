@@ -226,7 +226,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     add(
         "request_input",
         format!("Ask {user} for something only they can provide (a Provide card): a file, a piece of text or a secret. {user} writes it or attaches it on the card, and it reaches you as their answer; the card's only button is «I can't provide it». Use ask instead when the answer is one of a few choices."),
-        json!({"need":need_schema(),"why":why_schema(),"kind":{"type":"string","enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        json!({"need":need_schema(),"why":why_schema(),"kind":{"type":"string","enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"destination":{"type":"object","properties":{"file":{"type":"string","description":"A git-ignored file, relative to the repository root, like .env"},"variable":{"type":"string","description":"The variable name, like STRIPE_KEY"}},"required":["file","variable"],"description":"Required for kind secret: Alondra writes VARIABLE=value to this file in your worktree and the main checkout, and you only get «VARIABLE written to file»"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "why", "kind", "blocking"],
     );
     if node {
@@ -1302,8 +1302,15 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
             command.entry("options").or_insert_with(|| json!([choice("done", "Done"), choice("cannot", "I can't do it")]));
         }
         "request_input" => {
-            if !matches!(take_text(command, "kind").as_str(), "file" | "text" | "secret") {
+            let kind = take_text(command, "kind");
+            if !matches!(kind.as_str(), "file" | "text" | "secret") {
                 anyhow::bail!("invalid_input: kind must be file, text or secret");
+            }
+            match (kind.as_str(), command.remove("destination").filter(|v| !v.is_null())) {
+                ("secret", Some(destination)) => { card.insert("secret_destination".into(), destination); }
+                ("secret", None) => anyhow::bail!("invalid_input: destination is required for kind secret: the git-ignored file of the repository (like .env) and the variable name (like STRIPE_KEY) Alondra writes the value to"),
+                (_, Some(_)) => anyhow::bail!("invalid_input: destination goes only with kind secret"),
+                _ => {}
             }
             command.insert("options".into(), json!([choice("skip", "I can't provide it")]));
         }
@@ -2697,7 +2704,7 @@ mod card_tool_tests {
         let cases = [
             ("ask", with(json!({"need":"Pick a name","why":"The release needs one","options":options(),"blocking":true})), "ask_question", "decide"),
             ("request_action", with(json!({"need":"Rotate the key","why":"It leaked","verify":"I call the API","blocking":true})), "request_action", "do"),
-            ("request_input", with(json!({"need":"Send the API key","why":"The build needs it","kind":"secret","blocking":true})), "ask_question", "provide"),
+            ("request_input", with(json!({"need":"Send the API key","why":"The build needs it","kind":"secret","destination":{"file":".env","variable":"API_KEY"},"blocking":true})), "ask_question", "provide"),
             ("request_test", with(json!({"need":"Try the login","where":"Build 41","what":"Sign in twice"})), "ask_question", "test"),
             ("publish_information", with(json!({"need":"The build is green","body":"All 400 tests pass"})), "publish_information", "know"),
             ("present_result", json!({"task_id":"t-1","interaction_id":"card-1","need":"Review the parser","targets":[{"kind":"text","text":"done"}],"is_final":true,"content":{"kind":"report","body":"Done"}}), "present_result", "review"),
@@ -2882,6 +2889,9 @@ mod card_tool_tests {
         assert_eq!(test["card"]["content"]["body"], "Where: Build 41\nWhat to look at: Sign in");
         let input = built("request_input", with(json!({"need":"Send the key","why":"Needed","kind":"file","blocking":true})));
         assert_eq!(ids(&input), ["skip"], "the value comes as the answer written on the card");
+        assert!(input["card"].get("secret_destination").is_none());
+        let secret = built("request_input", with(json!({"need":"Send the key","why":"Needed","kind":"secret","blocking":true,"destination":{"file":".env","variable":"STRIPE_KEY"}})));
+        assert_eq!(secret["card"]["secret_destination"], json!({"file":".env","variable":"STRIPE_KEY"}));
         let action = built("request_action", with(json!({"need":"Rotate","why":"Leaked","verify":"I call it","blocking":false,"steps":["Open the console","Rotate it"]})));
         assert_eq!(ids(&action), ["done", "cannot"]);
         assert_eq!(action["card"]["content"], json!({"kind":"steps","body":"1. Open the console\n2. Rotate it"}));
@@ -2964,6 +2974,8 @@ mod card_tool_tests {
     fn arguments_that_cannot_make_a_card_are_refused_before_anything_is_sent() {
         for (name, args, said) in [
             ("request_input", with(json!({"need":"n","why":"w","kind":"photo","blocking":true})), "kind must be file, text or secret"),
+            ("request_input", with(json!({"need":"n","why":"w","kind":"secret","blocking":true})), "destination is required for kind secret"),
+            ("request_input", with(json!({"need":"n","why":"w","kind":"text","blocking":true,"destination":{"file":".env","variable":"K"}})), "destination goes only with kind secret"),
             ("request_test", with(json!({"need":"n"})), "where and what are required"),
             ("ask", with(json!({"need":"n","why":"w","options":options(),"blocking":false,"surprise":1})), "surprise"),
             ("ask", json!({"need":"n"}), "interaction_id"),

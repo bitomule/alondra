@@ -410,6 +410,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 900), spanish: true, alignTop: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_secret() throws {
+        let store = try presentation(detail: "card-secret-mac", spanish: false)
+        assertWindow(size: CGSize(width: 900, height: 700), spanish: false, alignTop: true) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_secret_spanish() throws {
+        let store = try presentation(detail: "card-secret-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 700), spanish: true, alignTop: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_reportAlone_spanish() throws {
         let store = try presentation(detail: "card-delivery-report-es-mac", spanish: true)
         assertWindow(size: CGSize(width: 900, height: 820), spanish: true, alignTop: true) { MacServiceDetail(presentation: store) }

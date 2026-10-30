@@ -130,7 +130,11 @@ Pick the tool by what you need:
   a label: `recommended` is the mark. A question's `why` and the card's `content` are only context
   for answering (why each option matters), never more questions or options.
 - `request_input`: a file, text or secret only the user has (`kind`: file, text or secret). The
-  user writes or attaches it on the card and it comes back as their answer.
+  user writes or attaches it on the card and it comes back as their answer. A secret (a key, a
+  token, a password) never comes back: give `destination`, a git-ignored file of the repository
+  (`.env`) and the variable (`STRIPE_KEY`). Alondra writes `STRIPE_KEY=value` to that file in your
+  worktree and in the main checkout, and you only get «STRIPE_KEY written to .env»: read it from
+  there. A file git does not ignore, or one outside the repository, is refused.
 - `request_action`: something the user does outside Alondra (get a key, check a console), with
   the `steps` in order and `verify`, how you will check it was done. Their answer is typed into
   this session.

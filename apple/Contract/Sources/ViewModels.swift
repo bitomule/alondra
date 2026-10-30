@@ -500,13 +500,13 @@ public struct Field: Codable, Equatable, Sendable {
 }
 
 public enum Input: Codable, Equatable, Sendable {
-    case none, text(placeholder: String?, required: Bool, multiline: Bool)
-    private enum Keys: String, CodingKey { case kind, placeholder, required, multiline }
+    case none, text(placeholder: String?, required: Bool, multiline: Bool, secret: Bool = false)
+    private enum Keys: String, CodingKey { case kind, placeholder, required, multiline, secret }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .kind) {
         case "none": self = .none
-        case "text": self = .text(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder), required: try c.decode(Bool.self, forKey: .required), multiline: try c.decode(Bool.self, forKey: .multiline))
+        case "text": self = .text(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder), required: try c.decode(Bool.self, forKey: .required), multiline: try c.decode(Bool.self, forKey: .multiline), secret: try c.decodeIfPresent(Bool.self, forKey: .secret) ?? false)
         case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
@@ -514,7 +514,7 @@ public enum Input: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: Keys.self)
         switch self {
         case .none: try c.encode("none", forKey: .kind)
-        case let .text(placeholder, required, multiline): try c.encode("text", forKey: .kind); try c.encodeIfPresent(placeholder, forKey: .placeholder); try c.encode(required, forKey: .required); try c.encode(multiline, forKey: .multiline)
+        case let .text(placeholder, required, multiline, secret): try c.encode("text", forKey: .kind); try c.encodeIfPresent(placeholder, forKey: .placeholder); try c.encode(required, forKey: .required); try c.encode(multiline, forKey: .multiline); if secret { try c.encode(secret, forKey: .secret) }
         }
     }
 }

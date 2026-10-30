@@ -248,7 +248,7 @@ impl App {
             agent_sel: self.agent_sel.clone(),
             agent_scroll: self.agent_scroll,
             agent_detail_scroll: self.agent_detail_scroll,
-            composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. } | super::Target::AccountPosition))
+            composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. } | super::Target::AccountPosition | super::Target::ViewAction { secret: true, .. }))
                 .map(|c| OpenComposer { text: c.input.text(), chips: c.chips, target: c.target }),
         }
     }

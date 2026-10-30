@@ -109,6 +109,13 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
             }
         }
     }
+    if let Some(destination) = &found.card.secret_destination {
+        let fact = |label: &str, value: &str| Fact { label: label.into(), value: format!("`{value}`"), tone: None, link: None };
+        sections.push(super::common::section("secret", Some(t!(context.lang, "Where the secret goes", "Dónde se guarda el secreto").into()), vec![Item::Facts(Facts { items: vec![
+            fact(t!(context.lang, "File", "Fichero"), &destination.file),
+            fact(t!(context.lang, "Variable", "Variable"), &destination.variable),
+        ] })]));
+    }
     if let Some(documents) = documents_section(item, context) {
         sections.push(documents);
     }
@@ -626,6 +633,16 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
     let lang = context.lang;
     let domain = context.domain;
     let interaction = interaction?;
+    if let Some(destination) = &interaction.card.secret_destination {
+        return Some(ContentRow {
+            kind: "secret".into(),
+            icon: Icon::Document,
+            label: t!(lang, "Saved to", "Se guarda en").into(),
+            summary: tf!(lang, "{variable} in {file}, never in the chat", "{variable} en {file}, nunca en el chat",
+                variable = destination.variable, file = destination.file),
+            more_count: 0,
+        });
+    }
     let attachments = interaction.attachments.len();
     let live = pr_target(interaction, domain)
         .and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
@@ -754,7 +771,7 @@ fn with_availability(mut action: Action, available: Option<&AvailableAction>, la
 }
 
 fn text_input(placeholder: &str, required: bool) -> Input {
-    Input::Text { placeholder: placeholder.into(), required, multiline: true }
+    Input::Text { placeholder: placeholder.into(), required, multiline: true, secret: false }
 }
 
 /// The buttons the card shows (the rest go behind "More"), then the ones that always go there.
@@ -1764,6 +1781,13 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
     let mut action = button(id.to_string(), t!(lang, "Reply", "Responder"), Role::Neutral);
     action.input = text_input(&placeholder, item.card.kind != CardKind::Provide);
     action.attachments = true;
+    if let Some(destination) = interaction.card.secret_destination.as_ref().filter(|_| answers && item.card.kind == CardKind::Provide) {
+        action.input = Input::Text {
+            placeholder: tf!(lang, "Value of {variable}…", "Valor de {variable}…", variable = destination.variable),
+            required: true, multiline: false, secret: true,
+        };
+        action.attachments = false;
+    }
     action.stamp = Some(if answers { t!(lang, "You answered", "Respondiste") } else { t!(lang, "Sent", "Enviado") }.into());
     action.key = (context.client != Client::Ios).then(|| "r".into());
     action.enabled = !interaction.withdrawn;

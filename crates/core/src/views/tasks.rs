@@ -1227,6 +1227,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     placeholder: t!(context.lang, "Write to this task's node…", "Escribe al nodo de esta tarea…").into(),
                     required: true,
                     multiline: true,
+                    secret: false,
                 };
                 message.attachments = true;
                 actions.push(message);

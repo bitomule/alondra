@@ -66,7 +66,7 @@ public struct TriageCardFeature: Sendable {
         public var id: String { action.id ?? action.label }
         public var needsReason: Bool { !action.options.isEmpty }
         public var requiresNote: Bool {
-            if case .text(_, let required, _) = action.input { return required }
+            if case .text(_, let required, _, _) = action.input { return required }
             return false
         }
         public var canSend: Bool {
