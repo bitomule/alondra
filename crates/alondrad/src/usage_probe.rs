@@ -4,7 +4,7 @@
 //! account it signed in with and answers the usage its `/usage` command shows, and no turn runs.
 //! It runs when the daemon starts, every 15 minutes for an account nothing else measured meanwhile,
 //! and right after Claude refused work for running out. A probe that fails keeps the last good
-//! reading, which says how old it is.
+//! reading, which says how old it is. A stale reading retries at once, then backs off up to 30 seconds.
 use crate::locks::Poisonable as _;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -298,51 +298,103 @@ pub(crate) fn due(accounts: &[AccountId], usage: &[AccountUsage], probed: &HashM
     (ready, next)
 }
 
+#[derive(Default)]
+struct ProbeSchedule {
+    probed: HashMap<AccountId, Millis>,
+    retries: HashMap<AccountId, (crate::native_probe::Backoff, Millis)>,
+}
+
+impl ProbeSchedule {
+    fn due(&self, accounts: &[AccountId], usage: &[AccountUsage], now: Millis) -> (Vec<AccountId>, Option<Millis>) {
+        let ordinary: Vec<_> = accounts.iter().filter(|account| !self.retries.contains_key(*account)).cloned().collect();
+        let (mut ready, mut next) = due(&ordinary, usage, &self.probed, now);
+        for account in accounts {
+            if let Some((_, at)) = self.retries.get(account) {
+                if *at <= now { ready.push(account.clone()); }
+                else { next = Some(next.map_or(*at, |next| next.min(*at))); }
+            }
+        }
+        (ready, next)
+    }
+
+    fn finished(&mut self, account: &AccountId, outcome: crate::native_probe::Outcome, now: Millis) {
+        match outcome {
+            crate::native_probe::Outcome::Stale => {
+                let (backoff, at) = self.retries.entry(account.clone()).or_default();
+                *at = now + backoff.next_delay().as_millis() as Millis;
+            }
+            crate::native_probe::Outcome::Finished => { self.retries.remove(account); }
+        }
+    }
+}
+
+async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountId) -> crate::native_probe::Outcome {
+    if !probed_accounts(domain.read().state()).iter().any(|status| status.id == *account) {
+        return crate::native_probe::Outcome::Finished;
+    }
+    let Some((backend, _)) = domain.sdk() else { return crate::native_probe::Outcome::Finished };
+    let (backend, folder) = (backend.clone(), alondra_core::accounts::folder(home, account));
+    if folder.as_ref().is_some_and(|folder| !folder.is_dir()) {
+        return crate::native_probe::Outcome::Finished;
+    }
+    let (fence, file) = match crate::accounts::probe_fence(domain, home) {
+        Ok(fence) => fence,
+        Err(why) => { log!("Could not prepare the account usage probe: {why}"); return crate::native_probe::Outcome::Finished; }
+    };
+    if !file.accounts.accounts(Provider::Claude).iter().any(|configured| configured.id == *account && configured.enabled && !matches!(configured.billing, AccountBilling::PayPerUse)) {
+        return crate::native_probe::Outcome::Finished;
+    }
+    let measured_at = now_millis();
+    match tokio::task::spawn_blocking(move || probe(&backend, folder.as_deref())).await {
+        Ok(Ok(reading)) => {
+            let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: crate::node_reports::local_day(measured_at) };
+            match crate::accounts::publish_current_probe(domain, home, fence, vec![command]) {
+                Ok(()) => crate::accounts::answered(domain),
+                Err(why) => {
+                    log!("Discarded stale native usage metadata: {why}");
+                    return crate::native_probe::Outcome::of(&why);
+                },
+            }
+        }
+        Ok(Err(why)) => log!("could not measure the usage of account {account}: {why}"),
+        Err(_) => log!("the usage probe of account {account} stopped"),
+    }
+    crate::native_probe::Outcome::Finished
+}
+
 /// Keeps every account measured, and the live view's copy and the Mac-wide pause in step with
 /// what the accounts say.
 pub(crate) async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
     let mut changes = domain.subscribe();
     let mut pauses = domain.live.usage_pause.subscribe();
-    let mut probed: HashMap<AccountId, Millis> = HashMap::new();
+    let mut schedule = ProbeSchedule::default();
     loop {
         let now = now_millis();
         follow(&domain, now);
         let read = domain.read();
         let state = read.state();
         let accounts: Vec<AccountId> = probed_accounts(state).into_iter().map(|account| account.id.clone()).collect();
-        let (mut ready, next) = due(&accounts, &state.account_usage, &probed, now);
+        let (mut ready, _) = schedule.due(&accounts, &state.account_usage, now);
         drop(read);
         // A `claude --bg` node's hook paused the Mac: measure the default account, the one they run on.
         let nodes = AccountId::default_account();
         let refused = domain.live.usage_pause.current().filter(|standing| !standing.by_user).map(|standing| standing.since);
-        if refused.is_some_and(|since| probed.get(&nodes).is_none_or(|probe| *probe < since)) && accounts.contains(&nodes) && !ready.contains(&nodes) {
+        if refused.is_some_and(|since| schedule.probed.get(&nodes).is_none_or(|probe| *probe < since)) && accounts.contains(&nodes) && !schedule.retries.contains_key(&nodes) && !ready.contains(&nodes) {
             ready.push(nodes);
         }
         for account in ready {
-            probed.insert(account.clone(), now_millis());
-            let Some((backend, _)) = domain.sdk() else { break };
-            let (backend, folder) = (backend.clone(), alondra_core::accounts::folder(&home, &account));
-            if folder.as_ref().is_some_and(|folder| !folder.is_dir()) {
-                continue;
-            }
-            let (fence, _) = match crate::accounts::probe_fence(&domain, &home) {
-                Ok(fence) => fence,
-                Err(why) => { log!("Could not prepare the account usage probe: {why}"); continue; }
-            };
-            let measured_at = now_millis();
-            match tokio::task::spawn_blocking(move || probe(&backend, folder.as_deref())).await {
-                Ok(Ok(reading)) => {
-                    let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: crate::node_reports::local_day(measured_at) };
-                    match crate::accounts::publish_probe(&domain, &home, fence, vec![command]) {
-                        Ok(()) => crate::accounts::answered(&domain),
-                        Err(why) => log!("Discarded stale native usage metadata: {why}"),
-                    }
-                }
-                Ok(Err(why)) => log!("could not measure the usage of account {account}: {why}"),
-                Err(_) => log!("the usage probe of account {account} stopped"),
-            }
+            schedule.probed.insert(account.clone(), now_millis());
+            let outcome = measure_account(&domain, &home, &account).await;
+            schedule.finished(&account, outcome, now_millis());
         }
-        let wait = next.map_or(Duration::from_millis(EVERY as u64), |at| Duration::from_millis((at - now_millis()).max(1_000) as u64));
+        let now = now_millis();
+        let read = domain.read();
+        let accounts: Vec<_> = probed_accounts(read.state()).into_iter().map(|account| account.id.clone()).collect();
+        schedule.retries.retain(|account, _| accounts.contains(account));
+        let (ready, next) = schedule.due(&accounts, &read.state().account_usage, now);
+        drop(read);
+        let wait = if !ready.is_empty() { Duration::ZERO }
+            else { next.map_or(Duration::from_millis(EVERY as u64), |at| Duration::from_millis((at - now).max(0) as u64)) };
         tokio::select! {
             changed = changes.changed() => if changed.is_err() { return },
             changed = pauses.changed() => if changed.is_err() { return },

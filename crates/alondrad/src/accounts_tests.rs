@@ -537,6 +537,92 @@ fn absent_native_workspace_never_proves_existing_session_identity() {
     assert!(report.signed_in && report.supported_authentication(), "optional identity is independent from first-node authentication");
 }
 
+#[tokio::test]
+async fn a_stale_startup_account_check_retries_and_releases_account_selection() {
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    let f = fixture();
+    let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let _hosts = crate::sdk_owner::tests::SdkLaunches::enable(&domain, &f.home);
+    let native = f._scratch.join("codex-native");
+    let original = std::fs::read_to_string(std::env::var("FIXTURE_CODEX_NATIVE").unwrap()).unwrap();
+    let options = alondra_core::options::path_in(&f.home);
+    let edit = format!("\nimport pathlib\noptions = pathlib.Path({:?})\nmarker = pathlib.Path(__file__ + '.attempts')\nif not marker.exists():\n    with options.open('a') as output: output.write('\\n# concurrent settings edit\\n')\nwith marker.open('a') as output: output.write('x')\n", options.display().to_string());
+    std::fs::write(&native, original.replacen("import json, os, sys, subprocess, threading", &format!("import json, os, sys, subprocess, threading{edit}"), 1)).unwrap();
+    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut backend = domain.sdk().unwrap().0.clone();
+    backend.provider = Provider::Codex; backend.origin = None;
+    backend.native = native.clone(); backend.native_sha256 = crate::sdk_owner::backend::digest(&native).unwrap();
+    std::fs::write(f.home.join("codex-backend.json"), serde_json::to_vec(&backend).unwrap()).unwrap();
+    let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex);
+    std::fs::write(options, config.to_toml()).unwrap();
+    begin_initial_check(&domain);
+    let attempts = std::cell::Cell::new(0);
+    crate::native_probe::retry_with(|| {
+        attempts.set(attempts.get() + 1);
+        let outcome = check_current(&domain, &f.home);
+        if attempts.get() == 1 {
+            assert_eq!(outcome, crate::native_probe::Outcome::Stale);
+            assert!(require_initial_check(&domain).is_err());
+            assert!(domain.read().state().accounts.is_empty());
+        }
+        std::future::ready(outcome)
+    }, |delay| {
+        assert_eq!(delay, Duration::ZERO);
+        std::future::ready(())
+    }).await;
+    assert_eq!(attempts.get(), 2);
+    assert!(require_initial_check(&domain).is_ok());
+    let intent = TaskSelection::automatic(ModelProfile::Implementation);
+    assert_eq!(select_for_launch(&domain, &f.home, &intent, alondra_core::now_millis()).unwrap().account, AccountKey::native(Provider::Codex));
+}
+
+#[tokio::test]
+async fn a_stale_model_catalog_retries_the_account_check_until_models_are_ready() {
+    let f = fixture();
+    let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let state = crate::sdk_owner::tests::HostRoot::new();
+    let (mut backend, _) = crate::sdk_owner::tests::fixture_backend(&f.home, &state);
+    std::fs::write(&backend.native, r#"#!/usr/bin/python3
+import json, os, pathlib, sys
+if sys.argv[1:3] == ['auth', 'status']:
+    print(json.dumps(dict(loggedIn=True, email='me@example.org', subscriptionType='max')))
+    sys.exit(0)
+for raw in sys.stdin:
+    message = json.loads(raw)
+    assert message['request']['subtype'] == 'initialize'
+    marker = pathlib.Path(os.environ['HOME']) / 'model-probed'
+    if not marker.exists():
+        with open(os.environ['STALE_MODEL_OPTIONS'], 'a') as options:
+            options.write('\n# settings changed during model read\n')
+        marker.write_text('')
+    response = dict(commands=[], models=[dict(value='opus', displayName='Opus', description='Fixture model')], output_style='default', account={})
+    print(json.dumps(dict(type='control_response', response=dict(subtype='success', request_id=message['request_id'], response=response))), flush=True)
+"#).unwrap();
+    backend.native_sha256 = crate::sdk_owner::backend::digest(&backend.native).unwrap();
+    backend.native_environment.insert("HOME".into(), f.user_home.display().to_string());
+    backend.native_environment.insert("STALE_MODEL_OPTIONS".into(), alondra_core::options::path_in(&f.home).display().to_string());
+    domain.enable_sdk(backend);
+    let mut config = AccountsConfig::fresh(); config.connect(Provider::Claude);
+    std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
+    let attempts = std::cell::Cell::new(0);
+    crate::native_probe::retry_with(|| {
+        attempts.set(attempts.get() + 1);
+        let outcome = check_current(&domain, &f.home);
+        if attempts.get() == 1 {
+            assert_eq!(outcome, crate::native_probe::Outcome::Stale);
+            assert!(domain.read().state().model_catalogs.is_empty());
+        }
+        std::future::ready(outcome)
+    }, |delay| {
+        assert_eq!(delay, Duration::ZERO);
+        std::future::ready(())
+    }).await;
+    assert_eq!(attempts.get(), 2);
+    let read = domain.read();
+    assert_eq!(read.state().model_catalogs.len(), 1);
+    assert_eq!(read.state().model_catalogs[0].models[0].model, "opus");
+}
+
 #[test]
 fn connecting_claude_on_a_fresh_install_gives_the_orchestrator_a_model_claude_advertises() {
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelCandidate, ModelProfile, RoleModelPolicy};

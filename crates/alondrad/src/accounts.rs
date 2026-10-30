@@ -369,9 +369,17 @@ pub(crate) fn publish_probe(domain: &DomainRuntime, home: &Path, fence: ProbeFen
 }
 
 fn publish_probe_with<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut crate::domain_store::OwnerTransaction<'_>) -> Result<T, crate::domain_store::StoreError>) -> Result<T, String> {
+    commit_probe(domain, home, fence, commands, finish).map_err(|why| why.to_string())
+}
+
+pub(crate) fn publish_current_probe(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>) -> Result<(), crate::domain_store::StoreError> {
+    commit_probe(domain, home, fence, commands, |_| Ok(()))
+}
+
+fn commit_probe<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut crate::domain_store::OwnerTransaction<'_>) -> Result<T, crate::domain_store::StoreError>) -> Result<T, crate::domain_store::StoreError> {
     use crate::domain_store::{Attached, StoreError};
     use alondra_core::domain::DomainError;
-    let scope = alondra_store::AuthorityScope::new(fence.state.data_epoch.clone()).map_err(|why| why.to_string())?;
+    let scope = alondra_store::AuthorityScope::new(fence.state.data_epoch.clone()).map_err(StoreError::from)?;
     domain.own(scope, |transaction| {
         let current = transaction.domain_state();
         if current.data_epoch != fence.state.data_epoch
@@ -398,7 +406,7 @@ fn publish_probe_with<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence,
             transaction.stage_command(&Actor::System, &envelope, Attached::None)?;
         }
         finish(transaction)
-    }).map(|(value, _)| value).map_err(|why| why.to_string())
+    }).map(|(value, _)| value)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -533,6 +541,15 @@ pub(crate) fn record_distribution(domain: &DomainRuntime, policy: Policy, move_w
 }
 
 pub(crate) fn refresh_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<(), String> {
+    refresh_models_current(domain, home, key).map_err(|why| why.to_string())
+}
+
+fn refresh_models_current(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<(), crate::domain_store::StoreError> {
+    let (fence, catalog) = read_models(domain, home, key).map_err(|why| crate::domain_store::StoreError::Storage(anyhow::anyhow!(why)))?;
+    publish_current_probe(domain, home, fence, vec![Command::RecordModelCatalog { catalog }])
+}
+
+fn read_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<(ProbeFence, alondra_core::model_selection::AccountModelCatalog), String> {
     let (fence, file) = probe_fence(domain, home)?;
     if !file.accounts.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled) {
         return Err("The account is not connected and enabled".into());
@@ -550,12 +567,18 @@ pub(crate) fn refresh_models(domain: &DomainRuntime, home: &Path, key: &AccountK
         }
     };
     if catalog.models.is_empty() { return Err("This account did not advertise any models".into()); }
-    publish_probe(domain, home, fence, vec![Command::RecordModelCatalog { catalog }])
+    Ok((fence, catalog))
 }
 
 /// Checks every account's sign-in and records what it saw.
 pub(crate) fn check(domain: &DomainRuntime, home: &Path) {
-    if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return; }
+    if check_current(domain, home) == crate::native_probe::Outcome::Stale {
+        domain.live.account_check.notify_one();
+    }
+}
+
+fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Outcome {
+    if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return crate::native_probe::Outcome::Finished; }
     match probe_fence(domain, home) {
         Ok((fence, file)) => {
             let prior_generations: Vec<_> = fence.state.accounts.iter().map(|account| (AccountKey::new(account.provider, account.id.clone()), account.sign_ins)).collect();
@@ -614,9 +637,9 @@ pub(crate) fn check(domain: &DomainRuntime, home: &Path) {
                     }
                 }
             }
-            if let Err(why) = publish_probe(domain, home, fence, commands) {
+            if let Err(why) = publish_current_probe(domain, home, fence, commands) {
                 log!("Discarded native account metadata: {why}");
-                return;
+                return crate::native_probe::Outcome::of(&why);
             }
             if domain.live.initial_account_check_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 domain.live.gate.poke();
@@ -628,11 +651,17 @@ pub(crate) fn check(domain: &DomainRuntime, home: &Path) {
                         || !domain.read().state().model_catalogs.iter().any(|catalog| catalog.account == key)
                 }).map(|account| AccountKey::new(account.provider, account.id.clone())).collect();
             for key in refresh {
-                if let Err(why) = refresh_models(domain, home, &key) { log!("The connected Claude account's models are not ready: {why}"); }
+                if let Err(why) = refresh_models_current(domain, home, &key) {
+                    log!("The connected Claude account's models are not ready: {why}");
+                    if crate::native_probe::Outcome::of(&why) == crate::native_probe::Outcome::Stale {
+                        return crate::native_probe::Outcome::Stale;
+                    }
+                }
             }
         }
         Err(why) => log!("accounts not checked: {why}"),
     }
+    crate::native_probe::Outcome::Finished
 }
 
 /// Claude never names its native default model, so the orchestrator starts with opus until the
@@ -806,10 +835,15 @@ pub(crate) fn recover_settings(domain: &DomainRuntime, home: &Path) -> Result<()
 /// answered or refused a sign-in while no account had a session.
 pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     loop {
-        let (checking, at) = (domain.clone(), home.clone());
-        if tokio::task::spawn_blocking(move || check(&checking, &at)).await.is_err() {
-            log!("the accounts check stopped");
-        }
+        crate::native_probe::retry(|| {
+            let (checking, at) = (domain.clone(), home.clone());
+            async move {
+                tokio::task::spawn_blocking(move || check_current(&checking, &at)).await.unwrap_or_else(|_| {
+                    log!("the accounts check stopped");
+                    crate::native_probe::Outcome::Finished
+                })
+            }
+        }).await;
         tokio::select! {
             () = tokio::time::sleep(CHECK_EVERY) => {}
             () = domain.live.account_check.notified() => {}

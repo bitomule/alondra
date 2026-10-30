@@ -66,9 +66,61 @@ fn an_account_is_probed_at_start_every_15_minutes_while_quiet_and_right_after_a_
     assert!(due(&accounts, &refused, &probed_after, NOW).0.is_empty(), "and once probed it waits again");
 }
 
+#[test]
+fn stale_usage_retries_keep_their_deadline_without_blocking_other_accounts() {
+    use crate::native_probe::Outcome;
+    let account = id("default");
+    let other = id("work");
+    let accounts = [account.clone(), other.clone()];
+    let mut schedule = ProbeSchedule::default();
+    let mut now = NOW;
+    for seconds in [0, 1, 2, 4, 8, 16, 30, 30] {
+        schedule.probed.insert(account.clone(), now);
+        schedule.finished(&account, Outcome::Stale, now);
+        let deadline = now + seconds * 1_000;
+        if seconds > 0 {
+            // Repeated domain notifications can reread the schedule, but cannot advance it.
+            for _ in 0..3 {
+                assert_eq!(schedule.due(&accounts, &[], now), (vec![other.clone()], Some(deadline)));
+            }
+        }
+        assert!(schedule.due(&accounts, &[], deadline).0.contains(&account));
+        now = deadline;
+    }
+    schedule.finished(&account, Outcome::Finished, now);
+    assert!(!schedule.retries.contains_key(&account));
+    assert_eq!(schedule.due(&accounts, &[], now).0, [other], "ordinary completion returns to the periodic interval");
+    schedule.finished(&account, Outcome::Stale, now);
+    assert!(schedule.due(&accounts, &[], now).0.contains(&account), "success resets the backoff");
+}
+
+#[tokio::test]
+async fn a_usage_retry_rechecks_settings_before_launching_a_disabled_account() {
+    use alondra_core::accounts::{AccountsConfig, ProviderAccount};
+    let home = Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    two_accounts(&domain);
+    let mut config = AccountsConfig::default();
+    config.claude = vec![ProviderAccount { enabled: false, ..ProviderAccount::implicit_default() },
+        ProviderAccount { id: id("work"), name: "Work".into(), enabled: true, billing: AccountBilling::default() }];
+    std::fs::write(alondra_core::options::path_in(&home), config.to_toml()).unwrap();
+    let state = crate::sdk_owner::tests::HostRoot::new();
+    let mut backend = probe_backend(&home, &state);
+    let count = home.join("probe-count");
+    backend.native_environment.insert("PROBE_COUNT".into(), count.display().to_string());
+    domain.enable_sdk(backend);
+    assert_eq!(measure_account(&domain, &home, &id("default")).await, crate::native_probe::Outcome::Finished);
+    assert!(!count.exists(), "the disabled account must not run a native probe");
+    assert!(domain.read().state().account_usage.is_empty(), "a disabled account's successful fake probe must not be published");
+}
+
 /// A native Claude that answers the probe as Claude Code does, with what `CLAUDE_CONFIG_DIR` it got.
 const PROBE_NATIVE: &str = r#"#!/usr/bin/python3
 import json, os, sys
+if os.environ.get('PROBE_COUNT'):
+    with open(os.environ['PROBE_COUNT'], 'a') as count:
+        count.write('x')
 folder = os.environ.get('CLAUDE_CONFIG_DIR', 'default')
 if os.path.exists(os.path.join(os.environ['HOME'], 'usage-fails')):
     sys.exit(3)
@@ -78,6 +130,10 @@ for raw in sys.stdin:
     if request['subtype'] == 'initialize':
         response = dict(commands=[], models=[], output_style='default', account=dict(subscriptionType='pro' if folder != 'default' else 'max'))
     elif request['subtype'] == 'get_usage':
+        if os.environ.get('STALE_OPTIONS') and os.path.exists(os.path.join(os.environ['HOME'], 'invalidate-usage-once')):
+            os.unlink(os.path.join(os.environ['HOME'], 'invalidate-usage-once'))
+            with open(os.environ['STALE_OPTIONS'], 'a') as options:
+                options.write('\n# settings changed during native usage read\n')
         response = dict(session=dict(total_cost_usd=0, total_api_duration_ms=0, total_duration_ms=0, total_lines_added=0, total_lines_removed=0, model_usage={}),
                         subscription_type='max', rate_limits_available=True, behaviors=None, rate_limits=dict(
                             five_hour=dict(utilization=12.0, resets_at='2099-01-01T05:00:00Z'),
@@ -98,6 +154,66 @@ fn probe_backend(home: &Path, state: &crate::sdk_owner::tests::HostRoot) -> SdkB
     std::fs::set_permissions(&backend.native, std::fs::Permissions::from_mode(0o700)).unwrap();
     backend.native_sha256 = crate::sdk_owner::backend::digest(&backend.native).unwrap();
     backend
+}
+
+#[tokio::test]
+async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_selectable() {
+    use alondra_core::accounts::{AccountKey, AccountsConfig};
+    use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelProfile, TaskSelection};
+    let home = Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let state = crate::sdk_owner::tests::HostRoot::new();
+    let mut backend = probe_backend(&home, &state);
+    let mut config = AccountsConfig::fresh();
+    config.connect(Provider::Claude);
+    let options = alondra_core::options::path_in(&home);
+    std::fs::write(&options, config.to_toml()).unwrap();
+    backend.native_environment.insert("STALE_OPTIONS".into(), options.display().to_string());
+    domain.enable_sdk(backend);
+    let account = AccountId::default_account();
+    readiness_accounts(&domain, vec![AccountStatus {
+        provider: Provider::Claude, id: account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+    }]);
+    let key = AccountKey::native(Provider::Claude);
+    let commands = [
+        DomainCommand::RecordDistribution { policy: config.distribution.policy, move_when_exhausted: config.distribution.move_when_exhausted },
+        DomainCommand::RecordAccountConfiguration { order: vec![key.clone()], version: alondra_core::accounts::config_version(&config) },
+        DomainCommand::RecordModelCatalog { catalog: AccountModelCatalog {
+            account: key.clone(), revision: "fixture".into(), native_default: Some("fixture-model".into()), measured_at: NOW,
+            models: vec![CatalogModel { model: "fixture-model".into(), display_name: "Fixture".into(), reasoning_efforts: vec![],
+                default_reasoning_effort: None, context_window: None, input_modalities: vec!["text".into()], is_default: true, hidden: false }],
+        } },
+    ];
+    let (fence, _) = crate::accounts::probe_fence(&domain, &home).unwrap();
+    crate::accounts::publish_probe(&domain, &home, fence, commands.into()).unwrap();
+    let now = now_millis();
+    record_limit(&domain, &account, Some(now + 3_600_000), now);
+    let intent = TaskSelection::automatic(ModelProfile::Implementation);
+    assert!(crate::accounts::select_for_launch(&domain, &home, &intent, now).is_err());
+    let before = domain.read().state().account_usage.clone();
+    std::fs::write(home.join("invalidate-usage-once"), "").unwrap();
+    let mut schedule = ProbeSchedule::default();
+    for attempt in 1..=2 {
+        let now = now_millis();
+        assert_eq!(schedule.due(std::slice::from_ref(&account), &domain.read().state().account_usage, now).0, [account.clone()],
+            "the discarded attempt must be due again before the periodic interval");
+        schedule.probed.insert(account.clone(), now);
+        let outcome = measure_account(&domain, &home, &account).await;
+        if attempt == 1 {
+            assert_eq!(outcome, crate::native_probe::Outcome::Stale);
+            assert_eq!(domain.read().state().account_usage, before, "discarded usage cannot clear the quota fence");
+            assert!(crate::accounts::select_for_launch(&domain, &home, &intent, now).is_err());
+        } else {
+            assert_eq!(outcome, crate::native_probe::Outcome::Finished);
+        }
+        schedule.finished(&account, outcome, now_millis());
+    }
+    assert_eq!(crate::accounts::select_for_launch(&domain, &home, &intent, now_millis()).unwrap().account, key);
+    let recovered_at = now_millis();
+    follow(&domain, recovered_at);
+    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(recovered_at), "fresh capacity makes the pause due for resumption now");
 }
 
 #[test]

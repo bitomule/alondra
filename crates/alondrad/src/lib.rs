@@ -8,6 +8,7 @@ mod exit;
 mod locks;
 mod account_move;
 mod accounts;
+mod native_probe;
 mod allow_always;
 mod approval_lease;
 mod blocking_work;
