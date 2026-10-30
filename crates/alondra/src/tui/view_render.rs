@@ -177,6 +177,10 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
 /// laid rows out. A title wider than the list goes on as many lines as it takes; what does not fit
 /// beside it goes on the line below; a subtitle (what a node runs now) goes under it.
 pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<Line<'static>> {
+    row_lines_at(row, width, selected, nested, alondra_core::now_millis())
+}
+
+fn row_lines_at(row: &Row, width: usize, selected: bool, nested: bool, now: i64) -> Vec<Line<'static>> {
     let bar = Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT));
     let mut title_style = Style::default();
     if selected {
@@ -204,7 +208,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     let mut parts: Vec<(String, Style)> = row
         .badges
         .iter()
-        .map(|badge| (badge.text.clone(), label_style(badge)))
+        .map(|badge| (label_text_at(badge, now), label_style(badge)))
         .collect();
     match &row.trailing {
         Some(alondra_core::views::Trailing::Count { value }) if *value > 0 => {
@@ -425,7 +429,7 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
         out.push(Line::from(chip.label.clone().fg(ACCENT)));
     }
     for badge in &card.badges {
-        out.push(Line::from(Span::styled(badge.text.clone(), label_style(badge))));
+        out.push(Line::from(Span::styled(label_text_at(badge, alondra_core::now_millis()), label_style(badge))));
     }
     if let Some(body) = &card.body {
         out.extend(super::md::render(&super::md::parse(&body.text), width).lines);
@@ -914,6 +918,21 @@ pub(super) fn action_line(action: &Action) -> String {
     }
 }
 
+/// A label that counts time reads the span up to `now`, or its frozen total once it has an end.
+fn label_text_at(label: &Label, now: i64) -> String {
+    let Some(elapsed) = &label.elapsed else {
+        return label.text.clone();
+    };
+    let end = match &elapsed.until {
+        Some(until) => parse_utc(until),
+        None => Some(now),
+    };
+    match (parse_utc(&elapsed.since), end) {
+        (Some(since), Some(end)) => alondra_core::views::text::short_duration(u64::try_from((end - since) / 1_000).unwrap_or(0)),
+        _ => label.text.clone(),
+    }
+}
+
 pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String {
     let Some(millis) = parse_utc(at) else {
         return at.to_owned();
@@ -1333,6 +1352,55 @@ mod tests {
         assert_eq!(ago("2026-10-03T19:49:18.945+02:00"), "5 min ago");
         assert_eq!(ago("2026-10-03T05:00:00.861+02:00"), "today 05:00");
         assert_eq!(ago("2026-09-12T10:00:00.000+02:00"), "Sep 12");
+    }
+
+    fn task_row(elapsed: serde_json::Value, fallback: &str) -> Row {
+        serde_json::from_value(serde_json::json!({
+            "id": "task", "icon": "task", "title": "Ship", "depth": 0, "struck": false,
+            "badges": [{"text": "Working", "tone": "info"}, {"text": fallback, "tone": "neutral", "elapsed": elapsed}]
+        })).unwrap()
+    }
+
+    fn rendered_at(row: &Row, now: &str) -> String {
+        row_lines_at(row, 80, false, false, parse_utc(now).unwrap()).iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn a_running_task_counts_its_time_up_to_now_in_either_language() {
+        for (lang, fallback) in [(crate::i18n::Lang::Es, "en marcha desde las 10:05"), (crate::i18n::Lang::En, "running since 10:05")] {
+            crate::i18n::set_for_this_thread(lang);
+            let row = task_row(serde_json::json!({"since": "2026-10-28T10:05:00.000+01:00"}), fallback);
+            let early = rendered_at(&row, "2026-10-28T10:17:30.000+01:00");
+            let later = rendered_at(&row, "2026-10-28T11:10:00.000+01:00");
+            assert!(early.ends_with("Working · 12 min"), "{early}");
+            assert!(later.ends_with("Working · 1 h 05 min"), "{later}");
+            assert!(!early.contains(fallback), "{early}");
+        }
+    }
+
+    #[test]
+    fn a_finished_task_keeps_its_total_however_late_it_is_read() {
+        for (lang, fallback) in [(crate::i18n::Lang::Es, "duró 1 h 05 min"), (crate::i18n::Lang::En, "took 1 h 05 min")] {
+            crate::i18n::set_for_this_thread(lang);
+            let row = task_row(
+                serde_json::json!({"since": "2026-10-28T10:05:00.000+01:00", "until": "2026-10-28T10:10:00.000Z"}),
+                fallback,
+            );
+            for now in ["2026-10-28T11:10:00.000+01:00", "2026-10-30T09:00:00.000+01:00"] {
+                let rendered = rendered_at(&row, now);
+                assert!(rendered.ends_with("Working · 1 h 05 min"), "{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_whose_times_cannot_be_read_keeps_its_text() {
+        let label = Label {
+            text: "running since 10:05".into(),
+            tone: alondra_core::views::Tone::Neutral,
+            elapsed: Some(alondra_core::views::Elapsed { since: "soon".into(), until: None }),
+        };
+        assert_eq!(label_text_at(&label, 0), "running since 10:05");
     }
 
     #[test]
