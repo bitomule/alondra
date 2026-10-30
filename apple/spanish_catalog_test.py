@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Every literal a SwiftUI view or a feature reducer looks up in an app's Localizable catalog needs a Spanish translation.
 
-Feature reducers are checked against the iOS catalog, Mac-named files against the Mac catalog.
+Feature reducers are checked against the iOS catalog, Mac-named files against the Mac catalog and
+the Live Activity's views against its own `LiveActivity` table.
 In Spanish a pull request gets a merge: no translation says "fusionar" or "fusión"."""
 import json
 import re
@@ -34,6 +35,8 @@ def spanish_values(catalog):
 
 
 def clientFor(source):
+    if "/iOSLiveActivity/" in source:
+        return "live"
     if "/macOS/" in source or re.search("/Mac[A-Z]", source):
         return "mac"
     if "/iOS/" in source or ("/Features/Sources/" in source and "/ViewsUI/" not in source):
@@ -42,11 +45,12 @@ def clientFor(source):
 
 
 def main():
-    shared_path, ios_path, mac_path, *sources = sys.argv[1:]
+    shared_path, ios_path, mac_path, live_path, *sources = sys.argv[1:]
     shared = strings(shared_path)
     catalogs = {"ios": strings(ios_path), "mac": strings(mac_path)}
+    live = strings(live_path)
     missing = []
-    for path, catalog in [(shared_path, shared), (ios_path, catalogs["ios"]), (mac_path, catalogs["mac"])]:
+    for path, catalog in [(shared_path, shared), (ios_path, catalogs["ios"]), (mac_path, catalogs["mac"]), (live_path, live)]:
         for key, value in spanish_values(catalog):
             if MERGE_IN_SPANISH.search(value):
                 missing.append(f"{path}: {key!r} says {value!r}: in Spanish it is a merge")
@@ -58,6 +62,10 @@ def main():
                 if key in BRAND or "\\(" in key or not re.search("[A-Za-z]", key):
                     continue
                 if "AlondraDesign" in line and translated(shared, key):
+                    continue
+                if client == "live":
+                    if not translated(live, key):
+                        missing.append(f"{source}:{number}: {key!r} has no Spanish in the LiveActivity catalog")
                     continue
                 for name, catalog in catalogs.items():
                     if client in (None, name) and not translated(catalog, key):

@@ -117,8 +117,8 @@ def literals(paths):
 
 
 def main():
-    catalogs = sys.argv[1:4]
-    used = {normalized_key(literal) for literal in literals(sys.argv[4:])}
+    catalogs = sys.argv[1:5]
+    used = {normalized_key(literal) for literal in literals(sys.argv[5:])}
     unused = []
     for path in catalogs:
         for key in json.load(open(path, encoding="utf-8"))["strings"]:

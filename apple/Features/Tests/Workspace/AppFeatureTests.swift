@@ -1,6 +1,7 @@
 import AlondraContract
 import AlondraFeatures
 import AlondraFeed
+import AlondraLiveActivity
 import ComposableArchitecture
 import XCTest
 
@@ -51,6 +52,34 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.tab, .inbox)
         XCTAssertFalse(store.state.settingsPresented)
         XCTAssertTrue(store.state.inboxPath.isEmpty)
+    }
+
+    // MARK: Links
+
+    @MainActor
+    func testTheInboxLinkShowsWaitingForYouFromItsRoot() async {
+        var state = AppFeature.State()
+        state.tab = .tasks
+        state.settingsPresented = true
+        let store = makeStore(state)
+        await store.send(.open(.inbox, key("task:t-1")))
+
+        await store.send(.linkOpened(.inbox))
+        XCTAssertEqual(store.state.tab, .inbox)
+        XCTAssertFalse(store.state.settingsPresented)
+        XCTAssertTrue(store.state.inboxPath.isEmpty)
+    }
+
+    @MainActor
+    func testTheTasksLinkShowsTasksFromItsRootAndLeavesWaitingForYouAsItWas() async {
+        let store = makeStore()
+        await store.send(.open(.inbox, key("task:t-1")))
+        await store.send(.open(.tasks, key("task:t-2")))
+
+        await store.send(.linkOpened(.tasks))
+        XCTAssertEqual(store.state.tab, .tasks)
+        XCTAssertTrue(store.state.tasksPath.isEmpty)
+        XCTAssertEqual(store.state.inboxPath.count, 1)
     }
 
     @MainActor

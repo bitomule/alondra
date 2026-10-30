@@ -23,12 +23,16 @@ TEAM = "658YBSK6MG"
 IOS = "com.bitomule.alondra"
 MAC = IOS
 EXT = IOS + ".NotificationService"
+LIVE_ACTIVITY = IOS + ".LiveActivity"
+# Every iOS app extension, by bundle ID, with the bundle name it has under PlugIns/.
+IOS_EXTENSIONS = {EXT: "AlondraNotificationService", LIVE_ACTIVITY: "AlondraLiveActivity"}
 VERSIONS = ROOT / "tools/shared.bzl"
 BETA_OUTPUT = ROOT / ".beta-build"
 # The /beta skill writes its release notes here and deletes them after the upload.
 BETA_NOTES = "?? .beta_notes"
 PROFILES = {
-    "ios": [(IOS, "Alondra_AppStore.mobileprovision"), (EXT, "Alondra_NotificationService_AppStore.mobileprovision")],
+    "ios": [(IOS, "Alondra_AppStore.mobileprovision"), (EXT, "Alondra_NotificationService_AppStore.mobileprovision"),
+            (LIVE_ACTIVITY, "Alondra_LiveActivity_AppStore.mobileprovision")],
     "macos": [(MAC, "Alondra_Mac_AppStore.provisionprofile")],
 }
 
@@ -302,13 +306,13 @@ def validate_archive(path, destination):
         require(info.get("DTPlatformName") == ("iphoneos" if destination == "ios" else "macosx"), "Simulator or wrong-platform archive refused")
         require(info.get("CFBundleSupportedPlatforms") == (["iPhoneOS"] if destination == "ios" else ["MacOSX"]), "Unsupported bundle platform")
         extensions = sorted({name.split(".appex/")[0] + ".appex" for name in names if ".appex/" in name})
-        expected = [app + "/PlugIns/AlondraNotificationService.appex"] if destination == "ios" else []
+        expected = sorted(f"{app}/PlugIns/{name}.appex" for name in IOS_EXTENSIONS.values()) if destination == "ios" else []
         require(extensions == expected, "Missing or unexpected app extension")
         return app
 
 
 def validate_store_metadata(info, bundle_id, destination):
-    expected_type = "XPC!" if bundle_id == EXT else "APPL"
+    expected_type = "XPC!" if bundle_id in IOS_EXTENSIONS else "APPL"
     require(info.get("CFBundlePackageType") == expected_type, "App Store bundle package type mismatch")
     if destination == "ios":
         capabilities = info.get("UIRequiredDeviceCapabilities", [])
@@ -418,8 +422,9 @@ def main():
         verify_bundle(unpacked / app, IOS if args.destination == "ios" else MAC, args.destination,
                       args.version, args.build_number, args.identity, profiles[IOS if args.destination == "ios" else MAC])
         if args.destination == "ios":
-            verify_bundle(unpacked / app / "PlugIns/AlondraNotificationService.appex", EXT, "ios",
-                          args.version, args.build_number, args.identity, profiles[EXT])
+            for bundle_id, name in IOS_EXTENSIONS.items():
+                verify_bundle(unpacked / app / f"PlugIns/{name}.appex", bundle_id, "ios",
+                              args.version, args.build_number, args.identity, profiles[bundle_id])
             artifact = output / "Alondra.ipa"
             shutil.copyfile(snapshot, artifact)
         else:

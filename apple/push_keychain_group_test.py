@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""The app writes push decryption keys to the Keychain group its Info.plist names and the
-notification service extension reads the group its own Info.plist names. Both must be the
-same group, and every entitlements variant of both targets must grant it."""
+"""The app writes push decryption keys to the Keychain group its Info.plist names, and the
+notification service and Live Activity extensions read the group their own Info.plists name.
+All must be the same group, and every entitlements variant of every target must grant it.
+
+Arguments: the Info.plists, `--`, then the entitlements."""
 import plistlib
 import sys
 
@@ -13,12 +15,14 @@ def load(path):
         return plistlib.load(handle)
 
 
-def main(app_plist, extension_plist, *entitlements):
-    groups = {path: load(path).get("AlondraPushKeychainAccessGroup") for path in (app_plist, extension_plist)}
+def main(*arguments):
+    separator = arguments.index("--")
+    plists, entitlements = arguments[:separator], arguments[separator + 1:]
+    groups = {path: load(path).get("AlondraPushKeychainAccessGroup") for path in plists}
     failures = [f"{path} names no AlondraPushKeychainAccessGroup" for path, group in groups.items() if not group]
     if len(set(groups.values())) != 1:
-        failures.append(f"app and extension read different push Keychain groups: {groups}")
-    group = groups[app_plist] or ""
+        failures.append(f"the app and its extensions read different push Keychain groups: {groups}")
+    group = groups[plists[0]] or ""
     team, _, suffix = group.partition(".")
     for path in entitlements:
         values = load(path)

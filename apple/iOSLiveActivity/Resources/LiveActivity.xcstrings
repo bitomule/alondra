@@ -1,0 +1,116 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "All caught up": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todo al día"
+          }
+        }
+      }
+    },
+    "Inbox": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bandeja"
+          }
+        }
+      }
+    },
+    "Inbox %lld": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bandeja %lld"
+          }
+        }
+      }
+    },
+    "No news from %@ since %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ sin noticias desde %2$@"
+          }
+        }
+      }
+    },
+    "No news from a Mac since %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un Mac sin noticias desde %@"
+          }
+        }
+      }
+    },
+    "No news from your Macs since %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin noticias de tus Macs desde %@"
+          }
+        }
+      }
+    },
+    "Waiting": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando"
+          }
+        }
+      }
+    },
+    "Waiting %lld": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando %lld"
+          }
+        }
+      }
+    },
+    "Waiting %lld · updated %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando %1$lld · actualizado %2$@"
+          }
+        }
+      }
+    },
+    "Working": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trabajando"
+          }
+        }
+      }
+    },
+    "Working %lld": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trabajando %lld"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

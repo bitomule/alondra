@@ -1,5 +1,6 @@
 import AlondraContract
 import AlondraFeed
+import AlondraLiveActivity
 import ComposableArchitecture
 import Foundation
 
@@ -39,6 +40,8 @@ public struct AppFeature: Sendable {
         case open(State.Tab, ViewKey)
         /// A notification was tapped: show that card at the front of Waiting for You.
         case notificationOpened(cardID: String)
+        /// An `alondra://` link was opened, as from the Live Activity: its tab shows, from its root.
+        case linkOpened(AlondraLink)
         case dismissNotice(UUID)
         case triage(TriageFeature.Action)
         case tasks(TasksFeature.Action)
@@ -119,6 +122,17 @@ public struct AppFeature: Sendable {
             state.inboxPath.removeAll()
             let publicID = String(cardID.split(separator: ":").last ?? Substring(cardID))
             return .send(.triage(.focus(publicID)))
+        case .linkOpened(let link):
+            state.settingsPresented = false
+            switch link {
+            case .inbox:
+                state.tab = .inbox
+                state.inboxPath.removeAll()
+            case .tasks:
+                state.tab = .tasks
+                state.tasksPath.removeAll()
+            }
+            return .none
         case .triage(.delegate(.open(let key))):
             return .send(.openFromTriage(key))
         case .openFromTriage(let key):

@@ -56,6 +56,21 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.bitomule.alondra</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>alondra</string>
+			</array>
+		</dict>
+	</array>
 	<key>AlondraPushKeychainAccessGroup</key>
 	<string>658YBSK6MG.com.bitomule.alondra.push</string>
 </dict>

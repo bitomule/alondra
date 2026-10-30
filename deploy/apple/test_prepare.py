@@ -13,7 +13,7 @@ import tempfile
 import unittest
 import zipfile
 
-from prepare import (GateError, IOS, EXT, MAC, TEAM, only_identity, prepare_output, read_versions, uncommitted,
+from prepare import (GateError, IOS, EXT, LIVE_ACTIVITY, MAC, PROFILES, TEAM, only_identity, prepare_output, read_versions, uncommitted,
                      validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust,
                      validate_store_metadata, normalize_bundle, bom_problems, pkg_problems, verify_pkg_contents,
                      stripped_components)
@@ -23,7 +23,7 @@ class DistributionInputTests(unittest.TestCase):
     def test_store_metadata_rejects_observed_asc_failures_in_app_and_extension(self):
         # ASC rejected the real first IPA with 90183 (missing APPL) and
         # 90502 (missing arm64 in both app and extension).
-        for bundle, kind in [(IOS, "APPL"), (EXT, "XPC!")]:
+        for bundle, kind in [(IOS, "APPL"), (EXT, "XPC!"), (LIVE_ACTIVITY, "XPC!")]:
             valid = {"CFBundlePackageType": kind, "UIRequiredDeviceCapabilities": ["arm64"]}
             validate_store_metadata(plistlib.loads(plistlib.dumps(valid)), bundle, "ios")
             for key in valid:
@@ -84,15 +84,15 @@ class DistributionInputTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "APNs"):
             validate_profile(ios_without_push, IOS, "ios", identity)
 
-    def archive(self, path, simulator=False, extension=True, extra=None):
+    def archive(self, path, simulator=False, extensions=("AlondraNotificationService", "AlondraLiveActivity"), extra=None):
         app = "Payload/Alondra.app/"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(app + "Info.plist", plistlib.dumps({
                 "DTPlatformName": "iphonesimulator" if simulator else "iphoneos",
                 "CFBundleSupportedPlatforms": ["iPhoneSimulator" if simulator else "iPhoneOS"],
             }))
-            if extension:
-                archive.writestr(app + "PlugIns/AlondraNotificationService.appex/Info.plist", plistlib.dumps({}))
+            for extension in extensions:
+                archive.writestr(app + f"PlugIns/{extension}.appex/Info.plist", plistlib.dumps({}))
             if extra:
                 archive.writestr(*extra)
 
@@ -101,7 +101,9 @@ class DistributionInputTests(unittest.TestCase):
             path = Path(directory) / "input.ipa"
             self.archive(path)
             self.assertEqual(validate_archive(path, "ios"), "Payload/Alondra.app")
-            for options in ({"simulator": True}, {"extension": False},
+            for options in ({"simulator": True}, {"extensions": ()},
+                            {"extensions": ("AlondraNotificationService",)},
+                            {"extensions": ("AlondraLiveActivity",)},
                             {"extra": ("credentials.json", "private")},
                             {"extra": ("../outside", "escape")},
                             {"extra": ("Payload/Other.app/Info.plist", "foreign")},
@@ -110,6 +112,10 @@ class DistributionInputTests(unittest.TestCase):
                     self.archive(path, **options)
                     with self.assertRaises(GateError):
                         validate_archive(path, "ios")
+
+    def test_the_ios_release_needs_a_store_profile_for_each_extension(self):
+        self.assertEqual([bundle for bundle, _ in PROFILES["ios"]], [IOS, EXT, LIVE_ACTIVITY])
+        self.assertIn((LIVE_ACTIVITY, "Alondra_LiveActivity_AppStore.mobileprovision"), PROFILES["ios"])
 
     def test_replaced_bazel_output_cannot_change_verified_snapshot_or_shipped_ipa(self):
         with tempfile.TemporaryDirectory() as directory:

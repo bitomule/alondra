@@ -1,0 +1,26 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+# Shared by the app, which starts and updates the Live Activity, and the widget extension, which
+# draws it. ActivityKit is iOS only, so its adapter compiles only there and the rest is tested on
+# the Mac against a fake host.
+swift_library(
+    name = "AlondraLiveActivity",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraLiveActivity",
+    visibility = ["//visibility:public"],
+)
+
+swift_test(
+    name = "AlondraLiveActivityTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [":AlondraLiveActivity"],
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

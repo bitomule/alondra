@@ -10,7 +10,7 @@ struct AlondraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppScene(owner: delegate.cloudPairing, notifications: delegate.notifications)
+            AppScene(owner: delegate.cloudPairing, notifications: delegate.notifications, liveActivity: delegate.liveActivity)
                 .environment(delegate.cloudPairing)
                 .tint(Palette.dawn)
         }
@@ -21,9 +21,11 @@ struct AlondraApp: App {
 /// Each WindowGroup instance creates its own presentation stores.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     let notifications = NotificationRuntime()
+    let liveActivity = LiveActivityRuntime()
     lazy var cloudPairing = makeAccountSession(notifications: notifications)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        liveActivity.start()
         let owner = cloudPairing
         notifications.prepareSession = { [weak owner] in try await owner?.prepareNotificationSession() }
         notifications.selectSession = { [weak owner] id in

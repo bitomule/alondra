@@ -1,0 +1,22 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "CFBundleDisplayName": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra Live Activity"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra Actividad en directo"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

@@ -3,12 +3,12 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extensio
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
-load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
+load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "LIVE_ACTIVITY_BUNDLE_ID", "LIVE_ACTIVITY_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 load("//tools:shared.bzl", "versions")
 
 exports_files(
-    ["iOS/Resources/Localizable.xcstrings", "macOS/Resources/Localizable.xcstrings"],
+    ["iOS/Resources/Localizable.xcstrings", "iOSLiveActivity/Resources/LiveActivity.xcstrings", "macOS/Resources/Localizable.xcstrings"],
     visibility = ["//apple/Testing:__subpackages__"],
 )
 
@@ -26,19 +26,28 @@ sh_test(
     data = ["Bonjour/Bonjour.plist", "iOS/Info.plist", "macOS/Info.plist"],
 )
 
-PUSH_KEYCHAIN_FILES = [
+PUSH_KEYCHAIN_PLISTS = [
     "iOS/Info.plist",
     "iOSNotificationService/Info.plist",
+    "iOSLiveActivity/Info.plist",
+]
+
+PUSH_KEYCHAIN_ENTITLEMENTS = [
     "iOS/Alondra.entitlements",
     "iOS/AppStore.entitlements",
     "iOSNotificationService/AlondraNotificationService.entitlements",
     "iOSNotificationService/AppStore.entitlements",
+    "iOSLiveActivity/AlondraLiveActivity.entitlements",
+    "iOSLiveActivity/AppStore.entitlements",
 ]
+
+PUSH_KEYCHAIN_FILES = PUSH_KEYCHAIN_PLISTS + PUSH_KEYCHAIN_ENTITLEMENTS
 
 sh_test(
     name = "push_keychain_group_test",
     srcs = ["push_keychain_group_test.py"],
-    args = ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_FILES],
+    args = ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_PLISTS] + ["--"] +
+           ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_ENTITLEMENTS],
     data = PUSH_KEYCHAIN_FILES,
 )
 
@@ -65,12 +74,14 @@ sh_test(
         "$(rootpath //apple/Design:Resources/AlondraDesign.xcstrings)",
         "$(rootpath iOS/Resources/Localizable.xcstrings)",
         "$(rootpath macOS/Resources/Localizable.xcstrings)",
+        "$(rootpath iOSLiveActivity/Resources/LiveActivity.xcstrings)",
         "$(rootpaths :view_sources)",
     ],
     data = [
         "//apple/Design:Resources/AlondraDesign.xcstrings",
         "iOS/Resources/Localizable.xcstrings",
         "macOS/Resources/Localizable.xcstrings",
+        "iOSLiveActivity/Resources/LiveActivity.xcstrings",
         ":view_sources",
     ],
 )
@@ -81,6 +92,8 @@ filegroup(
         "iOS/ViewsShipping/*.swift",
         "macOS/ViewsShipping/*.swift",
         "macOS/Workspace/*.swift",
+        "iOSLiveActivity/Views/*.swift",
+        "iOSLiveActivity/Sources/*.swift",
     ]) + ["//apple/Features:sources", "//apple/iOS/UI:sources"],
 )
 
@@ -91,6 +104,7 @@ APP_SOURCES = [
     "//apple/Data/Attachments:sources",
     "//apple/Data/Feed:sources",
     "//apple/Data/Iroh:sources",
+    "//apple/Data/LiveActivity:sources",
     "//apple/Data/Notifications:sources",
     "//apple/Data/Pairing:sources",
     "//apple/Data/Sync:sources",
@@ -107,11 +121,13 @@ sh_test(
         "$(rootpath //apple/Design:Resources/AlondraDesign.xcstrings)",
         "$(rootpath iOS/Resources/Localizable.xcstrings)",
         "$(rootpath macOS/Resources/Localizable.xcstrings)",
+        "$(rootpath iOSLiveActivity/Resources/LiveActivity.xcstrings)",
     ] + ["$(rootpaths %s)" % sources for sources in APP_SOURCES],
     data = [
         "//apple/Design:Resources/AlondraDesign.xcstrings",
         "iOS/Resources/Localizable.xcstrings",
         "macOS/Resources/Localizable.xcstrings",
+        "iOSLiveActivity/Resources/LiveActivity.xcstrings",
     ] + APP_SOURCES,
 )
 
@@ -254,7 +270,7 @@ ios_application(
     minimum_os_version = "26.0",
     resources = glob(["iOS/Resources/*.xcstrings"]) + ["//fixtures/views:cards_ios"],
     version = ":Version",
-    extensions = [":AlondraNotificationService"],
+    extensions = [":AlondraNotificationService", ":AlondraLiveActivity"],
     visibility = ["//visibility:public"],
     deps = [":AlondraiOSViewsEntry"],
 )
@@ -270,6 +286,7 @@ swift_library(
         "//apple/Data/Account:AlondraAccount",
         "//apple/Data/Iroh:AlondraIroh",
         "//apple/Contract:AlondraContract",
+        "//apple/Data/LiveActivity:AlondraLiveActivity",
         "//apple/Data/Notifications:AlondraNotifications",
         "//apple/Data/Sync:AlondraNetworkReachability",
         "//apple/Demo:AlondraDemo",
@@ -302,4 +319,38 @@ ios_extension(
     provisioning_profile = select({":distribution": "//signing:Alondra_NotificationService_AppStore.mobileprovision", "//conditions:default": "//signing:" + NOTIFICATION_SERVICE_PROFILE}),
     version = ":Version",
     deps = [":AlondraNotificationServiceLib"],
+)
+
+swift_library(
+    name = "AlondraLiveActivityUI",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["iOSLiveActivity/Views/*.swift"]),
+    module_name = "AlondraLiveActivityUI",
+    visibility = ["//apple/Testing/Snapshots:__pkg__"],
+    deps = ["//apple/Data/LiveActivity:AlondraLiveActivity"],
+)
+
+swift_library(
+    name = "AlondraLiveActivityLib",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["iOSLiveActivity/Sources/**/*.swift"]),
+    module_name = "AlondraLiveActivityExtension",
+    deps = [
+        ":AlondraLiveActivityUI",
+        "//apple/Data/LiveActivity:AlondraLiveActivity",
+    ],
+)
+
+ios_extension(
+    name = "AlondraLiveActivity",
+    entitlements = select({":distribution": "iOSLiveActivity/AppStore.entitlements", "//conditions:default": "iOSLiveActivity/AlondraLiveActivity.entitlements"}),
+    bundle_id = LIVE_ACTIVITY_BUNDLE_ID,
+    bundle_name = "AlondraLiveActivity",
+    families = ["iphone"],
+    infoplists = ["iOSLiveActivity/Info.plist"],
+    minimum_os_version = "26.0",
+    resources = glob(["iOSLiveActivity/Resources/*.xcstrings"]),
+    provisioning_profile = select({":distribution": "//signing:Alondra_LiveActivity_AppStore.mobileprovision", "//conditions:default": "//signing:" + LIVE_ACTIVITY_PROFILE}),
+    version = ":Version",
+    deps = [":AlondraLiveActivityLib"],
 )

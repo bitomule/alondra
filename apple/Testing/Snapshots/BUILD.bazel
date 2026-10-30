@@ -54,7 +54,10 @@ ios_application(
     families = ["iphone"],
     infoplists = ["TestHost/Info.plist"],
     minimum_os_version = "26.0",
-    resources = ["//apple:iOS/Resources/Localizable.xcstrings"],
+    resources = [
+        "//apple:iOS/Resources/Localizable.xcstrings",
+        "//apple:iOSLiveActivity/Resources/LiveActivity.xcstrings",
+    ],
     visibility = ["//apple/Mermaid:__pkg__"],
     deps = [":SnapshotTestHostLib"],
 )
@@ -71,6 +74,8 @@ swift_library(
     deps = [
         "//apple/Contract:AlondraContract",
         "//apple/Data/Feed:AlondraFeed",
+        "//apple/Data/LiveActivity:AlondraLiveActivity",
+        "//apple:AlondraLiveActivityUI",
         "//apple/Design:AlondraDesign",
         "//apple/Features:AlondraFeatures",
         "//apple/Data/Transport:AlondraTransport",

@@ -6,6 +6,7 @@ import AlondraDesign
 import AlondraAccount
 import AlondraFeed
 import AlondraDemo
+import AlondraLiveActivity
 import AlondraiOSUI
 import ComposableArchitecture
 import Observation
@@ -15,6 +16,7 @@ import UserNotifications
 struct AppScene: View {
     let owner: AccountSession
     let notifications: NotificationRuntime
+    let liveActivity: LiveActivityRuntime
     @Environment(\.scenePhase) private var phase
     @State private var demoSession: UUID?
 
@@ -26,7 +28,7 @@ struct AppScene: View {
         } else {
         LaunchGate(store: owner.store, hasServices: owner.services != nil) {
             if let services = owner.services {
-                ApprovedServiceScene(services: services, owner: owner, notifications: notifications)
+                ApprovedServiceScene(services: services, owner: owner, notifications: notifications, liveActivity: liveActivity)
                     .id(ObjectIdentifier(services))
             }
         } restoring: {
@@ -34,16 +36,24 @@ struct AppScene: View {
                 .background(DawnBackground())
         } onboarding: {
             NavigationStack { SignInView(store: owner.store, demo: { demoSession = UUID() }) }
+                .onAppear { liveActivity.controller.keep(macIDs: []) }
         }
         }
         }
         .task { await owner.store.send(.appeared).finish() }
         .onChange(of: phase, initial: true) { _, phase in
             switch phase {
-            case .active: Task { await owner.goLive() }
-            case .background: Task { await owner.goIdle() }
+            case .active:
+                liveActivity.controller.enteredForeground()
+                Task { await owner.goLive() }
+            case .background:
+                liveActivity.controller.enteredBackground()
+                Task { await owner.goIdle() }
             default: break
             }
+        }
+        .onChange(of: owner.macs.map(\.macID)) { _, macIDs in
+            if !macIDs.isEmpty { liveActivity.controller.keep(macIDs: Set(macIDs)) }
         }
     }
 }
@@ -89,6 +99,20 @@ private struct DemoAccountView: View {
     private(set) var storedFiles: StoredFiles?
     private(set) var store: StoreOf<AppFeature>?
 
+    private var pendingLink: AlondraLink?
+
+    func open(_ url: URL) {
+        guard let link = AlondraLink(url: url) else { return }
+        pendingLink = link
+        consumeLink()
+    }
+
+    func consumeLink() {
+        guard let store, let link = pendingLink else { return }
+        pendingLink = nil
+        store.send(.linkOpened(link))
+    }
+
     func consumeNotification(_ notifications: NotificationRuntime, services: Connection, active: Bool) {
         guard active, let store, let route = notifications.consumeRoute(for: services) else { return }
         store.send(.notificationOpened(cardID: route.itemID))
@@ -114,6 +138,7 @@ private struct ApprovedServiceScene: View {
     let services: Connection
     let owner: AccountSession
     let notifications: NotificationRuntime
+    let liveActivity: LiveActivityRuntime
     @Environment(\.scenePhase) private var phase
     @State private var context = SceneContext()
     @State private var returningFromBackground = false
@@ -146,7 +171,14 @@ private struct ApprovedServiceScene: View {
         .task {
             notifications.macReached = { await services.macReached() }
             await context.connect(services)
+            context.consumeLink()
             context.consumeNotification(notifications, services: services, active: phase == .active)
+        }
+        .onOpenURL { context.open($0) }
+        .onChange(of: activityCounts, initial: true) { _, reported in
+            guard let reported, let macID = services.macID else { return }
+            liveActivity.controller.report(macID: macID, name: owner.macs.first { $0.macID == macID }?.name,
+                                           counts: reported.counts, live: reported.live)
         }
         .onChange(of: notifications.push.route) { _, _ in
             context.consumeNotification(notifications, services: services, active: phase == .active)
@@ -168,6 +200,14 @@ private struct ApprovedServiceScene: View {
         .onChange(of: context.store?.triage.orderedIDs) { _, _ in reconcileNotifications() }
     }
 
+    /// What this Mac adds to the Live Activity, once its queue has loaded.
+    private var activityCounts: ReportedCounts? {
+        guard let triage = context.store?.triage, let inbox = triage.iconBadge else { return nil }
+        let count = { (id: String) in Int(triage.status?.counts.first { $0.id == id }?.value ?? 0) }
+        return ReportedCounts(counts: ActivityCounts(inbox: inbox, waiting: count("waiting"), working: count("working")),
+                              live: context.store?.connection.isConnected == true)
+    }
+
     /// Only a loaded queue is the truth: before it loads it is empty and would clear everything.
     private func reconcileNotifications() {
         guard phase == .active, let triage = context.store?.triage, triage.iconBadge != nil else { return }
@@ -181,6 +221,11 @@ private struct ApprovedServiceScene: View {
         guard let badge else { return }
         Task { try? await UNUserNotificationCenter.current().setBadgeCount(badge) }
     }
+}
+
+private struct ReportedCounts: Equatable {
+    let counts: ActivityCounts
+    let live: Bool
 }
 
 struct RootView<AccountContent: View>: View {

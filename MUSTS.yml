@@ -113,6 +113,7 @@ checks:
         - //apple/Data/Account:AlondraAccountTests
         - //apple/Data/Pairing:AlondraPairingTests
         - //apple/Data/Notifications:AlondraNotificationsTests
+        - //apple/Data/LiveActivity:AlondraLiveActivityTests
         - //apple/Data/Feed:AlondraFeedTests
         - //apple/Data/Feed:ActionJournalProcessTests
         - //apple/Data/Iroh:AlondraIrohProcessTests
