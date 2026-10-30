@@ -1331,7 +1331,7 @@ mod tests {
         let domain = fixture.open();
         working_agent(&domain, "isolation");
         let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
-        domain.store.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().begin_live_read_trace();
         let driver = std::thread::current().id();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
@@ -1349,7 +1349,7 @@ mod tests {
             let runtime = client.read("/runtime").await.expect("runtime route");
             assert_eq!(runtime.status(), axum::http::StatusCode::OK);
         });
-        let reads = domain.store.lock().unwrap().end_live_read_trace();
+        let reads = domain.reads.lock().unwrap().end_live_read_trace();
         assert!(!reads.is_empty());
         assert!(reads.iter().any(|read| read.rows > 0), "the real populated store was read");
         assert!(reads.iter().all(|read| read.thread != format!("{driver:?}")), "SQLite ran on the async worker: {reads:?}");
@@ -1375,7 +1375,7 @@ mod tests {
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel();
         let entered = std::sync::Mutex::new(Some(entered));
-        domain.store.lock().unwrap().on_live_read(move |_| {
+        domain.reads.lock().unwrap().on_live_read(move |_| {
             // A wrong-thread regression fails before the controlled block, rather than hanging.
             if let Some(entered) = entered.lock().unwrap().take() {
                 assert_ne!(std::thread::current().id(), driver, "view SQL occupies the async worker");

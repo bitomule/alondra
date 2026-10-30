@@ -272,8 +272,7 @@ async fn deny_pending_device(
 /// The paired device the middleware verified, while its approval persists.
 pub(crate) fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> Option<Signed> {
     let Extension(signed) = signed.as_ref()?;
-    let auth = crate::auth::Auth::open(home).ok()?;
-    auth.list()
+    crate::auth::approved_devices(home).ok()?
         .iter()
         .any(|entry| entry.id == signed.device_id && entry.public_key == signed.public_key)
         .then(|| signed.clone())
@@ -1617,6 +1616,116 @@ mod tests {
         assert_eq!(state.domain().state().unwrap(), expected);
         drop(state);
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn views_and_changes_answer_while_a_writer_holds_the_domain_store() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let auth = Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let pairing = auth.new_pairing_code();
+        let device = auth.pair(&pairing, "test-device", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
+        let domain = state.domain();
+        let app = router(state.clone()).layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let signed = |path: &str| {
+            let timestamp = alondra_core::now_millis().to_string();
+            let signature: Signature = key.sign(crate::auth::signed_message("GET", path, &timestamp, b"").as_bytes());
+            client.get(format!("{base}{path}"))
+                .header("x-alondra-device", &device.id)
+                .header("x-alondra-timestamp", timestamp)
+                .header("x-alondra-signature", STANDARD.encode(signature.to_der().as_bytes()))
+        };
+        let writer = domain.store.lock().unwrap();
+        let mut answers = Vec::new();
+        for path in [
+            "/views/home?protocol=1&client=tui&lang=en",
+            "/views/tasks?protocol=1&client=tui&lang=en",
+            "/changes?protocol=1&client=tui&lang=en&wait=0&views=home%40v0000000000000000",
+        ] {
+            // Only a hang guard: a read that waits for the writer never answers while it is held.
+            answers.push((path, tokio::time::timeout(std::time::Duration::from_secs(60), signed(path).send()).await));
+        }
+        drop(writer);
+        for (path, answer) in answers {
+            let response = answer.unwrap_or_else(|_| panic!("{path} waited for the writer")).unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert!(body.get("error").is_none(), "{path}: {body}");
+        }
+        server.abort();
+    }
+
+    /// Opt-in measurement, never an ordinary test: the views' latency while commits hold the
+    /// writer 200 ms of every 300 ms, as on a Mac whose disk is saturated. Run it with
+    /// `--test_arg=--ignored --test_filter=views_latency_while_commits_hold_the_writer`.
+    #[ignore]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn views_latency_while_commits_hold_the_writer() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        crate::domain_store::load_bench::seed(&mut crate::domain_store::DomainStore::open(
+            &crate::domain_database_migration::active_path(&home)).unwrap(), 20);
+        let auth = Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let pairing = auth.new_pairing_code();
+        let device = auth.pair(&pairing, "test-device", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
+        let domain = state.domain();
+        let app = router(state.clone()).layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        });
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let committer = {
+            let (domain, stop) = (domain.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut attempt = 0u8;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    {
+                        let mut store = domain.store.lock().unwrap();
+                        attempt = attempt.wrapping_add(1).max(1);
+                        store.set_start_retry(&"task-110".into(), Some((attempt, 0))).unwrap();
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+        };
+        let client = reqwest::Client::new();
+        let mut timings = Vec::new();
+        for round in 0..200 {
+            let path = if round % 2 == 0 { "/views/home?protocol=1&client=tui&lang=en" } else { "/views/tasks?protocol=1&client=tui&lang=en" };
+            let timestamp = alondra_core::now_millis().to_string();
+            let signature: Signature = key.sign(crate::auth::signed_message("GET", path, &timestamp, b"").as_bytes());
+            let started = std::time::Instant::now();
+            let response = client.get(format!("{base}{path}"))
+                .header("x-alondra-device", &device.id)
+                .header("x-alondra-timestamp", timestamp)
+                .header("x-alondra-signature", STANDARD.encode(signature.to_der().as_bytes()))
+                .send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.bytes().await.unwrap();
+            timings.push(started.elapsed().as_secs_f64() * 1_000.0);
+            tokio::time::sleep(std::time::Duration::from_millis(37)).await;
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        committer.join().unwrap();
+        server.abort();
+        timings.sort_by(f64::total_cmp);
+        let at = |share: f64| timings[((timings.len() as f64 * share) as usize).min(timings.len() - 1)];
+        println!("views while commits hold the writer: n={} p50={:.1} ms p90={:.1} ms p99={:.1} ms max={:.1} ms",
+            timings.len(), at(0.5), at(0.9), at(0.99), timings[timings.len() - 1]);
     }
 
     #[tokio::test]

@@ -2154,3 +2154,53 @@ fn no_daemon_code_writes_the_journal_tables_but_the_store() {
         }
     }
 }
+
+#[test]
+fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
+    let fixture = Fixture::new();
+    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut writer);
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let before = writer.request_times().unwrap();
+    let (mark, newest) = ReadTransaction::begin(reader.lock().unwrap()).read_mark().unwrap();
+    {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        assert_eq!(read.request_times().unwrap(), before);
+        writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        writer.set_start_retry(&"task-1".into(), Some((1, 2))).unwrap();
+        assert!(read.start_retries().unwrap().is_empty(), "a write not committed yet is never read");
+        writer.conn.execute_batch("COMMIT").unwrap();
+        let during = envelope(&mut writer, "during-read", Command::CreateRequest {
+            request_id: "during".into(), body: "Committed while a view reads".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        writer.execute_authenticated(&user(), &during, None).unwrap();
+        assert_eq!(read.request_times().unwrap(), before, "a commit after the read began is not mixed into it");
+        assert!(read.start_retries().unwrap().is_empty());
+        assert_eq!(read.read_mark().unwrap(), (mark, newest));
+    }
+    let read = ReadTransaction::begin(reader.lock().unwrap());
+    assert!(read.request_times().unwrap().contains_key(&"during".into()));
+    assert!(read.start_retries().unwrap().contains_key(&"task-1".into()));
+    let (after, latest) = read.read_mark().unwrap();
+    assert!(after != mark && latest > newest, "the next read sees both commits and its mark moved");
+}
+
+#[test]
+fn launched_tasks_answers_for_every_task_in_one_statement() {
+    use crate::domain_store::model_metrics::{Decision, DecisionKind};
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    for kind in [DecisionKind::Send, DecisionKind::Relaunch] {
+        store.record_model_decision(&Decision { task_id: "task-1".into(), request_id: "request-1".into(), agent_id: None,
+            at: 1, kind, model: None, effort: None, approach: None, chosen_by: alondra_core::domain::ModelChooser::Orchestrator,
+            reason: None, title: "task-1".into(), provider: None, tags: None }).unwrap();
+    }
+    let asked: Vec<TaskId> = ["task-1", "never"].map(TaskId::from).into();
+    let launched = store.launched_tasks(&asked).unwrap();
+    assert_eq!(launched, ["task-1"].map(TaskId::from).into());
+    for task in &asked {
+        assert_eq!(launched.contains(task), store.task_was_launched(task).unwrap(), "{task:?}");
+    }
+    assert!(store.launched_tasks(&[]).unwrap().is_empty());
+}

@@ -23,6 +23,10 @@ pub struct DomainRuntime {
     /// after the SQLite commit while the snapshot is published, the commit acknowledged, its seals
     /// kept and the watchers woken; a fresh start rebuilds all of them from the database.
     pub(crate) store: RuntimeMutex<DomainStore>,
+    /// A read-only connection of the views' own: in WAL it reads the last commit while a commit
+    /// holds `store`, so a screen never waits for the writer. A holder that panics leaves it
+    /// whole, so it is recovered: the next read ends the transaction it left open.
+    pub(crate) reads: Mutex<DomainStore>,
     /// The last committed state and the read index built from it. Readers take them without the
     /// store, a transaction or a copy; only a commit replaces them, while it still holds the store.
     /// A holder that panics leaves it whole, so it is recovered: its only write swaps one `Arc`,
@@ -124,6 +128,7 @@ impl DomainRuntime {
 
     pub(crate) fn open_at(home: &Path, database: &Path) -> Result<Self> {
         let mut store = DomainStore::open(database)?;
+        let reads = DomainStore::open_readonly(database)?;
         crate::domain_store::provider_settings::recover_store(&mut store, home)?;
         let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
         store.fill_task_projects(&options.projects_root(&crate::options::user_home()))?;
@@ -143,6 +148,7 @@ impl DomainRuntime {
             guard_work: crate::blocking_work::BlockingWork::new(2),
             home: home.to_path_buf(),
             store: RuntimeMutex::new(store),
+            reads: Mutex::new(reads),
             snapshot: RwLock::new(Arc::new(ReadSnapshot::build(state))),
             approval_home: home.to_path_buf(),
             authority: RuntimeMutex::new(authority),
@@ -307,6 +313,11 @@ impl DomainRuntime {
     }
     pub fn state(&self) -> Result<Arc<DomainState>> {
         Ok(Arc::clone(self.read().state()))
+    }
+    /// A read of the committed store that never waits for the writer: what is read through it
+    /// is one commit's state.
+    pub(crate) fn live_read(&self) -> crate::domain_store::ReadTransaction<'_> {
+        crate::domain_store::ReadTransaction::begin(self.reads.lock_or_recover("the domain reader"))
     }
     /// The last committed state with its read index: both of the same revision.
     pub fn read(&self) -> Arc<ReadSnapshot> {

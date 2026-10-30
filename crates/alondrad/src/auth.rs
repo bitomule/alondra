@@ -69,6 +69,45 @@ pub fn signed_message(method: &str, path_and_query: &str, timestamp: &str, body:
     format!("{method}\n{path_and_query}\n{timestamp}\n{}", hex(&Sha256::digest(body)))
 }
 
+/// What tells one `devices.json` from another without reading it: a save renames a new file in,
+/// and any write changes its size or times.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileIdentity { device: u64, inode: u64, size: u64, modified: (i64, i64), changed: (i64, i64) }
+
+impl FileIdentity {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self { device: metadata.dev(), inode: metadata.ino(), size: metadata.size(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()), changed: (metadata.ctime(), metadata.ctime_nsec()) }
+    }
+}
+
+static APPROVED: Mutex<std::collections::BTreeMap<PathBuf, (FileIdentity, Arc<Vec<Device>>)>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// The devices approved in `home`'s `devices.json`, as it is now: read again only when the file
+/// changed, so a request checks its device with one `stat`, and a revocation counts from the
+/// moment the file changes, whoever wrote it.
+pub(crate) fn approved_devices(home: &std::path::Path) -> Result<Arc<Vec<Device>>> {
+    use std::io::Read as _;
+    let path = home.join("devices.json");
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Arc::default()),
+        Err(error) => return Err(error.into()),
+    };
+    let identity = FileIdentity::of(&file.metadata()?);
+    if let Some((known, devices)) = APPROVED.lock_or_recover("the approved devices").get(&path)
+        && *known == identity
+    {
+        return Ok(devices.clone());
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    let devices: Arc<Vec<Device>> = Arc::new(serde_json::from_str(&text).context("devices.json ilegible")?);
+    APPROVED.lock_or_recover("the approved devices").insert(path, (identity, devices.clone()));
+    Ok(devices)
+}
+
 impl Auth {
     fn persisted(&self) -> Result<Vec<Device>> {
         match std::fs::read_to_string(&self.path) {
@@ -395,6 +434,27 @@ mod tests {
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
         assert_eq!(auth.verify(&headers("other", ts, &sig), "GET", "/v1/overview", b"", false).unwrap_err(), "device not paired");
+    }
+
+    #[test]
+    fn approved_devices_are_read_again_only_when_devices_json_changes() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(approved_devices(&home).unwrap().is_empty());
+        let auth = Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let public = B64.encode(key.verifying_key().to_sec1_bytes());
+        let kept = auth.pair(&auth.new_pairing_code(), "kept", &public).unwrap();
+        let revoked = auth.pair(&auth.new_pairing_code(), "revoked", &public).unwrap();
+        let first = approved_devices(&home).unwrap();
+        assert_eq!(first.iter().map(|device| device.id.as_str()).collect::<Vec<_>>(), [kept.id.as_str(), revoked.id.as_str()]);
+        assert!(Arc::ptr_eq(&first, &approved_devices(&home).unwrap()), "an unchanged file is not read again");
+        assert!(auth.revoke(&revoked.id).unwrap());
+        assert!(approved_devices(&home).unwrap().iter().all(|device| device.id != revoked.id), "a revocation counts at once");
+        std::fs::write(home.join("devices.json"), "[]").unwrap();
+        assert!(approved_devices(&home).unwrap().is_empty(), "so does a write by another process, in place");
+        std::fs::remove_file(home.join("devices.json")).unwrap();
+        assert!(approved_devices(&home).unwrap().is_empty());
     }
 
     #[test]

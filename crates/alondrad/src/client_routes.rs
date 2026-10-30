@@ -453,11 +453,12 @@ impl Client {
         let orders: Vec<(String, alondra_core::domain::Revision)> = read.index().queue().iter()
             .filter_map(|id| state.interactions.get(id).map(|card| (format!("interaction:{}", id.0), card.order)))
             .collect();
-        let (state_times, request_times, revision_times) = {
-            let store = self.domain.store.lock_or_exit("the domain store");
-            let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();
-            match (store.task_state_times(), store.request_times(), store.revision_times(&revisions)) {
-                (Ok(tasks), Ok(requests), Ok(revisions)) => (tasks, requests, revisions),
+        let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();
+        let (state_times, request_times, revision_times, launches, cancel_reasons) = {
+            let store = self.domain.live_read();
+            match (store.task_state_times(), store.request_times(), store.revision_times(&revisions),
+                store.request_launch_summaries(), store.cancel_reasons()) {
+                (Ok(tasks), Ok(requests), Ok(revisions), Ok(launches), Ok(reasons)) => (tasks, requests, revisions, launches, reasons),
                 _ => return storage(),
             }
         };
@@ -466,13 +467,6 @@ impl Client {
             None => (Value::Null, Value::Null),
         };
         let nodes = live::runtime_nodes(self.domain.live.nodes(), &state, |task| state_times.get(task).copied());
-        let (launches, cancel_reasons) = {
-            let store = self.domain.store.lock_or_exit("the domain store");
-            match (store.request_launch_summaries(), store.cancel_reasons()) {
-                (Ok(launches), Ok(reasons)) => (launches, reasons),
-                _ => return storage(),
-            }
-        };
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
             let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
             (id.0.clone(), json!({"project": task.project, "state_since": state_times.get(id),

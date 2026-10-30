@@ -787,7 +787,7 @@ pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
 /// The queued launches whose turn may come: one whose start failed waits out its retry or the
 /// user's answer to its card where it is, keeping its place without holding back the rest.
 fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> Vec<Waiting> {
-    let store = domain.store.lock_or_exit("the domain store");
+    let store = domain.live_read();
     let rows = store.launch_queue().unwrap_or_default();
     if rows.is_empty() {
         return vec![];

@@ -1051,8 +1051,7 @@ fn signed_device<H: DomainHost>(host: &H, signed: &Option<Extension<Signed>>) ->
 }
 
 fn approved(home: &FsPath, device: &Signed) -> anyhow::Result<()> {
-    let auth = crate::auth::Auth::open(home)?;
-    anyhow::ensure!(auth.list().iter().any(|entry| entry.id == device.device_id
+    anyhow::ensure!(crate::auth::approved_devices(home)?.iter().any(|entry| entry.id == device.device_id
         && entry.public_key == device.public_key), "device approval was revoked");
     Ok(())
 }

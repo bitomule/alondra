@@ -485,6 +485,44 @@ pub(crate) struct Commit {
     pub sealed: Option<alondra_store::Committed>,
 }
 
+/// One read transaction on a reader connection: every getter called through it reads the same
+/// committed state, never part of a commit. It ends when dropped.
+pub(crate) struct ReadTransaction<'a>(std::sync::MutexGuard<'a, DomainStore>);
+
+impl<'a> ReadTransaction<'a> {
+    pub(crate) fn begin(store: std::sync::MutexGuard<'a, DomainStore>) -> Self {
+        if !store.conn.is_autocommit() && let Err(error) = store.conn.execute_batch("ROLLBACK") {
+            log!("a domain read left open could not be ended: {error:#}");
+        }
+        if let Err(error) = store.conn.execute_batch("BEGIN DEFERRED") {
+            log!("a domain read transaction could not begin: {error:#}");
+        }
+        Self(store)
+    }
+}
+
+impl std::ops::Deref for ReadTransaction<'_> {
+    type Target = DomainStore;
+    fn deref(&self) -> &DomainStore {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for ReadTransaction<'_> {
+    fn deref_mut(&mut self) -> &mut DomainStore {
+        &mut self.0
+    }
+}
+
+impl Drop for ReadTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.0.conn.is_autocommit() && let Err(error) = self.0.conn.execute_batch("COMMIT") {
+            log!("a domain read transaction could not end: {error:#}");
+        }
+    }
+}
+
 impl DomainStore {
     #[cfg(test)]
     pub(crate) fn on_live_read(&mut self, hook: impl Fn(&str) + Send + 'static) {
@@ -713,7 +751,6 @@ impl DomainStore {
         }
     }
     /// No schema creation, no restart recovery and no write of any kind.
-    #[cfg(test)]
     pub(crate) fn open_readonly(path: &Path) -> Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let parent = std::fs::canonicalize(path.parent().context("database parent required")?)?;
@@ -1010,6 +1047,12 @@ impl DomainStore {
     pub(crate) fn write_mark(&self) -> Result<(u64, Revision)> {
         let newest: i64 = self.conn.query_row("SELECT coalesce(max(revision),0) FROM command_audit", [], |row| row.get(0))?;
         Ok((self.conn.total_changes(), newest as Revision))
+    }
+    /// What a reader connection sees committed: a number that changes with every commit of
+    /// another connection, commands and side tables alike, and the newest committed revision.
+    pub(crate) fn read_mark(&self) -> Result<(u64, Revision)> {
+        let newest: i64 = self.conn.query_row("SELECT coalesce(max(revision),0) FROM command_audit", [], |row| row.get(0))?;
+        Ok((data_version(&self.conn)? as u64, newest as Revision))
     }
     /// When each Task last entered its state.
     pub(crate) fn task_state_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
@@ -1379,6 +1422,21 @@ impl DomainStore {
         self.conn.execute("DELETE FROM auto_launches WHERE task_id=?1", [&task_id.0])?;
         self.note_side_write();
         Ok(())
+    }
+    /// Which of these tasks ever had a launch recorded, in one statement.
+    pub(crate) fn launched_tasks<'a>(&self, tasks: impl IntoIterator<Item = &'a TaskId>) -> Result<std::collections::BTreeSet<TaskId>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("launched_tasks");
+        let ids = serde_json::to_string(&tasks.into_iter().map(|task| task.0.as_str()).collect::<Vec<_>>())?;
+        let mut query = self.conn.prepare("SELECT DISTINCT task_id FROM model_decisions
+            WHERE task_id IN (SELECT value FROM json_each(?1)) AND kind IN('launch','relaunch')")?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([ids], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok(TaskId(row.get(0)?)) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     /// Whether a launch of this task was ever recorded.
     pub(crate) fn task_was_launched(&self, task_id: &TaskId) -> Result<bool> {
@@ -1835,7 +1893,7 @@ mod lifecycle_cache_tests;
 mod write_cost_tests;
 #[cfg(test)]
 #[path = "domain_store/load_bench.rs"]
-mod load_bench;
+pub(crate) mod load_bench;
 #[cfg(test)]
 #[path = "domain_store/load_tests.rs"]
 mod load_tests;

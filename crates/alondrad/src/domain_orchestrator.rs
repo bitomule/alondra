@@ -845,7 +845,8 @@ fn bounded_note(note: &str, limit: usize) -> String {
 /// The orchestrator phase and the actions available to the user.
 pub(crate) fn status(executor: &Executor) -> Result<serde_json::Value> {
     let runtime = load(&executor.home)?;
-    let queue_depth = executor.pending()?.len();
+    let queue_depth = executor.domain.live_read().pending_messages()?.into_iter()
+        .filter(|message| message.recipient_kind == "orchestrator").count();
     let ambiguous = runtime.active_run.is_some() && runtime.last_error.is_some();
     let phase = match (&runtime.active_run, &runtime.last_error) {
         (Some(_), None) => "running",

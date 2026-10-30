@@ -33,7 +33,7 @@ fn seed_load_bench() {
     seed(&mut store, nodes);
 }
 
-fn seed(store: &mut DomainStore, nodes: usize) {
+pub(crate) fn seed(store: &mut DomainStore, nodes: usize) {
     let user = Actor::User { user_id: "user-1".into() };
     for r in 0..REQUESTS {
         run(store, &Actor::Orchestrator { generation: 0 }, format!("request-{r}"), Command::CreateRequest {
@@ -253,9 +253,9 @@ async fn trace_card_live_store_reads() {
     let client = daemon.client();
     let state = client.domain.state().unwrap();
     let before = process_resources();
-    client.domain.store.lock().unwrap().begin_live_read_trace();
+    client.domain.reads.lock().unwrap().begin_live_read_trace();
     let live = crate::views::live::gather(&client, &state, Lang::En, &["card:info-0".into()], true, false).await;
-    let trace = client.domain.store.lock().unwrap().end_live_read_trace();
+    let trace = client.domain.reads.lock().unwrap().end_live_read_trace();
     let after = process_resources();
     let mut getters = std::collections::BTreeMap::<&str, (usize, usize, usize, usize, f64)>::new();
     for read in &trace {

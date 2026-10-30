@@ -89,7 +89,7 @@ impl Facts {
         let sampled = client.feeds.subscribe();
         let pull_requests = client.details.version();
         let contexts = client.domain.contexts.version();
-        let (store_rows, newest) = client.domain.store.lock_or_exit("the domain store").write_mark().ok()?;
+        let (store_rows, newest) = client.domain.live_read().read_mark().ok()?;
         (newest <= state.revision && *domain.borrow() == state.revision).then(|| Self {
             epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests, contexts,
             domain, hooks, reports, usage, gate, sampled,
@@ -118,7 +118,7 @@ struct Marks {
 impl Marks {
     fn now(client: &crate::client_routes::Client) -> Self {
         Self {
-            store_rows: client.domain.store.lock_or_exit("the domain store").write_mark().ok().map(|(rows, _)| rows),
+            store_rows: client.domain.live_read().read_mark().ok().map(|(rows, _)| rows),
             pull_requests: client.details.version(),
             contexts: client.domain.contexts.version(),
         }
@@ -272,6 +272,54 @@ async fn issue_data(client: &crate::client_routes::Client, keys: &[String], refr
     }
 }
 
+/// What a snapshot reads from the store, all in one read transaction: one commit's state.
+struct Stored {
+    launches: BTreeMap<alondra_core::domain::RequestId, (Option<String>, Option<String>)>,
+    refusals: Vec<(TaskId, String, Option<String>)>,
+    retries: BTreeMap<TaskId, (u8, i64)>,
+    /// Unreadable launch history counts every waiting task as launched, so none is offered a slot.
+    launched: anyhow::Result<std::collections::BTreeSet<TaskId>>,
+    revision_times: anyhow::Result<BTreeMap<alondra_core::domain::Revision, i64>>,
+    request_times: BTreeMap<alondra_core::domain::RequestId, i64>,
+    task_state_times: BTreeMap<TaskId, i64>,
+    task_started_times: BTreeMap<TaskId, i64>,
+    cancel_reasons: BTreeMap<TaskId, String>,
+    task_spend: Vec<(String, (BTreeMap<String, i64>, Option<i64>))>,
+}
+
+impl Stored {
+    fn read(client: &crate::client_routes::Client, state: &DomainState, waiting: &[&alondra_core::domain::Task], keys: &[String], clock_only: bool) -> Self {
+        let store = client.domain.live_read();
+        let launched = if waiting.is_empty() { Ok(Default::default()) } else { store.launched_tasks(waiting.iter().map(|task| &task.id)) };
+        let (launches, refusals, retries) = (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default());
+        if clock_only {
+            return Self { launches, refusals, retries, launched, revision_times: Ok(Default::default()), request_times: Default::default(),
+                task_state_times: Default::default(), task_started_times: Default::default(), cancel_reasons: Default::default(), task_spend: vec![] };
+        }
+        let revisions = state.inbox_orders().iter().map(|(_, order)| *order).collect::<Vec<_>>();
+        Self {
+            launches, refusals, retries, launched,
+            revision_times: store.revision_times(&revisions),
+            request_times: store.request_times().unwrap_or_default(),
+            task_state_times: store.task_state_times().unwrap_or_default(),
+            task_started_times: store.task_started_times().unwrap_or_default(),
+            cancel_reasons: store.cancel_reasons().unwrap_or_default(),
+            task_spend: keys.iter().filter_map(|key| key.strip_prefix("task:"))
+                .filter(|id| state.tasks.contains_key(&TaskId((*id).to_owned())))
+                .filter_map(|id| Some((id.to_owned(), store.task_spend(id).ok()?))).collect(),
+        }
+    }
+}
+
+/// The tasks not started that no node holds and no closed node had: those a launch may still be
+/// owed to.
+fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a DomainState) -> Vec<&'a alondra_core::domain::Task> {
+    state.tasks.values()
+        .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
+        .filter(|task| client.domain.live.closed_task(&task.id.0).is_none())
+        .collect()
+}
+
 async fn gather_inner(
     client: &crate::client_routes::Client,
     state: &DomainState,
@@ -285,15 +333,13 @@ async fn gather_inner(
         Some(standing) if standing.no_session => (None, true),
         standing => (standing, false),
     };
-    let (launches, refusals, retries) = {
-        let store = client.domain.store.lock_or_exit("the domain store");
-        (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default())
-    };
+    let waiting = waiting_to_start(client, state);
+    let read = Stored::read(client, state, &waiting, keys, clock_only);
+    let (launches, refusals, retries) = (read.launches, read.refusals, read.retries);
     let start_waits = {
-        let store = client.domain.store.lock_or_exit("the domain store");
-        state.tasks.values()
-            .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
-            .filter(|task| client.domain.live.closed_task(&task.id.0).is_none() && !store.task_was_launched(&task.id).unwrap_or(true))
+        let launched = read.launched;
+        waiting.into_iter()
+            .filter(|task| launched.as_ref().is_ok_and(|launched| !launched.contains(&task.id)))
             .map(|task| {
                 let wait = match retries.get(&task.id) {
                     Some((_, at)) => alondra_core::views::LiveStartWait::Retry { at: crate::usage_pause::clock_text(*at, now, lang == Lang::Es) },
@@ -517,13 +563,7 @@ async fn gather_inner(
     });
     let inbox_times = if clock_only { vec![] } else {
         let orders = state.inbox_orders();
-        let revisions = orders.iter().map(|(_, order)| *order).collect::<Vec<_>>();
-        client
-            .domain
-            .store
-            .lock_or_exit("the domain store")
-            .revision_times(&revisions)
-            .ok()
+        read.revision_times
             .map(|times| {
                 orders
                     .into_iter()
@@ -545,20 +585,12 @@ async fn gather_inner(
             gauges(&machine, &providers, Lang::Es, machine.at),
         ))
     } else { vec![] };
-    let request_times = if clock_only { BTreeMap::new() } else { client
-        .domain
-        .store
-        .lock_or_exit("the domain store")
-        .request_times()
-        .unwrap_or_default()
+    let request_times = if clock_only { BTreeMap::new() } else { read.request_times
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
         .collect() };
     let (task_since, task_started, cancel_reasons) = if clock_only { (BTreeMap::new(), BTreeMap::new(), BTreeMap::new()) } else {
-        let (times, started, reasons) = {
-            let store = client.domain.store.lock_or_exit("the domain store");
-            (store.task_state_times().unwrap_or_default(), store.task_started_times().unwrap_or_default(), store.cancel_reasons().unwrap_or_default())
-        };
+        let (times, started, reasons) = (read.task_state_times, read.task_started_times, read.cancel_reasons);
         let visible = || state.tasks.values().filter(|task| !task.archived);
         let since = visible()
             .filter_map(|task| times.get(&task.id).map(|at| (task.id.0.clone(), timestamp(*at))))
@@ -579,13 +611,11 @@ async fn gather_inner(
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { effort })
     }).collect();
     let task_costs = if clock_only { BTreeMap::new() } else {
-        let store = client.domain.store.lock_or_exit("the domain store");
-        keys.iter().filter_map(|key| key.strip_prefix("task:")).filter_map(|id| {
-            let task = state.tasks.get(&TaskId(id.to_owned()))?;
-            let (sessions, folded) = store.task_spend(id).ok()?;
+        read.task_spend.into_iter().filter_map(|(id, (sessions, folded))| {
+            let task = state.tasks.get(&TaskId(id.clone()))?;
             let live = task.agent_id.as_ref().and_then(|agent| nodes.iter().find(|node| node.agent_id == agent.0))
                 .and_then(|node| Some((node.agent_id.as_str(), node.cost_cents?)));
-            Some((id.to_owned(), task_cost_cents(&sessions, folded, live)?))
+            Some((id.clone(), task_cost_cents(&sessions, folded, live)?))
         }).collect()
     };
     let keyed = gather_keyed(client, state, keys, issue_data).await;
@@ -753,13 +783,12 @@ async fn gather_keyed(
         }
     }
     let mut task_history = BTreeMap::new();
-    for id in keys.iter().filter_map(|key| key.strip_prefix("task:")) {
-        let task = TaskId(id.to_owned());
-        if let Ok(history) = client
-            .domain
-            .store
-            .lock_or_exit("the domain store")
-            .task_history(&task)
+    let histories: Vec<_> = {
+        let store = client.domain.live_read();
+        keys.iter().filter_map(|key| key.strip_prefix("task:")).map(|id| (id, store.task_history(&TaskId(id.to_owned())))).collect()
+    };
+    for (id, history) in histories {
+        if let Ok(history) = history
         {
             task_history.insert(
                 id.to_owned(),
@@ -801,7 +830,7 @@ fn allowed_rules(client: &crate::client_routes::Client, keys: &[String]) -> (Vec
     let rows = if keys.iter().any(|key| key == "machine") {
         crate::allow_always::reconcile(&client.domain)
     } else {
-        client.domain.store.lock_or_exit("the domain store").allowed_rules().unwrap_or_default()
+        client.domain.live_read().allowed_rules().unwrap_or_default()
     };
     let mut missing: Vec<String> = rows.iter().filter(|row| row.state == RuleState::Missing).map(|row| row.interaction_id.clone()).collect();
     missing.sort();
@@ -995,15 +1024,15 @@ mod cache_tests {
         assert_eq!(gathered(&client), 1, "nothing changed, so the second view reuses the snapshot");
         let getter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = getter_calls.clone();
-        domain.store.lock().unwrap().on_live_read(move |_| {
+        domain.reads.lock().unwrap().on_live_read(move |_| {
             calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
         let before = (gathered(&client), keyed(&client));
-        domain.store.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().begin_live_read_trace();
         for _ in 0..3 {
             assert_eq!(gather(&client, &state, Lang::En, &home, true, false).await, first);
         }
-        let trace = domain.store.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().end_live_read_trace();
         assert_eq!(getter_calls.load(std::sync::atomic::Ordering::Relaxed), 0, "warm snapshots must not call instrumented live getters");
         assert!(trace.is_empty(), "warm snapshots must not execute instrumented live getters: {trace:?}");
         assert_eq!((gathered(&client), keyed(&client)), before, "warm snapshots reuse shared and keyed data");
@@ -1063,7 +1092,7 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.store.lock().unwrap().on_live_read(move |getter| {
+        domain.reads.lock().unwrap().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.wake(); }
         });
@@ -1105,9 +1134,9 @@ mod cache_tests {
             assert_eq!(tasks, 320, "both fixtures retain the same Task population");
             assert!(history >= tasks * steps as u64, "the real SQL history must be populated");
             let state = domain.state().unwrap();
-            domain.store.lock().unwrap().begin_live_read_trace();
+            domain.reads.lock().unwrap().begin_live_read_trace();
             let live = gather_at(&client, &state, Lang::En, &["home".to_owned()], true, false, 1_700_000_000_000).await;
-            let trace = domain.store.lock().unwrap().end_live_read_trace();
+            let trace = domain.reads.lock().unwrap().end_live_read_trace();
             assert_eq!(live.task_since.len(), 6, "finished archived Tasks stay out of the visible snapshot");
             assert_eq!(live.task_since["room"], timestamp(latest), "the actual latest history value reaches the snapshot");
             let mut getters = BTreeMap::new();
@@ -1118,7 +1147,7 @@ mod cache_tests {
             }
             assert_eq!(getters, BTreeMap::from([
                 ("request_launch_summaries", 1), ("launch_refusals", 1), ("start_retries", 1),
-                ("task_was_launched", 6), ("revision_times", 1), ("request_times", 1),
+                ("launched_tasks", 1), ("revision_times", 1), ("request_times", 1),
                 ("task_state_times", 1), ("task_started_times", 1), ("cancel_reasons", 1),
             ]), "a cold home snapshot has a bounded set of real live getter calls");
             let started = trace.iter().find(|read| read.getter == "task_started_times").unwrap();
@@ -1155,16 +1184,18 @@ mod cache_tests {
         }
         domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
-        domain.store.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().begin_live_read_trace();
         let changed = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
-        let trace = domain.store.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().end_live_read_trace();
         assert_eq!(domain.state().unwrap().revision, state.revision);
         assert_eq!(changed.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["retry", "room", "send"]);
         assert_eq!(changed.start_waits["room"], LiveStartWait::Room);
         assert_eq!(changed.start_waits["send"], LiveStartWait::Room);
         assert_eq!(changed.start_waits["retry"], LiveStartWait::Retry { at: crate::usage_pause::clock_text(now + 60_000, now, false) });
         assert!(trace.iter().all(|read| !read.failed));
-        assert_eq!(trace.iter().filter(|read| read.getter == "task_was_launched").count(), 5, "live-closed task skips the SQL probe");
+        let launched = trace.iter().filter(|read| read.getter == "launched_tasks").collect::<Vec<_>>();
+        assert_eq!(launched.iter().map(|read| (read.statement_attempts, read.rows)).collect::<Vec<_>>(), [(1, 2)],
+            "one statement for every waiting task, the live-closed one left out of it");
         let later = gather_at(&client, &state, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
         assert_eq!(later.start_waits["retry"], LiveStartWait::Retry { at: crate::usage_pause::clock_text(now + 60_000, now + 2 * 86_400_000, true) });
         assert_ne!(changed.start_waits["retry"], later.start_waits["retry"], "moving clock/language remain live inputs");
@@ -1181,13 +1212,13 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
         connection.execute_batch("DROP TABLE model_decisions").unwrap();
-        domain.store.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().begin_live_read_trace();
         let live = gather_at(&client, &state, Lang::En, &[], false, false, 1_700_000_000_000).await;
-        let trace = domain.store.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().end_live_read_trace();
         assert!(live.start_waits.is_empty(), "unknown launch history must not advertise a fresh launch slot");
         let failed: Vec<_> = trace.iter().filter(|read| read.failed).collect();
-        assert_eq!(failed.len(), 6);
-        assert!(failed.iter().all(|read| read.getter == "task_was_launched" && read.statement_attempts == 1 && read.rows == 0));
+        assert_eq!(failed.len(), 1);
+        assert!(failed.iter().all(|read| read.getter == "launched_tasks" && read.rows == 0));
     }
 
     #[tokio::test]
