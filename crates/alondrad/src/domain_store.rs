@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS account_usage(provider TEXT NOT NULL, account TEXT NO
 CREATE TABLE IF NOT EXISTS account_distribution(singleton INTEGER PRIMARY KEY CHECK(singleton=1), policy TEXT NOT NULL CHECK(policy IN('margin','chain')), move_when_exhausted INTEGER NOT NULL CHECK(move_when_exhausted IN(0,1)));";
 /// How this Mac merges PRs, as the user set it in Settings; no row is the default, squash.
 const MERGE_METHOD: &str = "CREATE TABLE IF NOT EXISTS merge_method(singleton INTEGER PRIMARY KEY CHECK(singleton=1), method TEXT NOT NULL CHECK(method IN('squash','merge','rebase')));";
+/// How nodes bring their PR's base into their branch, as the user set it in Settings; no row is the default, rebase.
+const BRANCH_UPDATE: &str = "CREATE TABLE IF NOT EXISTS branch_update(singleton INTEGER PRIMARY KEY CHECK(singleton=1), method TEXT NOT NULL CHECK(method IN('rebase','merge')));";
 /// What each node said last as a turn of it ended; created on every open like task_models.
 const NODE_LAST_WORDS: &str = "CREATE TABLE IF NOT EXISTS node_last_words(agent_id TEXT PRIMARY KEY REFERENCES agents(id), text TEXT NOT NULL);";
 /// Domains written before no node could rest unheard kept such nodes `stopped`: what moved them
@@ -651,6 +653,7 @@ impl DomainStore {
         tx.execute_batch(PLAN_REVIEWS)?;
         tx.execute_batch(ACCOUNTS)?;
         tx.execute_batch(MERGE_METHOD)?;
+        tx.execute_batch(BRANCH_UPDATE)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;

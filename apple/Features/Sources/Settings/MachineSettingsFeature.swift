@@ -6,11 +6,13 @@ import Foundation
 /// A setting of the connected Mac that its daemon offers in the `settings` section of this Mac's view.
 public enum MachineSettingKind: String, CaseIterable, Hashable, Sendable {
     case mergeMethod = "merge_method"
+    case branchUpdate = "branch_update"
     case nodeLimit = "node_limit"
 
     var command: String {
         switch self {
         case .mergeMethod: "set_merge_method"
+        case .branchUpdate: "set_branch_update"
         case .nodeLimit: "set_limit"
         }
     }
@@ -18,7 +20,7 @@ public enum MachineSettingKind: String, CaseIterable, Hashable, Sendable {
     /// The row's second line right after a choice, before the daemon confirms it.
     func chosenDetail(_ label: String) -> String {
         switch self {
-        case .mergeMethod:
+        case .mergeMethod, .branchUpdate:
             return label.components(separatedBy: " · ").first ?? label
         case .nodeLimit:
             return String(localized: "Nodes at once: \(label)")
@@ -28,6 +30,7 @@ public enum MachineSettingKind: String, CaseIterable, Hashable, Sendable {
     var unreachable: String {
         switch self {
         case .mergeMethod: String(localized: "Your Mac didn’t get the new merge method. Try again.")
+        case .branchUpdate: String(localized: "Your Mac didn’t get the new way to update branches. Try again.")
         case .nodeLimit: String(localized: "Your Mac didn’t get the new limit. Try again.")
         }
     }
@@ -35,6 +38,7 @@ public enum MachineSettingKind: String, CaseIterable, Hashable, Sendable {
     var refused: String {
         switch self {
         case .mergeMethod: String(localized: "Your Mac didn’t take the new merge method.")
+        case .branchUpdate: String(localized: "Your Mac didn’t take the new way to update branches.")
         case .nodeLimit: String(localized: "Your Mac didn’t take the new limit.")
         }
     }

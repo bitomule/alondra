@@ -450,9 +450,11 @@ pub(super) fn machine(context: &RenderContext<'_>) -> View {
     view
 }
 
-/// This Mac's settings the apps show in Settings: how it merges PRs and how many nodes work at once.
+/// This Mac's settings the apps show in Settings: how it merges PRs, how nodes bring main into their
+/// PR's branch and how many nodes work at once.
 fn settings_section(context: &RenderContext<'_>) -> Option<super::Section> {
-    let mut items: Vec<Item> = super::merge_method::settings_row(context).into_iter().collect();
+    let mut items: Vec<Item> = super::merge_method::settings_row(context).into_iter()
+        .chain(super::branch_update::settings_row(context)).collect();
     if let Some(pacing) = context.live.pacing.as_ref()
         && let Some(limit) = super::pacing::limit_action(pacing, context)
     {

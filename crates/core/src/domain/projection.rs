@@ -122,6 +122,10 @@ impl DomainState {
     pub fn set_merge_method_action(&self, method: MergeMethod) -> AvailableAction {
         self.action("set_merge_method", Command::SetMergeMethod { method }, None, None, self)
     }
+    /// The button that makes `update` the way nodes bring their PR's base into their branch.
+    pub fn set_branch_update_action(&self, update: BranchUpdate) -> AvailableAction {
+        self.action("set_branch_update", Command::SetBranchUpdate { update }, None, None, self)
+    }
     pub(super) fn action(
         &self,
         kind: &str,

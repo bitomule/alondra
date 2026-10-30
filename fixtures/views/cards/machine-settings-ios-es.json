@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v549fa637298675e2",
+  "version": "vd9775fd80d5c4937",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
@@ -133,6 +133,51 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Modo de merge cambiado",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "branch_update",
+          "icon": "branch",
+          "title": "Actualizar la rama de un PR con main",
+          "subtitle": "Rebase · cuando la PR tiene conflictos",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "set_branch_update:branch_update@6",
+              "label": "Actualizar la rama de un PR con main",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "rebase",
+                  "label": "Rebase · ahora",
+                  "description": "Los commits de la PR se reaplican sobre main y se suben con --force-with-lease",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Merge",
+                  "description": "Un commit de merge trae main a la rama",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Modo de actualizar la rama cambiado",
               "resolves_card": false
             }
           ]

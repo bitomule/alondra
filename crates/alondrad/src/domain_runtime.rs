@@ -1150,7 +1150,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordModelCatalog { .. }
         | Command::RecordModelProfiles { .. }
         | Command::SetModelProfile { .. }
-        | Command::SetMergeMethod { .. } => None,
+        | Command::SetMergeMethod { .. }
+        | Command::SetBranchUpdate { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

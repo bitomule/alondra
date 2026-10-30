@@ -336,6 +336,15 @@ Pick the tool by what you need:
   completes the task. Never merge a PR yourself.
 - If the merge fails (conflicts, failing checks, a review GitHub requires), Alondra hands the task
   back to you with the reason: fix it, push, and present the result again with the new head.
+- Updating your branch with its base (conflicts, or you need what landed there): use the method
+  Alondra's message names, which the user picks in Settings («Update a PR's branch with main»).
+  - Rebase, the default: `git fetch origin <base>`, `git rebase origin/<base>`, resolve, run the
+    tests, then `git push --force-with-lease` to your own task's branch only. Never force-push
+    `main`, the base, or any branch that is not your task's.
+  - If the rebase gets hard (many conflicts across intermediate commits), `git rebase --abort`,
+    merge `origin/<base>` into your branch instead this once, push normally, and say in your
+    delivery that you merged instead of rebasing and why.
+  - Merge: `git fetch origin <base>`, `git merge origin/<base>`, resolve, run the tests, push.
 - When the user requests changes or asks about the PR, or Alondra asks you to resolve its
   conflicts, its card leaves the user's queue and the task shows what Alondra asked of you. Do
   it (put the answer to a question in the report), then present the result again with

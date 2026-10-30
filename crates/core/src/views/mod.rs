@@ -15,6 +15,7 @@ pub mod live;
 pub mod resolves;
 pub mod review_export;
 mod merge_method;
+mod branch_update;
 mod messages;
 pub mod metrics;
 mod misc;

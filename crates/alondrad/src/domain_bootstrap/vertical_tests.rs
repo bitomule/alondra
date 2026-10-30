@@ -426,7 +426,7 @@ async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
     let (status, refused) = fixture.post(&fixture.agent, &envelope).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
     assert_eq!(refused["code"], "pr_conflicts");
-    assert!(refused["message"].as_str().unwrap().contains("bring main into the branch"), "{refused}");
+    assert!(refused["message"].as_str().unwrap().contains("git push --force-with-lease"), "{refused}");
     assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()), "no card");
     assert_eq!(user_pushes(&fixture.domain), pushes_before, "no push");
 

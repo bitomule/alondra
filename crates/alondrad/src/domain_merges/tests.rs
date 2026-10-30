@@ -349,7 +349,7 @@ async fn a_conflicting_pr_goes_back_to_its_node_to_resolve_conflicts_with_main()
         assert!(!merger.merge_due(&domain, &gh).await.unwrap(), "nothing is left waiting ({merge_state}, {mergeable})");
         assert_eq!(task(&domain), TaskState::Running, "the node resolves the conflicts");
         let feedback = feedback(&domain);
-        assert!(feedback.len() == 1 && feedback[0].contains("conflicts with main"), "{feedback:?}");
+        assert!(feedback.len() == 1 && feedback[0].contains("conflicts with main: rebase its branch on main"), "{feedback:?}");
         merger.merge_due(&domain, &gh).await.unwrap();
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(!calls.contains("pr merge") && !calls.contains("protection"), "{calls}");

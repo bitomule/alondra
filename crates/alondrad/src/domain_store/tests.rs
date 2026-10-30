@@ -855,6 +855,21 @@ fn the_merge_method_set_in_settings_survives_restart_and_a_database_without_one_
 }
 
 #[test]
+fn the_branch_update_set_in_settings_survives_restart_and_a_database_without_one_rebases() {
+    use alondra_core::domain::BranchUpdate;
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().branch_update, BranchUpdate::Rebase);
+    execute(&mut store, &user(), "merge", Command::SetBranchUpdate { update: BranchUpdate::Merge });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().branch_update, BranchUpdate::Merge);
+    execute(&mut store, &user(), "rebase", Command::SetBranchUpdate { update: BranchUpdate::Rebase });
+    drop(store);
+    assert_eq!(DomainStore::open(&fixture.path()).unwrap().load().unwrap().branch_update, BranchUpdate::Rebase);
+}
+
+#[test]
 fn restart_preserves_decisions_documents_and_relations() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();

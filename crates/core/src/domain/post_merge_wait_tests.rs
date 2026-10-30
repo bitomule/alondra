@@ -173,7 +173,7 @@ fn a_task_waiting_to_go_on_goes_on_when_the_pr_it_waits_for_merges() {
     let expected = dependencies_done_notice(&[Landed {
         title: "Fix the Mac package".into(), cancelled: false, result: Some("Fixed".into()),
         merged_pr: Some("https://github.com/owner/repo/pull/2".into()),
-    }]);
+    }], BranchUpdate::Rebase);
     assert_eq!(told(&landed, "c"), vec![expected]);
 }
 
@@ -273,7 +273,7 @@ fn a_wait_that_ended_while_the_daemon_was_closed_goes_on_with_its_node_told_once
     let expected = dependencies_done_notice(&[Landed {
         title: "Fix the Mac package".into(), cancelled: false, result: Some("Fixed".into()),
         merged_pr: Some("https://github.com/owner/repo/pull/2".into()),
-    }]);
+    }], BranchUpdate::Rebase);
     assert_eq!(told(&reviewed, "c"), vec![expected]);
     assert!(s.ended_waits().is_empty());
 

@@ -1418,7 +1418,7 @@ fn map_action(
                 if text.is_empty() { return None; }
                 (text.to_owned(), attachments.to_vec(), Instruction::Question, stamp("Question sent", "Pregunta enviada"))
             } else {
-                (crate::domain_messages::conflicts_text(&crate::domain_messages::user_name(), pr), vec![],
+                (crate::domain_messages::conflicts_text(&crate::domain_messages::user_name(), pr, state.branch_update), vec![],
                     Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
             };
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
@@ -1517,6 +1517,10 @@ fn map_action(
         Verb::SetMergeMethod => {
             let method = MergeMethod::parse(request.option_id.as_deref()?)?;
             Some((Command::SetMergeMethod { method }, stamp("Merge method changed", "Modo de merge cambiado")))
+        }
+        Verb::SetBranchUpdate => {
+            let update = alondra_core::domain::BranchUpdate::parse(request.option_id.as_deref()?)?;
+            Some((Command::SetBranchUpdate { update }, stamp("Branch update changed", "Modo de actualizar la rama cambiado")))
         }
         Verb::Cancel => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
@@ -1793,6 +1797,8 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::SetPriority => Outcome::done(say("Priority changed. The queue follows it now.", "Prioridad cambiada. La cola ya la sigue.")),
         Verb::SetMergeMethod => Outcome::done(say("Merge method changed: PRs merge this way from now on.",
             "Modo de merge cambiado: las PR se mergean así desde ahora.")),
+        Verb::SetBranchUpdate => Outcome::done(say("Branch update changed: nodes bring main into their PR's branch this way from now on.",
+            "Modo de actualizar la rama cambiado: los nodos traen main a la rama de su PR así desde ahora.")),
         _ => Outcome::done(stamp.to_owned()),
     }
 }
@@ -2301,6 +2307,17 @@ mod tests {
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "octopus", "en"), None, || Ok(())).await.unwrap();
         assert_ne!(reply["outcome"], "applied", "{reply}");
         assert_eq!(domain.state().unwrap().merge_method, MergeMethod::Rebase);
+
+        use alondra_core::domain::BranchUpdate;
+        let state = domain.state().unwrap();
+        assert_eq!(state.branch_update, BranchUpdate::Rebase, "nodes rebase until the user picks otherwise");
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "merge", "es"), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(reply["result"]["title"], "Modo de actualizar la rama cambiado: los nodos traen main a la rama de su PR así desde ahora.", "{reply}");
+        assert_eq!(domain.state().unwrap().branch_update, BranchUpdate::Merge);
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "squash", "en"), None, || Ok(())).await.unwrap();
+        assert_ne!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(domain.state().unwrap().branch_update, BranchUpdate::Merge);
     }
 
     #[tokio::test]

@@ -464,6 +464,58 @@ impl MergeMethod {
         *self == MergeMethod::default()
     }
 }
+/// How a node brings its PR's base into its branch when the PR falls behind or conflicts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchUpdate {
+    #[default]
+    Rebase,
+    Merge,
+}
+impl BranchUpdate {
+    pub const ALL: [BranchUpdate; 2] = [BranchUpdate::Rebase, BranchUpdate::Merge];
+    pub fn id(self) -> &'static str {
+        match self {
+            BranchUpdate::Rebase => "rebase",
+            BranchUpdate::Merge => "merge",
+        }
+    }
+    pub fn parse(id: &str) -> Option<BranchUpdate> {
+        Self::ALL.into_iter().find(|update| update.id() == id)
+    }
+    pub fn is_default(&self) -> bool {
+        *self == BranchUpdate::default()
+    }
+    /// The same in a few words, for a reason the user also reads on the task.
+    pub fn summary(self, base: &str) -> String {
+        match self {
+            BranchUpdate::Rebase => format!("rebase its branch on {base} and resolve them"),
+            BranchUpdate::Merge => format!("merge {base} into its branch and resolve them"),
+        }
+    }
+    /// How a node that needs what landed on the default branch brings it into its branch.
+    pub fn from_default_branch(self) -> &'static str {
+        match self {
+            BranchUpdate::Rebase => "rebase it on the default branch and push with `git push --force-with-lease` to your task's own branch only",
+            BranchUpdate::Merge => "merge the default branch into it and push",
+        }
+    }
+    /// What a node is told to do to bring `base` into its branch, in every message that asks it to.
+    pub fn instruction(self, base: &str) -> String {
+        match self {
+            BranchUpdate::Rebase => format!(
+                "rebase your branch on {base} (`git fetch origin {base}`, `git rebase origin/{base}`), resolve the conflicts, \
+                 run the tests and push with `git push --force-with-lease` to your task's own branch only, never to {base} or \
+                 anyone else's branch. If the rebase gets hard (many conflicts in intermediate commits), run `git rebase --abort`, \
+                 merge origin/{base} into your branch instead this once, and say so in your delivery"
+            ),
+            BranchUpdate::Merge => format!(
+                "merge {base} into your branch (`git fetch origin {base}`, `git merge origin/{base}`), resolve the conflicts, \
+                 run the tests and push"
+            ),
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequest {
     pub id: PrId,
@@ -1236,6 +1288,9 @@ pub struct DomainState {
     /// repository allows it (`MergeMethod::for_pr`).
     #[serde(default, skip_serializing_if = "MergeMethod::is_default")]
     pub merge_method: MergeMethod,
+    /// How nodes bring their PR's base into their branch, as the user set it in Settings.
+    #[serde(default, skip_serializing_if = "BranchUpdate::is_default")]
+    pub branch_update: BranchUpdate,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -1275,6 +1330,7 @@ impl DomainState {
             model_profiles_version: String::new(),
             account_usage: Vec::new(),
             merge_method: MergeMethod::default(),
+            branch_update: BranchUpdate::default(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

@@ -930,6 +930,10 @@ pub(super) fn save_changes(
         exec(c, "INSERT INTO merge_method(singleton,method) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET method=excluded.method",
             params![after.merge_method.id()])?;
     }
+    if before.branch_update != after.branch_update {
+        exec(c, "INSERT INTO branch_update(singleton,method) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET method=excluded.method",
+            params![after.branch_update.id()])?;
+    }
     if before.account_usage != after.account_usage {
         let key = |usage: &alondra_core::usage::AccountUsage| (usage.provider.as_str(), usage.account.as_str().to_owned());
         for gone in before.account_usage.iter().filter(|old| !after.account_usage.iter().any(|new| key(new) == key(old))) {
@@ -1446,6 +1450,10 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     let stored: bool = c.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='merge_method'", [], |r| r.get::<_, i64>(0))? == 1;
     if stored && let Some(method) = c.query_row("SELECT method FROM merge_method WHERE singleton=1", [], |r| r.get::<_, String>(0)).optional()? {
         state.merge_method = MergeMethod::parse(&method).with_context(|| format!("an unknown merge method {method:?}"))?;
+    }
+    let stored: bool = c.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='branch_update'", [], |r| r.get::<_, i64>(0))? == 1;
+    if stored && let Some(method) = c.query_row("SELECT method FROM branch_update WHERE singleton=1", [], |r| r.get::<_, String>(0)).optional()? {
+        state.branch_update = alondra_core::domain::BranchUpdate::parse(&method).with_context(|| format!("an unknown branch update {method:?}"))?;
     }
     let mut usage = c.prepare("SELECT usage FROM account_usage ORDER BY rowid")?;
     for row in usage.query_map([], |r| r.get::<_, String>(0))? {

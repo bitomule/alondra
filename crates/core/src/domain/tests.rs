@@ -3105,9 +3105,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ReviewWaits => 112,
         Command::ReportFailure { .. } => 113,
         Command::SettleStall { .. } => 114,
+        Command::SetBranchUpdate { .. } => 115,
     }
 }
-const COMMAND_KINDS: usize = 115;
+const COMMAND_KINDS: usize = 116;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3264,6 +3265,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CompactEndedTasks { task_ids: vec![ids.task.into()] }, false),
         (Command::ClearCompleted { seen: 0 }, false),
         (Command::SetMergeMethod { method: MergeMethod::Rebase }, true),
+        (Command::SetBranchUpdate { update: BranchUpdate::Merge }, true),
         (Command::RecordDecisionRequest { task_id: ids.task.into(), generation: 1, epoch: 1, hold: Hold::Permission, tool: Some("Bash".into()),
             input: serde_json::json!({"command": "make"}), mcp_server: None,
             prompt: DecisionPrompt::Card { body: "Run make".into(), options: Hold::Permission.options(), card: CardSpec::new(CardKind::Authorize, "Run make") } }, false),
@@ -4408,7 +4410,7 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
     }).collect();
     let result = s.interactions[s.tasks[&"t".into()].final_presentation.as_ref().unwrap()].body.clone();
     let landed = Landed { title: "Result".into(), cancelled: false, result: Some(result_excerpt(&result)), merged_pr: None };
-    assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&[landed]))]);
+    assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&[landed], BranchUpdate::Rebase))]);
     let later = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
 }
@@ -4506,6 +4508,8 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::ClearCompleted { seen: MAX_REVISION },
         Command::SetMergeMethod { method: MergeMethod::Merge },
         Command::SetMergeMethod { method: MergeMethod::Squash },
+        Command::SetBranchUpdate { update: BranchUpdate::Merge },
+        Command::SetBranchUpdate { update: BranchUpdate::Rebase },
         Command::InterruptTurn { agent_id: "a".into() },
         Command::InterruptTurn { agent_id: "s".into() },
         Command::InterruptTurn { agent_id: "missing".into() },
@@ -4932,6 +4936,32 @@ fn only_the_user_sets_the_merge_method_and_merges_already_authorized_keep_theirs
     exec(&mut s, user(), Command::SetMergeMethod { method: MergeMethod::Rebase }).unwrap();
     assert_eq!(s.merge_method, MergeMethod::Rebase);
     assert_eq!(s.merge_authorizations[&AuthorizationId::from("auth")].method, MergeMethod::Squash);
+}
+#[test]
+fn nodes_rebase_by_default_only_the_user_changes_it_and_old_state_reads_as_rebase() {
+    let mut s = fixture();
+    assert_eq!(s.branch_update, BranchUpdate::Rebase);
+    for actor in [agent(), orchestrator(), Actor::System] {
+        reject_unchanged(&mut s, actor, Command::SetBranchUpdate { update: BranchUpdate::Merge }, "forbidden");
+    }
+    exec(&mut s, user(), Command::SetBranchUpdate { update: BranchUpdate::Merge }).unwrap();
+    assert_eq!(s.branch_update, BranchUpdate::Merge);
+    let mut stored = serde_json::to_value(&s).unwrap();
+    assert_eq!(stored["branch_update"], "merge");
+    stored.as_object_mut().unwrap().remove("branch_update");
+    assert_eq!(serde_json::from_value::<DomainState>(stored).unwrap().branch_update, BranchUpdate::Rebase);
+}
+#[test]
+fn a_rebase_pushes_with_lease_to_the_tasks_own_branch_and_can_fall_back_to_a_merge() {
+    let rebase = BranchUpdate::Rebase.instruction("main");
+    for words in ["git rebase origin/main", "git push --force-with-lease", "your task's own branch only, never to main",
+        "git rebase --abort", "say so in your delivery"] {
+        assert!(rebase.contains(words), "{words:?} in {rebase}");
+    }
+    let merge = BranchUpdate::Merge.instruction("main");
+    assert!(merge.contains("git merge origin/main") && !merge.contains("force"), "{merge}");
+    assert!(BranchUpdate::Rebase.from_default_branch().contains("--force-with-lease"));
+    assert!(!BranchUpdate::Merge.from_default_branch().contains("force"));
 }
 
 #[test]

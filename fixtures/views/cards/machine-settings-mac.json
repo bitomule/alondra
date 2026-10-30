@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "v81f627d9c9a296a8",
+  "version": "v33c02298c6095bd9",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
@@ -133,6 +133,51 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Merge method changed",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "branch_update",
+          "icon": "branch",
+          "title": "Update a PR's branch with main",
+          "subtitle": "Rebase · when the PR has conflicts",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "set_branch_update:branch_update@6",
+              "label": "Update a PR's branch with main",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "rebase",
+                  "label": "Rebase · now",
+                  "description": "The PR's commits replayed on top of main, pushed with --force-with-lease",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Merge",
+                  "description": "A merge commit brings main into the branch",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Branch update changed",
               "resolves_card": false
             }
           ]

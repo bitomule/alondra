@@ -67,6 +67,8 @@ pub enum Verb {
     AccountPolicy,
     /// Set how this Mac merges PRs: `squash`, `merge` or `rebase`, as `option_id`.
     SetMergeMethod,
+    /// Set how nodes bring their PR's base into their branch: `rebase` or `merge`, as `option_id`.
+    SetBranchUpdate,
     /// Whether a node whose account reaches its limit goes on with another: `on` or `off`, as
     /// `option_id`.
     AccountMoves,
@@ -78,7 +80,7 @@ pub enum Verb {
     TaskSelection,
 }
 impl Verb {
-    pub const ALL: [Self; 55] = [
+    pub const ALL: [Self; 56] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -120,6 +122,7 @@ impl Verb {
         Self::McpCheck,
         Self::McpRemove,
         Self::SetMergeMethod,
+        Self::SetBranchUpdate,
         Self::AccountEnable,
         Self::AccountDisable,
         Self::AccountRemove,
@@ -178,6 +181,7 @@ impl Verb {
             Self::McpCheck => "mcp_check",
             Self::McpRemove => "mcp_remove",
             Self::SetMergeMethod => "set_merge_method",
+            Self::SetBranchUpdate => "set_branch_update",
             Self::AccountEnable => "account_enable",
             Self::AccountDisable => "account_disable",
             Self::AccountRemove => "account_remove",

@@ -7914,9 +7914,37 @@ fn the_merge_method_is_picked_in_this_macs_settings_above_the_node_limit() {
         Item::Row(row) => Some((row.id.as_str(), row.subtitle.as_deref())),
         _ => None,
     }).collect();
-    assert_eq!(rows, [("merge_method", Some("Rebase and merge · if the repository allows it")), ("node_limit", Some("Limit: automatic (6)"))]);
+    assert_eq!(rows, [("merge_method", Some("Rebase and merge · if the repository allows it")),
+        ("branch_update", Some("Rebase · when the PR has conflicts")), ("node_limit", Some("Limit: automatic (6)"))]);
     let pick = find_action(&machine, "set_merge_method:").unwrap();
     assert_eq!(pick.options[2].label, "Rebase and merge · now");
+}
+
+#[test]
+fn how_a_prs_branch_is_updated_with_main_is_picked_in_settings_below_the_merge_method_and_rebases_by_default() {
+    use crate::domain::BranchUpdate;
+    let mut state = fixture();
+    assert_eq!(state.branch_update, BranchUpdate::Rebase);
+    let machine = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "machine", "");
+    let settings = machine.sections.iter().find(|section| section.id == "settings").expect("this Mac's settings");
+    let Item::Row(row) = &settings.items[1] else { panic!("{settings:?}") };
+    assert_eq!((row.id.as_str(), row.title.as_str(), row.subtitle.as_deref()),
+        ("branch_update", "Actualizar la rama de un PR con main", Some("Rebase · cuando la PR tiene conflictos")));
+    let pick = find_action(&machine, "set_branch_update:").expect("the branch update is changed from this Mac's settings");
+    assert_eq!(pick.presentation, Presentation::Menu);
+    let options: Vec<(&str, &str, Option<&str>)> = pick.options.iter()
+        .map(|option| (option.id.as_str(), option.label.as_str(), option.description.as_deref())).collect();
+    assert_eq!(options, [
+        ("rebase", "Rebase · ahora", Some("Los commits de la PR se reaplican sobre main y se suben con --force-with-lease")),
+        ("merge", "Merge", Some("Un commit de merge trae main a la rama")),
+    ]);
+    state.branch_update = BranchUpdate::Merge;
+    let machine = render(&state, &LiveSnapshot::default(), Client::Mac, Lang::En, "machine", "");
+    let settings = machine.sections.iter().find(|section| section.id == "settings").unwrap();
+    let Item::Row(row) = &settings.items[1] else { panic!("{settings:?}") };
+    assert_eq!((row.title.as_str(), row.subtitle.as_deref()), ("Update a PR's branch with main", Some("Merge · when the PR has conflicts")));
+    let pick = find_action(&machine, "set_branch_update:").unwrap();
+    assert_eq!(pick.options.iter().map(|option| option.label.as_str()).collect::<Vec<_>>(), ["Rebase", "Merge · now"]);
 }
 
 /// Every state something a node runs in the background can be in: running, or ended with one of

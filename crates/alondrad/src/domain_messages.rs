@@ -227,7 +227,7 @@ pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user:
     }
     let agent = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.clone())
         .ok_or_else(|| refused("not_assigned", "the PR's task has no agent to ask"))?;
-    let text = conflicts_text(name, pr);
+    let text = conflicts_text(name, pr, state.branch_update);
     let body = MessageBody { text, attachments: vec![], kind: Kind::Message, mark_read: false,
         interaction_id: None, pr_id: None, task_id: Some(pr.task_id.clone()), from_claude: false };
     deliver(domain, home, user, name, &agent, body, false).await
@@ -238,11 +238,11 @@ pub(crate) fn pr_url(pr: &alondra_core::domain::PullRequest) -> String {
 }
 
 /// What the Agent of a conflicting PR is told, whether the user asked or Alondra noticed.
-pub(crate) fn conflicts_text(name: &str, pr: &alondra_core::domain::PullRequest) -> String {
+pub(crate) fn conflicts_text(name: &str, pr: &alondra_core::domain::PullRequest, update: alondra_core::domain::BranchUpdate) -> String {
     format!(
-        "{name} asks you to resolve the conflicts of {url} with {base}: bring {base} into the branch, resolve them, \
-         run the tests and push. When you finish, present the PR again with present_result and its new head. If you cannot resolve them, ask {name}.",
-        url = pr_url(pr), base = pr.base
+        "{name} asks you to resolve the conflicts of {url} with {base}: {how}. When you finish, present the PR again with \
+         present_result and its new head. If you cannot resolve them, ask {name}.",
+        url = pr_url(pr), base = pr.base, how = update.instruction(&pr.base)
     )
 }
 
@@ -348,12 +348,17 @@ mod tests {
         let sent = node.texts();
         assert_eq!(sent.len(), 1);
         assert!(sent[0].starts_with("[Task t “Build it”] Ana asks you to resolve the conflicts of https://github.com/me/app/pull/7 with main: "), "{}", sent[0]);
+        assert!(sent[0].contains("git rebase origin/main") && sent[0].contains("git push --force-with-lease"), "rebase by default: {}", sent[0]);
         assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "a notice from Alondra is not the user's words");
+        run(user(), "merge", Command::SetBranchUpdate { update: alondra_core::domain::BranchUpdate::Merge });
+        resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
+        let sent = node.texts();
+        assert!(sent[1].contains("git merge origin/main") && !sent[1].contains("rebase"), "the method the user picked: {}", sent[1]);
         assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"none".into()).await.unwrap_err().code, "not_found");
         run(Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: "0123456789abcdef0123456789abcdef01234567".into(),
             base: "main".into(), state: alondra_core::domain::PrState::Closed, merged_head: None });
         assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap_err().code, "pr_not_open");
-        assert_eq!(node.texts().len(), 1, "a refusal sends nothing");
+        assert_eq!(node.texts().len(), 2, "a refusal sends nothing");
     }
 
     #[tokio::test]

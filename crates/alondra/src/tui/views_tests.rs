@@ -502,6 +502,32 @@ fn settings_open_on_general_where_the_merge_method_set_in_settings_is_picked_wit
 }
 
 #[test]
+fn how_a_prs_branch_is_updated_with_main_is_below_the_merge_method_and_picked_with_one_post() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let mut app = mcp_servers_open();
+    let machine: ViewDocument = serde_json::from_value(super::parity::view_fixture("machine-settings-ios-es.json")).unwrap();
+    app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
+    let screen = drawn(&mut app, 140, 60);
+    for shown in ["Actualizar la rama de un PR con main", "Rebase · cuando la PR tiene conflictos"] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+    assert!(screen.find("Merge de las PR") < screen.find("Actualizar la rama") && screen.find("Actualizar la rama") < screen.find("Nodos a la vez"), "{screen}");
+
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.mcp_servers.as_ref().unwrap().selected().map(|row| row.id.as_str()), Some("branch_update"));
+    press(&mut app, KeyCode::Enter);
+    let menu = drawn(&mut app, 140, 60);
+    for shown in [" 1  Rebase · ahora", "--force-with-lease", " 2  Merge", "Un commit de merge trae main a la rama"] {
+        assert!(menu.contains(shown), "{shown}: {menu}");
+    }
+    press(&mut app, KeyCode::Char('2'));
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().is_some_and(|id| id.starts_with("set_branch_update:")), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "merge");
+}
+
+#[test]
 fn the_mcp_servers_screen_lists_each_project_s_servers_and_runs_the_selected_one_s_buttons() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = mcp_servers_open();
@@ -666,6 +692,7 @@ fn every_node_limit_the_mac_offers_is_reached_with_the_arrows_and_picked_with_en
     }));
     let machine: ViewDocument = serde_json::from_value(machine).unwrap();
     app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine) });
+    press(&mut app, KeyCode::Char('j'));
     press(&mut app, KeyCode::Char('j'));
     assert_eq!(app.mcp_servers.as_ref().unwrap().selected().map(|row| row.id.as_str()), Some("node_limit"));
     press(&mut app, KeyCode::Enter);

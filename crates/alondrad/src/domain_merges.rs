@@ -474,8 +474,8 @@ impl Merger {
         }
         if status.merge_state == MergeState::Conflicting {
             self.clear_action(domain, pr);
-            hand_back(domain, item, &format!("it has conflicts with {base}: merge {base} into its branch and resolve them",
-                base = status.base))?;
+            let update = domain.state()?.branch_update;
+            hand_back(domain, item, &format!("it has conflicts with {base}: {how}", base = status.base, how = update.summary(&status.base)))?;
             return Ok(Step::Settled);
         }
         match &status.checks {

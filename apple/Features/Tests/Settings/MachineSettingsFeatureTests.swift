@@ -21,7 +21,7 @@ final class MachineSettingsFeatureTests: XCTestCase {
 
     func testReadsTheLimitThisMacOffersInItsSettings() throws {
         let settings = MachineSetting.all(in: try Fixtures.document("machine-settings-ios-es"))
-        XCTAssertEqual(settings.map(\.kind), [.mergeMethod, .nodeLimit], "in the daemon's order")
+        XCTAssertEqual(settings.map(\.kind), [.mergeMethod, .branchUpdate, .nodeLimit], "in the daemon's order")
         let setting = try XCTUnwrap(settings.last)
         XCTAssertEqual(setting.title, "Nodos a la vez")
         XCTAssertEqual(setting.detail, "Límite: automático (6)")
@@ -98,6 +98,32 @@ final class MachineSettingsFeatureTests: XCTestCase {
         XCTAssertEqual(merge.action.options.map(\.id), ["squash", "merge", "rebase"])
         XCTAssertEqual(merge.action.options.map(\.description), ["Un solo commit en la rama base", "Conserva todos los commits",
                                                                  "Los commits se reaplican sobre la rama base"])
+    }
+
+    func testReadsHowThisMacUpdatesAPRsBranchBelowTheMergeMethod() throws {
+        let update = try XCTUnwrap(MachineSetting.all(in: try Fixtures.document("machine-settings-ios-es")).dropFirst().first)
+        XCTAssertEqual(update.kind, .branchUpdate)
+        XCTAssertEqual(update.title, "Actualizar la rama de un PR con main")
+        XCTAssertEqual(update.detail, "Rebase · cuando la PR tiene conflictos")
+        XCTAssertEqual(update.action.options.map(\.id), ["rebase", "merge"])
+        XCTAssertEqual(update.action.options.map(\.label), ["Rebase · ahora", "Merge"])
+    }
+
+    func testAChosenBranchUpdateShowsAtOnceAndGoesToTheDaemon() async throws {
+        let requests = LockIsolated<[ActionRequest]>([])
+        let store = store(reply: { try Fixtures.response(#"{"protocol":1,"outcome":"applied"}"#) }, requests: requests)
+        await store.send(.loaded(try Fixtures.document("machine-settings-ios-es")))
+        let update = try XCTUnwrap(store.state[.branchUpdate])
+        let merge = try XCTUnwrap(update.action.options.first { $0.id == "merge" })
+
+        await store.send(.choose(.branchUpdate, merge))
+        XCTAssertEqual(store.state.detail(.branchUpdate), "Merge", "it shows before the daemon answers")
+        XCTAssertEqual(store.state.detail(.mergeMethod), "Squash and merge · si el repositorio lo permite", "the other rows stay as they are")
+        await store.receive(\.answered)
+
+        XCTAssertEqual(store.state.errors, [:])
+        XCTAssertEqual(requests.value.map(\.actionId), [update.action.id])
+        XCTAssertEqual(requests.value.map(\.optionId), ["merge"])
     }
 
     func testAChosenMergeMethodShowsAtOnceAndGoesToTheDaemonAlone() async throws {

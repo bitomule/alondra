@@ -339,11 +339,11 @@ impl Landed {
     }
 }
 /// What a node that waited on other Tasks is told when they are done.
-pub fn dependencies_done_notice(landed: &[Landed]) -> String {
+pub fn dependencies_done_notice(landed: &[Landed], update: BranchUpdate) -> String {
     let names: Vec<String> = landed.iter().map(|l| format!("“{}”", l.title)).collect();
     let details: Vec<String> = landed.iter().map(Landed::describe).collect();
-    format!("What you were waiting for is done: {}. Go on with your task; update your branch from the default branch \
-first if you need what it changed.\n\n{}", names.join(", "), details.join("\n\n"))
+    format!("What you were waiting for is done: {}. Go on with your task; if you need what it changed, first update your \
+branch: {}.\n\n{}", names.join(", "), update.from_default_branch(), details.join("\n\n"))
 }
 /// What a node whose work after the merge waited on other Tasks is told when that wait is over.
 pub fn post_merge_wait_over_notice(task: &TaskId, reason: &str, landed: &[Landed]) -> String {
@@ -1342,7 +1342,7 @@ impl DomainState {
                     post_merge_wait_over_notice(&t.id, &work.reason, &landed)
                 }
                 _ if matches!(t.state, TaskState::Running | TaskState::NeedsYou) && t.final_presentation.is_none() =>
-                    dependencies_done_notice(&landed),
+                    dependencies_done_notice(&landed, self.branch_update),
                 _ => continue,
             };
             let _ = self.notify(&t.id, None, &message, effects);
@@ -2333,7 +2333,7 @@ impl DomainState {
             // Clearing takes only what the user saw at `seen`, so any snapshot may ask for it.
             Command::ClearCompleted { .. } => Some(0),
             // A setting of this Mac's, not of anything the client read: any snapshot may change it.
-            Command::SetMergeMethod { .. } => Some(0),
+            Command::SetMergeMethod { .. } | Command::SetBranchUpdate { .. } => Some(0),
             Command::DeleteSchedule {
                 expected_schedule_revision: Some(_),
                 ..
@@ -4786,6 +4786,10 @@ impl DomainState {
             Command::SetMergeMethod { method } => {
                 user(actor)?;
                 self.merge_method = *method;
+            }
+            Command::SetBranchUpdate { update } => {
+                user(actor)?;
+                self.branch_update = *update;
             }
         }
         Ok(())

@@ -338,7 +338,7 @@ impl super::Client {
                 continue;
             }
             if self.merge_state(pr, head, PRESENT_ATTEMPTS, PRESENT_PAUSE).await == Merge::Conflicts {
-                return Err(DomainError::new("pr_conflicts", presentation_conflicts_text(pr)));
+                return Err(DomainError::new("pr_conflicts", presentation_conflicts_text(pr, state.branch_update)));
             }
             let missing = self.missing_images(pr).await;
             if !missing.is_empty() {
@@ -388,12 +388,11 @@ const PRESENT_PAUSE: Duration = Duration::from_secs(2);
 const HEAD_ATTEMPTS: usize = 3;
 const HEAD_PAUSE: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(2) };
 
-fn presentation_conflicts_text(pr: &PullRequest) -> String {
+fn presentation_conflicts_text(pr: &PullRequest, update: alondra_core::domain::BranchUpdate) -> String {
     let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
     let base = &pr.base;
-    format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: bring {base} into the branch, \
-        resolve the conflicts, run the tests and push, then present the PR again with present_result and its new head. \
-        If you cannot resolve them, ask the user.")
+    format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: {how}, then present the PR again \
+        with present_result and its new head. If you cannot resolve them, ask the user.", how = update.instruction(base))
 }
 
 fn missing_images_text(pr: &PullRequest, missing: &[PrImage]) -> String {
@@ -434,7 +433,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
                 attachments: vec![],
                 presentation_id: presentation.id.clone(),
                 targets: targets.clone(),
-                body: crate::domain_messages::conflicts_text(name, pr),
+                body: crate::domain_messages::conflicts_text(name, pr, state.branch_update),
                 instruction: Instruction::Conflicts,
             },
         };

@@ -34,7 +34,7 @@ impl DomainState {
             Command::RevokeTaskGrant { task_id, card } => self.revoke_grant_guard(actor, task_id, card),
             Command::ReportFailure { task_id } => self.report_failure_guard(actor, task_id).map(drop),
             Command::ClearCompleted { seen } => self.clear_guard(actor, *seen).map(drop),
-            Command::SetMergeMethod { .. } => user(actor).map(drop),
+            Command::SetMergeMethod { .. } | Command::SetBranchUpdate { .. } => user(actor).map(drop),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
             Command::ForceStopTurn { agent_id } => self.force_stop_guard(actor, agent_id).map(drop),
             Command::SetModel { task_id, model } => {

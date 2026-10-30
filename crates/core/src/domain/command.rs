@@ -497,6 +497,10 @@ pub enum Command {
     SetMergeMethod {
         method: MergeMethod,
     },
+    /// The user picks how nodes bring their PR's base into their branch from now on.
+    SetBranchUpdate {
+        update: BranchUpdate,
+    },
     /// The Agent working on the Task was closed by the user: the Task goes back to not started with
     /// no Agent, and stays open for a new one.
     ReleaseTask {

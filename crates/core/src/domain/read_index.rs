@@ -110,6 +110,7 @@ pub struct ReadIndex {
     account_policy: crate::accounts::Policy,
     account_moves: bool,
     merge_method: super::MergeMethod,
+    branch_update: super::BranchUpdate,
     account_usage: Vec<crate::usage::AccountUsage>,
     account_nodes: Vec<(crate::accounts::AccountKey, usize)>,
     account_order: Vec<crate::accounts::AccountKey>,
@@ -285,6 +286,10 @@ impl ReadIndex {
     pub fn merge_method(&self) -> super::MergeMethod {
         self.merge_method
     }
+    /// How nodes bring their PR's base into their branch.
+    pub fn branch_update(&self) -> super::BranchUpdate {
+        self.branch_update
+    }
     /// The provider accounts in the user's order, each with its state and plan.
     pub fn accounts(&self) -> &[crate::accounts::AccountStatus] {
         &self.accounts
@@ -442,6 +447,7 @@ impl<'a> Builder<'a> {
         index.account_policy = state.account_policy;
         index.account_moves = state.account_moves;
         index.merge_method = state.merge_method;
+        index.branch_update = state.branch_update;
         index.account_usage = state.account_usage.clone();
         index.account_order = state.account_order.clone();
         index.account_config_version = state.account_config_version.clone();
@@ -840,6 +846,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         }
     }
     assert_eq!(index.merge_method, state.merge_method, "the merge method");
+    assert_eq!(index.branch_update, state.branch_update, "the branch update");
     for request in state.requests.keys() {
         assert_eq!(index.request_project(request), state.request_project(request), "the project of request {request}");
     }
