@@ -167,7 +167,17 @@ pub(crate) async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing
     let mut failed = Vec::new();
     for (task_id, kind) in due_tasks {
         if let Err(error) = close_one(domain, sessions, timing, now, &task_id, kind).await {
-            failed.push(format!("{task_id}: {error:#}"));
+            let reason = format!("{error:#}");
+            let state = domain.state()?;
+            if let Some(task) = state.tasks.get(&task_id) {
+                let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(&task_id, now)?;
+                if row.problem_id.as_ref().is_some_and(|id| matches!(card(&state, id), Card::Leave)) {
+                    row.problem_id = None;
+                }
+                let row = retry_later(timing, now, task, row, &reason);
+                count_failure(domain, task, row, CloseStop::Error, &reason, state.in_cleanup(task))?;
+            }
+            failed.push(format!("{task_id}: {reason}"));
         }
     }
     if failed.is_empty() { Ok(()) } else { Err(anyhow::anyhow!(failed.join("; "))) }
@@ -196,28 +206,35 @@ fn card(state: &DomainState, id: &str) -> Card {
 /// Records what became of the node. A task that went back to work while its node was removed is
 /// released like one whose node the user closed: what a relaunch needs is kept, the orchestrator
 /// is told, and the changes asked for reach the node that replaces it.
-fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) {
+fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) -> Result<()> {
     let before = domain.state().ok();
     let back_to_work = matches!(end, NodeEnd::Closed | NodeEnd::Gone)
         && before.as_ref().and_then(|state| state.tasks.get(task_id)).is_some_and(|task| !task.over() && task.wrap_up.asked_at.is_none());
     if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task_id.clone(), end, agent_id: agent.cloned() }) {
-        log!("could not record what became of the node of {task_id}: {error:?}");
-        return;
+        if let Some(agent) = agent {
+            let current = domain.state()?;
+            // The old node's receipt no longer belongs to a task another node took over.
+            if current.tasks.get(task_id).is_some_and(|task| task.agent_id.as_ref() != Some(agent)) {
+                return Ok(());
+            }
+        }
+        return Err(anyhow::anyhow!("recording the node end: {error:?}"));
     }
-    let (Some(state), true) = (before, back_to_work) else { return };
-    let (Some(task), Some(agent)) = (state.tasks.get(task_id), agent) else { return };
+    let (Some(state), true) = (before, back_to_work) else { return Ok(()) };
+    let (Some(task), Some(agent)) = (state.tasks.get(task_id), agent) else { return Ok(()) };
     let name = state.agents.get(agent).map_or_else(|| agent.0.clone(), |known| known.name.clone());
     domain.live.remember_closed_task(&task_id.0, crate::client_routes::ClosedNode { name, cwd: domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd) });
     let _ = domain.tell_orchestrator(&format!("node-closed-while-working-{task_id}-{}", crate::auth::random_hex(4)), format!(
         "The node of “{}” ({task_id}) was closed while the user asked for changes on it. The task waits for a new node: start it with launch (task {task_id}); its mission carries the changes asked for.",
         task.title));
+    Ok(())
 }
 
 fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, end: NodeEnd) -> Result<()> {
     if let Some(agent) = agent {
         domain.live.set_close_interrupted(&agent.0, None);
     }
-    record_end(domain, &row.task_id, end, agent);
+    record_end(domain, &row.task_id, end, agent)?;
     forget_post_merge_check(domain, &row.task_id)?;
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
@@ -229,10 +246,31 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
 async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64, task_id: &TaskId, kind: Due) -> Result<()> {
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
-    if matches!(kind, Due::Unattended) {
-        return finish_unattended(domain, task).await;
-    }
     let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
+    if let Some(card_id) = row.problem_id.clone() {
+        match card(&state, &card_id) {
+            Card::Leave => return finish(domain, &row, task.agent_id.as_ref(), NodeEnd::KeptByUser),
+            Card::Retry | Card::Withdrawn => {
+                if let Some(agent) = &task.agent_id {
+                    domain.live.set_close_interrupted(&agent.0, None);
+                }
+                row.failures = 0;
+                row.problem_id = None;
+                row.next_attempt = 0;
+                domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
+            }
+            Card::Unanswered => return Ok(()),
+        }
+    }
+    let confirmed = task.wrap_up.cleaned_at.is_some_and(|at| Some(at as i64) > row.attempted_cleaned_at);
+    if now < row.next_attempt && !confirmed {
+        return Ok(());
+    }
+    if matches!(kind, Due::Unattended) {
+        finish_unattended(domain, task).await?;
+        domain.store.lock_or_exit("the domain store").forget_task_closing(task_id)?;
+        return Ok(());
+    }
     let Some(agent) = task.agent_id.clone() else {
         return finish(domain, &row, None, NodeEnd::Gone);
     };
@@ -243,19 +281,6 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let orchestrator = domain.live.node(&agent.0).is_some_and(|node| node.is_orchestrator);
     if orchestrator || !domain.launched_by_alondra(&agent)? {
         return finish(domain, &row, Some(&agent), NodeEnd::UsersOwn);
-    }
-    if let Some(card_id) = row.problem_id.clone() {
-        match card(&state, &card_id) {
-            Card::Leave => return finish(domain, &row, Some(&agent), NodeEnd::KeptByUser),
-            Card::Retry | Card::Withdrawn => {
-                domain.live.set_close_interrupted(&agent.0, None);
-                row.failures = 0;
-                row.problem_id = None;
-                row.next_attempt = 0;
-                domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
-            }
-            Card::Unanswered => return Ok(()),
-        }
     }
     let session_over = state.node_session_closed(task);
     let mut close_now = session_over;

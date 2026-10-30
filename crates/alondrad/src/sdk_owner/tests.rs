@@ -2959,6 +2959,31 @@ fn an_sdk_node_without_its_models_window_shows_no_context() {
     assert_eq!(shown_context("Write the release notes"), (None, None), "Claude sized no model");
 }
 
+#[test]
+fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let agent = driver.agent().clone();
+    for command_id in ["first-interrupt", "second-interrupt"] {
+        slice.run(&user(), command_id, Command::InterruptTurn { agent_id: agent.clone() });
+        driver.sealed();
+        let permit = driver.controls.pop_front().unwrap();
+        assert!(driver.domain.own(driver.scope.clone(), |owner| owner.claim_control(permit)).unwrap().0);
+        // The native connection can disappear here, before prepare_control records bytes.
+        let _abandoned = driver.sealed().control_attempts.pop().unwrap();
+    }
+    assert_eq!(slice.control_rows().into_iter().map(|row| row.2).collect::<Vec<_>>(), ["claimed", "claimed"]);
+    assert!(slice.controls().is_empty());
+    drop(driver);
+    let mut driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(slice.control_rows().into_iter().map(|row| row.2).collect::<Vec<_>>(), ["claimed", "claimed"], "adopting a live host does not discard its requests");
+    driver.stop().unwrap();
+    drop(driver);
+    end_unowned_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
+    assert_eq!(slice.control_rows().into_iter().map(|row| row.2).collect::<Vec<_>>(), ["rejected", "rejected"]);
+    assert!(slice.controls().is_empty(), "the ended host never received either control");
+}
+
 // C6: the daemon dies after recording a read of the MCP status and before the host gets it. A
 // fresh daemon adopts the host and reconciles the control once: Claude answers it a single time
 // and its status is kept.

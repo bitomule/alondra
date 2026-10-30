@@ -3207,6 +3207,104 @@ fn the_same_control_is_staged_once_and_other_content_under_its_id_conflicts() {
 }
 
 #[test]
+fn adoption_rejects_claimed_controls_without_bytes_and_retains_recorded_ones() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let path = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance")).unwrap();
+    tx.stage_launch(&"task".into(), &local(&path), &control_binding(every_control())).unwrap();
+    let permit = tx.commit().unwrap().permits.pop().unwrap();
+    let stamp = permit.execution().clone();
+    let grant = owner(&mut fixture, &stamp);
+    let mut tx = fixture.transaction();
+    tx.claim(permit).unwrap();
+    let attempt = tx.commit().unwrap().attempts.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_owned_command(attempt, grant.generation(), CommandEvidence::new(b"original input".to_vec()).unwrap()).unwrap();
+    let command = tx.commit().unwrap().commands.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_committed_receipt(command, DispatchReceipt::Uncertain).unwrap();
+    tx.commit().unwrap();
+    fixture.card("task", "doubt");
+    decide(&mut fixture, "doubt", Event::DoubtHandoff { card: "doubt".into(), input: id("initial") });
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.put_input(&"task".into(), InputPayload::new(id("again"), payload("initial").text()).unwrap()).unwrap();
+    tx.apply(&"task".into(), revision, "settle", Event::SettleHandoff { card: "doubt".into(), resend: Some(id("again")), unheard_card: "unheard".into() }).unwrap();
+    tx.settle_card(&"task".into(), &"doubt".into(), CardSettlement::Answer(CardAnswer(r#"{"option_id":"resend"}"#.into()))).unwrap();
+    tx.stage_input(&"task".into(), &id("again")).unwrap();
+    tx.commit().unwrap();
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    assert!(fixture.transaction().load(&"task".into()).unwrap().turn().is_none(), "the resend has not started a turn, so its interrupts carry no turn id");
+    // The real journal had two claimed interrupts with no provider_control_commands row.
+    // A third claim with bytes must still be reconciled against the host, never discarded.
+    let mut abandoned = vec![];
+    for name in ["interrupt-400", "interrupt-453", "recorded"] {
+        let permit = request(&mut fixture, name, Control::Interrupt { turn: None }).unwrap().control_permits
+            .into_iter().find(|permit| permit.control() == &op(name)).unwrap();
+        let mut tx = fixture.transaction();
+        assert!(tx.claim_control(permit).unwrap());
+        let attempt = tx.commit().unwrap().control_attempts.pop().unwrap();
+        if name == "recorded" {
+            let mut tx = fixture.transaction();
+            tx.record_owned_control(attempt, grant.generation(), CommandEvidence::new(b"exact interrupt".to_vec()).unwrap()).unwrap();
+            tx.commit().unwrap();
+        } else {
+            abandoned.push(attempt);
+        }
+    }
+    fixture.runtime("task", RuntimeFact::HostEnded { unheard_card: "host-ended".into(), resume: None });
+    assert!(fixture.transaction().unresolved(&"task".into()).unwrap().is_empty(), "the uncertain input was already settled, as in the real journal");
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, grant.generation()).unwrap();
+    let controls = tx.unresolved_controls(&"task".into()).unwrap();
+    let unrecorded = tx.unrecorded_controls(&"task".into()).unwrap();
+    assert_eq!(unrecorded.len(), 2);
+    assert_eq!(controls.len(), 1);
+    let recorded = controls[0].id;
+    let adopted = tx.commit().unwrap().owners.pop().unwrap();
+    assert_eq!(control_status(&fixture, "interrupt-400"), "claimed", "ownership alone cannot discard a live host's request");
+    assert_eq!(control_status(&fixture, "interrupt-453"), "claimed");
+    {
+        let mut tx = fixture.transaction();
+        for id in &unrecorded {
+            tx.resolve_control(&stamp, *id, adopted.generation(), DispatchReceipt::Rejected).unwrap();
+        }
+        // Failed retirement must preserve the claims for the next reconciliation.
+    }
+    assert_eq!(control_status(&fixture, "interrupt-400"), "claimed");
+    let mut tx = fixture.transaction();
+    for id in unrecorded {
+        tx.resolve_control(&stamp, id, adopted.generation(), DispatchReceipt::Rejected).unwrap();
+    }
+    tx.commit().unwrap();
+    assert_eq!(control_status(&fixture, "interrupt-400"), "rejected");
+    assert_eq!(control_status(&fixture, "interrupt-453"), "rejected");
+    assert_eq!(control_status(&fixture, "recorded"), "claimed");
+    for attempt in abandoned {
+        let mut tx = fixture.transaction();
+        assert!(matches!(tx.record_owned_control(attempt, grant.generation(), CommandEvidence::new(b"late".to_vec()).unwrap()), Err(Error::StalePermit)));
+    }
+    let mut tx = fixture.transaction();
+    tx.resolve_control(&stamp, recorded, adopted.generation(), DispatchReceipt::Rejected).unwrap();
+    tx.commit().unwrap();
+    let mut tx = fixture.transaction();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.apply(&"task".into(), revision, "finish", Event::Finish { intent: FinishIntent::Cancel, cleanup: op("cleanup"), post_merge: None }).unwrap();
+    tx.apply(&"task".into(), revision + 1, "cleanup-ended", Event::DrainObserved { obligation: DrainObligation::Cleanup(op("cleanup")) }).unwrap();
+    let end = Event::DrainObserved { obligation: DrainObligation::Execution(stamp.instance().clone()) };
+    tx.apply(&"task".into(), revision + 2, "execution-ended", end.clone()).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(fixture.transaction().load(&"task".into()).unwrap().phase(), TaskPhase::Cancelled);
+    let mut tx = fixture.transaction();
+    assert!(tx.apply(&"task".into(), revision + 2, "execution-ended", end).unwrap().replayed);
+    tx.commit().unwrap();
+    let count: i64 = fixture.connection.query_row("SELECT count(*) FROM lifecycle_events WHERE task_id='task' AND command_id='execution-ended'", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 1, "the affected execution ends exactly once");
+}
+
+#[test]
 fn a_new_execution_revokes_prepared_controls_and_waits_for_claimed_ones() {
     let mut fixture = Fixture::new();
     let stamp = running_sdk(&mut fixture, &control_binding(every_control()));

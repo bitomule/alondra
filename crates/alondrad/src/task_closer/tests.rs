@@ -190,6 +190,74 @@ fn thirty_minutes() -> Option<Duration> {
 }
 
 #[tokio::test]
+async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three_attempts() {
+    let rig = Rig::new(thirty_minutes());
+    rig.confirm();
+    command(&rig.domain, Actor::System, "other-agent", Command::RegisterAgent { agent_id: "other".into(), name: "Other".into(), at: 0 });
+    command(&rig.domain, user(), "other-request", Command::CreateRequest { request_id: "other".into(), body: "Other work".into(), auto_merge: false, maintenance: false, message: false });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other-task", Command::CreateTask {
+        plan_items: None, task_id: "z".into(), request_id: "other".into(), title: "Other task".into(), agent_id: Some("other".into()),
+        review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("other", "/tmp")),
+    });
+    command(&rig.domain, Actor::Agent { agent_id: "other".into() }, "other-result", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: "z".into(), interaction_id: "other-final".into(), body: "Done".into(),
+        targets: text(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the other result", &[], true),
+    });
+    command(&rig.domain, user(), "accept-other", Command::AcceptDelivery { presentation_id: "other-final".into(), targets: text() });
+    let database = crate::domain_database_migration::active_path(&rig._home.0);
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection.execute_batch(r#"CREATE TRIGGER refuse_node_end BEFORE INSERT ON task_history
+        WHEN NEW.task_id = 't' AND NEW.state = 'done'
+        BEGIN SELECT RAISE(ABORT, 'node end storage unavailable'); END;"#).unwrap();
+    for attempt in 0..3 {
+        let now = T0 + attempt * 5 * MINUTE;
+        let result = pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, now).await;
+        assert!(result.is_err(), "the failed receipt is propagated");
+        assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from("z")].state, TaskState::Done, "a failed close does not block other tasks");
+        let row = rig.closing().expect("the failed receipt stays tracked");
+        assert_eq!(row.failures, attempt as u32 + 1);
+        assert_eq!(row.next_attempt, now + 5 * MINUTE);
+        let calls = rig.sessions.calls.lock().unwrap().len();
+        rig.pass(now + 1).await;
+        assert_eq!(rig.sessions.calls.lock().unwrap().len(), calls, "domain notifications cannot bypass retry timing");
+    }
+    assert_eq!(rig.cards().len(), 1);
+    let calls = rig.sessions.calls.lock().unwrap().len();
+    rig.pass(T0 + 600 * MINUTE).await;
+    assert_eq!(rig.sessions.calls.lock().unwrap().len(), calls, "a permanent failure waits for the user");
+    assert_eq!(rig.task().wrap_up.node, None);
+    connection.execute_batch("DROP TRIGGER refuse_node_end").unwrap();
+    answer(&rig, "retry");
+    rig.pass(T0 + 601 * MINUTE).await;
+    rig.assert_done(NodeEnd::Gone);
+    assert!(rig.closing().is_none());
+    rig.pass(T0 + 602 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1, "the removed session is never removed again");
+}
+
+#[tokio::test]
+async fn a_failed_leave_receipt_asks_again_instead_of_replaying_the_answer() {
+    let rig = Rig::new(thirty_minutes());
+    failed_three_times(&rig).await;
+    let database = crate::domain_database_migration::active_path(&rig._home.0);
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection.execute_batch(r#"CREATE TRIGGER refuse_node_end BEFORE INSERT ON command_audit
+        WHEN json_extract(NEW.command, '$.kind') = 'record_node_end'
+        BEGIN SELECT RAISE(ABORT, 'node end storage unavailable'); END;"#).unwrap();
+    answer(&rig, "leave");
+    assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + 11 * MINUTE).await.is_err());
+    let row = rig.closing().unwrap();
+    assert_eq!(row.failures, 4);
+    let replacement = rig.cards().into_iter().find(|card| Some(&card.id.0) == row.problem_id.as_ref()).unwrap();
+    assert!(matches!(replacement.payload, InteractionPayload::Question { answer: None, .. }));
+    for at in [T0 + 11 * MINUTE + 1, T0 + 600 * MINUTE] {
+        rig.pass(at).await;
+        assert_eq!(rig.closing().unwrap(), row, "an answered leave never causes repeated receipt attempts");
+    }
+}
+
+#[tokio::test]
 async fn a_node_that_confirms_its_cleanup_is_closed_and_its_task_is_done() {
     let rig = Rig::new(thirty_minutes());
     assert_eq!(rig.task().state, TaskState::Closing);

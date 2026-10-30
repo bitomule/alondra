@@ -1,5 +1,4 @@
 use alondra_store::OwnerGrant;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -54,8 +53,8 @@ impl VerifiedArtifact {
         Ok(value)
     }
     fn revalidate(&self) -> io::Result<()> {
-        if file_hash(&self.executable)? != self.executable_sha256
-            || file_hash(&self.artifact)? != self.artifact_sha256
+        if crate::artifact_digest::digest(&self.executable)? != self.executable_sha256
+            || crate::artifact_digest::digest(&self.artifact)? != self.artifact_sha256
         {
             return Err(refused("owned artifact hash mismatch"));
         }
@@ -918,23 +917,7 @@ fn private_directory(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-fn file_hash(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 65536];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    Ok(hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
+
 struct WakeDecoder {
     line: [u8; LINE_LIMIT],
     length: usize,

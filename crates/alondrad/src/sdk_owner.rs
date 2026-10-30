@@ -690,6 +690,11 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     let ended_work = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?.0
         .checkpoint().map(|checkpoint| worker.background_left(checkpoint.bytes())).unwrap_or_default();
     domain.own(scope.clone(), |owner| {
+        // A claim whose preparation failed has no command the ended host could have received.
+        // Keep these claims untouched when adopting a live host, whose requests still matter.
+        for id in adoption.unrecorded_controls {
+            owner.resolve_control(&stamp, id, owner_generation, DispatchReceipt::Rejected)?;
+        }
         let envelope = |name: String, command: Command| CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

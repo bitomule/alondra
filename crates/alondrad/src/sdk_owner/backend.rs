@@ -195,22 +195,9 @@ impl SdkBackend {
 /// time.
 static CHECKED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
-type FileState = (PathBuf, u64, std::time::SystemTime);
-/// A holder that panics leaves it whole, so it is recovered: a memo, read or filled one entry at a
-/// time.
-static DIGESTS: Mutex<Option<HashMap<FileState, String>>> = Mutex::new(None);
-
-/// The SHA256 of the host a release installed, read once per file as it is on disk: the daemon
-/// starts without reading its 120 MB, and each host start checks it again as it runs it.
+/// Uses the same stable file identity as launch and adoption verification.
 fn installed_digest(host: &Path) -> Result<String> {
-    let meta = std::fs::metadata(host).with_context(|| format!("reading {}", host.display()))?;
-    let state = (host.to_path_buf(), meta.len(), meta.modified()?);
-    if let Some(known) = DIGESTS.lock_or_recover("the SDK host digests").as_ref().and_then(|known| known.get(&state).cloned()) {
-        return Ok(known);
-    }
-    let sha256 = digest(host)?;
-    DIGESTS.lock_or_recover("the SDK host digests").get_or_insert_default().insert(state, sha256.clone());
-    Ok(sha256)
+    digest(host)
 }
 
 /// The release `claude --version` names, once per binary: a Claude Code older than the one the
@@ -251,24 +238,26 @@ fn version_of(native: &Path) -> Result<String> {
 }
 
 pub(crate) fn digest(file: &Path) -> Result<String> {
-    use sha2::Digest;
-    use std::io::Read;
-    let mut hasher = sha2::Sha256::new();
-    let mut reader = std::fs::File::open(file).with_context(|| format!("opening {}", file.display()))?;
-    let mut buffer = vec![0; 1 << 20];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    alondra_agent_runtime::artifact_digest::digest(file)
+        .with_context(|| format!("hashing {}", file.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_host_digest_detects_changes_with_preserved_size_and_mtime() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir(&root).unwrap();
+        let host = root.join("host");
+        std::fs::write(&host, b"good").unwrap();
+        let expected = installed_digest(&host).unwrap();
+        let modified = std::fs::metadata(&host).unwrap().modified().unwrap();
+        std::fs::write(&host, b"evil").unwrap();
+        std::fs::File::options().write(true).open(&host).unwrap().set_modified(modified).unwrap();
+        assert_ne!(installed_digest(&host).unwrap(), expected);
+    }
 
     fn configuration(home: &Path, native_environment: serde_json::Value) -> serde_json::Value {
         let file = home.join("artifact");

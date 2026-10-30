@@ -599,6 +599,17 @@ impl LifecycleTransaction<'_> {
             .collect()
         })
     }
+    /// Claims whose preparation failed before any sendable bytes were committed. An ended
+    /// host cannot have received them; a live host still needs the requested control.
+    pub fn unrecorded_controls(&self, task: &TaskId) -> Result<Vec<i64>> {
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let mut statement = self.transaction.prepare("SELECT l.id FROM lifecycle_controls l WHERE l.task_id=?1 AND l.generation=?2 AND l.status='claimed' AND NOT EXISTS(SELECT 1 FROM provider_control_commands c WHERE c.control_id=l.id AND c.task_id=l.task_id AND c.generation=l.generation) ORDER BY l.id")?;
+            let rows = statement.query_map(params![task.0, sql_number(stamp.generation())?], |row| row.get(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
     /// Resolves a claimed control of the task's current execution with the host's answer, fenced
     /// by the owner generation it was reconciled under.
     pub fn resolve_control(&mut self, stamp: &ExecutionStamp, id: i64, owner_generation: u64, receipt: DispatchReceipt) -> Result<()> {
