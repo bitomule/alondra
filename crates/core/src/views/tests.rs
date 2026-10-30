@@ -8909,7 +8909,7 @@ fn a_report_that_repeats_the_description_shows_its_images_too() {
 }
 
 #[test]
-fn an_attachment_whose_file_is_an_image_reaches_the_apps_as_an_image() {
+fn attachments_expose_typed_download_routes_without_disk_paths() {
     let mut state = fixture();
     let attachment = |id: &str, name: &str, reference: &str| crate::domain::AttachmentRef {
         id: id.into(), name: name.into(), content_digest: "d".repeat(64), content_reference: reference.into(), bytes: 10,
@@ -8917,11 +8917,22 @@ fn an_attachment_whose_file_is_an_image_reaches_the_apps_as_an_image() {
     state.interactions.get_mut(&"i-1".into()).unwrap().attachments = vec![
         attachment("shot", "iPhone, claro", "files/t/ios-light.JPG"),
         attachment("named", "dark.webp", "files/t/stored"),
-        attachment("log", "build.log", "files/t/build.log"),
+        attachment("log", "build.log", "/Users/example/.alondra/files/t/build.log"),
+        attachment("clip: ñ 1", "clip", "/Users/example/.alondra/files/t/clip.MP4"),
+        attachment("binary", "data.bin", "files/t/data.bin"),
     ];
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     let kinds: Vec<_> = card_of(&view).attachments.iter().map(|a| (a.id.as_str(), a.kind)).collect();
-    assert_eq!(kinds, [("shot", AttachmentKind::Image), ("named", AttachmentKind::Image), ("log", AttachmentKind::Binary)]);
+    assert_eq!(kinds, [("shot", AttachmentKind::Image), ("named", AttachmentKind::Image),
+        ("log", AttachmentKind::Text), ("clip: ñ 1", AttachmentKind::Video), ("binary", AttachmentKind::Binary)]);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "card:i-1", "");
+        for attachment in &card_of(&view).attachments {
+            assert_eq!(attachment.fetch, format!("/interactions/i-1/attachments/{}/content", super::id::path_segment(&attachment.id)));
+            assert!(!attachment.fetch.contains("/Users/"));
+            assert_eq!(attachment.digest.as_deref(), Some("d".repeat(64).as_str()));
+        }
+    }
 }
 
 /// Task t-1 whose PR #… waits for the review, its node of the Agent SDK in the turn that presented

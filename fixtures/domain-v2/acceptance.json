@@ -551,7 +551,7 @@
           "value": 1
         }
       ],
-      "cs_evidence": ["domain_store::tests::two_connections_compete_by_revision_and_domain_rejection_writes_nothing", "service::domain_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts", "domain::tests::revision_checks_are_per_subject_and_invalidation_dates_decisions"],
+      "cs_evidence": ["domain_store::tests::two_connections_compete_by_revision_and_domain_rejection_writes_nothing", "service::domain_parity_tests::attachments_and_resources_match_on_signed_loopback_and_sealed_service", "domain::tests::revision_checks_are_per_subject_and_invalidation_dates_decisions"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2757,7 +2757,7 @@
           "value": true
         }
       ],
-      "cs_evidence": ["service::domain_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts"],
+      "cs_evidence": ["service::domain_parity_tests::attachments_and_resources_match_on_signed_loopback_and_sealed_service"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },

@@ -47,7 +47,8 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/action-requests", post(resource_command::<H>))
         .route("/messages", post(resource_command::<H>))
         .route("/problems", post(resource_command::<H>))
-        .route("/document-revisions/{id}/content", get(document_content::<H>));
+        .route("/document-revisions/{id}/content", get(document_content::<H>))
+        .route("/interactions/{id}/attachments/{attachment}/content", get(attachment_content::<H>));
     let mutations = [
         ("/requests/{id}/close", "POST"), ("/requests/{id}/title", "POST"),
         ("/requests/{request_id}/tasks", "POST"),
@@ -132,6 +133,61 @@ async fn schedule_mutation<H: DomainHost>(
         ))
     }).await.unwrap_or_else(|_| storage_error())
 }
+async fn attachment_content<H: DomainHost>(
+    State(host): State<Arc<H>>,
+    signed: Option<Extension<Signed>>,
+    Path((interaction, attachment)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if !signed_read(&*host, &signed) { return unsigned_read(); }
+    let response = attachment_content_inner(host.domain(), host.home(), interaction, attachment, query).await;
+    if !signed_read(&*host, &signed) { return unsigned_read(); }
+    response
+}
+
+async fn attachment_content_inner(
+    domain: &DomainRuntime, home: &FsPath, interaction: String, attachment: String, query: Option<String>,
+) -> Response {
+    let Some((offset, version)) = query.as_deref().and_then(document_content_query) else {
+        return domain_error(DomainError::new("invalid_input", "offset and version query are invalid"));
+    };
+    let state = match domain.state() {
+        Ok(state) => state,
+        Err(_) => return storage_error(),
+    };
+    let Some(stored) = state.interactions.get(&InteractionId(interaction.clone()))
+        .and_then(|card| card.attachments.iter().find(|item| item.id == attachment)).cloned() else {
+        return domain_error(DomainError::new("not_found", "interaction attachment does not exist"));
+    };
+    let home = home.to_path_buf();
+    let reads = domain.stored_reads.clone();
+    let digest = stored.content_digest.clone();
+    match tokio::task::spawn_blocking(move || {
+        reads.attachment(&home, &stored.content_reference, &stored.content_digest, offset, version)
+    }).await {
+        Ok(Ok(mut chunk)) => {
+            chunk["interaction_id"] = json!(interaction);
+            chunk["attachment_id"] = json!(attachment);
+            chunk["content_digest"] = json!(digest);
+            Json(chunk).into_response()
+        }
+        _ => domain_error(DomainError::new("content_unavailable", "stored attachment content is unavailable")),
+    }
+}
+
+fn attachment_content_path(path: &str) -> Option<(String, String, String)> {
+    let (path, query) = path.split_once('?')?;
+    let segments: Vec<_> = path.strip_prefix('/')?.split('/').collect();
+    let ["interactions", interaction, "attachments", attachment, "content"] = segments.as_slice() else { return None };
+    let decode = |raw: &str| {
+        let id = percent_decoded(raw)?;
+        (!id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+            && alondra_core::views::id::path_segment(&id) == raw).then_some(id)
+    };
+    document_content_query(query)?;
+    Some((decode(interaction)?, decode(attachment)?, query.to_owned()))
+}
+
 async fn document_content<H: DomainHost>(
     State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
@@ -529,6 +585,8 @@ pub(crate) async fn encrypted_read_runtime(
             anyhow::bail!("unapproved encrypted domain read path");
         };
         pull_request_diff_inner(domain, id).await
+    } else if let Some((interaction, attachment, query)) = attachment_content_path(path) {
+        attachment_content_inner(domain, home, interaction, attachment, Some(query)).await
     } else if let Some((id, query)) = path.strip_prefix("/document-revisions/")
         .and_then(|suffix| suffix.split_once("/content?")) {
         document_content_inner(domain, home, id.to_owned(), Some(query.to_owned())).await
@@ -875,6 +933,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
 
 pub(crate) fn approved_resource_read_path(path: &str) -> bool {
     crate::domain_schedule_api::approved_read_path(path)
+        || attachment_content_path(path).is_some()
         || path == "/capabilities"
         || path.strip_prefix("/delivery-attempts?").is_some_and(|query| delivery_evidence_query(query).is_some())
         || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(encoded_pull_request_id)
@@ -1419,6 +1478,25 @@ mod tests {
     #[test]
     fn resource_router_constructs_without_method_collisions() {
         let _ = routes::<crate::domain_bootstrap::DomainDaemon>();
+    }
+
+    #[test]
+    fn attachment_download_paths_are_canonical_and_cannot_carry_filesystem_paths() {
+        let root = "/interactions/i-1/attachments/clip.mp4/content";
+        assert!(approved_resource_read_path(&format!("{root}?offset=0")));
+        assert!(approved_resource_read_path(&format!("{root}?offset=65536&version=1-2-3")));
+        assert_eq!(attachment_content_path("/interactions/github.com%2Fa%2Fb%231/attachments/a/content?offset=0"),
+            Some(("github.com/a/b#1".into(), "a".into(), "offset=0".into())));
+        for path in [
+            format!("{root}?offset=0&path=/etc/passwd"),
+            format!("{root}?offset=1"),
+            format!("{root}?offset=0&offset=0"),
+            "/interactions/i/attachments/%0A/content?offset=0".into(),
+            "/interactions/i/attachments/%3aclip/content?offset=0".into(),
+            "/interactions/i/attachments/clip.mp4/content/extra?offset=0".into(),
+        ] {
+            assert!(!approved_resource_read_path(&path), "{path}");
+        }
     }
 
     #[test]

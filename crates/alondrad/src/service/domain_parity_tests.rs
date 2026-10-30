@@ -116,8 +116,8 @@ async fn encrypted(
 }
 
 #[tokio::test]
-async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts() {
-    let scratch_directory = crate::test_support::Directory::new();
+async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service() {
+    let scratch_directory = Arc::new(crate::test_support::Directory::new());
     use std::os::unix::fs::PermissionsExt;
     let home = scratch_directory.parent().unwrap().join(format!(
         "alondra-domain-parity-{}",
@@ -163,6 +163,10 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         },
     );
+    let video: Vec<u8> = (0..(crate::service_files::CHUNK * 2 + 7)).map(|n| (n % 251) as u8).collect();
+    std::fs::create_dir_all(home.join("files")).unwrap();
+    std::fs::write(home.join("files/clip.mp4"), &video).unwrap();
+    let video_digest = Sha256::digest(&video).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     execute(
         &domain,
         Actor::System,
@@ -174,7 +178,10 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             },
             recipient: Recipient::User,
             body: "Synthetic information".into(),
-            attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            attachments: vec![alondra_core::domain::AttachmentRef {
+                id: "clip: ñ 1".into(), name: "Video".into(), content_digest: video_digest.clone(),
+                content_reference: home.join("files/clip.mp4").to_string_lossy().into_owned(), bytes: video.len() as u64,
+            }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
         },
     );
     execute(
@@ -226,6 +233,22 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         },
     );
 
+    std::fs::write(home.join("outside-files"), b"private fixture").unwrap();
+    std::os::unix::fs::symlink(home.join("outside-files"), home.join("files/escape")).unwrap();
+    for (index, reference) in [home.join("outside-files"), home.join("files/escape")].iter().enumerate() {
+        execute(&domain, Actor::System, &format!("unsafe-{index}"), Command::PublishInformation {
+            interaction_id: format!("unsafe-{index}").into(),
+            scope: Scope::Task { task_id: "task-parity".into() }, recipient: Recipient::User,
+            body: format!("Unsafe historical reference {index}"),
+            attachments: vec![alondra_core::domain::AttachmentRef {
+                id: "private".into(), name: "private.txt".into(), bytes: 15,
+                content_reference: reference.to_string_lossy().into_owned(),
+                content_digest: Sha256::digest(b"private fixture").iter().map(|b| format!("{b:02x}")).collect(),
+            }],
+            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+        });
+    }
+
     let phone_key = SigningKey::from_slice(&[31; 32]).unwrap();
     let phone_agreement = SecretKey::from_slice(&[32; 32]).unwrap();
     let mac_signing = SigningKey::from_slice(&[33; 32]).unwrap();
@@ -252,13 +275,12 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let local = tokio::spawn(
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .into_future(),
-    );
+    let local_directory = scratch_directory.clone();
+    let local_server = tokio::spawn(async move {
+        let _directory = local_directory;
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+            .into_future().await
+    });
     let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let relay_url = "http://127.0.0.1:1/";
     std::fs::write(home.join("service.toml"), format!(
@@ -280,6 +302,11 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let epoch = domain.state().unwrap().data_epoch.0.clone();
     let paths = [
         "/capabilities".to_owned(),
+        "/interactions/info-parity/attachments/clip%3A%20%C3%B1%201/content?offset=0".to_owned(),
+        "/interactions/question-parity/attachments/clip%3A%20%C3%B1%201/content?offset=0".to_owned(),
+        "/interactions/missing/attachments/clip%3A%20%C3%B1%201/content?offset=0".to_owned(),
+        "/interactions/info-parity/attachments/missing/content?offset=0".to_owned(),
+        "/interactions/info-parity/attachments/..%2Foutside-files/content?offset=0".to_owned(),
         "/document-revisions/rev-parity/content?offset=0".to_owned(),
         "/document-revisions/missing/content?offset=0".to_owned(),
         "/pull-requests/missing/diff".to_owned(),
@@ -299,7 +326,69 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             assert_eq!(remote["body"]["operation_results"], true);
         }
         assert_eq!(remote, local, "local/encrypted mismatch for {path}");
+        if path.starts_with("/interactions/") {
+            let expected = if path == "/interactions/info-parity/attachments/clip%3A%20%C3%B1%201/content?offset=0" { 200 } else { 404 };
+            assert_eq!(local["status"], expected, "{path}");
+        }
     }
+    for index in 0..2 {
+        let path = format!("/interactions/unsafe-{index}/attachments/private/content?offset=0");
+        let local = local_get(&client, &base, &phone_key, device_id, &path).await;
+        let remote = encrypted(&service, &phone_key, &phone_agreement, &responses,
+            &format!("unsafe-read-{index}"), json!({"method":"GET","path":path})).await;
+        assert_eq!(local, remote);
+        assert_eq!(remote["status"], 409);
+        assert_eq!(remote["body"]["code"], "content_unavailable");
+    }
+    let attachment_path = "/interactions/info-parity/attachments/clip%3A%20%C3%B1%201/content";
+    assert_eq!(client.get(format!("{base}{attachment_path}?offset=0")).send().await.unwrap().status(), 403);
+    let mut downloaded = Vec::new();
+    let mut query = "offset=0".to_owned();
+    let mut count = 0;
+    loop {
+        assert!(count < 3, "download did not finish after three chunks");
+        let path = format!("{attachment_path}?{query}");
+        let local = local_get(&client, &base, &phone_key, device_id, &path).await;
+        let remote = encrypted(&service, &phone_key, &phone_agreement, &responses,
+            &format!("video-chunk-{count}"), json!({"method":"GET","path":path})).await;
+        assert_eq!(local, remote);
+        assert_eq!(remote["status"], 200);
+        let body = &remote["body"];
+        assert_eq!(body["interaction_id"], "info-parity");
+        assert_eq!(body["attachment_id"], "clip: ñ 1");
+        assert_eq!(body["content_digest"], video_digest);
+        assert_eq!(body["total"], video.len());
+        assert_eq!(body["offset"], downloaded.len());
+        downloaded.extend(URL_SAFE_NO_PAD.decode(body["data"].as_str().unwrap()).unwrap());
+        assert_eq!(body["next_offset"], downloaded.len());
+        count += 1;
+        if body["eof"] == true { break }
+        query = format!("offset={}&version={}", body["next_offset"], body["version"].as_str().unwrap());
+    }
+    assert_eq!(count, 3);
+    assert_eq!(downloaded, video);
+    for (index, path) in [
+        format!("{attachment_path}?offset=1"),
+        format!("{attachment_path}?offset=0&path=/etc/passwd"),
+        format!("{attachment_path}?offset=1&version=0"),
+    ].iter().enumerate() {
+        let local = local_get(&client, &base, &phone_key, device_id, path).await;
+        assert_eq!(local["status"], if index == 2 { 409 } else { 422 }, "{path}");
+        // Malformed paths are refused by the encrypted transport allowlist.
+        if index == 2 {
+            let remote = encrypted(&service, &phone_key, &phone_agreement, &responses,
+                "stale-video", json!({"method":"GET","path":path})).await;
+            assert_eq!(local, remote);
+        }
+    }
+    std::fs::write(home.join("files/clip.mp4"), b"tampered video").unwrap();
+    let path = format!("{attachment_path}?offset=0");
+    let local = local_get(&client, &base, &phone_key, device_id, &path).await;
+    let remote = encrypted(&service, &phone_key, &phone_agreement, &responses,
+        "tampered-video", json!({"method":"GET","path":path})).await;
+    assert_eq!(local, remote);
+    assert_eq!(remote["status"], 409);
+    assert_eq!(remote["body"]["code"], "content_unavailable");
     let local_schedule = local_get(&client, &base, &phone_key, device_id,
         "/schedules").await;
     let remote_schedule = encrypted(&service, &phone_key, &phone_agreement, &responses,
@@ -547,6 +636,10 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         revision_before_old_clients
     );
     auth.revoke(device_id).unwrap();
+    let path = format!("{attachment_path}?offset=0");
+    assert_eq!(local_get(&client, &base, &phone_key, device_id, &path).await["status"], 401);
+    assert!(service.prepare_work(&sealed(&service, &phone_key, "revoked-video",
+        json!({"method":"GET","path":path})), Transport::Relay).is_err());
     assert_eq!(
         local_get(&client, &base, &phone_key, device_id, "/capabilities").await["status"],
         401
@@ -561,8 +654,8 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             ), Transport::Relay)
             .is_err()
     );
-    local.abort();
-    let _ = local.await;
+    local_server.abort();
+    let _ = local_server.await;
     drop(service);
     drop(domain);
     drop(daemon);

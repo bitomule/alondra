@@ -582,11 +582,20 @@ fn painted(mut action: Action, worded: &[String]) -> Action {
 
 /// An image by the extension of its stored file or of its name, so the apps preview it.
 fn attachment_kind(name: &str, reference: &str) -> AttachmentKind {
-    let image = [reference, name].iter().any(|text| {
-        text.rsplit_once('.')
-            .is_some_and(|(_, extension)| crate::markdown::images::EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
-    });
-    if image { AttachmentKind::Image } else { AttachmentKind::Binary }
+    for source in [reference, name] {
+        let Some((_, extension)) = source.rsplit_once('.') else { continue };
+        let extension = extension.to_ascii_lowercase();
+        if crate::markdown::images::EXTENSIONS.contains(&extension.as_str()) {
+            return AttachmentKind::Image;
+        }
+        if matches!(extension.as_str(), "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "mpeg" | "mpg") {
+            return AttachmentKind::Video;
+        }
+        if matches!(extension.as_str(), "txt" | "md" | "markdown" | "log" | "csv" | "tsv" | "json" | "yaml" | "yml" | "xml" | "html" | "css" | "rs" | "swift" | "py" | "js" | "ts" | "sh") {
+            return AttachmentKind::Text;
+        }
+    }
+    AttachmentKind::Binary
 }
 
 fn attachment_refs(interaction: Option<&Interaction>) -> Vec<Attachment> {
@@ -601,7 +610,8 @@ fn attachment_refs(interaction: Option<&Interaction>) -> Vec<Attachment> {
                     kind: attachment_kind(&a.name, &a.content_reference),
                     size: a.bytes,
                     digest: Some(a.content_digest.clone()),
-                    fetch: a.content_reference.clone(),
+                    fetch: format!("/interactions/{}/attachments/{}/content",
+                        super::id::path_segment(&interaction.id.0), super::id::path_segment(&a.id)),
                 })
                 .collect()
         })

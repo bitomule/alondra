@@ -5394,7 +5394,7 @@ fn validate_attachments(attachments: &[AttachmentRef]) -> Result<()> {
         bytes = bytes
             .checked_add(attachment.bytes)
             .ok_or_else(|| DomainError::new("payload_too_large", "Attachment size overflow"))?;
-        if attachment.bytes > 64 * 1024 * 1024 || bytes > 128 * 1024 * 1024 {
+        if attachment.bytes > MAX_ATTACHMENT_BYTES || bytes > 128 * 1024 * 1024 {
             return fail("payload_too_large", "Attachment content exceeds limits");
         }
     }

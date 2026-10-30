@@ -19,6 +19,25 @@ final class NewerDaemonTests: XCTestCase {
         }.first)
     }
 
+    func testAVideoAttachmentFromANewerDaemonKeepsTheWholeCardReadable() throws {
+        let original = try ContractCodec.encode(try newerCard())
+        var value = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        var sections = try XCTUnwrap(value["sections"] as? [[String: Any]])
+        var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+        let video: [String: Any] = [
+            "id": "clip", "name": "clip.mp4", "kind": "video", "size": 10,
+            "fetch": "/interactions/i-1/attachments/clip/content"
+        ]
+        items[0]["attachments"] = [video]
+        sections[0]["items"] = items
+        value["sections"] = sections
+        let decoded = try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: value))
+        let decodedCard = try card(decoded)
+        XCTAssertEqual(decodedCard.title, try card(newerCard()).title)
+        XCTAssertEqual(decodedCard.attachments.first?.kind, .binary)
+        XCTAssertEqual(decodedCard.attachments.first?.id, "clip")
+    }
+
     func testAViewFromANewerDaemonLoadsWithEverythingTheAppKnows() throws {
         let view = try newerCard()
         let card = try card(view)

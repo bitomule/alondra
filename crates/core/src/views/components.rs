@@ -120,6 +120,7 @@ pub enum ContentKind {
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentKind {
     Image,
+    Video,
     Text,
     #[serde(other)]
     Binary,

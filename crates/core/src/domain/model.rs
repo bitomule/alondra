@@ -597,6 +597,7 @@ pub struct QuestionOption {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
+pub const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentRef {
     pub id: String,

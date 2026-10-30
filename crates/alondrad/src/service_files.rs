@@ -310,24 +310,28 @@ struct VerifiedCopy {
     _reservation: ReadReservation,
 }
 impl StoredReads {
+    pub(crate) fn attachment(&self, home: &Path, reference: &str, digest: &str,
+        offset: u64, version: Option<String>) -> Result<Value> {
+        self.chunk(home, reference, Some(digest), offset, version, alondra_core::domain::MAX_ATTACHMENT_BYTES).map(|(chunk, _)| chunk)
+    }
     pub(crate) fn verified(&self, home: &Path, reference: &str, digest: &str,
         offset: u64, version: Option<String>) -> Result<Value> {
-        self.chunk(home, reference, Some(digest), offset, version).map(|(chunk, _)| chunk)
+        self.chunk(home, reference, Some(digest), offset, version, crate::uploads::MAX_UPLOAD_BYTES as u64).map(|(chunk, _)| chunk)
     }
     pub(crate) fn stored(&self, home: &Path, reference: &str, offset: u64,
         version: Option<String>) -> Result<Value> {
-        let (mut chunk, digest) = self.chunk(home, reference, None, offset, version)?;
+        let (mut chunk, digest) = self.chunk(home, reference, None, offset, version, crate::uploads::MAX_UPLOAD_BYTES as u64)?;
         chunk["content_digest"] = json!(digest);
         Ok(chunk)
     }
     fn chunk(&self, home: &Path, reference: &str, expected: Option<&str>,
-        offset: u64, version: Option<String>) -> Result<(Value, String)> {
+        offset: u64, version: Option<String>, maximum: u64) -> Result<(Value, String)> {
         use std::sync::atomic::Ordering;
         let path = Path::new(reference);
         let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
         let mut file = open_stored_file(home, &path)?;
         let metadata = file.metadata()?;
-        ensure!(metadata.is_file() && metadata.len() <= crate::uploads::MAX_UPLOAD_BYTES as u64,
+        ensure!(metadata.is_file() && metadata.len() <= maximum,
             "invalid stored document");
         let current_version = file_version(&metadata);
         ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
@@ -372,7 +376,7 @@ impl StoredReads {
             copy
         } else {
             // Evicted copies may still be serving another request; their reservations remain live.
-            return read_chunk(home, reference, expected, offset, version, Some(&self.hashed_bytes));
+            return read_chunk(home, reference, expected, offset, version, Some(&self.hashed_bytes), maximum);
         };
         ensure!(expected.is_none_or(|value| value == copy.digest), "stored document digest does not match revision");
         ensure!(file_version(&file.metadata()?) == current_version, "file changed during read");
@@ -409,12 +413,12 @@ pub(crate) fn attachment_ref(home: &Path, id: String, name: String, stored: &Pat
 }
 
 fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
-    offset: u64, version: Option<String>, hashed: Option<&std::sync::atomic::AtomicU64>) -> Result<(Value, String)> {
+    offset: u64, version: Option<String>, hashed: Option<&std::sync::atomic::AtomicU64>, maximum: u64) -> Result<(Value, String)> {
     let path = Path::new(reference);
     let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
     let mut file = open_stored_file(home, &path)?;
     let metadata = file.metadata()?;
-    ensure!(metadata.is_file() && metadata.len() <= crate::uploads::MAX_UPLOAD_BYTES as u64,
+    ensure!(metadata.is_file() && metadata.len() <= maximum,
         "invalid stored document");
     let current_version = file_version(&metadata);
     ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
@@ -435,7 +439,7 @@ fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
             bytes.extend_from_slice(&buffer[start..stop]);
         }
         position = segment_end;
-        ensure!(position <= crate::uploads::MAX_UPLOAD_BYTES as u64, "stored document too large");
+        ensure!(position <= maximum, "stored document too large");
     }
     if let Some(hashed) = hashed { hashed.fetch_add(position, std::sync::atomic::Ordering::Relaxed); }
     let actual = hex_digest(hash.finalize().as_slice());
@@ -591,6 +595,38 @@ mod tests {
             json!({"transfer_id":ID}),
         )
     }
+    #[test]
+    fn attachments_above_the_upload_limit_download_without_growing_the_cache_budget() {
+        let h = home();
+        std::fs::create_dir(h.join("files")).unwrap();
+        let bytes = vec![37u8; READ_CACHE_BYTES + 7];
+        std::fs::write(h.join("files/video.mp4"), &bytes).unwrap();
+        let digest = hex_digest(Sha256::digest(&bytes).as_slice());
+        let reads = StoredReads::default();
+        let first = reads.attachment(&h, "files/video.mp4", &digest, 0, None).unwrap();
+        assert_eq!(first["total"], bytes.len());
+        assert_eq!(URL_SAFE_NO_PAD.decode(first["data"].as_str().unwrap()).unwrap(), bytes[..CHUNK]);
+        assert!(reads.verified(&h, "files/video.mp4", &digest, 0, None).is_err());
+        assert_eq!(reads.reserved.load(std::sync::atomic::Ordering::Relaxed), 0);
+        let end = reads.attachment(&h, "files/video.mp4", &digest, (bytes.len() - 7) as u64,
+            Some(first["version"].as_str().unwrap().into())).unwrap();
+        assert_eq!(URL_SAFE_NO_PAD.decode(end["data"].as_str().unwrap()).unwrap(), bytes[bytes.len() - 7..]);
+        assert_eq!(end["eof"], true);
+        let file = std::fs::OpenOptions::new().write(true).open(h.join("files/video.mp4")).unwrap();
+        file.set_len(alondra_core::domain::MAX_ATTACHMENT_BYTES + 1).unwrap();
+        let mut grown_hash = Sha256::new();
+        grown_hash.update(&bytes);
+        let zeros = [0u8; CHUNK];
+        let mut remaining = alondra_core::domain::MAX_ATTACHMENT_BYTES as usize + 1 - bytes.len();
+        while remaining > 0 {
+            let count = remaining.min(zeros.len());
+            grown_hash.update(&zeros[..count]);
+            remaining -= count;
+        }
+        let grown_digest = hex_digest(grown_hash.finalize().as_slice());
+        assert!(reads.attachment(&h, "files/video.mp4", &grown_digest, 0, None).is_err());
+    }
+
     #[test]
     #[ignore = "opt-in isolated stored-file profiling"]
     fn profile_verified_download() {
