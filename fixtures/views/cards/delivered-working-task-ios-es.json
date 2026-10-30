@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v584bd3b8acad67e5",
+  "version": "vd705bd4e51c2379c",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
@@ -113,7 +113,7 @@
     {
       "id": "request",
       "title": "Solicitud",
-      "collapsed": false,
+      "collapsed": true,
       "items": [
         {
           "type": "markdown",

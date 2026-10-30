@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""A research result that proposes a plan, end to end against its own sandbox.
+"""A research that ends in a plan, and one that ends in a report alone, end to end against a sandbox.
 
 A node without a model writes its report in a temporary folder, as a background session writes
 in $CLAUDE_JOB_DIR/tmp, and delivers a final result that cites that file and proposes a plan.
-The folder is deleted at once: the daemon must already keep the whole result in its files folder,
-and the card must show the report, the cited file, the plan and where it is kept, with «Aprobar y
-empezar a implementar» and «Solo archivar» instead of «Aceptar».
+The folder is deleted at once: the daemon must already keep the whole result in its files folder.
+That result is a plan card: the plan in front, the report as the document «Informe» beside it,
+and only «Aprobar» and «Pedir cambios». The «Solo archivar» button an app may still show from
+before is refused and closes nothing. A second node delivers a report alone: its card offers
+«Visto», and seeing it creates nothing.
 
-`--client tui` opens that card in the real TUI inside tmux and approves it with its first button;
-`--client phone` approves it from the sandbox phone. Either way the orchestrator is then told the
-request that holds the plan. A second node's result is only archived: the orchestrator hears
-nothing about it. Captures land in --captures.
+`--client tui` opens both cards in the real TUI inside tmux and approves the plan with its first
+button; `--client phone` approves it from the sandbox phone. Either way the request that holds
+the plan exists afterwards, and none for the report. Captures land in --captures.
 """
 
 import argparse
@@ -41,14 +42,17 @@ PLAN = """# Índice de toda la galería
 - [ ] Mostrar el progreso del índice en la pantalla de inicio
 """
 
-NEED = "Lee el informe sobre indexar toda la galería de Redraft"
-ARCHIVED = "Lee el informe sobre limpiar los duplicados de Redraft"
+NEED = "Aprueba el plan para indexar toda la galería de Redraft"
+SEEN = "Lee el informe sobre limpiar los duplicados de Redraft"
 
 
-def deliver(node, interaction, need, body, plan):
-    node.call(("present_result", {"task_id": node.task, "interaction_id": interaction, "need": need,
-                                  "content": {"kind": "report", "body": body}, "plan": plan,
-                                  "targets": [{"kind": "text", "text": "Informe"}], "is_final": True}))
+def deliver(node, interaction, need, body, plan=None):
+    result = {"task_id": node.task, "interaction_id": interaction, "need": need,
+              "content": {"kind": "report", "body": body},
+              "targets": [{"kind": "text", "text": "Informe"}], "is_final": True}
+    if plan:
+        result["plan"] = plan
+    node.call(("present_result", result))
 
 
 def kept(sandbox, interaction):
@@ -68,45 +72,67 @@ def card_of(phone, need):
     raise AssertionError(f"{need!r} never reached the queue")
 
 
-def orchestrator_heard(sandbox, text):
+def request_exists(phone, request):
+    try:
+        return phone.view(f"request:{request}")
+    except AssertionError:
+        return None
+
+
+def request_created(phone, request):
     deadline = time.time() + e2e_cards.TIMEOUT
     while time.time() < deadline:
-        if os.path.exists(sandbox.orchestrator_log) and text in open(sandbox.orchestrator_log).read():
-            return True
+        if view := request_exists(phone, request):
+            return view
         time.sleep(0.5)
-    return False
+    return None
 
 
-def press(phone, epoch, action):
+def press(phone, epoch, action_id, outcome="applied"):
     reply = phone.request("POST", "/actions", {"protocol": 1, "command_id": str(uuid.uuid4()), "data_epoch": epoch,
-                                               "client": "ios", "lang": "es", "action_id": action["id"]})
-    assert reply["outcome"] == "applied", reply
+                                               "client": "ios", "lang": "es", "action_id": action_id})
+    assert reply["outcome"] == outcome, reply
+    return reply
+
+
+def select(tui, need):
+    for key in ["k"] * 8 + ["j"] * 8:
+        if any(line.startswith("│▌") and need[:30] in line for line in tui.screen().splitlines()):
+            return
+        tui.keys(key)
+    raise AssertionError(f"{need!r} was never selected")
 
 
 def approve_in_tui(sandbox, captures):
     tui = e2e_cards.Terminal([sandbox.alondra], sandbox.env, captures)
     try:
         tui.until(lambda s: "TE ESPERA" in s, "the inbox never showed")
-        for _ in range(8):
-            if any(line.startswith("│▌") and NEED[:30] in line for line in tui.screen().splitlines()):
-                break
-            tui.keys("j")
-        tui.until(lambda s: "Aprobar y empezar a implementar" in s and "Solo archivar" in s, "the card never offered its two choices")
-        tui.capture("plan-result")
-        tui.keys("Enter")
-        tui.until(lambda s: "Plan propuesto" in s or "Plan propuesto" in s.replace("\n", " "), "the card never opened")
-        for _ in range(8):
-            if "Guardado en" in tui.screen():
-                break
-            tui.keys("PageDown")
-        tui.until(lambda s: "Guardado en" in s, "the card never said where the result is kept")
-        tui.capture("plan-result-detail")
+        select(tui, SEEN)
+        tui.until(lambda s: "Visto" in s, "the report alone never offered «Visto»")
+        tui.capture("report-alone")
+        select(tui, NEED)
+        tui.until(lambda s: "Aprobar" in s and "Solo archivar" not in s and "Aceptar" not in s and "Informe" in s,
+                  "the plan card never offered «Aprobar» with its report beside it")
+        tui.capture("plan-card")
+        tui.keys("f")
+        tui.until(lambda s: "elige" in s, "the documents of the card never opened")
+        tui.keys("1")
+        tui.until(lambda s: "Viable: indexar una vez" in s, "the report never opened")
+        tui.capture("plan-card-report")
         tui.keys("Escape")
-        tui.until(lambda s: "Aprobar y empezar a implementar" in s, "back to the inbox")
+        tui.until(lambda s: e2e_cards.listed(s, NEED), "back to the inbox")
+        select(tui, NEED)
+        tui.keys("Enter")
+        tui.until(lambda s: "Guardar la huella de cada foto" in s, "the card never showed its plan")
+        tui.capture("plan-card-detail")
+        tui.keys("Escape")
+        tui.until(lambda s: e2e_cards.listed(s, NEED), "back to the inbox")
+        select(tui, NEED)
         tui.keys("1")
         tui.until(lambda s: not e2e_cards.listed(s, NEED), "the card was still listed once approved", seconds=5)
-        tui.capture("plan-result-approved")
-        print("ok (tui): the card shows its plan and where it is kept, and approving it takes it out", file=sys.stderr, flush=True)
+        tui.capture("plan-card-approved")
+        print("ok (tui): the report offers «Visto», the plan card shows its plan with the report beside it, and approving it takes it out",
+              file=sys.stderr, flush=True)
     except BaseException:
         print(f"the screen:\n{tui.screen()}", file=sys.stderr, flush=True)
         raise
@@ -130,32 +156,41 @@ def main():
         with open(report, "w") as file:
             file.write(REPORT)
         deliver(nodes[0], "research", NEED, f"Viable: indexar una vez y seguir los cambios. Informe completo en {report}", PLAN)
-        deliver(nodes[1], "duplicates", ARCHIVED, "Los duplicados se limpian bien con lo que hay.", PLAN)
+        deliver(nodes[1], "duplicates", SEEN, "Los duplicados se limpian bien con lo que hay: no hace falta construir nada.")
         shutil.rmtree(job_tmp)
         text, path = kept(sandbox, "research")
         assert "Seguir los cambios de la fototeca" in text and "- [ ] Mostrar el progreso del índice" in text, text
         print(f"ok: the report outlived its temporary folder, kept whole in {path}", file=sys.stderr, flush=True)
 
-        phone = e2e_cards.Phone(sandbox, direct=True)
+        phone = e2e_cards.Phone(sandbox)
         card, actions, epoch = card_of(phone, NEED)
         labels = [action["label"] for action in actions]
-        assert "Aprobar y empezar a implementar" in labels and "Solo archivar" in labels and "Aceptar" not in labels, labels
+        assert labels[:1] == ["Aprobar"] and "Solo archivar" not in labels and "Aceptar" not in labels, labels
         view = json.dumps(phone.view(f"card:{card}"), ensure_ascii=False)
-        assert "Plan propuesto" in view and "Guardado en" in view and "Guardar la huella de cada foto" in view, view
+        assert "Informe" in view and "Guardado en" in view and "Guardar la huella de cada foto" in view, view
         with open(os.path.join(args.captures, "card-plan-result-es.json"), "w") as file:
             file.write(view)
-        print(f"ok: the card shows the plan and where it is kept, and offers {labels}", file=sys.stderr, flush=True)
+        print(f"ok: the card shows the plan with its report beside it, and offers {labels}", file=sys.stderr, flush=True)
 
-        archived, _, archive_epoch = card_of(phone, ARCHIVED)
-        press(phone, archive_epoch, next(a for a in phone.actions(archived)[0] if a["label"] == "Solo archivar"))
+        approve = next(a for a in actions if a["label"] == "Aprobar")["id"]
+        old_archive = approve.rsplit("~", 1)[0] + "~archive"
+        press(phone, epoch, old_archive, outcome="no_longer_available")
+        card_of(phone, NEED)
+        print("ok: an old «Solo archivar» button is refused and the plan card stays", file=sys.stderr, flush=True)
+
+        seen, seen_actions, seen_epoch = card_of(phone, SEEN)
+        seen_labels = [action["label"] for action in seen_actions]
+        assert seen_labels[:1] == ["Visto"] and "Aprobar" not in seen_labels, seen_labels
         if args.client == "tui":
             approve_in_tui(sandbox, args.captures)
         else:
-            press(phone, epoch, next(a for a in actions if a["label"] == "Aprobar y empezar a implementar"))
-        assert orchestrator_heard(sandbox, "Request implement-research holds that plan"), open(sandbox.orchestrator_log).read()
-        assert "implement-duplicates" not in open(sandbox.orchestrator_log).read(), "an archived plan reached the orchestrator"
-        print("ok: approving told the orchestrator the request that holds the plan; archiving told it nothing", file=sys.stderr, flush=True)
-        print(f"e2e plan result ({args.client}): the plan is built only when approved and the report is never lost.")
+            press(phone, epoch, approve)
+        press(phone, seen_epoch, next(a for a in phone.actions(seen)[0] if a["label"] == "Visto")["id"])
+        approved = request_created(phone, "implement-research")
+        assert approved and "Guardar la huella de cada foto" in json.dumps(approved, ensure_ascii=False), approved
+        assert request_exists(phone, "implement-duplicates") is None, "seeing a report created a request"
+        print("ok: approving created the request that holds the plan; seeing the report created nothing", file=sys.stderr, flush=True)
+        print(f"e2e plan result ({args.client}): a plan is built only when approved, a report is only seen, and the report is never lost.")
     finally:
         for node in nodes:
             node.stop()

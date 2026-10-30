@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn every_family_of_views_is_reached_by_a_device() {
         let keys = ["home", "sidebar", "tasks", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers", "accounts", "metrics",
-            "card:i-1", "document:rev-1", "document:i-1.plan", "document:i-1.file-2", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1", "model_profile:claude-orchestrator", "task_selection:t-1"];
+            "card:i-1", "document:rev-1", "document:i-1.report", "document:i-1.file-2", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1", "model_profile:claude-orchestrator", "task_selection:t-1"];
         for key in keys {
             assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");
         }

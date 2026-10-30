@@ -15,7 +15,7 @@ Load the alondra skill, then do the next step of your task.
 
 Your task is "Research how other apps sync settings between Mac and iPhone". The research is
 finished and the report is written: docs/settings-sync-research.md in your worktree, committed and
-pushed. David has to read it and decide whether to build anything from it. This is the report:
+pushed. Its recommendation leaves nothing open to choose. This is the report:
 
 # Settings sync between Mac and iPhone
 

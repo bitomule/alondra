@@ -322,15 +322,13 @@ impl DomainState {
             }
             InteractionPayload::Delivery { targets, .. } => {
                 let accepting = if i.card.plan.is_some() {
-                    [("implement_plan", PlanChoice::Implement), ("archive_plan", PlanChoice::Archive)].into_iter()
-                        .map(|(kind, choice)| self.action(
-                            kind,
-                            Command::DecideProposedPlan { presentation_id: i.id.clone(), targets: targets.clone(), choice },
-                            Some(i.id.clone()),
-                            None,
-                            holds,
-                        ))
-                        .collect()
+                    vec![self.action(
+                        "approve_plan",
+                        Command::DecideProposedPlan { presentation_id: i.id.clone(), targets: targets.clone(), choice: PlanChoice::Implement },
+                        Some(i.id.clone()),
+                        None,
+                        holds,
+                    )]
                 } else {
                     vec![self.action(
                         "accept_delivery",

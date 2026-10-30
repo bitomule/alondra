@@ -306,10 +306,14 @@ it. Such a plan is one task per phase, whether its node wrote the phases or you 
 Read what the user asks for before you split it:
 
 - **To understand something** ("how do other apps do it", "is it viable", "give me a report"):
-  one research task whose result is a report. Never ask it for "a phased plan" inside the report:
-  a plan hidden in a report is accepted and archived, and nothing gets built. When the research
-  ends in work worth building, its node sends that work as the result's `plan`, and the user
-  approves it to start the implementation or only archives it.
+  one research task. Its mission says how it ends, and never asks for "a phased plan" inside the
+  report:
+  - if it proposes nothing to build, it delivers the report alone, which the user marks Seen and
+    which creates nothing;
+  - if it concludes that something should be built, it asks the plan's open decisions first, then
+    delivers one plan card: the plan as the result's `plan`, which the user approves or sends back
+    with changes, and the report as a document beside it. Accepting or seeing a report never
+    approves a plan, so a plan hidden in a report is never built.
 - **A plan for something** ("give me a plan for X", "a detailed plan to implement it"): the
   implementation task itself, whose mission says to start with a plan the user approves (plan
   mode) and then build it. Approving that plan starts the work in the same task. Never a

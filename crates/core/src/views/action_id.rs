@@ -323,14 +323,16 @@ pub fn clarification_reason(name: &str) -> Option<crate::domain::ClarificationRe
     }
 }
 
-/// The `extra` of an accept action on a result that proposes a plan.
-pub const IMPLEMENT_PLAN: &str = "implement";
+/// The `extra` of the button that approves the plan a result proposes. Its bytes stay those of
+/// the button that preceded it, so a card an app still shows from before keeps working.
+pub const APPROVE_PLAN: &str = "implement";
+/// The `extra` of «Only archive», which apps may still send from a card they show from before.
 pub const ARCHIVE_PLAN: &str = "archive";
 
 /// What an accept action's `extra` chooses for a result's proposed plan.
 pub fn plan_choice(extra: &str) -> Option<crate::domain::PlanChoice> {
     match extra {
-        IMPLEMENT_PLAN => Some(crate::domain::PlanChoice::Implement),
+        APPROVE_PLAN => Some(crate::domain::PlanChoice::Implement),
         ARCHIVE_PLAN => Some(crate::domain::PlanChoice::Archive),
         _ => None,
     }

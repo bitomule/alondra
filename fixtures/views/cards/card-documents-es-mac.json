@@ -4,9 +4,9 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "v69cdc8f749fea557",
+  "version": "vdddf237b8b89c90f",
   "cursor": "cursor-1",
-  "title": "Read the report on indexing Redraft's whole library",
+  "title": "Approve the plan to index Redraft's whole library",
   "status": {
     "version": "vb7b081b6c72395b1",
     "summary": "1 por leer · 1 nodo trabajando",
@@ -53,14 +53,14 @@
           "type": "card",
           "id": "result-1",
           "kind": "review",
-          "need": "Read the report on indexing Redraft's whole library",
-          "why": "It ends in a plan: approve it to start building it, or only archive the report.",
+          "need": "Approve the plan to index Redraft's whole library",
+          "why": "The research found it viable. Approving it creates the tasks that build it; the report is beside it.",
           "meta": "Redraft: analyse the whole library at once",
           "content_row": {
-            "kind": "report",
-            "icon": "notice",
-            "label": "Informe",
-            "summary": "2 puntos"
+            "kind": "plan",
+            "icon": "document",
+            "label": "Plan",
+            "summary": "3 pasos"
           },
           "reply": {
             "id": "reply:result-1@5",
@@ -135,8 +135,8 @@
             "text": "Revisar",
             "tone": "accent"
           },
-          "title": "Read the report on indexing Redraft's whole library",
-          "subtitle": "It ends in a plan: approve it to start building it, or only archive the report.",
+          "title": "Approve the plan to index Redraft's whole library",
+          "subtitle": "The research found it viable. Approving it creates the tasks that build it; the report is beside it.",
           "context": [
             {
               "icon": "task",
@@ -155,7 +155,7 @@
           "actions": [
             {
               "id": "accept:result-1@5~implement",
-              "label": "Aprobar y empezar a implementar",
+              "label": "Aprobar",
               "style": "primary",
               "role": "advance",
               "presentation": "button",
@@ -164,23 +164,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Implementación pedida",
+              "stamp": "Aprobado",
               "key": "1",
-              "resolves_card": true
-            },
-            {
-              "id": "accept:result-1@5~archive",
-              "label": "Solo archivar",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Archivada",
-              "key": "2",
               "resolves_card": true
             },
             {
@@ -201,7 +186,7 @@
               },
               "enabled": true,
               "stamp": "Cambios solicitados",
-              "key": "3",
+              "key": "2",
               "resolves_card": true
             }
           ]
@@ -215,7 +200,7 @@
       "items": [
         {
           "type": "markdown",
-          "text": "## Summary\n\n- **Viable.** Every photo keeps a 360 px copy on the iPhone.\n- How other apps do it: docs/research/competitors.md",
+          "text": "# Index the whole library\n\nMeasurements in docs/measurements.md\n\n- [ ] Store each photo's feature print in Core Data\n- [ ] Index changes in the background\n- [ ] Show indexing progress on the home screen",
           "truncated": false,
           "commentable": false
         }
@@ -238,11 +223,11 @@
               }
             },
             {
-              "label": "Plan propuesto",
-              "value": "Index the whole library",
+              "label": "Informe",
+              "value": "Summary",
               "link": {
                 "kind": "view",
-                "key": "document:result-1.plan"
+                "key": "document:result-1.report"
               }
             },
             {

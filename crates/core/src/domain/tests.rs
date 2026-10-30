@@ -4628,8 +4628,18 @@ fn guards_refuse_what_the_commands_refuse() {
         change(AccountChange::SetMoveWhenExhausted { on: true }),
         change(AccountChange::SetMoveWhenExhausted { on: false }),
     ]).collect();
+    let mut proposing = fixture();
+    let mut proposal = crate::domain::CardSpec::delivery("Approve the plan", &text(), true);
+    proposal.plan = Some("- [ ] Build it\n".into());
+    exec(&mut proposing, agent(), Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
+        interaction_id: "p".into(), body: "Report".into(), targets: text(), is_final: true, nothing_to_review: false, card: proposal }).unwrap();
+    let commands: Vec<Command> = commands.into_iter().chain([
+        Command::AcceptDelivery { presentation_id: "p".into(), targets: text() },
+        Command::DecideProposedPlan { presentation_id: "p".into(), targets: text(), choice: PlanChoice::Implement },
+        Command::DecideProposedPlan { presentation_id: "p".into(), targets: text(), choice: PlanChoice::Archive },
+    ]).collect();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&presented, &authorized, &merged, &cancelled, &sdk, &ended, &lost, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
+    for state in [&proposing, &presented, &authorized, &merged, &cancelled, &sdk, &ended, &lost, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
         &accounts, &work_busy, &alone] {
         for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {
@@ -4652,7 +4662,7 @@ fn guards_refuse_what_the_commands_refuse() {
     }
     assert!(allowed > 0, "some buttons are allowed");
     for code in ["incompatible_protocol", "stale_epoch", "stale_revision", "stale_generation", "forbidden", "not_found",
-        "invalid_input", "invalid_action_for_kind", "acceptance_stale", "stale_head", "task_not_active"] {
+        "invalid_input", "invalid_action_for_kind", "acceptance_stale", "stale_head", "task_not_active", "plan_choice_required", "plan_approve_or_change"] {
         assert!(refusals.contains(code), "no button was refused with {code}: {refusals:?}");
     }
 }

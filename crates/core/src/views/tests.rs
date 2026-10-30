@@ -1556,13 +1556,14 @@ fn attach_document(state: &mut DomainState) {
 }
 
 #[test]
-fn plain_delivery_offers_accept_and_request_changes_with_a_reply_to_the_node() {
+fn a_report_alone_offers_seen_and_request_changes_with_a_reply_to_the_node() {
     let mut state = fixture();
     state.interactions.get_mut(&"i-3".into()).unwrap().author = Author::Agent { agent_id: "a-1".into() };
     let card = decidable_card(&state, Lang::En, "i-3");
     assert_eq!(card.kind, Some(crate::domain::CardKind::Review));
-    let accept = card.actions.iter().find(|action| action.label == "Accept").expect("accept");
-    assert_eq!((accept.style, accept.role), (Style::Primary, Some(Role::Advance)));
+    let seen = card.actions.iter().find(|action| action.label == "Seen").expect("seen");
+    assert_eq!((seen.style, seen.role), (Style::Primary, Some(Role::Advance)));
+    assert_eq!(seen.stamp.as_deref(), Some("Seen"));
     let changes = card.actions.iter().find(|action| action.label == "Request changes").expect("request changes");
     assert_eq!(changes.role, Some(Role::Neutral));
     let reply = reply_to_node(&card);
@@ -1602,7 +1603,7 @@ fn a_delivery_carrying_a_claude_artifact_asks_for_changes_in_a_sheet_with_commen
     let card = decidable_card(&state, Lang::En, "i-3");
     let changes = card.actions.iter().find(|action| action.label == "Request changes").expect("request changes");
     assert!(matches!(&changes.input, Input::Text { placeholder, .. } if placeholder == "Describe the changes"));
-    assert!(card.actions.iter().any(|action| action.label == "Accept" && action.style == Style::Primary));
+    assert!(card.actions.iter().any(|action| action.label == "Seen" && action.style == Style::Primary));
     reply_to_node(&card);
 }
 
@@ -7100,8 +7101,8 @@ fn proposed_plan_fixture() -> DomainState {
         title: "Redraft: analyse the whole library at once".into(), agent_id: Some("a-1".into()), review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("redraft/library-index", "/tmp/redraft")) });
     let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
-    let mut card = CardSpec::new(CardKind::Review, "Read the report on indexing Redraft's whole library")
-        .why("It ends in a plan: approve it to start building it, or only archive the report.")
+    let mut card = CardSpec::new(CardKind::Review, "Approve the plan to index Redraft's whole library")
+        .why("The research found it viable. Approving it creates the tasks that build it; the report is beside it.")
         .content(Content::Report, "## Summary\n\n- **Viable.** Every photo of an optimised library keeps a 360 px copy on the iPhone.\n- Other apps index once and then follow the library's changes.")
         .plan("# Index the whole library\n\n- [ ] Store each photo's feature print in Core Data, next to what users have today\n- [ ] Index changes in the background with the library's change history\n- [ ] Show indexing progress on the home screen");
     card.kept_at = Some("/Users/me/.alondra/files/results/t-1/result-1.md".into());
@@ -7111,8 +7112,11 @@ fn proposed_plan_fixture() -> DomainState {
     state
 }
 
+/// The report on Ultimate came as one card holding a report and a plan: David pressed its first
+/// button to accept the report and approved a plan that created seven tasks. The fixture is
+/// stored as such a result was, so results kept from before read the same way.
 #[test]
-fn a_result_that_proposes_a_plan_shows_it_and_offers_to_build_it_or_only_archive_it() {
+fn a_result_that_proposes_a_plan_is_a_plan_card_with_its_report_as_a_document() {
     let state = proposed_plan_fixture();
     let live = LiveSnapshot::default();
     for (client, lang, filename, expected) in [
@@ -7126,14 +7130,40 @@ fn a_result_that_proposes_a_plan_shows_it_and_offers_to_build_it_or_only_archive
     let view = render(&state, &live, Client::Tui, Lang::Es, "card:result-1", "");
     let card = card_of(&view);
     let labels: Vec<&str> = card.actions.iter().map(|action| action.label.as_str()).collect();
-    assert_eq!(labels, ["Aprobar y empezar a implementar", "Solo archivar", "Pedir cambios"]);
-    assert!(card.actions[0].id.ends_with("~implement") || card.actions[0].id.contains("implement"), "{}", card.actions[0].id);
-    let text = serde_json::to_string(&view).unwrap();
-    assert!(!text.contains("Show indexing progress on the home screen"), "{text}");
-    assert_eq!(document_links(&view), ["document:result-1.plan"]);
-    let plan = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "document:result-1.plan", "")).unwrap();
-    assert!(plan.contains("Show indexing progress on the home screen"), "{plan}");
+    assert_eq!(labels, ["Aprobar", "Pedir cambios"]);
+    assert!(card.actions[0].id.contains("implement"), "{}", card.actions[0].id);
+    let text: String = view.sections.iter().filter(|section| section.id != "documents").map(|section| serde_json::to_string(section).unwrap()).collect();
+    assert!(text.contains("Show indexing progress on the home screen"), "the card is the plan: {text}");
+    assert!(!text.contains("keeps a 360 px copy"), "the report is a document beside the plan: {text}");
+    assert_eq!(document_links(&view), ["document:result-1.report"]);
+    let report = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "document:result-1.report", "")).unwrap();
+    assert!(report.contains("keeps a 360 px copy") && report.contains("Informe"), "{report}");
     assert!(text.contains("Guardado en `/Users/me/.alondra/files/results/t-1/result-1.md`"), "{text}");
+}
+
+#[test]
+fn a_report_alone_is_only_marked_seen() {
+    use crate::domain::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget};
+    let mut state = proposed_plan_fixture();
+    let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "report".into(),
+        expected_revision: state.revision, command: Command::PresentResult { checklist: vec![], attachments: vec![], task_id: "t-1".into(),
+            interaction_id: "result-2".into(), body: "Read the report".into(), targets: vec![DeliveryTarget::Text { text: "Report".into() }],
+            is_final: true, nothing_to_review: false,
+            card: CardSpec::new(CardKind::Review, "Read why Redraft does not need a widget").content(Content::Report, "Not worth building now.") } };
+    state.execute(&Actor::Agent { agent_id: "a-1".into() }, &envelope).unwrap();
+    let live = LiveSnapshot::default();
+    for (lang, labels) in [(Lang::Es, ["Visto", "Pedir cambios"]), (Lang::En, ["Seen", "Request changes"])] {
+        let view = render(&state, &live, Client::Tui, lang, "card:result-2", "");
+        let actual: Vec<&str> = card_of(&view).actions.iter().map(|action| action.label.as_str()).collect();
+        assert_eq!(actual, labels);
+    }
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "card-delivery-report.json", include_str!("../../../../fixtures/views/cards/card-delivery-report.json")),
+        (Client::Ios, Lang::Es, "card-delivery-report-es.json", include_str!("../../../../fixtures/views/cards/card-delivery-report-es.json")),
+        (Client::Mac, Lang::Es, "card-delivery-report-es-mac.json", include_str!("../../../../fixtures/views/cards/card-delivery-report-es-mac.json")),
+    ] {
+        assert_golden(filename, &render(&state, &live, client, lang, "card:result-2", "2026-10-15T10:00:00Z"), expected);
+    }
 }
 
 /// A result with a report, a design document of the task, a plan it proposes and two Markdown
@@ -7164,8 +7194,8 @@ fn documents_fixture() -> DomainState {
         |path| (path == "docs/measurements.md").then(|| "# Measurements\n\n| Library | Time |\n|---|---|\n| 10 000 photos | 4 min |".to_owned()),
     ).unwrap();
     let targets = vec![DeliveryTarget::DocumentRevision { document_id: "design".into(), revision_id: "design-r1".into() }];
-    let card = CardSpec::new(CardKind::Review, "Read the report on indexing Redraft's whole library")
-        .why("It ends in a plan: approve it to start building it, or only archive the report.")
+    let card = CardSpec::new(CardKind::Review, "Approve the plan to index Redraft's whole library")
+        .why("The research found it viable. Approving it creates the tasks that build it; the report is beside it.")
         .content(Content::Report, &report)
         .plan(&plan);
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::PresentResult { checklist: vec![], attachments: vec![],
@@ -7190,10 +7220,10 @@ fn a_cards_documents_are_links_in_their_own_section_and_never_part_of_its_text()
     }
     let view = render(&state, &live, Client::Ios, Lang::Es, "card:result-1", "");
     let text: String = view.sections.iter().filter(|section| section.id != "documents").map(|section| serde_json::to_string(section).unwrap()).collect();
-    for inside in ["Indexes overnight", "10 000 photos", "Show indexing progress", "/document-revisions/"] {
+    for inside in ["Indexes overnight", "10 000 photos", "Every photo keeps a 360 px copy", "/document-revisions/"] {
         assert!(!text.contains(inside), "the card holds «{inside}» in its text: {text}");
     }
-    assert!(text.contains("Every photo keeps a 360 px copy"), "the report stays: {text}");
+    assert!(text.contains("Show indexing progress"), "the card is the plan: {text}");
     let documents = view.sections.iter().find(|section| section.id == "documents").expect("a section of documents");
     assert_eq!(documents.title.as_deref(), Some("Documentos"));
     let [Item::Facts(facts)] = documents.items.as_slice() else { panic!("{:?}", documents.items) };
@@ -7201,7 +7231,7 @@ fn a_cards_documents_are_links_in_their_own_section_and_never_part_of_its_text()
     let view_link = |key: &str| Link::View { key: key.into() };
     assert_eq!(links, [
         ("Documento", "Library index design", Some(&view_link("document:design-r1"))),
-        ("Plan propuesto", "Index the whole library", Some(&view_link("document:result-1.plan"))),
+        ("Informe", "Summary", Some(&view_link("document:result-1.report"))),
         ("docs/research/competitors.md", "How other apps index a library", Some(&view_link("document:result-1.file-1"))),
         ("docs/measurements.md", "Measurements", Some(&view_link("document:result-1.file-2"))),
     ]);
@@ -7212,8 +7242,8 @@ fn a_cards_documents_are_links_in_their_own_section_and_never_part_of_its_text()
     };
     assert_eq!(markdown_of("document:result-1.file-1"),
         "# How other apps index a library\n\n## Photos\n\nIndexes overnight while charging.\n\n## Lightroom\n\nIndexes on import.");
-    assert!(markdown_of("document:result-1.plan").starts_with("# Index the whole library"));
-    assert!(!markdown_of("document:result-1.plan").contains("10 000 photos"), "the plan's own file is a document of its own");
+    assert!(markdown_of("document:result-1.report").contains("Every photo keeps a 360 px copy"));
+    assert!(!markdown_of("document:result-1.report").contains("Indexes overnight"), "the report's own file is a document of its own");
     assert!(markdown_of("document:result-1.file-2").contains("10 000 photos"));
     let missing = build("document:result-1.file-3", RenderContext {
         domain: &state, index: &crate::domain::ReadIndex::build(&state), live: &live, client: Client::Ios, lang: Lang::Es,

@@ -320,8 +320,8 @@ e2e-plan-card:
 	python3 tools/e2e_plan_card.py --client $(or $(CLIENT),tui) --captures $(or $(E2E_CAPTURES),$(CURDIR)/.e2e-captures) \
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
-# A research result that proposes a plan (tools/e2e_plan_result.py): its report outlives its
-# temporary folder, and only approving the plan hands it on. CLIENT=tui|phone, captures in E2E_CAPTURES.
+# A research that ends in a plan card, and one that ends in a report alone (tools/e2e_plan_result.py):
+# the report outlives its temporary folder, only approving the plan hands it on, and a report is only seen. CLIENT=tui|phone, captures in E2E_CAPTURES.
 e2e-plan-result:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
 	python3 tools/e2e_plan_result.py --client $(or $(CLIENT),tui) --captures $(or $(E2E_CAPTURES),$(CURDIR)/.e2e-captures) \

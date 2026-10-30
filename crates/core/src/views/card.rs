@@ -619,7 +619,7 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
     let attachments = interaction.attachments.len();
     let live = pr_target(interaction, domain)
         .and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
-    let shown = interaction.shown_content();
+    let shown = front_content(interaction);
     let (kind, summary_text, others) = match shown.as_deref() {
         Some(content) => {
             let agent = content.summary.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(|text| clip(text, 60));
@@ -1514,7 +1514,8 @@ fn delivery_actions(
     let pr = pr_target(interaction, domain);
     let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     let document = is_document_review(interaction);
-    let accept_label = if item.card.kind == CardKind::Know {
+    let read_only = item.card.kind == CardKind::Know || (pr.is_none() && !document);
+    let accept_label = if read_only {
         t!(lang, "Seen", "Visto")
     } else if document {
         t!(lang, "Approve", "Aprobar")
@@ -1528,28 +1529,27 @@ fn delivery_actions(
         }
         let id = action_id(Verb::Accept, &interaction.id.0, interaction.revision, None)?;
         let mut action = button(id.to_string(), label, role);
-        action.stamp = Some(if document { t!(lang, "Approved", "Aprobada") } else { t!(lang, "Accepted", "Aceptada") }.into());
+        action.stamp = Some(if document {
+            t!(lang, "Approved", "Aprobada")
+        } else if read_only {
+            t!(lang, "Seen", "Visto")
+        } else {
+            t!(lang, "Accepted", "Aceptada")
+        }.into());
         Some(with_availability(action, find("accept_delivery"), lang))
     };
     let mut visible = vec![];
     let mut more = vec![];
-    if pr.is_none() && interaction.card.plan.is_some() && item.card.kind != CardKind::Know {
-        if !accepted {
-            let choices = [
-                (super::action_id::IMPLEMENT_PLAN, t!(lang, "Approve and start implementing", "Aprobar y empezar a implementar"), Role::Advance,
-                    t!(lang, "Implementation requested", "Implementación pedida"), "implement_plan"),
-                (super::action_id::ARCHIVE_PLAN, t!(lang, "Only archive", "Solo archivar"), Role::Neutral, t!(lang, "Archived", "Archivada"), "archive_plan"),
-            ];
-            for (extra, label, role, done, kind) in choices {
-                if let Some(id) = action_id(Verb::Accept, &interaction.id.0, interaction.revision, Some(extra.to_owned())) {
-                    let mut action = button(id.to_string(), label, role);
-                    action.stamp = Some(done.into());
-                    visible.push(with_availability(action, find(kind), lang));
-                }
-            }
+    if pr.is_none() && proposed_plan(interaction).is_some() && item.card.kind != CardKind::Know {
+        if !accepted
+            && let Some(id) = action_id(Verb::Accept, &interaction.id.0, interaction.revision, Some(super::action_id::APPROVE_PLAN.to_owned()))
+        {
+            let mut approve = button(id.to_string(), t!(lang, "Approve", "Aprobar"), Role::Advance);
+            approve.stamp = Some(t!(lang, "Approved", "Aprobado").into());
+            visible.push(with_availability(approve, find("approve_plan"), lang));
         }
         visible.extend(request_changes(
-            Verb::Changes, &interaction.id.0, interaction.revision, None, document, find("submit_feedback"), context,
+            Verb::Changes, &interaction.id.0, interaction.revision, None, true, find("submit_feedback"), context,
         ));
         return (visible, more);
     }
@@ -1790,7 +1790,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let domain = context.domain;
     let Some(interaction) = interaction_of(item, domain) else { return vec![] };
     let mut out = vec![];
-    let shown = interaction.shown_content();
+    let shown = front_content(interaction);
     let content = shown.as_deref().filter(|content| !without_included_files(&content.body).trim().is_empty());
     if reviewed_revision(interaction).is_some() {
         out.extend(content.map(|content| markdown(without_included_files(&content.body).to_owned())));
@@ -1843,6 +1843,11 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             out.push(commentable_markdown(body.to_owned()));
             return out;
         }
+        if proposed_plan(interaction).is_some() {
+            out.push(commentable_markdown(body.to_owned()));
+            out.extend(kept_at(interaction, lang));
+            return out;
+        }
         out.push(markdown(match content.kind {
             DomainContent::Command => fenced(body, ""),
             DomainContent::Diff if summary::diff_stats(body).is_some() => fenced(body, "diff"),
@@ -1874,8 +1879,8 @@ pub(super) struct CardDocument {
     pub markdown: Option<String>,
 }
 
-/// The documents of a card, in order: the revisions it delivers or asks about, the plan it
-/// proposes, and the files its words cite.
+/// The documents of a card, in order: the revisions it delivers or asks about, the report beside
+/// the plan it proposes, and the files its words cite.
 pub(super) fn documents(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Vec<CardDocument> {
     let mut revisions: Vec<&DocumentRevisionId> = targets_of(interaction).iter().filter_map(|target| match target {
         DeliveryTarget::DocumentRevision { revision_id, .. } => Some(revision_id),
@@ -1897,16 +1902,19 @@ pub(super) fn documents(interaction: &Interaction, domain: &DomainState, lang: L
         })
     }).collect();
     let id = &interaction.id.0;
-    let plan = interaction.card.plan.as_deref().map(str::trim).filter(|plan| !plan.is_empty());
-    if let Some(plan) = plan {
+    let plan = proposed_plan(interaction);
+    let content = interaction.shown_content();
+    if plan.is_some()
+        && let Some(report) = content.as_deref().map(|content| without_included_files(&content.body).trim()).filter(|report| !report.is_empty())
+    {
         out.push(CardDocument {
-            label: t!(lang, "Proposed plan", "Plan propuesto").into(),
-            title: first_heading(without_included_files(plan)).unwrap_or_else(|| t!(lang, "Proposed plan", "Plan propuesto").into()),
-            key: format!("document:{id}.plan"),
-            markdown: Some(without_included_files(plan).to_owned()),
+            label: t!(lang, "Report", "Informe").into(),
+            title: report.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty())
+                .map_or_else(|| t!(lang, "Report", "Informe").into(), |line| clip(line, 60)),
+            key: format!("document:{id}.report"),
+            markdown: Some(report.to_owned()),
         });
     }
-    let content = interaction.shown_content();
     let cited = content.iter().flat_map(|content| included_files(&content.body)).chain(plan.into_iter().flat_map(included_files));
     out.extend(cited.enumerate().map(|(n, (path, markdown))| CardDocument {
         title: first_heading(&markdown).unwrap_or_else(|| path.clone()),
@@ -1915,6 +1923,20 @@ pub(super) fn documents(interaction: &Interaction, domain: &DomainState, lang: L
         markdown: Some(markdown),
     }));
     out
+}
+
+/// The plan a final result proposes: the card is that plan, and its report goes with it as a
+/// document, so accepting a report and approving a plan are never the same button.
+fn proposed_plan(interaction: &Interaction) -> Option<&str> {
+    interaction.card.plan.as_deref().map(str::trim).filter(|plan| !plan.is_empty())
+}
+
+/// What the card puts in front of the user: the plan a result proposes, else its content.
+fn front_content(interaction: &Interaction) -> Option<std::borrow::Cow<'_, crate::domain::CardContent>> {
+    match proposed_plan(interaction) {
+        Some(plan) => Some(std::borrow::Cow::Owned(crate::domain::CardContent { kind: DomainContent::Plan, summary: None, body: plan.to_owned() })),
+        None => interaction.shown_content(),
+    }
 }
 
 fn first_heading(markdown: &str) -> Option<String> {

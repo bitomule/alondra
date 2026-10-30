@@ -93,7 +93,7 @@ impl Refusal {
     /// reach read as "no longer available" to a person.
     pub fn for_code(code: &str) -> Self {
         match code {
-            "stale_revision" | "conflict" | "stale_generation" | "stale_epoch" => Self::Changed,
+            "stale_revision" | "conflict" | "stale_generation" | "stale_epoch" | "plan_approve_or_change" => Self::Changed,
             "acceptance_stale" => Self::NewerResult,
             "question_already_answered" | "already_answered" => Self::AlreadyAnswered,
             "withdrawn" | "already_withdrawn" => Self::Withdrawn,

@@ -174,7 +174,7 @@ def main():
         assert reply.get("approved") is False and "cannot open docs/missing-plan.md" in reply.get("feedback", ""), reply
         print(f"ok: a plan that only points at a file goes back to its node: {reply['feedback']}", file=sys.stderr, flush=True)
         hold(node, "toolu-plan", PLAN)
-        phone = e2e_cards.Phone(sandbox, direct=True)
+        phone = e2e_cards.Phone(sandbox)
         card, view = plan_card(phone, "mac" if args.client == "mac" else "ios")
         print(f"ok: the plan reached the queue with the file inside ({card})", file=sys.stderr, flush=True)
         if args.client == "mac":

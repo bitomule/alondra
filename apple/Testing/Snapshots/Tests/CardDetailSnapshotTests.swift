@@ -196,26 +196,41 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
-    // MARK: A report that proposes a plan: build it or only archive it
+    // MARK: A research that ends in a plan card, or in a report that is only seen
+
+    /// The screen reads the plan a card carries when it loads; the store starts already loaded.
+    private func proposedPlan(_ document: ViewDocument) -> StoreOf<CardDetailFeature> {
+        ScreenStores.cardDetail(document) { state in
+            state.content = document.sections.lazy.flatMap(\.items).compactMap { item -> String? in
+                if case .markdown(let markdown) = item, markdown.commentable { markdown.text } else { nil }
+            }.first
+        }
+    }
 
     func test_deliveryThatProposesAPlan() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-delivery-plan")))
-        assertDetail(store)
+        assertDetail(proposedPlan(try Fixtures.unblocked(try Fixtures.document("card-delivery-plan"))))
     }
 
     func test_deliveryThatProposesAPlan_es() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-delivery-plan-es"))))
+        assertDetail(proposedPlan(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-delivery-plan-es")))), language: .spanish)
+    }
+
+    func test_reportAlone() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-delivery-report")))
+        assertDetail(store)
+    }
+
+    func test_reportAlone_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-delivery-report-es"))))
         assertDetail(store, language: .spanish)
     }
 
     func test_cardWithItsDocuments() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-documents")))
-        assertDetail(store)
+        assertDetail(proposedPlan(try Fixtures.unblocked(try Fixtures.document("card-documents"))))
     }
 
     func test_cardWithItsDocuments_es() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-documents-es"))))
-        assertDetail(store, language: .spanish)
+        assertDetail(proposedPlan(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-documents-es")))), language: .spanish)
     }
 
     // MARK: A plan to comment on

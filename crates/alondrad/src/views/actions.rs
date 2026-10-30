@@ -1455,13 +1455,11 @@ fn map_action(
             let InteractionPayload::Delivery { targets, acceptance: None, .. } = &interaction.payload else { return None; };
             if interaction.card.plan.is_some() {
                 let choice = alondra_core::views::action_id::plan_choice(action.extra.as_deref()?)?;
-                let done = match choice {
-                    alondra_core::domain::PlanChoice::Implement => stamp("Implementation requested", "Implementación pedida"),
-                    alondra_core::domain::PlanChoice::Archive => stamp("Archived", "Archivada"),
-                };
-                return Some((Command::DecideProposedPlan { presentation_id: interaction.id.clone(), targets: targets.clone(), choice }, done));
+                return Some((Command::DecideProposedPlan { presentation_id: interaction.id.clone(), targets: targets.clone(), choice },
+                    stamp("Approved", "Aprobado")));
             }
-            Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, stamp("Accepted", "Aceptada")))
+            let done = if only_text(targets) { stamp("Seen", "Visto") } else { stamp("Accepted", "Aceptada") };
+            Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, done))
         }
         Verb::Changes => {
             let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
@@ -1727,14 +1725,19 @@ fn domain_refusal_value(error: &DomainError, lang: Lang) -> Value {
     value
 }
 
+/// A delivery the user only reads: no pull request to merge and no document to approve.
+fn only_text(targets: &[alondra_core::domain::DeliveryTarget]) -> bool {
+    targets.iter().all(|target| matches!(target, alondra_core::domain::DeliveryTarget::Text { .. }))
+}
+
 /// What an accept verb is accepting, read before the action changes the card.
 #[derive(Clone, Copy, PartialEq)]
 enum Accepted {
     Plan,
     Document,
     Result,
-    ImplementPlan,
-    ArchivePlan,
+    Report,
+    ProposedPlan,
 }
 
 impl Accepted {
@@ -1744,12 +1747,10 @@ impl Accepted {
             return Self::Plan;
         }
         if interaction.card.plan.is_some() {
-            return match action.extra.as_deref().and_then(alondra_core::views::action_id::plan_choice) {
-                Some(alondra_core::domain::PlanChoice::Implement) => Self::ImplementPlan,
-                _ => Self::ArchivePlan,
-            };
+            return Self::ProposedPlan;
         }
         match &interaction.payload {
+            InteractionPayload::Delivery { targets, .. } if only_text(targets) => Self::Report,
             InteractionPayload::Delivery { targets, .. } if !targets.is_empty()
                 && targets.iter().all(|target| matches!(target, alondra_core::domain::DeliveryTarget::DocumentRevision { .. })) => Self::Document,
             InteractionPayload::Question { .. } if matches!(interaction.subject, Some(alondra_core::domain::InteractionSubject::DocumentReview { .. })) => Self::Document,
@@ -1772,8 +1773,8 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
             Accepted::Plan => say("Plan approved.", "Plan aprobado."),
             Accepted::Document => say("Document accepted.", "Documento aceptado."),
             Accepted::Result => say("Result accepted.", "Resultado aceptado."),
-            Accepted::ImplementPlan => say("Plan approved: a task to implement it is on its way.", "Plan aprobado: llega una tarea para implementarlo."),
-            Accepted::ArchivePlan => say("Result archived. Its plan is not implemented.", "Resultado archivado. Su plan no se implementa."),
+            Accepted::Report => say("Marked as seen.", "Marcado como visto."),
+            Accepted::ProposedPlan => say("Plan approved: Alondra creates the tasks that build it.", "Plan aprobado: Alondra crea las tareas que lo construyen."),
         }),
         Verb::Changes if accepted == Accepted::Document => Outcome::done(say("Changes sent to its node. The document comes back with its next version.", "Cambios enviados a su nodo. El documento volverá con su próxima versión.")),
         Verb::Changes => Outcome::done(say("Changes sent. The card comes back when it is presented again.", "Cambios enviados. La tarjeta volverá cuando se presente de nuevo.")),
@@ -3479,21 +3480,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_and_start_implementing_hands_the_plan_on_and_only_archive_does_not() {
-        for (extra, request) in [(Some("implement"), true), (Some("archive"), false)] {
-            let (home, domain, client) = action_home();
-            presented_plan(&domain);
-            let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, extra.map(str::to_owned)).unwrap();
-            let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
-            assert_eq!(reply["outcome"], "applied", "{reply}");
-            let state = domain.state().unwrap();
-            assert!(matches!(&state.interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid));
-            assert_eq!(state.requests.contains_key(&"implement-result".into()), request, "{extra:?}");
-        }
+    async fn approving_a_proposed_plan_hands_it_on_and_an_old_only_archive_button_closes_nothing() {
+        let (home, domain, client) = action_home();
+        presented_plan(&domain);
+        let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, Some("archive".into())).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+        assert_ne!(reply["outcome"], "applied", "{reply}");
+        let state = domain.state().unwrap();
+        assert!(matches!(&state.interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: None, .. }));
+        assert!(!state.requests.contains_key(&"implement-result".into()));
+
+        let id = ActionId::new(Verb::Accept, "result", state.revision, Some("implement".into())).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        let state = domain.state().unwrap();
+        assert!(matches!(&state.interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid));
+        assert!(state.requests.contains_key(&"implement-result".into()));
     }
 
     #[tokio::test]
-    async fn a_plain_accept_never_archives_a_result_that_proposes_a_plan() {
+    async fn a_plain_accept_never_decides_a_result_that_proposes_a_plan() {
         let (home, domain, client) = action_home();
         presented_plan(&domain);
         let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();

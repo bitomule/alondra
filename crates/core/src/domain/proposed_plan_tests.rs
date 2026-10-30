@@ -1,6 +1,6 @@
-//! A final result that proposes a plan is never accepted and archived by accident: the user
-//! either approves it, which hands the orchestrator a Request whose one Task starts with that plan
-//! approved, or only archives it.
+//! A final result that proposes a plan is a plan card: the user approves it, which hands the
+//! orchestrator a Request whose Tasks start with that plan approved, or sends it back with
+//! changes. Accepting a report never approves, archives or builds a plan.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,7 +71,7 @@ fn accepted(s: &DomainState, id: &str) -> bool {
 }
 
 #[test]
-fn a_result_that_proposes_a_plan_cannot_be_accepted_without_saying_whether_to_build_it() {
+fn a_result_that_proposes_a_plan_is_only_approved_or_sent_back() {
     let mut s = delivered_with_plan();
     let accept = Command::AcceptDelivery { presentation_id: "report".into(), targets: text() };
     assert_eq!(refused(&mut s, user(), accept), "plan_choice_required");
@@ -79,8 +79,7 @@ fn a_result_that_proposes_a_plan_cannot_be_accepted_without_saying_whether_to_bu
     let kinds: Vec<String> = inbox_items(&s).into_iter().flat_map(|item| item.available_actions)
         .filter(|action| action.presentation_id.as_ref() == Some(&InteractionId::from("report")))
         .map(|action| action.kind).collect();
-    assert!(kinds.contains(&"implement_plan".to_owned()) && kinds.contains(&"archive_plan".to_owned()), "{kinds:?}");
-    assert!(!kinds.contains(&"accept_delivery".to_owned()), "{kinds:?}");
+    assert_eq!(kinds, ["approve_plan", "submit_feedback"], "its only answers are approving the plan or asking for changes");
 }
 
 #[test]
@@ -97,13 +96,39 @@ fn approving_the_plan_closes_the_research_and_hands_the_orchestrator_a_request_h
 }
 
 #[test]
-fn only_archiving_closes_the_research_and_creates_nothing_to_build() {
+fn a_proposed_plan_is_never_archived_with_its_report() {
     let mut s = delivered_with_plan();
-    let outcome = ok(&mut s, user(), decide(PlanChoice::Archive));
-    assert!(accepted(&s, "report"));
-    assert_eq!(s.requests.len(), 1, "no new request");
+    assert_eq!(refused(&mut s, user(), decide(PlanChoice::Archive)), "plan_approve_or_change");
+    assert!(!accepted(&s, "report"), "the plan card stays open until the user approves it or asks for changes");
     assert!(s.request_plans.is_empty());
-    assert!(!outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyOrchestrator { .. })), "{:?}", outcome.effects);
+}
+
+#[test]
+fn accepting_a_report_creates_no_request_task_or_plan() {
+    let mut s = fixture();
+    ok(&mut s, agent(), result("report", true, text(), None));
+    let (requests, tasks) = (s.requests.clone(), s.tasks.keys().cloned().collect::<Vec<_>>());
+    let outcome = ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "report".into(), targets: text() });
+    assert!(accepted(&s, "report"));
+    assert_eq!(s.requests, requests);
+    assert_eq!(s.tasks.keys().cloned().collect::<Vec<_>>(), tasks);
+    assert!(s.request_plans.is_empty() && s.checklists.is_empty());
+    assert!(!outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyOrchestrator { request_id: Some(_), .. })), "{:?}", outcome.effects);
+}
+
+#[test]
+fn the_tasks_created_for_an_approved_plan_are_read_from_its_request() {
+    let mut s = delivered_with_plan();
+    ok(&mut s, user(), decide(PlanChoice::Implement));
+    let request = RequestId::from("implement-report");
+    let (approved, tasks) = s.tasks_of_approved_plan(&request).unwrap();
+    assert_eq!(approved.task_id, TaskId::from("research"));
+    assert!(tasks.is_empty());
+    ok(&mut s, orchestrator(), Command::TitleRequest { request_id: "implement-report".into(), title: "Index the whole library".into() });
+    ok(&mut s, orchestrator(), create_task("build", "implement-report", None));
+    let titles: Vec<&str> = s.tasks_of_approved_plan(&request).unwrap().1.iter().map(|task| task.title.as_str()).collect();
+    assert_eq!(titles, ["Task build"]);
+    assert!(s.tasks_of_approved_plan(&RequestId::from("r")).is_none(), "an ordinary request was not born of a plan");
 }
 
 #[test]

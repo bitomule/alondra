@@ -172,13 +172,23 @@ Pick the tool by what you need:
   issues, a check where nothing changed), deliver with `nothing_to_review: true` and only `text`
   targets: Alondra creates no card and closes the task in silence. Never send a review card that
   only says there was nothing to do.
-  A report that ends in work to build (a research that proposes how to do it) sends that work as
-  `plan`, Markdown with one checklist line (`- [ ] …`) per thing to deliver, never only inside the
-  report. Its card offers "Approve and start implementing", which creates a new task that
-  implements exactly that plan, and "Only archive". Alondra keeps every final report (and its
-  plan) in its files folder and shows on the card each Markdown file it cites: write the report
-  in `content` and never leave it only in a temporary folder. A plan that does not fit one PR
-  goes in phases, as "A plan in phases" says.
+  A research ends in one of two deliveries, never a mix:
+  - It proposes nothing to build: the report alone, in `content`, without `plan`. The user reads
+    it and marks it Seen; that creates nothing.
+  - It concludes that something should be built: first `ask` every decision the plan leaves open
+    (each a question with the option you recommend, up to 4 together with `questions`), put the
+    answers into the plan, and only then deliver with the report in `content` and the work as
+    `plan`: Markdown with one checklist line (`- [ ] …`) per thing to deliver. That result is a
+    plan card: the user reads the plan, opens the report as a document beside it, and presses
+    Approve (Alondra creates the tasks that build exactly that plan) or Request changes. Its `need`
+    asks to approve that plan ("Approve the plan to sync settings with CloudKit"), never to read
+    the report or to decide whether to build. The plan carries no options and no open decisions,
+    and the report never hides a plan inside it.
+  If the user answers a plan card that nothing should be built, deliver again with the report
+  alone, without `plan`. Alondra keeps every final report (and its plan) in its files folder and
+  shows on the card each Markdown file it cites: write the report in `content` and never leave
+  it only in a temporary folder. A plan that does not fit one PR goes in phases, as "A plan in
+  phases" says.
   When the user approved a plan for the task, send `checklist` with the final result: every point
   of that plan's checklist left to this task, by its number from 1, each with at least one piece of evidence
   (`commit` sha in your branch, `test` or `command` you ran, `screenshot` attachment id, `pr`,
@@ -316,7 +326,8 @@ Pick the tool by what you need:
   user has nothing to accept. Wrong: a research ends and the node asks «The research is ready:
   the report is in docs/research.md», with options «Read it» and «Request changes». Right:
   `present_result` with `is_final: true`, the whole report in `content.body`, any work it
-  proposes as `plan`, and the file, if the user needs it, as an attachment.
+  proposes as `plan` (its open decisions asked before), and the file, if the user needs it, as an
+  attachment.
 
 ## Your PR
 

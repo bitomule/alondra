@@ -767,13 +767,14 @@ pub struct ApprovedPlan {
     pub task_id: TaskId,
     pub presentation_id: InteractionId,
 }
-/// What the user does with a final result that proposes a plan.
+/// What the user does with a final result that proposes a plan: approve it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanChoice {
     /// Accept the result and start implementing its plan.
     Implement,
-    /// Accept the result and leave its plan unbuilt.
+    /// Only read from decisions stored before a proposed plan became a plan card: the domain
+    /// refuses it, so accepting a report never decides a plan.
     Archive,
 }
 /// What the card asks of the user: the kind comes from what the user contributes, not from the
@@ -1336,6 +1337,13 @@ impl DomainState {
     /// The orchestrator has neither defined it into Tasks nor closed it.
     pub fn is_defining(&self, request: &Request) -> bool {
         !request.closed && !self.tasks.values().any(|task| task.request_id == request.id)
+    }
+    /// For a Request born of approving the plan a final result proposed: where the plan came
+    /// from and the Tasks the orchestrator created to build it, which the card telling the user
+    /// what was created lists.
+    pub fn tasks_of_approved_plan(&self, request_id: &RequestId) -> Option<(&ApprovedPlan, Vec<&Task>)> {
+        let approved = self.request_plans.get(request_id)?;
+        Some((approved, self.tasks.values().filter(|task| &task.request_id == request_id).collect()))
     }
 }
 

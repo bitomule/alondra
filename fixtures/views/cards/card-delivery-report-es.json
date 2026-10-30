@@ -1,0 +1,221 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:result-2",
+  "client": "ios",
+  "version": "v262f82f46c762fad",
+  "cursor": "cursor-1",
+  "title": "Read why Redraft does not need a widget",
+  "status": {
+    "version": "vb7b081b6c72395b1",
+    "summary": "1 por leer · 1 nodo trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "result-2",
+          "kind": "review",
+          "need": "Read why Redraft does not need a widget",
+          "meta": "Redraft: analyse the whole library at once",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Informe",
+            "summary": "1 punto"
+          },
+          "reply": {
+            "id": "reply:result-2@5",
+            "label": "Responder",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Responder a Redraft: analyse the whole library at once…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Enviado",
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "clarify:result-2@5",
+              "label": "Pedir aclaración",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "No se entiende",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "Se contradice",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "Le falta contexto",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "¿Qué debe aclarar?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Aclaración solicitada",
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:result-2"
+          },
+          "icon": "document",
+          "eyebrow": {
+            "text": "Revisar",
+            "tone": "accent"
+          },
+          "title": "Read why Redraft does not need a widget",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Redraft: analyse the whole library at once",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "state": {
+                "text": "Para revisar",
+                "tone": "info"
+              }
+            }
+          ],
+          "detail": "included",
+          "actions": [
+            {
+              "id": "accept:result-2@5",
+              "label": "Visto",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Visto",
+              "resolves_card": true
+            },
+            {
+              "id": "changes:result-2@5",
+              "label": "Pedir cambios",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe los cambios",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "stamp": "Cambios solicitados",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Contenido",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Not worth building now.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Redraft: analyse the whole library at once",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

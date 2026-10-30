@@ -8,7 +8,7 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
     common::id(id)?;
     if !context.domain.document_revisions.contains_key(&DocumentRevisionId(id.into()))
         && let Some((card, part)) = id.rsplit_once('.')
-        && (part == "plan" || part.starts_with("file-"))
+        && (part == "report" || part.starts_with("file-"))
     {
         return card_document(card, part, context);
     }
@@ -83,7 +83,7 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
     Ok(view)
 }
 
-/// A document a card carries inside it, a cited file or a proposed plan, on its own screen.
+/// A document a card carries inside it, a cited file or the report beside a proposed plan, on its own screen.
 fn card_document(card: &str, part: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     let key = format!("document:{card}.{part}");
     let interaction = context.domain.interactions.get(&InteractionId(card.into())).ok_or(BuildError::NotFound)?;

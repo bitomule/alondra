@@ -133,7 +133,7 @@ impl DomainState {
         };
         if self.interactions[presentation_id].card.plan.is_some() {
             return refuse("plan_choice_required", "choice",
-                "this result proposes a plan: decide it with DecideProposedPlan, implement or archive, so accepting it never leaves the plan unbuilt by accident");
+                "this result proposes a plan: approve it with DecideProposedPlan, or ask its node for changes; accepting a report never approves a plan");
         }
         self.unblocked(presentation_id, holds)?;
         for (pr_id, head, method) in self.accepted_merges(presentation_id, targets)? {
@@ -197,6 +197,10 @@ impl DomainState {
         holds: &dyn Holds,
     ) -> Result<(String, String)> {
         let u = user(actor)?;
+        if choice == PlanChoice::Archive {
+            return refuse("plan_approve_or_change", "choice",
+                "a proposed plan is approved or sent back with changes: to leave it unbuilt, ask its node for changes and it delivers the report alone");
+        }
         let (_, _, current) = self.presentation(presentation_id)?;
         if current != targets {
             return fail("acceptance_stale", "Delivery targets changed");
