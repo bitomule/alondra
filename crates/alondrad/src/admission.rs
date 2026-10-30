@@ -1,7 +1,8 @@
 //! The gate every node start passes through: at most the working-node limit at once, one start
 //! a minute (one every 3 while macOS warns of memory pressure), none while memory has no room for
 //! one more node (`MacState::room`, which reserves free memory for every node admitted in the last
-//! `IN_FLIGHT`), and none while the CPU is overloaded. A paused node coming back, the user's Resume
+//! `IN_FLIGHT`), none while the CPU is overloaded, and none while the disk has no room for its build
+//! on top of what the nodes at work may still take (`disk_peaks`). A paused node coming back, the user's Resume
 //! included, passes the same checks as a start. Memory and the CPU only ever hold starts and
 //! resumes: they never pause a working node. The
 //! limit is the user's number, or in automatic what this Mac's cores and measured nodes take. What does not
@@ -67,8 +68,8 @@ pub(crate) enum Hold {
     Memory { why: NoRoom, free: Option<u32> },
     Cpu { load: f64, cpus: usize },
     Spacing { until: Millis },
-    /// No room on the disk for one more build.
-    Disk { free: u64, needed: u64 },
+    /// No room on the disk for one more build: the Mac's own, or the volume named.
+    Disk { free: u64, needed: u64, volume: Option<String> },
 }
 
 pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
@@ -457,7 +458,7 @@ impl Admission {
         let snapshot = self.snapshot(domain, now)?;
         let state = domain.state().ok()?;
         let pauses = self.pauses(domain);
-        let held = |session: &String| pauses.paused.contains_key(session) && !pauses.resumed.contains_key(session);
+        let held = |session: &String| pauses.paused.get(session).is_some_and(|paused| paused.reason != Reason::Disk) && !pauses.resumed.contains_key(session);
         let is_paused = |waiting: &Waiting| matches!(&waiting.key, Key::Resume(session) if held(session));
         let starts: Vec<&Waiting> = snapshot.queue.iter().filter(|waiting| !is_paused(waiting)).collect();
         let total = starts.len();
@@ -481,7 +482,7 @@ impl Admission {
                 at: crate::usage_pause::clock_text(entry.since, now, false),
                 reason: match &entry.reason {
                     Reason::Memory => LivePauseReason::Memory,
-                    Reason::Declared { .. } => LivePauseReason::Machine,
+                    Reason::Declared { .. } | Reason::Disk => LivePauseReason::Machine,
                     Reason::Usage => LivePauseReason::Usage,
                     Reason::ByUser => LivePauseReason::User,
                     Reason::ApiError(retry) if retry.outage => LivePauseReason::ApiOutage,
@@ -530,11 +531,15 @@ impl Admission {
 /// Whether `head` may start now, with everything the gate knows: the disk, the Mac, the limit and
 /// the spacing of starts, which resumes keep too.
 fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> Result<(), Hold> {
-    if let Some(room) = snapshot.disk {
-        return Err(Hold::Disk { free: room.free, needed: room.needed });
+    if let Some(room) = &snapshot.disk {
+        return Err(Hold::Disk { free: room.free, needed: room.needed, volume: room.volume.clone() });
     }
     let mac = if inner.ignores_mac { MacState::default() } else { snapshot.mac.clone() };
     decide(head, snapshot.working, snapshot.limit, &mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
+}
+
+fn on_volume(volume: Option<&str>) -> String {
+    volume.map(|volume| format!(" on {volume}")).unwrap_or_default()
 }
 
 fn reason_of(reason: &PauseReason) -> Reason {
@@ -542,6 +547,7 @@ fn reason_of(reason: &PauseReason) -> Reason {
         PauseReason::Memory => Reason::Memory,
         PauseReason::Declared { reason } => Reason::Declared { reason: reason.clone() },
         PauseReason::Usage => Reason::Usage,
+        PauseReason::Disk => Reason::Disk,
         PauseReason::ByUser => Reason::ByUser,
         PauseReason::ApiError(retry) => Reason::ApiError(retry.clone()),
     }
@@ -552,6 +558,7 @@ fn pause_reason(reason: &Reason) -> PauseReason {
         Reason::Memory => PauseReason::Memory,
         Reason::Declared { reason } => PauseReason::Declared { reason: reason.clone() },
         Reason::Usage => PauseReason::Usage,
+        Reason::Disk => PauseReason::Disk,
         Reason::ByUser => PauseReason::ByUser,
         Reason::ApiError(retry) => PauseReason::ApiError(retry.clone()),
     }
@@ -641,6 +648,9 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
         paused.reason = Reason::ByUser;
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
+    if paused.reason == Reason::Disk {
+        return;
+    }
     let text = crate::pauses::resume_text(&paused, now);
     if !tell_to_go_on(domain, session, &text) {
         inner.saved.pauses.owed.insert(session.to_owned(), text);
@@ -699,7 +709,7 @@ fn live_hold(hold: &Hold) -> LiveHold {
         Hold::Memory { free, .. } => LiveHold::Memory { free: *free },
         Hold::Cpu { load, cpus } => LiveHold::Cpu { load: load.round() as u32, cpus: *cpus },
         Hold::Spacing { .. } => LiveHold::Next,
-        Hold::Disk { free, needed } => LiveHold::Disk { free: *free, needed: *needed },
+        Hold::Disk { free, needed, volume } => LiveHold::Disk { free: *free, needed: *needed, volume: volume.clone() },
     }
 }
 
@@ -727,7 +737,7 @@ pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold:
         }
         Hold::Memory { why, free } => format!("memory has no room for one more node: {why} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
         Hold::Cpu { load, cpus } => format!("the CPU is overloaded (load {load:.0} on {cpus} cores), which holds new starts"),
-        Hold::Disk { free, needed } => format!("the disk has no room for one more build: {} free of {} needed", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En)),
+        Hold::Disk { free, needed, volume } => format!("the disk has no room for one more build: {} free of {} needed{}", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En), on_volume(volume.as_deref())),
     };
     let paused = if paused > 0 { format!("; {paused} node(s) paused") } else { String::new() };
     Some(format!("the admission gate holds {queued} waiting (next {head}, {priority:?}): {why}{paused}"))
@@ -777,11 +787,51 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
 /// The tasks whose node takes a slot, as the node machine says: the one count the gate, the
 /// Tasks list and the header share. A paused node, one that waits on the user and one whose session
 /// was lost and waits for the gate hold none, whatever their session still reports; one the gate let
-/// back and Alondra is restarting holds one.
+/// back and Alondra is restarting holds one, and so does one the disk's floor held until the turn it
+/// runs, and the work of its own it left running, end.
 pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
     state.slots().into_iter()
         .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.over()).map(|task| task.id.clone()))
+        .chain(turns_held_for_disk(state))
         .collect()
+}
+
+fn turns_held_for_disk(state: &DomainState) -> impl Iterator<Item = TaskId> + '_ {
+    state.paused_nodes().into_iter().filter(|(agent, pause)| pause.reason == PauseReason::Disk && state.through_sdk(agent))
+        .filter_map(|(agent, _)| state.node_task(&agent).filter(|task| !task.over()).map(|task| task.id.clone()))
+        .filter(|task| state.lifecycle_of(task).is_ok_and(|lifecycle| matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork)))
+}
+
+/// `working_tasks` with the project each one works on.
+pub(crate) fn working_projects(state: &DomainState) -> BTreeMap<TaskId, Option<String>> {
+    projects_of(state, working_tasks(state).iter())
+}
+
+fn projects_of<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>) -> BTreeMap<TaskId, Option<String>> {
+    tasks.map(|task| (task.clone(), state.tasks.get(task).and_then(|task| task.project.clone()))).collect()
+}
+
+/// The disk fell under its floor: the next turn of every node at work but the one that took least
+/// waits for room, with no card, and comes back through the queue. The turns they run go on, and a
+/// node of `claude --bg`, whose next turn cannot wait, goes on too.
+pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
+    let Ok(state) = domain.state() else { return };
+    let gate = &domain.live.gate;
+    let pauses = gate.pauses(domain);
+    let at_work: Vec<crate::disk_peaks::AtWork> = working_tasks(&state).into_iter().filter_map(|task| {
+        let session = crate::pauses::session_of(&state, &task)?;
+        Some(crate::disk_peaks::AtWork {
+            used: domain.live.machine_watch.disk_used(&task),
+            can_wait: crate::pauses::through_sdk(domain, &session),
+            held: pauses.paused.contains_key(&session),
+            task,
+        })
+    }).collect();
+    for task in crate::disk_peaks::to_hold(&at_work) {
+        let Some(session) = crate::pauses::session_of(&state, &task) else { continue };
+        log!("the disk is under its floor: the next turn of {session} ({task}) waits for room");
+        gate.hold_back(domain, &session, Reason::Disk, now);
+    }
 }
 
 /// The queued launches whose turn may come: one whose start failed waits out its retry or the
@@ -880,7 +930,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     // ends its first turn on a card within seconds.
     let working = busy.len() + in_flight.len();
     let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();
-    let working_tasks = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();
+    let working_tasks: BTreeSet<TaskId> = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();
     let mut all: BTreeMap<Key, Waiting> = inner.asking.iter().filter(|(key, _)| still_waits(state, key))
         .map(|(key, waiting)| {
             let priority = match key {
@@ -895,7 +945,9 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let usage_clear = !domain.live.usage_pause.is_active();
     let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live.api_watch, now);
     let resumed = &inner.saved.pauses.resumed;
-    let returning = inner.saved.pauses.paused.iter().filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
+    let returning = inner.saved.pauses.paused.iter()
+        .filter(|(_, paused)| !(paused.reason == Reason::Disk && working_tasks.contains(&paused.task)))
+        .filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
         Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
         _ => paused.returns(usage_clear && (!matches!(paused.reason, Reason::Usage)
             || crate::usage_pause::task_usage_ready(state, &paused.task, paused.since, now)), domain.live.api_watch.answered_since(paused.since), now),
@@ -910,7 +962,10 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let mac = domain.live.machine_watch.mac();
     let (setting, limits) = node_limits(domain, &mac);
     let limit = limit_setting(setting, limits, inner.tuning).count();
-    let disk = domain.live.machine_watch.disk_room();
+    let head = queue.first().and_then(|head| task_of(state, &head.key));
+    let reserving = projects_of(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
+    let project = head.and_then(|task| state.tasks.get(&task)).and_then(|task| task.project.as_deref());
+    let disk = domain.live.machine_watch.disk_room(&reserving, project);
     let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
@@ -991,7 +1046,7 @@ pub(crate) fn queued_text(domain: &DomainRuntime, task: &TaskId, now: Millis) ->
         LiveHold::Memory { free: None } => "the Mac is short of memory".into(),
         LiveHold::Cpu { load, cpus } => format!("the Mac is very busy (load {load} on {cpus} cores)"),
         LiveHold::Next => "it starts within a minute".into(),
-        LiveHold::Disk { free, needed } => format!("the disk has no room for one more build ({} free of {} needed)", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En)),
+        LiveHold::Disk { free, needed, volume } => format!("the disk has no room for one more build ({} free of {} needed{})", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En), on_volume(volume.as_deref())),
     };
     format!("It waits in the queue, {} of {}: {why}. Alondra starts it by itself when its turn comes; you do not need to launch it again.",
         place.position, place.of)

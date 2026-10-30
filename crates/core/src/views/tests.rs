@@ -6263,7 +6263,7 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
 /// its row and on its screen, whether it never started or its node waits to come back.
 #[test]
 fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_needed() {
-    let held = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000 } };
+    let held = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None } };
     let mut unstarted = fixture();
     let task = unstarted.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
@@ -6282,8 +6282,12 @@ fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_n
         }
     }
     assert_eq!(common::queued_label(&held, Lang::Es), "Esperando capacidad · Disco · 3,5 GB libres de 13,0 GB necesarios");
+    let on_cache = LiveQueued { hold: LiveHold::Disk { free: 659_000_000, needed: 9_000_000_000, volume: Some("BuildCache".into()) }, ..held.clone() };
+    assert_eq!(common::queued_label(&on_cache, Lang::Es), "Esperando capacidad · Disco · 659 MB libres de 9,0 GB necesarios en BuildCache",
+        "a volume builds write to, other than the Mac's own disk, is named");
+    assert_eq!(common::queued_label(&on_cache, Lang::En), "Waiting for capacity · Disk · 659 MB free of 9.0 GB needed on BuildCache");
     let earlier: LiveHold = serde_json::from_str(r#"{"kind":"disk"}"#).unwrap();
-    assert_eq!(earlier, LiveHold::Disk { free: 0, needed: 0 }, "a view of an earlier daemon still reads");
+    assert_eq!(earlier, LiveHold::Disk { free: 0, needed: 0, volume: None }, "a view of an earlier daemon still reads");
 }
 
 #[test]

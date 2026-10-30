@@ -135,7 +135,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     if let Some(dir) = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)) {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
-            Ok(TaskWorktree::Removed { freed }) => domain.live.machine_watch.record_build(freed),
+            Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En)),
             Ok(_) => {}
             Err(why) => anyhow::bail!("the worktree of {} could not be released: {why}", task.id),
         }
@@ -486,7 +486,7 @@ async fn finish_with_worktree(
         }
         Ok(released) => {
             if let TaskWorktree::Removed { freed } = released {
-                domain.live.machine_watch.record_build(freed);
+                log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
             }
             finish(domain, &row, Some(agent), end)
         }

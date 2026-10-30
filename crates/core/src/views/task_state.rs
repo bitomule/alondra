@@ -232,6 +232,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
                 PauseReason::Memory => t!(lang, "For memory · resumes by itself", "Por memoria · se reanuda sola").to_owned(),
                 PauseReason::ByUser => t!(lang, "You paused it", "La pausaste").to_owned(),
                 PauseReason::Usage => t!(lang, "For the usage limit · back when it resets", "Por el límite de uso · vuelve cuando se reinicie").to_owned(),
+                PauseReason::Disk => t!(lang, "For disk space · resumes by itself", "Por espacio en disco · se reanuda sola").to_owned(),
                 PauseReason::ApiError(_) => t!(lang, "Claude API error · retries by itself", "Error de la API de Claude · reintenta sola").to_owned(),
                 PauseReason::Declared { reason } => match reason.trim().trim_end_matches('.') {
                     "" => t!(lang, "Waits for the Mac", "Espera al Mac").to_owned(),
@@ -315,7 +316,7 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
         LiveState::WaitingCapacity(Capacity::ClaudeApi) => warn(t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude")),
         LiveState::WaitingCapacity(Capacity::Disk) => {
             let fact = match common::held_for_disk(task, context) {
-                Some((free, needed)) => common::disk_room_fact(free, needed, lang),
+                Some((free, needed, volume)) => common::disk_room_fact(free, needed, volume, lang),
                 None => t!(lang, "Disk", "Disco").into(),
             };
             Presentation {
@@ -505,7 +506,7 @@ fn in_queue(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Prese
         LiveHold::Memory { free: Some(free) } => Some(tf!(lang, "The Mac is short of memory ({free}% free)", "El Mac va justo de memoria ({free} % libre)")),
         LiveHold::Memory { free: None } => Some(t!(lang, "The Mac is short of memory", "El Mac va justo de memoria").into()),
         LiveHold::Cpu { load, cpus } => Some(tf!(lang, "The Mac is very busy (load {load} on {cpus} cores)", "El Mac está muy cargado (carga {load} en {cpus} núcleos)")),
-        LiveHold::Disk { free, needed } => Some(common::disk_room_fact(*free, *needed, lang)),
+        LiveHold::Disk { free, needed, volume } => Some(common::disk_room_fact(*free, *needed, volume.as_deref(), lang)),
         LiveHold::Next => priority(task, lang),
     };
     Presentation {

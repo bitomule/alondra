@@ -26,6 +26,8 @@ pub(crate) enum Reason {
     Usage,
     ByUser,
     ApiError(ApiRetry),
+    /// The disk fell under its floor while it built: its next turn waits for room.
+    Disk,
 }
 
 impl Reason {
@@ -73,7 +75,7 @@ impl Paused {
             Reason::ByUser => false,
             Reason::Usage => usage_clear,
             Reason::ApiError(retry) => api_answered || now >= retry.at,
-            Reason::Declared { .. } | Reason::Memory => true,
+            Reason::Declared { .. } | Reason::Memory | Reason::Disk => true,
         }
     }
 }
@@ -112,6 +114,7 @@ pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
         Reason::Memory => format!("Alondra stopped you at {at} because the Mac ran out of memory{cut}. The Mac has room again: carry on with your task and run again what was cut."),
         Reason::Declared { .. } => format!("You waited for the machine since {at}. The Mac is fine again: carry on with your task; if it still cannot go on, call wait_for_machine again with the reason."),
         Reason::Usage => "Your usage limit has reset. Carry on with what you were doing.".into(),
+        Reason::Disk => format!("Alondra held your next turn at {at} while the disk was nearly full. There is room again: carry on with your task."),
         Reason::ApiError(retry) => crate::api_failures::resume_text(&retry.error, retry.detail.as_deref()),
         Reason::ByUser => format!("{} resumed you; you were paused at {at}{cut}. Carry on with your task and run again what was cut.", crate::domain_messages::user_name()),
     }

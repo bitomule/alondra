@@ -54,6 +54,7 @@ fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alond
         PauseReason::ByUser => ("user", Owner::User),
         PauseReason::Declared { .. } | PauseReason::Memory => ("machine", Owner::Capacity(Capacity::Machine)),
         PauseReason::Usage => ("usage", Owner::Capacity(Capacity::Usage)),
+        PauseReason::Disk => ("disk", Owner::Capacity(Capacity::Disk)),
         PauseReason::ApiError(_) => return None,
     };
     Some((InteractionId(format!("{NODE_PAUSE_PREFIX}{kind}-{}-{task}", pause.since)), owner))
@@ -67,6 +68,7 @@ fn pause_of_card(card: &InteractionId) -> Option<Pause> {
         "user" => PauseReason::ByUser,
         "machine" => PauseReason::Declared { reason: String::new() },
         "usage" => PauseReason::Usage,
+        "disk" => PauseReason::Disk,
         _ => return None,
     };
     Some(Pause { reason, since: since.parse().ok()?, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false })
@@ -229,6 +231,8 @@ pub enum PauseReason {
     ByUser,
     /// A Claude API error ended its turn: Alondra sends it back to its task at the retry's time.
     ApiError(ApiRetry),
+    /// The disk fell under its floor while it built: its next turn waits for room.
+    Disk,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

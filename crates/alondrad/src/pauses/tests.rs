@@ -889,3 +889,61 @@ async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_
     assert!(options.iter().any(|option| option.id == alondra_core::domain::RETAKE), "{options:?}");
     assert_eq!(node.domain.state().unwrap().tasks[&TaskId::from(SDK_TASK)].state, alondra_core::domain::TaskState::NeedsYou);
 }
+
+/// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and
+/// still counts as working; once it ends, what the node is told waits, with no card, shown in the
+/// queue for the disk; once the disk has room it gets it, and is never told it was held. The
+/// lighter one, of `claude --bg`, goes on.
+#[tokio::test]
+async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_without_cutting_the_one_it_runs() {
+    const GB: u64 = 1_000_000_000;
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+        task_id: "t-light".into(), request_id: "r".into(), title: "Fix a typo".into(), agent_id: None, review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
+    run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-light".into()), name: "agent-light".into(), at: 0 });
+    run(&domain, Actor::System, Command::MoveNode { agent_id: AgentId("agent-light".into()), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
+    run(&domain, user(), Command::AssignTask { task_id: "t-light".into(), agent_id: AgentId("agent-light".into()), model: None });
+    let now = alondra_core::now_millis();
+    domain.report(Envelope { session_id: "agent-light".into(), report: Report::TurnStart }, now);
+    let working = crate::admission::working_projects(&domain.state().unwrap());
+    assert_eq!(working.keys().map(|task| task.0.as_str()).collect::<Vec<_>>(), ["t-light", SDK_TASK]);
+    let watch = &domain.live.machine_watch;
+    let heavy: std::collections::BTreeMap<TaskId, Option<String>> = [(TaskId::from(SDK_TASK), None)].into();
+    watch.measure_peaks(14 * GB, &heavy, now);
+    watch.measure_peaks(2 * GB, &heavy, now + SAMPLE);
+    watch.measure_peaks(2 * GB, &working, now + 2 * SAMPLE);
+    watch.measure_disk(crate::disk::Space { free: 2 * GB, purgeable: 0, total: 500 * GB });
+    assert!(watch.under_floor());
+
+    crate::admission::hold_for_disk(&domain, now + 2 * SAMPLE);
+    let held = domain.live.gate.paused(&domain, &node.agent()).expect("the heavier node is held");
+    assert_eq!(held.reason, Reason::Disk);
+    assert!(domain.live.gate.paused(&domain, "agent-light").is_none(), "the lightest goes on");
+    node.step();
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Working, "the turn it runs is not cut");
+    assert_eq!(node.prompts(), ["consume-and-hold"]);
+    assert!(crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "it counts as working until its turn ends");
+
+    interrupt_sdk_node(&domain, &node.agent());
+    node.step_until(SdkNode::turn_ended);
+    crate::domain_messages::tell_sdk_node(&domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-held", false).unwrap();
+    node.gate_look().await;
+    node.step();
+    assert!(!crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "its turn ended: it holds no slot");
+    assert!(domain.live.gate.paused(&domain, &node.agent()).is_some(), "the disk has no room: it still waits");
+    assert_eq!(node.dispatched_inputs(), 0, "what it is told waits for room");
+    let pacing = domain.live.gate.live(&domain, alondra_core::now_millis()).unwrap();
+    assert!(matches!(pacing.queued.as_slice(), [queued] if queued.task_id == SDK_TASK && matches!(queued.hold, alondra_core::views::LiveHold::Disk { .. })),
+        "it waits in the queue for the disk: {:?}", pacing.queued);
+    assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
+    assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)));
+
+    watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    node.gate_look().await;
+    node.until_told("Use the short changelog format");
+    assert!(node.prompts().iter().all(|prompt| !prompt.contains("held your next turn")), "{:?}", node.prompts());
+    assert!(domain.live.gate.paused(&domain, &node.agent()).is_none());
+}

@@ -93,7 +93,7 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
     for (path, worktree) in task.open_worktrees() {
         let end = match crate::worktree::release_recorded_worktree(Path::new(path), worktree.discard).await {
             Ok(TaskWorktree::Removed { freed }) => {
-                domain.live.machine_watch.record_build(freed);
+                log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
                 WorktreeEnd::Removed
             }
             Ok(TaskWorktree::Absent) => WorktreeEnd::Removed,

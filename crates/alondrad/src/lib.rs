@@ -22,6 +22,7 @@ mod cleanup;
 mod claude_trust;
 mod direct;
 mod disk;
+mod disk_peaks;
 mod save;
 mod domain_agent_lifecycle;
 mod domain_api;
@@ -649,6 +650,9 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     if config.fast_timing {
         domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
         domain.live.gate.ignore_mac();
+        domain.live.machine_watch.ignore_peaks();
+    } else {
+        domain.live.machine_watch.discover_volumes();
     }
     if config.ignore_mac_load {
         domain.live.gate.ignore_mac();

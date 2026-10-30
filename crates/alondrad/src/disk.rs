@@ -5,9 +5,9 @@
 //! build filled the disk while that number still showed tens of gigabytes. So the disk is low when
 //! the space counting purgeable is short, or when the space free right now is under a floor.
 //!
-//! A new node starts only with room for one more build: what a typical task of this Mac took, the
-//! space deleting its worktree freed, on top of the low line, so the build never takes the disk
-//! under it.
+//! A new node starts only with room for its build on top of what the nodes at work may still take
+//! (`disk_peaks`), above the low line, so the builds never take the disk under it. Under the floor
+//! (`under_floor`), lower than the low line, the estimates fell short: the nodes' next turns wait.
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -18,10 +18,8 @@ pub(crate) const LOW_DISK_BYTES: u64 = 5_000_000_000;
 pub(crate) const FLOOR_DISK_BYTES: u64 = 2_000_000_000;
 const RECOVERY_MARGIN_BYTES: u64 = 2_000_000_000;
 const FLOOR_RECOVERY_MARGIN_BYTES: u64 = 1_000_000_000;
-/// A typical build while none was measured yet.
-pub(crate) const UNMEASURED_BUILD_BYTES: u64 = 5_000_000_000;
-/// The builds the typical one is taken from, the latest.
-pub(crate) const BUILDS_KEPT: usize = 20;
+const FLOOR_USABLE_BYTES: u64 = 3_000_000_000;
+const FLOOR_FREE_BYTES: u64 = 1_500_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Space {
@@ -52,31 +50,30 @@ impl Space {
         if self.short_now() { self.free } else { self.usable() }
     }
 
+    /// Under the floor nodes at work must not take the disk past: little usable space, or little
+    /// free right now.
+    pub(crate) fn under_floor(&self) -> bool {
+        self.usable() < FLOOR_USABLE_BYTES || self.free < FLOOR_FREE_BYTES
+    }
+
     /// Whether one more build fits, `needed` counting purgeable space; once it did not
     /// (`was_short`) it needs margin on both lines to fit again.
     pub(crate) fn room_for(&self, needed: u64, was_short: bool) -> Result<(), Room> {
         let (usable, free) = if was_short { (needed + RECOVERY_MARGIN_BYTES, recovered_lines().free) } else { (needed, low_lines().free) };
         if self.usable() < usable || self.free < free {
-            return Err(Room { free: self.shown_free(), needed });
+            return Err(Room { free: self.shown_free(), needed, volume: None });
         }
         Ok(())
     }
 }
 
-/// The disk short of room for one more build: the free space the user is told and what is needed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The disk short of room for one more build: the free space the user is told, what is needed,
+/// and the volume when it is not the Mac's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Room {
     pub free: u64,
     pub needed: u64,
-}
-
-/// The space one more build needs: the median of the builds measured, or
-/// `UNMEASURED_BUILD_BYTES` before any, on top of the low line.
-pub(crate) fn needed_for_build(builds: &[u64]) -> u64 {
-    let mut sorted = builds.to_vec();
-    sorted.sort_unstable();
-    let typical = sorted.get(sorted.len() / 2).copied().unwrap_or(UNMEASURED_BUILD_BYTES);
-    typical + low_lines().usable
+    pub volume: Option<String>,
 }
 
 /// The space the files under `path` take on disk, links not followed and a file with several
@@ -112,6 +109,12 @@ pub(crate) struct Lines {
     pub free: u64,
 }
 
+/// The volumes mounted on this Mac a build may write to besides its own disk: local, writable and
+/// shown in Finder, so never `/`, the system's own volumes or the simulators' images.
+pub(crate) fn candidate_volumes() -> Vec<PathBuf> {
+    platform::mounted().into_iter().filter(|mount| !matches!(mount.to_str(), Some("/" | crate::machine::BOOT_DATA))).collect()
+}
+
 pub(crate) fn space(path: &Path) -> Option<Space> {
     let free = free_space(path)?;
     let purgeable = platform::usable(path).map_or(0, |usable| usable.saturating_sub(free.free));
@@ -142,12 +145,33 @@ mod platform {
         let number = value?.downcast::<NSNumber>().ok()?;
         u64::try_from(number.longLongValue()).ok()
     }
+
+    /// Every mount point that is local, writable and not hidden from Finder.
+    pub(super) fn mounted() -> Vec<std::path::PathBuf> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+        let Ok(count) = usize::try_from(count) else { return vec![] };
+        let mut mounts: Vec<libc::statfs> = Vec::with_capacity(count + 4);
+        let size = libc::c_int::try_from(mounts.capacity() * std::mem::size_of::<libc::statfs>()).unwrap_or(libc::c_int::MAX);
+        let filled = unsafe { libc::getfsstat(mounts.as_mut_ptr(), size, libc::MNT_NOWAIT) };
+        let Ok(filled) = usize::try_from(filled) else { return vec![] };
+        unsafe { mounts.set_len(filled.min(mounts.capacity())) };
+        let wanted = |flags: u32| flags & libc::MNT_LOCAL as u32 != 0 && flags & (libc::MNT_RDONLY | libc::MNT_DONTBROWSE) as u32 == 0;
+        mounts.iter().filter(|mount| wanted(mount.f_flags)).map(|mount| {
+            let name = unsafe { std::ffi::CStr::from_ptr(mount.f_mntonname.as_ptr()) };
+            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes()))
+        }).collect()
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
     pub(super) fn usable(_path: &std::path::Path) -> Option<u64> {
         None
+    }
+
+    pub(super) fn mounted() -> Vec<std::path::PathBuf> {
+        vec![]
     }
 }
 
@@ -269,20 +293,35 @@ mod tests {
     }
 
     #[test]
-    fn one_more_build_needs_the_typical_one_measured_on_top_of_the_low_line() {
-        assert_eq!(needed_for_build(&[]), 10 * GB, "none measured yet");
-        assert_eq!(needed_for_build(&[3 * GB, 13 * GB, 8 * GB]), 13 * GB, "the median of 3, 8 and 13 GB");
-        assert_eq!(needed_for_build(&[GB / 2, 4 * GB, 12 * GB, 9 * GB]), 14 * GB);
+    fn the_floor_is_under_the_low_line_and_counts_purgeable_space_once() {
+        assert!(!disk(4.0, 0.0).under_floor(), "low, not under the floor");
+        assert!(disk(2.9, 0.0).under_floor());
+        assert!(!disk(2.0, 8.0).under_floor(), "purgeable space counts while enough is free right now");
+        assert!(disk(1.4, 20.0).under_floor(), "little free right now, however much macOS could purge");
     }
 
     #[test]
     fn a_disk_short_of_room_for_a_build_needs_margin_to_have_it_again() {
         let needed = 13 * GB;
-        assert_eq!(disk(12.0, 0.0).room_for(needed, false), Err(Room { free: 12 * GB, needed }));
+        assert_eq!(disk(12.0, 0.0).room_for(needed, false), Err(Room { free: 12 * GB, needed, volume: None }));
         assert_eq!(disk(4.0, 10.0).room_for(needed, false), Ok(()), "purgeable space counts");
-        assert_eq!(disk(1.0, 30.0).room_for(needed, false), Err(Room { free: GB, needed }), "little free right now: told what a write can use");
+        assert_eq!(disk(1.0, 30.0).room_for(needed, false), Err(Room { free: GB, needed, volume: None }), "little free right now: told what a write can use");
         assert!(disk(14.0, 0.0).room_for(needed, true).is_err(), "under the 2 GB margin once short");
         assert_eq!(disk(15.0, 0.0).room_for(needed, true), Ok(()));
+    }
+
+    /// On this Mac `/` is sealed and read-only, the system's own volumes and the simulators' images
+    /// are hidden from Finder or read-only, and the data volume is the Mac's own disk.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_volumes_builds_may_write_to_are_local_writable_and_shown_in_finder() {
+        let candidates = candidate_volumes();
+        let path = |name: &str| PathBuf::from(name);
+        for system in ["/", crate::machine::BOOT_DATA, "/System/Volumes/VM", "/System/Volumes/Preboot", "/System/Volumes/Update"] {
+            assert!(!candidates.contains(&path(system)), "{system} in {candidates:?}");
+        }
+        assert!(candidates.iter().all(|mount| !mount.starts_with("/Library/Developer/CoreSimulator/Volumes")), "{candidates:?}");
+        assert!(candidates.iter().all(|mount| mount.is_dir()), "{candidates:?}");
     }
 
     #[test]

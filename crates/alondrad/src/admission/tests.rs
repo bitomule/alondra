@@ -818,10 +818,10 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     assert!(still_paused(&domain, "t1"), "the disk has no room for its build");
     let queued = gate.live(&domain, base + MIN).unwrap().queued;
     assert_eq!(queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_core::views::LiveHold::Disk { free: 6 * GB, needed: 10 * GB })], "it waits in the queue, and says why");
+        [("t1", &alondra_core::views::LiveHold::Disk { free: 6 * GB, needed: 13 * GB, volume: None })], "it waits in the queue, and says why");
     assert!(gate.live(&domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
 
-    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 9 * GB, total: 500 * GB });
+    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
     look(&domain, &home.0, base + MIN + SAMPLE);
     assert!(!still_paused(&domain, "t1"), "with room on the disk it goes on");
 }
@@ -859,4 +859,180 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
     finish(&domain, "t1", now + 3 * SAMPLE);
     look(&domain, &home.0, now + 4 * SAMPLE);
     assert_eq!(["t1", "t2", "t3"].map(|id| still_paused(&domain, id)), [false, false, true]);
+}
+
+const GB: u64 = 1_000_000_000;
+
+fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
+    let mut launch = alondra_core::domain::LaunchPlan::new("node", "/tmp");
+    launch.project = Some(project.into());
+    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+        task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(launch),
+    });
+}
+
+/// A sample of the Mac at `now` whose own disk has `usable` bytes free, none of them purgeable.
+fn disk_sample(domain: &DomainRuntime, usable: u64, now: Millis) {
+    crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3],
+        disk_total: 500 * GB, disk_available: usable, ..Machine::default() });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
+}
+
+fn machine_cards(domain: &DomainRuntime) -> usize {
+    domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count()
+}
+
+/// 27 October: six nodes building at once took the disk from 34 GB to nothing, each start having
+/// found room for one build. A start now waits, with no card, while the nodes at work may still
+/// take the room it needs, and goes once one of them ends and frees what it reserved.
+#[test]
+fn a_start_waits_while_the_nodes_at_work_may_still_take_the_disk_and_goes_once_one_ends() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    gate.ignore_mac();
+    domain.live.machine_watch.seed_peaks("app", &[6 * GB; 3]);
+    let base = alondra_core::now_millis();
+    disk_sample(&domain, 20 * GB, base);
+    for id in ["t1", "t2", "t3"] {
+        create_in(&domain, id, "app");
+    }
+    for (step, id) in ["t1", "t2"].into_iter().enumerate() {
+        let now = base + (step as Millis + 1) * SAMPLE;
+        assert_eq!(ask(&domain, id, now), Ok(()), "{id} fits");
+        start(&domain, id, now);
+        disk_sample(&domain, 20 * GB, now);
+    }
+    let now = base + 3 * SAMPLE;
+    assert_eq!(ask(&domain, "t3", now), Err(Hold::Disk { free: 20 * GB, needed: 6 * GB + 6 * GB + 6 * GB + 5 * GB, volume: None }),
+        "t1 and t2 may still take 6 GB each");
+    disk_sample(&domain, 17 * GB, now + SAMPLE);
+    assert_eq!(ask(&domain, "t3", now + SAMPLE), Err(Hold::Disk { free: 17 * GB, needed: 4_500_000_000 * 2 + 6 * GB + 5 * GB, volume: None }),
+        "what they took is no longer free, nor reserved");
+    finish(&domain, "t1", now + 2 * SAMPLE);
+    disk_sample(&domain, 20 * GB, now + 2 * SAMPLE);
+    assert_eq!(ask(&domain, "t3", now + 2 * SAMPLE), Ok(()), "t1 ended and its build was deleted: what it reserved is free again");
+    assert_eq!(machine_cards(&domain), 0, "waiting for the disk asks the user nothing");
+}
+
+/// The disk's floor held a node's next turn and the daemon restarted: the node still waits, shown
+/// in the queue for the disk, and goes on by itself once the disk has room for its build.
+#[test]
+fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_there_is_room() {
+    let (home, domain) = world();
+    let base = alondra_core::now_millis();
+    create_in(&domain, "t1", "app");
+    start(&domain, "t1", base);
+    assert!(domain.live.gate.hold_back(&domain, "agent-t1", Reason::Disk, base));
+    finish(&domain, "t1", base + SAMPLE);
+    drop(domain);
+
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    gate.ignore_mac();
+    let now = base + MIN;
+    disk_sample(&domain, 9 * GB, now);
+    look(&domain, &home.0, now);
+    assert!(still_paused(&domain, "t1"), "8 GB for a project measured less than 3 times, on top of the 5 GB line, do not fit in 9");
+    let pacing = gate.live(&domain, now).unwrap();
+    assert_eq!(pacing.queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
+        [("t1", &alondra_core::views::LiveHold::Disk { free: 9 * GB, needed: 13 * GB, volume: None })], "it waits in the queue for the disk");
+    assert!(pacing.paused.is_empty(), "not shown as paused");
+
+    disk_sample(&domain, 16 * GB, now + SAMPLE);
+    look(&domain, &home.0, now + SAMPLE);
+    assert!(!still_paused(&domain, "t1"), "with room for its build it goes on");
+    assert_eq!(machine_cards(&domain), 0);
+}
+
+/// Under the disk's floor the next turn of every node at work but the one that took least waits;
+/// one already held stays as it is.
+#[test]
+fn under_the_floor_every_node_but_the_lightest_is_held() {
+    use crate::disk_peaks::{AtWork, to_hold};
+    let at_work = |task: &str, used: u64, can_wait: bool, held: bool| AtWork { task: task.into(), used, can_wait, held };
+    assert_eq!(to_hold(&[at_work("t1", 9 * GB, true, false), at_work("t2", GB, true, false), at_work("t3", 4 * GB, true, false)]),
+        [TaskId::from("t1"), TaskId::from("t3")]);
+    assert_eq!(to_hold(&[at_work("t1", 9 * GB, true, false), at_work("t2", GB, false, false), at_work("t3", 4 * GB, false, false)]),
+        [TaskId::from("t1")], "a node of claude --bg cannot wait");
+    assert_eq!(to_hold(&[at_work("t1", 9 * GB, true, true), at_work("t2", GB, true, false)]), Vec::<TaskId>::new(),
+        "the lightest still going is never held");
+    assert_eq!(to_hold(&[at_work("t1", GB, true, false)]), Vec::<TaskId>::new(), "one node alone goes on");
+}
+
+fn build() -> impl proptest::strategy::Strategy<Value = (usize, u64, u64)> {
+    use proptest::prelude::*;
+    (0usize..3, 4u64..=8, 1u64..=5)
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 24, ..proptest::prelude::ProptestConfig::default() })]
+
+    /// Four to nine nodes of up to three projects ask to start together on a disk with 37 to 45 GB
+    /// usable, room for any estimate up to the 30 GB a stretch is kept at, so every node can end; each
+    /// one's build takes its true peak over a few samples, stays up to 3 more, and is deleted when
+    /// its turn ends. While each project's estimate covers its true peak, however the builds overlap
+    /// the disk never goes under its 5 GB line, no card is raised, and every node ends.
+    #[test]
+    fn nodes_whose_estimates_cover_their_builds_never_take_the_disk_under_its_line(
+        builds in proptest::collection::vec(build(), 4..=9),
+        extra in proptest::collection::vec(0u64..=4, 3),
+        usable in 37u64..=45,
+        stays in proptest::collection::vec(proptest::prelude::any::<bool>(), 1..64),
+    ) {
+        let (_home, domain) = world();
+        let gate = &domain.live.gate;
+        gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(12)) });
+        gate.ignore_mac();
+        let projects = ["app", "web", "docs"];
+        for (index, project) in projects.iter().enumerate() {
+            let truest = builds.iter().filter(|(of, _, _)| *of == index).map(|(_, peak, _)| *peak).max().unwrap_or(1);
+            domain.live.machine_watch.seed_peaks(project, &[(truest + extra[index]) * GB; 3]);
+        }
+        let ids: Vec<String> = (0..builds.len()).map(|index| format!("t{index}")).collect();
+        for (id, (project, _, _)) in ids.iter().zip(&builds) {
+            create_in(&domain, id, projects[*project]);
+        }
+        let base = alondra_core::now_millis();
+        let mut free = (usable * GB) as i64;
+        disk_sample(&domain, free as u64, base);
+        let mut took = vec![0u64; ids.len()];
+        let mut at_peak = vec![0usize; ids.len()];
+        let mut started = vec![false; ids.len()];
+        let mut ended = vec![false; ids.len()];
+        let mut step = 0usize;
+        while ended.iter().any(|ended| !ended) {
+            proptest::prop_assert!(step < 600, "{} of {} nodes ended", ended.iter().filter(|ended| **ended).count(), ids.len());
+            let now = base + (step as Millis + 1) * SAMPLE;
+            for (index, id) in ids.iter().enumerate() {
+                if !started[index] && gate.ask(&domain, Waiting { key: Key::Task(id.as_str().into()), priority: TaskPriority::Normal, resuming: false, since: index as Millis }, now).is_ok() {
+                    start(&domain, id, now);
+                    started[index] = true;
+                }
+            }
+            for (index, (_, peak, samples)) in builds.iter().enumerate() {
+                if !started[index] || ended[index] {
+                    continue;
+                }
+                let peak = peak * GB;
+                if took[index] < peak {
+                    let more = (peak / samples).max(1).min(peak - took[index]);
+                    took[index] += more;
+                    free -= more as i64;
+                } else if !stays[step % stays.len()] && at_peak[index] < 3 {
+                    at_peak[index] += 1;
+                } else {
+                    finish(&domain, &ids[index], now);
+                    free += took[index] as i64;
+                    ended[index] = true;
+                }
+            }
+            proptest::prop_assert!(free >= crate::disk::LOW_DISK_BYTES as i64, "step {}: {} bytes left with {:?} taken", step, free, took);
+            disk_sample(&domain, free as u64, now);
+            step += 1;
+        }
+        proptest::prop_assert_eq!(machine_cards(&domain), 0);
+    }
 }

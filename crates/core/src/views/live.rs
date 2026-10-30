@@ -225,12 +225,15 @@ pub enum LiveHold {
     Cpu { load: u32, cpus: usize },
     /// Nothing holds it but the minute between two starts.
     Next,
-    /// No room on the disk for one more build: the free space and what one more needs, in bytes.
+    /// No room on the disk for one more build: the free space and what one more needs, in bytes,
+    /// on the Mac's own disk or the volume named.
     Disk {
         #[serde(default)]
         free: u64,
         #[serde(default)]
         needed: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        volume: Option<String>,
     },
 }
 /// `reason` is `usage_exhausted`, `disk_low`, `workspace_untrusted` (with the folder as `detail`)

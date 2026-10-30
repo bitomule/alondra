@@ -207,11 +207,12 @@ fn rewrite_header(file: &std::path::Path) -> std::io::Result<()> {
 pub(crate) const SAMPLES_DIR: &str = "machine-samples";
 const KEEP_DAYS: Millis = 7 * 24 * 60 * 60_000;
 
-/// `health` says whether the gate had room for one more node with none in flight.
-const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb";
+/// `health` says whether the gate had room for one more node with none in flight; the disk's usable
+/// space and what the nodes at work may still take of it are in decimal GB.
+const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb,disk_usable_gb,disk_reserved_gb";
 const GB: f64 = (1u64 << 30) as f64;
 
-pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize) {
+pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) {
     use std::io::Write;
     let day = crate::node_reports::local_day(now);
     let file = dir.join(format!("{day}.csv"));
@@ -232,7 +233,8 @@ pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working
             format!("{:.3},{:.2},{},{},{},{},{swap}", c.share(), c.margin() as f64 / GB, c.compressor_pages, c.uncompressed_pages, c.stored_pages, c.swap_used >> 20)
         }).unwrap_or_else(|| ",,,,,,,".into());
         let node_cost = mac.node_cost.map(|cost| format!("{:.2}", cost as f64 / GB)).unwrap_or_default();
-        writeln!(out, "{now},{free},{:.2},{},{room},{},{working},{pressure},{compressor},{node_cost}", mac.load, mac.cpus, mac.cpu_busy)
+        let disk = disk.map(|(usable, reserved)| format!("{:.2},{:.2}", usable as f64 / 1e9, reserved as f64 / 1e9)).unwrap_or_else(|| ",".into());
+        writeln!(out, "{now},{free},{:.2},{},{room},{},{working},{pressure},{compressor},{node_cost},{disk}", mac.load, mac.cpus, mac.cpu_busy)
     });
     if let Err(error) = written {
         log!("could not record the machine sample in {}: {error}", file.display());
@@ -621,12 +623,12 @@ mod tests {
         let dir = crate::test_support::Directory::new();
         let mut state = MacState::default();
         state.step(&pressed(31, MemoryPressure::Warning), 0);
-        record(&dir, 1_791_500_000_000, &state, 6);
+        record(&dir, 1_791_500_000_000, &state, 6, Some((21_400_000_000, 8_000_000_000)));
         let day = std::fs::read_dir(&*dir).unwrap().next().unwrap().unwrap().path();
         let text = std::fs::read_to_string(day).unwrap();
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some(SAMPLES_HEADER));
-        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,room,false,6,warning,,,,,,,,,"));
+        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,room,false,6,warning,,,,,,,,,,21.40,8.00"), "the disk's usable space and what the nodes at work reserve of it");
     }
 
     #[test]
@@ -643,12 +645,12 @@ mod tests {
         state.step(&machine, 0);
         machine.compressor.as_mut().unwrap().swapins = 300;
         state.step(&machine, SAMPLE);
-        record(&dir, now, &state, 6);
+        record(&dir, now, &state, 6, None);
         let text = std::fs::read_to_string(day).unwrap();
         assert_eq!(text.lines().collect::<Vec<_>>(), [
             SAMPLES_HEADER,
-            "1,40,1.00,11,tight,false,2,normal,0.318,5.00,286160,613840,0,6700,30,0,",
-            "1791500000000,40,5.00,11,room,false,6,normal,0.318,5.00,286160,613840,0,6700,30,0,0.38",
+            "1,40,1.00,11,tight,false,2,normal,0.318,5.00,286160,613840,0,6700,30,0,,,",
+            "1791500000000,40,5.00,11,room,false,6,normal,0.318,5.00,286160,613840,0,6700,30,0,0.38,,",
         ]);
     }
 }
