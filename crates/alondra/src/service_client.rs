@@ -40,7 +40,11 @@ struct Profiles {
 }
 
 fn remaining(deadline: Instant) -> Result<Duration> {
-    deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()).context("remote operation deadline exceeded; inspect the destination before repeating an action")
+    remaining_at(deadline, Instant::now())
+}
+
+fn remaining_at(deadline: Instant, now: Instant) -> Result<Duration> {
+    deadline.checked_duration_since(now).filter(|d| !d.is_zero()).context("remote operation deadline exceeded; inspect the destination before repeating an action")
 }
 
 pub fn random<const N: usize>() -> Result<[u8; N]> {
@@ -83,12 +87,16 @@ struct EpochCache {
 struct RelayTransport {
     origin: String,
     agent: ureq::Agent,
+    now: fn() -> Instant,
     epoch: std::sync::Mutex<EpochCache>,
 }
 impl RelayTransport {
     fn new(origin: &str) -> Self {
-        Self { origin: origin.into(), agent: http(Duration::from_secs(35)),
+        Self { origin: origin.into(), agent: http(Duration::from_secs(35)), now: Instant::now,
             epoch: std::sync::Mutex::new(EpochCache::default()) }
+    }
+    fn remaining(&self, deadline: Instant) -> Result<Duration> {
+        remaining_at(deadline, (self.now)())
     }
     fn invalidate(&self, used: [u8; 16]) {
         let mut cached = self.epoch.lock().unwrap();
@@ -105,11 +113,11 @@ impl RelayTransport {
         };
         // No lock is held across network I/O, including long polling.
         let mut response = self.agent.get(format!("{}/v1/bootstrap", self.origin))
-            .config().timeout_global(Some(remaining(deadline)?.min(Duration::from_secs(35))))
+            .config().timeout_global(Some(self.remaining(deadline)?.min(Duration::from_secs(35))))
             .build().call()?;
         if response.status().as_u16() != 200 { bail!("relay bootstrap unavailable"); }
         let boot: Value = response.body_mut().with_config().limit(4096).read_json()?;
-        remaining(deadline)?;
+        self.remaining(deadline)?;
         if boot["protocol"].as_u64() != Some(1) { bail!("unsupported relay protocol"); }
         let fetched: [u8; 16] = B64.decode(boot["epoch"].as_str().context("missing epoch")?)?
             .try_into().map_err(|_| anyhow!("invalid relay epoch"))?;
@@ -123,7 +131,7 @@ impl RelayTransport {
     #[allow(clippy::too_many_arguments)]
     fn call(&self, profile: &Profile, owner: &str, access: &str,
             method: &str, path: &str, body: &[u8], deadline: Instant) -> Result<(u16, Value)> {
-        remaining(deadline)?;
+        self.remaining(deadline)?;
         if owner != profile.owner_sub { bail!("terminal approval belongs to another account"); }
         if !matches!(method, "GET" | "POST" | "PUT") { bail!("unsupported relay method"); }
         let epoch = self.epoch(deadline)?;
@@ -164,7 +172,7 @@ impl RelayTransport {
             ("x-relay-epoch", B64.encode(epoch)),
         ];
         let endpoint = format!("{}{path}", self.origin);
-        let timeout = remaining(deadline)?.min(Duration::from_secs(35));
+        let timeout = self.remaining(deadline)?.min(Duration::from_secs(35));
         let mut response = if method == "POST" {
             let mut request = self.agent.post(endpoint).config().timeout_global(Some(timeout)).build()
                 .header("content-type", "application/json");
@@ -192,7 +200,7 @@ impl RelayTransport {
                 Err(_) => bail!("invalid relay JSON response (HTTP {status})"),
             }
         };
-        remaining(deadline)?;
+        self.remaining(deadline)?;
         Ok((status, value))
     }
 }
@@ -934,12 +942,55 @@ mod tests {
 
     #[test]
     fn bootstrap_and_request_share_deadline_and_post_timeout_does_not_replay() {
-        let mut bootstrap = boot(1); bootstrap.2=Duration::from_millis(120);
-        let mut slow = reply(200,"ok"); slow.2=Duration::from_millis(120);
-        let server = HttpFixture::start(vec![bootstrap,slow]);
-        let transport = RelayTransport::new(&server.origin);
-        assert!(transport.call(&fixture().0,"owner-a","token","POST","/v1/pairings/p",b"{}",Instant::now()+Duration::from_millis(200)).is_err());
-        assert_eq!(server.count(),2,"timed out POST must not be repeated");
+        thread_local! {
+            static CLOCK: std::cell::Cell<Instant> = std::cell::Cell::new(Instant::now());
+        }
+        for (bootstrap_ms, post_times_out) in [(120, false), (120, true), (200, false)] {
+            let start = Instant::now();
+            CLOCK.set(start);
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = requests.clone();
+            let agent = ureq::Agent::config_builder()
+                .middleware(move |request: ureq::http::Request<ureq::SendBody<'_>>,
+                                  _next: ureq::middleware::MiddlewareNext<'_>| {
+                    let mut requests = seen.lock().unwrap();
+                    requests.push((request.method().to_string(), request.uri().path().to_owned()));
+                    let body = match requests.len() {
+                        1 => {
+                            CLOCK.set(start + Duration::from_millis(bootstrap_ms));
+                            boot(1).1
+                        }
+                        2 => {
+                            CLOCK.set(CLOCK.get() + Duration::from_millis(120));
+                            if post_times_out {
+                                return Err(ureq::Error::Timeout(ureq::Timeout::Global));
+                            }
+                            reply(200, "ok").1
+                        }
+                        _ => panic!("unexpected replay"),
+                    };
+                    Ok(ureq::http::Response::builder().status(200)
+                        .body(ureq::Body::builder().data(serde_json::to_vec(&body).unwrap()))
+                        .unwrap())
+                })
+                .build().new_agent();
+            let mut transport = RelayTransport::new("http://127.0.0.1");
+            transport.agent = agent;
+            transport.now = || CLOCK.get();
+            let error = transport.call(&fixture().0, "owner-a", "token", "POST",
+                "/v1/pairings/p", b"{}", start + Duration::from_millis(200)).unwrap_err();
+            if post_times_out {
+                assert!(matches!(error.downcast_ref::<ureq::Error>(),
+                    Some(ureq::Error::Timeout(ureq::Timeout::Global))));
+            } else {
+                assert_eq!(error.to_string(), "remote operation deadline exceeded; inspect the destination before repeating an action");
+            }
+            let mut expected = vec![("GET".to_owned(), "/v1/bootstrap".to_owned())];
+            if bootstrap_ms < 200 {
+                expected.push(("POST".to_owned(), "/v1/pairings/p".to_owned()));
+            }
+            assert_eq!(*requests.lock().unwrap(), expected);
+        }
     }
 
     #[test]
