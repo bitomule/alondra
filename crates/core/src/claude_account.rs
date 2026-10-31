@@ -171,26 +171,48 @@ pub fn command(executable: &Path, environment: &BTreeMap<String, String>, user_h
     command
 }
 
-/// Runs `command` with no input and waits up to `timeout` for it, keeping what it printed.
-pub fn output(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u8>), String> {
+trait OutputChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn wait(&mut self) -> std::io::Result<ExitStatus>;
+}
+
+impl OutputChild for std::process::Child {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> { Self::try_wait(self) }
+    fn kill(&mut self) -> std::io::Result<()> { Self::kill(self) }
+    fn wait(&mut self) -> std::io::Result<ExitStatus> { Self::wait(self) }
+}
+
+fn wait_for_output(child: &mut impl OutputChild, timeout: Option<Duration>, mut elapsed: impl FnMut() -> Duration, mut pause: impl FnMut()) -> std::io::Result<ExitStatus> {
+    let Some(timeout) = timeout else { return child.wait(); };
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status),
+            None if elapsed() < timeout => pause(),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Claude Code did not answer in time"));
+            }
+        }
+    }
+}
+
+/// Runs `command` with no input, keeping what it printed. A finite fixture can wait for
+/// completion with no deadline; native commands use the caller's timeout.
+pub fn output(mut command: Command, timeout: Option<Duration>) -> Result<(ExitStatus, Vec<u8>), String> {
     let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("could not run Claude Code: {e}"))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout.take(OUTPUT_LIMIT + 1).read_to_end(&mut bytes).map(|_| bytes)
     });
-    let until = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return Err("Claude Code did not answer in time".into());
-            }
-            Err(e) => return Err(e.to_string()),
+    let started = Instant::now();
+    let status = match wait_for_output(&mut child, timeout, || started.elapsed(), || std::thread::sleep(Duration::from_millis(20))) {
+        Ok(status) => status,
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::TimedOut { let _ = reader.join(); }
+            return Err(error.to_string());
         }
     };
     let bytes = reader.join().map_err(|_| "could not read Claude Code's answer".to_owned())?.map_err(|e| e.to_string())?;
@@ -198,18 +220,18 @@ pub fn output(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Ve
 }
 
 /// The sign-in of the account whose folder is `folder` (`None`: the default one).
-pub fn status(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Result<AuthStatus, String> {
+pub fn status(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>, timeout: Option<Duration>) -> Result<AuthStatus, String> {
     let mut command = command(executable, environment, user_home, path, username, folder);
     command.args(["auth", "status", "--json"]);
-    let (status, bytes) = output(command, STATUS_TIMEOUT)?;
+    let (status, bytes) = output(command, timeout)?;
     parse_status(status.success(), &bytes).ok_or_else(|| "Claude Code's answer about its sign-in could not be read".to_owned())
 }
 
 /// Signs the account out of Claude, which removes its sign-in from the Keychain.
-pub fn logout(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: &Path) -> Result<(), String> {
+pub fn logout(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: &Path, timeout: Option<Duration>) -> Result<(), String> {
     let mut command = command(executable, environment, user_home, path, username, Some(folder));
     command.args(["auth", "logout"]);
-    let (status, _) = output(command, STATUS_TIMEOUT)?;
+    let (status, _) = output(command, timeout)?;
     if status.success() { Ok(()) } else { Err(format!("claude auth logout ended with {status}")) }
 }
 

@@ -45,8 +45,31 @@ fn fixture() -> Fixture {
         path: format!("{}:/usr/bin:/bin", bin.display()),
         username: claude_account::effective_username().unwrap(),
         environment: BTreeMap::new(),
+        timeout: None,
     };
     Fixture { _scratch: scratch, home, user_home, claude }
+}
+
+#[test]
+fn claude_account_probes_keep_the_native_deadline_for_installed_and_pinned_backends() {
+    let f = fixture();
+    assert_eq!(f.claude.timeout, None, "the finite shell fixture waits for completion");
+    for installed_native in [false, true] {
+        let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+        let native = f.claude.executable.clone();
+        domain.enable_sdk(crate::sdk_owner::SdkBackend {
+            provider: Provider::Claude, origin: None,
+            node: native.clone(), node_sha256: String::new(),
+            host: native.clone(), host_sha256: String::new(),
+            native, native_sha256: String::new(),
+            host_environment: BTreeMap::new(),
+            native_environment: BTreeMap::from([("HOME".into(), f.user_home.display().to_string()), ("PATH".into(), f.claude.path.clone())]),
+            confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native,
+        });
+        let claude = Claude::of(&domain).unwrap();
+        assert_eq!(claude.executable, f.claude.executable);
+        assert_eq!(claude.timeout, Some(Duration::from_secs(10)), "native probes stay bounded, including pinned custom binaries");
+    }
 }
 
 fn work() -> ProviderAccount {

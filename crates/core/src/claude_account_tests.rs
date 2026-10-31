@@ -93,23 +93,80 @@ printf '{"loggedIn":false}'; exit 1"#);
     std::fs::create_dir_all(&user_home).unwrap();
     let account = user_home.join(".alondra/accounts/work");
     std::fs::create_dir_all(&account).unwrap();
-    let default = status(&script, &BTreeMap::new(), &user_home, &path, &user, None).unwrap();
+    let default = status(&script, &BTreeMap::new(), &user_home, &path, &user, None, None).unwrap();
     assert_eq!(default.email.as_deref(), Some("me@example.org"));
     assert_eq!(default.subscription.as_deref(), Some("pro"));
-    assert!(!status(&script, &BTreeMap::new(), &user_home, &path, &user, Some(&account)).unwrap().logged_in);
+    assert!(!status(&script, &BTreeMap::new(), &user_home, &path, &user, Some(&account), None).unwrap().logged_in);
     std::fs::write(account.join("in"), "").unwrap();
-    assert_eq!(status(&script, &BTreeMap::new(), &user_home, &path, &user, Some(&account)).unwrap().email.as_deref(), Some("work@example.org"));
+    assert_eq!(status(&script, &BTreeMap::new(), &user_home, &path, &user, Some(&account), None).unwrap().email.as_deref(), Some("work@example.org"));
     let vars: Vec<String> = command(&script, &BTreeMap::new(), &user_home, &path, &user, None).get_envs().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
     assert_eq!(vars.len(), 4, "{vars:?}");
 }
 
+struct ScriptedChild {
+    observations: std::collections::VecDeque<Option<ExitStatus>>,
+    actions: Vec<&'static str>,
+}
+
+fn successful_exit() -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt as _;
+    ExitStatus::from_raw(0)
+}
+
+impl ScriptedChild {
+    fn new(observations: impl IntoIterator<Item = Option<ExitStatus>>) -> Self {
+        Self { observations: observations.into_iter().collect(), actions: vec![] }
+    }
+}
+
+impl OutputChild for ScriptedChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.actions.push("poll");
+        Ok(self.observations.pop_front().expect("scripted observation"))
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        self.actions.push("kill");
+        Ok(())
+    }
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        self.actions.push("wait");
+        Ok(successful_exit())
+    }
+}
+
 #[test]
 fn a_claude_that_does_not_answer_is_stopped() {
-    let scratch = Directory::new();
-    let script = fake_claude(&scratch.join("bin"), "exec sleep 30");
-    let mut command = Command::new(&script);
-    command.current_dir(scratch.join("bin"));
-    assert!(output(command, Duration::from_millis(100)).unwrap_err().contains("did not answer"));
+    let mut child = ScriptedChild::new([None, None]);
+    let elapsed = std::cell::Cell::new(Duration::ZERO);
+    let error = wait_for_output(&mut child, Some(STATUS_TIMEOUT), || elapsed.get(), || elapsed.set(STATUS_TIMEOUT)).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(error.to_string(), "Claude Code did not answer in time");
+    assert_eq!(child.actions, ["poll", "poll", "kill", "wait"], "the expired child is killed and reaped once");
+}
+
+#[test]
+fn a_claude_that_answers_within_the_deadline_is_not_stopped() {
+    let mut child = ScriptedChild::new([None, Some(successful_exit())]);
+    let elapsed = std::cell::Cell::new(Duration::ZERO);
+    let status = wait_for_output(&mut child, Some(STATUS_TIMEOUT), || elapsed.get(), || elapsed.set(STATUS_TIMEOUT / 2)).unwrap();
+    assert!(status.success());
+    assert_eq!(child.actions, ["poll", "poll"]);
+}
+
+#[test]
+fn a_completed_claude_is_not_killed_when_the_scheduler_returns_after_its_deadline() {
+    let mut child = ScriptedChild::new([Some(successful_exit())]);
+    let status = wait_for_output(&mut child, Some(STATUS_TIMEOUT), || STATUS_TIMEOUT * 2, || panic!("already completed")).unwrap();
+    assert!(status.success());
+    assert_eq!(child.actions, ["poll"]);
+}
+
+#[test]
+fn a_finite_fixture_waits_for_its_answer_even_past_the_native_deadline() {
+    let mut child = ScriptedChild::new([None]);
+    let status = wait_for_output(&mut child, None, || STATUS_TIMEOUT * 2, || panic!("wait for completion")).unwrap();
+    assert!(status.success());
+    assert_eq!(child.actions, ["wait"], "fixture completion does not consult the host's clock");
 }
 
 #[test]

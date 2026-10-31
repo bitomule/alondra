@@ -1195,7 +1195,7 @@ mod tests {
     #[test]
     fn observing_an_exit_does_not_wait_for_the_child_cleanup_mutex() {
         let executable = Path::new("/usr/bin/true");
-        let digest = file_hash(executable).unwrap();
+        let digest = crate::artifact_digest::digest(executable).unwrap();
         let artifact = VerifiedArtifact::verify(executable, executable, &digest, &digest).unwrap();
         let child = Command::new(executable).env_clear().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().unwrap();
         let pid = rustix::process::Pid::from_child(&child);

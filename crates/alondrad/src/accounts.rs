@@ -36,6 +36,7 @@ pub(crate) struct Claude {
     pub user_home: PathBuf,
     pub path: String,
     pub username: String,
+    pub timeout: Option<Duration>,
 }
 
 impl Claude {
@@ -45,7 +46,7 @@ impl Claude {
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
         let user_home = Self::user_home(domain);
-        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: Some(claude_account::STATUS_TIMEOUT) })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
@@ -59,11 +60,11 @@ impl Claude {
     }
 
     fn status(&self, folder: Option<&Path>) -> Result<claude_account::AuthStatus, String> {
-        claude_account::status(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder)
+        claude_account::status(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder, self.timeout)
     }
 
     fn logout(&self, folder: &Path) -> Result<(), String> {
-        claude_account::logout(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder)
+        claude_account::logout(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder, self.timeout)
     }
 }
 
