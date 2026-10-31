@@ -8,55 +8,66 @@
 [[sheet]]
 provider = "claude"
 match = "opus"
+usd_per_mtok = [4, 20, 0.20, 5]
+benchmark = 64.8
 cost = "high"
 good_for = ["feature", "refactor", "design", "review", "research", "migration"]
 cautions = "Priciest Claude tier; wasted on mechanical work"
-evidence = "TB4: Claude Code + Opus 5.5 64.8%, top of the cited runs. AIDev: Claude Code led features (72.6%) and docs (92.3%). Warp: Claude Code for large refactors and integrations"
+evidence = "TB4: Claude Code + Opus 5.5 64.8%, top of the cited runs. AIDev: Claude Code led features (72.6%) and docs (92.3%). Warp: Claude Code for large refactors and integrations Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://platform.claude.com/docs/en/about-claude/pricing"
 
 [[sheet]]
 provider = "claude"
 match = "sonnet"
+usd_per_mtok = [2, 10, 0.10, 2.5]
+benchmark = 61.8
 cost = "medium"
 good_for = ["feature", "fix", "refactor", "tests", "docs"]
 cautions = "Below Opus on TB4 (61.8% vs 64.8%)"
-evidence = "TB4: Claude Code + Sonnet 5.5 61.8%. AIDev: Claude Code led features (72.6%) and docs (92.3%)"
+evidence = "TB4: Claude Code + Sonnet 5.5 61.8%. AIDev: Claude Code led features (72.6%) and docs (92.3%) Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://platform.claude.com/docs/en/about-claude/pricing"
 
 [[sheet]]
 provider = "claude"
 match = "haiku"
+usd_per_mtok = [0.10, 0.50, 0.01, 0.125]
 cost = "low"
 good_for = ["docs", "tests"]
 cautions = "No cited benchmark; small, fully specified work only"
-evidence = "None cited; rely on Alondra's measured results"
+evidence = "None cited; rely on Alondra's measured results Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://platform.claude.com/docs/en/about-claude/pricing"
 
 [[sheet]]
 provider = "claude"
 match = "fable"
+usd_per_mtok = [10, 50, 0.25, 12.5]
 cost = "high"
 good_for = ["design", "review", "research"]
 cautions = "No cited benchmark; choose it on measured results"
-evidence = "None cited; rely on Alondra's measured results"
+evidence = "None cited; rely on Alondra's measured results Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://platform.claude.com/docs/en/about-claude/pricing"
 
 [[sheet]]
 provider = "codex"
 match = "gpt-6.1-sol"
+usd_per_mtok = [2, 10, 0.10, 2.5]
+benchmark = 58.2
 cost = "medium"
 good_for = ["fix", "tests", "migration", "refactor", "review", "docs"]
 cautions = "Below the Claude Code runs on TB4 (58.2%)"
-evidence = "TB4: Codex + GPT-6.1 Sol 58.2% at $1.92/task. AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill"
+evidence = "TB4: Codex + GPT-6.1 Sol 58.2% at $1.92/task. AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://developers.openai.com/api/docs/models/gpt-6.1-sol"
 
 [[sheet]]
 provider = "codex"
 match = "gpt-6-astra"
+usd_per_mtok = [10, 50, 1, 12.5]
+benchmark = 58.2
 cost = "medium"
 good_for = ["fix", "tests", "migration"]
 cautions = "Below the Claude Code runs on TB4 (58.2%)"
-evidence = "TB4: GPT-6 Astra 58.2%. AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill"
+evidence = "TB4: GPT-6 Astra 58.2%. AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://developers.openai.com/api/docs/models/gpt-6-astra"
 
 [[sheet]]
 provider = "codex"
 match = "gpt"
+usd_per_mtok = [2, 10, 0.10, 2.5]
 cost = "medium"
 good_for = ["fix", "tests", "migration"]
 cautions = "Generic Codex sheet; no benchmark for this model"
-evidence = "AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill"
+evidence = "AIDev: Codex accepted 59.6-88.6% across all 9 categories. Warp: Codex for mechanical migrations and test backfill Pricing checked 2026-10-31: standard base, short context, shortest cache-write duration; https://developers.openai.com/api/docs/models/gpt-6.1-sol; generic GPT uses Sol prices by user decision"

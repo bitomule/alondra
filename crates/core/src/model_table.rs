@@ -55,7 +55,7 @@ pub struct Results {
 
 /// The name a model's results are kept under: a Claude model by its family (`opus`), whether it
 /// was recorded as an alias, a full id or provider-qualified; any other by its own id.
-fn measured_key(provider: Provider, model: &str) -> String {
+pub fn measured_key(provider: Provider, model: &str) -> String {
     let bare = model.split_once('/').filter(|(qualifier, _)| Provider::parse(qualifier).is_ok()).map_or(model, |(_, rest)| rest);
     match provider {
         Provider::Claude => crate::model_label::model_family(bare),

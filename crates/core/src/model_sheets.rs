@@ -2,14 +2,14 @@
 //! before Alondra has measured it. A model no sheet matches has none.
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::accounts::Provider;
 use crate::task_tags::TaskKind;
 
 const SHEETS: &str = include_str!("model_sheets.toml");
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Cost {
     Low,
@@ -27,13 +27,17 @@ impl Cost {
     }
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSheet {
     pub provider: Provider,
     #[serde(rename = "match")]
     pub prefix: String,
     pub cost: Cost,
+    #[serde(default)]
+    pub benchmark: Option<f64>,
+    /// USD per million input, output, cache-read and cache-write tokens.
+    pub usd_per_mtok: [f64; 4],
     pub good_for: Vec<TaskKind>,
     pub cautions: String,
     pub evidence: String,
@@ -55,6 +59,12 @@ fn parse(text: &str) -> Result<Vec<ModelSheet>, String> {
     let file: File = toml::from_str(text).map_err(|error| error.to_string())?;
     if let Some(blank) = file.sheet.iter().find(|sheet| sheet.prefix.trim().is_empty() || sheet.good_for.is_empty()) {
         return Err(format!("a {} sheet has no match or no kinds", blank.provider.as_str()));
+    }
+    for sheet in &file.sheet {
+        if sheet.usd_per_mtok.iter().any(|p| !p.is_finite() || *p <= 0.0)
+            || sheet.benchmark.is_some_and(|b| !b.is_finite() || !(0.0..=100.0).contains(&b)) {
+            return Err(format!("invalid price or benchmark for {}", sheet.prefix));
+        }
     }
     Ok(file.sheet)
 }

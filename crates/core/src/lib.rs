@@ -26,6 +26,7 @@ pub mod machine_incident;
 pub mod markdown;
 pub mod model;
 pub mod model_label;
+pub mod model_decider;
 pub mod model_selection;
 pub mod model_sheets;
 pub mod model_table;

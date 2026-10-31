@@ -55,10 +55,21 @@ impl TaskRisk {
     }
 }
 
+tag!(
+    /// Estimated size before the task starts.
+    TaskSize { Small => "small", Medium => "medium", Large => "large" }
+);
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Impact { Normal, High }
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TaskTags {
     pub kind: TaskKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<TaskSize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub areas: Vec<TaskArea>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -66,6 +77,18 @@ pub struct TaskTags {
 }
 
 impl TaskTags {
+    pub fn impact(&self) -> Impact {
+        self.impact_with(3, &[TaskArea::Data])
+    }
+
+    pub fn impact_with(&self, broad_count: usize, broad_areas: &[TaskArea]) -> Impact {
+        let areas: std::collections::BTreeSet<_> = self.areas.iter().collect();
+        if self.severe() || self.size == Some(TaskSize::Large)
+            || areas.len() >= broad_count || self.areas.iter().any(|area| broad_areas.contains(area)) {
+            Impact::High
+        } else { Impact::Normal }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         fn repeated<T: Ord>(items: &[T]) -> bool {
             let mut seen = std::collections::BTreeSet::new();
