@@ -53,6 +53,8 @@ impl DomainState {
             Command::CompleteMcpSignIn { task_id, server, state } => self.mcp_complete_guard(actor, task_id, server, state).map(drop),
             Command::WaitForMcp { task_id, server } => self.mcp_wait_guard(actor, task_id, server).map(drop),
             Command::CompactConversation { task_id } => self.compact_guard(actor, task_id).map(drop),
+            Command::BeginAccountLogin { account, attempt, .. } => self.begin_account_login_guard(actor, account, attempt),
+            Command::CancelAccountLogin { account, attempt } => self.cancel_account_login_guard(actor, account, attempt),
             Command::ChangeAccounts { provider, change } => self.accounts_guard(actor, *provider, change),
             Command::SetAccountOrder { order, expected_config_version } => self.account_order_guard(actor, order, expected_config_version),
             Command::SetModelProfile { provider, profile, policy, expected_config_version } => self.model_profile_guard(actor, *provider, *profile, policy, expected_config_version),

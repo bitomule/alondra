@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v952efa7947ade9d5",
+  "version": "v3371aa80c6cf9a42",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
@@ -918,37 +918,21 @@
           "id": "codex-connect",
           "icon": "machine",
           "title": "Connect Codex",
-          "subtitle": "Use this provider's native sign-in on the Mac",
+          "subtitle": "Use the session on the Mac, or sign in with a code on any device",
           "depth": 0,
           "struck": false,
           "actions": [
             {
-              "id": "",
+              "id": "account_login:default@6~codex",
               "label": "Connect",
-              "style": "plain",
-              "role": "neutral",
+              "style": "primary",
+              "role": "advance",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
               "enabled": true,
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "account_sign_in",
-                  "account": "default",
-                  "command": "alondra accounts login --provider codex 'default'",
-                  "provider": "codex",
-                  "argv": [
-                    "accounts",
-                    "login",
-                    "--provider",
-                    "codex",
-                    "default"
-                  ]
-                }
-              },
               "resolves_card": false
             }
           ]

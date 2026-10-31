@@ -30,6 +30,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         let key = AccountKey { provider: account.provider, account: account.id.clone() };
         account_row(account, at + 1, measured.get(&key).copied(), context)
     }).collect();
+    rows.splice(0..0, context.index.account_logins().iter().filter_map(|login| login_row(login, context)));
     let mut view = common::view(KEY, KEY, Some(t!(lang, "Accounts", "Cuentas").into()), context, vec![]);
     view.account_configuration = (!context.index.account_config_version().is_empty()).then(|| super::AccountConfigurationPresentation { version: context.index.account_config_version().into() });
     let mut section = list_style(common::section("accounts", None, std::mem::take(&mut rows)));
@@ -43,7 +44,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     if let Some(check) = common::action(Verb::AccountCheck, "accounts", context.domain.revision, t!(lang, "Check accounts", "Comprobar cuentas"), Style::Secondary) { section.actions.push(check); }
     view.sections.push(section);
     let provider_rows = [Provider::Claude, Provider::Codex].into_iter().map(|provider| {
-        if accounts.iter().any(|account| account.provider == provider) { add_row(provider, lang) } else { connect_row(provider, lang) }
+        if accounts.iter().any(|account| account.provider == provider) { add_row(provider, lang) } else { connect_row(provider, context) }
     }).collect();
     view.sections.push(list_style(common::section("providers", Some(t!(lang, "Providers", "Proveedores").into()), provider_rows)));
     if accounts.len() > 1 {
@@ -161,7 +162,9 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&crate
     row.link = None;
     row.account = Some(account_presentation(account, position, measured, context));
     row.badges.push(state_badge(account.state, lang));
-    if account.state == AccountState::SignedOut {
+    if account.provider == Provider::Codex && account.state == AccountState::SignedOut {
+        row.actions.extend(login_action(&AccountKey::new(Provider::Codex, account.id.clone()), None, context));
+    } else if account.state == AccountState::SignedOut {
         let mut sign_in = common::view_link("", t!(lang, "Sign in", "Iniciar sesión"));
         sign_in.link = Some(Link::Local { local: LocalLink::AccountSignIn {
             account: if account.provider == Provider::Claude { shown.clone() } else { account.id.as_str().into() },
@@ -261,11 +264,17 @@ fn add_row(provider: Provider, lang: Lang) -> Item {
     Item::Row(row)
 }
 
-fn connect_row(provider: Provider, lang: Lang) -> Item {
+fn connect_row(provider: Provider, context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
     let name = provider_name(provider);
     let mut row = common::row(&format!("{}-connect", provider.as_str()), KEY, Icon::Machine,
         tf!(lang, "Connect {name}", "Conectar {name}"), Some(t!(lang, "Use this provider's native sign-in on the Mac", "Usar el inicio de sesión nativo de este proveedor en el Mac").into()));
     row.link = None;
+    if provider == Provider::Codex {
+        row.subtitle = Some(t!(lang, "Use the session on the Mac, or sign in with a code on any device", "Usa la sesión del Mac o inicia sesión con un código en cualquier dispositivo").into());
+        row.actions.extend(login_action(&AccountKey::native(provider), None, context));
+        return Item::Row(row);
+    }
     let mut connect = common::view_link("", t!(lang, "Connect", "Conectar"));
     connect.link = Some(Link::Local { local: LocalLink::AccountSignIn { account: "default".into(), command: login_command(provider, "default"),
         provider: (provider != Provider::Claude).then(|| provider.as_str().into()), argv: (provider != Provider::Claude).then(|| login_arguments(provider, "default")), } });
@@ -441,4 +450,50 @@ pub fn account_arguments(provider: Option<&str>, argv: Option<&[String]>, accoun
         args.push(account.into());
     }
     Some(args)
+}
+
+fn login_action(account: &AccountKey, cancel: Option<&str>, context: &RenderContext<'_>) -> Option<Action> {
+    let available = context.domain.account_login_action(account.clone(), cancel);
+    if !available.enabled { return None; }
+    let (verb, label, extra) = match cancel {
+        Some(attempt) => (Verb::AccountLoginCancel, t!(context.lang, "Cancel sign-in", "Cancelar inicio de sesión"), attempt),
+        None if context.index.accounts().iter().any(|known| known.provider == account.provider && known.id == account.account) =>
+            (Verb::AccountLogin, t!(context.lang, "Sign in with a code", "Iniciar sesión con un código"), "codex"),
+        None => (Verb::AccountLogin, t!(context.lang, "Connect", "Conectar"), "codex"),
+    };
+    let mut action = common::action(verb, account.account.as_str(), context.domain.revision, label, Style::Primary)?;
+    action.id = super::action_id::ActionId::new(verb, account.account.as_str(), context.domain.revision, Some(extra.into())).ok()?.to_string();
+    Some(action)
+}
+
+fn login_row(login: &crate::domain::AccountLogin, context: &RenderContext<'_>) -> Option<Item> {
+    use crate::domain::AccountLoginPhase;
+    let lang = context.lang;
+    if login.phase == AccountLoginPhase::Connected { return None; }
+    let account_name = context.index.accounts().iter().find(|known| known.provider == login.account.provider && known.id == login.account.account)
+        .map(|known| name(known, lang)).unwrap_or_else(|| if login.account.account.is_default() { t!(lang, "Default", "Principal").into() } else { login.account.account.to_string() });
+    let title = tf!(lang, "Sign in to Codex · {account_name}", "Iniciar sesión en Codex · {account_name}");
+    let detail = match login.phase {
+        AccountLoginPhase::Starting => t!(lang, "Checking the session on the Mac…", "Comprobando la sesión del Mac…").into(),
+        AccountLoginPhase::Publishing => t!(lang, "Finishing sign-in…", "Terminando el inicio de sesión…").into(),
+        AccountLoginPhase::Pending => {
+            let challenge = login.challenge.as_ref()?;
+            let url = &challenge.url;
+            let code = &challenge.code;
+            tf!(lang, "Open {url} on any device and enter this code:\n{code}", "Abre {url} en cualquier dispositivo e introduce este código:\n{code}")
+        },
+        AccountLoginPhase::Cancelled => t!(lang, "Sign-in cancelled. The previous session was preserved.", "Inicio de sesión cancelado. Se ha conservado la sesión anterior.").into(),
+        AccountLoginPhase::Failed => t!(lang, "Sign-in did not complete. The previous session was preserved. Try again or check Codex on the Mac.", "No se completó el inicio de sesión. Se ha conservado la sesión anterior. Vuelve a intentarlo o comprueba Codex en el Mac.").into(),
+        AccountLoginPhase::Connected => return None,
+    };
+    let mut row = common::row(&format!("codex-login-{}", login.account.account), KEY, Icon::Machine, title, Some(detail));
+    row.link = None;
+    if let Some(challenge) = &login.challenge {
+        let mut open = common::view_link("", t!(lang, "Open verification page", "Abrir página de verificación"));
+        open.link = Some(Link::Url { url: challenge.url.clone() });
+        open.style = Style::Primary;
+        row.actions.push(open);
+    }
+    if login.phase != AccountLoginPhase::Publishing { row.actions.extend(login_action(&login.account, login.phase.active().then_some(login.attempt.as_str()), context)); }
+    Some(Item::Row(row))
 }

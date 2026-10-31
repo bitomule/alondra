@@ -3,6 +3,21 @@ use crate::test_support::Directory;
 use alondra_core::accounts::{Distribution, Policy, ProviderAccount};
 use std::os::unix::fs::PermissionsExt as _;
 
+#[test]
+fn codex_login_credential_destination_matches_the_native_working_directory() {
+    let user_home = PathBuf::from("/fixture-user");
+    let mut native = Codex { executable: "/fixture-codex".into(), environment: BTreeMap::new(),
+        user_home: user_home.clone(), path: "/usr/bin:/bin".into(), username: "fixture".into() };
+    let account = AccountKey::native(Provider::Codex);
+    for (configured, expected) in [(None, user_home.join(".codex")), (Some(""), user_home.join(".codex")), (Some("/absolute-codex"), PathBuf::from("/absolute-codex")),
+        (Some("relative-codex"), user_home.join("relative-codex"))] {
+        native.environment.remove("CODEX_HOME");
+        if let Some(profile) = configured { native.environment.insert("CODEX_HOME".into(), profile.into()); }
+        assert_eq!(native.command(None).get_current_dir(), Some(user_home.as_path()));
+        assert_eq!(native.profile(Path::new("/fixture-service"), &account), expected);
+    }
+}
+
 /// A Claude Code that keeps each folder's sign-in as a file in it, and logs every sign-out. An API
 /// key in its environment signs every folder in.
 const FAKE: &str = r#"#!/bin/sh

@@ -2,6 +2,45 @@ use super::*;
 use crate::test_support::Directory;
 use std::os::unix::fs::PermissionsExt as _;
 
+#[test]
+fn codex_login_error_exit_cancels_only_its_own_attempt() {
+    use std::io::{Read, Write};
+    use alondra_core::accounts::AccountKey;
+    use alondra_core::domain::{AccountLogin, AccountLoginPhase};
+    use alondra_core::views::action_id::{ActionId, Verb};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = Client::at(format!("http://{}", listener.local_addr().unwrap()));
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut bytes = Vec::new();
+        let body = loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap(); assert!(count > 0);
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]);
+                let size: usize = headers.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|size| size.trim().parse().unwrap())).unwrap();
+                if bytes.len() >= end + 4 + size { break serde_json::from_slice::<Value>(&bytes[end + 4..end + 4 + size]).unwrap(); }
+            }
+        };
+        assert_eq!(body["data_epoch"], "fixture-epoch");
+        let action = ActionId::parse(body["action_id"].as_str().unwrap()).unwrap();
+        assert_eq!(action.verb, Verb::AccountLoginCancel);
+        assert_eq!(action.extra.as_deref(), Some("owned-attempt"));
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    });
+    let fail = || -> Result<()> {
+        let _pending = PendingCodexLogin { client: &client, login: AccountLogin {
+            account: AccountKey::native(Provider::Codex), attempt: "owned-attempt".into(), started_at: 1,
+            phase: AccountLoginPhase::Pending, challenge: None, error: None,
+        }, epoch: "fixture-epoch".into(), revision: 3, finished: false };
+        bail!("synthetic transport failure")
+    };
+    assert!(fail().is_err());
+    server.join().unwrap();
+}
+
 fn row(id: &str, email: Option<&str>, state: AccountState) -> Row {
     Row {
         provider: Provider::Claude,

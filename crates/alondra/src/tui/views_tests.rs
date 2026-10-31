@@ -5,6 +5,21 @@ fn app() -> App {
     App::new(tx)
 }
 
+#[test]
+fn codex_login_verification_button_opens_only_the_provider_page() {
+    let mut app = app();
+    let mut action: alondra_core::views::Action = serde_json::from_value(json!({
+        "id":"", "label":"Open verification page", "style":"primary", "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+        "link":{"kind":"url","url":"https://auth.openai.com/codex/device"}
+    })).unwrap();
+    OPENED.with(|opened| opened.borrow_mut().clear());
+    app.run_view_action_confirmed(&action, None, &Key("accounts".into()), "epoch".into());
+    OPENED.with(|opened| assert_eq!(&*opened.borrow(), &["https://auth.openai.com/codex/device"]));
+    action.link = Some(alondra_core::views::Link::Url { url: "https://auth.openai.com.evil.test/codex/device".into() });
+    app.run_view_action_confirmed(&action, None, &Key("accounts".into()), "epoch".into());
+    OPENED.with(|opened| assert_eq!(opened.borrow().len(), 1));
+}
+
 fn press(app: &mut App, code: KeyCode) {
     app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 }

@@ -1,5 +1,8 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "account_login.rs"]
+mod account_login;
+pub use account_login::{AccountLogin, AccountLoginPhase};
 mod plan_review;
 mod snooze;
 mod stall;
@@ -2348,6 +2351,7 @@ impl DomainState {
             // A Schedule's own revision is its subject: Update carries the next
             // one, Delete and Claim the one they read. The rule checks it.
             Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
+            Command::BeginAccountLogin { .. } | Command::CancelAccountLogin { .. } | Command::RecordAccountLogin { .. } => Some(0),
             Command::SetAccountOrder { .. } | Command::SetModelProfile { .. } | Command::ReplaceAccountConfiguration { .. } => Some(0),
             // Clearing takes only what the user saw at `seen`, so any snapshot may ask for it.
             Command::ClearCompleted { .. } => Some(0),
@@ -2746,6 +2750,9 @@ impl DomainState {
                 self.adopt_sdk_nodes(lifecycles)?;
             }
             Command::ReviewWaits => system(actor)?,
+            Command::BeginAccountLogin { account, attempt, started_at } => self.begin_account_login(actor, account, attempt, *started_at)?,
+            Command::CancelAccountLogin { account, attempt } => self.cancel_account_login(actor, account, attempt)?,
+            Command::RecordAccountLogin { login } => self.record_account_login(actor, login)?,
             Command::RecordAccounts { accounts, reserve } => {
                 system(actor)?;
                 let mut seen = BTreeSet::new();

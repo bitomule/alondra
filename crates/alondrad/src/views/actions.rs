@@ -287,7 +287,7 @@ impl LocalActionResource {
             Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
             Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
-            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ModelProfile => add(Self::AccountSettings, true),
+            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile => add(Self::AccountSettings, true),
             Verb::TaskSelection => add(Self::Task(action.subject.clone()), true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
             Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(Self::Mcp(action.subject.clone()), true),
@@ -367,7 +367,7 @@ fn is_external(verb: Verb) -> bool {
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
-        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ModelProfile | Verb::TaskSelection)
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile | Verb::TaskSelection)
 }
 
 pub(crate) async fn execute_action(
@@ -495,6 +495,8 @@ async fn execute_external(
         Verb::AccountOrder => "Order saved",
         Verb::ModelProfile => "Model profile saved",
         Verb::TaskSelection => "Selection change requested",
+        Verb::AccountLogin => "Checking sign-in",
+        Verb::AccountLoginCancel => "Sign-in cancelled",
         Verb::AccountCheck => "Accounts checked",
         Verb::AccountModels => "Models refreshed",
         Verb::AccountPolicy => "Updated",
@@ -513,7 +515,7 @@ async fn execute_external(
         Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", Verb::McpRemove => "Borrado",
         Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
         Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado",
-        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", _ => stamp,
+        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::AccountLogin => "Comprobando sesión", Verb::AccountLoginCancel => "Inicio de sesión cancelado", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -788,6 +790,31 @@ async fn execute_external(
             match tokio::task::spawn_blocking(move || crate::accounts::refresh_models(&runtime, &home, &key)).await? {
                 Ok(()) => Ok(to_applied(200, json!({"models_refreshed": true}))),
                 Err(message) => Ok(error_value("unavailable", &message)),
+            }
+        }
+        Verb::AccountLogin | Verb::AccountLoginCancel => {
+            let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else {
+                return Ok(rejected_field(lang, "account", "Choose a Codex account"));
+            };
+            let account = alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Codex, account);
+            let actor = Actor::User { user_id: user_id.clone() };
+            let result = if action.verb == Verb::AccountLogin {
+                if action.extra.as_deref() != Some("codex") { return Ok(rejected_field(lang, "provider", "Choose Codex")); }
+                let approved = crate::auth::approved_devices(home).ok().and_then(|devices| devices.iter().find(|known| known.id == device).cloned());
+                let owner = request.input.fields.get("cli_pid").and_then(Value::as_i64).map(|pid| i32::try_from(pid).ok()
+                    .and_then(|pid| alondra_process_group::process(pid).ok().flatten()));
+                let home = home.to_path_buf();
+                let authorized: crate::codex_sign_in::Authorization = std::sync::Arc::new(move || owner.as_ref().is_none_or(|owner| owner.as_ref().is_some_and(|member| alondra_process_group::alive(member).unwrap_or(false))) && approved.as_ref().is_some_and(|original| {
+                    crate::auth::approved_devices(&home).ok().is_some_and(|devices| devices.iter().any(|current| current.id == original.id && current.public_key == original.public_key))
+                }));
+                client.codex_sign_ins.start(&actor, account, authorized, !flag(&request.input, "check_only")).map(|login| json!({"sign_in":login}))
+            } else {
+                let Some(attempt) = action.extra.clone() else { return Ok(rejected_field(lang, "attempt", "Choose the current sign-in")); };
+                client.codex_sign_ins.cancel(&actor, account, attempt).map(|_| json!({"cancelled":true}))
+            };
+            match result {
+                Ok(body) => Ok(to_applied(200, body)),
+                Err(error) => Ok(domain_refusal_value(&error, lang)),
             }
         }
         Verb::AccountCheck => {

@@ -43,6 +43,16 @@ final class ClaudeAccountsSnapshotTests: XCTestCase {
     func test_finishOnTheMac_spanish() {
         assertScreen([.light], language: .spanish, inWindow: true) { finishOnTheMac }
     }
+    func test_codexDeviceCode() throws {
+        let document = try SampleViews.document("accounts-device-code-ios")
+        assertScreen([.light, .dark]) { ScreenFrame(height: 900) { settings(document) } }
+    }
+
+    func test_codexDeviceCode_spanish() throws {
+        let document = try SampleViews.document("accounts-device-code-ios-es")
+        assertScreen([.light], language: .spanish) { ScreenFrame(height: 900) { settings(document) } }
+    }
+
     func test_codexAccounts() throws {
         let document = try SampleViews.document("accounts-codex-ios")
         assertScreen([.light, .dark]) { ScreenFrame(height: 1200) { settings(document) } }

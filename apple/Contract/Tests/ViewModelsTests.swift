@@ -3,6 +3,20 @@ import XCTest
 import AlondraContract
 
 final class ViewModelsTests: XCTestCase {
+    func testDeviceCodeUsesRowsLinksAndActionsUnderTheExistingViewsProtocol() throws {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"])).appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main").appendingPathComponent("fixtures/views/cards")
+        for name in ["accounts-device-code-ios", "accounts-device-code-mac", "accounts-device-code-ios-es"] {
+            let view = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("\(name).json")))
+            let rows = view.sections.flatMap(\.items).compactMap { item -> AlondraContract.Row? in if case let .row(row) = item { row } else { nil } }
+            let row = try XCTUnwrap(rows.first { $0.id == "codex-login-default" })
+            XCTAssertTrue(row.subtitle?.contains("ABCD-1234") == true)
+            XCTAssertTrue(row.subtitle?.contains("https://auth.openai.com/codex/device") == true)
+            XCTAssertTrue(row.actions.contains { $0.link == .url(url: "https://auth.openai.com/codex/device") })
+            XCTAssertTrue(row.actions.allSatisfy { !$0.needsNewerApp })
+        }
+    }
+
     func testDecodesRustGoldenViews() throws {
         let env = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))

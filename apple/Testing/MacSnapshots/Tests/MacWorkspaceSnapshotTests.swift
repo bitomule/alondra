@@ -871,6 +871,17 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
         assertWindow(size: CGSize(width: 480, height: 420)) { MacRequestOptionsSheet(store: store) }
     }
+    func test_settings_codexDeviceCode() throws {
+        for spanish in [false, true] {
+            var state = ServerSettingsFeature.State(key: .accounts, client: .mac)
+            state.document = try document(spanish ? "accounts-device-code-mac-es" : "accounts-device-code-mac")
+            let store = Store(initialState: state) { ServerSettingsFeature() }
+            assertWindow(size: CGSize(width: 640, height: 700), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                Form { ServerSettingsSection(store: store) }.formStyle(.grouped)
+            }
+        }
+    }
+
     func test_settings_codexAccounts() throws {
         for spanish in [false, true] {
             var state = ServerSettingsFeature.State(key: .accounts, client: .mac)

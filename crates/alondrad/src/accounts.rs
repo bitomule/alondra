@@ -78,7 +78,13 @@ pub(crate) struct Codex {
 }
 
 impl Codex {
-    fn of(domain: &DomainRuntime) -> Option<Self> {
+    pub(crate) fn profile(&self, home: &Path, key: &AccountKey) -> PathBuf {
+        let profile = alondra_core::accounts::provider_folder(home, key)
+            .or_else(|| self.environment.get("CODEX_HOME").filter(|value| !value.is_empty()).map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(".codex"));
+        self.user_home.join(profile)
+    }
+    pub(crate) fn of(domain: &DomainRuntime) -> Option<Self> {
         let (backend, _) = domain.sdk()?;
         let backend = backend.for_provider(Provider::Codex, domain.home()).ok()?;
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
@@ -87,7 +93,7 @@ impl Codex {
         Some(Self { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
     }
 
-    fn command(&self, profile: Option<&Path>) -> std::process::Command {
+    pub(crate) fn command(&self, profile: Option<&Path>) -> std::process::Command {
         alondra_core::codex_account::command(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, profile)
     }
 
@@ -885,7 +891,8 @@ pub(crate) fn read(domain: &DomainRuntime, home: &Path, lang: Lang) -> Reply {
         })
         .collect();
     let moving = json!({"on": config.distribution.move_when_exhausted, "risk": move_risk(lang)});
-    Reply { status: StatusCode::OK, body: json!({"version": version(&config), "config": config, "accounts": accounts, "move_when_exhausted": moving, "supported_providers": Provider::ALL}) }
+    let read = domain.read();
+    Reply { status: StatusCode::OK, body: json!({"version": version(&config), "config": config, "accounts": accounts, "move_when_exhausted": moving, "supported_providers": Provider::ALL, "data_epoch": read.state().data_epoch, "revision": read.state().revision, "sign_ins": read.state().account_logins}) }
 }
 
 pub(crate) fn for_client(mut reply: Reply, provider_accounts: bool) -> Reply {

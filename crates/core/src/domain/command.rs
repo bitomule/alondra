@@ -608,6 +608,9 @@ pub enum Command {
     /// The provider accounts as the daemon sees them now, in the user's order: each one's sign-in,
     /// email and plan, and how much of the session window each may use. It replaces what was
     /// recorded before.
+    BeginAccountLogin { account: crate::accounts::AccountKey, attempt: String, started_at: Millis },
+    CancelAccountLogin { account: crate::accounts::AccountKey, attempt: String },
+    RecordAccountLogin { login: super::AccountLogin },
     RecordAccounts {
         accounts: Vec<crate::accounts::AccountStatus>,
         #[serde(default = "crate::usage::default_reserve")]

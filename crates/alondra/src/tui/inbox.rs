@@ -327,12 +327,12 @@ impl App {
         {
             match link {
                 alondra_core::views::Link::Url { url } => {
-                    if safe_github_url(url) {
+                    if safe_github_url(url) || alondra_core::codex_login::verification_url(url) {
                         super::open_with_mac(url);
                     } else {
                         self.fail(tr!(
-                            "Only HTTPS GitHub links can be opened from this view",
-                            "Solo se pueden abrir enlaces HTTPS de GitHub desde esta vista"
+                            "Only GitHub and Codex verification links can be opened from this view",
+                            "Solo se pueden abrir enlaces de GitHub y de verificación de Codex desde esta vista"
                         ));
                     }
                 }

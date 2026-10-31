@@ -1,0 +1,161 @@
+{
+  "protocol": 1,
+  "data_epoch": "device-code-fixture",
+  "view": "accounts",
+  "key": "accounts",
+  "client": "ios",
+  "version": "vdc0591edc55d26a0",
+  "cursor": "cursor-1",
+  "title": "Accounts",
+  "status": {
+    "version": "v88a117097b2bb9b9",
+    "summary": "0 nodes working",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 0
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "accounts",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "codex-login-default",
+          "icon": "machine",
+          "title": "Sign in to Codex · Default",
+          "subtitle": "Open https://auth.openai.com/codex/device on any device and enter this code:\nABCD-1234",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Open verification page",
+              "style": "primary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "url",
+                "url": "https://auth.openai.com/codex/device"
+              },
+              "resolves_card": false
+            },
+            {
+              "id": "account_login_cancel:default@0~fixture-attempt",
+              "label": "Cancel sign-in",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list",
+      "actions": [
+        {
+          "id": "account_check:accounts@0",
+          "label": "Check accounts",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": false
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "title": "Providers",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-connect",
+          "icon": "machine",
+          "title": "Connect Claude",
+          "subtitle": "Use this provider's native sign-in on the Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "",
+              "label": "Connect",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "account_sign_in",
+                  "account": "default",
+                  "command": "alondra accounts login 'default'"
+                }
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-connect",
+          "icon": "machine",
+          "title": "Connect Codex",
+          "subtitle": "Use the session on the Mac, or sign in with a code on any device",
+          "depth": 0,
+          "struck": false
+        }
+      ],
+      "style": "list"
+    }
+  ]
+}

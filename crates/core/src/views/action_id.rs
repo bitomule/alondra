@@ -74,13 +74,15 @@ pub enum Verb {
     AccountMoves,
     AccountRename,
     AccountOrder,
+    AccountLogin,
+    AccountLoginCancel,
     AccountCheck,
     AccountModels,
     ModelProfile,
     TaskSelection,
 }
 impl Verb {
-    pub const ALL: [Self; 56] = [
+    pub const ALL: [Self; 58] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -133,6 +135,8 @@ impl Verb {
         Self::AccountMoves,
         Self::AccountRename,
         Self::AccountOrder,
+        Self::AccountLogin,
+        Self::AccountLoginCancel,
         Self::AccountCheck,
         Self::AccountModels,
         Self::ModelProfile,
@@ -192,6 +196,8 @@ impl Verb {
             Self::AccountMoves => "account_moves",
             Self::AccountRename => "account_rename",
             Self::AccountOrder => "account_order",
+            Self::AccountLogin => "account_login",
+            Self::AccountLoginCancel => "account_login_cancel",
             Self::AccountCheck => "account_check",
             Self::AccountModels => "account_models",
             Self::ModelProfile => "model_profile",

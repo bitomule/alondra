@@ -8,6 +8,8 @@ mod exit;
 mod locks;
 mod account_move;
 mod accounts;
+mod codex_credentials;
+mod codex_sign_in;
 mod native_probe;
 mod allow_always;
 mod approval_lease;
@@ -567,6 +569,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();
+    client.codex_sign_ins.recover_after_backend();
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr)

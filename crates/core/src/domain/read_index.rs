@@ -121,6 +121,7 @@ pub struct ReadIndex {
     branch_update: super::BranchUpdate,
     account_usage: Vec<crate::usage::AccountUsage>,
     account_nodes: Vec<(crate::accounts::AccountKey, usize)>,
+    account_logins: Vec<super::AccountLogin>,
     account_order: Vec<crate::accounts::AccountKey>,
     account_config_version: String,
     model_catalogs: Vec<crate::model_selection::AccountModelCatalog>,
@@ -310,6 +311,7 @@ impl ReadIndex {
         self.branch_update
     }
     /// The provider accounts in the user's order, each with its state and plan.
+    pub fn account_logins(&self) -> &[super::AccountLogin] { &self.account_logins }
     pub fn accounts(&self) -> &[crate::accounts::AccountStatus] {
         &self.accounts
     }
@@ -462,6 +464,7 @@ impl<'a> Builder<'a> {
         index.mcp_waiting = state.mcp_waiting();
         index.mcp_nodes = state.mcp_nodes();
         index.accounts = state.accounts.clone();
+        index.account_logins = state.account_logins.clone();
         index.account_reserve = state.account_reserve;
         index.account_policy = state.account_policy;
         index.account_moves = state.account_moves;
@@ -881,6 +884,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let indexed: Vec<(TaskId, Vec<McpServerState>)> = index.mcp_nodes().iter().map(|node| (node.task.clone(), node.servers.clone())).collect();
     assert_eq!(indexed, reported, "the MCP servers each open task's node reported");
     assert_eq!(index.accounts(), state.accounts.as_slice(), "the provider accounts");
+    assert_eq!(index.account_logins(), state.account_logins.as_slice(), "the pending provider sign-ins");
     assert_eq!(index.account_usage(), state.account_usage.as_slice(), "the accounts' usage");
     assert_eq!(index.account_reserve, state.account_reserve, "the accounts' reserve");
     assert_eq!(index.account_policy(), state.account_policy, "how work is spread over the accounts");

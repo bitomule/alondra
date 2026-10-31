@@ -7,6 +7,7 @@ import SwiftUI
 /// below, and its first action as a button with the rest in a menu. An action presented as a menu
 /// lists its options. What each row offers is the daemon's: this view only lays it out.
 public struct ListRowView: View {
+    @Environment(\.openURL) private var openURL
     public let row: AlondraContract.Row
     public var busy: Set<String>
     public var onAction: (Action) -> Void
@@ -78,7 +79,11 @@ public struct ListRowView: View {
     }
 
     private func run(_ action: Action) {
-        if let link = action.link { onLink(link) } else { onAction(action) }
+        if case let .url(value)? = action.link,
+           ["https://auth.openai.com/codex/device", "https://auth.openai.com/codex/device/"].contains(value),
+           let url = URL(string: value) {
+            openURL(url)
+        } else if let link = action.link { onLink(link) } else { onAction(action) }
     }
 
     @ViewBuilder private var actions: some View {

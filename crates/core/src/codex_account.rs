@@ -94,7 +94,7 @@ impl ProbeReport {
     }
 }
 
-struct Probe {
+pub(crate) struct Probe {
     child: Child,
     input: Option<ChildStdin>,
     output: Receiver<Result<Value, String>>,
@@ -102,6 +102,8 @@ struct Probe {
     until: Instant,
     sequence: u64,
     fixture_diagnostics: bool,
+    notifications: std::collections::VecDeque<Value>,
+    pub(crate) cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Drop for Probe {
@@ -115,7 +117,7 @@ impl Drop for Probe {
 }
 
 impl Probe {
-    fn start(mut command: Command, timeout: Duration) -> Result<Self, String> {
+    pub(crate) fn start(mut command: Command, timeout: Duration) -> Result<Self, String> {
         command.args(["app-server", "--listen", "stdio://"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         unsafe { command.pre_exec(|| if libc::setpgid(0, 0) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }); }
         let mut child = command.spawn().map_err(|error| format!("Could not run Codex: {error}"))?;
@@ -140,22 +142,28 @@ impl Probe {
                 }
             }
         });
-        Ok(Self { child, input, output, reader: Some(reader), until: Instant::now() + timeout, sequence: 0, fixture_diagnostics: false })
+        Ok(Self { child, input, output, reader: Some(reader), until: Instant::now() + timeout, sequence: 0, fixture_diagnostics: false, notifications: Default::default(), cancelled: None })
     }
 
-    fn send(&mut self, value: Value) -> Result<(), String> {
+    pub(crate) fn send(&mut self, value: Value) -> Result<(), String> {
         let input = self.input.as_mut().ok_or("Codex input is closed")?;
         serde_json::to_writer(&mut *input, &value).map_err(|error| error.to_string())?;
         input.write_all(b"\n").and_then(|_| input.flush()).map_err(|error| error.to_string())
     }
 
-    fn rpc(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    pub(crate) fn rpc(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.sequence += 1;
         let id = self.sequence;
         self.send(json!({"id":id,"method":method,"params":params}))?;
         loop {
+            self.check_cancelled()?;
             let left = self.until.checked_duration_since(Instant::now()).ok_or("Codex probe did not answer in time")?;
-            let message = self.output.recv_timeout(left).map_err(|_| "Codex probe ended or did not answer in time".to_owned())??;
+            let wait = if self.cancelled.is_some() { left.min(Duration::from_millis(100)) } else { left };
+            let message = match self.output.recv_timeout(wait) {
+                Ok(message) => message?,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err("Codex probe ended before answering".into()),
+            };
             if message["id"].as_u64() == Some(id) && message.get("method").is_none() {
                 if let Some(error) = message.get("error") {
                     if self.fixture_diagnostics {
@@ -169,9 +177,31 @@ impl Probe {
             }
             if message.get("method").is_some() && message.get("id").is_some() {
                 self.send(json!({"id":message["id"],"error":{"code":-32601,"message":"Account probes do not handle interactive requests"}}))?;
+            } else if message.get("method").is_some() {
+                self.notifications.push_back(message);
             }
         }
     }
+
+    pub(crate) fn notification(&mut self, wait: Duration) -> Result<Option<Value>, String> {
+        self.check_cancelled()?;
+        if let Some(message) = self.notifications.pop_front() { return Ok(Some(message)); }
+        let left = self.until.checked_duration_since(Instant::now()).ok_or("Codex sign-in expired")?;
+        match self.output.recv_timeout(wait.min(left)) {
+            Ok(message) => message.map(Some),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err("Codex sign-in ended before completion".into()),
+        }
+    }
+
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err("Codex sign-in cancelled; the previous session was preserved".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn extend_deadline(&mut self, timeout: Duration) { self.until = Instant::now() + timeout; }
 }
 
 pub fn probe(command: Command, account: AccountKey, now: crate::Millis) -> Result<ProbeReport, String> {

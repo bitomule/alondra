@@ -65,6 +65,13 @@ impl DomainState {
     }
     /// Whether the user may make `change` to the accounts from Settings, by the guard of its
     /// command.
+    pub fn account_login_action(&self, account: crate::accounts::AccountKey, cancel: Option<&str>) -> AvailableAction {
+        let command = match cancel {
+            Some(attempt) => Command::CancelAccountLogin { account, attempt: attempt.into() },
+            None => Command::BeginAccountLogin { account, attempt: "requested".into(), started_at: 0 },
+        };
+        self.action("account_login", command, None, None, self)
+    }
     pub fn account_action(&self, provider: crate::accounts::Provider, change: crate::accounts::AccountChange) -> AvailableAction {
         self.action("change_accounts", Command::ChangeAccounts { provider, change }, None, None, self)
     }

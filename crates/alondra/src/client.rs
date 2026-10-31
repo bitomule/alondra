@@ -299,6 +299,16 @@ impl Client {
         client
     }
 
+    pub(crate) fn bounded(&self, timeout: Duration) -> Self {
+        let mut client = Self::new(timeout);
+        client.base = self.base.clone();
+        client.pairing = self.pairing.clone();
+        client.service = self.service.clone();
+        client.direct = self.direct.clone();
+        client.protocol = self.protocol;
+        client
+    }
+
     /// A client whose requests are signed as the user: for the TUI and the commands the user
     /// types. Falls back to unsigned (and says so on stderr) when pairing is impossible.
     pub fn for_user(timeout: Duration) -> Self {

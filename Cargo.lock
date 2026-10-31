@@ -321,6 +321,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2 0.11.0",

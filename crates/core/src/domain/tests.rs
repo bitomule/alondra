@@ -3106,12 +3106,15 @@ fn variant_index(c: &Command) -> usize {
         Command::ReportFailure { .. } => 113,
         Command::SettleStall { .. } => 114,
         Command::SetBranchUpdate { .. } => 115,
-        Command::SnoozeCard { .. } => 116,
-        Command::UnsnoozeCard { .. } => 117,
-        Command::ResurfaceDueCards { .. } => 118,
+        Command::BeginAccountLogin { .. } => 116,
+        Command::CancelAccountLogin { .. } => 117,
+        Command::RecordAccountLogin { .. } => 118,
+        Command::SnoozeCard { .. } => 119,
+        Command::UnsnoozeCard { .. } => 120,
+        Command::ResurfaceDueCards { .. } => 121,
     }
 }
-const COMMAND_KINDS: usize = 119;
+const COMMAND_KINDS: usize = 122;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3246,6 +3249,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordRuntimeFacts { task_id: ids.task.into(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] }, false),
         (Command::RecordTurnBoundary { task_id: ids.task.into(), generation: 1, turn: "turn".into(), failure: None, failed: None }, false),
         (Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None }, false),
+        (Command::BeginAccountLogin { account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex), attempt: "attempt".into(), started_at: 0 }, true),
+        (Command::CancelAccountLogin { account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex), attempt: "attempt".into() }, false),
+        (Command::RecordAccountLogin { login: AccountLogin { account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex), attempt: "attempt".into(), started_at: 0, phase: AccountLoginPhase::Failed, challenge: None, error: None } }, false),
         (Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }, true),
         (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
@@ -4589,6 +4595,9 @@ fn guards_refuse_what_the_commands_refuse() {
     let mut waiting_mcp = mcp.clone();
     exec(&mut waiting_mcp, Actor::Agent { agent_id: "s".into() }, Command::WaitForMcp { task_id: "sdk".into(), server: "linear".into() }).unwrap();
     let commands: Vec<Command> = commands.into_iter().chain([
+        Command::BeginAccountLogin { account: crate::accounts::AccountKey::native(Provider::Codex), attempt: "attempt".into(), started_at: 0 },
+        Command::BeginAccountLogin { account: crate::accounts::AccountKey::new(Provider::Codex, crate::accounts::AccountId::parse("missing").unwrap()), attempt: "attempt".into(), started_at: 0 },
+        Command::CancelAccountLogin { account: crate::accounts::AccountKey::native(Provider::Codex), attempt: "stale".into() },
         Command::WaitForMcp { task_id: "sdk".into(), server: "linear".into() },
         Command::WaitForMcp { task_id: "sdk".into(), server: "files".into() },
         Command::WaitForMcp { task_id: "sdk".into(), server: "missing".into() },

@@ -1,6 +1,6 @@
-//! `alondra accounts`: the Claude accounts nodes may run on. This Mac's daemon keeps the list in
-//! `options.toml` and each account's folder; this command only asks it, and signs an account in
-//! with `claude auth login` in this terminal. The user names an account, never a folder.
+//! `alondra accounts`: provider accounts nodes may run on. The daemon keeps their configuration
+//! and owns Codex device sign-in; Claude sign-in uses its native CLI in this terminal.
+//! The user names an account, never a folder.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -40,6 +40,12 @@ pub(crate) struct Listing {
     pub accounts: Vec<Row>,
     #[serde(default = "legacy_providers")]
     pub supported_providers: Vec<Provider>,
+    #[serde(default)]
+    pub data_epoch: String,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub sign_ins: Vec<alondra_core::domain::AccountLogin>,
 }
 
 fn legacy_providers() -> Vec<Provider> { vec![Provider::Claude] }
@@ -342,20 +348,79 @@ pub fn list_for(provider: Provider, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn codex_sign_in(client: &Client, id: &AccountId) -> Result<Listing> {
-    let home = client::config().home.clone();
-    let key = alondra_core::accounts::AccountKey::new(Provider::Codex, id.clone());
-    let profile = alondra_core::codex_account::prepare(&home, &key).map_err(anyhow::Error::msg)?;
-    let context = crate::claude_auth::installed_codex_context(&user_home())?;
-    let executable = alondra_core::codex_account::executable(&context.path).context("Codex is not installed for the service on this Mac")?;
-    let username = alondra_core::claude_account::effective_username().context("The current user could not be identified")?;
-    let status = alondra_core::codex_account::command(&executable, &context.environment, &context.home, &context.path, &username, profile.as_deref()).arg("login").status()?;
-    if !status.success() { bail!("Codex login did not complete"); }
-    let listing = check(client)?;
-    if !listing.accounts.iter().any(|row| row.provider == Provider::Codex && row.id == *id && row.state == AccountState::SignedIn) {
-        bail!("The Codex account is still not signed in: check it in Accounts");
+static CODEX_LOGIN_INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn codex_login_interrupted(_: libc::c_int) {
+    CODEX_LOGIN_INTERRUPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+struct LoginSignals(Vec<(libc::c_int, libc::sighandler_t)>);
+
+impl LoginSignals {
+    fn install() -> Self {
+        CODEX_LOGIN_INTERRUPTED.store(false, std::sync::atomic::Ordering::Relaxed);
+        Self([libc::SIGINT, libc::SIGHUP, libc::SIGTERM].into_iter().map(|signal| {
+            (signal, unsafe { libc::signal(signal, codex_login_interrupted as *const () as libc::sighandler_t) })
+        }).collect())
     }
-    Ok(listing)
+}
+impl Drop for LoginSignals {
+    fn drop(&mut self) { for (signal, handler) in &self.0 { unsafe { libc::signal(*signal, *handler); } } }
+}
+
+struct PendingCodexLogin<'a> {
+    client: &'a Client,
+    login: alondra_core::domain::AccountLogin,
+    epoch: String,
+    revision: u64,
+    finished: bool,
+}
+
+impl Drop for PendingCodexLogin<'_> {
+    fn drop(&mut self) {
+        if self.finished { return; }
+        use alondra_core::views::action_id::{ActionId, Verb};
+        if let Ok(action) = ActionId::new(Verb::AccountLoginCancel, self.login.account.account.as_str(), self.revision, Some(self.login.attempt.clone())) {
+            let _ = self.client.bounded(Duration::from_secs(3)).action(&self.epoch, &action.to_string(), None, json!({}));
+        }
+    }
+}
+
+fn codex_sign_in(client: &Client, id: &AccountId, no_input: bool) -> Result<Listing> {
+    use alondra_core::domain::AccountLoginPhase;
+    use alondra_core::views::action_id::{ActionId, Verb};
+    let seen = listing(client)?;
+    if seen.data_epoch.is_empty() { bail!("Update the daemon before connecting Codex safely"); }
+    let _signals = LoginSignals::install();
+    let action = ActionId::new(Verb::AccountLogin, id.as_str(), seen.revision, Some("codex".into())).map_err(|_| anyhow!("Invalid account"))?;
+    let response = client.action(&seen.data_epoch, &action.to_string(), None, json!({"fields":{"cli_pid":std::process::id(),"check_only":no_input}}))?;
+    if response["outcome"] != "applied" {
+        bail!("{}", response["message"].as_str().unwrap_or("Codex sign-in could not start"));
+    }
+    let started: alondra_core::domain::AccountLogin = serde_json::from_value(response["detail"]["sign_in"].clone()).context("The daemon did not return a Codex sign-in")?;
+    let mut pending = PendingCodexLogin { client, login: started.clone(), epoch: seen.data_epoch, revision: seen.revision, finished: false };
+    let mut shown = None;
+    loop {
+        let seen = listing(client)?;
+        pending.epoch = seen.data_epoch.clone(); pending.revision = seen.revision;
+        let current = seen.sign_ins.iter().find(|login| login.attempt == started.attempt).context("This Codex sign-in is no longer available")?;
+        if CODEX_LOGIN_INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed) {
+            bail!("{}", tr!("Codex sign-in cancelled; the previous session was preserved", "Inicio de sesión de Codex cancelado; se ha conservado la sesión anterior"));
+        }
+        if let Some(challenge) = &current.challenge {
+            if shown.as_ref() != Some(challenge) {
+                println!("{}\n{}\n{}", tr!("Open this page on any device and enter the verification code:", "Abre esta página en cualquier dispositivo e introduce el código de verificación:"), challenge.url, challenge.code);
+                shown = Some(challenge.clone());
+            }
+        }
+        match current.phase {
+            AccountLoginPhase::Connected => { pending.finished = true; return Ok(check(client)?); },
+            AccountLoginPhase::Failed => bail!("{}", current.error.as_deref().unwrap_or("Codex sign-in did not complete; the previous session was preserved")),
+            AccountLoginPhase::Cancelled => bail!("Codex sign-in cancelled; the previous session was preserved"),
+            AccountLoginPhase::Starting | AccountLoginPhase::Pending | AccountLoginPhase::Publishing => {},
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 pub fn login_for(provider: Provider, name: &str, no_input: bool) -> Result<()> {
@@ -366,8 +431,7 @@ pub fn login_for(provider: Provider, name: &str, no_input: bool) -> Result<()> {
         }
         return login(name, no_input);
     }
-    needs_terminal(no_input, "login --provider codex")?;
-    let client = daemon();
+    let client = Client::for_user(Duration::from_secs(120));
     let mut seen = listing(&client)?;
     if !seen.supported_providers.contains(&provider) { bail!("Update the daemon before connecting this provider"); }
     if !seen.config.is_connected(provider) && (name == AccountId::DEFAULT || seen.config.listed(provider).iter().any(|account| account.id.as_str() == name || account.name.eq_ignore_ascii_case(name))) {
@@ -377,7 +441,7 @@ pub fn login_for(provider: Provider, name: &str, no_input: bool) -> Result<()> {
         seen = save(&client, &seen, &next)?;
     }
     let id = provider_row(&seen, provider, name)?.id.clone();
-    let listed = codex_sign_in(&client, &id)?;
+    let listed = codex_sign_in(&client, &id, no_input)?;
     if let Some(other) = same_email_for(&listed.accounts, provider, &id) {
         let other_name = shown_name(other).to_owned();
         if !id.is_default() {
@@ -402,7 +466,7 @@ pub fn add_for(provider: Provider, name: &str, no_input: bool) -> Result<()> {
     needs_terminal(no_input, "add --provider codex")?;
     let name = name.trim();
     if name.is_empty() { bail!("Give the account a name"); }
-    let client = daemon();
+    let client = Client::for_user(Duration::from_secs(120));
     let seen = listing(&client)?;
     let mut next = seen.config.clone();
     if !seen.supported_providers.contains(&provider) { bail!("Update the daemon before connecting this provider"); }
@@ -414,7 +478,7 @@ pub fn add_for(provider: Provider, name: &str, no_input: bool) -> Result<()> {
     next.listed_mut(provider).push(ProviderAccount { id: id.clone(), name: name.into(), enabled: true, billing: AccountBilling::default() });
     finish_added_account(&mut next)?;
     save(&client, &seen, &next)?;
-    let listed = codex_sign_in(&client, &id)?;
+    let listed = codex_sign_in(&client, &id, no_input)?;
     if let Some(other) = same_email_for(&listed.accounts, provider, &id) {
         let other_name = shown_name(other).to_owned();
         if !id.is_default() {

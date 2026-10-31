@@ -9046,3 +9046,30 @@ fn a_delivery_in_its_turn_and_after_it_matches_goldens() {
         assert_golden(name, &render(&presented_in_a_turn(ended), &live, client, lang, key, "2026-09-30T10:00:00Z"), expected);
     }
 }
+
+
+#[test]
+fn codex_login_views_show_device_url_and_code_using_existing_contract_elements() {
+    use crate::accounts::{AccountKey, Provider};
+    use crate::domain::{AccountLogin, AccountLoginPhase};
+    let mut state = DomainState::new("device-code-fixture");
+    state.account_logins.push(AccountLogin { account: AccountKey::native(Provider::Codex), attempt: "fixture-attempt".into(), started_at: 0,
+        phase: AccountLoginPhase::Pending, challenge: Some(crate::codex_login::Challenge { url: "https://auth.openai.com/codex/device".into(), code: "ABCD-1234".into() }), error: None });
+    for (client, client_name, english, spanish) in [
+        (Client::Ios, "ios", include_str!("../../../../fixtures/views/cards/accounts-device-code-ios.json"), include_str!("../../../../fixtures/views/cards/accounts-device-code-ios-es.json")),
+        (Client::Mac, "mac", include_str!("../../../../fixtures/views/cards/accounts-device-code-mac.json"), include_str!("../../../../fixtures/views/cards/accounts-device-code-mac-es.json")),
+        (Client::Tui, "tui", include_str!("../../../../fixtures/views/cards/accounts-device-code-tui.json"), include_str!("../../../../fixtures/views/cards/accounts-device-code-tui-es.json")),
+    ] {
+        for (lang, suffix) in [(Lang::En, ""), (Lang::Es, "-es")] {
+            let mut view = render(&state, &LiveSnapshot::default(), client, lang, "accounts", "");
+            ClientCapabilities::default().adapt_view(&mut view, lang);
+            let rows: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
+            let row = rows.iter().find(|row| row.id == "codex-login-default").expect("pending sign-in row");
+            assert!(row.subtitle.as_ref().unwrap().contains("ABCD-1234"));
+            assert!(row.subtitle.as_ref().unwrap().contains("https://auth.openai.com/codex/device"));
+            assert!(row.actions.iter().any(|action| matches!(&action.link, Some(Link::Url { url }) if url == "https://auth.openai.com/codex/device")));
+            assert!(row.actions.iter().any(|action| action.enabled && action_id::ActionId::parse(&action.id).is_ok_and(|id| id.verb == action_id::Verb::AccountLoginCancel)));
+            assert_golden(&format!("accounts-device-code-{client_name}{suffix}.json"), &view, if lang == Lang::En { english } else { spanish });
+        }
+    }
+}

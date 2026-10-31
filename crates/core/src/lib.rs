@@ -4,6 +4,7 @@ mod test_support;
 
 pub mod accounts;
 pub mod codex_account;
+pub mod codex_login;
 pub mod bonjour;
 pub mod home_lock;
 pub mod service_config;

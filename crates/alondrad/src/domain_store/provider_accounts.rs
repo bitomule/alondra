@@ -5,7 +5,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::repository::exec;
 
-pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS task_providers(task_id TEXT PRIMARY KEY REFERENCES tasks(id), provider TEXT NOT NULL CHECK(provider IN('claude','codex')));\
+pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS account_logins(singleton INTEGER PRIMARY KEY CHECK(singleton=1), logins TEXT NOT NULL CHECK(json_valid(logins)));\
+CREATE TABLE IF NOT EXISTS task_providers(task_id TEXT PRIMARY KEY REFERENCES tasks(id), provider TEXT NOT NULL CHECK(provider IN('claude','codex')));\
 CREATE TABLE IF NOT EXISTS account_configuration(singleton INTEGER PRIMARY KEY CHECK(singleton=1), account_order TEXT NOT NULL CHECK(json_valid(account_order)), config_version TEXT NOT NULL);\
 CREATE TABLE IF NOT EXISTS account_model_catalogs(provider TEXT NOT NULL, account TEXT NOT NULL, catalog TEXT NOT NULL CHECK(json_valid(catalog)), PRIMARY KEY(provider,account));\
 CREATE TABLE IF NOT EXISTS task_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id), selection TEXT NOT NULL CHECK(json_valid(selection)), pending TEXT CHECK(pending IS NULL OR json_valid(pending)));\
@@ -13,6 +14,9 @@ CREATE TABLE IF NOT EXISTS model_profiles(singleton INTEGER PRIMARY KEY CHECK(si
 CREATE TABLE IF NOT EXISTS schedule_paid_accounts(schedule_id TEXT PRIMARY KEY REFERENCES schedules(id), account TEXT NOT NULL CHECK(json_valid(account)));";
 
 pub(super) fn save(c: &Connection, before: &DomainState, after: &DomainState) -> Result<()> {
+    if before.account_logins != after.account_logins {
+        exec(c, "INSERT INTO account_logins(singleton,logins) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET logins=excluded.logins", [serde_json::to_string(&after.account_logins)?])?;
+    }
     for schedule in after.schedule.schedules.values().filter(|schedule| before.schedule.schedules.get(&schedule.id).and_then(|prior| prior.paid_account_grant.as_ref()) != schedule.paid_account_grant.as_ref()) {
         match &schedule.paid_account_grant {
             Some(account) => { exec(c, "INSERT INTO schedule_paid_accounts(schedule_id,account) VALUES(?1,?2) ON CONFLICT(schedule_id) DO UPDATE SET account=excluded.account", params![schedule.id.0, serde_json::to_string(account)?])?; }
@@ -60,6 +64,9 @@ pub(super) fn load(c: &Connection, state: &mut DomainState) -> Result<()> {
             let (id, account) = row?;
             state.schedule.schedules.get_mut(&alondra_core::domain::ScheduleId(id)).context("paid grant schedule missing")?.paid_account_grant = Some(serde_json::from_str(&account)?);
         }
+    }
+    if exists("account_logins")? && let Some(logins) = c.query_row("SELECT logins FROM account_logins WHERE singleton=1", [], |row| row.get::<_, String>(0)).optional()? {
+        state.account_logins = serde_json::from_str(&logins)?;
     }
     if exists("task_providers")? {
         let mut statement = c.prepare("SELECT task_id,provider FROM task_providers")?;
@@ -110,8 +117,23 @@ mod tests {
         let mut state = DomainState::new("fixture");
         load(&c, &mut state).unwrap();
         assert!(state.accounts.is_empty());
+        assert!(state.account_logins.is_empty());
         assert!(state.account_order.is_empty());
         assert!(state.model_catalogs.is_empty());
+    }
+
+    #[test]
+    fn codex_login_presentation_survives_restart_without_persisting_credentials() {
+        use alondra_core::domain::{AccountLogin, AccountLoginPhase};
+        let c = Connection::open_in_memory().unwrap(); c.execute_batch(SCHEMA).unwrap();
+        let before = DomainState::new("fixture"); let mut after = before.clone();
+        after.account_logins.push(AccountLogin { account: AccountKey::native(Provider::Codex), attempt: "fixture".into(), started_at: 1,
+            phase: AccountLoginPhase::Pending, challenge: Some(alondra_core::codex_login::Challenge { url: "https://auth.openai.com/codex/device".into(), code: "ABCD-1234".into() }), error: None });
+        save(&c, &before, &after).unwrap();
+        let mut loaded = before.clone(); load(&c, &mut loaded).unwrap();
+        assert_eq!(loaded.account_logins, after.account_logins);
+        let stored: String = c.query_row("SELECT logins FROM account_logins", [], |row| row.get(0)).unwrap();
+        assert!(!stored.contains("token"));
     }
 
     #[test]
