@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::templates::{Catalog, Piece};
+use super::templates::{Catalog, Piece, Template};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -189,12 +189,15 @@ fn kind_of_shape(token: &str) -> Option<Kind> {
 
 /// A token that is safe on its own: a number, a time, a version, a random id or a word of the code.
 pub fn is_safe_token(token: &str, vocabulary: &HashSet<String>) -> bool {
+    is_safe_shape(token) || vocabulary.contains(token)
+}
+
+fn is_safe_shape(token: &str) -> bool {
     is_number(token)
         || is_compound_duration(token)
         || is_iso_time(token)
         || is_version(token)
         || is_random_id(token)
-        || vocabulary.contains(token)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -245,18 +248,24 @@ impl<'a> Redactor<'a> {
     /// A value as the report may show it: itself when every token is safe, the safe tokens with each
     /// id, path or URL replaced when that is all it has, or one pseudonym for the whole of it.
     pub fn value(&mut self, value: &str, hint: Kind) -> String {
+        self.value_with_code_words(value, hint, true)
+    }
+
+    fn value_with_code_words(&mut self, value: &str, hint: Kind, code_words: bool) -> String {
         if is_iso_time(value) {
             return super::time::iso_to_utc(value).unwrap_or_else(|| self.pseudonyms.of(Kind::Value, value));
         }
+        let vocabulary = self.vocabulary;
+        let safe = |token: &str| is_safe_shape(token) || (code_words && vocabulary.contains(token));
         let parts = split(value);
         let tokens = || parts.iter().filter_map(|p| if let Part::Token(t) = p { Some(*t) } else { None });
-        if tokens().all(|t| is_safe_token(t, self.vocabulary) || kind_of_shape(t).is_some()) {
+        if tokens().all(|t| safe(t) || kind_of_shape(t).is_some()) {
             return parts
                 .iter()
                 .map(|part| match part {
                     Part::Gap(gap) => (*gap).to_owned(),
                     Part::Token(t) if is_iso_time(t) => super::time::iso_to_utc(t).unwrap_or_else(|| self.pseudonyms.of(Kind::Value, t)),
-                    Part::Token(t) if is_safe_token(t, self.vocabulary) => (*t).to_owned(),
+                    Part::Token(t) if safe(t) => (*t).to_owned(),
                     Part::Token(t) => self.shaped(t),
                 })
                 .collect();
@@ -294,12 +303,6 @@ impl<'a> Redactor<'a> {
     /// A message of the daemon's log redacted by its template, or `None` when no template's fixed
     /// text matches all of it.
     pub fn log_message(&mut self, catalog: &Catalog, message: &str) -> Option<String> {
-        self.templated(catalog, message, NESTING)
-    }
-
-    /// `message` as its template with each hole redacted; a hole that holds a sentence the code
-    /// words elsewhere keeps that sentence's text too.
-    fn templated(&mut self, catalog: &Catalog, message: &str, depth: usize) -> Option<String> {
         let (template, values) = catalog.matching(message)?;
         let mut out = String::new();
         let mut values = values.into_iter();
@@ -308,8 +311,11 @@ impl<'a> Redactor<'a> {
                 Piece::Text(text) => out.push_str(text),
                 Piece::Hole(name) => {
                     let value = values.next()?;
-                    let nested = if depth > 0 && value.contains(' ') { self.templated(catalog, value, depth - 1) } else { None };
-                    let redacted = nested.unwrap_or_else(|| self.value(value, Kind::of_hole(name)));
+                    if code_hole(template, name, value) {
+                        out.push_str(value);
+                        continue;
+                    }
+                    let redacted = self.value_with_code_words(value, Kind::of_hole(name), false);
                     out.push_str(&redacted);
                 }
             }
@@ -318,8 +324,45 @@ impl<'a> Redactor<'a> {
     }
 }
 
-/// How many sentences deep a log line is read into its holes.
-const NESTING: usize = 2;
+fn code_hole(template: &Template, name: &str, value: &str) -> bool {
+    let source = template.origin.rsplit_once(':').map_or(template.origin.as_str(), |(source, _)| source);
+    match (source, name) {
+        ("crates/alondrad/src/admission.rs", "priority") => matches!(value, "High" | "Normal" | "Low"),
+        ("crates/alondrad/src/sdk_owner.rs", "handoff") => matches!(value, "Offered" | "RefusedBeforeOffer" | "Uncertain"),
+        ("crates/alondrad/src/pauses.rs", "reason" | "") => {
+            let reason_slot = template.pieces.iter().any(|piece| matches!(piece, Piece::Text(text) if text == ") for " || text == " started a turn while paused for "));
+            reason_slot && matches!(value, "Memory" | "Usage" | "ByUser" | "Disk")
+        }
+        _ => false,
+    }
+}
+
+/// Generated aliases have a closed spelling; a mutable pseudonym table cannot declare arbitrary
+/// text to be an alias and bypass the check.
+pub(super) fn is_pseudonym(value: &str) -> bool {
+    let value = value.split_once("/pull/").map_or(value, |(repo, number)| {
+        if repo.starts_with("repo-") && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) { repo } else { value }
+    });
+    let Some((kind, number)) = value.split_once('-') else { return false };
+    matches!(kind, "task" | "request" | "node" | "path" | "repo" | "account" | "device" | "value")
+        && number.starts_with(|c: char| matches!(c, '1'..='9'))
+        && number.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn generated_value(value: &str) -> bool {
+    let parts = split(value);
+    let tokens: Vec<&str> = parts.iter().filter_map(|part| if let Part::Token(token) = part { Some(*token) } else { None }).collect();
+    !tokens.is_empty() && tokens.iter().all(|token| is_safe_shape(token) || is_pseudonym(token))
+}
+
+pub(super) fn free_log_values<'a>(catalog: &Catalog, message: &'a str) -> Vec<&'a str> {
+    let Some((template, holes)) = catalog.matching(message) else { return vec![message] };
+    template.pieces.iter()
+        .filter_map(|piece| if let Piece::Hole(name) = piece { Some(name.as_str()) } else { None })
+        .zip(holes)
+        .filter_map(|(name, value)| (!code_hole(template, name, value) && !generated_value(value)).then_some(value))
+        .collect()
+}
 
 fn pull_request(url: &str) -> Option<(&str, &str)> {
     let rest = url.strip_prefix("https://github.com/")?;

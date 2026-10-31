@@ -1,7 +1,7 @@
 //! The last check before a report may leave the Mac: none of this user's own private values and
 //! none of the known shapes of a secret, an address or an email anywhere in it. It is the safety
 //! net under the redaction, never a replacement for it.
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use base64::Engine;
 use serde::Serialize;
@@ -17,22 +17,29 @@ pub struct Hit {
 #[derive(Debug, Default)]
 pub struct Private {
     values: Vec<(String, Vec<String>, &'static str)>,
+    by_word: HashMap<String, Vec<usize>>,
+    unindexed: Vec<usize>,
 }
 
 impl Private {
-    /// Adds a value; one that is too short to tell apart, or made only of words of the code, says
-    /// nothing the code does not.
-    pub fn add(&mut self, what: &'static str, value: &str, vocabulary: &HashSet<String>) {
+    /// Adds a private value even when its words also occur in the code.
+    pub fn add(&mut self, what: &'static str, value: &str, _vocabulary: &HashSet<String>) {
         let value = value.trim();
-        let of_the_code = value.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).all(|w| vocabulary.contains(w) || vocabulary.contains(&w.to_lowercase()));
-        if value.chars().count() < 4 || of_the_code || value.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        if value.chars().count() < 4 || value.chars().all(|c| c.is_ascii_digit() || c == '.') {
             return;
         }
         let lowered = value.to_lowercase();
         if self.values.iter().any(|(v, _, _)| *v == lowered) {
             return;
         }
-        let words = word_set(&lowered).into_iter().collect();
+        let mut words: Vec<String> = word_set(&lowered).into_iter().collect();
+        words.sort_unstable();
+        let index = self.values.len();
+        if let Some(word) = words.iter().max_by_key(|word| word.len()) {
+            self.by_word.entry(word.clone()).or_default().push(index);
+        } else {
+            self.unindexed.push(index);
+        }
         self.values.push((lowered, words, what));
     }
 
@@ -53,10 +60,26 @@ pub fn scan(section: &str, text: &str, private: Option<&Private>) -> Vec<Hit> {
             hits.push(Hit { section: section.to_owned(), line: index + 1, what: what.to_owned() });
         }
     }
-    let Some(private) = private else { return hits };
+    if let Some(private) = private {
+        hits.extend(private_hits(section, text, private));
+    }
+    hits.sort_by_key(|hit| hit.line);
+    hits.dedup_by_key(|hit| hit.line);
+    hits
+}
+
+pub(super) fn private_hits(section: &str, text: &str, private: &Private) -> Vec<Hit> {
+    let mut hits = Vec::new();
     let lowered = text.to_lowercase();
     let present = word_set(&lowered);
-    for (value, words, what) in &private.values {
+    let mut candidates: BTreeSet<usize> = private.unindexed.iter().copied().collect();
+    for word in &present {
+        if let Some(indices) = private.by_word.get(word) {
+            candidates.extend(indices);
+        }
+    }
+    for index in candidates {
+        let (value, words, what) = &private.values[index];
         if !words.iter().all(|w| present.contains(w)) {
             continue;
         }

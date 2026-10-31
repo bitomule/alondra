@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::canary::{self, Hit, Private};
+use super::canary::{Hit, Private};
 use super::collect::{Omitted, Section, Status, Window};
 use super::time;
 
@@ -145,7 +145,7 @@ pub fn compressed(files: &Files) -> Vec<u8> {
 pub fn check(files: &Files, private: &Private) -> Vec<Hit> {
     files
         .iter()
-        .flat_map(|(name, text)| canary::scan(name, text, (name != DESCRIPTION).then_some(private)))
+        .flat_map(|(name, text)| super::check::section(name, text, private))
         .collect()
 }
 

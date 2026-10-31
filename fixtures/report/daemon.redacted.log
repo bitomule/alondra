@@ -1,15 +1,15 @@
 2026-10-23T07:00:01.120Z domain listener on http://value-1, data in path-1
 2026-10-23T07:00:02.004Z exiting with 75 so launchd starts the new binary
 2026-10-23T07:00:05.630Z start failed 3 times in a row (value-2); waiting 30s before exiting so launchd does not restart it every 10s
-2026-10-24T01:15:58.530Z the admission gate holds 65 waiting (next task-1, High): memory has no room for one more node: value-3 (41% free)
+2026-10-24T01:15:58.530Z the admission gate holds 65 waiting (next task-1, High): value-3
 2026-10-24T01:16:12.124Z input value-4 of task-1 went to its SDK host (sdk-e5a1927df399effa): Offered
-2026-10-24T01:17:24.020Z a turn of the SDK host's Claude ended (completed) (sdk-0abdea5e130f80de, task task-2)
-2026-10-24T01:18:40.000Z GitHub could not report repo-1: value-5
-2026-10-24T01:19:12.643Z the admission gate holds 64 waiting (next scheduled run run-8c937776545c594475e4b21e40102329, Normal): 10 of 10 working (task-2, task-1)
-2026-10-24T02:39:23.860Z iroh endpoint value-6 on value-7
-2026-10-24T03:04:27.100Z service push for value-8 failed: value-9
-2026-10-24T03:10:11.637Z pausing node-1 (task-2) for value-10
-2026-10-24T03:12:00.000Z the live SDK host of task-2 refused its adoption (Disconnected): it is stopped and a host that resumes the same Claude session takes its place
-~2026-10-24T03:12:00.000Z Error: value-11
-~2026-10-24T03:12:00.000Z Alondra omitted an action with an invalid identifier (Changes)
-2026-10-24T03:21:30.200Z the admission gate holds 11 waiting (next task-1, High): memory has no room for one more node: value-12 (42% free)
+2026-10-24T01:17:24.020Z value-5 (value-6, task task-2)
+2026-10-24T01:18:40.000Z GitHub could not report repo-1: value-7
+2026-10-24T01:19:12.643Z the admission gate holds 64 waiting (next value-8, Normal): value-9
+2026-10-24T02:39:23.860Z iroh endpoint value-10 on value-11
+2026-10-24T03:04:27.100Z service push for value-12 failed: value-13
+2026-10-24T03:10:11.637Z pausing node-1 (task-2) for value-14
+2026-10-24T03:12:00.000Z the live SDK host of task-2 refused its adoption (value-15): it is stopped and a host that resumes the same Claude session takes its place
+~2026-10-24T03:12:00.000Z Error: value-16
+~2026-10-24T03:12:00.000Z Alondra omitted an action with an invalid identifier (value-17)
+2026-10-24T03:21:30.200Z the admission gate holds 11 waiting (next task-1, High): value-18

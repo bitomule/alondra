@@ -3,6 +3,7 @@
 //! leave the Mac. It needs no daemon: it reads `~/.alondra` itself.
 pub mod bundle;
 pub mod canary;
+mod check;
 pub mod collect;
 pub mod daemon_log;
 pub mod extract;

@@ -125,6 +125,226 @@ fn a_real_log_comes_out_as_its_templates_in_utc_with_nothing_private() {
 }
 
 #[test]
+fn free_log_holes_do_not_trust_code_words() {
+    let catalog = Catalog::built();
+    let phrase = "move the request to the project and close the task";
+    assert!(phrase.split_whitespace().all(|word| catalog.vocabulary.contains(word)));
+    assert!(catalog.vocabulary.contains("work"));
+    let mut redactor = Redactor::new(&catalog.vocabulary);
+    assert_eq!(redactor.log_message(catalog, &format!("accounts not checked: {phrase}")), Some("accounts not checked: value-1".into()));
+    assert_eq!(
+        redactor.log_message(catalog, &format!("could not check the sign-in of account work: {phrase}")),
+        Some("could not check the sign-in of account value-2: value-1".into())
+    );
+    assert_eq!(redactor.pseudonyms.originals().collect::<Vec<_>>(), [phrase, "work"]);
+}
+
+#[test]
+fn the_final_check_keeps_private_values_made_of_code_words() {
+    let catalog = Catalog::built();
+    let phrase = "move the request to the project and close the task";
+    let mut private = Private::default();
+    private.add("a task title", phrase, &catalog.vocabulary);
+    private.add("an account name", "work", &catalog.vocabulary);
+    for value in [phrase, "work"] {
+        let hits = canary::scan("daemon.log", &format!("first line\naccounts not checked: {value}"), Some(&private));
+        assert_eq!(hits.len(), 1, "{value}: {hits:?}");
+        assert_eq!(hits[0].line, 2);
+    }
+}
+
+#[test]
+fn only_the_known_priority_slot_keeps_its_closed_enum() {
+    let catalog = Catalog::built();
+    for priority in ["High", "Normal", "Low", "work"] {
+        let mut redactor = Redactor::new(&catalog.vocabulary);
+        let message = format!("the admission gate holds 2 waiting (next t-private, {priority}): a private reason");
+        let expected = if priority == "work" { "value-1" } else { priority };
+        let reason = if priority == "work" { "value-2" } else { "value-1" };
+        assert_eq!(
+            redactor.log_message(catalog, &message),
+            Some(format!("the admission gate holds 2 waiting (next task-1, {expected}): {reason}"))
+        );
+    }
+    for value in ["High", "Normal", "Low"] {
+        let mut redactor = Redactor::new(&catalog.vocabulary);
+        assert_eq!(redactor.log_message(catalog, &format!("accounts not checked: {value}")), Some("accounts not checked: value-1".into()));
+    }
+    let elsewhere = Catalog::parse("crates/alondrad/src/accounts.rs:1\tpriority {priority}\n", "High\n");
+    let mut redactor = Redactor::new(&elsewhere.vocabulary);
+    assert_eq!(redactor.log_message(&elsewhere, "priority High"), Some("priority value-1".into()));
+}
+
+#[test]
+fn a_nested_code_template_in_a_free_slot_is_still_private() {
+    let catalog = Catalog::built();
+    let mut redactor = Redactor::new(&catalog.vocabulary);
+    assert_eq!(
+        redactor.log_message(catalog, "accounts not checked: iroh relay connected"),
+        Some("accounts not checked: value-1".into())
+    );
+    assert_eq!(
+        redactor.log_message(catalog, "accounts not checked: could not check the sign-in of account work: move the request to the project and close the task"),
+        Some("accounts not checked: value-2".into())
+    );
+}
+
+#[test]
+fn the_check_keeps_nested_code_templates_private_in_free_slots() {
+    let mut private = Private::default();
+    private.add("private fixture", "iroh relay connected", &Catalog::built().vocabulary);
+    let text = "2026-10-24T05:00:00.000Z iroh relay connected\n2026-10-24T05:00:01.000Z accounts not checked: iroh relay connected\n";
+    let hits = super::check::section("daemon.log", text, &private);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].line, 2, "the fixed text of the first line is code; the free slot on the second is data");
+}
+
+#[test]
+fn the_check_distinguishes_fixed_structure_from_private_data_at_each_position() {
+    let vocabulary = &Catalog::built().vocabulary;
+    let phrase = "move the request to the project and close the task";
+    let mut private = Private::default();
+    for value in ["Code", "work", "Normal", "Offered", "Memory", "High", "running", phrase] {
+        private.add("private fixture", value, vocabulary);
+    }
+    let clean = [
+        ("machine.json", "{\"launchd_job\":{\"state\":\"running\",\"last_exit_code\":0},\"incident\":{\"cause\":\"memory\"}}"),
+        ("tasks.jsonl", "{\"state\":\"running\"}"),
+        ("nodes.jsonl", "{\"effort\":\"high\",\"last_session_end\":{\"process\":{\"exit_code\":0}}}"),
+        ("sdk-host.jsonl", "{\"frames\":[{\"type\":\"receipt\",\"status\":\"accepted\",\"phase\":\"offered\",\"code\":null}]}"),
+        ("daemon.log", "2026-10-24T05:10:12.000Z pausing node-1 (task-1) for Memory"),
+    ];
+    for (section, text) in clean {
+        let hits = super::check::section(section, text, &private);
+        assert!(hits.is_empty(), "{section}: {text}\n{hits:?}");
+    }
+    for (section, text) in [
+        ("machine.json", "{\"model\":\"Code\"}".to_owned()),
+        ("machine.json", "{\"Code\":true}".to_owned()),
+        ("machine.json", "{\"extra\":{\"launchd_job\":{\"state\":\"running\"}}}".to_owned()),
+        ("tasks.jsonl", "{\"state\":\"work\"}".to_owned()),
+        ("nodes.jsonl", "{\"last_session_end\":{\"result\":{\"terminal_reason\":\"work\"}}}".to_owned()),
+        ("sdk-host.jsonl", "{\"frames\":[{\"type\":\"receipt\",\"code\":\"Code\"}]}".to_owned()),
+        ("apps.jsonl", "{\"code\":0,\"state\":\"running\"}".to_owned()),
+        ("daemon.log", format!("2026-10-24T05:10:12.000Z accounts not checked: {phrase}")),
+        ("daemon.log", "2026-10-24T05:10:12.000Z accounts not checked: Offered".to_owned()),
+    ] {
+        assert!(!super::check::section(section, &text, &private).is_empty(), "{section}: {text}");
+    }
+}
+
+#[test]
+fn escaped_json_strings_do_not_hide_private_values() {
+    let mut private = Private::default();
+    private.add("private fixture", "work", &Catalog::built().vocabulary);
+    private.add("private fixture", "Code", &Catalog::built().vocabulary);
+    for text in [
+        "{\n  \"state\":\"\\u0077ork\"\n}",
+        "{\n  \"\\u0043ode\":true\n}",
+    ] {
+        let hits = super::check::section("machine.json", text, &private);
+        assert_eq!(hits.len(), 1, "{text}: {hits:?}");
+        assert_eq!(hits[0].line, 2, "{text}: {hits:?}");
+    }
+    let hits = super::check::section("machine.json", "{\"launchd_job\":{\"state\":\"ghp_0123456789abcdef\"}}", &Private::default());
+    assert_eq!(hits.len(), 1, "secret shapes are checked independently of format rules");
+    let escaped = "{\"value\":\"\\u0067hp_0123456789abcdef\"}";
+    assert_eq!(super::check::section("apps.jsonl", escaped, &Private::default()).len(), 1);
+}
+
+#[test]
+fn invalid_json_and_duplicate_keys_cannot_claim_fixed_structure() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    for text in [
+        "{\n  \"state\":\"work\",\n  \"state\":\"running\"\n}",
+        "{\n  \"extra\":\"\\u0077ork\",\n",
+        "{\"extra\":\"broken\n\"\"\\u0077ork\"}",
+        "{\"extra\":\\\"\\u0077ork\"}",
+        "{\"state\":\"work\",\"state\":\"running\"}",
+        "[\"work\"]",
+        "null",
+    ] {
+        let hits = super::check::section("machine.json", text, &Private::default());
+        assert_eq!(hits.len(), 1, "{text}: {hits:?}");
+        assert_eq!(hits[0].line, 1);
+        assert_eq!(hits[0].what, "invalid report JSON");
+    }
+    let hits = super::check::section("tasks.jsonl", "{\"state\":\"running\"}\n{\"state\":\"work\",\"state\":\"running\"}\n", &Private::default());
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].line, 2);
+}
+
+#[test]
+fn sample_labels_are_trusted_only_in_the_columns_that_generate_them() {
+    let mut private = Private::default();
+    for value in ["room", "no_room", "normal", "healthy", "work", "true"] {
+        private.add("private fixture", value, &Catalog::built().vocabulary);
+    }
+    let header = collect::SAMPLE_COLUMNS.join(",");
+    let row = |health: &str, pressure: &str, busy: &str| {
+        let mut fields = vec![""; collect::SAMPLE_COLUMNS.len()];
+        for (column, value) in [("health", health), ("memory_pressure", pressure), ("cpu_busy", busy)] {
+            fields[collect::SAMPLE_COLUMNS.iter().position(|name| *name == column).unwrap()] = value;
+        }
+        format!("{header}\n{}\n", fields.join(","))
+    };
+    for health in ["room", "no_room"] {
+        assert!(super::check::section("machine-samples.csv", &row(health, "normal", "true"), &private).is_empty());
+    }
+    for health in ["healthy", "work", "true"] {
+        let hits = super::check::section("machine-samples.csv", &row(health, "normal", "true"), &private);
+        assert_eq!(hits.len(), 1, "{health}: {hits:?}");
+        assert_eq!(hits[0].line, 2);
+    }
+}
+
+#[test]
+fn a_reopened_report_checks_code_word_private_values_without_trusting_local_aliases() {
+    let home = Directory::new();
+    full_home(&home);
+    let phrase = "move the request to the project and close the task";
+    let db = Connection::open(home.join("domain.db")).unwrap();
+    db.execute("UPDATE tasks SET title = ?1", [phrase]).unwrap();
+    drop(db);
+    let mac = FakeMac::new(&home);
+    let built = build(&mac, hours_before(72), None, None).unwrap();
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    let leaked = format!("2026-10-25T05:00:00.000Z accounts not checked: {phrase}\n");
+    std::fs::write(built.dir.join("daemon.log"), &leaked).unwrap();
+    let path = built.dir.join(bundle::MANIFEST);
+    let mut manifest: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for section in manifest["sections"].as_array_mut().unwrap() {
+        if section["name"] == "daemon.log" {
+            section["sha256"] = json!(bundle::sha256(leaked.as_bytes()));
+            section["bytes"] = json!(leaked.len());
+        }
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    std::fs::write(built.dir.join(bundle::PSEUDONYMS), json!({"by_value":{"unused":phrase},"counts":{}}).to_string()).unwrap();
+    let error = checked(&mac, &built.id).unwrap_err().to_string();
+    assert!(error.contains("daemon.log, line 1"), "{error}");
+}
+
+#[test]
+fn normal_receipts_and_pause_enums_do_not_block_a_report_after_reopening() {
+    let home = Directory::new();
+    full_home(&home);
+    let log_path = home.join("alondrad.log");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    std::fs::write(&log_path, log + "2026-10-24T05:10:12.000Z alondrad: pausing df27c53d-db4d-4b6d-9400-5b62abb33d38 (t-acme-sso-login) for Memory\n").unwrap();
+    let receipt = serde_json::to_vec(&json!({"protocol_version":1,"body":{"type":"receipt","outcome":{"status":"accepted","phase":"offered"}}})).unwrap();
+    let mut bytes = (receipt.len() as u32).to_be_bytes().to_vec();
+    bytes.extend_from_slice(&receipt);
+    std::fs::write(home.join("sdk/sdk-0abdea5e130f80de/outbox"), bytes).unwrap();
+    let mac = FakeMac::new(&home);
+    let built = build(&mac, hours_before(72), None, None).unwrap();
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    assert!(built.files.iter().any(|(name, text)| name == "sdk-host.jsonl" && text.contains("\"phase\":\"offered\"")));
+    assert!(built.files.iter().any(|(name, text)| name == "daemon.log" && text.contains("for Memory")));
+    assert_eq!(checked(&mac, &built.id).unwrap(), built.files);
+}
+
+#[test]
 fn a_task_keeps_one_pseudonym_across_the_log() {
     let (lines, _, _) = redacted_fixture_log();
     let named: Vec<&String> = lines.iter().filter(|l| l.contains("went to its SDK host")).collect();
@@ -282,9 +502,8 @@ proptest! {
         let mut redactor = Redactor::new(&catalog.vocabulary);
         let Some(out) = redactor.log_message(catalog, &message) else { return Ok(()) };
         for value in injected {
-            let all_code = value.split([' ', '-', '.', '/']).all(|w| w.is_empty() || catalog.vocabulary.contains(w));
             let in_fixed_text = template.pieces.iter().any(|p| matches!(p, Piece::Text(t) if t.contains(&value)));
-            prop_assert!(all_code || in_fixed_text || !out.contains(&value), "{value:?} shows in {out:?}");
+            prop_assert!(in_fixed_text || !out.contains(&value), "{value:?} shows in {out:?}");
         }
     }
 }
@@ -773,11 +992,10 @@ fn only_the_known_windows() {
 }
 
 #[test]
-fn private_values_too_short_or_of_the_code_say_nothing() {
+fn private_values_too_short_or_numeric_say_nothing() {
     let catalog = Catalog::built();
     let mut private = Private::default();
     private.add("x", "ana", &catalog.vocabulary);
-    private.add("x", "running", &catalog.vocabulary);
     private.add("x", "0.3.5", &catalog.vocabulary);
     assert_eq!(private.len(), 0);
     assert!(canary::scan("daemon.log", "the task is running", Some(&private)).is_empty());
