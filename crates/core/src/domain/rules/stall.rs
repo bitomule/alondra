@@ -109,7 +109,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card: CardSpec::new(CardKind::Decide, clip(&need, CardSpec::NEED_MAX)),
-            clarification: None,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         effects.push(DomainEffect::NotifyOrchestrator { interaction_id: Some(card), request_id: None });
     }

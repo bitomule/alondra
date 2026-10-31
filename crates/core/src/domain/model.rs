@@ -1106,6 +1106,11 @@ pub struct Interaction {
     pub card: CardSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clarification: Option<Clarification>,
+    /// Unix milliseconds, supplied by the trusted adapter; screens never compare it to a clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resurfaced_at_revision: Option<Revision>,
 }
 impl Interaction {
     /// The long part the reader sees: the card's content, or else the body its author wrote, so a

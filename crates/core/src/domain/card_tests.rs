@@ -1364,3 +1364,248 @@ fn a_secret_card_is_answered_only_with_where_its_value_was_written() {
     ok(&mut s, agent(), ask_secret("again"));
     ok(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "again".into(), option_id: "skip".into(), inputs: BTreeMap::new() });
 }
+
+fn snooze(id: &str, until: i64) -> Command {
+    Command::SnoozeCard { interaction_id: id.into(), until, now: 100 }
+}
+fn notify_count(outcome: &CommandOutcome, id: &str) -> usize {
+    outcome.effects.iter().filter(|effect| matches!(effect,
+        DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == id)).count()
+}
+
+#[test]
+fn snooze_persists_and_old_cards_still_decode() {
+    let mut s = fixture();
+    ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name")));
+    let mut old = serde_json::to_value(&s.interactions[&InteractionId::from("q")]).unwrap();
+    old.as_object_mut().unwrap().remove("snoozed_until");
+    old.as_object_mut().unwrap().remove("resurfaced_at_revision");
+    let old: Interaction = serde_json::from_value(old).unwrap();
+    assert_eq!(old.snoozed_until, None);
+    assert_eq!(old.resurfaced_at_revision, None);
+    ok(&mut s, user(), snooze("q", 200));
+    let saved = serde_json::to_vec(&s.interactions[&InteractionId::from("q")]).unwrap();
+    let restored: Interaction = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(restored.snoozed_until, Some(200));
+    assert_eq!(restored, s.interactions[&InteractionId::from("q")]);
+    let index = ReadIndex::build(&s);
+    assert_eq!(index.snoozed().len(), 1);
+    assert_eq!(index.snoozed()[0].until, 200);
+    assert_eq!(index.next_snoozed_until(), Some(200));
+    assert!(index.waiting().is_empty());
+    assert_eq!(index.counts().pending, 0);
+    assert_eq!(crate::views::inbox_badge(&index), 0);
+    assert!(index.task(&"t".into()).unwrap().waits_for_user);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+}
+
+#[test]
+fn snooze_returns_only_due_cards_and_return_now_is_immediate_and_idempotent() {
+    let mut s = fixture();
+    ok(&mut s, agent(), ask("old", "t", false, decide("Choose the first name")));
+    ok(&mut s, agent(), ask("q", "t", false, decide("Choose the second name")));
+    ok(&mut s, agent(), ask("later", "t", false, decide("Choose the third name")));
+    ok(&mut s, user(), snooze("q", 200));
+    ok(&mut s, user(), snooze("later", 300));
+    let early = ok(&mut s, Actor::System, Command::ResurfaceDueCards { now: 199 });
+    assert!(!early.changed);
+    assert!(early.effects.is_empty());
+    let returned = ok(&mut s, Actor::System, Command::ResurfaceDueCards { now: 200 });
+    assert_eq!(notify_count(&returned, "q"), 1);
+    assert_eq!(notify_count(&returned, "later"), 0);
+    let q = &s.interactions[&InteractionId::from("q")];
+    assert_eq!(q.snoozed_until, None);
+    assert_eq!(q.resurfaced_at_revision, Some(returned.revision));
+    assert_eq!(ReadIndex::build(&s).waiting()[0].id, "interaction:q");
+    assert!(!ok(&mut s, Actor::System, Command::ResurfaceDueCards { now: 200 }).changed);
+    let returned_now = ok(&mut s, user(), Command::UnsnoozeCard { interaction_id: "later".into() });
+    assert_eq!(notify_count(&returned_now, "later"), 1);
+    assert_eq!(ReadIndex::build(&s).waiting()[0].id, "interaction:later");
+    assert_eq!(ReadIndex::build(&s).next_snoozed_until(), None);
+    assert_eq!(refused(&mut s, user(), Command::UnsnoozeCard { interaction_id: "later".into() }).0, "not_snoozed");
+}
+
+#[test]
+fn snooze_new_agent_card_wakes_only_its_task_and_replacement_retires_the_old_card() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "other", "b");
+    ok(&mut s, agent(), ask("q", "t", false, decide("Choose the name")));
+    ok(&mut s, agent_b(), ask("other-q", "other", false, decide("Choose the other name")));
+    ok(&mut s, user(), snooze("q", 200));
+    ok(&mut s, user(), snooze("other-q", 200));
+    let new_card = ok(&mut s, agent(), ask("new", "t", false, decide("Choose the release")));
+    assert_eq!(s.interactions[&InteractionId::from("q")].snoozed_until, None);
+    assert_eq!(notify_count(&new_card, "q"), 1);
+    assert_eq!(s.interactions[&InteractionId::from("other-q")].snoozed_until, Some(200));
+    ok(&mut s, user(), snooze("q", 200));
+    let mut replacement = decide("Choose the updated name");
+    replacement.replaces = Some("q".into());
+    let replaced = ok(&mut s, agent(), ask("replacement", "t", false, replacement));
+    assert!(s.interactions[&InteractionId::from("q")].withdrawn);
+    assert_eq!(s.interactions[&InteractionId::from("q")].snoozed_until, None);
+    assert_eq!(notify_count(&replaced, "q"), 0);
+    assert_eq!(notify_count(&replaced, "replacement"), 1);
+    assert_eq!(ReadIndex::build(&s).waiting()[0].id, "interaction:replacement");
+}
+
+#[test]
+fn snooze_rejects_nonfuture_closed_hidden_and_nonuser_cards_without_changing_state() {
+    let mut s = fixture();
+    ok(&mut s, agent(), ask("q", "t", false, decide("Choose the name")));
+    assert_eq!(refused(&mut s, user(), snooze("q", 100)).0, "invalid_input");
+    assert_eq!(refused(&mut s, user(), snooze("q", 99)).0, "invalid_input");
+    assert_eq!(refused(&mut s, agent(), snooze("q", 200)).0, "forbidden");
+    assert_eq!(refused(&mut s, user(), Command::ResurfaceDueCards { now: 200 }).0, "forbidden");
+    assert_eq!(refused(&mut s, user(), Command::UnsnoozeCard { interaction_id: "q".into() }).0, "not_snoozed");
+    ok(&mut s, user(), snooze("q", 200));
+    assert_eq!(refused(&mut s, user(), snooze("q", 300)).0, "not_waiting");
+    ok(&mut s, user(), answer("q"));
+    assert_eq!(s.interactions[&InteractionId::from("q")].snoozed_until, None);
+    assert_eq!(refused(&mut s, user(), snooze("q", 200)).0, "not_waiting");
+    let mut to_orchestrator = ask("private", "t", false, decide("Choose the owner"));
+    if let Command::AskQuestion { recipient, .. } = &mut to_orchestrator { *recipient = Recipient::Orchestrator; }
+    ok(&mut s, agent(), to_orchestrator);
+    assert_eq!(refused(&mut s, user(), snooze("private", 200)).0, "not_waiting");
+}
+
+#[test]
+fn snooze_cancellation_withdraws_the_card_without_resurfacing_it() {
+    let mut s = fixture();
+    ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name")));
+    ok(&mut s, user(), snooze("q", 200));
+    let ended = ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    assert!(s.interactions[&InteractionId::from("q")].withdrawn);
+    assert_eq!(s.interactions[&InteractionId::from("q")].snoozed_until, None);
+    assert_eq!(notify_count(&ended, "q"), 0);
+    assert!(!ok(&mut s, Actor::System, Command::ResurfaceDueCards { now: 300 }).changed);
+    assert!(ReadIndex::build(&s).snoozed().is_empty());
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config { cases: 128, failure_persistence: None, ..Default::default() })]
+    #[test]
+    fn snooze_never_stops_a_task_waiting_for_the_user(
+        times in proptest::collection::vec(101i64..i64::MAX, 1..20),
+        kind in 0u8..3,
+    ) {
+        let mut s = fixture();
+        match kind {
+            0 => { ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name"))); }
+            1 => { ok(&mut s, agent(), Command::RequestAction { attachments: vec![], interaction_id: "q".into(), scope: scope("t"),
+                recipient: Recipient::User, body: "Try the build".into(), blocking: true, options: two(),
+                card: CardSpec::new(CardKind::Test, "Try the build").why("The release needs testing") }); }
+            _ => { ok(&mut s, agent(), present("q", text(), true, review())); }
+        }
+        let attention = s.attention(&s.tasks[&TaskId::from("t")]);
+        let live = s.live_state(&"t".into());
+        let task_state = s.tasks[&TaskId::from("t")].state;
+        for until in times {
+            let snoozed = ok(&mut s, user(), snooze("q", until));
+            proptest::prop_assert_eq!(notify_count(&snoozed, "q"), 0);
+            let index = ReadIndex::build(&s);
+            proptest::prop_assert!(index.waiting().is_empty());
+            proptest::prop_assert_eq!(index.activity().inbox, 0);
+            let current = &index.task(&"t".into()).unwrap().attention;
+            match (&attention, current) {
+                (Attention::Act(before), Attention::Act(after)) => proptest::prop_assert_eq!(&before.interaction, &after.interaction),
+                _ => proptest::prop_assert_eq!(&attention, current),
+            }
+            proptest::prop_assert_eq!(index.task(&"t".into()).unwrap().live.as_ref(), live.as_ref());
+            proptest::prop_assert_eq!(s.tasks[&TaskId::from("t")].state, task_state);
+            proptest::prop_assert!(index.task(&"t".into()).unwrap().waits_for_user);
+            let live_view = crate::views::LiveSnapshot::default();
+            let view = crate::views::build("tasks", crate::views::RenderContext {
+                domain: &s, index: &index, live: &live_view, client: crate::views::Client::Tui, lang: crate::views::Lang::En,
+                transport: crate::views::Transport::Loopback, cursor: "", rendered_at: "",
+            }).unwrap();
+            proptest::prop_assert!(serde_json::to_string(&view).unwrap().contains("\"id\":\"block:for-you\""));
+            ok(&mut s, user(), Command::UnsnoozeCard { interaction_id: "q".into() });
+        }
+    }
+}
+
+#[test]
+fn snooze_completion_clears_a_snoozed_review_without_resurfacing_it() {
+    let mut s = fixture();
+    ok(&mut s, agent(), present("review", text(), true, review()));
+    ok(&mut s, user(), snooze("review", 200));
+    let accepted = ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "review".into(), targets: text() });
+    assert_eq!(s.interactions[&InteractionId::from("review")].snoozed_until, None);
+    assert_eq!(notify_count(&accepted, "review"), 0);
+    ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Done);
+    assert!(ReadIndex::build(&s).snoozed().is_empty());
+}
+
+#[test]
+fn snooze_a_new_final_result_replaces_the_snoozed_review_at_the_top() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "other", "b");
+    ok(&mut s, agent_b(), ask("other-q", "other", true, decide("Choose the other name")));
+    ok(&mut s, agent(), present("d1", text(), true, review()));
+    ok(&mut s, user(), snooze("d1", 200));
+    let replaced = ok(&mut s, agent(), present("d2", text(), true, review()));
+    assert!(s.interactions[&InteractionId::from("d1")].withdrawn);
+    assert_eq!(s.interactions[&InteractionId::from("d1")].snoozed_until, None);
+    assert_eq!(ReadIndex::build(&s).waiting()[0].id, "interaction:d2");
+    assert_eq!(notify_count(&replaced, "d2"), 1);
+    assert_eq!(notify_count(&replaced, "d1"), 0);
+}
+
+#[test]
+fn snooze_reading_information_clears_its_return_time_without_waking_a_question() {
+    let mut s = fixture();
+    ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name")));
+    ok(&mut s, user(), snooze("q", 200));
+    ok(&mut s, Actor::System, inform("notice", scope("t"), "The build is ready"));
+    assert_eq!(s.interactions[&InteractionId::from("q")].snoozed_until, Some(200));
+    ok(&mut s, user(), snooze("notice", 300));
+    let read = ok(&mut s, user(), Command::MarkRead { interaction_id: "notice".into() });
+    assert_eq!(s.interactions[&InteractionId::from("notice")].snoozed_until, None);
+    assert_eq!(notify_count(&read, "notice"), 0);
+    assert_eq!(ReadIndex::build(&s).next_snoozed_until(), Some(200));
+}
+
+#[test]
+fn snooze_cancelling_a_review_retires_it_and_clears_its_return_time() {
+    let mut s = fixture();
+    ok(&mut s, agent(), present("review", text(), true, review()));
+    ok(&mut s, user(), snooze("review", 200));
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    assert!(s.interactions[&InteractionId::from("review")].withdrawn);
+    assert_eq!(s.interactions[&InteractionId::from("review")].snoozed_until, None);
+    assert!(ReadIndex::build(&s).snoozed().is_empty());
+    assert_eq!(notify_count(&cancelled, "review"), 0);
+    assert!(!ok(&mut s, Actor::System, Command::ResurfaceDueCards { now: 300 }).changed);
+}
+
+#[test]
+fn snooze_keeps_the_card_and_its_question_in_task_screens() {
+    let mut s = fixture();
+    ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name")));
+    ok(&mut s, user(), snooze("q", 200));
+    let index = ReadIndex::build(&s);
+    assert!(index.waiting().is_empty());
+    assert_eq!(crate::views::inbox_badge(&index), 0);
+    let live = crate::views::LiveSnapshot::default();
+    for client in [crate::views::Client::Tui, crate::views::Client::Ios, crate::views::Client::Mac] {
+        for lang in [crate::views::Lang::En, crate::views::Lang::Es] {
+            let context = crate::views::RenderContext {
+                domain: &s, index: &index, live: &live, client, lang,
+                transport: crate::views::Transport::Loopback, cursor: "", rendered_at: "",
+            };
+            let detail = crate::views::build("task:t", context).unwrap();
+            let waiting = detail.sections.iter().find(|section| section.id == "waiting")
+                .expect("the task still offers its snoozed question");
+            assert!(waiting.items.iter().any(|item| matches!(item,
+                crate::views::Item::Card(card) if card.id == "q")));
+            let list = crate::views::build("tasks", crate::views::RenderContext {
+                domain: &s, index: &index, live: &live, client, lang,
+                transport: crate::views::Transport::Loopback, cursor: "", rendered_at: "",
+            }).unwrap();
+            assert!(serde_json::to_string(&list).unwrap().contains("Choose the name"));
+        }
+    }
+}

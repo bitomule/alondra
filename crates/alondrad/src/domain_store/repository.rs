@@ -480,6 +480,8 @@ fn interaction_row(i: &Interaction) -> Result<Map<String, Value>> {
     );
     row.insert("ordering".into(), json!(i.order));
     row.insert("clarification".into(), json!(i.clarification));
+    row.insert("snoozed_until".into(), json!(i.snoozed_until));
+    row.insert("resurfaced_at_revision".into(), json!(i.resurfaced_at_revision));
     let (scope, task, request) = match &i.scope {
         Scope::Task { task_id } => ("task", json!(task_id), Value::Null),
         Scope::Orchestrator { request_id } => ("orchestrator", Value::Null, json!(request_id)),
@@ -1470,4 +1472,17 @@ fn policy_name(policy: alondra_core::accounts::Policy) -> &'static str {
         alondra_core::accounts::Policy::Margin => "margin",
         alondra_core::accounts::Policy::Chain => "chain",
     }
+}
+
+pub(super) fn add_snooze_columns(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    for (column, definition) in [
+        ("snoozed_until", "INTEGER"),
+        ("resurfaced_at_revision", "INTEGER CHECK(resurfaced_at_revision IS NULL OR resurfaced_at_revision BETWEEN 0 AND 9007199254740991)"),
+    ] {
+        let present = tx.query_row("SELECT count(*) FROM pragma_table_info('interactions') WHERE name=?1", [column], |row| row.get::<_, i64>(0))? == 1;
+        if !present {
+            tx.execute_batch(&format!("ALTER TABLE interactions ADD COLUMN {column} {definition}"))?;
+        }
+    }
+    Ok(())
 }

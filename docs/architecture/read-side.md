@@ -53,7 +53,8 @@ Relations, by id:
 What is derived from the domain alone:
 
 - `TaskReading`: attention, activity, the instruction it was handed back with, a failed merge, its
-  cards in Waiting for You, whether it waits for the user or only for a review of its delivery.
+  cards waiting for the user (including snoozed cards), whether it waits for the user or only
+  for a review of its delivery.
 - `NodeReading`: phase, whether it merges an authorized PR, its waiting cards, the work it said it
   still does after its PR merged.
 - `acting`: the card the user can act on for each task.
@@ -64,6 +65,20 @@ The inbox, ordered and decided:
 - `queue` (every inbox card in order, with `queue_position`), `waiting` (Waiting for You, each card
   with its buttons), `waiting_card`, `counts` (roots, pending, unread information outside archived
   tasks).
+- `snoozed` lists open snoozed cards with their persisted Unix-millisecond return times;
+  `snoozed_card` looks one up by id and `next_snoozed_until` gives the earliest time.
+  `assert_index_matches` checks both the visible queue and the snoozed list against the state.
+  Screens do not compare these times with a clock.
+- Snoozing hides only a card from `waiting` and its badge. The task's attention, lifecycle and
+  `waits_for_user` still include it. Task screens resolve both visible and snoozed cards from the
+  index, retaining the question summary and access to the card. `SnoozeCard` requires an open
+  visible card and a future time; `UnsnoozeCard` returns it immediately; the system's
+  `ResurfaceDueCards` takes an explicit time.
+  Returning persists `resurfaced_at_revision`, puts the card before ordinary inbox entries and
+  requests `NotifyUser` even though the task's attention did not change. Existing dependencies
+  still come before cards they hold back. A new agent card in the same task wakes snoozed cards;
+  replacements retire the old card and inherit its return position. Answering, accepting or
+  retiring a snoozed card clears its return time.
 - `item` returns a card outside Waiting for You with its buttons, decided from the index by the
   same rules; `task_actions` gives a task's cancel, reopen and archive buttons.
 

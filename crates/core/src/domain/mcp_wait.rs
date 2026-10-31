@@ -214,6 +214,6 @@ fn mcp_card(id: InteractionId, task: &TaskId, server: &McpServerKey, revision: u
         order: revision,
         withdrawn: false,
         card,
-        clarification: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
     }
 }

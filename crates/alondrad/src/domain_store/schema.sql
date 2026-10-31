@@ -35,6 +35,8 @@ CREATE TABLE interactions (
  withdrawn INTEGER NOT NULL DEFAULT 0 CHECK(withdrawn IN(0,1)),
  card TEXT NOT NULL CHECK(json_valid(card) AND json_type(card,'$.kind')='text' AND length(json_extract(card,'$.need'))>0),
  clarification TEXT CHECK(clarification IS NULL OR json_valid(clarification)),
+ snoozed_until INTEGER,
+ resurfaced_at_revision INTEGER CHECK(resurfaced_at_revision IS NULL OR resurfaced_at_revision BETWEEN 0 AND 9007199254740991),
  CHECK(withdrawn=0 OR answer IS NULL),
  UNIQUE(task_id,id),
  CHECK((scope_kind='task' AND task_id IS NOT NULL AND request_id IS NULL) OR (scope_kind='orchestrator' AND task_id IS NULL)),

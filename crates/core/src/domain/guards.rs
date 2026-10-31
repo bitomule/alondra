@@ -15,6 +15,9 @@ impl DomainState {
     pub(in crate::domain) fn guard_given(&self, actor: &Actor, envelope: &CommandEnvelope, holds: &dyn Holds) -> Result<()> {
         self.admit(actor, envelope)?;
         match &envelope.command {
+            Command::SnoozeCard { interaction_id, until, now } => self.snooze_guard(actor, interaction_id, *until, *now, holds),
+            Command::UnsnoozeCard { interaction_id } => self.unsnooze_guard(actor, interaction_id),
+            Command::ResurfaceDueCards { .. } => system(actor),
             Command::SubmitFeedback { attachments, presentation_id, targets, body, instruction } => {
                 self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction).map(drop)
             }

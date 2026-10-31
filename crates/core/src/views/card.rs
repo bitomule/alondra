@@ -2277,7 +2277,7 @@ mod model_change_notice_tests {
             attachments: vec![], id: "native-model-change-selection-owned".into(), scope: Scope::Task { task_id: "task".into() },
             author: Author::System, recipient: Recipient::User, body: "native_code_cells_active".into(), blocking: false, subject: None,
             payload: InteractionPayload::Information { read_by: std::collections::BTreeSet::new() }, revision: 1, order: 1, withdrawn: false,
-            card: CardSpec::derived(CardKind::Know, "The model change was not applied"), clarification: None,
+            card: CardSpec::derived(CardKind::Know, "The model change was not applied"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         };
         for code in ["native_code_cells_active", "native_model_control_rejected"] {
             interaction.body = code.into();

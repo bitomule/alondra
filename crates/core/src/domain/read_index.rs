@@ -22,7 +22,7 @@ pub struct TaskReading {
     pub open_blockers: Vec<TaskId>,
     /// The open tasks it still waits for.
     pub open_dependencies: Vec<TaskId>,
-    /// Its cards in Waiting for You, in the queue's order.
+    /// Its cards waiting for the user, including snoozed ones, in queue order.
     pub waiting: Vec<InteractionId>,
     /// It waits for an answer, an action or a review: a card only to be read never holds it.
     pub waits_for_user: bool,
@@ -42,7 +42,7 @@ pub struct NodeReading {
     pub task: Option<TaskId>,
     /// It merges a PR Alondra authorized and that is still open.
     pub merging: bool,
-    /// The cards it wrote that wait for the user, in the queue's order.
+    /// The cards it wrote that wait for the user, including snoozed ones, in queue order.
     pub waiting: Vec<InteractionId>,
     /// What it said it still does after its task's PR merged.
     pub post_merge_work: Option<String>,
@@ -72,6 +72,12 @@ impl ActivityCounts {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SnoozedCard {
+    pub card: InboxItem,
+    pub until: i64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReadIndex {
     data_epoch: DataEpoch,
@@ -99,6 +105,8 @@ pub struct ReadIndex {
     queue: Vec<InteractionId>,
     queue_at: HashMap<InteractionId, usize>,
     waiting: Vec<InboxItem>,
+    snoozed: Vec<SnoozedCard>,
+    snoozed_at: HashMap<InteractionId, usize>,
     asks_outside_tasks: bool,
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
@@ -197,6 +205,15 @@ impl ReadIndex {
     pub fn waiting(&self) -> &[InboxItem] {
         &self.waiting
     }
+    pub fn snoozed(&self) -> &[SnoozedCard] {
+        &self.snoozed
+    }
+    pub fn snoozed_card(&self, card: &InteractionId) -> Option<&SnoozedCard> {
+        self.snoozed.get(*self.snoozed_at.get(card)?)
+    }
+    pub fn next_snoozed_until(&self) -> Option<i64> {
+        self.snoozed.iter().map(|entry| entry.until).min()
+    }
     pub fn waiting_card(&self, card: &InteractionId) -> Option<&InboxItem> {
         self.waiting.get(*self.waiting_at.get(card)?)
     }
@@ -209,7 +226,9 @@ impl ReadIndex {
     /// The node wrote a card that waits for the user to answer, act or review, not only to read.
     fn waits_for_an_answer(&self, node: &AgentId) -> bool {
         self.nodes.get(node).is_some_and(|node| {
-            node.waiting.iter().filter_map(|id| self.waiting_card(id)).any(|item| item.kind != "information")
+            node.waiting.iter().filter_map(|id| self.waiting_card(id).or_else(|| {
+                self.snoozed_at.get(id).map(|at| &self.snoozed[*at].card)
+            })).any(|item| item.kind != "information")
         })
     }
     /// Where a card stands in the queue Waiting for You is drawn from, if it is in it.
@@ -477,7 +496,13 @@ impl<'a> Builder<'a> {
         self.inbox(&mut index, &attention);
         let mut waiting_of_task: HashMap<&TaskId, Vec<&InboxItem>> = HashMap::new();
         let mut waiting_of_node: HashMap<AgentId, Vec<InteractionId>> = HashMap::new();
-        for item in &index.waiting {
+        for item in index.queue.iter().filter_map(|id| {
+            index.waiting_at.get(id).map(|at| &index.waiting[*at])
+                .or_else(|| index.snoozed_at.get(id).map(|at| &index.snoozed[*at].card))
+        }).filter(|item| {
+            let InboxSubject::Interaction { interaction_id } = &item.subject;
+            state.card_waits_for_user(&state.interactions[interaction_id], |t| attention[&t.id].clone())
+        }) {
             let InboxSubject::Interaction { interaction_id } = &item.subject;
             if let Some(task) = &item.task_id {
                 waiting_of_task.entry(task).or_default().push(item);
@@ -686,6 +711,7 @@ impl<'a> Builder<'a> {
                 id: &i.id.0,
                 interaction_id: &i.id,
                 order: i.order,
+                resurfaced: i.resurfaced_at_revision,
                 kind: i.card.kind,
                 blocking: i.blocking,
                 blocked_by,
@@ -697,6 +723,11 @@ impl<'a> Builder<'a> {
             let Some((i, blocked_by, pending)) = slots[at].take() else { continue };
             index.queue_at.insert(i.id.clone(), index.queue.len());
             index.queue.push(i.id.clone());
+            if let Some(until) = i.snoozed_until.filter(|_| state.open(i)) {
+                let blocks = self.blocks.get(&i.id).cloned().unwrap_or_default();
+                index.snoozed_at.insert(i.id.clone(), index.snoozed.len());
+                index.snoozed.push(SnoozedCard { until, card: state.item_given(i, false, blocked_by.clone(), blocks, self) });
+            }
             if pending {
                 let blocks = self.blocks.get(&i.id).cloned().unwrap_or_default();
                 index.waiting_at.insert(i.id.clone(), index.waiting.len());
@@ -822,8 +853,25 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     }).count() as u64;
     let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
     assert_eq!(index.counts(), &counts, "the counts");
+    let snoozed: Vec<_> = inbox.iter().filter_map(|item| {
+        let InboxSubject::Interaction { interaction_id } = &item.subject;
+        let card = &state.interactions[interaction_id];
+        card.snoozed_until.filter(|_| state.open(card)).map(|until| SnoozedCard { card: item.clone(), until })
+    }).collect();
+    assert_eq!(index.snoozed(), snoozed.as_slice(), "snoozed cards and their return times");
+    assert_eq!(index.next_snoozed_until(), snoozed.iter().map(|entry| entry.until).min());
+    for (at, entry) in snoozed.iter().enumerate() {
+        let InboxSubject::Interaction { interaction_id } = &entry.card.subject;
+        assert_eq!(index.snoozed_at.get(interaction_id), Some(&at));
+        assert_eq!(index.snoozed_card(interaction_id), Some(entry));
+        assert_eq!(index.waiting_card(interaction_id), None);
+    }
+    let logical_waiting: Vec<_> = inbox.iter().filter(|item| {
+        let InboxSubject::Interaction { interaction_id } = &item.subject;
+        state.card_waits_for_user(&state.interactions[interaction_id], |task| state.attention(task))
+    }).cloned().collect();
     let waiting_nodes = state.agents.values()
-        .filter(|agent| waiting.iter().any(|item| item.kind != "information" && item.agent_id.as_ref() == Some(&agent.id)))
+        .filter(|agent| logical_waiting.iter().any(|item| item.kind != "information" && item.agent_id.as_ref() == Some(&agent.id)))
         .count() as u32;
     let activity = ActivityCounts { inbox: waiting.len() as u32, waiting: waiting_nodes, working: state.slots().len() as u32 };
     assert_eq!(index.activity(), activity, "the activity counts");
@@ -892,7 +940,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         assert_eq!(read.live, state.live_state(&t.id), "what {} is doing", t.id);
         assert_eq!(read.handed_back, state.task_handed_back(&t.id));
         assert_eq!(read.merge_failure, state.task_merge_failure(&t.id));
-        let on_task: Vec<InboxItem> = waiting.iter().filter(|item| item.task_id.as_ref() == Some(&t.id)).cloned().collect();
+        let on_task: Vec<InboxItem> = logical_waiting.iter().filter(|item| item.task_id.as_ref() == Some(&t.id)).cloned().collect();
         let answers = || on_task.iter().filter(|item| item.kind != "information");
         assert_eq!(read.waiting, ids(&on_task), "the cards {} waits on", t.id);
         assert_eq!(read.waits_for_user, answers().next().is_some());
@@ -977,7 +1025,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
                 .then(|| lifecycle.turn_stop()).flatten()
         })).flatten();
         assert_eq!(read.sdk_turn_stop, stop, "how far stopping the turn of {} went", agent.id);
-        let asking: Vec<InboxItem> = waiting.iter().filter(|item| item.agent_id.as_ref() == Some(&agent.id)).cloned().collect();
+        let asking: Vec<InboxItem> = logical_waiting.iter().filter(|item| item.agent_id.as_ref() == Some(&agent.id)).cloned().collect();
         assert_eq!(read.waiting, ids(&asking));
         let work = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal())
             .find_map(|t| t.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone()));

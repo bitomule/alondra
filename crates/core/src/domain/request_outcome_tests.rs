@@ -213,7 +213,7 @@ fn a_card_the_orchestrator_sent_before_the_upgrade_is_not_repeated() {
         attachments: vec![], id: "old".into(), scope, author: Author::Orchestrator { generation: 0 }, recipient: Recipient::User,
         body: "Yes, with R2".into(), blocking: false, subject: None,
         payload: InteractionPayload::Information { read_by: BTreeSet::new() }, revision: s.revision, order: s.revision,
-        withdrawn: false, card: CardSpec::new(CardKind::Know, "Images are encrypted with R2"), clarification: None,
+        withdrawn: false, card: CardSpec::new(CardKind::Know, "Images are encrypted with R2"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
     });
     close(&mut s, "r", Some("Yes, with R2"), None);
     assert_eq!(the_card(&s, "r").id.0, "old");

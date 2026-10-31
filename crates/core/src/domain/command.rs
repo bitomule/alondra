@@ -13,6 +13,10 @@ pub struct CommandEnvelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// `now` and `until` are Unix milliseconds supplied by the trusted adapter.
+    SnoozeCard { interaction_id: InteractionId, until: i64, now: i64 },
+    UnsnoozeCard { interaction_id: InteractionId },
+    ResurfaceDueCards { now: i64 },
     /// Trusted adapter materializes a validated draft and computes `next_run`
     /// with the Mac's local calendar before submitting this command.
     CreateSchedule {

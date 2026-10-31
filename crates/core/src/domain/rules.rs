@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod plan_review;
+mod snooze;
 mod stall;
 pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, is_stall_case, stalled_card_id};
 pub(in crate::domain) use stall::stalled_in_place_of;
@@ -716,12 +717,15 @@ impl DomainState {
             self.one_blocking_ask(&author, card, blocking)?;
         }
         self.card_blocks(task.as_ref(), card)?;
+        let mut replaces_snoozed = false;
         if let Some(old) = &card.replaces {
             self.replaceable(&author, old)?;
+            replaces_snoozed = self.interactions[old].snoozed_until.is_some();
             self.retire(old);
         }
         if let Some(slot) = CardSlot::of(card, &payload) {
             for old in self.slot_holders(scope, &author, &slot) {
+                replaces_snoozed |= self.interactions[&old].snoozed_until.is_some();
                 self.retire(&old);
             }
         }
@@ -741,7 +745,8 @@ impl DomainState {
                 order: self.revision + 1,
                 withdrawn: false,
                 card: card.clone(),
-                clarification: None,
+                clarification: None, snoozed_until: None,
+                resurfaced_at_revision: replaces_snoozed.then_some(self.revision + 1),
             },
         );
         self.blocks_acyclic(i)?;
@@ -905,6 +910,7 @@ impl DomainState {
     pub(super) fn retire(&mut self, id: &InteractionId) {
         if let Some(i) = self.interactions.get_mut(id) {
             i.withdrawn = true;
+            i.snoozed_until = None;
             i.revision = self.revision + 1;
         }
     }
@@ -1227,7 +1233,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card,
-            clarification: None,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         created.push(id.0.clone());
         effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
@@ -2007,7 +2013,7 @@ impl DomainState {
                 order: self.revision + 1,
                 withdrawn: false,
                 card,
-                clarification: None,
+                clarification: None, snoozed_until: None, resurfaced_at_revision: None,
             };
             self.interactions.insert(id.clone(), interaction);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: id });
@@ -2296,7 +2302,9 @@ impl DomainState {
                 Scope::Task { task_id } => task(task_id),
                 Scope::Orchestrator { .. } => None,
             },
-            Command::MarkRead { interaction_id }
+            Command::SnoozeCard { interaction_id, .. }
+            | Command::UnsnoozeCard { interaction_id }
+            | Command::MarkRead { interaction_id }
             | Command::Withdraw { interaction_id }
             | Command::RequestClarification { interaction_id, .. }
             | Command::AnswerQuestion { interaction_id, .. }
@@ -2393,6 +2401,7 @@ impl DomainState {
             next.derive_states();
         }
         next.retire_cards_of_ended_tasks(&mut effects);
+        next.reconcile_snoozed_cards(self, &mut effects);
         next.forget_what_ended_tasks_allowed();
         next.close_finished_messages();
         let ended_before = self.open_requests_with_every_task_over();
@@ -2455,6 +2464,23 @@ impl DomainState {
         lifecycles: &mut Lifecycles,
     ) -> Result<()> {
         match c {
+            Command::SnoozeCard { interaction_id, until, now } => {
+                self.snooze_guard(actor, interaction_id, *until, *now, self)?;
+                let card = self.interactions.get_mut(interaction_id).unwrap();
+                card.snoozed_until = Some(*until);
+                card.revision = self.revision + 1;
+            }
+            Command::UnsnoozeCard { interaction_id } => {
+                self.unsnooze_guard(actor, interaction_id)?;
+                self.resurface_card(interaction_id, effects);
+            }
+            Command::ResurfaceDueCards { now } => {
+                system(actor)?;
+                let due: Vec<_> = self.interactions.values()
+                    .filter(|i| i.snoozed_until.is_some_and(|until| until <= *now) && self.open(i))
+                    .map(|i| i.id.clone()).collect();
+                for id in due { self.resurface_card(&id, effects); }
+            }
             Command::CreateSchedule { schedule } => {
                 system(actor)?;
                 id(&schedule.id.0)?;

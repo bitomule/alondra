@@ -49,6 +49,7 @@ pub struct AvailableAction {
     pub expected_head: Option<String>,
 }
 pub(super) struct InboxOrderFacts<'a> {
+    pub(super) resurfaced: Option<Revision>,
     pub(super) id: &'a str,
     pub(super) interaction_id: &'a InteractionId,
     pub(super) order: Revision,
@@ -231,6 +232,9 @@ impl DomainState {
     /// Whether the card waits for the user now, which is what lists it in Waiting for You; a
     /// delivery only while its task's attention is that card.
     pub(super) fn inbox_pending(&self, i: &Interaction, attention: impl FnOnce(&Task) -> Attention) -> bool {
+        i.snoozed_until.is_none() && self.card_waits_for_user(i, attention)
+    }
+    pub(super) fn card_waits_for_user(&self, i: &Interaction, attention: impl FnOnce(&Task) -> Attention) -> bool {
         let task = self.inbox_task(i);
         let active = Self::inbox_active(task);
         match &i.payload {
@@ -475,7 +479,8 @@ impl DomainState {
         sorted.sort_by(|(ra, a), (rb, b)| {
             let a = &facts[*a];
             let b = &facts[*b];
-            (ra, a.order, a.id).cmp(&(rb, b.order, b.id))
+            (a.resurfaced.is_none(), std::cmp::Reverse(a.resurfaced), ra, a.order, a.id)
+                .cmp(&(b.resurfaced.is_none(), std::cmp::Reverse(b.resurfaced), rb, b.order, b.id))
         });
         let position: BTreeMap<InteractionId, usize> = sorted
             .iter()
@@ -529,6 +534,7 @@ impl DomainState {
                     id: &item.id,
                     interaction_id,
                     order: item.order,
+                    resurfaced: self.interactions.get(interaction_id).and_then(|i| i.resurfaced_at_revision),
                     kind: item.card.kind,
                     blocking: self.interactions.get(interaction_id).is_some_and(|i| i.blocking),
                     blocked_by: &item.blocked_by,
@@ -574,6 +580,7 @@ impl DomainState {
                 id,
                 interaction_id: &i.id,
                 order: i.order,
+                resurfaced: i.resurfaced_at_revision,
                 kind: i.card.kind,
                 blocking: self.interactions.get(&i.id).is_some_and(|i| i.blocking),
                 blocked_by,

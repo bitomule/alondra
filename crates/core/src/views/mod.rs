@@ -119,7 +119,9 @@ impl RenderContext<'_> {
     }
     /// The cards a task waits on the user with, in the queue's order.
     pub(super) fn waiting_cards_of(&self, task: &TaskId) -> impl Iterator<Item = &InboxItem> {
-        self.reading(task).into_iter().flat_map(|read| &read.waiting).filter_map(|id| self.index.waiting_card(id))
+        self.reading(task).into_iter().flat_map(|read| &read.waiting).filter_map(|id| {
+            self.index.waiting_card(id).or_else(|| self.index.snoozed_card(id).map(|entry| &entry.card))
+        })
     }
     /// The task a node works for: its latest open one, or else its latest.
     pub(super) fn node_task(&self, agent: &crate::domain::AgentId) -> Option<&Task> {

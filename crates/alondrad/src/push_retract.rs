@@ -210,7 +210,7 @@ mod tests {
                 recipient: Recipient::User, body: "Read this".into(), blocking: false, subject: None,
                 payload: InteractionPayload::Information { read_by: BTreeSet::new() },
                 revision: 1, order: order as u64 + 1, withdrawn: false,
-                card: CardSpec::new(CardKind::Know, "Read this"), clarification: None,
+                card: CardSpec::new(CardKind::Know, "Read this"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
             });
         }
         ReadIndex::build(&state)

@@ -3106,9 +3106,12 @@ fn variant_index(c: &Command) -> usize {
         Command::ReportFailure { .. } => 113,
         Command::SettleStall { .. } => 114,
         Command::SetBranchUpdate { .. } => 115,
+        Command::SnoozeCard { .. } => 116,
+        Command::UnsnoozeCard { .. } => 117,
+        Command::ResurfaceDueCards { .. } => 118,
     }
 }
-const COMMAND_KINDS: usize = 116;
+const COMMAND_KINDS: usize = 119;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3126,6 +3129,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         description: None,
     };
     let list = vec![
+        (Command::SnoozeCard { interaction_id: ids.interaction.into(), until: 200, now: 100 }, false),
+        (Command::UnsnoozeCard { interaction_id: ids.interaction.into() }, false),
+        (Command::ResurfaceDueCards { now: 200 }, true),
         (Command::CreateSchedule { schedule }, true),
         (Command::UpdateSchedule { schedule: updated }, false),
         (Command::DeleteSchedule { schedule_id: ids.schedule.into(), deleted_at: 1,
@@ -4486,6 +4492,12 @@ fn guards_refuse_what_the_commands_refuse() {
         expected_head: head.into(), method,
     };
     let commands = [
+        Command::SnoozeCard { interaction_id: "d".into(), until: 200, now: 100 },
+        Command::SnoozeCard { interaction_id: "d".into(), until: 100, now: 100 },
+        Command::SnoozeCard { interaction_id: "missing".into(), until: 200, now: 100 },
+        Command::UnsnoozeCard { interaction_id: "d".into() },
+        Command::UnsnoozeCard { interaction_id: "missing".into() },
+        Command::ResurfaceDueCards { now: 200 },
         Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() },
         Command::AcceptDelivery { presentation_id: "d".into(), targets: text() },
         Command::AcceptDelivery { presentation_id: "missing".into(), targets: pr_targets() },
@@ -4638,8 +4650,10 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::DecideProposedPlan { presentation_id: "p".into(), targets: text(), choice: PlanChoice::Implement },
         Command::DecideProposedPlan { presentation_id: "p".into(), targets: text(), choice: PlanChoice::Archive },
     ]).collect();
+    let mut snoozed = presented.clone();
+    exec(&mut snoozed, user(), Command::SnoozeCard { interaction_id: "d".into(), until: 200, now: 100 }).unwrap();
     let (mut allowed, mut refusals) = (0, BTreeSet::new());
-    for state in [&proposing, &presented, &authorized, &merged, &cancelled, &sdk, &ended, &lost, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
+    for state in [&snoozed, &proposing, &presented, &authorized, &merged, &cancelled, &sdk, &ended, &lost, &resting, &accepted, &forcing, &asking, &asked_resting, &decided, &granted, &mcp, &waiting_mcp,
         &accounts, &work_busy, &alone] {
         for actor in [user(), agent(), Actor::Agent { agent_id: "s".into() }, Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
             for command in &commands {

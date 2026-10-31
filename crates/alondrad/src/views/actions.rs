@@ -2565,7 +2565,7 @@ mod tests {
                 options: vec![QuestionOption {
                     id: "yes".into(), label: "Yes".into(), description: None,
                 }], answer: None,
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2598,7 +2598,7 @@ mod tests {
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Rotate the key".into(),
             blocking: true, subject: None, payload: InteractionPayload::ActionRequest { options, answer: None },
-            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Do, "Rotate the key"), clarification: None,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Do, "Rotate the key"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         let pressed = |text: Option<&str>| ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2635,7 +2635,7 @@ mod tests {
                 attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
                 author: Author::System, recipient: Recipient::User, body: "Run it?".into(), blocking: true, subject: None,
                 payload: InteractionPayload::Question { options: hold.options(), answer: None },
-                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Authorize, "Run it?"), clarification: None,
+                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Authorize, "Run it?"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
             });
             state.holds.insert("hold-1".into(), hold);
             let reply = ActionId::new(Verb::Reply, "hold-1", 1, None).unwrap();
@@ -2658,7 +2658,7 @@ mod tests {
             payload: InteractionPayload::Question {
                 options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None }],
                 answer: None,
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2688,7 +2688,7 @@ mod tests {
             author: Author::System, recipient: Recipient::User, body: "# Plan\n\n1. Split the lexer".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options: Hold::Plan.options(), answer: None },
-            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         state.holds.insert("hold-1".into(), Hold::Plan);
         let request = ActionRequest {
@@ -2735,7 +2735,7 @@ mod tests {
             attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "Body".into(),
             blocking: true, subject: None, payload,
-            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
         });
         state
     }
@@ -3931,7 +3931,7 @@ mod tests {
                 attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() }, author: Author::System,
                 recipient: Recipient::User, body: "Ask".into(), blocking: true, subject: None,
                 payload: InteractionPayload::Question { options, answer: None }, revision: 1, order: 1, withdrawn: false,
-                card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+                card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
             });
             if let Some(hold) = hold { state.holds.insert(id.into(), hold); }
         };

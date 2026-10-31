@@ -2204,3 +2204,40 @@ fn launched_tasks_answers_for_every_task_in_one_statement() {
     }
     assert!(store.launched_tasks(&[]).unwrap().is_empty());
 }
+
+#[test]
+fn snooze_survives_reopening_an_old_store_and_clears_its_sql_column_on_return() {
+    let fixture = Fixture::new();
+    let path = fixture.path();
+    let mut store = DomainStore::open(&path).unwrap();
+    seeded(&mut store);
+    present(&mut store);
+    store.conn.execute_batch("ALTER TABLE interactions DROP COLUMN snoozed_until; ALTER TABLE interactions DROP COLUMN resurfaced_at_revision;").unwrap();
+    drop(store);
+
+    let mut store = DomainStore::open(&path).unwrap();
+    assert_eq!(store.load().unwrap().interactions[&InteractionId::from("delivery-1")].snoozed_until, None);
+    execute(&mut store, &user(), "snooze", Command::SnoozeCard { interaction_id: "delivery-1".into(), until: 200, now: 100 });
+    drop(store);
+    let mut store = DomainStore::open(&path).unwrap();
+    let state = store.load().unwrap();
+    let index = ReadIndex::build(&state);
+    assert!(index.waiting().is_empty());
+    assert_eq!(index.snoozed()[0].until, 200);
+    assert!(index.task(&"task-1".into()).unwrap().waits_for_user);
+
+    let commit = execute(&mut store, &Actor::System, "return", Command::ResurfaceDueCards { now: 200 });
+    let returned = commit.state.interactions[&InteractionId::from("delivery-1")].resurfaced_at_revision;
+    assert!(returned.is_some());
+    let (until, revision): (Option<i64>, Option<i64>) = store.conn.query_row(
+        "SELECT snoozed_until,resurfaced_at_revision FROM interactions WHERE id='delivery-1'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(until, None);
+    assert_eq!(revision, returned.map(|revision| revision as i64));
+    assert_eq!(store.conn.query_row("SELECT count(*) FROM domain_message_user_targets targets JOIN domain_messages messages ON messages.id=targets.message_id WHERE messages.revision=?1 AND messages.interaction_id='delivery-1'", [commit.state.revision as i64], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    drop(store);
+    let mut store = DomainStore::open(&path).unwrap();
+    let state = store.load().unwrap();
+    assert_eq!(state.interactions[&InteractionId::from("delivery-1")].snoozed_until, None);
+    assert_eq!(state.interactions[&InteractionId::from("delivery-1")].resurfaced_at_revision, returned);
+    assert_eq!(ReadIndex::build(&state).waiting()[0].id, "interaction:delivery-1");
+}

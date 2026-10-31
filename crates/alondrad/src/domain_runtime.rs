@@ -1091,7 +1091,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
             Scope::Task { task_id } => Some(task_id.clone()),
             Scope::Orchestrator { .. } => None,
         },
-        Command::MarkRead { interaction_id }
+        Command::SnoozeCard { interaction_id, .. }
+        | Command::UnsnoozeCard { interaction_id }
+        | Command::MarkRead { interaction_id }
         | Command::Withdraw { interaction_id }
         | Command::RequestClarification { interaction_id, .. }
         | Command::AnswerQuestion { interaction_id, .. }
@@ -1124,7 +1126,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         Command::ObservePrState { pr_id, .. } | Command::ObservePrMergeMethods { pr_id, .. } => {
             state.pull_requests.get(pr_id).map(|pr| pr.task_id.clone())
         }
-        Command::CreateRequest { .. }
+        Command::ResurfaceDueCards { .. }
+        | Command::CreateRequest { .. }
         | Command::CloseRequest { .. }
         | Command::TitleRequest { .. }
         | Command::CreateSchedule { .. }
