@@ -105,7 +105,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         None => {
             let content = content_items(item, context);
             if !content.is_empty() {
-                sections.push(super::common::section("content", Some(t!(context.lang, "Content", "Contenido").into()), content));
+                sections.push(super::common::section("content", None, content));
             }
         }
     }
@@ -317,7 +317,7 @@ fn target_label(domain: &DomainState, id: &InteractionId, lang: Lang) -> String 
 
 /// What `interaction` asks, as its card shows it to the viewer.
 pub(super) fn shown_need(interaction: &Interaction, domain: &DomainState, lang: Lang) -> String {
-    own_text(interaction, domain, lang).map_or_else(|| humanize_task_ids(&interaction.card.need, domain), |(need, _)| need)
+    own_text(interaction, domain, lang).map_or_else(|| humanize_task_ids(interaction.card.effective_title(), domain), |(need, _)| need)
 }
 
 fn chips(item: &InboxItem, context: &RenderContext<'_>) -> (Vec<BlockChip>, Vec<BlockChip>) {
@@ -486,6 +486,20 @@ fn waiting_reply(item: &InboxItem, interaction: &Interaction, context: &RenderCo
     })
 }
 
+fn short_request(kind: CardKind, lang: Lang) -> &'static str {
+    match kind {
+        CardKind::Decide => t!(lang, "Choose an option", "Elige una opción"),
+        CardKind::Review => t!(lang, "Review the result", "Revisa el resultado"),
+        CardKind::Authorize => t!(lang, "Allow this action", "Autoriza esta acción"),
+        CardKind::Know => t!(lang, "Read this update", "Lee esta novedad"),
+        CardKind::Provide => t!(lang, "Provide the requested information", "Aporta la información solicitada"),
+        CardKind::Test => t!(lang, "Test the result", "Prueba el resultado"),
+        CardKind::Do => t!(lang, "Complete the steps", "Completa los pasos"),
+        CardKind::Problem => t!(lang, "Resolve the problem", "Resuelve el problema"),
+        CardKind::Propose => t!(lang, "Consider this suggestion", "Considera esta sugerencia"),
+    }
+}
+
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let lang = context.lang;
     let domain = context.domain;
@@ -508,10 +522,19 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         .map(|at| vec![Stamp { role: "created".into(), at: at.into(), format: TimeFormat::Relative }])
         .unwrap_or_default();
     let (blocks, blocked_by) = chips(item, context);
-    let (need, why) = match interaction.and_then(|i| own_text(i, domain, lang)) {
-        Some((need, why)) => (need, Some(why)),
+    let own = interaction.and_then(|i| own_text(i, domain, lang));
+    let automatic = own.is_some() || interaction.is_some_and(|i| i.author == Author::System);
+    let title = match (&spec.title, &own) {
+        (Some(_), Some((subject, _))) if automatic => subject.clone(),
+        (Some(title), _) => humanize_task_ids(title, domain),
+        _ => own.as_ref().map(|(subject, _)| subject.clone()).unwrap_or_else(|| humanize_task_ids(&spec.need, domain)),
+    };
+    let (mut need, why) = match own {
+        Some((need, why)) if spec.title.is_none() => (need, Some(why)),
+        Some((_, why)) if automatic => (short_request(spec.kind, lang).into(), Some(why)),
+        Some((_, why)) => (humanize_task_ids(&spec.need, domain), Some(why)),
         None => (
-            humanize_task_ids(&spec.need, domain),
+            if automatic && spec.title.is_some() { short_request(spec.kind, lang).into() } else { humanize_task_ids(&spec.need, domain) },
             Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty()),
         ),
     };
@@ -519,10 +542,19 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         Some(reply) => Some(why.map_or_else(|| reply.clone(), |why| format!("{reply}\n\n{why}"))),
         None => why,
     };
+    if spec.title.is_some()
+        && let Some(hold) = interaction.and_then(|interaction| domain.holds.get(&interaction.id))
+    {
+        need = match hold {
+            Hold::Plan => t!(lang, "Review the plan", "Revisa el plan").into(),
+            _ => short_request(spec.kind, lang).into(),
+        };
+    }
     let mut card = Card {
         id: public_id(item).into(),
         kind: Some(spec.kind),
         need: Some(need.clone()),
+        title_is_separate: spec.title.is_some(),
         why: why.clone(),
         meta: meta_line(item, interaction, context),
         content_row: content_row(item, interaction, context),
@@ -533,7 +565,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         link: Some(Link::View { key: card_key(item) }),
         icon: kind_icon(spec.kind, carries),
         eyebrow: Some(Label { text: eyebrow_text, tone: kind_tone(spec.kind, item.pending), elapsed: None }),
-        title: need,
+        title,
         subtitle: why,
         badges: vec![],
         context: context_lines(item, context),
@@ -559,7 +591,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     }
     if let Some(pr) = pr {
         let own_title = live_pr(pr, context).and_then(|detail| detail.title.as_deref()).map(str::trim).filter(|title| !title.is_empty());
-        if let Some(title) = own_title {
+        if let Some(title) = own_title.filter(|_| spec.title.is_none()) {
             card.title = title.into();
         }
         card.meta = Some(pr_meta(pr, context));
@@ -916,7 +948,7 @@ fn start_problem_card(interaction: &Interaction, domain: &DomainState, lang: Lan
 }
 
 fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    start_problem_card(interaction, domain, lang).map(|card| (card.need, card.why))
+    start_problem_card(interaction, domain, lang).map(|card| (card.effective_title().to_owned(), card.why))
 }
 
 /// What one of Alondra's own cards asks and why, in the viewer's language; `None` for a card
@@ -1161,7 +1193,7 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
     if interaction.card.why == crate::domain::REFUSED_WHY {
-        let refusal = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.need.ends_with(crate::domain::api_refusal(error)))
+        let refusal = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.effective_title().ends_with(crate::domain::api_refusal(error)))
             .map_or(t!(lang, "Claude Code cannot use the Claude API", "Claude Code no puede usar la API de Claude"), |error| api_refusal_text(error, lang));
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: {refusal}", "«{title}» se ha parado: {refusal}"));
         return Some((need, t!(lang,
@@ -1182,7 +1214,7 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "Codex indica que esta solicitud supera la ventana de contexto del modelo. Compacta esta sesión o reduce la siguiente entrada antes de continuar expresamente. Los cambios de modelo usan los controles compatibles de este nodo con la misma cuenta.").into()));
     }
     if interaction.card.why == crate::domain::NATIVE_FAILED_WHY {
-        let code = interaction.card.need.split('`').nth(1)?;
+        let code = interaction.card.effective_title().split('`').nth(1)?;
         let need = tf!(lang, "Codex's turn ended with an error (`{code}`): tell it how to go on",
             "El turno de Codex terminó con un error (`{code}`): dile cómo seguir");
         return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
@@ -1190,7 +1222,7 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "El turno de Codex terminó con un error. Dile cómo seguir, escríbele qué hacer después o cancela la tarea.").into()));
     }
     if interaction.card.why == crate::domain::FAILED_WHY {
-        let code = interaction.card.need.split('`').nth(1)?;
+        let code = interaction.card.effective_title().split('`').nth(1)?;
         let need = tf!(lang, "Claude's turn ended with an error (`{code}`): tell it how to go on",
             "El turno de Claude terminó con un error (`{code}`): dile cómo seguir");
         return Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
@@ -1968,8 +2000,7 @@ pub(super) fn documents(interaction: &Interaction, domain: &DomainState, lang: L
     {
         out.push(CardDocument {
             label: t!(lang, "Report", "Informe").into(),
-            title: report.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty())
-                .map_or_else(|| t!(lang, "Report", "Informe").into(), |line| clip(line, 60)),
+            title: t!(lang, "Findings", "Conclusiones").into(),
             key: format!("document:{id}.report"),
             markdown: Some(report.to_owned()),
         });

@@ -1666,7 +1666,7 @@ impl DomainState {
             && i.recipient == Recipient::User
             && matches!(&i.scope, Scope::Task { task_id } if task_id == task);
         let said = answer_said(i).filter(|_| theirs)?;
-        Some(EmptyTurn::UnactedAnswer { card: card.clone(), need: i.card.need.clone(), said: said.trim_end_matches('.').to_owned() })
+        Some(EmptyTurn::UnactedAnswer { card: card.clone(), need: i.card.effective_title().to_owned(), said: said.trim_end_matches('.').to_owned() })
     }
 
     /// Whether `card` is a case about a stopped node that Alondra settled itself, for nobody settled it.
@@ -2648,7 +2648,7 @@ impl DomainState {
         let Some(asked) = self.interactions.get(card) else { return String::new() };
         let InteractionPayload::Question { options, .. } = &asked.payload else { return String::new() };
         let chosen = options.iter().find(|choice| choice.id == option).map_or(option, |choice| choice.label.as_str());
-        format!("The user answered the question the previous node of this task asked, «{}»: {chosen}", asked.card.need)
+        format!("The user answered the question the previous node of this task asked, «{}»: {chosen}", asked.card.effective_title())
     }
 
     /// The questions the ending execution waits on that the task keeps when it moves: single

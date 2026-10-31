@@ -74,7 +74,7 @@ fn two() -> Vec<QuestionOption> {
     vec![option("a", "Atlas"), option("b", "Borealis")]
 }
 fn decide(need: &str) -> CardSpec {
-    CardSpec::new(CardKind::Decide, need).why("The name goes on the release")
+    CardSpec::new(CardKind::Decide, need).needing(need).why("The name goes on the release")
 }
 fn ask(id: &str, task: &str, blocking: bool, card: CardSpec) -> Command {
     Command::AskQuestion {
@@ -366,7 +366,7 @@ fn blocks_never_form_a_cycle() {
 fn each_kind_requires_its_fields() {
     let mut s = fixture();
     let field = |s: &mut DomainState, card: CardSpec| refused(s, agent(), ask("q", "t", false, card));
-    assert_eq!(field(&mut s, decide("")), ("invalid_input".into(), Some("card.need".into())));
+    assert_eq!(field(&mut s, decide("").titled("Release design")), ("invalid_input".into(), Some("card.need".into())));
     assert_eq!(field(&mut s, decide(&"n".repeat(91))), ("invalid_input".into(), Some("card.need".into())));
     assert_eq!(field(&mut s, decide("Pick a name").why("w".repeat(241))), ("invalid_input".into(), Some("card.why".into())));
     assert_eq!(field(&mut s, CardSpec::new(CardKind::Decide, "Pick a name")), ("invalid_input".into(), Some("card.why".into())));
@@ -449,7 +449,7 @@ fn closing_with_an_answer_tells_the_user() {
         .filter(|i| i.scope == Scope::Orchestrator { request_id: Some("q-r".into()) })
         .collect();
     assert_eq!(told.len(), 1);
-    assert_eq!((told[0].card.kind, told[0].card.need.as_str(), told[0].body.as_str()), (CardKind::Know, "Yes, since Monday", "Yes, since Monday"));
+    assert_eq!((told[0].card.kind, told[0].card.effective_title(), told[0].body.as_str()), (CardKind::Know, "Review status", "Yes, since Monday"));
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id == &told[0].id)));
 }
 
@@ -970,6 +970,7 @@ fn waiting_ids(s: &DomainState) -> Vec<String> {
 }
 fn gq(need: &str, labels: &[&str]) -> GroupQuestion {
     GroupQuestion {
+        title: Some("Release choices".into()),
         need: need.into(), why: "The release needs it".into(), recommended: None,
         options: labels.iter().enumerate().map(|(n, label)| option(&format!("o{n}"), label)).collect(),
     }
@@ -1620,4 +1621,38 @@ fn snooze_keeps_the_card_and_its_question_in_task_screens() {
             assert!(serde_json::to_string(&list).unwrap().contains("Choose the name"));
         }
     }
+}
+
+#[test]
+fn card_title_contract_validates_structure_and_preserves_bodies() {
+    let mut s = fixture();
+    let mut missing = decide("Choose a design");
+    missing.title = None;
+    assert_eq!(refused(&mut s, agent(), ask("q", "t", false, missing)).1, Some("card.title".into()));
+    for title in ["", " ", "First\nSecond", "First\rSecond", &"x".repeat(CardSpec::TITLE_MAX + 1)] {
+        let error = refused(&mut s, agent(), ask("q", "t", false, decide("Choose a design").titled(title)));
+        assert_eq!(error, ("invalid_input".into(), Some("card.title".into())));
+    }
+    let empty = decide("Choose a design").titled("Release design").content(ContentKind::Options, " ");
+    assert_eq!(refused(&mut s, agent(), ask("q", "t", false, empty)).1, Some("card.content.body".into()));
+    for need in ["Choose a design\n", "Choose\ra design"] {
+        assert_eq!(refused(&mut s, agent(), ask("q", "t", false, decide(need).titled("Release design"))).1, Some("card.need".into()));
+    }
+    let body = "# Release design\n\nAtlas has larger text.";
+    ok(&mut s, agent(), ask("q", "t", false,
+        decide("Choose a design").titled("Release design").content(ContentKind::Options, body)));
+    let card = &s.interactions[&"q".into()].card;
+    assert_eq!(card.title.as_deref(), Some("Release design"));
+    assert_eq!(card.content.as_ref().unwrap().body, body);
+}
+
+#[test]
+fn card_title_contract_reads_old_cards_without_changing_content() {
+    let body = "# Old subject\n\nKeep this text.";
+    let card: CardSpec = serde_json::from_value(serde_json::json!({
+        "kind":"review","need":"Old subject","content":{"kind":"report","body":body}
+    })).unwrap();
+    assert_eq!(card.title, None);
+    assert_eq!(card.effective_title(), "Old subject");
+    assert_eq!(card.content.unwrap().body, body);
 }

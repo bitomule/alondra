@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "mac",
-  "version": "vb4b5c04578ae2c75",
+  "version": "vca2c762b45898fe1",
   "cursor": "cursor-1",
   "title": "Sign in to linear: 2 tasks wait for it",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "mcp-sign-in-t-18",
           "kind": "problem",
-          "need": "Sign in to linear: 2 tasks wait for it",
+          "need": "Resolve the problem",
+          "title_is_separate": true,
           "why": "Claude cannot use the MCP server linear until you sign in. Connect opens the sign-in; once it is done, every waiting task goes on by itself. Waiting: “Task t” and “Task u”.",
           "meta": "Alondra",
           "link": {

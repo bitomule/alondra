@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "ios",
-  "version": "vc1ead0ae07154bd5",
+  "version": "va10d9eb2a819e7aa",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
@@ -68,7 +68,8 @@
           "type": "card",
           "id": "unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
           "kind": "decide",
-          "need": "«Restore the native review experience» se ha parado y te escribe",
+          "need": "Elige una opción",
+          "title_is_separate": true,
           "why": "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.",
           "meta": "Restore the native review experience · Demo Garden",
           "reply": {

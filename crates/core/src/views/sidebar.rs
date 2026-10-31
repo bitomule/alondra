@@ -152,7 +152,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
                     &card.id,
                     &format!("card:{}", card.id),
                     card.icon,
-                    card.need.unwrap_or(card.title),
+                    card.title,
                     card.meta.or(card.subtitle),
                 );
                 row.badges.extend(card.eyebrow);

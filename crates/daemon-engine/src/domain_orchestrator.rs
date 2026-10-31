@@ -653,8 +653,8 @@ impl Executor {
             });
             let task = task_id.and_then(|id| state.tasks.values().find(|task| task.id.0 == id));
             let subject = match (interaction, task) {
-                (Some(interaction), Some(task)) => format!("{}: {}", task.title, interaction.card.need),
-                (Some(interaction), None) => interaction.card.need.clone(),
+                (Some(interaction), Some(task)) => format!("{}: {}", task.title, interaction.card.effective_title()),
+                (Some(interaction), None) => interaction.card.effective_title().to_owned(),
                 (None, Some(task)) => task.title.clone(),
                 (None, None) => message.message.lines().next().unwrap_or_default().chars().take(SUBJECT_LINE).collect(),
             };

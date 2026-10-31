@@ -84,8 +84,8 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
             };
             let arguments = json!({
                 "task_id": task()?, "interaction_id": format!("result-{}-{}", worker.short, hex(&random::<3>()?)),
-                "need": need, "body": format!("{need}: done in the sandbox."), "targets": targets, "is_final": is_final,
-                "content": {"kind": "report", "body": format!("{need}: the sandbox node did the scripted work.")},
+                "title": need, "need": if *is_final { "Review the result" } else { "Read the update" }, "body": "The sandbox changes are ready.", "targets": targets, "is_final": is_final,
+                "content": {"kind": "report", "body": "The sandbox node completed the scripted work."},
             });
             // Alondra learns a pushed head from GitHub a moment later; a node told so sends the
             // same card again, as the refusal says.
@@ -105,7 +105,7 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
                 .collect();
             worker.tool(fakes, "ask", json!({
                 "interaction_id": id, "scope": {"kind": "task", "task_id": task()?}, "recipient": {"kind": "user"},
-                "need": need, "why": "The sandbox node needs this decision to go on.", "blocking": true, "options": options,
+                "title": need, "need": "Choose an option", "why": "The sandbox node needs this decision to go on.", "blocking": true, "options": options,
             }))
         })(),
         Step::Cleanup => task().and_then(|task| worker.tool(fakes, "cleanup_done", json!({"task_id": task}))),

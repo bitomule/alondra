@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v35269bfbbd2bd018",
+  "version": "v7e236cd5b0a46103",
   "cursor": "cursor-1",
   "status": {
     "version": "v628d97b17c8156ba",
@@ -261,7 +261,7 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v4f2220b5690c1a06",
+      "version": "ve1ec8050da9a2e26",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
@@ -325,7 +325,8 @@
               "type": "card",
               "id": "a98d034b-249e-4487-a89b-57de38c26372",
               "kind": "decide",
-              "need": "Choose the welcome copy",
+              "need": "Choose an option",
+              "title_is_separate": true,
               "why": "The new empty state is ready; the beta ships with the copy you pick.",
               "meta": "Restore the native review experience · Demo Garden",
               "content_row": {
@@ -425,7 +426,6 @@
         },
         {
           "id": "content",
-          "title": "Contenido",
           "collapsed": false,
           "items": [
             {
@@ -464,7 +464,7 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v95330057b610250b",
+      "version": "v28db0926de0d7581",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
@@ -528,7 +528,8 @@
               "type": "card",
               "id": "8fa4034b-249e-4487-a89b-57de38c26372",
               "kind": "decide",
-              "need": "Ship the compact schedule editor with this beta?",
+              "need": "Elige una opción",
+              "title_is_separate": true,
               "why": "The review of the pull request waits for your answer.",
               "meta": "Alondra · Demo Garden",
               "reply": {
@@ -648,9 +649,9 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "vdaab8880f2e98fe2",
+      "version": "v124ae20e2d8dfc0d",
       "cursor": "cursor-1",
-      "title": "Add the compact schedule editor",
+      "title": "Review the beta candidate",
       "status": {
         "version": "v21e817e49a9c8092",
         "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
@@ -712,7 +713,8 @@
               "type": "card",
               "id": "hf-weekly-2026-09-30",
               "kind": "review",
-              "need": "Review the beta candidate",
+              "need": "Revisa el resultado",
+              "title_is_separate": true,
               "why": "All required checks passed and the branch is up to date with main.",
               "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
               "content_row": {
@@ -795,7 +797,7 @@
                 "text": "Revisar · PR #12",
                 "tone": "accent"
               },
-              "title": "Add the compact schedule editor",
+              "title": "Review the beta candidate",
               "subtitle": "All required checks passed and the branch is up to date with main.",
               "context": [
                 {

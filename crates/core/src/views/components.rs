@@ -321,9 +321,12 @@ pub struct Card {
     pub id: String,
     #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
     pub kind: Option<CardKind>,
-    /// What the user must do, in the imperative; the same text as `title`. Markdown, drawn on one line.
+    /// The short action requested, separate from the subject in `title`. Markdown, drawn on one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<String>,
+    /// The author supplied a separate title field. Older stored cards and older daemons used need as the subject.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub title_is_separate: bool,
     /// Why, and whom it holds back; the same text as `subtitle`. Markdown: whole in a detail, on one line in a list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
@@ -351,6 +354,7 @@ pub struct Card {
     pub icon: Icon,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eyebrow: Option<Label>,
+    /// The subject, shown once as the large heading in a card detail.
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,

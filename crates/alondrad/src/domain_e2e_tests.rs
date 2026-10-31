@@ -171,6 +171,7 @@ fn bg_node_with_a_task(daemon: &Daemon, home: &Path, title: &str) -> (String, Ta
 fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> Value {
     let mut command = command.as_object().unwrap().clone();
     command.remove("kind");
+    if let Some(need) = command.get("need").cloned() { command.entry("title").or_insert(need); }
     let mut args = json!({"data_epoch":epoch,"command_id":id,"expected_revision":expected_revision}).as_object().unwrap().clone();
     args.extend(command);
     Value::Object(args)
@@ -739,10 +740,10 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
         ask("option", "Pick the release channel"),
         ask("reply", "Name the new settings screen"),
         ("request_input", json!({"data_epoch": epoch, "command_id": "text", "expected_revision": 0, "interaction_id": "text",
-            "scope": scope, "recipient": {"kind": "user"}, "need": "Write the release note", "why": "The release notes need it.",
+            "scope": scope, "recipient": {"kind": "user"}, "title": "Release note", "need": "Write the release note", "why": "The release notes need it.",
             "kind": "text", "blocking": false})),
         ("ask", tool_args(&epoch, "group", 0, json!({"interaction_id": "group", "scope": scope, "recipient": {"kind": "user"},
-            "why": "", "blocking": false, "questions": (1..=4).map(|n| json!({"question": format!("Launch question {n}?"),
+            "why": "", "blocking": false, "questions": (1..=4).map(|n| json!({"title": format!("Launch decision {n}"), "question": format!("Launch question {n}?"),
                 "why": "The launch plan needs it.", "options": [choice("a"), choice("b")]})).collect::<Vec<_>>()}))),
     ]);
     let queue = app.queue().await;

@@ -108,7 +108,7 @@ final class CardDetailFeatureTests: XCTestCase {
 
         XCTAssertEqual(CardDetailFeature.Subject.diffKey(of: reference), .pullRequest("github.com/example/repo#12"))
         XCTAssertEqual(store.state.subject?.sections.map(\.id), ["checks", "diff", "description", "context"])
-        XCTAssertEqual(store.state.subject?.title, "Add the compact schedule editor")
+        XCTAssertEqual(store.state.subject?.title, "Review the beta candidate")
     }
 
     @MainActor

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:r-encrypt-answer",
   "client": "mac",
-  "version": "vbe15405088236bed",
+  "version": "va11e54f6e9a83b86",
   "cursor": "cursor-1",
   "title": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "r-encrypt-answer",
           "kind": "know",
-          "need": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
+          "need": "Read this update",
+          "title_is_separate": true,
           "meta": "Cifrar imágenes en R2",
           "content_row": {
             "kind": "report",
@@ -116,7 +117,6 @@
     },
     {
       "id": "content",
-      "title": "Content",
       "collapsed": false,
       "items": [
         {

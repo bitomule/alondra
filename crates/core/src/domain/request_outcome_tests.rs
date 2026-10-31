@@ -103,7 +103,7 @@ fn an_answer_without_tasks_reaches_the_user_under_its_headline() {
     let out = close(&mut s, "r", Some("Yes, since Monday: PR #1159 merged it."), Some("Already in review"));
     let card = the_card(&s, "r");
     assert_eq!((card.author.clone(), card.card.kind), (Author::System, CardKind::Know));
-    assert_eq!((card.card.need.as_str(), card.card.why.as_str()), ("Already in review", "Yes, since Monday: PR #1159 merged it."));
+    assert_eq!((card.card.effective_title(), card.card.why.as_str()), ("Already in review", "Yes, since Monday: PR #1159 merged it."));
     assert!(matches!(card.payload, InteractionPayload::Information { ref read_by } if read_by.is_empty()));
     assert!(notified(&out, &card));
 }
@@ -115,17 +115,18 @@ fn a_long_answer_keeps_its_headline_and_goes_whole_in_the_detail() {
     let answer = format!("It is on main.\n\n{}", "Every step of the release is covered. ".repeat(10));
     close(&mut s, "r", Some(&answer), Some("Already on main"));
     let card = the_card(&s, "r");
-    assert_eq!(card.card.need, "Already on main");
+    assert_eq!(card.card.effective_title(), "Already on main");
     assert_eq!(card.card.content.as_ref().map(|c| (c.kind, c.body.as_str())), Some((ContentKind::Report, answer.trim())));
 }
 
 #[test]
-fn an_answer_without_a_headline_opens_with_its_first_line() {
+fn an_answer_without_a_headline_uses_request_metadata_and_keeps_the_body() {
     let mut s = state();
     asked(&mut s, user(), "r", false);
     close(&mut s, "r", Some("Main is green\nThe last run passed at 9:00."), None);
     let card = the_card(&s, "r");
-    assert_eq!((card.card.need.as_str(), card.card.why.as_str()), ("Main is green", "The last run passed at 9:00."));
+    assert_eq!((card.card.effective_title(), card.card.why.as_str()), ("Claude accounts", ""));
+    assert_eq!(card.card.content.as_ref().unwrap().body, "Main is green\nThe last run passed at 9:00.");
 }
 
 #[test]
@@ -139,7 +140,7 @@ fn a_request_whose_tasks_are_done_tells_the_user_it_is_done() {
     let out = close(&mut s, "r", Some("Both accounts work and the switch is in Settings."), None);
     let card = the_card(&s, "r");
     assert_eq!(card.id.0, DoneCard::id("r"));
-    assert_eq!((card.author.clone(), card.card.need.as_str()), (Author::System, "Done"));
+    assert_eq!((card.author.clone(), card.card.effective_title()), (Author::System, "Done"));
     assert_eq!(card.card.why, "Both accounts work and the switch is in Settings.");
     let body = DoneCard::from_body(&card.body).unwrap();
     assert_eq!(body.tasks.iter().map(|t| (t.id.as_str(), t.cancelled, t.pr)).collect::<Vec<_>>(),
@@ -157,7 +158,7 @@ fn a_request_with_cancelled_tasks_says_how_much_was_done() {
     cancel(&mut s, "build");
     close(&mut s, "r", None, None);
     let card = the_card(&s, "r");
-    assert_eq!((card.card.need.as_str(), card.card.why.as_str()), ("Done in part: 1 of 2 tasks was cancelled", "All its work is finished."));
+    assert_eq!((card.card.effective_title(), card.card.why.as_str()), ("Done in part: 1 of 2 tasks was cancelled", "All its work is finished."));
 
     let mut s = state();
     asked(&mut s, user(), "r", false);
@@ -165,7 +166,7 @@ fn a_request_with_cancelled_tasks_says_how_much_was_done() {
     cancel(&mut s, "design");
     close(&mut s, "r", Some("Not needed after all"), None);
     let card = the_card(&s, "r");
-    assert_eq!((card.card.need.as_str(), card.card.why.as_str()), ("Not done: its task was cancelled", "Not needed after all"));
+    assert_eq!((card.card.effective_title(), card.card.why.as_str()), ("Not done: its task was cancelled", "Not needed after all"));
 }
 
 #[test]
@@ -258,7 +259,7 @@ fn the_tasks_a_turn_made_reach_the_user_on_one_card_in_the_order_they_run() {
     assert_eq!((interaction.author.clone(), interaction.card.kind), (Author::System, CardKind::Know));
     assert_eq!(ids(&card), ["design", "build", "docs", "ship"]);
     assert_eq!(card.tasks[1].priority, TaskPriority::High);
-    assert_eq!(interaction.card.need, "I created 4 tasks");
+    assert_eq!(interaction.card.effective_title(), "I created 4 tasks");
     assert_eq!(interaction.card.why, "First “Task design”; then “Task build” and “Task docs”, in parallel; then “Task ship”.");
     assert_eq!(card.task_line(3, crate::views::Lang::Es), ("4.".into(), "Task ship · después de 2 y 3".into()));
     assert_eq!(card.task_line(1, crate::views::Lang::En), ("2.".into(), "Task build · High priority · after 1".into()));
@@ -276,7 +277,7 @@ fn announcing_again_tells_nothing_new() {
     let out = announce(&mut s);
     assert_eq!(tasks_cards(&s, "r"), before);
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
-    assert_eq!(before[0].0.card.need, "I created the task “Task design”");
+    assert_eq!(before[0].0.card.effective_title(), "I created the task “Task design”");
 }
 
 #[test]
@@ -294,7 +295,7 @@ fn a_second_batch_names_only_its_new_tasks() {
     assert_eq!(interaction.id.0, TasksCard::id("r", 2));
     assert!(card.more);
     assert_eq!(ids(card), ["build", "docs"]);
-    assert_eq!(interaction.card.need, "I created 2 more tasks");
+    assert_eq!(interaction.card.effective_title(), "I created 2 more tasks");
     assert_eq!(card.task_line(0, crate::views::Lang::Es).1, "Task build · después de «Task design»");
     assert_eq!(card.text(crate::views::Lang::Es).0, "He creado 2 tareas más");
 }
@@ -363,6 +364,49 @@ fn tasks_the_daemon_finds_when_it_opens_count_as_told_without_a_card() {
     let (interaction, card) = cards.last().unwrap();
     assert!(!interaction.withdrawn);
     assert_eq!(ids(card), ["build"]);
-    assert_eq!(interaction.card.need, "I created one more task: “Task build”");
+    assert_eq!(interaction.card.effective_title(), "I created one more task: “Task build”");
     assert_eq!(interaction.card.why, "It starts once “Task design” is done.");
+}
+
+#[test]
+fn card_title_contract_request_answer_fields_are_checked_before_closing() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    let mut cases = Vec::new();
+    for headline in ["x".repeat(91), "First\nSecond".into(), "First\rSecond".into(), String::new(), " ".into()] {
+        cases.push(("headline", Some("Complete answer.".to_owned()), None, Some(headline)));
+    }
+    cases.push(("answer", Some(" ".into()), None, Some("Release result".into())));
+    cases.push(("title", Some("Complete answer.".into()), Some(" ".into()), None));
+    for (field, answer, title, headline) in cases {
+        let error = exec(&mut s, orchestrator(), Command::CloseRequest {
+            request_id: "r".into(), answer, title, headline, withdrawn: false,
+        }).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert_eq!(error.subject.as_deref(), Some(field));
+        assert!(!s.requests[&"r".into()].closed, "a malformed {field} must not close the request");
+    }
+    let body = "# Release result\n\nKeep this authored heading.";
+    close(&mut s, "r", Some(body), Some("Release result"));
+    let card = the_card(&s, "r");
+    assert_eq!(card.card.title.as_deref(), Some("Release result"));
+    assert_eq!(card.card.content.as_ref().unwrap().body, body);
+}
+
+#[test]
+fn card_title_contract_request_subject_bounds_metadata_without_changing_the_answer() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    let metadata = format!("{}\nSecond line", "Request metadata ".repeat(20));
+    let body = "# A different heading\n\nKeep this answer literally.";
+    ok(&mut s, orchestrator(), Command::CloseRequest {
+        request_id: "r".into(), answer: Some(body.into()), title: Some(metadata.clone()), headline: None, withdrawn: false,
+    });
+    let card = the_card(&s, "r");
+    let title = card.card.title.as_deref().unwrap();
+    assert!(title.starts_with("Request metadata Request metadata"));
+    assert!(title.chars().count() <= CardSpec::TITLE_MAX);
+    assert!(!title.contains(['\n', '\r']));
+    assert_eq!(card.card.content.as_ref().unwrap().body, body);
+    assert_eq!(s.requests[&"r".into()].title.as_deref(), Some(metadata.as_str()));
 }

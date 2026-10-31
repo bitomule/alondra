@@ -23,7 +23,7 @@ pub fn keep(home: &Path, command: &mut Command) -> Result<Option<PathBuf>, Domai
         return Ok(None);
     }
     let report = card.content.as_ref().map(|content| content.body.trim()).filter(|text| !text.is_empty()).unwrap_or(body.trim());
-    let mut text = format!("# {}\n\n{report}\n", card.need.trim());
+    let mut text = format!("{report}\n");
     if let Some(plan) = card.plan.as_deref().map(str::trim).filter(|plan| !plan.is_empty()) {
         text.push_str(&format!("\n---\n\n{plan}\n"));
     }
@@ -59,7 +59,7 @@ mod tests {
     }
 
     #[test]
-    fn a_final_report_whose_file_lives_in_a_temporary_folder_is_kept_whole_after_that_folder_goes() {
+    fn card_title_contract_keeps_reports_without_injecting_a_title() {
         let home = crate::test_support::Directory::new();
         let scratch = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*scratch).unwrap();
@@ -75,6 +75,7 @@ mod tests {
         assert!(!cited.exists(), "the temporary folder is gone");
         let kept = std::fs::read_to_string(&written).unwrap();
         assert!(written.starts_with(home.join("files/results/t-research")), "{}", written.display());
+        assert!(kept.starts_with("Full report below."), "no title is injected into the content: {kept}");
         assert!(kept.contains("1. Index the library"), "the cited file's content survives: {kept}");
         assert!(kept.contains("- [ ] Index the library in the background"), "the plan survives: {kept}");
         assert_eq!(kept_at(&command), Some(written.display().to_string()), "the card says where it is kept");

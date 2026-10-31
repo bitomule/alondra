@@ -4,9 +4,9 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "v542401f968b75b9f",
+  "version": "v3e4a76ebb8b360dc",
   "cursor": "cursor-1",
-  "title": "Add the compact schedule editor",
+  "title": "Review the beta candidate",
   "status": {
     "version": "v21e817e49a9c8092",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
@@ -68,7 +68,8 @@
           "type": "card",
           "id": "hf-weekly-2026-09-30",
           "kind": "review",
-          "need": "Review the beta candidate",
+          "need": "Revisa el resultado",
+          "title_is_separate": true,
           "why": "All required checks passed and the branch is up to date with main.",
           "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
           "content_row": {
@@ -148,7 +149,7 @@
             "text": "Revisar · PR #12",
             "tone": "accent"
           },
-          "title": "Add the compact schedule editor",
+          "title": "Review the beta candidate",
           "subtitle": "All required checks passed and the branch is up to date with main.",
           "context": [
             {

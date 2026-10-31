@@ -243,7 +243,7 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the forced turn ended");
     let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the stopped task asks the user");
     let title = slice.domain.read().state().tasks[&TaskId::from(TASK)].title.clone();
-    assert_eq!(card.card.need, format!("You interrupted “{title}”: tell it how to go on"), "it ended as the user's interrupt");
+    assert_eq!(card.card.effective_title(), format!("You interrupted “{title}”: tell it how to go on"), "it ended as the user's interrupt");
     answer(&slice.domain, &card.id, CARRY_ON);
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);

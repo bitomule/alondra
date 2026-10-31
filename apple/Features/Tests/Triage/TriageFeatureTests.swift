@@ -39,7 +39,7 @@ final class TriageFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.orderedIDs, queue)
         XCTAssertEqual(store.state.cards.ids, [ids.question, ids.information, ids.delivery])
-        XCTAssertEqual(store.state.currentCard?.need, "Choose the welcome copy")
+        XCTAssertEqual(store.state.currentCard?.title, "Choose the welcome copy")
         XCTAssertNotNil(store.state.cards[id: ids.information]?.card)
         XCTAssertEqual(store.state.badge, 4)
         XCTAssertEqual(store.state.queueTitle, "Waiting for You")

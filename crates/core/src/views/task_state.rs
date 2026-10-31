@@ -135,21 +135,24 @@ fn in_review(task: &Task, context: &RenderContext<'_>) -> Presentation {
     Presentation::new(t!(context.lang, "Ready for review", "Para revisar"), Tone::Info, Block::InProgress, review_fact(task, context))
 }
 
-/// What a task that needs the user asks: its one open question, or how many it has. Never the task's own title.
+/// What a task that needs the user asks: its one open question, or how many it has.
 fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
     let pending: Vec<_> = context.waiting_cards_of(&task.id).collect();
     match pending.as_slice() {
         [] => None,
-        [one] if !one.card.need.trim().is_empty() && one.card.need.trim() != task.title.trim() => {
+        [one] if !one.card.effective_title().trim().is_empty() => {
             let interaction = one.id.strip_prefix("interaction:").and_then(|id| context.domain.interactions.get(&InteractionId(id.into())));
+            if interaction.is_some_and(|interaction| context.domain.holds.get(&interaction.id) == Some(&crate::domain::Hold::Plan)) {
+                return Some(t!(lang, "Review the plan", "Revisa el plan").into());
+            }
             if let Some(said) = interaction.and_then(super::card::node_words) {
                 return Some(tf!(lang, "“{said}”", "«{said}»"));
             }
             if let Some((need, _)) = interaction.and_then(|interaction| super::card::own_text(interaction, context.domain, lang)) {
                 return Some(need);
             }
-            let need = one.card.need.trim();
+            let need = one.card.effective_title().trim();
             Some(tf!(lang, "“{need}”", "«{need}»"))
         }
         [_] => Some(t!(lang, "1 open question", "1 pregunta abierta").into()),

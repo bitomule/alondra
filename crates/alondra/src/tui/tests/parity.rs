@@ -1250,16 +1250,14 @@ fn text_of(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
 }
 
 #[test]
-fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
+fn card_detail_starts_with_the_title_and_keeps_agent_and_age_metadata() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let card = question_card();
     let lines = text_of(&crate::tui::view_render::document_lines(&card, 80, false, false));
-    let header = &lines[0];
-    assert!(
-        header.starts_with("? DECIDE · Restore the native review experience · Demo Garden · ") && (header.ends_with(" ago") || header.ends_with("Sep 30")),
-        "{header}"
-    );
-    assert_eq!(lines[1], "Choose the welcome copy");
+    assert_eq!(lines[0], "Choose the welcome copy");
+    assert!(lines.iter().any(|line| line.starts_with("Restore the native review experience · Demo Garden · ")
+        && (line.ends_with(" ago") || line.ends_with("Sep 30"))), "{lines:#?}");
+    assert!(!lines.iter().any(|line| line.contains("DECIDE")), "the frame carries the kind: {lines:#?}");
     assert_eq!(
         lines.iter().filter(|line| line.contains("Choose the welcome copy")).count(),
         1,
@@ -2530,4 +2528,47 @@ fn a_numbered_list_on_a_card_reads_as_a_list_and_other_facts_keep_their_label() 
     let done: ViewDocument = serde_json::from_value(view_fixture("card-outcome-done-es-tui.json")).unwrap();
     let lines = text_of(&crate::tui::view_render::document_lines(&done, 100, false, false));
     assert!(lines.iter().any(|line| line.starts_with("Cancelada: Documentar las cuentas")), "{lines:#?}");
+}
+
+#[test]
+fn card_title_contract_tui_uses_fields_without_text_comparison() {
+    let mut value = view_fixture("card-question.json");
+    value["title"] = serde_json::json!("A wrapper title that must not be shown");
+    value["sections"][0]["items"][0]["title"] = serde_json::json!("Release design");
+    value["sections"][0]["items"][0]["need"] = serde_json::json!("Choose a design");
+    value["sections"][0]["items"][0]["title_is_separate"] = serde_json::json!(true);
+    let view = serde_json::from_value(value.clone()).unwrap();
+    let kind = crate::tui::view_render::document_kind(&view).unwrap();
+    assert!(!kind.is_empty());
+    let lines = text_of(&crate::tui::view_render::document_lines(&view, 100, false, false)).join("\n");
+    assert!(!lines.contains(&kind.to_uppercase()), "the kind belongs to the pane frame: {lines}");
+    assert_eq!(lines.matches("Release design").count(), 1, "{lines}");
+    assert_eq!(lines.matches("Choose a design").count(), 1, "{lines}");
+    assert!(!lines.contains("A wrapper title"), "{lines}");
+    let mut equal = value.clone();
+    equal["sections"][0]["items"][0]["need"] = serde_json::json!("Release design");
+    let equal = serde_json::from_value(equal).unwrap();
+    let lines = text_of(&crate::tui::view_render::document_lines(&equal, 100, false, false)).join("\n");
+    assert_eq!(lines.matches("Release design").count(), 2, "explicit fields remain even when their text is equal: {lines}");
+    value["sections"][0]["items"][0]["need"] = serde_json::json!("Legacy metadata is not a request");
+    for signal in [Some(false), None] {
+        let fields = value["sections"][0]["items"][0].as_object_mut().unwrap();
+        if let Some(signal) = signal {
+            fields.insert("title_is_separate".into(), serde_json::json!(signal));
+        } else {
+            fields.remove("title_is_separate");
+        }
+        let view = serde_json::from_value(value.clone()).unwrap();
+        assert!(!crate::tui::view_render::typed_card(&view).unwrap().title_is_separate);
+        let lines = text_of(&crate::tui::view_render::document_lines(&view, 100, false, false)).join("\n");
+        assert_eq!(lines.matches("Release design").count(), 1, "{lines}");
+        assert!(!lines.contains("Legacy metadata"), "{lines}");
+    }
+    let view = serde_json::from_value(value).unwrap();
+    let mut card = crate::tui::view_render::typed_card(&view).unwrap().clone();
+    card.icon = alondra_core::views::Icon::PullRequest;
+    card.state = Some(alondra_core::views::Label { text: "Ready for review".into(), tone: alondra_core::views::Tone::Info, elapsed: None });
+    let lines = text_of(&crate::tui::view_render::card_lines(&card, 100));
+    assert_eq!(lines[0], "Release design");
+    assert!(lines.iter().any(|line| line.starts_with("Ready for review")), "{lines:#?}");
 }

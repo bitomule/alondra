@@ -534,7 +534,7 @@ fn a_turn_the_user_interrupted_ends_on_a_card_that_says_so() {
     must(&mut s, user(), Command::InterruptTurn { agent_id: "a".into() });
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     let asked = &s.interactions[&InteractionId::from(card.as_str())];
-    assert_eq!(asked.card.need, "You interrupted “Task t”: tell it how to go on");
+    assert_eq!(asked.card.effective_title(), "You interrupted “Task t”: tell it how to go on");
     assert_eq!(asked.card.why, INTERRUPTED_WHY);
     assert!(matches!(&asked.payload, InteractionPayload::Question { options, answer: None }
         if options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>() == [CARRY_ON, CANCEL_TASK]));
@@ -574,11 +574,11 @@ fn a_card_naming_a_task_with_a_long_title_shortens_the_title_and_says_all_it_ask
     let card = interrupted_turn(&mut s, "t", "a");
     s.tasks.get_mut(&TaskId::from("t")).unwrap().title = TITLE.into();
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    let stored = &s.interactions[&InteractionId::from(card.as_str())].card.need;
+    let stored = s.interactions[&InteractionId::from(card.as_str())].card.effective_title();
     assert!(stored.starts_with("You interrupted “Parcel: quitar la") && stored.ends_with("…”: tell it how to go on"), "{stored}");
     assert!(stored.chars().count() <= CardSpec::TITLED_NEED_MAX, "{stored}");
     let en = turn_end_shown(&s, "t", Lang::En);
-    assert!(en.contains(stored.as_str()), "{en}");
+    assert!(en.contains(stored), "{en}");
     let es_need = fit_title(TITLE, CardSpec::TITLED_NEED_MAX, |title| format!("Lo interrumpiste: dile a «{title}» cómo seguir"));
     assert!(es_need.starts_with("Lo interrumpiste: dile a «Parcel: quitar") && es_need.ends_with("…» cómo seguir"), "{es_need}");
     assert!(es_need.chars().count() <= CardSpec::TITLED_NEED_MAX, "{es_need}");
@@ -784,7 +784,7 @@ fn tasks_signed_out_of_claude_wait_on_cards_listed_and_announced_as_one() {
     let first = fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
     let second = fail_turn(&mut s, "u", "turn-1", "authentication_failed", None);
     assert_eq!(sign_in_cards(&s).len(), 2, "each task waits on a card of its own");
-    assert_eq!(sign_in_cards(&s)[0].card.need, "Sign in to Claude outside Alondra");
+    assert_eq!(sign_in_cards(&s)[0].card.effective_title(), "Sign in to Claude outside Alondra");
     assert_eq!((notices(&first), notices(&second)), (1, 0), "announced once");
     assert_eq!(listed_holds(&s).len(), 1, "Waiting for You lists one: {:?}", listed_holds(&s));
     for generic in [generic_t, generic_u] {
@@ -1073,7 +1073,7 @@ fn a_refusal_signing_in_cannot_fix_asks_on_the_tasks_own_card_with_its_reason() 
         let card = sdk_turn(&mut s, "t", "a");
         fail_turn(&mut s, "t", "turn-1", error, status);
         let asked = &s.interactions[&InteractionId::from(card.as_str())];
-        assert_eq!(asked.card.need, format!("“Task t” stopped: {reason}"));
+        assert_eq!(asked.card.effective_title(), format!("“Task t” stopped: {reason}"));
         assert_eq!(asked.card.why, REFUSED_WHY);
         assert!(sign_in_cards(&s).is_empty(), "{error} {status:?} is not a logout");
         assert_eq!(listed_holds(&s), Vec::<String>::new());
@@ -1120,7 +1120,7 @@ fn a_host_that_ends_mid_turn_asks_once_how_the_task_goes_on() {
     sdk_turn(&mut s, "t", "a");
     let ended = must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the interrupted task asks").clone();
-    assert_eq!(s.interactions[&card].card.need, "“Task t” was interrupted when its session closed: tell it how to go on");
+    assert_eq!(s.interactions[&card].card.effective_title(), "“Task t” was interrupted when its session closed: tell it how to go on");
     assert_eq!(options(&s, &card), [CARRY_ON, CANCEL_TASK]);
     assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
     assert!(!holds_slot(&s, "t"), "nothing of the ended host runs");
@@ -1156,7 +1156,7 @@ fn a_turn_that_stays_open_after_claude_accepted_its_interrupt_can_be_forced_to_s
 
     must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the stopped task asks").clone();
-    assert_eq!(s.interactions[&card].card.need, "You interrupted “Task t”: tell it how to go on", "Claude exiting ends the turn as the user's interrupt");
+    assert_eq!(s.interactions[&card].card.effective_title(), "You interrupted “Task t”: tell it how to go on", "Claude exiting ends the turn as the user's interrupt");
     assert_eq!(s.interactions[&card].card.why, INTERRUPTED_WHY);
     assert_eq!(options(&s, &card), [CARRY_ON, CANCEL_TASK]);
     let en = turn_end_shown(&s, "t", Lang::En);
@@ -1253,7 +1253,7 @@ fn a_message_the_ended_host_may_not_have_read_is_shown_whole_and_sent_again_only
     let mut s = world();
     let (card, text) = doubtful(&mut s, "Add the tests first");
     let doubt = &s.interactions[&card];
-    assert_eq!(doubt.card.need, "“Task t” closed before confirming it read your message: send it again?");
+    assert_eq!(doubt.card.effective_title(), "“Task t” closed before confirming it read your message: send it again?");
     assert_eq!(doubt.card.content.as_ref().map(|content| content.body.as_str()), Some(text.as_str()), "the card carries the whole message");
     assert_eq!(options(&s, &card), [RESEND, TAKE_AS_RECEIVED]);
     assert_eq!(exec(&mut s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: "other".into(), text: "other".into(), resumes: false, by_alondra: false })
@@ -1875,7 +1875,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host refused to be taken over and did not stop: pid 7 is still alive".into() });
     let card = s.interactions.keys().find(|id| id.0.starts_with(HOST_LOST_PREFIX)).expect("the task has a card").clone();
     let shown = &s.interactions[&card];
-    assert_eq!(shown.card.need, "“Task t” stopped: Alondra could not resume its session");
+    assert_eq!(shown.card.effective_title(), "“Task t” stopped: Alondra could not resume its session");
     assert_eq!(shown.card.content.as_ref().map(|content| content.body.as_str()), Some("Its host refused to be taken over and did not stop: pid 7 is still alive"), "the details carry the reason");
     assert_eq!(options(&s, &card), [RETAKE, CANCEL_TASK]);
     assert!(lost.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
@@ -1920,7 +1920,7 @@ fn a_turn_claude_ended_as_failed_asks_how_to_go_on_and_names_its_error() {
     let card = sdk_turn(&mut s, "t", "a");
     let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: Some("error_max_turns".into()) });
     let failed = &s.interactions[&InteractionId::from(card.as_str())];
-    assert_eq!(failed.card.need, "Claude's turn ended with an error (`error_max_turns`): tell it how to go on");
+    assert_eq!(failed.card.effective_title(), "Claude's turn ended with an error (`error_max_turns`): tell it how to go on");
     assert_eq!(options(&s, &card.as_str().into()), [CARRY_ON, CANCEL_TASK]);
     assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == card)));
     assert!(held(&s).is_empty(), "nothing waits for the API");
@@ -1971,7 +1971,7 @@ fn a_message_claude_never_reads_leaves_the_queue_and_asks_whether_to_send_it_aga
     let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
     assert!(replayed.pending_inputs().is_empty(), "nothing waits for Claude to read it");
     let asked = &s.interactions[&card];
-    assert_eq!(asked.card.need, "Claude didn't get to read your message");
+    assert_eq!(asked.card.effective_title(), "Claude didn't get to read your message");
     assert_eq!(asked.card.content.as_ref().map(|content| content.body.as_str()), Some(text.as_str()), "the card carries the whole message");
     assert_eq!(options(&s, &card), [SEND_AGAIN, DISCARD]);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
@@ -2080,7 +2080,7 @@ fn a_host_force_stopped_during_the_work_after_the_merge_tells_the_user_and_offer
     let mut s = world();
     working_after_the_merge(&mut s);
     let (ended, card) = force_stopped(&mut s);
-    assert_eq!(s.interactions[&card].card.need, "You stopped “Task t” during its work after the merge: tell it how to go on");
+    assert_eq!(s.interactions[&card].card.effective_title(), "You stopped “Task t” during its work after the merge: tell it how to go on");
     assert_eq!(s.interactions[&card].card.why, POST_MERGE_STOPPED_WHY);
     assert_eq!(s.interactions[&card].card.content.as_ref().map(|content| content.body.as_str()), Some("release.sh publishes 0.3.0"));
     assert_eq!(options(&s, &card), [CARRY_ON, CLOSE_TASK]);

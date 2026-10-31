@@ -355,7 +355,7 @@ pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'st
     let right_width: usize = right.iter().map(Span::width).sum();
     let right_beside = right_width <= budget / 3;
     let column = if right_beside && right_width > 0 { budget.saturating_sub(right_width + 2) } else { budget };
-    let need = card.need.as_deref().unwrap_or(&card.title);
+    let need = &card.title;
     let mut need_style = Style::default();
     if selected {
         need_style = need_style.add_modifier(Modifier::BOLD);
@@ -401,32 +401,25 @@ pub fn card_task_id(card: &Card) -> Option<alondra_core::domain::TaskId> {
     }
 }
 
-/// `◆ AUTHORIZE · Alondra · iOS · Demo Garden · 3d ago`: what it is, who it came from, how old.
-fn card_header(card: &Card) -> Line<'static> {
-    let (glyph, color) = card_glyph(card);
-    let name = card.eyebrow.as_ref().map(|eyebrow| eyebrow.text.to_uppercase()).unwrap_or_default();
-    let mut spans = vec![Span::styled(
-        format!("{glyph} {name}").trim_end().to_owned(),
-        Style::new().fg(color).add_modifier(Modifier::BOLD),
-    )];
-    if let Some(state) = pr_state(card) {
-        spans.push(Span::styled(" · ", Style::new().fg(DIM)));
-        spans.push(Span::styled(state.text.clone(), label_style(state)));
-    }
-    for part in [card.meta.clone(), card_age(card)].into_iter().flatten() {
-        spans.push(Span::styled(format!(" · {part}"), Style::new().fg(DIM)));
-    }
-    Line::from(spans)
-}
-
-/// The top of the detail: type, what is needed, why, and what holds it back. The content, the
-/// context and the history follow as the daemon's own sections.
+/// The detail starts with its title; the pane frame carries the card's kind.
 pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
-    let mut out = vec![card_header(card)];
-    let need = card.need.as_deref().unwrap_or(&card.title);
-    out.push(Line::from(super::md::inline(need, Style::new().add_modifier(Modifier::BOLD))));
+    let mut out = super::md::wrap(super::md::inline(&card.title, Style::new().add_modifier(Modifier::BOLD)), width, vec![], vec![]);
+    if let Some(need) = card.need.as_ref().filter(|_| card.title_is_separate) {
+        out.extend(super::md::render(&super::md::parse(need), width).lines);
+    }
     if let Some(why) = card.why.as_ref().or(card.subtitle.as_ref()) {
         out.extend(super::md::render(&super::md::parse(why), width).lines.into_iter().map(|line| grey(line, Color::Gray)));
+    }
+    let mut metadata = vec![];
+    if let Some(state) = pr_state(card) {
+        metadata.push(Span::styled(state.text.clone(), label_style(state)));
+    }
+    for part in [card.meta.clone(), card_age(card)].into_iter().flatten() {
+        if !metadata.is_empty() { metadata.push(Span::styled(" · ", Style::new().fg(DIM))); }
+        metadata.push(Span::styled(part, Style::new().fg(DIM)));
+    }
+    if !metadata.is_empty() {
+        out.extend(super::md::wrap(metadata, width, vec![], vec![]));
     }
     for chip in card.blocked_by.iter().chain(&card.blocks) {
         out.push(Line::from(chip.label.clone().fg(ACCENT)));
@@ -680,13 +673,7 @@ pub fn document_lines_with(
     changes: &dyn Fn(&str, &str) -> Option<String>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let cards_title = |title: &String| {
-        view.sections
-            .iter()
-            .flat_map(|section| &section.items)
-            .any(|item| matches!(item, Item::Card(card) if card.title == *title))
-    };
-    if let Some(title) = view.title.as_ref().filter(|title| !cards_title(title)) {
+    if let Some(title) = view.title.as_ref().filter(|_| view.view != "card" || typed_card(view).is_none()) {
         lines.push(Line::from(Span::styled(
             title.clone(),
             Style::new().add_modifier(Modifier::BOLD),

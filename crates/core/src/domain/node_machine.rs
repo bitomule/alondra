@@ -16,7 +16,7 @@ pub const UNHEARD_PREFIX: &str = "unheard-";
 pub const CARRY_ON: &str = "carry_on";
 pub const CARRY_ON_LABEL: &str = "Carry on";
 pub(super) const CARRY_ON_MEANS: &str = "It goes on with its task and asks you through a card when it needs you";
-const UNHEARD_WHY: &str = "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.";
+pub(crate) const UNHEARD_WHY: &str = "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.";
 /// The cards of the pauses the gate holds a node of the Agent SDK in, which its task's lifecycle
 /// keeps: who the pause waits for and since when are in the card's id, so the journal keeps them.
 /// They stay out of Waiting for You: the task's row shows the pause and its Resume button.

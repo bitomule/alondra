@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "v393a798a470735c3",
+  "version": "v4727436dda4ec236",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "g-q2",
           "kind": "decide",
-          "need": "Ship it today?",
+          "need": "Choose an option",
+          "title_is_separate": true,
           "why": "The release needs it",
           "meta": "Build a feature · 2 of 3",
           "reply": {

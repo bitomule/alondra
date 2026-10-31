@@ -874,6 +874,7 @@ pub enum ContentKind {
 }
 /// The long part of a card, shown only in its detail. Without `summary` Alondra computes one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CardContent {
     pub kind: ContentKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -893,6 +894,8 @@ pub enum CardTarget {
 #[serde(deny_unknown_fields)]
 pub struct CardSpec {
     pub kind: CardKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// What the user must do, in the imperative: at most 90 characters.
     pub need: String,
     /// Why, and whom it holds back: at most 240 characters.
@@ -989,6 +992,8 @@ pub struct QuestionGroup {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupQuestion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// The question, clear on its own: at most 90 characters.
     pub need: String,
     /// What the user needs to know to answer it: at most 240 characters.
@@ -1019,6 +1024,7 @@ pub fn without_recommended_suffix(label: &str) -> Option<String> {
     (!bare.is_empty()).then(|| bare.to_owned())
 }
 impl CardSpec {
+    pub const TITLE_MAX: usize = 160;
     pub const NEED_MAX: usize = 90;
     /// The longest headline of Alondra's own cards that name their task: it fits a notification's
     /// title too, so no screen cuts what the card asks.
@@ -1026,10 +1032,12 @@ impl CardSpec {
     pub const WHY_MAX: usize = 240;
     pub const SUMMARY_MAX: usize = 60;
 
-    pub fn new(kind: CardKind, need: impl Into<String>) -> Self {
+    /// An internally authored subject with a short default request for its kind.
+    pub fn new(kind: CardKind, title: impl Into<String>) -> Self {
         CardSpec {
             kind,
-            need: need.into(),
+            title: Some(title.into()),
+            need: fallback_need(kind).into(),
             why: String::new(),
             content: None,
             recommended: None,
@@ -1047,6 +1055,17 @@ impl CardSpec {
             form: None,
             system: None,
         }
+    }
+    pub fn needing(mut self, need: impl Into<String>) -> Self {
+        self.need = need.into();
+        self
+    }
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+    pub fn effective_title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.need)
     }
     pub fn plan(mut self, plan: impl Into<String>) -> Self {
         self.plan = Some(plan.into());
@@ -1076,7 +1095,7 @@ impl CardSpec {
             None if kind.needs_why() => need.clone(),
             None => String::new(),
         };
-        let mut card = CardSpec::new(kind, need).why(why);
+        let mut card = CardSpec::new(kind, need.clone()).needing(need).why(why);
         if rest.len() > 1 || first.chars().count() > Self::NEED_MAX || rest.first().is_some_and(|p| p.chars().count() > Self::WHY_MAX) {
             card = card.content(ContentKind::Report, body.trim());
         }
@@ -1196,13 +1215,7 @@ impl Interaction {
             return Some(Cow::Borrowed(content));
         }
         let body = self.body.trim();
-        let (need, why) = (self.card.need.trim(), self.card.why.trim());
-        let only_the_card = body
-            .lines()
-            .map(|line| line.trim().trim_start_matches('#').trim())
-            .filter(|line| !line.is_empty())
-            .all(|line| line == need || line == why);
-        if self.author == Author::System || only_the_card {
+        if self.author == Author::System || self.card.title.is_some() || body.is_empty() {
             return None;
         }
         Some(Cow::Owned(CardContent { kind: ContentKind::Report, summary: None, body: body.to_owned() }))

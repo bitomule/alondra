@@ -189,7 +189,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
         let open = cards(&domain);
         assert_eq!(open.len(), 1, "one card, not one per check");
-        assert_eq!(open[0].card.need, "Allow Alondra to use this Mac's local network");
+        assert_eq!(open[0].card.effective_title(), "Allow Alondra to use this Mac's local network");
         assert_eq!(LocalNetworkCard::from_body(&open[0].body), Some(LocalNetworkCard { launcher: true, still: false }));
 
         *answer.lock().unwrap() = ("allowed", None);

@@ -9,6 +9,41 @@ The user supervises the nodes; the Alondra MCP instructions give their name and 
 write to them in. Your terminal does not reach the user: only Alondra's tools do, and the user's
 answers are typed into this session. Alondra sees on its own that you are working.
 
+## Card fields and title
+
+Every new card has an explicit `title`: its subject, one non-empty line of at most
+160 characters. The detail shows it once as the large heading above the content.
+`need` is the short action requested, one non-empty line of at most 90 characters.
+`why` explains why in at most 240 characters; it is required when the card asks for
+something. These are short lines, never the document.
+
+`content.kind` names the content type; `content.body` holds the complete content,
+without repeating `title` as its first heading. When content is present, kind and
+a non-empty body are required. `content.summary` is an optional label of at most
+60 characters. Do not put the title in summary either.
+
+Correct: title "Release design", need "Choose a design", why "The release needs
+one design", content {kind: "options", body: "Atlas uses a compact layout; Borealis
+uses larger text."}. Incorrect: title "Release design" and body "# Release design"
+followed by the same content, or a document pasted into need/why.
+
+For suggest, what supplies the title, why_not_mine supplies why, and where/detail
+are content; Alondra supplies need. For close_request, headline supplies the answer
+card title and answer supplies content; Alondra supplies need. For an orchestrator
+answer_clarification with text, title and need are explicit and text is the content.
+
+This applies to ask, request_input, request_action, request_test, publish_information,
+raise_problem, present_result and every other card producer available to your role.
+Each entry in ask.questions has its own title and question (its need), why and options.
+For a result, title names what changed and need asks to review it. For a native plan,
+the task title provides the card heading: write the plan body without an opening
+heading that repeats that title. Start with the proposal or a section heading.
+
+The domain validates structure, required fields, types and lengths, never wording.
+It does not compare titles with headings and does not remove or rewrite headings.
+A refusal identifies the field to fix. Old stored cards without title remain readable.
+
+
 ## Never deploy
 
 Never install, restart or replace the Alondra daemon or CLI on the user's machine: no `make
@@ -33,7 +68,7 @@ not be reached, do not proceed: retry the same call. If Alondra refused it, the 
 field and how to fix it: fix it and send it again. A refusal is never an answer or a permission,
 and sending the same refused card three times raises a Problem for the user instead.
 
-A tool's arguments are exactly its schema: never add a field it does not have (`need`, `why` and
+A tool's arguments are exactly its schema: never add a field it does not have (`title`, `need`, `why` and
 `content` go at the top level, there is no `card`), and send an object or a list as JSON itself,
 never as text that holds JSON. A call whose arguments do not fit says which ones and what they
 must be; nothing was sent, so fix them and call again.
@@ -124,7 +159,7 @@ Pick the tool by what you need:
   Never ask one card after another: gather every question you have open at that point into one
   `ask` with `questions`, and ask again only when an answer raises something new. Never ask what
   you already asked or the user already answered (check `open_cards` and their earlier replies).
-  To ask several questions together, send `questions` (2 to 4, each `{question, options, recommended,
+  To ask several questions together, send `questions` (2 to 4, each `{title, question, options, recommended,
   why}`) instead of `options`. Each question becomes its own card, the user answers them one by
   one, and every answer comes back together, each to its own question, once the last is answered;
   you never get part of them. Every question must stand on its own and be clear without any

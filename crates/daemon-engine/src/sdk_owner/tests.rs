@@ -501,7 +501,7 @@ impl Slice {
         let read = domain.read();
         let state = read.state();
         let card = state.interactions.values().find(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-"))).expect("a turn-end card");
-        card.card.need.replace(&state.tasks[&TaskId::from(TASK)].title, "<title>")
+        card.card.effective_title().replace(&state.tasks[&TaskId::from(TASK)].title, "<title>")
     }
 
     fn stored_cards(&self) -> i64 {
@@ -2514,7 +2514,7 @@ fn a_prompt_claude_never_delivers_asks_whether_to_send_it_again_and_goes_again_o
     let mut driver = slice.launch_with("failed-delivery");
     slice.settle(&mut driver);
     let card = open_card(&slice.domain, DROPPED_PREFIX).expect("the dropped prompt asks the user");
-    assert_eq!(card.card.need, "Claude didn't get to read your message");
+    assert_eq!(card.card.effective_title(), "Claude didn't get to read your message");
     assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("failed-delivery"));
     assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing waits for Claude to read it");
     assert!(!driver.waits_for_host(), "the owner no longer waits for it");

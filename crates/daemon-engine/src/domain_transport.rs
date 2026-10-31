@@ -830,7 +830,7 @@ fn question_label(question: &str) -> String {
 fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain::Interaction) -> String {
     let lines: Vec<String> = state.group_members(interaction).into_iter().enumerate().map(|(index, member)| {
         let said = alondra_core::domain::answer_said(member).unwrap_or_default();
-        format!("{}. {} (card {}) → {said}", index + 1, member.card.need, member.id)
+        format!("{}. {} (card {}) → {said}", index + 1, member.card.effective_title(), member.id)
     }).collect();
     let who = if matches!(interaction.recipient, Recipient::Orchestrator) { "The orchestrator" } else { "The user" };
     format!("{who} answered your {} cards:\n{}", lines.len(), lines.join("\n"))
@@ -898,8 +898,8 @@ pub fn render(state: &DomainState, message: &OutboxMessage) -> String {
             }
         }
         Author::Agent { .. } if matches!(interaction.recipient, Recipient::Orchestrator) =>
-            format!("The orchestrator answered your card {} ({}): {said}", interaction.id, interaction.card.need),
-        Author::Agent { .. } => format!("Answer to your card {} ({}): {said}", interaction.id, interaction.card.need),
+            format!("The orchestrator answered your card {} ({}): {said}", interaction.id, interaction.card.effective_title()),
+        Author::Agent { .. } => format!("Answer to your card {} ({}): {said}", interaction.id, interaction.card.effective_title()),
         _ => said,
     }
 }
@@ -2240,7 +2240,7 @@ pub mod tests {
         assert_eq!(phase_of(&domain), NodePhase::WaitingUser { in_turn: false }, "blocked is no work");
         let cards = unheard(&domain);
         assert_eq!(cards.len(), 1, "its words reach the user");
-        assert_eq!(cards[0].card.need, "“Task” stopped without a word", "no Stop came with its words");
+        assert_eq!(cards[0].card.effective_title(), "“Task” stopped without a word", "no Stop came with its words");
         assert!(cards[0].card.content.is_none());
 
         domain.live.mods.set_job("agent-a", Some(crate::job_state::Job {
@@ -2459,7 +2459,7 @@ pub mod tests {
     fn ask(agent: &str) -> Value {
         json!({"session_id": agent, "id": "toolu-ask", "kind": "question",
             "input": {"questions": [
-                {"question": "Which database?", "options": [{"label": "Postgres", "description": "Shared server"}, {"label": "SQLite"}]},
+                {"header":"Database", "question": "Which database?", "options": [{"label": "Postgres", "description": "Shared server"}, {"label": "SQLite"}]},
                 {"question": "Also migrate the old rows?"}]}})
     }
 
@@ -2823,17 +2823,17 @@ pub mod tests {
         };
         let permission = post(permission("agent-a"));
         assert_eq!(permission.kind, CardKind::Authorize);
-        assert!(permission.need.contains("Bash: Clean the build"), "{}", permission.need);
+        assert!(permission.effective_title().contains("Bash: Clean the build"), "{}", permission.effective_title());
         let command = permission.content.unwrap();
         assert_eq!(command.kind, ContentKind::Command);
         assert!(command.body.contains("rm -rf build") && !command.body.contains("Bash: Clean the build"), "{}", command.body);
         let plan = post(plan("agent-a"));
-        assert_eq!((plan.kind, plan.need.as_str()), (CardKind::Review, "Ship the parser"));
+        assert_eq!((plan.kind, plan.effective_title(), plan.need.as_str()), (CardKind::Review, "Task", "Review the plan"));
         assert_eq!(plan.content.unwrap().kind, ContentKind::Plan);
         let mut question = single_question("agent-a");
         question["input"]["questions"][0]["options"][1]["label"] = json!("SQLite (Recommended)");
         let question = post(question);
-        assert_eq!((question.kind, question.need.as_str(), question.recommended.as_deref()), (CardKind::Decide, "Which database?", Some("o1")));
+        assert_eq!((question.kind, question.effective_title(), question.need.as_str(), question.recommended.as_deref()), (CardKind::Decide, "Database", "Choose an option", Some("o1")));
         assert!(question.group.is_none(), "one question is an ordinary card");
     }
 
@@ -3077,7 +3077,7 @@ pub mod tests {
             assert_eq!(reply["hookSpecificOutput"], expected);
             let state = domain.state().unwrap();
             assert_eq!(state.holds[&id], Hold::Elicitation);
-            assert!(state.interactions[&id].body.starts_with("Which repository?\n\nMCP server “github” requests your input."));
+            assert!(state.interactions[&id].body.starts_with("MCP server “github” requests your input.\n\nWhich repository?"));
             let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
             assert_eq!(options[0].description.as_deref(), Some("Write the Repository"));
         }

@@ -9,6 +9,8 @@ pub struct OpenCard {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<TaskId>,
     pub kind: CardKind,
+    #[serde(default)]
+    pub title: String,
     pub need: String,
     /// The slot it holds: a new card in it replaces this one without `replaces`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -28,6 +30,7 @@ impl DomainState {
                 Scope::Orchestrator { .. } => None,
             },
             kind: i.card.kind,
+            title: i.card.effective_title().to_owned(),
             need: i.card.need.clone(),
             slot: CardSlot::of(&i.card, &i.payload),
             blocking: i.blocking,

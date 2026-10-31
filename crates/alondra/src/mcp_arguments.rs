@@ -22,6 +22,16 @@ pub(crate) fn check(tool: &str, schema: &Value, arguments: &Value) -> Result<(),
 }
 
 fn shape(schema: &Value, value: &Value, path: &str, problems: &mut Vec<String>) {
+    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
+        let alternatives: Vec<Vec<String>> = branches.iter().map(|branch| {
+            let mut errors = vec![];
+            shape(branch, value, path, &mut errors);
+            errors
+        }).collect();
+        if !alternatives.iter().any(Vec::is_empty) {
+            problems.push(alternatives.iter().map(|errors| errors.join("; ")).collect::<Vec<_>>().join(" or "));
+        }
+    }
     if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
         if !value.is_object() && types(schema).iter().any(|t| *t == "object") {
             problems.push(wrong_type(path, &["object"], value));

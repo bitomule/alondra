@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v375c865e4aedd022",
+  "version": "v8f2acba9b3477748",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
@@ -68,7 +68,8 @@
           "type": "card",
           "id": "f12d034b-249e-4487-a89b-57de38c26372",
           "kind": "know",
-          "need": "The simulator pass is clean",
+          "need": "Read this update",
+          "title_is_separate": true,
           "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
           "meta": "Alondra · Demo Garden",
           "content_row": {
@@ -149,7 +150,6 @@
     },
     {
       "id": "content",
-      "title": "Content",
       "collapsed": false,
       "items": [
         {

@@ -408,7 +408,7 @@ impl<'connection> OwnerTransaction<'connection> {
                             .map_err(|error| StoreError::Storage(error.into()))?;
                         Ok::<_, StoreError>((payload, worktree, worktrees))
                     })?;
-                    let asked = crate::domain_holds::sdk_decision(*kind, &payload, worktree.as_deref(), &worktrees, home);
+                    let asked = crate::domain_holds::sdk_decision(self.state().tasks.get(&task_id).map(|task| task.title.as_str()).unwrap_or("Plan"), *kind, &payload, worktree.as_deref(), &worktrees, home);
                     commands.push(Command::RecordDecisionRequest {
                         task_id: task_id.clone(),
                         generation,

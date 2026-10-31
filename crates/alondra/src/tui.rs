@@ -1669,7 +1669,7 @@ impl App {
     fn card_title(&self, key: &Key) -> String {
         let from_home = self.home_view.as_ref().and_then(|home| {
             home.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-                alondra_core::views::Item::Card(card) if card.id == key.0 => card.need.clone(),
+                alondra_core::views::Item::Card(card) if card.id == key.0 => Some(card.title.clone()),
                 _ => None,
             })
         });
