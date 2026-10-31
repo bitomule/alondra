@@ -3,6 +3,7 @@
 //! net under the redaction, never a replacement for it.
 use std::collections::HashSet;
 
+use base64::Engine;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -87,6 +88,11 @@ pub fn shapes(line: &str) -> Vec<&'static str> {
     let lowered = line.to_ascii_lowercase();
     for (prefix, what) in [
         ("sk-ant-", "an Anthropic key"),
+        ("sk-proj-", "a key"),
+        ("sk_live_", "a key"),
+        ("rk_live_", "a key"),
+        ("glpat-", "a key"),
+        ("npm_", "a key"),
         ("ghp_", "a GitHub token"),
         ("gho_", "a GitHub token"),
         ("ghu_", "a GitHub token"),
@@ -99,6 +105,21 @@ pub fn shapes(line: &str) -> Vec<&'static str> {
         if lowered.contains(prefix) {
             found.push(what);
         }
+    }
+    if lowered.as_bytes().windows(5).any(|s| s.starts_with(b"xox") && s[3].is_ascii_alphabetic() && s[4] == b'-')
+        || ["akia", "aiza"].iter().any(|prefix| has_marker(&lowered, prefix, |_| true))
+        || has_marker(&lowered, "x-api-key", |tail| tail.trim_start().starts_with([':', '=']))
+    {
+        found.push("a key");
+    }
+    if has_marker(&lowered, "cookie", |tail| tail.trim_start().starts_with([':', '='])) {
+        found.push("a Cookie header");
+    }
+    if has_marker(&lowered, "authorization", |tail| tail.trim_start().starts_with([':', '=']))
+        || has_marker(&lowered, "bearer", |tail| tail.starts_with(auth_separator))
+        || has_marker(&lowered, "basic", |tail| basic_credentials(&line[line.len() - tail.len()..]))
+    {
+        found.push("an Authorization header");
     }
     if has_jwt(line) {
         found.push("a JWT");
@@ -114,6 +135,28 @@ pub fn shapes(line: &str) -> Vec<&'static str> {
     }
     found.dedup();
     found
+}
+
+fn auth_separator(c: char) -> bool {
+    c.is_ascii_whitespace() || matches!(c, ':' | '=')
+}
+
+fn basic_credentials(tail: &str) -> bool {
+    if !tail.starts_with(auth_separator) {
+        return false;
+    }
+    let token = tail.trim_start_matches(auth_separator).split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))).next().unwrap_or_default();
+    base64::engine::general_purpose::STANDARD
+        .decode(token)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(token))
+        .is_ok_and(|bytes| bytes.contains(&b':'))
+}
+
+fn has_marker(line: &str, marker: &str, followed_by: impl Fn(&str) -> bool) -> bool {
+    line.match_indices(marker).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        !before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-')) && followed_by(&line[at + marker.len()..])
+    })
 }
 
 fn has_jwt(line: &str) -> bool {

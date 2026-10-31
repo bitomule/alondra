@@ -540,7 +540,10 @@ fn the_final_check_finds_every_shape_and_every_value_of_this_mac() {
     ] {
         assert_eq!(canary::shapes(line).first(), Some(&what), "{line}");
     }
-    for clean in ["2026-10-25T05:43:41.854Z version 0.3.5 took 1.5s", "Event::HostEnded at 14:13:20", "repo-1/pull/42 task-3"] {
+    for clean in [
+        "2026-10-25T05:43:41.854Z version 0.3.5 took 1.5s", "Event::HostEnded at 14:13:20", "repo-1/pull/42 task-3",
+        "I live in Slovakia", "the basic settings page crashes", "a cookie jar", "basically broken", "x-api-keyring: empty",
+    ] {
         assert!(canary::shapes(clean).is_empty(), "{clean}: {:?}", canary::shapes(clean));
     }
     let home = Directory::new();
@@ -578,6 +581,69 @@ fn a_report_the_final_check_refuses_is_never_saved() {
     assert!(error.contains("daemon.log, line 1"), "{error}");
     assert!(!out.exists());
 }
+
+macro_rules! secret_format_test {
+    ($name:ident, $secret:literal) => {
+        #[test]
+        fn $name() {
+            let text = format!("What happened?\n{}\n", $secret);
+            let hits = bundle::check(
+                &vec![("daemon.log".into(), text.clone())],
+                &Private::default(),
+            );
+            let home = Directory::new();
+            let mac = FakeMac::new(&home);
+            let built = build(&mac, hours_before(24), Some(text), None).unwrap();
+            assert_eq!(
+                (hits.len(), built.hits.len()),
+                (1, 1),
+                "the final check must catch the secret in both daemon.log and What happened?"
+            );
+            assert_eq!(hits[0].line, 2);
+            assert_eq!(built.hits[0].section, bundle::DESCRIPTION);
+            assert_eq!(built.hits[0].line, 2);
+            assert!(
+                !built.hits[0].what.contains($secret),
+                "the reason must not repeat the secret"
+            );
+            assert!(
+                checked(&mac, &built.id).is_err(),
+                "a report containing the secret must not be sendable"
+            );
+        }
+    };
+}
+
+secret_format_test!(secret_format_openai, "sk-proj-example0123456789");
+secret_format_test!(secret_format_aws, "AKIAIOSFODNN7EXAMPLE");
+secret_format_test!(secret_format_slack_bot, "xoxb-example-0123456789");
+secret_format_test!(secret_format_slack_user, "xoxp-example-0123456789");
+secret_format_test!(secret_format_slack_app, "xoxa-example-0123456789");
+secret_format_test!(secret_format_slack_refresh, "xoxr-example-0123456789");
+secret_format_test!(secret_format_google, "AIzaExample0123456789");
+secret_format_test!(secret_format_stripe_secret, "sk_live_example0123456789");
+secret_format_test!(secret_format_stripe_restricted, "rk_live_example0123456789");
+secret_format_test!(secret_format_gitlab, "glpat-example0123456789");
+secret_format_test!(secret_format_npm, "npm_example0123456789");
+secret_format_test!(secret_format_api_key_header, "X-Api-Key: example0123456789");
+secret_format_test!(
+    secret_format_cookie_header,
+    "Cookie: session=example0123456789"
+);
+secret_format_test!(secret_format_basic, "Authorization = Basic dXNlcjpwYXNz");
+secret_format_test!(secret_format_basic_standalone, "Basic dXNlcjpwYXNz");
+secret_format_test!(secret_format_basic_colon, "basic:dXNlcjpwYXNz");
+secret_format_test!(secret_format_basic_mixed_case, "bAsIc\tdXNlcjpwYXNz");
+secret_format_test!(
+    secret_format_api_key_header_equals,
+    "x-api-key = example0123456789"
+);
+secret_format_test!(
+    secret_format_cookie_header_spaced,
+    "COOKIE : session=example0123456789"
+);
+secret_format_test!(secret_format_bearer_colon, "bearer:example0123456789");
+secret_format_test!(secret_format_bearer_equals, "BEARER=example0123456789");
 
 #[test]
 fn a_report_changed_after_its_preview_is_refused() {
