@@ -402,6 +402,91 @@ fn listing_finds_reports_by_their_title_and_delete_closes_the_issue_and_takes_th
 }
 
 #[test]
+fn delete_refuses_an_issue_pointing_to_an_unrelated_gist() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    let gh = FakeGithub::new();
+    let Outcome::Sent { number, .. } = send_it(&gh, &mac, &built.id).unwrap() else { panic!() };
+    let mut public = Public::parse(&issue(&gh, number).body).unwrap();
+    let notes = "My private notes";
+    let foreign = repo(&gh).create_gist("my private notes", "part-01", notes).unwrap();
+    public.gist = foreign.url;
+    public.parts = 1;
+    public.sha256 = bundle::sha256(notes.as_bytes());
+    gh.as_user("stranger");
+    let forged = repo(&gh).create_issue(&public.title(), &public.body(), send::LABEL).unwrap();
+    gh.as_user(OWNER);
+    let result = delete_issue_report(&repo(&gh), &forged);
+    assert_eq!(gh.calls("DELETE gists/"), 0, "an issue cannot authorize deleting unrelated notes");
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(gh.0.borrow().gists.len(), 2);
+    assert!(issue(&gh, forged.number).open);
+}
+
+fn assert_delete_refuses_change(change: &str) {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    let gh = FakeGithub::new();
+    let Outcome::Sent { number, .. } = send_it(&gh, &mac, &built.id).unwrap() else { panic!() };
+    {
+        let mut world = gh.0.borrow_mut();
+        let gist = &mut world.gists[0];
+        match change {
+            "description" => gist.description = send::gist_description("r-19000101-00000000"),
+            "content" => gist.files.get_mut("part-01").unwrap().push_str("changed"),
+            "missing part" => { gist.files.remove("part-01"); }
+            "extra file" => { gist.files.insert("notes.txt".into(), "My private notes".into()); }
+            _ => unreachable!(),
+        }
+    }
+    let result = delete_issue_report(&repo(&gh), &issue(&gh, number));
+    assert_eq!(gh.calls("DELETE gists/"), 0, "{change}");
+    assert!(result.is_err(), "{change}: {result:?}");
+    assert_eq!(gh.0.borrow().gists.len(), 1, "{change}");
+    assert!(issue(&gh, number).open, "{change}");
+}
+
+#[test]
+fn delete_requires_the_same_report_id_in_the_description() {
+    assert_delete_refuses_change("description");
+}
+
+#[test]
+fn delete_requires_the_same_content_hash() {
+    assert_delete_refuses_change("content");
+}
+
+#[test]
+fn delete_refuses_a_missing_part() {
+    assert_delete_refuses_change("missing part");
+}
+
+#[test]
+fn delete_refuses_files_outside_the_report() {
+    assert_delete_refuses_change("extra file");
+}
+
+#[test]
+fn delete_verifies_all_parts_of_a_genuine_report() {
+    let gh = FakeGithub::new();
+    let id = "r-20261025-00000000";
+    let file = format!("{}{}end", "A".repeat(send::PART_BYTES), "B".repeat(send::PART_BYTES));
+    let mut public = Public::of(id, &vec![], Kind::Other, &file);
+    let parts = send::parts(&file);
+    let gist = repo(&gh).create_gist(&send::gist_description(id), "part-01", parts[0]).unwrap();
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        repo(&gh).put_gist_file(&gist.id, &format!("part-{:02}", index + 1), part).unwrap();
+    }
+    public.gist = gist.url;
+    let sent = repo(&gh).create_issue(&public.title(), &public.body(), send::LABEL).unwrap();
+    delete_issue_report(&repo(&gh), &sent).unwrap();
+    assert!(gh.0.borrow().gists.is_empty());
+    assert!(!issue(&gh, sent.number).open);
+    assert_eq!(gh.calls("DELETE gists/"), 1);
+    assert!(gh.calls("RAW ") > 0, "the hash includes the whole text of truncated parts");
+}
+
+#[test]
 fn a_part_changed_in_its_gist_fails_the_issue_s_hash() {
     let home = Directory::new();
     let (mac, built) = built_report(&home);

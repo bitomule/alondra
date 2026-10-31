@@ -347,7 +347,16 @@ pub fn delete_issue_report(repo: &github::Repo, issue: &github::Issue) -> Result
     let login = repo.login()?;
     let gist = repo.gist(send::gist_id(&public.gist))?;
     let deleted = match gist {
-        Some(gist) if gist.owner == login => repo.delete_gist(&gist.id)?,
+        Some(gist) if gist.owner == login => {
+            if gist.description != send::gist_description(&public.id) {
+                bail!(tr!("the gist's description does not match this report: nothing was deleted", "la descripción del gist no coincide con este informe: no se borró nada"));
+            }
+            if gist.files.len() != public.parts {
+                bail!(tr!("the gist's files do not match this report: nothing was deleted", "los ficheros del gist no coinciden con este informe: no se borró nada"));
+            }
+            send::gist_file(&public, &gist)?;
+            repo.delete_gist(&gist.id)?
+        }
         _ => false,
     };
     if issue.open {

@@ -350,6 +350,13 @@ pub fn download(repo: &Repo, issue: &Issue) -> Result<(Public, String)> {
     };
     let url = public.gist.clone();
     let gist = repo.gist(gist_id(&url))?.with_context(|| trf!("the report's gist {url} was deleted", "el gist del informe, {url}, se borró"))?;
+    let file = gist_file(&public, &gist)?;
+    Ok((public, file))
+}
+
+/// Joins a report's parts and verifies the hash its issue names.
+pub fn gist_file(public: &Public, gist: &super::github::Gist) -> Result<String> {
+    let url = &public.gist;
     let mut file = String::new();
     for index in 0..public.parts {
         let name = part_name(index);
@@ -361,7 +368,7 @@ pub fn download(repo: &Repo, issue: &Issue) -> Result<(Public, String)> {
     if bundle::sha256(file.as_bytes()) != public.sha256 {
         bail!(tr!("the report in its gist is not the one its issue names: it was changed after it was sent", "el informe de su gist no es el que nombra su issue: se cambió después de enviarlo"));
     }
-    Ok((public, file))
+    Ok(file)
 }
 
 /// The issue number in `12`, `#12` or an issue URL, and the repository the URL names.

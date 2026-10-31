@@ -148,6 +148,7 @@ pub struct Gist {
     pub id: String,
     pub url: String,
     pub owner: String,
+    pub description: String,
     pub files: std::collections::BTreeMap<String, String>,
 }
 
@@ -191,6 +192,7 @@ fn gist(value: &Value) -> GhResult<(Gist, Vec<(String, String)>)> {
     let gist = Gist {
         url: value["html_url"].as_str().map(str::to_owned).unwrap_or_else(|| format!("https://gist.github.com/{id}")),
         owner: value["owner"]["login"].as_str().unwrap_or_default().to_owned(),
+        description: value["description"].as_str().unwrap_or_default().to_owned(),
         id,
         files,
     };
