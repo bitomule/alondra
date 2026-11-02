@@ -99,12 +99,20 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
             }
             calls.push(("close_request", close));
         }
+        if let Some(title) = &script.title {
+            calls.push(("title_request", json!({"request_id": script.request_id, "title": title})));
+        }
         for task in &script.tasks {
             let launch = json!({"name": format!("sandbox/{}", task.task_id), "cwd": fakes.repo(), "model": "sonnet", "reason": "A scripted sandbox node"});
             calls.push(("create_task", json!({
                 "task_id": task.task_id, "request_id": script.request_id, "title": task.title, "agent_id": null,
                 "review_prs": false, "dependencies": task.dependencies, "launch": launch,
             })));
+        }
+        for task in &script.tasks {
+            if let Some(priority) = &task.priority {
+                calls.push(("set_priority", json!({"task_id": task.task_id, "priority": priority})));
+            }
         }
         made.extend(call_all(&dir, &program, &server_args, calls)?);
         std::fs::write(&handled, "")?;

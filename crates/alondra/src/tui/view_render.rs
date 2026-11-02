@@ -749,7 +749,8 @@ pub fn document_lines_with(
                 }
                 Item::Facts(facts) => {
                     for fact in &facts.items {
-                        let mut line = vec![Span::styled(format!("{}: ", fact.label), Style::new().fg(DIM))];
+                        let separator = if fact.label.ends_with('.') { " " } else { ": " };
+                        let mut line = vec![Span::styled(format!("{}{separator}", fact.label), Style::new().fg(DIM))];
                         let style = fact.tone.map_or_else(Style::new, |tone| label_style(&Label { text: String::new(), tone, elapsed: None }));
                         line.extend(super::md::inline(&fact.value, style));
                         lines.push(Line::from(line));

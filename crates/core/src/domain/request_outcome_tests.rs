@@ -2,7 +2,7 @@
 //! task, «Done» when its tasks are over. Nobody else's requests get a card, and the orchestrator
 //! cannot send a second one.
 use super::*;
-use crate::request_outcome::DoneCard;
+use crate::request_outcome::{DoneCard, TasksCard};
 use std::collections::BTreeSet;
 
 fn user() -> Actor {
@@ -217,4 +217,152 @@ fn a_card_the_orchestrator_sent_before_the_upgrade_is_not_repeated() {
     });
     close(&mut s, "r", Some("Yes, with R2"), None);
     assert_eq!(the_card(&s, "r").id.0, "old");
+}
+
+fn planned(s: &mut DomainState, id: &str, request: &str, after: &[&str]) {
+    ok(s, orchestrator(), Command::CreateTask {
+        plan_items: None, task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
+        review_prs: false, dependencies: after.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
+        launch: Some(LaunchPlan::new("node", "/tmp/project")),
+    });
+}
+fn announce(s: &mut DomainState) -> CommandOutcome {
+    ok(s, Actor::System, Command::AnnounceRequestTasks)
+}
+fn tasks_cards(s: &DomainState, request: &str) -> Vec<(Interaction, TasksCard)> {
+    let mut cards: Vec<_> = cards(s, request).into_iter()
+        .filter(|i| i.id.0.starts_with(crate::request_outcome::TASKS_PREFIX))
+        .map(|i| { let card = TasksCard::from_body(&i.body).unwrap(); (i, card) })
+        .collect();
+    cards.sort_by_key(|(i, _)| i.order);
+    cards
+}
+fn ids(card: &TasksCard) -> Vec<&str> {
+    card.tasks.iter().map(|t| t.id.as_str()).collect()
+}
+
+#[test]
+fn the_tasks_a_turn_made_reach_the_user_on_one_card_in_the_order_they_run() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    planned(&mut s, "ship", "r", &[]);
+    planned(&mut s, "design", "r", &[]);
+    planned(&mut s, "docs", "r", &["design"]);
+    planned(&mut s, "build", "r", &["design"]);
+    ok(&mut s, orchestrator(), Command::SetDependencies { task_id: "ship".into(), dependencies: ["build".into(), "docs".into()].into(), stack: None });
+    ok(&mut s, orchestrator(), Command::SetPriority { task_id: "build".into(), priority: TaskPriority::High });
+    ok(&mut s, orchestrator(), Command::SetPriority { task_id: "docs".into(), priority: TaskPriority::Low });
+    let out = announce(&mut s);
+    let [(interaction, card)] = tasks_cards(&s, "r").try_into().unwrap();
+    assert_eq!(interaction.id.0, TasksCard::id("r", 1));
+    assert_eq!((interaction.author.clone(), interaction.card.kind), (Author::System, CardKind::Know));
+    assert_eq!(ids(&card), ["design", "build", "docs", "ship"]);
+    assert_eq!(card.tasks[1].priority, TaskPriority::High);
+    assert_eq!(interaction.card.need, "I created 4 tasks");
+    assert_eq!(interaction.card.why, "First “Task design”; then “Task build” and “Task docs”, in parallel; then “Task ship”.");
+    assert_eq!(card.task_line(3, crate::views::Lang::Es), ("4.".into(), "Task ship · después de 2 y 3".into()));
+    assert_eq!(card.task_line(1, crate::views::Lang::En), ("2.".into(), "Task build · High priority · after 1".into()));
+    assert!(notified(&out, &interaction));
+}
+
+#[test]
+fn announcing_again_tells_nothing_new() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    planned(&mut s, "design", "r", &[]);
+    announce(&mut s);
+    assert!(s.unannounced_tasks().is_empty());
+    let before = tasks_cards(&s, "r");
+    let out = announce(&mut s);
+    assert_eq!(tasks_cards(&s, "r"), before);
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
+    assert_eq!(before[0].0.card.need, "I created the task “Task design”");
+}
+
+#[test]
+fn a_second_batch_names_only_its_new_tasks() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    planned(&mut s, "design", "r", &[]);
+    announce(&mut s);
+    planned(&mut s, "build", "r", &["design"]);
+    planned(&mut s, "docs", "r", &[]);
+    announce(&mut s);
+    let cards = tasks_cards(&s, "r");
+    assert_eq!(cards.len(), 2);
+    let (interaction, card) = &cards[1];
+    assert_eq!(interaction.id.0, TasksCard::id("r", 2));
+    assert!(card.more);
+    assert_eq!(ids(card), ["build", "docs"]);
+    assert_eq!(interaction.card.need, "I created 2 more tasks");
+    assert_eq!(card.task_line(0, crate::views::Lang::Es).1, "Task build · después de «Task design»");
+    assert_eq!(card.text(crate::views::Lang::Es).0, "He creado 2 tareas más");
+}
+
+#[test]
+fn schedules_nodes_messages_and_maintenance_get_no_tasks_card() {
+    let mut s = state();
+    asked(&mut s, orchestrator(), "own", false);
+    asked(&mut s, user(), "maintenance", true);
+    asked(&mut s, user(), "scheduled", false);
+    s.requests.get_mut(&RequestId::from("scheduled")).unwrap().origin = RequestOrigin::Schedule;
+    ok(&mut s, user(), Command::CreateRequest { request_id: "message".into(), body: "From Claude".into(), auto_merge: false, maintenance: false, message: true });
+    ok(&mut s, orchestrator(), Command::TitleRequest { request_id: "message".into(), title: "From Claude".into() });
+    s.requests.get_mut(&RequestId::from("own")).unwrap().origin = RequestOrigin::Node { agent_id: "n".into() };
+    for request in ["own", "maintenance", "scheduled", "message"] {
+        planned(&mut s, &format!("{request}-task"), request, &[]);
+    }
+    assert!(s.unannounced_tasks().is_empty());
+    let out = announce(&mut s);
+    assert!(s.interactions.is_empty(), "{:?}", s.interactions.keys().collect::<Vec<_>>());
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
+}
+
+#[test]
+fn done_takes_the_place_of_an_unread_tasks_card() {
+    for read in [false, true] {
+        let mut s = state();
+        asked(&mut s, user(), "r", false);
+        planned(&mut s, "design", "r", &[]);
+        announce(&mut s);
+        let id = TasksCard::id("r", 1);
+        if read {
+            ok(&mut s, user(), Command::MarkRead { interaction_id: id.as_str().into() });
+        }
+        done(&mut s, "design", None);
+        close(&mut s, "r", Some("The design is ready."), None);
+        assert_eq!(s.interactions[&InteractionId::from(id.as_str())].withdrawn, !read);
+        assert!(!s.interactions[&InteractionId::from(DoneCard::id("r").as_str())].withdrawn);
+    }
+}
+
+#[test]
+fn only_alondra_announces_tasks() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    planned(&mut s, "design", "r", &[]);
+    for actor in [user(), orchestrator(), Actor::Agent { agent_id: "n".into() }] {
+        let before = s.clone();
+        assert_eq!(exec(&mut s, actor, Command::AnnounceRequestTasks).unwrap_err().code, "forbidden");
+        assert_eq!(s, before);
+    }
+}
+
+#[test]
+fn tasks_the_daemon_finds_when_it_opens_count_as_told_without_a_card() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    planned(&mut s, "design", "r", &[]);
+    let out = ok(&mut s, Actor::System, Command::AcknowledgeRequestTasks);
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
+    assert!(s.unannounced_tasks().is_empty());
+    assert!(tasks_cards(&s, "r").iter().all(|(i, _)| i.withdrawn));
+    planned(&mut s, "build", "r", &["design"]);
+    announce(&mut s);
+    let cards = tasks_cards(&s, "r");
+    let (interaction, card) = cards.last().unwrap();
+    assert!(!interaction.withdrawn);
+    assert_eq!(ids(card), ["build"]);
+    assert_eq!(interaction.card.need, "I created one more task: “Task build”");
+    assert_eq!(interaction.card.why, "It starts once “Task design” is done.");
 }

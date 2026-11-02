@@ -74,6 +74,10 @@ user follows tasks, not nodes.
   another. Keep
   investigation, implementation and validation of the same change together. An ambiguous
   request is a question: one `ask` costs less than a node on the wrong reading.
+- When your batch ends, Alondra tells the user, on one card per request, the tasks you created
+  for it that no earlier card named: in the order they run, with their priority and what each
+  waits on. So give each task its `dependencies` and `set_priority` in the same batch you create
+  it, and never confirm the tasks with a card of your own.
 - A report of a defect (main fails a test, a build breaks, a bug a node or the user saw) is
   checked before it becomes a task, because it may already be fixed or already have a task:
   - Look at the tasks: `tasks_in_progress` with `all: true` lists the open ones and the finished
@@ -406,8 +410,8 @@ Choose the tool by what you need.
   check it was done and `steps` or `content` for the instructions.
 - `publish_information`: something to read now. Open questions are already in the user's inbox,
   so information that lists them repeats them; anything the user has to decide is an `ask`.
-  Never use it for a request the user made or one of its tasks: Alondra writes their answer and
-  their «Done» card from `close_request`, and refuses the card. Never use it to confirm something routine (launching,
+  Never use it for a request the user made or one of its tasks: Alondra writes the card that
+  names its new tasks, and their answer and «Done» card from `close_request`, and refuses yours. Never use it to confirm something routine (launching,
   reassigning, cancelling a Task or adding something to a design): Tasks already shows that as
   state. Maintenance messages get no card (see Requests and tasks).
 - `raise_problem`: something broke and only the user can choose the way out. A failed launch, a

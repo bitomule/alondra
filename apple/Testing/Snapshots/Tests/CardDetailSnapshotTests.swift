@@ -169,6 +169,16 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    func test_outcomeTasks() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-outcome-tasks") { _ in })
+        assertDetail(store)
+    }
+
+    func test_outcomeTasks_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-outcome-tasks-es") { _ in })
+        assertDetail(store, language: .spanish)
+    }
+
     func test_pullRequestHeldBackByAnotherCard() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.pullRequestID))
         assertDetail(store)

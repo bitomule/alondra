@@ -37,6 +37,8 @@ pub enum SystemCard {
     BatchProblem { run: String },
     StuckProblem,
     RequestDone,
+    /// The tasks of a request of the user, as the orchestrator gave them.
+    RequestTasks,
     /// A reminder or a Problem the orchestrator's inbox raised about `subject`, the `number`th.
     Inbox { about: InboxCard, subject: String, number: u32 },
     /// Alondra refused the same card of `owner` again and again.
@@ -140,7 +142,7 @@ impl SystemCard {
             return Some(Self::ClaudeUsage { resets_at: rest.split('-').next()?.parse().ok() });
         }
         type Read = fn(&str) -> Option<SystemCard>;
-        let cards: [(&str, Read); 24] = [
+        let cards: [(&str, Read); 25] = [
             (crate::usage::OVER_PACE_PREFIX, |day| Some(Self::OverPace { day: day.to_owned() })),
             (crate::usage::PACE_RESUME_PREFIX, |day| Some(Self::PaceResume { day: day.to_owned() })),
             (crate::machine_incident::MACHINE_PREFIX, |_| Some(Self::Machine)),
@@ -165,6 +167,7 @@ impl SystemCard {
             (crate::orchestrator_cards::STUCK_PROBLEM_PREFIX, |_| Some(Self::StuckProblem)),
             (crate::orchestrator_batch::BATCH_PROBLEM_PREFIX, |run| Some(Self::BatchProblem { run: run.to_owned() })),
             (crate::request_outcome::DONE_PREFIX, |_| Some(Self::RequestDone)),
+            (crate::request_outcome::TASKS_PREFIX, |_| Some(Self::RequestTasks)),
         ];
         if let Some((rest, read)) = cards.into_iter().find_map(|(prefix, read)| Some((after(prefix)?, read))) {
             return read(rest);

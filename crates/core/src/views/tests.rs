@@ -8884,7 +8884,8 @@ fn a_task_account_fact_qualifies_identical_default_slugs_by_provider() {
 
 const OUTCOME_ANSWER_CARD: &str = "r-encrypt-answer";
 const OUTCOME_DONE_CARD: &str = "request-done-r-accounts";
-const OUTCOME_CASES: [(&str, &str, Client, Lang); 12] = [
+const OUTCOME_TASKS_CARD: &str = "request-tasks-r-sync-1";
+const OUTCOME_CASES: [(&str, &str, Client, Lang); 18] = [
     ("card-outcome-answer.json", OUTCOME_ANSWER_CARD, Client::Ios, Lang::En),
     ("card-outcome-answer-es.json", OUTCOME_ANSWER_CARD, Client::Ios, Lang::Es),
     ("card-outcome-answer-mac.json", OUTCOME_ANSWER_CARD, Client::Mac, Lang::En),
@@ -8897,10 +8898,16 @@ const OUTCOME_CASES: [(&str, &str, Client, Lang); 12] = [
     ("card-outcome-done-es-mac.json", OUTCOME_DONE_CARD, Client::Mac, Lang::Es),
     ("card-outcome-done-tui.json", OUTCOME_DONE_CARD, Client::Tui, Lang::En),
     ("card-outcome-done-es-tui.json", OUTCOME_DONE_CARD, Client::Tui, Lang::Es),
+    ("card-outcome-tasks.json", OUTCOME_TASKS_CARD, Client::Ios, Lang::En),
+    ("card-outcome-tasks-es.json", OUTCOME_TASKS_CARD, Client::Ios, Lang::Es),
+    ("card-outcome-tasks-mac.json", OUTCOME_TASKS_CARD, Client::Mac, Lang::En),
+    ("card-outcome-tasks-es-mac.json", OUTCOME_TASKS_CARD, Client::Mac, Lang::Es),
+    ("card-outcome-tasks-tui.json", OUTCOME_TASKS_CARD, Client::Tui, Lang::En),
+    ("card-outcome-tasks-es-tui.json", OUTCOME_TASKS_CARD, Client::Tui, Lang::Es),
 ];
 
 /// Two requests of the user as they ended: one answered without tasks, one whose three tasks are
-/// over, two of them done with their PRs and one cancelled.
+/// over, two of them done with their PRs and one cancelled. A third just got its three tasks.
 fn outcome_state() -> DomainState {
     use crate::domain::{Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION};
     fn run(state: &mut DomainState, actor: Actor, command: Command) {
@@ -8961,6 +8968,22 @@ fn outcome_state() -> DomainState {
         answer: Some("Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.".into()),
         withdrawn: false, title: None, headline: None,
     });
+    run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+        request_id: "r-sync".into(), body: "Que las notas se sincronicen entre el iPhone y el Mac".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    run(&mut state, orchestrator.clone(), Command::TitleRequest { request_id: "r-sync".into(), title: "Sincronizar notas".into() });
+    for (task, title, after) in [("t-model", "Guardar las notas con su versión", vec![]),
+        ("t-ios", "Sincronizar desde el iPhone", vec!["t-model"]), ("t-mac", "Sincronizar desde el Mac", vec!["t-model"])] {
+        run(&mut state, orchestrator.clone(), Command::CreateTask {
+            plan_items: None, task_id: task.into(), request_id: "r-sync".into(), title: title.into(), agent_id: None,
+            review_prs: false, dependencies: after.into_iter().map(crate::domain::TaskId::from).collect(), stack: None,
+            launch: Some(LaunchPlan::new("node", "/tmp/project")),
+        });
+    }
+    run(&mut state, orchestrator.clone(), Command::SetPriority { task_id: "t-model".into(), priority: crate::domain::TaskPriority::High });
+    run(&mut state, orchestrator, Command::SetPriority { task_id: "t-mac".into(), priority: crate::domain::TaskPriority::Low });
+    run(&mut state, Actor::System, Command::AnnounceRequestTasks);
     state
 }
 
@@ -8980,6 +9003,12 @@ fn outcome_cards_match_goldens() {
         include_str!("../../../../fixtures/views/cards/card-outcome-done-es-mac.json"),
         include_str!("../../../../fixtures/views/cards/card-outcome-done-tui.json"),
         include_str!("../../../../fixtures/views/cards/card-outcome-done-es-tui.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-tasks.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-tasks-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-tasks-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-tasks-es-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-tasks-tui.json"),
+        include_str!("../../../../fixtures/views/cards/card-outcome-tasks-es-tui.json"),
     ]).filter_map(|((filename, card, client, lang), expected)| {
         let actual = render(&state, &LiveSnapshot::default(), client, lang, &format!("card:{card}"), "2026-10-26T10:00:00Z");
         std::panic::catch_unwind(|| assert_golden(filename, &actual, expected)).is_err().then_some(filename)
@@ -8994,6 +9023,8 @@ fn an_outcome_card_names_its_request_above_and_not_in_its_headline() {
         (OUTCOME_DONE_CARD, Lang::Es, "Hecho en parte: se canceló 1 de 3 tareas", "Dos cuentas de Claude"),
         (OUTCOME_DONE_CARD, Lang::En, "Done in part: 1 of 3 tasks was cancelled", "Dos cuentas de Claude"),
         (OUTCOME_ANSWER_CARD, Lang::Es, "Sí: el iPhone ya cifra las imágenes antes de subirlas", "Cifrar imágenes en R2"),
+        (OUTCOME_TASKS_CARD, Lang::Es, "He creado 3 tareas", "Sincronizar notas"),
+        (OUTCOME_TASKS_CARD, Lang::En, "I created 3 tasks", "Sincronizar notas"),
     ] {
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, &format!("card:{card}"), "2026-10-26T10:00:00Z");
         let Some(Item::Card(shown)) = view.sections.iter().flat_map(|section| &section.items).next() else { panic!("{card} renders as a card") };
@@ -9009,6 +9040,23 @@ fn an_outcome_card_names_its_request_above_and_not_in_its_headline() {
         ("Hecha: Guardar varias cuentas de Claude · PR #1290".to_owned(), Some(Link::View { key: "task:t-store".into() })),
         ("Hecha: Cambiar de cuenta en Ajustes · PR #1291".to_owned(), Some(Link::View { key: "task:t-switch".into() })),
         ("Cancelada: Documentar las cuentas".to_owned(), Some(Link::View { key: "task:t-docs".into() })),
+    ]);
+}
+
+#[test]
+fn a_tasks_card_lists_the_tasks_in_order_each_opening_its_screen() {
+    let state = outcome_state();
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, &format!("card:{OUTCOME_TASKS_CARD}"), "2026-10-26T10:00:00Z");
+    let Some(Item::Card(shown)) = view.sections.iter().flat_map(|section| &section.items).next() else { panic!("renders as a card") };
+    assert_eq!(shown.why.as_deref(), Some("Primero «Guardar las notas con su versión»; «Sincronizar desde el iPhone» y «Sincronizar desde el Mac» después, en paralelo."));
+    let facts: Vec<(String, Option<Link>)> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Facts(facts) => Some(facts.items.iter().map(|fact| (format!("{} {}", fact.label, fact.value), fact.link.clone())).collect::<Vec<_>>()),
+        _ => None,
+    }).flatten().collect();
+    assert_eq!(facts, [
+        ("1. Guardar las notas con su versión · Prioridad alta".to_owned(), Some(Link::View { key: "task:t-model".into() })),
+        ("2. Sincronizar desde el iPhone · después de 1".to_owned(), Some(Link::View { key: "task:t-ios".into() })),
+        ("3. Sincronizar desde el Mac · Prioridad baja · después de 1".to_owned(), Some(Link::View { key: "task:t-mac".into() })),
     ]);
 }
 

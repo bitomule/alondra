@@ -1,0 +1,148 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch-outcome",
+  "view": "card",
+  "key": "card:request-tasks-r-sync-1",
+  "client": "ios",
+  "version": "v8e82e8ef56f71a85",
+  "cursor": "cursor-1",
+  "title": "He creado 3 tareas",
+  "status": {
+    "version": "v3f1618d548c7eb72",
+    "summary": "3 por leer · 0 nodos trabajando",
+    "badge": 3,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 3
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 3
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "request-tasks-r-sync-1",
+          "kind": "know",
+          "need": "He creado 3 tareas",
+          "why": "Primero «Guardar las notas con su versión»; «Sincronizar desde el iPhone» y «Sincronizar desde el Mac» después, en paralelo.",
+          "meta": "Sincronizar notas",
+          "reply": {
+            "id": "msg:view@27",
+            "label": "Responder",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Responder…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Enviado",
+            "resolves_card": false
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:request-tasks-r-sync-1"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Info",
+            "tone": "neutral"
+          },
+          "title": "He creado 3 tareas",
+          "subtitle": "Primero «Guardar las notas con su versión»; «Sincronizar desde el iPhone» y «Sincronizar desde el Mac» después, en paralelo.",
+          "state": {
+            "text": "No bloquea",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "read:request-tasks-r-sync-1@27",
+              "label": "Visto",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Leída",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Contenido",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "1.",
+              "value": "Guardar las notas con su versión · Prioridad alta",
+              "link": {
+                "kind": "view",
+                "key": "task:t-model"
+              }
+            },
+            {
+              "label": "2.",
+              "value": "Sincronizar desde el iPhone · después de 1",
+              "link": {
+                "kind": "view",
+                "key": "task:t-ios"
+              }
+            },
+            {
+              "label": "3.",
+              "value": "Sincronizar desde el Mac · Prioridad baja · después de 1",
+              "link": {
+                "kind": "view",
+                "key": "task:t-mac"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

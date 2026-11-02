@@ -80,6 +80,13 @@ pub enum Command {
     /// Every task the store keeps waiting whose waits are over goes on, saved and with its node
     /// told: the daemon runs it when it opens its domain, since opening it tells no node.
     ReviewWaits,
+    /// Every open request of the user tells them, on a card of its own, the tasks no card of it
+    /// named yet: the daemon runs it when a turn of the orchestrator ends.
+    AnnounceRequestTasks,
+    /// The tasks `AnnounceRequestTasks` would tell count as told, with no card shown: the daemon
+    /// runs it when it opens its domain, so tasks made before an upgrade or a crash are not
+    /// announced as new.
+    AcknowledgeRequestTasks,
     CreateRequest {
         request_id: RequestId,
         body: String,

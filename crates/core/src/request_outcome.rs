@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CardSpec, clip};
+use crate::domain::{CardSpec, TaskPriority, clip};
 use crate::views::Lang;
 use crate::views::text::{t, tf};
 
@@ -75,5 +75,149 @@ impl DoneCard {
             None => task.title.clone(),
         };
         (label.into(), value)
+    }
+}
+
+pub const TASKS_PREFIX: &str = "request-tasks-";
+
+/// A task the card waits on: one of the card when its id is there, an earlier one by its title.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct After {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AnnouncedTask {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "TaskPriority::is_normal")]
+    pub priority: TaskPriority,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<After>,
+}
+
+/// Alondra's card that tells the user which tasks a request of theirs got, in the order they run.
+/// The cards of a request are also the record of which of its tasks were announced.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TasksCard {
+    pub request_id: String,
+    /// An earlier card of the request already named some of its tasks.
+    #[serde(default)]
+    pub more: bool,
+    pub tasks: Vec<AnnouncedTask>,
+}
+
+impl TasksCard {
+    pub fn id(request_id: &str, n: usize) -> String {
+        format!("{TASKS_PREFIX}{request_id}-{n}")
+    }
+
+    pub fn to_body(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    pub fn from_body(body: &str) -> Option<Self> {
+        serde_json::from_str(body).ok()
+    }
+
+    fn position(&self, id: &str) -> Option<usize> {
+        self.tasks.iter().position(|task| task.id == id)
+    }
+
+    /// How deep each task sits in the order: 0 when nothing of this card goes before it.
+    fn levels(&self) -> Vec<usize> {
+        let mut levels: Vec<usize> = Vec::with_capacity(self.tasks.len());
+        for task in &self.tasks {
+            let level = task.after.iter()
+                .filter_map(|after| self.position(&after.id).and_then(|i| levels.get(i)))
+                .map(|level| level + 1)
+                .max()
+                .unwrap_or(0);
+            levels.push(level);
+        }
+        levels
+    }
+
+    pub fn text(&self, lang: Lang) -> (String, String) {
+        let need = match (self.tasks.as_slice(), self.more) {
+            ([task], false) => tf!(lang, "I created the task “{title}”", "He creado la tarea «{title}»", title = task.title),
+            ([task], true) => tf!(lang, "I created one more task: “{title}”", "He creado una tarea más: «{title}»", title = task.title),
+            (tasks, false) => tf!(lang, "I created {n} tasks", "He creado {n} tareas", n = tasks.len()),
+            (tasks, true) => tf!(lang, "I created {n} more tasks", "He creado {n} tareas más", n = tasks.len()),
+        };
+        let why = self.order(lang, false);
+        let why = if why.chars().count() > CardSpec::WHY_MAX { self.order(lang, true) } else { why };
+        (clip(&need, CardSpec::NEED_MAX), clip(&why, CardSpec::WHY_MAX))
+    }
+
+    /// The order the tasks run in, naming each by its title or, when that is too long, its number.
+    fn order(&self, lang: Lang, by_number: bool) -> String {
+        let name = |i: usize| match by_number {
+            true => (i + 1).to_string(),
+            false => match lang {
+                Lang::En => format!("“{}”", self.tasks[i].title),
+                Lang::Es => format!("«{}»", self.tasks[i].title),
+            },
+        };
+        if let [task] = self.tasks.as_slice() {
+            let earlier: Vec<String> = task.after.iter().map(|after| match lang {
+                Lang::En => format!("“{}”", after.title),
+                Lang::Es => format!("«{}»", after.title),
+            }).collect();
+            return match earlier.len() {
+                0 => t!(lang, "It starts as soon as there is room.", "Empieza en cuanto haya hueco.").into(),
+                1 => tf!(lang, "It starts once {earlier} is done.", "Empieza cuando termine {earlier}.", earlier = earlier[0]),
+                _ => tf!(lang, "It starts once {earlier} are done.", "Empieza cuando terminen {earlier}.", earlier = list(lang, &earlier)),
+            };
+        }
+        let levels = self.levels();
+        let deepest = levels.iter().copied().max().unwrap_or(0);
+        if deepest == 0 {
+            return tf!(lang, "All {n} at once, in parallel.", "Las {n} a la vez, en paralelo.", n = self.tasks.len());
+        }
+        let steps: Vec<String> = (0..=deepest).map(|level| {
+            let names: Vec<String> = (0..self.tasks.len()).filter(|&i| levels[i] == level).map(name).collect();
+            let together = names.len() > 1;
+            let names = list(lang, &names);
+            match (level, together) {
+                (0, false) => tf!(lang, "First {names}", "Primero {names}", names = names),
+                (0, true) => tf!(lang, "First {names}, in parallel", "Primero {names}, en paralelo", names = names),
+                (1, false) => tf!(lang, "then {names}", "{names} después", names = names),
+                (1, true) => tf!(lang, "then {names}, in parallel", "{names} después, en paralelo", names = names),
+                (_, false) => tf!(lang, "then {names}", "luego {names}", names = names),
+                (_, true) => tf!(lang, "then {names}, in parallel", "luego {names}, en paralelo", names = names),
+            }
+        }).collect();
+        format!("{}.", steps.join("; "))
+    }
+
+    /// The task's line in the card's list: its number, then its title, priority and what it waits on.
+    pub fn task_line(&self, i: usize, lang: Lang) -> (String, String) {
+        let task = &self.tasks[i];
+        let mut value = task.title.clone();
+        match task.priority {
+            TaskPriority::High => value.push_str(t!(lang, " · High priority", " · Prioridad alta")),
+            TaskPriority::Low => value.push_str(t!(lang, " · Low priority", " · Prioridad baja")),
+            TaskPriority::Normal => {}
+        }
+        let after: Vec<String> = task.after.iter().map(|after| match (self.position(&after.id), lang) {
+            (Some(position), _) => (position + 1).to_string(),
+            (None, Lang::En) => format!("“{}”", after.title),
+            (None, Lang::Es) => format!("«{}»", after.title),
+        }).collect();
+        if !after.is_empty() {
+            value.push_str(&tf!(lang, " · after {after}", " · después de {after}", after = list(lang, &after)));
+        }
+        (format!("{}.", i + 1), value)
+    }
+}
+
+/// «a, b and c» in the reader's language.
+fn list(lang: Lang, names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} {} {last}", rest.join(", "), t!(lang, "and", "y")),
     }
 }

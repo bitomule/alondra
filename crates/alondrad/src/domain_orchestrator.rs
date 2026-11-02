@@ -603,6 +603,9 @@ impl Executor {
         let settled = self.domain.store.lock_or_exit("the domain store").settle_orchestrator_batch(&run.id, State::Handed, None)?;
         if !settled { self.finish(run, State::Handed, None)?; }
         read_handed_notices(&self.domain);
+        if let Err(error) = self.domain.announce_request_tasks() {
+            log!("orchestrator: batch {} could not announce its tasks: {error}", run.id);
+        }
         runtime.active_run = None;
         runtime.last_error = None;
         runtime.failure = None;
@@ -1616,6 +1619,69 @@ mod tests {
         f.executor.apply_problem_answers().unwrap();
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.retry_at.is_none() && runtime.stuck_problem.is_none(), "{runtime:?}");
+    }
+
+    fn plan_sync(f: &Fixture) {
+        let orchestrator = Actor::Orchestrator { generation: 0 };
+        f.run(orchestrator.clone(), "title-sync", Command::TitleRequest { request_id: "sync".into(), title: "Sync notes".into() });
+        for (task, after) in [("model", vec![]), ("mac", vec!["model"]), ("ios", vec!["model"])] {
+            f.run(orchestrator.clone(), &format!("create-{task}"), Command::CreateTask { plan_items: None,
+                task_id: task.into(), request_id: "sync".into(), title: format!("Sync {task}"), agent_id: None,
+                review_prs: false, dependencies: after.into_iter().map(TaskId::from).collect(), stack: None,
+                launch: Some(LaunchPlan::new("node", "/tmp")),
+            });
+        }
+        f.run(orchestrator, "priority-ios", Command::SetPriority { task_id: "ios".into(), priority: TaskPriority::High });
+    }
+
+    fn announced(f: &Fixture) -> Vec<Vec<String>> {
+        use alondra_core::request_outcome::TasksCard;
+        let state = f.domain().state().unwrap();
+        f.cards(alondra_core::request_outcome::TASKS_PREFIX).iter()
+            .map(|id| TasksCard::from_body(&state.interactions[&InteractionId::from(id.as_str())].body).unwrap())
+            .map(|card| card.tasks.into_iter().map(|task| task.id).collect())
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_tasks_a_turn_made_reach_the_user_once_when_it_ends() {
+        let f = fixture();
+        f.run(Actor::User { user_id: "u".into() }, "sync", Command::CreateRequest {
+            request_id: "sync".into(), body: "Sync my notes between iPhone and Mac".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        f.hold_before_claude();
+        let turn = async {
+            f.held().await;
+            plan_sync(&f);
+            assert!(announced(&f).is_empty(), "nothing is told while the turn runs");
+            f.release();
+        };
+        let ((), ()) = tokio::join!(f.tick(), turn);
+        assert_eq!(announced(&f), [["model", "ios", "mac"]], "one card, in the order the tasks run");
+        assert!(f.domain().state().unwrap().unannounced_tasks().is_empty());
+        f.tell("later", "Anything else?");
+        let ((), ()) = tokio::join!(f.tick(), async { f.held().await; f.release(); });
+        assert_eq!(announced(&f).len(), 1, "the next turn tells nothing new");
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_fails_leaves_its_tasks_for_the_next_turn_to_tell() {
+        let f = fixture();
+        let domain = &f.executor.domain;
+        f.mark(CREATED_THEN_EXIT);
+        f.run(Actor::User { user_id: "u".into() }, "sync", Command::CreateRequest {
+            request_id: "sync".into(), body: "Sync my notes between iPhone and Mac".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        plan_sync(&f);
+        f.tick().await;
+        let run = load(&f.executor.home).unwrap().active_run.expect("the failed batch stays claimed");
+        assert!(announced(&f).is_empty(), "a failed turn tells nothing");
+        answer_problem(domain, &run.id, "continue");
+        f.executor.apply_problem_answers().unwrap();
+        f.clear_marker();
+        f.tell("later", "Anything else?");
+        f.tick().await;
+        assert_eq!(announced(&f), [["model", "ios", "mac"]]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

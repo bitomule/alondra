@@ -477,6 +477,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 560), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_outcomeTasks() throws {
+        let store = try presentation(detail: "card-outcome-tasks-mac")
+        assertWindow(size: CGSize(width: 900, height: 560)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_outcomeTasks_es() throws {
+        let store = try presentation(detail: "card-outcome-tasks-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 560), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_noticeWithACommandInItsBody_es() throws {
         let store = try presentation(detail: "card-know-command-es-mac")
         assertWindow(size: CGSize(width: 900, height: 620), spanish: true) { MacServiceDetail(presentation: store) }

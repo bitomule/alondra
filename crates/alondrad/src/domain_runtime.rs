@@ -191,6 +191,7 @@ impl DomainRuntime {
         };
         runtime.adopt_sdk_nodes()?;
         runtime.review_waits()?;
+        runtime.run_request_tasks(Command::AcknowledgeRequestTasks)?;
         Ok(runtime)
     }
     /// Moves every node of the Agent SDK an older daemon left in a phase of its own to its task's
@@ -239,6 +240,33 @@ impl DomainRuntime {
             }
             Err(StoreError::Domain(error)) => {
                 log!("could not end the waits of {names}: {}", error.message);
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+    /// Tells the user, on a card per request, the tasks the orchestrator gave their open
+    /// requests that no card named yet. Run once a turn of the orchestrator ended: a turn that
+    /// failed leaves them for the next one, which finds them still unnamed.
+    pub(crate) fn announce_request_tasks(&self) -> Result<()> {
+        self.run_request_tasks(Command::AnnounceRequestTasks)
+    }
+    fn run_request_tasks(&self, command: Command) -> Result<()> {
+        let state = self.state()?;
+        if state.unannounced_tasks().is_empty() {
+            return Ok(());
+        }
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("request-tasks-{}", crate::auth::random_hex(8)).into(),
+            expected_revision: 0,
+            command,
+        };
+        match self.execute_as_system(envelope) {
+            Ok(_) => Ok(()),
+            Err(StoreError::Domain(error)) => {
+                log!("could not record the tasks of the user's requests: {}", error.message);
                 Ok(())
             }
             Err(error) => Err(error.into()),
@@ -1155,6 +1183,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::AdoptSdkNodes
         | Command::ReviewWaits
+        | Command::AnnounceRequestTasks
+        | Command::AcknowledgeRequestTasks
         | Command::RegisterAgent { .. }
         | Command::MoveNode { .. }
         | Command::RecordLastWords { .. }

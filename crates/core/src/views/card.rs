@@ -1327,6 +1327,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if matches!(interaction.system_card, Some(SystemCard::RequestDone)) {
         return crate::request_outcome::DoneCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if matches!(interaction.system_card, Some(SystemCard::RequestTasks)) {
+        return crate::request_outcome::TasksCard::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::UnansweredProblem, .. })) {
         return crate::orchestrator_cards::UnansweredProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
@@ -1853,6 +1856,16 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         out.push(Item::Facts(Facts { items: card.tasks.iter().map(|task| {
             let (label, value) = crate::request_outcome::DoneCard::task_line(task, lang);
             Fact { kind: None, label, value, tone: (!task.cancelled).then_some(Tone::Success), link: Some(Link::View { key: format!("task:{}", task.id) }) }
+        }).collect() }));
+        return out;
+    }
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::RequestTasks))
+        && let Some(card) = crate::request_outcome::TasksCard::from_body(&interaction.body)
+    {
+        out.push(Item::Facts(Facts { items: card.tasks.iter().enumerate().map(|(i, task)| {
+            let (label, value) = card.task_line(i, lang);
+            Fact { kind: None, label, value, tone: None, link: Some(Link::View { key: format!("task:{}", task.id) }) }
         }).collect() }));
         return out;
     }

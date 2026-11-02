@@ -1208,12 +1208,89 @@ impl DomainState {
         };
         let (need, why) = done.text(crate::views::Lang::En);
         let card = CardSpec::new(CardKind::Know, need).why(why);
+        self.retire_unread_tasks_cards(request);
         self.tell_the_user(crate::request_outcome::DoneCard::id(&request.0), request, done.to_body(), card, Some(SystemCard::RequestDone), created, effects);
         Ok(())
+    }
+    /// The cards that named the tasks of a request, oldest first.
+    fn tasks_cards(&self, request: &RequestId) -> Vec<(&Interaction, crate::request_outcome::TasksCard)> {
+        let mut cards: Vec<_> = self.interactions.values()
+            .filter(|i| i.author == Author::System
+                && i.system_card == Some(SystemCard::RequestTasks)
+                && matches!(&i.scope, Scope::Orchestrator { request_id: Some(id) } if id == request))
+            .filter_map(|i| crate::request_outcome::TasksCard::from_body(&i.body).map(|card| (i, card)))
+            .collect();
+        cards.sort_by_key(|(i, _)| i.order);
+        cards
+    }
+    /// The tasks of each open request of the user that no card of it names yet, in the order
+    /// they run: what `Command::AnnounceRequestTasks` tells. A schedule's request is left out,
+    /// since its task comes with it.
+    pub fn unannounced_tasks(&self) -> Vec<(RequestId, Vec<TaskId>)> {
+        self.requests.values()
+            .filter(|r| !r.closed && !r.withdrawn && !r.message && !r.maintenance && r.origin == RequestOrigin::User)
+            .filter_map(|r| {
+                let named: BTreeSet<String> = self.tasks_cards(&r.id).into_iter()
+                    .flat_map(|(_, card)| card.tasks.into_iter().map(|task| task.id))
+                    .collect();
+                let fresh: Vec<&Task> = self.tasks.values()
+                    .filter(|t| t.request_id == r.id && !t.cancelled() && !named.contains(&t.id.0))
+                    .collect();
+                (!fresh.is_empty()).then(|| (r.id.clone(), in_running_order(fresh)))
+            })
+            .collect()
+    }
+    /// `quiet` records the tasks as announced on a withdrawn card nobody sees: what the daemon
+    /// does with the tasks it finds when it opens its domain, which the user already knows.
+    fn announce_request_tasks(&mut self, quiet: bool, created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
+        for (request, tasks) in self.unannounced_tasks() {
+            let earlier = self.tasks_cards(&request).len();
+            let card = crate::request_outcome::TasksCard {
+                request_id: request.0.clone(),
+                more: earlier > 0,
+                tasks: tasks.iter().map(|id| {
+                    let task = &self.tasks[id];
+                    crate::request_outcome::AnnouncedTask {
+                        id: id.0.clone(),
+                        title: task.title.clone(),
+                        priority: task.priority,
+                        after: task.dependencies.iter().chain(&task.delivered_dependencies)
+                            .filter_map(|other| self.tasks.get(other))
+                            .map(|other| crate::request_outcome::After { id: other.id.0.clone(), title: other.title.clone() })
+                            .collect(),
+                    }
+                }).collect(),
+            };
+            let (need, why) = card.text(crate::views::Lang::En);
+            let spec = CardSpec::new(CardKind::Know, need).why(why);
+            let id = crate::request_outcome::TasksCard::id(&request.0, earlier + 1);
+            if quiet {
+                self.write_system_card(id, &request, card.to_body(), spec, Some(SystemCard::RequestTasks), true);
+            } else {
+                self.tell_the_user(id, &request, card.to_body(), spec, Some(SystemCard::RequestTasks), created, effects);
+            }
+        }
+    }
+    /// «Done» takes the place of the cards that named the request's tasks and nobody read.
+    fn retire_unread_tasks_cards(&mut self, request: &RequestId) {
+        let unread: Vec<InteractionId> = self.tasks_cards(request).into_iter()
+            .filter(|(i, _)| !i.withdrawn && matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty()))
+            .map(|(i, _)| i.id.clone())
+            .collect();
+        for card in &unread {
+            self.retire(card);
+        }
     }
     #[allow(clippy::too_many_arguments)]
     fn tell_the_user(&mut self, id: String, request: &RequestId, body: String, card: CardSpec, system_card: Option<SystemCard>,
         created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
+        let id = self.write_system_card(id, request, body, card, system_card, false);
+        created.push(id.0.clone());
+        effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
+    }
+    /// A card of Alondra about a request; a `withdrawn` one only keeps what it records.
+    fn write_system_card(&mut self, id: String, request: &RequestId, body: String, card: CardSpec, system_card: Option<SystemCard>,
+        withdrawn: bool) -> InteractionId {
         let mut id = InteractionId(id);
         while self.interactions.contains_key(&id) {
             id.0.push('-');
@@ -1230,12 +1307,11 @@ impl DomainState {
             payload: InteractionPayload::Information { read_by: BTreeSet::new() },
             revision: self.revision + 1,
             order: self.revision + 1,
-            withdrawn: false,
+            withdrawn,
             card,
             clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card, shortened: false,
         });
-        created.push(id.0.clone());
-        effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
+        id
     }
     /// R16: the open cards that hold back this delivery, oldest first.
     pub fn blocked_by(&self, delivery: &InteractionId) -> Vec<InteractionId> {
@@ -2125,6 +2201,9 @@ impl DomainState {
             .map(|t| t.id.clone())
             .collect()
     }
+    fn announce_guard(&self, actor: &Actor) -> Result<()> {
+        system(actor).map(drop)
+    }
     fn derive_states_once(&mut self) -> bool {
         let cards = TaskCards::new(self);
         let updates: Vec<_> = self
@@ -2751,6 +2830,14 @@ impl DomainState {
             Command::BeginAccountLogin { account, attempt, started_at } => self.begin_account_login(actor, account, attempt, *started_at)?,
             Command::CancelAccountLogin { account, attempt } => self.cancel_account_login(actor, account, attempt)?,
             Command::RecordAccountLogin { login } => self.record_account_login(actor, login)?,
+            Command::AnnounceRequestTasks => {
+                self.announce_guard(actor)?;
+                self.announce_request_tasks(false, created, effects);
+            }
+            Command::AcknowledgeRequestTasks => {
+                self.announce_guard(actor)?;
+                self.announce_request_tasks(true, created, effects);
+            }
             Command::RecordAccounts { accounts, reserve } => {
                 system(actor)?;
                 let mut seen = BTreeSet::new();
@@ -5488,4 +5575,18 @@ fn content(body: &str, attachments: &[AttachmentRef]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Tasks in the order they can run: each after the tasks among them it waits on, the higher
+/// priority first among those free to go, then the older.
+fn in_running_order(mut left: Vec<&Task>) -> Vec<TaskId> {
+    left.sort_by_key(|t| (t.priority, t.revision, t.id.clone()));
+    let mut order: Vec<TaskId> = Vec::with_capacity(left.len());
+    while !left.is_empty() {
+        let waits = |t: &Task| t.dependencies.iter().chain(&t.delivered_dependencies)
+            .any(|d| d != &t.id && left.iter().any(|other| &other.id == d));
+        let next = left.iter().position(|t| !waits(t)).unwrap_or(0);
+        order.push(left.remove(next).id.clone());
+    }
+    order
 }

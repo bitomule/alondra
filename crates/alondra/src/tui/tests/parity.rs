@@ -2519,3 +2519,15 @@ fn comments_a_node_takes_after_its_turn_count_as_sent_and_an_uncertain_handoff_d
     assert_eq!(comments_delivered(&serde_json::json!({}), sent()), Ok(sent()));
     assert!(comments_delivered(&serde_json::json!({"delivery_state": "uncertain"}), sent()).is_err());
 }
+
+#[test]
+fn a_numbered_list_on_a_card_reads_as_a_list_and_other_facts_keep_their_label() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let tasks: ViewDocument = serde_json::from_value(view_fixture("card-outcome-tasks-es-tui.json")).unwrap();
+    let lines = text_of(&crate::tui::view_render::document_lines(&tasks, 100, false, false));
+    assert!(lines.iter().any(|line| line == "1. Guardar las notas con su versión · Prioridad alta"), "{lines:#?}");
+    assert!(lines.iter().any(|line| line == "3. Sincronizar desde el Mac · Prioridad baja · después de 1"), "{lines:#?}");
+    let done: ViewDocument = serde_json::from_value(view_fixture("card-outcome-done-es-tui.json")).unwrap();
+    let lines = text_of(&crate::tui::view_render::document_lines(&done, 100, false, false));
+    assert!(lines.iter().any(|line| line.starts_with("Cancelada: Documentar las cuentas")), "{lines:#?}");
+}

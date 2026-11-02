@@ -6,7 +6,7 @@ use super::{Report, User, steps::*};
 use crate::{
     fake::{
         Checks, Fakes,
-        script::{RequestScript, Step},
+        script::{RequestScript, Step, TaskScript},
     },
     phone::Phone,
     sandbox::Sandbox,
@@ -158,9 +158,26 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
             answer: Some("Yes. Every image is encrypted on the iPhone before it is uploaded, and R2 only keeps the encrypted bytes.".into()),
             headline: Some("Yes: images are already encrypted before they leave the iPhone".into()),
             summary: None,
+            title: None,
         };
         request(report, &fakes, &user, &answered, "Are images encrypted before they reach R2?")?;
         outcome_card(report, &user, "req-answered-answer", "the orchestrator answers without tasks and Alondra writes the answer's card")?;
+
+        let task = |id: &str, title: &str, dependencies: &[&str], priority: Option<&str>| TaskScript {
+            task_id: id.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true,
+            dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: priority.map(Into::into),
+        };
+        let planned = RequestScript {
+            request_id: "req-sync".into(),
+            tasks: vec![
+                task("t-sync-model", "Store notes with their version", &[], Some("high")),
+                task("t-sync-ios", "Sync from the iPhone", &["t-sync-model"], None),
+                task("t-sync-mac", "Sync from the Mac", &["t-sync-model"], Some("low")),
+            ],
+            answer: None, headline: None, summary: None, title: Some("Sync notes".into()),
+        };
+        request(report, &fakes, &user, &planned, "Sync my notes between the iPhone and the Mac")?;
+        outcome_card(report, &user, "request-tasks-req-sync-1", "the orchestrator plans three tasks and Alondra tells the user which, in order")?;
 
         let mut after_merge = task_script("req-after-merge", "t-after-merge", "Publish the release once it is merged");
         after_merge.tasks[0].cleans_up = false;

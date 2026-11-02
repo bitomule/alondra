@@ -43,10 +43,11 @@ pub fn wait_within<T>(report: &mut Report, what: &str, limit: Duration, mut prob
 pub fn task_script(request: &str, task: &str, title: &str) -> RequestScript {
     RequestScript {
         request_id: request.into(),
-        tasks: vec![TaskScript { task_id: task.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true, dependencies: vec![] }],
+        tasks: vec![TaskScript { task_id: task.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true, dependencies: vec![], priority: None }],
         answer: None,
         headline: None,
         summary: None,
+        title: None,
     }
 }
 

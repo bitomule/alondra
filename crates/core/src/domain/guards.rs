@@ -59,6 +59,7 @@ impl DomainState {
             Command::SetAccountOrder { order, expected_config_version } => self.account_order_guard(actor, order, expected_config_version),
             Command::SetModelProfile { provider, profile, policy, expected_config_version } => self.model_profile_guard(actor, *provider, *profile, policy, expected_config_version),
             Command::RequestTaskSelection { task_id, expected_selection, selection, pending } => self.task_selection_guard(actor, task_id, expected_selection, selection, pending),
+            Command::AnnounceRequestTasks | Command::AcknowledgeRequestTasks => self.announce_guard(actor),
             Command::RecordDecisionSettled { task_id, generation, epoch } => {
                 self.decision_end_guard(actor, task_id, *generation, *epoch, true).map(drop)
             }

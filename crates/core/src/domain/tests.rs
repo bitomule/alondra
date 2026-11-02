@@ -3135,9 +3135,11 @@ fn variant_index(c: &Command) -> usize {
         Command::SnoozeCard { .. } => 119,
         Command::UnsnoozeCard { .. } => 120,
         Command::ResurfaceDueCards { .. } => 121,
+        Command::AnnounceRequestTasks => 122,
+        Command::AcknowledgeRequestTasks => 123,
     }
 }
-const COMMAND_KINDS: usize = 122;
+const COMMAND_KINDS: usize = 124;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3174,6 +3176,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::InterruptScheduleRunsOnRestart, true),
         (Command::AdoptSdkNodes, true),
         (Command::ReviewWaits, true),
+        (Command::AnnounceRequestTasks, true),
+        (Command::AcknowledgeRequestTasks, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
@@ -4569,6 +4573,8 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::RecordDecisionAborted { task_id: "sdk".into(), generation: 1, epoch: 1 },
         Command::RecordDecisionAborted { task_id: "sdk".into(), generation: 1, epoch: 9 },
         Command::RecordDecisionAborted { task_id: "missing".into(), generation: 1, epoch: 1 },
+        Command::AnnounceRequestTasks,
+        Command::AcknowledgeRequestTasks,
     ];
     let mut sdk = presented.clone();
     exec(&mut sdk, Actor::System, Command::RegisterAgent { agent_id: "s".into(), name: "SDK".into(), at: 0 }).unwrap();

@@ -17,6 +17,9 @@ pub struct RequestScript {
     /// The answer's headline on the user's card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headline: Option<String>,
+    /// The name the orchestrator gives the request before its tasks; a second task needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// What came of it: the orchestrator closes the request with it once all its tasks have ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -38,6 +41,9 @@ pub struct TaskScript {
     /// The tasks it waits for: it starts once they are done.
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// The priority the orchestrator gives it after creating it, when not normal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
 }
 
 fn yes() -> bool {
