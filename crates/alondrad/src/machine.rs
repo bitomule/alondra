@@ -1,6 +1,5 @@
 use crate::locks::Poisonable as _;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,17 +27,11 @@ pub(crate) async fn run(gauges: Gauges, domain: Arc<crate::domain_runtime::Domai
 
 async fn sample_loop(mut publish: impl FnMut(Machine)) {
     let mut sys = System::new();
-    let mut pressure: Option<u32> = None;
-    let mut round: u64 = 0;
     loop {
-        let (next, measured, machine) = tokio::task::spawn_blocking(move || {
+        let (next, machine) = tokio::task::spawn_blocking(move || {
             sys.refresh_memory();
             sys.refresh_cpu_usage();
-            pressure = match forced_memory_free_percent().or_else(memorystatus_level) {
-                Some(level) => Some(level),
-                None if round.is_multiple_of(3) => memory_free_percent(),
-                None => pressure,
-            };
+            let pressure = forced_memory_free_percent().or_else(memorystatus_level);
             let load = System::load_average();
             let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
             let machine = Machine {
@@ -56,12 +49,10 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
                 disk_purgeable: root.map_or(0, |space| space.purgeable),
                 unreliable: load.one > UNRELIABLE_LOAD,
             };
-            (sys, pressure, machine)
+            (sys, machine)
         }).await.expect("machine sample worker failed");
         sys = next;
-        pressure = measured;
         publish(machine);
-        round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
@@ -140,13 +131,6 @@ fn sysctl_int(name: &std::ffi::CStr) -> Option<i32> {
 #[cfg(not(target_os = "macos"))]
 fn sysctl_int(_name: &std::ffi::CStr) -> Option<i32> {
     None
-}
-
-fn memory_free_percent() -> Option<u32> {
-    let out = Command::new("/usr/bin/memory_pressure").output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().find(|l| l.contains("memory free percentage"))?;
-    line.rsplit(':').next()?.trim().trim_end_matches('%').parse().ok()
 }
 
 #[cfg(all(test, target_os = "macos"))]

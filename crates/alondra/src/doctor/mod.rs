@@ -579,7 +579,7 @@ pub fn configured(alondra_home: &Path, launch_agents: Option<&Path>) -> bool {
     match std::fs::read_dir(dir) {
         Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|e| e == "plist"))
-            .any(|p| std::fs::read_to_string(p).map_or(true, |t| t.contains("/alondrad</string>"))),
+            .any(|p| crate::setup::read_plist(&p).map_or(true, |job| crate::setup::starts_alondrad(&job))),
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }

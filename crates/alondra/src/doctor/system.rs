@@ -22,12 +22,23 @@ pub struct MacInfo {
     pub dev_over_brew: bool,
 }
 
+/// Whether this HOME's daemon runs, read from `/daemon` and the HOME lock, never from launchctl.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DaemonState {
+    Answers,
+    /// It holds the HOME lock but `/daemon` does not answer.
+    Silent,
+    #[default]
+    Stopped,
+}
+
 /// The service as launchd has it, and what `doctor --fix` would change in it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServiceView {
     pub label: String,
-    /// `launchctl print` of the service, when launchd has it loaded.
-    pub print: Option<String>,
+    /// Its LaunchAgent is on disk.
+    pub installed: bool,
+    pub daemon: DaemonState,
     pub pending: bool,
     pub others: Vec<PathBuf>,
     pub binaries: bool,
@@ -409,7 +420,8 @@ impl System for Real {
         if self.sandbox.is_some() {
             return ServiceView {
                 label: "e2e sandbox".into(),
-                print: self.health().is_ok().then(|| "state = running".into()),
+                installed: true,
+                daemon: if self.health().is_ok() { DaemonState::Answers } else { DaemonState::Stopped },
                 binaries: true,
                 bin: install.paths.bin.clone(),
                 repo: install.paths.repo.clone(),
@@ -417,10 +429,17 @@ impl System for Real {
             };
         }
         let label = install.label.clone();
-        let print = output("launchctl", &["print", &format!("gui/{}/{label}", install.paths.uid)], Duration::from_secs(5));
+        let daemon = if self.health().is_ok() {
+            DaemonState::Answers
+        } else if alondra_core::home_lock::in_use(&install.paths.alondra_home).unwrap_or(true) {
+            DaemonState::Silent
+        } else {
+            DaemonState::Stopped
+        };
         ServiceView {
             label,
-            print,
+            installed: install.seen.plist.is_some(),
+            daemon,
             pending: install.service_pending(),
             others: install.seen.other_services.clone(),
             binaries: install.seen.binaries,

@@ -4,7 +4,7 @@ use std::time::Duration;
 use alondra_core::config::{Config, FileConfig};
 use serde_json::{Value, json};
 
-use super::system::{MacInfo, Memory, ServiceView};
+use super::system::{DaemonState, MacInfo, Memory, ServiceView};
 use super::{Action, Check, Env, Fix, Group, Outcome, Status};
 use crate::setup;
 
@@ -188,7 +188,6 @@ fn label_of(path: &Path) -> String {
 
 pub fn service_check(view: &ServiceView) -> Outcome {
     let label = &view.label;
-    let running = view.print.as_deref().map(|t| t.contains("state = running"));
     if let Some(other) = view.others.first() {
         let (path, other_label) = (other.display(), label_of(other));
         let replace = service_repair(view, Action::ReplaceOtherService).map(|fix| match fix {
@@ -211,15 +210,19 @@ pub fn service_check(view: &ServiceView) -> Outcome {
         return outcome("service", "launchd", Group::Service, Status::Fail,
             trf!("alondrad is missing from {bin}", "falta alondrad en {bin}"), service_repair(view, Action::InstallService));
     }
-    match running {
-        None => outcome("service", "launchd", Group::Service, Status::Fail,
-            trf!("service {label} is not loaded", "el servicio {label} no está cargado"), service_repair(view, Action::InstallService)),
-        Some(_) if view.pending && !view.dev_over_brew => outcome("service", "launchd", Group::Service, Status::Warn,
+    if !view.installed {
+        return outcome("service", "launchd", Group::Service, Status::Fail,
+            trf!("service {label} is not installed", "el servicio {label} no está instalado"), service_repair(view, Action::InstallService));
+    }
+    match view.daemon {
+        DaemonState::Stopped => outcome("service", "launchd", Group::Service, Status::Warn,
+            trf!("{label} installed but not running", "{label} instalado pero parado"), service_repair(view, Action::InstallService)),
+        _ if view.pending && !view.dev_over_brew => outcome("service", "launchd", Group::Service, Status::Warn,
             trf!("{label} runs with an outdated service file or config.toml", "{label} funciona con un archivo de servicio o un config.toml desactualizado"),
             service_repair(view, Action::InstallService)),
-        Some(true) => outcome("service", "launchd", Group::Service, Status::Pass, trf!("{label} running", "{label} en marcha"), None),
-        Some(false) => outcome("service", "launchd", Group::Service, Status::Warn,
-            trf!("{label} loaded but not running", "{label} cargado pero parado"), service_repair(view, Action::RestartService)),
+        DaemonState::Answers => outcome("service", "launchd", Group::Service, Status::Pass, trf!("{label} running", "{label} en marcha"), None),
+        DaemonState::Silent => outcome("service", "launchd", Group::Service, Status::Warn,
+            trf!("{label} is running but does not answer", "{label} está en marcha pero no responde"), service_repair(view, Action::RestartService)),
     }
 }
 
@@ -567,7 +570,7 @@ fn run_daemon(env: &Env) -> Option<Outcome> {
     let config = env.sys.config();
     let owner = if health.is_err() { env.sys.port_owner(config.port) } else { None };
     let view = env.sys.service();
-    let start = service_repair(&view, if view.print.is_some() { Action::RestartService } else { Action::InstallService });
+    let start = service_repair(&view, if view.daemon == DaemonState::Silent { Action::RestartService } else { Action::InstallService });
     Some(daemon_check(health, &config, start, owner.as_deref()))
 }
 

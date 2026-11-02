@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use super::checks::*;
-use super::system::{MacInfo, Memory, PluginPass, ServiceView, System, TestPush};
+use super::system::{DaemonState, MacInfo, Memory, PluginPass, ServiceView, System, TestPush};
 use super::ui::{Plain, Recorded};
 use super::*;
 
@@ -29,7 +29,8 @@ fn healthy() -> Value {
 fn running() -> ServiceView {
     ServiceView {
         label: "com.example.alondra".into(),
-        print: Some("gui/501/com.example.alondra = {\n\tstate = running\n}".into()),
+        installed: true,
+        daemon: DaemonState::Answers,
         binaries: true,
         bin: "/opt/homebrew/opt/alondra/bin".into(),
         repo: Some("/opt/homebrew/opt/alondra/libexec/alondra".into()),
@@ -115,7 +116,7 @@ impl Fake {
 
     fn stopped(self) -> Self {
         *self.health.borrow_mut() = Err("connection refused".into());
-        self.service.borrow_mut().print = None;
+        self.service.borrow_mut().daemon = DaemonState::Stopped;
         self
     }
 
@@ -237,7 +238,8 @@ impl System for Fake {
                 }
                 self.config_text.borrow_mut().get_or_insert_with(String::new);
                 let mut service = self.service.borrow_mut();
-                service.print = running().print;
+                service.installed = true;
+                service.daemon = DaemonState::Answers;
                 service.pending = false;
                 service.others.clear();
                 *self.health.borrow_mut() = Ok(healthy());
@@ -296,18 +298,49 @@ fn a_healthy_mac_passes_every_check_and_exits_zero() {
 fn the_service_check_names_the_repair_for_each_state() {
     english();
     assert_eq!(service_check(&running()).status, Status::Pass);
-    let unloaded = ServiceView { print: None, ..running() };
+    let unloaded = ServiceView { installed: false, ..running() };
     let c = service_check(&unloaded);
     assert_eq!((c.status, c.fix), (Status::Fail, Some(Fix::Auto(Action::InstallService))));
     let outdated = ServiceView { pending: true, ..running() };
     let c = service_check(&outdated);
     assert_eq!((c.status, c.fix), (Status::Warn, Some(Fix::Auto(Action::InstallService))));
-    let stopped = ServiceView { print: Some("state = not running".into()), ..running() };
-    assert_eq!(service_check(&stopped).fix, Some(Fix::Auto(Action::RestartService)));
+    let silent = ServiceView { daemon: DaemonState::Silent, ..running() };
+    assert_eq!(service_check(&silent).fix, Some(Fix::Auto(Action::RestartService)));
+    let stopped = ServiceView { daemon: DaemonState::Stopped, ..running() };
+    let c = service_check(&stopped);
+    assert_eq!((c.status, c.fix), (Status::Warn, Some(Fix::Auto(Action::InstallService))));
     let missing = ServiceView { binaries: false, ..running() };
     let c = service_check(&missing);
     assert_eq!((c.status, c.fix), (Status::Fail, Some(Fix::Manual("brew reinstall alondra".into()))));
     assert!(c.detail.contains("alondrad is missing"), "{}", c.detail);
+}
+
+#[test]
+fn a_daemon_that_answers_is_running_whatever_launchd_prints() {
+    english();
+    let c = service_check(&ServiceView { installed: true, daemon: DaemonState::Answers, ..running() });
+    assert_eq!((c.status, c.fix), (Status::Pass, None));
+}
+
+#[test]
+fn a_binary_launch_agent_is_read_as_data() {
+    let dir = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&dir).unwrap();
+    let agent = |name: &str, program: &str| {
+        let path = dir.join(format!("{name}.plist"));
+        std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>{name}</string><key>ProgramArguments</key><array><string>{program}</string></array></dict></plist>"#)).unwrap();
+        let status = std::process::Command::new("/usr/bin/plutil").args(["-convert", "binary1"]).arg(&path).status().unwrap();
+        assert!(status.success());
+        path
+    };
+    let home = dir.join("alondra-home");
+    agent("com.example.other", "/usr/local/bin/other");
+    assert!(!configured(&home, Some(&dir)), "a binary plist of another program is not Alondra");
+    agent("com.example.alondra", "/opt/homebrew/opt/alondra/bin/alondrad");
+    assert!(configured(&home, Some(&dir)));
+    let launcher = agent("com.example.launcher", "/Users/ana/.alondra/bin/alondrad-launcher");
+    assert!(crate::setup::starts_alondrad(&crate::setup::read_plist(&launcher).unwrap()));
 }
 
 #[test]
@@ -326,7 +359,7 @@ fn another_service_is_replaced_only_after_a_yes_that_defaults_to_no() {
 #[test]
 fn a_development_build_never_repairs_a_homebrew_service() {
     english();
-    for view in [ServiceView { print: None, dev_over_brew: true, ..running() },
+    for view in [ServiceView { installed: false, dev_over_brew: true, ..running() },
                  ServiceView { others: vec!["/x.plist".into()], dev_over_brew: true, ..running() }] {
         let c = service_check(&view);
         assert!(matches!(&c.fix, Some(Fix::Manual(text)) if text.contains("make e2e-sandbox")), "{c:?}");
@@ -362,7 +395,7 @@ fn the_daemon_check_installs_the_service_launchd_does_not_have() {
     let sys = Fake::healthy().stopped();
     let outcomes = diagnose(&env(&sys));
     assert_eq!(find(&outcomes, "alondrad").fix, Some(Fix::Auto(Action::InstallService)));
-    sys.service.borrow_mut().print = running().print;
+    sys.service.borrow_mut().daemon = DaemonState::Silent;
     assert_eq!(find(&diagnose(&env(&sys)), "alondrad").fix, Some(Fix::Auto(Action::RestartService)));
 }
 
@@ -1035,7 +1068,6 @@ fn a_saved_folder_is_kept_and_one_that_is_gone_is_asked_again() {
 fn like_this_mac(projects: &Path) -> Fake {
     let mut sys = Fake::healthy();
     sys.service.borrow_mut().label = "com.bitomule.alondra".into();
-    sys.service.borrow_mut().print = Some("gui/501/com.bitomule.alondra = {\n\tstate = running\n}".into());
     *sys.options.borrow_mut() = Some(format!("projects_root = {:?}\n", projects.display().to_string()));
     sys.devices = (1..=12).map(|n| json!({"id": format!("d-{n}"), "name": format!("Device {n}"), "created_at": n})).collect();
     sys.memory.borrow_mut().test_push = Some(TestPush { device: "d-1".into(), name: "Device 1".into(), at: 0 });
@@ -1090,9 +1122,11 @@ fn set_up_means_a_config_or_a_launch_agent_for_alondrad() {
     let (home, agents) = (root.join(".alondra"), root.join("LaunchAgents"));
     assert!(!configured(&home, Some(&agents)), "nothing at all");
     std::fs::create_dir_all(&agents).unwrap();
-    std::fs::write(agents.join("com.other.plist"), "<string>/usr/bin/true</string>").unwrap();
+    let agent = |program: &str| format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>ProgramArguments</key><array><string>{program}</string></array></dict></plist>"#);
+    std::fs::write(agents.join("com.other.plist"), agent("/usr/bin/true")).unwrap();
     assert!(!configured(&home, Some(&agents)), "another app's agent");
-    std::fs::write(agents.join("com.bitomule.alondra.plist"), "<string>/opt/homebrew/opt/alondra/bin/alondrad</string>").unwrap();
+    std::fs::write(agents.join("com.bitomule.alondra.plist"), agent("/opt/homebrew/opt/alondra/bin/alondrad")).unwrap();
     assert!(configured(&home, Some(&agents)));
     assert!(!configured(&home, None), "the sandbox looks only at its own home");
     std::fs::create_dir_all(&home).unwrap();

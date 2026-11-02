@@ -7,6 +7,7 @@ use std::{
     path::Path,
 };
 pub const RECOVERY: &str = "service-recovery.json";
+const LOCK_FILE: &str = "service-home.lock";
 pub struct HomeLock {
     file: File,
 }
@@ -33,7 +34,7 @@ impl HomeLock {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(home.join("service-home.lock"))?;
+            .open(home.join(LOCK_FILE))?;
         if !file.metadata()?.is_file() {
             return Err(io::Error::other("HOME lock must be a regular file"));
         }
@@ -46,6 +47,24 @@ impl HomeLock {
             io::Error::other("Alondra HOME is busy; stop its daemon before service recovery")
         })?;
         Ok(Self { file })
+    }
+}
+/// Whether a process holds a lock on `home`: a running daemon holds it shared for its whole life.
+/// A caller that holds its own lock on `home` sees itself.
+pub fn in_use(home: &Path) -> io::Result<bool> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(home.join(LOCK_FILE))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match file.try_lock() {
+        Ok(()) => file.unlock().map(|()| false),
+        Err(fs::TryLockError::WouldBlock) => Ok(true),
+        Err(fs::TryLockError::Error(error)) => Err(error),
     }
 }
 /// Call only after holding a home lock and before loading any local trust.
@@ -91,6 +110,20 @@ mod tests {
         ensure_ready(&home).unwrap();
         drop(recovery);
         fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn in_use_is_read_from_the_lock_whatever_its_error_says() {
+        let home = crate::test_support::Directory::new();
+        assert!(!in_use(&home).unwrap(), "no lock file yet");
+        let daemon = HomeLock::shared(&home).unwrap();
+        assert!(in_use(&home).unwrap());
+        drop(daemon);
+        assert!(!in_use(&home).unwrap());
+        let recovery = HomeLock::recovery(&home).unwrap();
+        assert!(in_use(&home).unwrap());
+        drop(recovery);
+        assert!(!in_use(&home).unwrap());
+        HomeLock::shared(&home).unwrap();
     }
     /// Holds a child between fork and exec, where it owns duplicates of every descriptor
     /// in this process, including other threads' close-on-exec lock descriptors.
