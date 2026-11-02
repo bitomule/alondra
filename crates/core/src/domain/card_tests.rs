@@ -405,9 +405,20 @@ fn options_are_few_short_and_one_recommended() {
     assert_eq!(refused(&mut s, agent(), with(vec![option("a", "Atlas"), option("b", "atlas")], None)).1, Some("options.label".into()));
     assert_eq!(refused(&mut s, agent(), with(vec![option("a", &"x".repeat(41)), option("b", "B")], None)).1, Some("options.label".into()));
     assert_eq!(refused(&mut s, agent(), with(two(), Some("c"))).1, Some("card.recommended".into()));
-    let starred = vec![option("a", "Atlas (Recommended)"), option("b", "Borealis (Recommended)")];
-    assert_eq!(refused(&mut s, agent(), with(starred, None)).1, Some("card.recommended".into()));
     ok(&mut s, agent(), with(two(), Some("a")));
+}
+
+/// A label's text never decides a card: two labels that end in "(Recommended)" are words, and the
+/// recommendation is `card.recommended`.
+#[test]
+fn a_label_that_reads_recommended_is_only_a_label() {
+    let mut s = fixture();
+    let mut card = decide("Pick a name");
+    card.recommended = Some("a".into());
+    ok(&mut s, agent(), Command::AskQuestion {
+        attachments: vec![], interaction_id: "q".into(), scope: scope("t"), recipient: Recipient::User, body: "Which name?".into(),
+        blocking: false, options: vec![option("a", "Atlas (Recommended)"), option("b", "Borealis (Recommended)")], card,
+    });
 }
 
 #[test]
@@ -1311,34 +1322,26 @@ fn delivery_blocker_queries_exclude_self_and_closed_query_targets() {
     assert_eq!(s.blocked_by(&"d".into()), expanded_blocker_scan(&s, &"d".into()));
 }
 
-/// 10 Oct: a node asked the orchestrator whether to stop for usage, after the user had chosen to
-/// keep going on the usage card; the orchestrator answered "Hold until the reset" and the node sat
-/// idle until its session was gone. Only the user and Alondra's pacing stop for usage.
+/// Words never decide a card. Stopping for the subscription's usage is still never a node's call,
+/// but the rule lives in the skill and the tool's description: a card that reads like it, or a
+/// question about another quota, reaches its reader.
 #[test]
-fn a_node_never_asks_whether_to_stop_for_usage() {
+fn a_card_is_never_refused_for_the_words_it_uses() {
     let mut s = fixture();
-    let refusal = ("usage_is_not_a_stop".to_owned(), Some("card.need".to_owned()));
     let to_orchestrator = |id: &str, card: CardSpec, options: Vec<QuestionOption>| Command::AskQuestion {
         attachments: vec![], interaction_id: id.into(), scope: scope("t"), recipient: Recipient::Orchestrator,
-        body: "Usage".into(), blocking: true, options, card,
+        body: "Usage".into(), blocking: false, options, card,
     };
-    let hold = vec![option("hold", "Hold until the reset"), option("go", "Keep going")];
-    assert_eq!(refused(&mut s, agent(), to_orchestrator("o1",
-        CardSpec::new(CardKind::Decide, "Should I stop for the weekly usage?").why("Weekly usage is at 92%"), hold.clone())), refusal);
-    assert_eq!(refused(&mut s, agent(), to_orchestrator("o2",
-        CardSpec::new(CardKind::Decide, "Pick how to go on").why("The 5-hour limit is almost used"), hold)), refusal);
-    assert_eq!(refused(&mut s, agent(), ask("u1", "t", true, decide("¿Paro hasta que se reinicie el límite de uso?"))), refusal);
-    assert_eq!(refused(&mut s, agent(), asks(vec![gq("Which name?", &["Atlas", "Borealis"]), gq("¿Pauso la tarea por el uso semanal?", &["Sí", "No"])])), refusal);
-    let mut until_reset = CardSpec::new(CardKind::Do, "Tell me when the usage quota resets so I can stop waiting").why("Usage is at 99%");
-    until_reset.verify = Some("I read the usage".into());
-    assert_eq!(refused(&mut s, agent(), Command::RequestAction {
-        attachments: vec![], interaction_id: "d1".into(), scope: scope("t"), recipient: Recipient::User, body: "Usage".into(),
-        blocking: true, options: vec![], card: until_reset,
-    }), refusal);
-
-    ok(&mut s, agent(), to_orchestrator("o3", CardSpec::new(CardKind::Decide, "Which API should I use?").why("Two clients fit"), two()));
-    ok(&mut s, agent(), ask("u2", "t", false, decide("Should I wait for the token refresh fix to land?")));
-    ok(&mut s, agent(), ask("u3", "t", false, decide("Memory usage is at 95%: wait before building?")));
+    ok(&mut s, agent(), ask("u1", "t", false, decide("¿Paro el despliegue hasta que se reinicie la cuota de Firebase?")));
+    ok(&mut s, agent(), to_orchestrator("o1",
+        CardSpec::new(CardKind::Decide, "Should I stop for the weekly usage?").why("Weekly usage is at 92%"),
+        vec![option("hold", "Hold until the reset"), option("go", "Keep going")]));
+    let mut until_reset = CardSpec::new(CardKind::Do, "Tell me when the API quota resets so I can stop waiting").why("The quota is at 99%");
+    until_reset.verify = Some("I read the quota".into());
+    ok(&mut s, agent(), Command::RequestAction {
+        attachments: vec![], interaction_id: "d1".into(), scope: scope("t"), recipient: Recipient::User, body: "Quota".into(),
+        blocking: false, options: vec![], card: until_reset,
+    });
 }
 
 #[test]

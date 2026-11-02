@@ -23,6 +23,17 @@ pub enum MachineCause {
     Declared,
 }
 
+/// What a node says it waits for. Nothing names the subscription's usage: a wait for it cannot be
+/// declared.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineResource {
+    Memory,
+    Disk,
+    Cpu,
+    BuildQueue,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct MachineCard {
     pub cause: MachineCause,
@@ -33,6 +44,9 @@ pub struct MachineCard {
     /// What a node declared, when it is the only explanation.
     #[serde(default)]
     pub reason: Option<String>,
+    /// The resource that node declared; none from a CLI older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<MachineResource>,
     /// Minutes the nodes have waited, on the reminder.
     #[serde(default)]
     pub minutes: Option<u64>,
@@ -134,7 +148,7 @@ mod tests {
     use super::*;
 
     fn card(cause: MachineCause, nodes: &[&str]) -> MachineCard {
-        MachineCard { cause, disk_free: 0, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, still: false, purgeable: 0 }
+        MachineCard { cause, disk_free: 0, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, resource: None, minutes: None, disk: None, still: false, purgeable: 0 }
     }
 
     #[test]

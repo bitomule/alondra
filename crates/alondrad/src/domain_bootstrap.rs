@@ -1123,6 +1123,9 @@ async fn orchestrator_node(
 
 #[derive(Deserialize)]
 struct WaitingBody {
+    /// Missing from a CLI older than the field.
+    #[serde(default)]
+    resource: Option<alondra_core::machine_incident::MachineResource>,
     reason: String,
 }
 
@@ -1152,16 +1155,10 @@ async fn agent_waiting_machine(
             "invalid reason",
         ));
     };
-    if alondra_core::usage::usage_wait(&body.reason) {
-        return crate::domain_api::domain_error(DomainError::new(
-            "invalid_input",
-            crate::machine_watch::USAGE_WAIT_REFUSED,
-        ));
-    }
     let live = &state.domain.live;
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
-    live.machine_watch.declare(&session_id, &body.reason, turn, now);
+    live.machine_watch.declare(&session_id, body.resource, &body.reason, turn, now);
     live.gate.hold_back(&state.domain, &session_id, crate::pauses::Reason::Declared { reason: body.reason.clone() }, now);
     live.apply(&alondra_core::Event::WaitingMachine {
         session_id,
@@ -2113,7 +2110,7 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         domain.live.observe(&json!({"session_id": "test-agent", "hook_event_name": "UserPromptSubmit", "cwd": "/tmp", "prompt": "go"}));
-        let waiting = json!({"reason": "the build queue is full"});
+        let waiting = json!({"resource": "build_queue", "reason": "Bazel remote cache token expired, build queue stuck"});
         assert_eq!(
             client
                 .post(format!("{base}/agents/waiting-machine"))
@@ -2135,8 +2132,16 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::OK
+            StatusCode::OK,
+            "the words of the reason never refuse a wait"
         );
+        let declared = |session: &str| domain.live.machine_watch.declared()[session].resource;
+        assert_eq!(declared("test-agent"), Some(alondra_core::machine_incident::MachineResource::BuildQueue));
+        let post = |body: Value| client.post(format!("{base}/agents/waiting-machine")).bearer_auth(&bearer).json(&body).send();
+        assert_eq!(post(json!({"reason": "disk full"})).await.unwrap().status(), StatusCode::OK, "a CLI older than resource");
+        assert_eq!(declared("test-agent"), None);
+        assert!(post(json!({"resource": "usage", "reason": "weekly limit"})).await.unwrap().status().is_client_error(),
+            "no resource names the subscription's usage");
         let node = domain.live.node("test-agent").unwrap();
         assert_eq!(
             node.turn_signal,

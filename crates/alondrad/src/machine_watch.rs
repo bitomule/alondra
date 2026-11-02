@@ -18,7 +18,7 @@
 //! With the disk full the domain may not be able to write the card, so the user then hears it by
 //! a push, which writes nothing to disk.
 use crate::locks::Poisonable as _;
-use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause};
+use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause, MachineResource};
 use alondra_core::views::Lang;
 use alondra_core::domain::TaskId;
 use alondra_core::{Machine, MemoryPressure, Millis, now_millis};
@@ -43,6 +43,8 @@ const TICK: Duration = Duration::from_secs(10);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Declared {
     pub reason: String,
+    #[serde(default)]
+    pub resource: Option<MachineResource>,
     pub at: Millis,
     /// The node's turn when it declared: a later turn means it went on.
     pub turn: u64,
@@ -155,6 +157,7 @@ pub(crate) struct Waiter {
     pub session: String,
     pub name: String,
     pub reason: String,
+    pub resource: Option<MachineResource>,
     pub at: Millis,
 }
 
@@ -165,13 +168,6 @@ pub(crate) enum Action {
     /// The incident is over: its declared waits are left to the admission gate.
     Release(Vec<String>),
 }
-
-/// What a node hears when it declares a wait for the subscription's usage: pacing that is
-/// Alondra's call (its gate and the usage card the user answers), and the real limit stops the
-/// node by itself in Claude Code.
-pub(crate) const USAGE_WAIT_REFUSED: &str = "wait_for_machine is only for the Mac's memory, disk or CPU. \
-    Subscription usage (weekly or 5-hour limits, tokens, budget) is never a reason to wait: Alondra paces usage itself \
-    and the user decides whether to keep going. Carry on with your task.";
 
 /// What the gauges say is wrong. Once the disk was the cause it must climb past
 /// `disk::recovered_lines()` to count as fine, so a disk hovering at the line does not flap. Memory
@@ -193,6 +189,7 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
         purgeable: if short_now { space.purgeable } else { 0 },
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
+        resource: (cause == MachineCause::Declared).then(|| waiting.first().and_then(|waiter| waiter.resource)).flatten(),
         minutes: None,
         disk: disk.filter(|_| cause == MachineCause::Disk).map(str::to_owned),
         still: false,
@@ -319,9 +316,9 @@ impl MachineWatch {
     }
 
     /// A node said it waits for the machine; the watcher looks at once.
-    pub(crate) fn declare(&self, session: &str, reason: &str, turn: u64, now: Millis) {
+    pub(crate) fn declare(&self, session: &str, resource: Option<MachineResource>, reason: &str, turn: u64, now: Millis) {
         let mut record = self.record();
-        record.declared.insert(session.to_owned(), Declared { reason: reason.to_owned(), at: now, turn });
+        record.declared.insert(session.to_owned(), Declared { reason: reason.to_owned(), resource, at: now, turn });
         self.save(&record);
         drop(record);
         self.changed.notify_one();
@@ -549,7 +546,7 @@ impl MachineWatch {
         }).collect()
     }
 
-    fn declared(&self) -> BTreeMap<String, Declared> {
+    pub(crate) fn declared(&self) -> BTreeMap<String, Declared> {
         self.record().declared.clone()
     }
 
@@ -587,7 +584,7 @@ fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
             state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent) && !task.archived).map(|task| task.title.clone())
                 .or_else(|| state.agents.get(&agent).map(|agent| agent.name.clone()))
         }).unwrap_or_else(|| session.chars().take(8).collect());
-        waiting.push(Waiter { session, name, reason: declared.reason, at: declared.at });
+        waiting.push(Waiter { session, name, reason: declared.reason, resource: declared.resource, at: declared.at });
     }
     watch.forget(&gone);
     waiting
@@ -767,7 +764,7 @@ mod tests {
     }
 
     fn waiter(session: &str, name: &str, at: Millis) -> Waiter {
-        Waiter { session: session.into(), name: name.into(), reason: "disk full".into(), at }
+        Waiter { session: session.into(), name: name.into(), reason: "disk full".into(), resource: None, at }
     }
 
     fn raised(actions: &[Action]) -> Vec<&MachineCard> {
@@ -866,7 +863,7 @@ mod tests {
         watch.measure_volumes(&t1, 1);
         watch.give_volumes(vec![(cache.clone(), space(659_000_000))]);
         watch.measure_volumes(&t1, 2);
-        watch.declare("agent-t1", "the build ran out of disk", 0, 3);
+        watch.declare("agent-t1", None, "the build ran out of disk", 0, 3);
 
         let actions = look(&domain, machine(19 * GB, 50));
         let incident = watch.incident().expect("the volume builds write to is nearly full");
@@ -1220,7 +1217,7 @@ mod tests {
     async fn a_full_disk_puts_one_card_tells_the_orchestrator_nothing_and_i_have_fixed_it_withdraws_it() {
         let (_home, domain) = world();
         let session = "fase0";
-        domain.live.machine_watch.declare(session, "disk full, 0 bytes free", 0, now_millis());
+        domain.live.machine_watch.declare(session, None, "disk full, 0 bytes free", 0, now_millis());
         let node = Node::connect(&domain, session);
         let disk = Arc::new(Mutex::new(0u64));
         let reading = disk.clone();
@@ -1268,7 +1265,7 @@ mod tests {
     #[tokio::test]
     async fn when_the_card_cannot_be_written_the_user_hears_it_by_push() {
         let (_home, domain) = world();
-        domain.live.machine_watch.declare("fase0", "disk full", 0, now_millis());
+        domain.live.machine_watch.declare("fase0", None, "disk full", 0, now_millis());
         let told = Arc::new(Told(Mutex::new(vec![])));
         let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, healthy: 0 };
         domain.live.machine_watch.set_incident(Some(incident));
@@ -1291,7 +1288,7 @@ mod tests {
         let watch = MachineWatch::persisted_in(&home);
         let disk = crate::save::full_disk::fill();
         for session in ["first", "second", "third"] {
-            watch.declare(session, "disk full", 0, 1);
+            watch.declare(session, None, "disk full", 0, 1);
         }
         let incident = Incident { since: 1, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 3, healthy: 0 };
         watch.set_incident(Some(incident.clone()));
@@ -1304,7 +1301,7 @@ mod tests {
         assert!(!home.join(FILE).exists());
 
         disk.free();
-        watch.declare("fourth", "disk full", 0, 2);
+        watch.declare("fourth", None, "disk full", 0, 2);
         let saved: Record = serde_json::from_slice(&std::fs::read(home.join(FILE)).unwrap()).unwrap();
         assert_eq!(saved.declared.len(), 4);
         assert_eq!(logged(&format!("saved {} again", home.join(FILE).display())), 1, "{:?}", disk.lines());
@@ -1333,7 +1330,7 @@ mod tests {
             ended = &mut watcher => panic!("the machine watch stopped: {ended:?}"),
         }
         watcher.abort();
-        domain.live.machine_watch.declare("s", "RAM", 0, now_millis());
+        domain.live.machine_watch.declare("s", None, "RAM", 0, now_millis());
         assert_eq!(domain.live.machine_watch.declared().len(), 1);
         assert!(domain.live.machine_watch.mac().free_percent.is_some());
     }
@@ -1341,7 +1338,7 @@ mod tests {
     #[test]
     fn a_node_that_took_another_turn_no_longer_waits() {
         let (_home, domain) = world();
-        domain.live.machine_watch.declare("s", "RAM", 0, now_millis());
+        domain.live.machine_watch.declare("s", None, "RAM", 0, now_millis());
         assert_eq!(waiters(&domain).len(), 1);
         domain.live.observe(&serde_json::json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
         assert!(waiters(&domain).is_empty());
@@ -1361,7 +1358,7 @@ mod tests {
     #[tokio::test]
     async fn sustained_memory_pressure_puts_no_card_and_no_push_while_the_nodes_are_held_and_resumed() {
         let (_home, domain) = world();
-        domain.live.machine_watch.declare("s1", "killed for lack of memory", 0, now_millis());
+        domain.live.machine_watch.declare("s1", None, "killed for lack of memory", 0, now_millis());
         let clock = Clock::default();
         let under = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let reading = under.clone();

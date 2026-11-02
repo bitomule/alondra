@@ -64,7 +64,7 @@ fn tools(role: Role, user: &str) -> Value {
     list.push(json!({"name": "open_cards", "description": format!("The cards {whose} still has open in front of {user} or the orchestrator: id, kind, need, the slot it holds, whether it blocks and whether a Claude Code hook holds it. Read them before sending a card about something you already asked: send the new one with replaces set to the old card's id, or withdraw it. A new plan, final result or problem with the same cause replaces the open one in its slot by itself."),
         "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string", "description": task_help}}, "required": if role == Role::Node { json!(["task_id"]) } else { json!([]) }, "additionalProperties": false}}));
     if role == Role::Node {
-        list.push(json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for the Mac's resources (memory, a full disk, the CPU), also when something you ran died for lack of memory. Not for a build queue such as the build queue: waiting there is normal. Never for the subscription's usage (weekly or 5-hour limits, tokens): Alondra paces usage itself and refuses such a wait, so keep working. When a turn ends on a usage limit, never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again. End your turn after it: Alondra tells you to carry on when the Mac has room for you.", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string", "description": "What you wait for, in a few words in the user's language; the user reads it on your row."}}, "required": ["reason"]}}));
+        list.push(json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for the Mac's resources (memory, a full disk, the CPU), also when something you ran died for lack of memory. Not for your turn in a build queue such as the build queue: waiting there is normal; build_queue is for a queue that is stuck. Never for the subscription's usage (weekly or 5-hour limits, tokens): there is no resource for it, because Alondra paces usage itself, so keep working. When a turn ends on a usage limit, never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again. End your turn after it: Alondra tells you to carry on when the Mac has room for you.", "inputSchema": {"type": "object", "properties": {"resource": {"type": "string", "enum": ["memory", "disk", "cpu", "build_queue"], "description": "The resource of the Mac you wait for."}, "reason": {"type": "string", "description": "What you wait for, in a few words in the user's language; the user reads it on your row."}}, "required": ["resource", "reason"]}}));
     } else {
         list.push(
         json!({"name": "schedule_create", "description": format!("Create a durable scheduled Alondra task for {user}. Use this instead of CronCreate for work that should continue beyond this Claude session. Times use the Mac's local timezone. Ask only if the mission, project or time cannot be inferred from the conversation."), "inputSchema": {"type": "object", "properties": {
@@ -212,7 +212,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     };
     add(
         "ask",
-        format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Only for a real decision, whose options change what you do next: never to say your work is ready, to show a report or plan to read, or to point at a file; finished work goes out with present_result, and the task stays open while you only ask. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: each becomes its own card, {user} answers them one by one, and all the answers reach you together once the last is answered. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces. Never ask whether to stop or wait for the subscription's usage: Alondra paces usage and {user} decides on its usage card, so Alondra refuses that question; keep working. {rule}"),
+        format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Only for a real decision, whose options change what you do next: never to say your work is ready, to show a report or plan to read, or to point at a file; finished work goes out with present_result, and the task stays open while you only ask. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: each becomes its own card, {user} answers them one by one, and all the answers reach you together once the last is answered. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces. Never ask whether to stop or wait for the subscription's usage: Alondra paces usage and {user} decides on its usage card; keep working. {rule}"),
         json!({"need":need_schema(),"why":why_schema(),"options":interaction["options"],"recommended":{"type":"string","description":"The id of the option you recommend"},
             "questions":questions_schema(&interaction["options"]),"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["why", "blocking"],
@@ -839,10 +839,12 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         "wait_for_machine" => {
             let bearer = domain_bearer()?;
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
+            let resource: alondra_core::machine_incident::MachineResource = serde_json::from_value(args.get("resource").cloned().unwrap_or(Value::Null))
+                .map_err(|_| anyhow::anyhow!("invalid_input: resource must be one of memory, disk, cpu or build_queue. Call wait_for_machine again with it"))?;
             client.domain_post(
                 "/agents/waiting-machine",
                 &bearer,
-                &json!({"reason": reason}),
+                &json!({"resource": resource, "reason": reason}),
             )?;
             "Noted: you are waiting for the machine. End your turn now; Alondra tells you to carry on when the Mac has room for you.".to_string()
         }
@@ -1131,16 +1133,12 @@ fn card_kind(name: &str, command: &serde_json::Map<String, Value>) -> Option<&'s
     })
 }
 
-/// Only a plan Claude Code holds is a plan: a node that labels its own content one gets a list of
-/// steps or a report, whichever the body is, so the card never claims a plan was approved.
+/// Only a plan Claude Code holds is a plan: content a node labels one is always a report, so the
+/// card never claims a plan was approved.
 fn unplan_content(mut content: Value) -> Value {
-    if content["kind"].as_str() != Some("plan") {
-        return content;
+    if content["kind"].as_str() == Some("plan") {
+        content["kind"] = json!("report");
     }
-    let body = content["body"].as_str().unwrap_or_default();
-    let lines: Vec<&str> = body.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
-    let listed = !lines.is_empty() && lines.iter().all(|line| line.starts_with("- ") || line.starts_with("* ") || line.chars().take_while(char::is_ascii_digit).count() > 0 && line.contains(". "));
-    content["kind"] = json!(if listed { "steps" } else { "report" });
     content
 }
 
@@ -1943,6 +1941,9 @@ mod tests {
         let catalog = tools(Role::Node, "Ana");
         let wait = catalog.as_array().unwrap().iter().find(|t| t["name"] == "wait_for_machine").unwrap();
         assert!(wait["description"].as_str().unwrap().contains("never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again"));
+        assert_eq!(wait["inputSchema"]["required"], json!(["resource", "reason"]));
+        assert_eq!(wait["inputSchema"]["properties"]["resource"]["enum"], json!(["memory", "disk", "cpu", "build_queue"]),
+            "no resource names the subscription's usage");
         assert!(skill_text(Role::Node).contains("When a turn ends on a usage limit (\"You've hit your session limit\"), never wait for it yourself: no `sleep`, no cron (`CronCreate`), no loop in the background. End your turn; Alondra waits out the limit and wakes you when Claude answers again."), "the node skill says so too");
     }
 
@@ -2958,10 +2959,11 @@ mod card_tool_tests {
     }
 
     #[test]
-    fn content_a_node_calls_a_plan_is_a_list_of_steps_or_a_report() {
+    fn content_a_node_calls_a_plan_is_a_report_whatever_its_body() {
         let kind_of = |body: &str| built("ask", with(json!({"need":"Fix the badge","why":"Stuck","options":options(),"blocking":false,"content":{"kind":"plan","body":body}})))["card"]["content"]["kind"].clone();
-        assert_eq!(kind_of("- Relay: add a push type\n- Daemon: send it\n- App: lower the badge"), "steps");
-        assert_eq!(kind_of("1. Relay\n2. Daemon"), "steps");
+        assert_eq!(kind_of("- Relay: add a push type\n- Daemon: send it\n- App: lower the badge"), "report");
+        assert_eq!(kind_of("1. a\n2. b\nNotas"), "report");
+        assert_eq!(kind_of("1. Relay\n2. Daemon"), "report");
         assert_eq!(kind_of("Today the push raises the number, nothing lowers it."), "report");
         let asked = built("ask", with(json!({"need":"Pick","why":"Why","options":options(),"blocking":false,"content":{"kind":"plan","body":"Prose only"}})));
         assert_eq!(asked["card"]["content"]["kind"], "report");

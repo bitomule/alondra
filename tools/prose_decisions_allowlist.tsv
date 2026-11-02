@@ -8,11 +8,6 @@ apple/iOS/UI/Sources/Tasks/TaskDetailView.swift	if let priority = detail.priorit
 apple/Features/Sources/TaskDetail/TaskDetail.swift	folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,	finding:A-03	folder fact picked by position and a leading slash
 apple/Features/Sources/Settings/CrashReport/CrashReportFeature.swift	if !detail.isEmpty { return .refused(detail) }	finding:A-04	report refused when the server's text is not empty
 apple/Data/Feed/Sources/ActionDeliveryError.swift	case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final	finding:A-06	retry decided by a code in a field that also carries prose
-crates/core/src/usage.rs	let text = text.to_lowercase();	finding:C-01	card refused by usage and stop words
-crates/core/src/usage.rs	let usage = words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| text.contains(phrase));	finding:C-01	card refused by usage and stop words
-crates/core/src/usage.rs	let stop = words.iter().any(|word| stop_words.contains(word)) || stop_phrases.iter().any(|phrase| text.contains(phrase));	finding:C-01	card refused by usage and stop words
-crates/core/src/usage.rs	let reason = reason.to_lowercase();	finding:C-02	machine wait refused by usage words in its reason
-crates/core/src/usage.rs	words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| reason.contains(phrase))	finding:C-02	machine wait refused by usage words in its reason
 crates/core/src/domain/cited_files.rs	let lower = line.to_ascii_lowercase();	finding:C-03	any Markdown path mentioned is read or the card refused
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	finding:C-04	merge failure rebuilt by parsing the hand-back body
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	finding:C-04	merge failure rebuilt by parsing the hand-back body
@@ -20,7 +15,6 @@ crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whethe
 crates/core/src/states.rs	|| HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/tasks/derive.rs	while let Some(i) = text[from..].find("t-").map(|i| from + i) {	finding:C-06	old view assigns PRs and reports by t- mentions
-crates/core/src/domain/rules.rs	if options.iter().filter(|o| o.label.trim_end().ends_with("(Recommended)")).count() > 1 {	finding:C-07	card refused by the (Recommended) suffix of two labels
 crates/alondrad/src/domain_merges.rs	has(reason, &["http 404", "http 403"])	finding:D-01	merge outcome classified by gh's stderr
 crates/alondrad/src/domain_merges.rs	let reason = reason.to_ascii_lowercase();	finding:D-01	merge outcome classified by gh's stderr
 crates/alondrad/src/domain_merges.rs	signs.iter().any(|sign| reason.contains(sign))	finding:D-01	merge outcome classified by gh's stderr
@@ -126,7 +120,6 @@ crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::orchestrato
 crates/core/src/views/task_state.rs	LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) =>	finding:D-16	card kind and effects deduced from its id prefix
 crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
 crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondra/src/mcp.rs	let listed = !lines.is_empty() && lines.iter().all(|line| line.starts_with("- ") || line.starts_with("* ") || line.chars().take_while(char::is_ascii_digit).count() > 0 && line.contains(". "));	finding:D-17	plan content turned into steps or report by its shape
 crates/alondra/src/doctor/mod.rs	.any(|p| std::fs::read_to_string(p).map_or(true, |t| t.contains("/alondrad</string>"))),	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondra/src/setup.rs	.filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("/alondrad</string>")))	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondrad/src/machine.rs	let line = text.lines().find(|l| l.contains("memory free percentage"))?;	finding:D-21	free memory read from memory_pressure's text

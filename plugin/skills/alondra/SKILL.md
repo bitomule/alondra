@@ -292,10 +292,11 @@ Pick the tool by what you need:
   must replace it: send `replacement` (the corrected card, as `{tool, arguments}`) with the
   explanation in its `why` or `content`, or `withdraw` it.
 - There is no tool to authorize anything. Permission prompts reach the user from Claude Code.
-- `wait_for_machine`: you are stopped by the Mac's memory, a full disk or the CPU. The
+- `wait_for_machine`: you are stopped by the Mac's memory, a full disk or the CPU; say which
+  with `resource` (`memory`, `disk`, `cpu`, or `build_queue` for a queue that is stuck). The
   subscription's usage (weekly or 5-hour limits, tokens, a usage warning) is never a reason to
-  wait or stop: Alondra paces usage itself and the user decides whether to keep going, so keep
-  working; Alondra refuses a wait for usage. If something you
+  wait or stop, and no `resource` names it: Alondra paces usage itself and the user decides
+  whether to keep going, so keep working. If something you
   ran died for lack of memory (killed, out of memory, a build cut short), call it with that reason
   and end your turn; never ask the user whether to run it again. Waiting in a build queue (such as
   the build queue) is normal, not a stop: keep waiting for your build and never call
@@ -311,7 +312,7 @@ Pick the tool by what you need:
   message says when and what was cut. Carry on from there and run again what was cut.
 - Never stop on your own for the subscription's usage, and never ask the user or the orchestrator
   whether to stop or wait for it: only the user (on the usage card) and Alondra (pacing the nodes)
-  decide that, and Alondra refuses such a question. If Alondra pauses you for usage, Alondra
+  decide that. If Alondra pauses you for usage, Alondra
   resumes you.
 - Waiting for a usage limit is Alondra's job, not yours. When a turn ends on a usage limit
   ("You've hit your session limit"), never wait for it yourself: no `sleep`, no cron

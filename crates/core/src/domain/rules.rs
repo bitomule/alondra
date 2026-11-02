@@ -41,21 +41,6 @@ fn pr_head_mismatch(pr: &PullRequest, head: &str) -> String {
     format!("PR #{} is at {}, not {head}. If {head} is your latest commit, push it and present again; \
         to present the commit the PR is at, give head {} or leave head out", pr.number, pr.head, pr.head)
 }
-/// Stopping for the subscription's usage is decided by the user on the usage card and by
-/// Alondra's pacing, never by a node or the orchestrator: a node's question about it is refused
-/// before anyone can answer "hold".
-fn usage_is_not_a_stop(card: &CardSpec, options: &[QuestionOption]) -> Result<()> {
-    let mut asked = vec![card.need.as_str(), card.why.as_str()];
-    for option in options {
-        asked.push(&option.label);
-        asked.extend(option.description.as_deref());
-    }
-    if crate::usage::usage_stop_question(&asked.join("\n")) {
-        return refuse("usage_is_not_a_stop", "card.need",
-            "The subscription's usage is never a reason to stop or wait: Alondra paces usage and the user decides on the usage card. Do not ask; carry on with your task");
-    }
-    Ok(())
-}
 /// The command a card arrives with, which bounds the kinds it may be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Source {
@@ -222,9 +207,6 @@ fn decide_options(options: &[QuestionOption]) -> Result<()> {
         if !labels.insert(option.label.trim().to_lowercase()) {
             return refuse("invalid_input", "options.label", &format!("\"{}\" appears twice: every option says something different", option.label));
         }
-    }
-    if options.iter().filter(|o| o.label.trim_end().ends_with("(Recommended)")).count() > 1 {
-        return refuse("invalid_input", "card.recommended", "Recommend at most one option, with card.recommended");
     }
     Ok(())
 }
@@ -705,9 +687,6 @@ impl DomainState {
             _ => self.card_author(actor, scope, source)?,
         };
         self.recipient(to)?;
-        if matches!(author, Author::Agent { .. }) && matches!(source, Source::Question | Source::Action) {
-            usage_is_not_a_stop(card, options)?;
-        }
         if card.kind == CardKind::Propose {
             self.suggestion(&author, scope, to, options)?;
         }

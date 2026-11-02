@@ -141,7 +141,7 @@ def reply_scenario(deliverer, tui, shots):
     time.sleep(3)
     assert not listed(tui.screen(), DELIVERY), f"the delivery came back while the node acts on the reply:\n{tui.screen()}"
     shots.take("node-acting-on-reply")
-    deliverer.call(("wait_for_machine", {"reason": "Espera memoria"}))
+    deliverer.call(("wait_for_machine", {"resource": "memory", "reason": "Espera memoria"}))
     tui.until(lambda s: listed(s, DELIVERY), "the delivery never came back once its node stopped", seconds=20)
     select(tui, DELIVERY)
     tui.until(lambda s: "Aceptar" in s, "the delivery came back without Accept")
