@@ -79,6 +79,12 @@ fn what_nodes_may_never_do_and_a_plan_without_its_checklist_are_denied() {
 }
 
 #[test]
+fn a_plan_that_only_mentions_a_markdown_file_it_will_create_is_put_to_the_user() {
+    let plan = "- [ ] Ship\n\nCreate `docs/new.md` later";
+    assert_eq!(decision_policy(Hold::Plan, Some("ExitPlanMode"), &json!({}), None, Some(plan)), None);
+}
+
+#[test]
 fn a_plan_claude_never_wrote_is_sent_back_to_be_written() {
     for unwritten in [None, Some(""), Some(" \n")] {
         assert_eq!(decision_policy(Hold::Plan, Some("ExitPlanMode"), &json!({}), None, unwritten),

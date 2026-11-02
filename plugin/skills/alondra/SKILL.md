@@ -89,9 +89,11 @@ must be decidable by someone who sees nothing else:
   missing.
 - The user cannot open a file from the app. `content` holds the card's own text (the decision,
   the report, the answer); a document it goes with (a plan, a design, a spec) is never pasted
-  into it. Cite its Markdown path (`docs/plan.md`): Alondra reads it from your worktree and shows
-  it as a document of the card, which the user opens apart, or refuses the card when it cannot
-  read it. Or send it with `create_document` and, in a result, a `document_revision` target.
+  into it. List its Markdown path, relative to your worktree, in the card's `files`
+  (`"files": ["docs/plan.md"]`): Alondra reads it from your worktree and shows it as a document of
+  the card, which the user opens apart, or refuses the card when it cannot read it. A path you only
+  mention in the text is never read and never shown. Or send it with `create_document` and, in a
+  result, a `document_revision` target.
 
 Wrong: `need` "Approve the new promotional text for Quill's App Store listing", no `content`.
 Right: the same `need`, `why` saying what the text is for, and `content` (kind `document`) with
@@ -190,7 +192,7 @@ Pick the tool by what you need:
     and the report never hides a plan inside it.
   If the user answers a plan card that nothing should be built, deliver again with the report
   alone, without `plan`. Alondra keeps every final report (and its plan) in its files folder and
-  shows on the card each Markdown file it cites: write the report in `content` and never leave
+  shows on the card each Markdown file listed in `files`: write the report in `content` and never leave
   it only in a temporary folder. A plan that does not fit one PR goes in phases, as "A plan in
   phases" says.
   When the user approved a plan for the task, send `checklist` with the final result: every point
@@ -259,8 +261,9 @@ Pick the tool by what you need:
   about it with `ask`. Write its scope as Markdown checklist lines (`- [ ] …`), one per thing you
   will deliver: a plan without them comes back to you, and once approved they are what your final
   result must mark done. The plan goes whole in the card, never as a path: the user cannot open a
-  file from the app, so a Markdown file the plan cites (`docs/plan.md`) is added at its end from
-  your worktree, and a plan citing one Alondra cannot read comes back to you.
+  file from the app, so a Markdown file of your worktree the plan links to with a Markdown link
+  (`[the design](docs/design.md)`) is added at its end. A path only mentioned in the plan, such as
+  a file the work will create, is never read and never sends the plan back.
 - A plan in phases. Split your plan into phases when its change does not fit one PR a person
   reviews in one sitting. It does not fit when any of these is true: it changes more than one
   layer that ships on its own (stored data or its schema, the service, its API, each client

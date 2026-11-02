@@ -14,7 +14,7 @@ pub enum Role {
 }
 
 fn self_contained_card(user: &str) -> String {
-    format!("Every card is decided without reading your chat: {user} sees only the card. Its content carries the whole thing being decided (the proposed text and the current one, the design, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat: repeat what is needed, and ask yourself whether someone who sees only this card can decide. {user} cannot open a file from the app: write a plan into the card, never point at a file. Cite a document's Markdown path, never paste it in.")
+    format!("Every card is decided without reading your chat: {user} sees only the card. Its content carries the whole thing being decided (the proposed text and the current one, the design, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat: repeat what is needed, and ask yourself whether someone who sees only this card can decide. {user} cannot open a file from the app: write a plan into the card, never point at a file. List a document's Markdown path in files to show it; a path only mentioned is never read.")
 }
 
 fn instructions(role: Role, user: &str) -> String {
@@ -150,8 +150,12 @@ fn questions_schema(options: &Value) -> Value {
     },"required":["question","options"],"additionalProperties":false}})
 }
 
+fn files_schema() -> Value {
+    json!({"type":"array","items":{"type":"string"},"description":"Markdown files of your worktree the user reads beside the card, each a path relative to your worktree ending in .md (like docs/plan.md). Alondra reads each one and shows it as a document of the card; a listed file that cannot be read refuses the card. Only these files are shown: a path you mention in need, why, content or plan is never read"})
+}
+
 fn content_schema() -> Value {
-    json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. It holds the whole thing being decided, never a summary of it. Put anything longer than a sentence here, never in why. A separate document (a plan, a design, a spec) is never pasted here: cite its Markdown path, which the card shows as a document of its own, or send it as an Alondra document. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
+    json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. It holds the whole thing being decided, never a summary of it. Put anything longer than a sentence here, never in why. A separate document (a plan, a design, a spec) is never pasted here: list its Markdown path in files, which the card shows as a document of its own, or send it as an Alondra document. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
         "kind":{"type":"string","enum":["document","diff","command","report","steps","options","diagnosis","attachments"]},
         "summary":{"type":"string","maxLength":60,"description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
         "body":{"type":"string"}
@@ -214,26 +218,26 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         "ask",
         format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Only for a real decision, whose options change what you do next: never to say your work is ready, to show a report or plan to read, or to point at a file; finished work goes out with present_result, and the task stays open while you only ask. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: each becomes its own card, {user} answers them one by one, and all the answers reach you together once the last is answered. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces. Never ask whether to stop or wait for the subscription's usage: Alondra paces usage and {user} decides on its usage card; keep working. {rule}"),
         json!({"need":need_schema(),"why":why_schema(),"options":interaction["options"],"recommended":{"type":"string","description":"The id of the option you recommend"},
-            "questions":questions_schema(&interaction["options"]),"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+            "questions":questions_schema(&interaction["options"]),"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"files":files_schema(),"attachments":attachments}),
         &["why", "blocking"],
     );
     add(
         "request_action",
         format!("Hand {user} something to do outside Alondra (a Do card). Say how you will check it was done in verify; when {user} answers Done you run that check. Put the instructions in steps or content, not in why. {rule}"),
-        json!({"need":need_schema(),"why":why_schema(),"verify":{"type":"string","description":"How you will check it was done"},"steps":{"type":"array","items":{"type":"string"},"description":"The steps to follow, in order"},"options":interaction["options"],"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        json!({"need":need_schema(),"why":why_schema(),"verify":{"type":"string","description":"How you will check it was done"},"steps":{"type":"array","items":{"type":"string"},"description":"The steps to follow, in order"},"options":interaction["options"],"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"files":files_schema(),"attachments":attachments}),
         &["need", "why", "verify", "blocking"],
     );
     add(
         "request_input",
         format!("Ask {user} for something only they can provide (a Provide card): a file, a piece of text or a secret. {user} writes it or attaches it on the card, and it reaches you as their answer; the card's only button is «I can't provide it». Use ask instead when the answer is one of a few choices."),
-        json!({"need":need_schema(),"why":why_schema(),"kind":{"type":"string","enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"destination":{"type":"object","properties":{"file":{"type":"string","description":"A git-ignored file, relative to the repository root, like .env"},"variable":{"type":"string","description":"The variable name, like STRIPE_KEY"}},"required":["file","variable"],"description":"Required for kind secret: Alondra writes VARIABLE=value to this file in your worktree and the main checkout, and you only get «VARIABLE written to file»"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        json!({"need":need_schema(),"why":why_schema(),"kind":{"type":"string","enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"destination":{"type":"object","properties":{"file":{"type":"string","description":"A git-ignored file, relative to the repository root, like .env"},"variable":{"type":"string","description":"The variable name, like STRIPE_KEY"}},"required":["file","variable"],"description":"Required for kind secret: Alondra writes VARIABLE=value to this file in your worktree and the main checkout, and you only get «VARIABLE written to file»"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"files":files_schema(),"attachments":attachments}),
         &["need", "why", "kind", "blocking"],
     );
     if node {
         add(
             "request_test",
             format!("Ask {user} to try something out and say whether it works (a Test card): the answers are fixed, Works or Doesn't work, with any text {user} writes on the card. Say where to look in where (build, version, screen) and what to look at in what."),
-            json!({"need":need_schema(),"where":{"type":"string","description":"Where to test it: build, version, screen"},"what":{"type":"string","description":"What to look at"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"attachments":attachments}),
+            json!({"need":need_schema(),"where":{"type":"string","description":"Where to test it: build, version, screen"},"what":{"type":"string","description":"What to look at"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"files":files_schema(),"attachments":attachments}),
             &["need", "where", "what"],
         );
     }
@@ -241,7 +245,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         add(
         "publish_information",
         format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Never about a Request {user} made or one of its Tasks: Alondra tells {user} how each of those ended from close_request, and refuses such a card. Never to confirm something routine (launching, reassigning, cancelling, adding to a design): Tasks already shows it; a maintenance message (a Request sent with alondra send without --reply) gets no card, and one about it is refused; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one. Send a notice only when knowing it helps {user}, and say its effect for them in plain words (\"You can update Alondra to 0.2.56: it brings X and Y\"), never script names, task ids or internal steps (\"release.sh + tag finished: release 0.2.56 published\" is wrong). An answer to a message from Claude or a maintenance message never becomes a notice for {user}. {rule}"),
-        json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"replaces":replaces_schema(),"content":content_schema(),"files":files_schema(),"attachments":attachments}),
         &["need", "body"],
         );
     }
@@ -254,7 +258,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         tools.push(domain_tool(
             "present_result",
             &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass). With is_final false it is a progress notice, which never carries an open PR: an open PR goes only in a final result. Finishing is always present_result, never an ask. need says what to review and content carries the report written out in its body, never a path or a pasted document: {user} cannot open files from the app; files go in attachments (a final result needs content). Both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task. need and content say what the result means for {user} in plain words, never script names, task ids or internal steps. When the result needs {user} to choose anything, ask it with ask before delivering; never leave choices only in the content, because accepting the result does not answer them. When {user} approved a plan for the Task, a final result marks every point done in checklist, each with its evidence. {rule}"),
-            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"attachments":attachments}),
+            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
             &["task_id", "interaction_id", "need", "targets", "is_final"],
         ));
     }
@@ -1158,24 +1162,18 @@ fn with_steps(content: Option<Value>, steps: &str) -> Value {
     json!({"kind":kind,"body":body})
 }
 
-/// A decision carries every Markdown file its words cite, read from where the agent works, at the
-/// end of its content: the user cannot open a file from the app.
-fn with_cited_files(need: &str, why: &str, content: Option<Value>, cwd: Option<&std::path::Path>) -> Result<Option<Value>> {
-    let body = content.as_ref().and_then(|c| c["body"].as_str()).unwrap_or_default().to_owned();
-    let said = format!("{need}\n{why}\n{body}");
-    let whole = alondra_core::domain::include_cited_files(&said, |path| alondra_core::cited_file::read_cited_file(cwd, path))
-        .map_err(|fix| anyhow::anyhow!("invalid_input: card.content.body: {fix}"))?;
-    if whole == said {
-        return Ok(content);
-    }
-    let included = &whole[said.trim_end().len()..];
-    let mut content = content.unwrap_or_else(|| json!({"kind": "document"}));
-    content["body"] = json!(format!("{}{included}", body.trim_end()).trim_start().to_owned());
-    Ok(Some(content))
+/// The worktree Markdown files a card lists in `files`, read from where the agent works and
+/// included at the end of `text`: the user cannot open a file from the app.
+fn with_files(text: &str, files: &[String], cwd: Option<&std::path::Path>) -> Result<String> {
+    alondra_core::domain::include_files(text, files, |path| alondra_core::cited_file::read_cited_file(cwd, path))
+        .map_err(|fix| anyhow::anyhow!("invalid_input: files: {fix}"))
 }
 
-fn delivers_pr(command: &serde_json::Map<String, Value>) -> bool {
-    command.get("targets").and_then(Value::as_array).is_some_and(|targets| targets.iter().any(|t| t["kind"] == "pull_request"))
+fn take_files(command: &mut serde_json::Map<String, Value>) -> Result<Vec<String>> {
+    match command.remove("files").filter(|v| !v.is_null()) {
+        None => Ok(vec![]),
+        Some(files) => serde_json::from_value(files).map_err(|_| anyhow::anyhow!("invalid_input: files must be a list of paths relative to your worktree, like [\"docs/plan.md\"]")),
+    }
 }
 
 fn choice(id: &str, label: &str) -> Value {
@@ -1332,15 +1330,18 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
         _ => {}
     }
     let cwd = std::env::current_dir().ok();
-    if name == "ask" || (name == "present_result" && !delivers_pr(command)) {
-        content = with_cited_files(&need, &why, content, cwd.as_deref())?;
+    let files = take_files(command)?;
+    let plan = (name == "present_result").then(|| command.remove("plan")).flatten()
+        .and_then(|v| v.as_str().map(str::trim).map(str::to_owned)).filter(|plan| !plan.is_empty());
+    if let Some(plan) = plan {
+        card.insert("plan".into(), json!(with_files(&plan, &files, cwd.as_deref())?));
+    } else if !files.is_empty() {
+        let mut shown = content.unwrap_or_else(|| json!({"kind": "document"}));
+        shown["body"] = json!(with_files(shown["body"].as_str().unwrap_or_default(), &files, cwd.as_deref())?);
+        content = Some(shown);
     }
-    if name == "present_result"
-        && let Some(plan) = command.remove("plan").and_then(|v| v.as_str().map(str::trim).map(str::to_owned)).filter(|plan| !plan.is_empty())
-    {
-        let whole = alondra_core::domain::include_cited_files(&plan, |path| alondra_core::cited_file::read_cited_file(cwd.as_deref(), path))
-            .map_err(|fix| anyhow::anyhow!("invalid_input: plan: {fix}"))?;
-        card.insert("plan".into(), json!(whole));
+    if !files.is_empty() {
+        card.insert("files".into(), json!(files));
     }
     card.insert("kind".into(), json!(kind));
     card.insert("need".into(), json!(need));
@@ -2914,22 +2915,30 @@ mod card_tool_tests {
     }
 
     #[test]
-    fn a_decision_carries_the_markdown_files_it_cites_or_is_refused_before_it_is_sent() {
+    fn a_card_carries_the_markdown_files_it_lists_and_never_reads_a_mention() {
         let pointer = "Plan completo: docs/fast-connection-plan.md (PR #975, sin fusionar).\n\nPASOS:\n0. Medir.";
-        let refused = domain_envelope("ask", &with(json!({"need":"Aprueba el plan de conexión rápida","why":"Son 8 tareas","options":options(),"blocking":false,
-            "content":{"kind":"document","body":pointer}})), "epoch", "id").unwrap_err().to_string();
-        assert!(refused.starts_with("invalid_input: card.content.body: the user cannot open docs/fast-connection-plan.md"), "{refused}");
+        let mentioned = built("ask", with(json!({"need":"Aprueba el plan de conexión rápida","why":"Son 8 tareas","options":options(),"blocking":false,
+            "content":{"kind":"document","body":pointer}})));
+        assert_eq!(mentioned["card"]["content"]["body"], pointer, "a mention is never read nor refused");
+        assert!(mentioned["card"].get("files").is_none());
+        let refused = domain_envelope("ask", &with(json!({"need":"Aprueba el plan","why":"Son 8 tareas","options":options(),"blocking":false,
+            "files":["docs/fast-connection-plan.md"]})), "epoch", "id").unwrap_err().to_string();
+        assert!(refused.starts_with("invalid_input: files: docs/fast-connection-plan.md cannot be read"), "{refused}");
+        let outside = domain_envelope("ask", &with(json!({"need":"Aprueba","why":"x","options":options(),"blocking":false,"files":["/etc/a.md"]})), "epoch", "id").unwrap_err().to_string();
+        assert!(outside.contains("not a Markdown file of your worktree"), "{outside}");
         let worktree = tempfile::tempdir().unwrap();
         std::fs::create_dir(worktree.path().join("docs")).unwrap();
         std::fs::write(worktree.path().join("docs/fast-connection-plan.md"), "# Plan\n\n- [ ] Medir").unwrap();
         std::fs::write(worktree.path().join("notes.md"), "Notas").unwrap();
-        let content = Some(json!({"kind":"document","body":pointer}));
-        let whole = with_cited_files("Aprueba el plan", "Ver notes.md", content, Some(worktree.path())).unwrap().unwrap();
-        assert_eq!(whole["body"], format!("{pointer}\n\n---\n\n## notes.md\n\nNotas\n\n---\n\n## docs/fast-connection-plan.md\n\n### Plan\n\n- ☐ Medir"));
-        let created = with_cited_files("Revisa notes.md", "", None, Some(worktree.path())).unwrap().unwrap();
-        assert_eq!(created, json!({"kind":"document","body":"---\n\n## notes.md\n\nNotas"}));
-        let plain = Some(json!({"kind":"report","body":"Nada que incluir"}));
-        assert_eq!(with_cited_files("Elige", "", plain.clone(), Some(worktree.path())).unwrap(), plain);
+        let files = vec!["notes.md".to_owned(), "docs/fast-connection-plan.md".to_owned()];
+        assert_eq!(with_files(pointer, &files, Some(worktree.path())).unwrap(),
+            format!("{pointer}\n\n---\n\n## notes.md\n\nNotas\n\n---\n\n## docs/fast-connection-plan.md\n\n### Plan\n\n- ☐ Medir"));
+        assert_eq!(with_files("", &files[..1], Some(worktree.path())).unwrap(), "---\n\n## notes.md\n\nNotas");
+        assert_eq!(with_files("Nada que incluir", &[], Some(worktree.path())).unwrap(), "Nada que incluir");
+        for name in ["ask", "request_action", "request_input", "request_test", "present_result"] {
+            let files = &tool(Role::Node, name)["inputSchema"]["properties"]["files"];
+            assert!(files["description"].as_str().unwrap().contains("a path you mention in need, why, content or plan is never read"), "{name}: {files}");
+        }
     }
 
     #[test]
@@ -2948,14 +2957,6 @@ mod card_tool_tests {
         let content = tool(Role::Node, "present_result")["inputSchema"]["properties"]["content"]["description"].as_str().unwrap_or_default().to_owned();
         assert!(content.contains("A separate document (a plan, a design, a spec) is never pasted here"), "{content}");
         assert!(skill.contains("a document it goes with (a plan, a design, a spec) is never pasted"));
-    }
-
-    #[test]
-    fn a_question_that_points_at_a_finished_report_is_sent_back_to_present_result() {
-        let refused = with_cited_files("Lee la investigación sobre la conexión rápida: está lista",
-            "El informe completo está en docs/fast-connection-research.md", None, None).unwrap_err().to_string();
-        assert!(refused.starts_with("invalid_input: card.content.body: the user cannot open docs/fast-connection-research.md"), "{refused}");
-        assert!(refused.ends_with("if it is your finished work, deliver it with present_result and the whole report in content.body"), "{refused}");
     }
 
     #[test]

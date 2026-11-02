@@ -1,18 +1,27 @@
-//! A plan or a decision is read on its card alone: the user cannot open a Markdown file the
-//! author cites from their worktree. Each cited file is included at the end of the card under a
-//! heading with its path, or the card is refused.
+//! A plan or a decision is read on its card alone: the user cannot open a Markdown file from the
+//! app. The files its author names explicitly (the `files` field of a card, or a Markdown link in
+//! a native plan) are included at the end of the card under a heading with their path. A path
+//! merely mentioned in the text is never read and never refuses anything.
 use super::checklist::task_text;
 
 pub const CITED_FILE_MAX_BYTES: usize = 32 * 1024;
 pub const CITED_FILES_MAX_BYTES: usize = 128 * 1024;
 
-/// The local Markdown files `text` cites, once each and in order: outside code blocks and
-/// checklist lines (files the work will deliver), and before the first included file, whose own
-/// citations are not followed.
-pub fn cited_markdown_files(text: &str) -> Vec<String> {
+/// A Markdown file inside the author's worktree: relative, without `..`, ending in `.md`.
+pub fn worktree_markdown_path(path: &str) -> bool {
+    let file = std::path::Path::new(path);
+    !path.starts_with('/') && !path.starts_with('~') && path.chars().all(path_char)
+        && file.components().all(|part| matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir))
+        && file.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        && file.file_stem().is_some_and(|stem| !stem.is_empty())
+}
+
+/// The worktree Markdown files `plan` links to with CommonMark inline links (`[text](path.md)`),
+/// once each and in order: outside code, and before the first included file.
+pub fn linked_markdown_files(plan: &str) -> Vec<String> {
     let mut fence: Option<&str> = None;
-    let mut cited: Vec<String> = Vec::new();
-    for line in text.lines() {
+    let mut linked: Vec<String> = Vec::new();
+    for line in plan.lines() {
         let trimmed = line.trim_start();
         if let Some(open) = fence {
             if trimmed.starts_with(open) {
@@ -27,16 +36,102 @@ pub fn cited_markdown_files(text: &str) -> Vec<String> {
         if included_heading(line).is_some() {
             break;
         }
-        if task_text(trimmed).is_some() {
-            continue;
-        }
-        for path in markdown_paths(line) {
-            if !cited.contains(&path) {
-                cited.push(path);
+        for path in link_destinations(line) {
+            if worktree_markdown_path(&path) && !linked.contains(&path) {
+                linked.push(path);
             }
         }
     }
-    cited
+    linked
+}
+
+/// The destinations of a line's inline links, outside code spans, without their fragment or title;
+/// images are not links.
+fn link_destinations(line: &str) -> Vec<String> {
+    let mut destinations = Vec::new();
+    let mut code = false;
+    let mut label: Option<usize> = None;
+    let bytes = line.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'`' => code = !code,
+            b'[' if !code => label = Some(at),
+            b']' if !code && label.is_some() && bytes.get(at + 1) == Some(&b'(') => {
+                let opened = label.take().expect("checked");
+                let rest = &line[at + 2..];
+                let Some(close) = rest.find(')') else { break };
+                let inside = rest[..close].trim();
+                let target = inside.strip_prefix('<').and_then(|t| t.split_once('>')).map_or_else(
+                    || inside.split_whitespace().next().unwrap_or_default(),
+                    |(target, _)| target,
+                );
+                let target = target.split_once('#').map_or(target, |(file, _)| file);
+                if opened == 0 || bytes[opened - 1] != b'!' {
+                    destinations.push(target.strip_prefix("./").unwrap_or(target).to_owned());
+                }
+                at += 2 + close;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    destinations
+}
+
+/// `plan` with the worktree Markdown files it links to included at its end, each read by `read`
+/// from the plan's worktree. A link to a file that is not there includes nothing; a linked file
+/// too long for a card is the reason the plan cannot be sent.
+pub fn include_linked_files(plan: &str, read: impl FnMut(&str) -> Option<String>) -> Result<String, String> {
+    include(plan, linked_markdown_files(plan), read, false)
+}
+
+/// `text` with each of `files`, the files the author listed, included at its end; the reason it
+/// cannot be sent when one is not a worktree Markdown file, cannot be read or is too long.
+pub fn include_files(text: &str, files: &[String], read: impl FnMut(&str) -> Option<String>) -> Result<String, String> {
+    if let Some(path) = files.iter().find(|path| !worktree_markdown_path(path)) {
+        return Err(not_a_worktree_file(path));
+    }
+    include(text, files.to_vec(), read, true)
+}
+
+/// Why a card that lists `files` cannot reach the user: a listed file is not a worktree Markdown
+/// file, or `shown` does not include it; `None` when every listed file is there.
+pub fn listed_files_problem(files: &[String], shown: &[&str]) -> Option<String> {
+    if let Some(path) = files.iter().find(|path| !worktree_markdown_path(path)) {
+        return Some(not_a_worktree_file(path));
+    }
+    let included: Vec<String> = shown.iter().flat_map(|text| included_files(text)).map(|(path, _)| path).collect();
+    files.iter().find(|path| !included.contains(path))
+        .map(|path| format!("the card lists {path} in files but does not include it under its heading `## {path}`: send the card through the Alondra tool, which reads the file from your worktree"))
+}
+
+fn not_a_worktree_file(path: &str) -> String {
+    format!("{path} is not a Markdown file of your worktree: list paths relative to your worktree that end in .md, without .. (like docs/plan.md)")
+}
+
+fn include(text: &str, paths: Vec<String>, mut read: impl FnMut(&str) -> Option<String>, required: bool) -> Result<String, String> {
+    let already: Vec<String> = included_files(text).into_iter().map(|(path, _)| path).collect();
+    let mut included = text.trim_end().to_owned();
+    let mut total = 0;
+    for path in paths.into_iter().filter(|path| !already.contains(path)) {
+        let Some(content) = read(&path) else {
+            if required {
+                return Err(format!("{path} cannot be read in your worktree: check the path, relative to your worktree, or remove it from files"));
+            }
+            continue;
+        };
+        if content.len() > CITED_FILE_MAX_BYTES {
+            return Err(format!("{path} is {} KB, too long to show on a card (at most {} KB): quote the part that matters in the card instead",
+                content.len() / 1024, CITED_FILE_MAX_BYTES / 1024));
+        }
+        total += content.len();
+        if total > CITED_FILES_MAX_BYTES {
+            return Err(format!("the files your card includes add up to more than {} KB: quote the parts that matter in the card instead", CITED_FILES_MAX_BYTES / 1024));
+        }
+        included.push_str(&format!("\n\n---\n\n## {path}\n\n{}", nested(&content)));
+    }
+    Ok(if included.len() == text.trim_end().len() { text.to_owned() } else { included.trim_start_matches('\n').to_owned() })
 }
 
 /// What the author wrote, without the files included at its end.
@@ -113,47 +208,6 @@ fn unnested(content: &str) -> String {
     lines.join("\n")
 }
 
-/// The cited files whose content `text` does not include yet.
-pub fn files_not_included(text: &str) -> Vec<String> {
-    let included: Vec<&str> = text.lines().filter_map(included_heading).collect();
-    cited_markdown_files(text).into_iter().filter(|path| !included.contains(&path.as_str())).collect()
-}
-
-/// Why a card that cites files it does not include cannot reach the user, as a refusal code and
-/// how to fix it; `None` when it stands alone.
-pub fn cited_files_problem(text: &str) -> Option<(&'static str, String)> {
-    let missing = files_not_included(text);
-    (!missing.is_empty()).then(|| ("cited_file_not_included", not_openable(&missing.join(", "))))
-}
-
-fn not_openable(paths: &str) -> String {
-    format!("the user cannot open {paths} from the app, and your card must be read on its own: write the content you mean into the card itself, or send the file as an Alondra document; if it is your finished work, deliver it with present_result and the whole report in content.body")
-}
-
-/// `text` with every file it cites included at its end, each read by `read` from where the
-/// author works (`None` when it cannot be read); the reason it cannot be sent otherwise.
-pub fn include_cited_files(text: &str, mut read: impl FnMut(&str) -> Option<String>) -> Result<String, String> {
-    let missing = files_not_included(text);
-    if missing.is_empty() {
-        return Ok(text.to_owned());
-    }
-    let mut included = text.trim_end().to_owned();
-    let mut total = 0;
-    for path in missing {
-        let content = read(&path).ok_or_else(|| not_openable(&path))?;
-        if content.len() > CITED_FILE_MAX_BYTES {
-            return Err(format!("{path} is {} KB, too long to show on a card (at most {} KB): quote the part that matters in the card and drop the path",
-                content.len() / 1024, CITED_FILE_MAX_BYTES / 1024));
-        }
-        total += content.len();
-        if total > CITED_FILES_MAX_BYTES {
-            return Err(format!("the files your card cites add up to more than {} KB: quote the parts that matter in the card and drop their paths", CITED_FILES_MAX_BYTES / 1024));
-        }
-        included.push_str(&format!("\n\n---\n\n## {path}\n\n{}", nested(&content)));
-    }
-    Ok(included)
-}
-
 /// A file's Markdown placed under its heading: its headings two levels down, its checkboxes shown
 /// as ☐/☑ so they are never points of the plan, and an open code block closed.
 fn nested(content: &str) -> String {
@@ -197,43 +251,15 @@ fn unchecked(line: &str) -> String {
     }).unwrap_or_else(|| line.to_owned())
 }
 
-/// The path of a line that opens an included file: `## <path>.md`.
+/// The path of a line that opens an included file: `## <path>.md`, as Alondra writes it.
 fn included_heading(line: &str) -> Option<&str> {
     let path = line.strip_prefix("## ")?.trim();
-    (markdown_paths(path).first().map(String::as_str) == Some(path)).then_some(path)
+    let file = std::path::Path::new(path);
+    (path.chars().all(path_char) && file.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        && file.file_stem().is_some_and(|stem| stem.to_str().is_some_and(|stem| stem.chars().any(|c| c.is_ascii_alphanumeric()))))
+    .then_some(path)
 }
 
 fn path_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '~' | '+' | '@')
-}
-
-/// Paths ending in `.md` in a line, never part of a URL.
-fn markdown_paths(line: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let lower = line.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(found) = lower[from..].find(".md") {
-        let end = from + found + 3;
-        from = end;
-        let rest = &line[end..];
-        let mut after = rest.chars();
-        let ends_word = match after.next() {
-            None => true,
-            Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
-            Some('.' | '-' | '/') => !after.next().is_some_and(|c| c.is_ascii_alphanumeric()),
-            Some(_) => true,
-        };
-        if !ends_word {
-            continue;
-        }
-        let start = line[..end].char_indices().rev().take_while(|(_, c)| path_char(*c)).last().map_or(end, |(at, _)| at);
-        let path = &line[start..end];
-        let stem = &path[..path.len() - 3];
-        let host = path.split_once('/').is_some_and(|(first, _)| first.contains('.') && !first.starts_with('.'));
-        if stem.is_empty() || stem.ends_with('/') || stem.ends_with('.') || path.starts_with("//") || host || line[..start].ends_with(':') || !stem.chars().any(|c| c.is_ascii_alphanumeric()) {
-            continue;
-        }
-        paths.push(path.to_owned());
-    }
-    paths
 }

@@ -32,7 +32,7 @@ pub fn decision_policy(hold: Hold, tool: Option<&str>, input: &serde_json::Value
         }
         Hold::Plan => match plan.filter(|plan| !plan.trim().is_empty()) {
             None => Some(DecisionRecord::Deny { message: UNWRITTEN_PLAN.into() }),
-            Some(plan) => plan_checklist_problem(plan).or_else(|| cited_files_problem(plan)).map(|(_, fix)| DecisionRecord::Deny { message: fix }),
+            Some(plan) => plan_checklist_problem(plan).map(|(_, fix)| DecisionRecord::Deny { message: fix }),
         },
         Hold::Question | Hold::Elicitation => None,
     }

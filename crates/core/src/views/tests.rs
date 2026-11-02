@@ -7328,12 +7328,14 @@ fn documents_fixture() -> DomainState {
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::CreateDocument { task_id: "t-1".into(), document_id: "design".into(),
         title: "Library index design".into(), revision_id: "design-r1".into(), content_digest: "d".repeat(64),
         content_reference: "files/design.md".into(), role: "result".into() });
-    let report = crate::domain::include_cited_files(
+    let report = crate::domain::include_files(
         "## Summary\n\n- **Viable.** Every photo keeps a 360 px copy on the iPhone.\n- How other apps do it: docs/research/competitors.md",
+        &["docs/research/competitors.md".to_owned()],
         |path| (path == "docs/research/competitors.md").then(|| "# How other apps index a library\n\n## Photos\n\nIndexes overnight while charging.\n\n## Lightroom\n\nIndexes on import.".to_owned()),
     ).unwrap();
-    let plan = crate::domain::include_cited_files(
+    let plan = crate::domain::include_files(
         "# Index the whole library\n\nMeasurements in docs/measurements.md\n\n- [ ] Store each photo's feature print in Core Data\n- [ ] Index changes in the background\n- [ ] Show indexing progress on the home screen",
+        &["docs/measurements.md".to_owned()],
         |path| (path == "docs/measurements.md").then(|| "# Measurements\n\n| Library | Time |\n|---|---|\n| 10 000 photos | 4 min |".to_owned()),
     ).unwrap();
     let targets = vec![DeliveryTarget::DocumentRevision { document_id: "design".into(), revision_id: "design-r1".into() }];

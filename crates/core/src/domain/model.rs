@@ -893,6 +893,10 @@ pub struct CardSpec {
     /// Only a held elicitation carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form: Option<crate::requested_form::RequestedForm>,
+    /// The worktree Markdown files the author listed for the card, each included at the end of its
+    /// content or plan under `## <path>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 /// A place that holds one open card at a time: a new card in it replaces the open one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -986,6 +990,7 @@ impl CardSpec {
             plan: None,
             kept_at: None,
             secret_destination: None,
+            files: Vec::new(),
             form: None,
         }
     }

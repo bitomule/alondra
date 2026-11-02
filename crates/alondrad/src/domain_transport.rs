@@ -2842,7 +2842,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_carries_the_markdown_files_it_cites_or_goes_back_to_its_node() {
+    fn a_plan_carries_the_markdown_files_it_links_to_and_a_mention_never_sends_it_back() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
@@ -2852,13 +2852,13 @@ mod tests {
         let cwd = worktree.path().to_str().unwrap();
         let post = |id: &str, plan: &str| crate::domain_holds::post(&domain, &serde_json::from_value(json!({"session_id": "agent-a", "id": id,
             "kind": "plan", "cwd": cwd, "input": {"plan": plan}})).unwrap(), true).unwrap();
-        let pointer = "# Step 1\n\nThe whole plan is in docs/fast-connection.md.\n\n- [ ] Ship the relay";
-        match post("toolu-pointer", pointer) {
-            crate::domain_holds::Posted::Denied(reason) => assert!(reason.contains("cannot open docs/fast-connection.md"), "{reason}"),
-            _ => panic!("a plan that points at a file its node cannot show is put to the user"),
-        }
-        assert!(domain.state().unwrap().holds.is_empty());
-        let id = match post("toolu-plan", "# Step 1\n\nContext in docs/plan.md.\n\n- [ ] Ship the relay") {
+        let mention = "# Step 1\n\nCreate docs/fast-connection.md with the diagram.\n\n- [ ] Ship the relay";
+        let id = match post("toolu-mention", mention) {
+            crate::domain_holds::Posted::Held(id) => id,
+            _ => panic!("a plan that only mentions a Markdown file is put to the user as written"),
+        };
+        assert_eq!(domain.state().unwrap().interactions[&id].body, mention);
+        let id = match post("toolu-plan", "# Step 1\n\nContext in [the plan](docs/plan.md).\n\n- [ ] Ship the relay") {
             crate::domain_holds::Posted::Held(id) => id,
             _ => panic!("a plan whose cited file can be read is put to the user"),
         };

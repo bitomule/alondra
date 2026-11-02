@@ -440,9 +440,9 @@ read. Every `ask`, `request_action`, `request_input`,
 - Each option says in its `description` what happens if it is chosen, and the `recommended` one
   why.
 - A plan you ask the user to approve goes whole in `content`, never as a path. The user cannot
-  open a file from the app, and you work outside the repositories: an `ask` that cites a Markdown
-  file (`docs/plan.md`) you cannot read is refused. Paste the plan, or have its node send it as an
-  Alondra document.
+  open a file from the app, and you work outside the repositories: a path you mention is never
+  read or shown. Paste the plan, or have its node send it as an Alondra document or in its card's
+  `files`.
 - Nothing refers to the chat ("as I said", "the earlier one", "the plan", "option B above"):
   repeat what is needed.
 - Before sending, ask yourself: could someone who sees only this card decide? If not, add what is

@@ -8,7 +8,6 @@ apple/iOS/UI/Sources/Tasks/TaskDetailView.swift	if let priority = detail.priorit
 apple/Features/Sources/TaskDetail/TaskDetail.swift	folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,	finding:A-03	folder fact picked by position and a leading slash
 apple/Features/Sources/Settings/CrashReport/CrashReportFeature.swift	if !detail.isEmpty { return .refused(detail) }	finding:A-04	report refused when the server's text is not empty
 apple/Data/Feed/Sources/ActionDeliveryError.swift	case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final	finding:A-06	retry decided by a code in a field that also carries prose
-crates/core/src/domain/cited_files.rs	let lower = line.to_ascii_lowercase();	finding:C-03	any Markdown path mentioned is read or the card refused
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	finding:C-04	merge failure rebuilt by parsing the hand-back body
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	finding:C-04	merge failure rebuilt by parsing the hand-back body
 crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whether the user typed the prompt decided by its text

@@ -12,7 +12,7 @@ use crate::hook_text::{elicitation_card, elicitation_content, permission_detail,
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DecisionPrompt, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload,
-    McpServerOrigin, QuestionGroup, QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_cited_files,
+    McpServerOrigin, QuestionGroup, QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_linked_files,
 };
 use alondra_provider_contract::DecisionKind;
 use alondra_core::allow_always::AllowAlways;
@@ -125,7 +125,7 @@ pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Res
         if let Some(notice) = task.and_then(|task| state.plan_while_waiting(&task.id)) {
             return Ok(Posted::Denied(notice));
         }
-        match include_cited_files(&plan, |path| read_cited_file(card.cwd.as_deref().map(Path::new), path)) {
+        match include_linked_files(&plan, |path| read_cited_file(card.cwd.as_deref().map(Path::new), path)) {
             Ok(whole) => input["plan"] = json!(whole),
             Err(fix) => return Ok(Posted::Denied(capitalized(&fix))),
         }
@@ -355,7 +355,7 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
         }
         Hold::Plan => {
             let plan = str_field(&input, "plan").unwrap_or_default();
-            let whole = include_cited_files(&plan, |path| read_cited_file(worktree.map(Path::new), path)).unwrap_or(plan);
+            let whole = include_linked_files(&plan, |path| read_cited_file(worktree.map(Path::new), path)).unwrap_or(plan);
             card(whole, hold.options_offering(false), None, None, None)
         }
         Hold::Question => {
