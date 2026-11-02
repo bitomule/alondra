@@ -140,28 +140,30 @@ private actor ScriptedTransport: ViewTransport {
 /// A queue the long poll waits on; cancelling the wait ends it, so a stopped feed never hangs.
 private actor Changes {
     private var pending: [[String]] = []
-    private var waiting: CheckedContinuation<[String]?, Never>?
+    private var waiting: [(id: UUID, continuation: CheckedContinuation<[String]?, Never>)] = []
 
     func push(_ keys: [String]) {
-        if let waiting {
-            self.waiting = nil
-            waiting.resume(returning: keys)
-        } else {
+        if waiting.isEmpty {
             pending.append(keys)
+        } else {
+            waiting.removeFirst().continuation.resume(returning: keys)
         }
     }
 
     func next() async -> [String]? {
         if !pending.isEmpty { return pending.removeFirst() }
+        let id = UUID()
         return await withTaskCancellationHandler {
-            await withCheckedContinuation { waiting = $0 }
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume(returning: nil) } else { waiting.append((id, continuation)) }
+            }
         } onCancel: {
-            Task { await self.cancelWaiting() }
+            Task { await self.cancelWaiting(id) }
         }
     }
 
-    private func cancelWaiting() {
-        waiting?.resume(returning: nil)
-        waiting = nil
+    private func cancelWaiting(_ id: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        waiting.remove(at: index).continuation.resume(returning: nil)
     }
 }

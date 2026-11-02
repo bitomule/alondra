@@ -670,7 +670,7 @@ private struct MacViewSidebarRow: View {
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
                 }
                 if !row.badges.isEmpty {
-                    Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption)
+                    ElapsedText(row.badges).font(.caption)
                         .foregroundStyle(nodeTint == .yellow ? .orange : .secondary)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
                 }
@@ -700,7 +700,7 @@ private struct MacViewSidebarRow: View {
                 trailingLabel
             }
             if let subtitle = row.subtitle { Text(MarkdownBlock.line(subtitle)).font(.caption).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 24) }
-            if !row.badges.isEmpty && row.children.isEmpty { Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).padding(.leading, 24).lineLimit(1) }
+            if !row.badges.isEmpty && row.children.isEmpty { ElapsedText(row.badges).font(.caption).foregroundStyle(.secondary).padding(.leading, 24).lineLimit(1) }
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
@@ -807,6 +807,10 @@ private struct MacTaskSidebarRow: View {
             HStack(spacing: 7) {
                 StatusDot(color: taskColor).frame(width: 6)
                 Text(row.title).fontWeight(.medium).strikethrough(row.struck).lineLimit(2)
+                if let elapsed = row.badges.last(where: { $0.elapsed != nil }) {
+                    Spacer(minLength: 4)
+                    ElapsedText(elapsed).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+                }
             }
             if let line { Text(MarkdownBlock.line(line)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
         }.padding(.vertical, 2).accessibilityElement(children: .combine)

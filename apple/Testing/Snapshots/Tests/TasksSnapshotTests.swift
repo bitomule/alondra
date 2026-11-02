@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraDesign
 import AlondraFeatures
 import AlondraFeed
 import AlondraiOSUI
@@ -11,6 +12,10 @@ import XCTest
 @MainActor
 final class TasksSnapshotTests: XCTestCase {
     private let lightAndDark: [SnapshotVariant] = [.light, .dark]
+
+    override func setUp() async throws {
+        RelativeClock.now = { screenReferenceDate }
+    }
 
     /// `opened` are the pages the daemon sends for a fold when it is opened.
     private func tasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = [],
@@ -177,6 +182,32 @@ final class TasksSnapshotTests: XCTestCase {
     func test_taskDetail_allowedInTask_spanish() throws {
         let document = try ScreenFixtures.document("task-allowed-ios-es")
         assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_taskDetail_finishedShowsTheTimeItTook() throws {
+        let document = try ScreenFixtures.document("task-allowed-ios") { finish(&$0, took: "Took") }
+        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_taskDetail_finishedShowsTheTimeItTook_spanish() throws {
+        let document = try ScreenFixtures.document("task-allowed-ios-es") { finish(&$0, took: "Duró") }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+    }
+
+    /// The task's time row as the daemon sends it once the task ended at 09:05.
+    private func finish(_ document: inout [String: Any], took: String) {
+        guard var sections = document["sections"] as? [[String: Any]],
+              let index = sections.firstIndex(where: { $0["id"] as? String == "elapsed" }),
+              var items = sections[index]["items"] as? [[String: Any]], var row = items.first,
+              var badges = row["badges"] as? [[String: Any]], var elapsed = badges.first?["elapsed"] as? [String: Any] else { return }
+        elapsed["until"] = "2026-09-30T09:05:00Z"
+        badges[0]["elapsed"] = elapsed
+        badges[0]["text"] = "1 h 05 min"
+        row["badges"] = badges
+        row["title"] = took
+        items[0] = row
+        sections[index]["items"] = items
+        document["sections"] = sections
     }
 
     func test_taskDetail_working() throws {

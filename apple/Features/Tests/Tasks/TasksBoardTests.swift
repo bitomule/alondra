@@ -101,14 +101,15 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertTrue(request.isSingleTask)
         XCTAssertEqual(task.title, "Lumo · weekly improvement")
         XCTAssertEqual(task.state, "Working")
-        XCTAssertEqual(task.marks, ["Scheduled", "Lumo", "running since 09:48"], "an app that does not count the time reads since when it runs")
+        XCTAssertEqual(task.marks, ["Scheduled", "Lumo"], "the time it runs is counted apart, not shown as a mark")
+        XCTAssertEqual(task.elapsed?.elapsed, Elapsed(since: "2026-09-30T09:48:00.000Z"))
         XCTAssertEqual(task.tone, .accent, "the mark never takes the state's place")
 
         let spanish = TasksBoard(document: try Fixtures.document("tasks-ios-es"))
         let marks = spanish.active.requests.first { $0.id == "t-scheduled-lumo" }?.tasks.first?.marks
-        XCTAssertEqual(marks, ["Programada", "Lumo", "en marcha desde las 09:48"])
-        XCTAssertEqual(board.active.requests.first { $0.id == "t-badge-count" }?.tasks.first?.marks, ["Demo Garden", "running since 09:20"])
-        XCTAssertEqual(board.active.requests.first { $0.id == "t-legacy-editor" }?.tasks.first?.marks, ["running since 17:15"], "a task saved before projects has none")
+        XCTAssertEqual(marks, ["Programada", "Lumo"])
+        XCTAssertEqual(board.active.requests.first { $0.id == "t-badge-count" }?.tasks.first?.marks, ["Demo Garden"])
+        XCTAssertEqual(board.active.requests.first { $0.id == "t-legacy-editor" }?.tasks.first?.marks, [], "a task saved before projects has none")
     }
 
     func testTheActiveWorkComesInBlocksWithTheirTitleAndCount() throws {

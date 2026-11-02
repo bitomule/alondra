@@ -20,6 +20,11 @@ public struct TaskDetail: Equatable, Sendable {
         public let state: Label?
     }
 
+    public struct RunTime: Equatable, Sendable {
+        public let title: String
+        public let label: AlondraContract.Label
+    }
+
     /// One part of how far the node's work has got: a line of facts or a step, subagent or agent.
     public enum Progress: Equatable, Sendable {
         case facts([Fact])
@@ -54,6 +59,8 @@ public struct TaskDetail: Equatable, Sendable {
     public let state: String?
     public let stateTone: Tone?
     public let since: Date?
+    /// "Running for" or "Took" and the label whose time the app counts.
+    public let runTime: RunTime?
     public let folder: String?
     public let request: Reference?
     public let now: Reference?
@@ -128,6 +135,9 @@ public extension TaskDetail {
             state: state?.value,
             stateTone: state?.tone,
             since: rowsOf("since").compactMap { $0.trailing?.instant }.first,
+            runTime: rowsOf("elapsed").first.flatMap { row in
+                row.badges.first { $0.elapsed != nil }.map { RunTime(title: row.title, label: $0) }
+            },
             folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,
             request: facts.dropFirst().first { $0.link == nil }.map { Reference(text: $0.value, link: $0.link) },
             now: now,

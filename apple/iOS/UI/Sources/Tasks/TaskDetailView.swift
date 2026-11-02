@@ -105,6 +105,15 @@ public struct TaskDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let runTime = detail.runTime {
+                    HStack(spacing: 4) {
+                        Image(systemName: "timer").accessibilityHidden(true)
+                        Text(verbatim: runTime.title)
+                        ElapsedText(runTime.label).monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
         }
         .accessibilityElement(children: .combine)

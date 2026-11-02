@@ -117,6 +117,9 @@ struct CompactTaskLine: View {
                         .background(Palette.hairline, in: .capsule)
                         .lineLimit(1)
                 }
+                if let elapsed = line.elapsed {
+                    ElapsedText(elapsed).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+                }
                 if line.waiting > 0 { WaitingBadge(count: line.waiting) }
             }
             .padding(.horizontal, 16)

@@ -87,6 +87,8 @@ final class TaskDetailTests: XCTestCase {
         let detail = TaskDetail(document: try Fixtures.document("task-closed-ios"))
 
         XCTAssertEqual(detail.state, "Stopped · You closed its session before it delivered")
+        XCTAssertEqual(detail.runTime?.title, "Running for")
+        XCTAssertEqual(detail.runTime?.label.elapsed, Elapsed(since: "2026-09-30T08:00:00Z"), "the screen counts from when the task first ran")
         XCTAssertEqual(detail.relaunch?.label, "Relaunch")
         XCTAssertEqual(detail.relaunch?.enabled, true)
         XCTAssertEqual(detail.actions.map(\.command), ["relaunch", "set_priority", "cancel"])

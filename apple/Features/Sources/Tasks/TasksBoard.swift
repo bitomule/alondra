@@ -53,6 +53,8 @@ public struct TasksBoard: Equatable, Sendable {
         public let dependent: String?
         /// What the daemon says about the task beside its state, such as "Scheduled" for a scheduled run.
         public let marks: [String]
+        /// How long the task has run, counted by the app itself.
+        public let elapsed: AlondraContract.Label?
         /// "+7 waiting for this": the tasks that wait for the one above, folded until tapped.
         public let isChain: Bool
         /// The chain this line is folded into, hidden until that chain opens.
@@ -175,7 +177,7 @@ extension TasksBoard.Block {
                 let line = TasksBoard.Line(
                     id: child.id, title: child.title, state: child.subtitle, tone: nil, icon: child.icon, struck: false,
                     waiting: 0, activity: nil, activityAt: at, depth: 0, rails: [], isLastSibling: true, hasChildren: false,
-                    link: child.link, origin: nil, isWait: false, dependent: nil, marks: [], isChain: false, chain: nil
+                    link: child.link, origin: nil, isWait: false, dependent: nil, marks: [], elapsed: nil, isChain: false, chain: nil
                 )
                 return TasksBoard.Request(
                     id: child.id, title: "", state: child.subtitle, icon: child.icon, project: nil,
@@ -230,7 +232,8 @@ extension TasksBoard.Line {
                 activity: activity?.title, activityAt: activityAt,
                 depth: rails.count, rails: rails, isLastSibling: last, hasChildren: !children.isEmpty,
                 link: row.link, origin: origin?.title, isWait: isWait, dependent: isWait ? row.subtitle : nil,
-                marks: row.badges.dropFirst().map(\.text), isChain: row.folded, chain: chain
+                marks: row.badges.dropFirst().filter { $0.elapsed == nil }.map(\.text),
+                elapsed: row.badges.dropFirst().last { $0.elapsed != nil }, isChain: row.folded, chain: chain
             )
             return [line] + tree(children, rails: rails + [!last], chain: row.folded ? row.id : chain)
         }

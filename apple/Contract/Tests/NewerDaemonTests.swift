@@ -157,6 +157,16 @@ final class NewerDaemonTests: XCTestCase {
         XCTAssertEqual(try ContractCodec.decode(Row.self, from: Data(row.utf8)).badges.map(\.text), ["Working", "running since 08:05"])
     }
 
+    func testALabelKeepsTheSpanItCountsAndDropsOneItCannotRead() throws {
+        let closed = #"{"text":"took 1 h 05 min","tone":"neutral","elapsed":{"since":"2026-09-30T08:05:00.000+02:00","until":"2026-09-30T09:10:00.000+02:00"}}"#
+        XCTAssertEqual(try ContractCodec.decode(AlondraContract.Label.self, from: Data(closed.utf8)).elapsed,
+                       Elapsed(since: "2026-09-30T08:05:00.000+02:00", until: "2026-09-30T09:10:00.000+02:00"))
+        let broken = #"{"text":"running since 08:05","tone":"neutral","elapsed":{"from":8}}"#
+        let label = try ContractCodec.decode(AlondraContract.Label.self, from: Data(broken.utf8))
+        XCTAssertNil(label.elapsed)
+        XCTAssertEqual(label.text, "running since 08:05")
+    }
+
     func testAnOutcomeFromANewerDaemonReadsAsChanged() throws {
         let reply = try ContractCodec.decode(ActionResponse.self, from: Data(#"{"protocol":1,"outcome":"queued"}"#.utf8))
         XCTAssertEqual(reply.outcome, .changed)

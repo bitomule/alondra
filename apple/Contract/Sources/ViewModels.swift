@@ -175,7 +175,27 @@ public struct Gauge: Codable, Equatable, Sendable {
     public let parts: [GaugePart]?
 }
 public struct GaugePart: Codable, Equatable, Sendable { public let label: String; public let value: Double; public let text: String; public let detail: String?; public let level: Level }
-public struct Label: Codable, Equatable, Sendable { public let text: String; public let tone: Tone }
+public struct Label: Codable, Equatable, Sendable {
+    public let text: String; public let tone: Tone
+    /// The span an app counts itself in place of `text`, which stays for apps that do not count.
+    public let elapsed: Elapsed?
+    public init(text: String, tone: Tone, elapsed: Elapsed? = nil) { self.text = text; self.tone = tone; self.elapsed = elapsed }
+    enum CodingKeys: String, CodingKey { case text, tone, elapsed }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decode(String.self, forKey: .text); tone = try c.decode(Tone.self, forKey: .tone)
+        elapsed = try? c.decodeIfPresent(Elapsed.self, forKey: .elapsed)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(text, forKey: .text); try c.encode(tone, forKey: .tone); try c.encodeIfPresent(elapsed, forKey: .elapsed)
+    }
+}
+/// From `since` until now, or until `until` once it is over; both local ISO instants.
+public struct Elapsed: Codable, Equatable, Sendable {
+    public let since: String; public let until: String?
+    public init(since: String, until: String? = nil) { self.since = since; self.until = until }
+}
 public struct ViewSection: Codable, Equatable, Sendable {
     public let id: String; public let title: String?; public let count: UInt32?; public let collapsed: Bool
     public let items: [ViewItem]; public let cardIds: [String]?; public let more: More?

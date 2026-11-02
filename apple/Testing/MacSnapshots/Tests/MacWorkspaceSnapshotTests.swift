@@ -604,6 +604,35 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 1800), variants: [.light]) { MacServiceDetail(presentation: store) }
     }
 
+    func test_task_finishedShowsTheTimeItTook() throws {
+        let store = try presentation(detail: "task-allowed-mac") { $0.detailDocument = try? finished($0.detailDocument, took: "Took") }
+        assertWindow(size: CGSize(width: 900, height: 2900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_task_finishedShowsTheTimeItTook_spanish() throws {
+        let store = try presentation(detail: "task-allowed-es-mac", spanish: true) { $0.detailDocument = try? finished($0.detailDocument, took: "Duró") }
+        assertWindow(size: CGSize(width: 900, height: 2900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    /// The task's time row as the daemon sends it once the task ended at 09:05.
+    private func finished(_ document: ViewDocument?, took: String) throws -> ViewDocument? {
+        guard let document else { return nil }
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(document)) as? [String: Any])
+        guard var sections = object["sections"] as? [[String: Any]],
+              let index = sections.firstIndex(where: { $0["id"] as? String == "elapsed" }),
+              var items = sections[index]["items"] as? [[String: Any]], var row = items.first,
+              var badges = row["badges"] as? [[String: Any]], var elapsed = badges.first?["elapsed"] as? [String: Any] else { return document }
+        elapsed["until"] = "2026-09-30T09:05:00Z"
+        badges[0]["elapsed"] = elapsed
+        badges[0]["text"] = "1 h 05 min"
+        row["badges"] = badges
+        row["title"] = took
+        items[0] = row
+        sections[index]["items"] = items
+        object["sections"] = sections
+        return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
     func test_pullRequest_detail() throws {
         let store = try presentation(detail: "pull-request-mac")
         assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }

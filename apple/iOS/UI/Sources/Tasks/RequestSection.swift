@@ -189,6 +189,9 @@ struct TaskCard: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
+                if let elapsed = line.elapsed {
+                    ElapsedText(elapsed).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+                }
                 if line.waiting > 0 { WaitingBadge(count: line.waiting) }
                 if line.link != nil {
                     Image(systemName: "chevron.right")

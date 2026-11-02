@@ -249,6 +249,7 @@ public struct RowView: View {
     public var onLink: (Link) -> Void
     /// A row the daemon sends folded shows its children once clicked.
     @State private var opened = false
+    private var runTime: WireLabel? { row.trailing == nil && !row.folded && row.badges.count == 1 ? row.badges.first { $0.elapsed != nil } : nil }
     public init(row: Row, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }) { self.row = row; self.onAction = onAction; self.onLink = onLink }
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -269,9 +270,10 @@ public struct RowView: View {
                     VStack(alignment: .leading, spacing: 2) { Text(MarkdownBlock.line(row.title)).font(.subheadline.weight(.semibold)).strikethrough(row.struck); if let subtitle = row.subtitle { Text(MarkdownBlock.line(subtitle)).font(.caption).foregroundStyle(.secondary) } }
                     Spacer()
                     if let trailing = row.trailing { TrailingView(trailing: trailing) }
+                    else if let runTime { ElapsedText(runTime).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                 }
             }
-            if !row.badges.isEmpty { LabelList(labels: row.badges) }
+            if !row.badges.isEmpty && runTime == nil { LabelList(labels: row.badges) }
             if !row.folded || opened {
                 ForEach(row.children, id: \.id) { child in RowView(row: child, onAction: onAction, onLink: onLink).padding(.leading, 18) }
             }
@@ -285,7 +287,7 @@ public struct RowView: View {
 
 private struct LabelPill: View {
     let label: WireLabel
-    var body: some View { Text(label.text).font(.caption.weight(.semibold)).foregroundStyle(toneColor(label.tone)).padding(.horizontal, 8).padding(.vertical, 4).background(toneColor(label.tone).opacity(0.13), in: .capsule) }
+    var body: some View { ElapsedText(label).font(.caption.weight(.semibold)).foregroundStyle(toneColor(label.tone)).padding(.horizontal, 8).padding(.vertical, 4).background(toneColor(label.tone).opacity(0.13), in: .capsule) }
 }
 private struct LabelList: View {
     let labels: [WireLabel]

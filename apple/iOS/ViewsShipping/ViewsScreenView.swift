@@ -363,7 +363,7 @@ private struct TaskRequestRow: View {
                 HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 5) {
                         if !row.badges.isEmpty {
-                            Text(row.badges.map(\.text).joined(separator: " · "))
+                            ElapsedText(row.badges)
                                 .font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Text(row.title).font(.display(.title3, weight: .bold)).foregroundStyle(Palette.ink)
