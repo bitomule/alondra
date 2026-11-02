@@ -2365,7 +2365,7 @@ mod tests {
         });
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
         assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "in review");
-        command(&domain, user_actor(), "changes", Command::SubmitFeedback {
+        command(&domain, user_actor(), "changes", Command::SubmitFeedback { merge_failure: None,
             attachments: vec![], presentation_id: "delivery".into(),
             targets: vec![DeliveryTarget::Text { text: "The answer".into() }], body: "Shorter".into(),
             instruction: Instruction::Changes,

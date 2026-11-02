@@ -362,7 +362,7 @@ pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Resu
     let Ok(state) = domain.state() else { return Ok(()) };
     for task_id in freed {
         let title = state.tasks.get(&task_id).map_or_else(|| task_id.0.clone(), |task| task.title.clone());
-        let _ = domain.tell_orchestrator(&format!("replace-aborted-{task_id}-{}", crate::auth::random_hex(4)), format!(
+        let _ = domain.tell_orchestrator(&format!("replace-aborted-{task_id}-{}", crate::auth::random_hex(4)), None, format!(
             "“{title}” ({task_id}) has no node now: its node ended after your replacement of it stopped short, because Alondra could \
              not stop it then ({why}). No new node was started. Start one with launch (task {task_id}), without replace."));
     }

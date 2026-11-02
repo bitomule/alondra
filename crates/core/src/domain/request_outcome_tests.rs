@@ -209,7 +209,7 @@ fn a_card_the_orchestrator_sent_before_the_upgrade_is_not_repeated() {
     let mut s = state();
     asked(&mut s, user(), "r", false);
     let scope = Scope::Orchestrator { request_id: Some("r".into()) };
-    s.interactions.insert("old".into(), Interaction {
+    s.interactions.insert("old".into(), Interaction { system_card: None,
         attachments: vec![], id: "old".into(), scope, author: Author::Orchestrator { generation: 0 }, recipient: Recipient::User,
         body: "Yes, with R2".into(), blocking: false, subject: None,
         payload: InteractionPayload::Information { read_by: BTreeSet::new() }, revision: s.revision, order: s.revision,

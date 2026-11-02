@@ -20,11 +20,11 @@ impl ReportedFailure {
         }
     }
 
-    fn of(record: &LifecycleRecord) -> Option<ReportedFailure> {
+    fn of(record: &LifecycleRecord, cards: &std::collections::BTreeMap<InteractionId, Interaction>) -> Option<ReportedFailure> {
         match record {
             LifecycleRecord::HostEnded { .. } => Some(ReportedFailure::SessionEnded),
             LifecycleRecord::InputDropped { .. } | LifecycleRecord::HandoffDoubted { .. } => Some(ReportedFailure::MessageNotDelivered),
-            LifecycleRecord::Paused { card, .. } if card.0.starts_with(HOST_LOST_PREFIX) => Some(ReportedFailure::NotResumed),
+            LifecycleRecord::Paused { card, .. } if cards.get(card).is_some_and(|card| card.system_card == Some(SystemCard::HostLost)) => Some(ReportedFailure::NotResumed),
             _ => None,
         }
     }
@@ -33,7 +33,7 @@ impl ReportedFailure {
 impl DomainState {
     /// The last failure of `task` a crash report explains, if it had one.
     pub fn task_failure(&self, task: &TaskId) -> Option<ReportedFailure> {
-        self.lifecycle_journal.get(task)?.iter().rev().find_map(ReportedFailure::of)
+        self.lifecycle_journal.get(task)?.iter().rev().find_map(|record| ReportedFailure::of(record, &self.interactions))
     }
 
     /// The “Send crash report” button of `task`, judged by the guard of its command.

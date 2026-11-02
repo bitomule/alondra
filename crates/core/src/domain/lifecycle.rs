@@ -1428,7 +1428,7 @@ impl DomainState {
                 None => self.open_stall(task, card, effects),
                 Some(end) => {
                     let title = self.tasks[task].title.clone();
-                    self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, self.revision + 1));
+                    self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, SystemCard::TurnEnded, self.revision + 1));
                     effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
                 }
             }
@@ -1580,7 +1580,7 @@ impl DomainState {
     /// when one is open, or else on something still unanswered.
     pub fn waiting_on(&self, task: &TaskId) -> Option<RecordedWait> {
         let since = self.interactions.values()
-            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && i.id.0.starts_with(TURN_ENDED_PREFIX) && self.open(i))
+            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && i.system_card == Some(SystemCard::TurnEnded) && self.open(i))
             .map(|i| i.revision)
             .max()
             .unwrap_or(u64::MAX);
@@ -1677,7 +1677,7 @@ impl DomainState {
             let ended = if let Some(reason) = &after_merge {
                 post_merge_ended_card(card.clone(), task, &title, reason, forced, self.revision + 1)
             } else if forced {
-                turn_ended_card(card.clone(), task, &title, TurnEnd::Interrupted, self.revision + 1)
+                turn_ended_card(card.clone(), task, &title, TurnEnd::Interrupted, SystemCard::SessionEnded, self.revision + 1)
             } else {
                 session_ended_card(card.clone(), task, &title, if looped { SESSION_ENDED_AGAIN_WHY } else { SESSION_ENDED_WHY }, self.revision + 1)
             };
@@ -1740,6 +1740,7 @@ impl DomainState {
             let order = self.interactions[&card].order;
             let mut lost = host_lost_card(card.clone(), task, &title, reason, self.revision + 1);
             lost.order = order;
+            lost.system_card = self.interactions[&card].system_card.clone();
             self.interactions.insert(card.clone(), lost);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
             return Ok(());
@@ -2292,7 +2293,7 @@ const DECISION_CANCELLED_WHY: &str = "Claude Code stopped waiting for the decisi
 
 pub(super) fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped waiting for your decision: tell it how to go on"));
-    asks_how_it_goes_on(id, task, need, DECISION_CANCELLED_WHY, revision)
+    asks_how_it_goes_on(id, task, need, DECISION_CANCELLED_WHY, SystemCard::DecisionCancelled, revision)
 }
 
 /// The cards that ask the user how a task goes on when its SDK turn ended with nothing that
@@ -2377,7 +2378,7 @@ fn interrupted(journal: &Journal, turn: &str) -> bool {
         .any(|record| matches!(record, LifecycleRecord::ControlRequested { operation: ControlRecord::Interrupt { turn: Some(stopped) }, .. } if stopped == turn))
 }
 
-fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, revision: u64) -> Interaction {
+fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, system: SystemCard, revision: u64) -> Interaction {
     let (need, why) = match end {
         TurnEnd::Refused(failure) => {
             let refusal = api_refusal(&failure.error);
@@ -2389,10 +2390,10 @@ fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, 
         TurnEnd::NativeContextExceeded => ("This request exceeds the Codex model's context window".into(), NATIVE_CONTEXT_EXCEEDED_WHY),
         TurnEnd::Failed(code) => (format!("Claude's turn ended with an error (`{}`): tell it how to go on", clip(code, FAILED_CODE_MAX)), FAILED_WHY),
     };
-    asks_how_it_goes_on(id, task, need, why, revision)
+    asks_how_it_goes_on(id, task, need, why, system, revision)
 }
 
-fn asks_how_it_goes_on(id: InteractionId, task: &TaskId, need: String, why: &str, revision: u64) -> Interaction {
+fn asks_how_it_goes_on(id: InteractionId, task: &TaskId, need: String, why: &str, system: SystemCard, revision: u64) -> Interaction {
     let need = clip(&need, CardSpec::NEED_MAX);
     Interaction {
         attachments: vec![],
@@ -2414,7 +2415,7 @@ fn asks_how_it_goes_on(id: InteractionId, task: &TaskId, need: String, why: &str
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(why),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(system), shortened: false,
     }
 }
 
@@ -2487,7 +2488,7 @@ fn host_lost_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, r
         order: revision,
         withdrawn: false,
         card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::HostLost), shortened: false,
     }
 }
 
@@ -2560,7 +2561,7 @@ fn post_merge_ended_card(id: InteractionId, task: &TaskId, title: &str, reason: 
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(why).content(ContentKind::Diagnosis, reason),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::SessionEnded), shortened: false,
     }
 }
 
@@ -2586,7 +2587,7 @@ fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, why: &str, 
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(why),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::SessionEnded), shortened: false,
     }
 }
 const SESSION_ENDED_WHY: &str = "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.";
@@ -2615,7 +2616,7 @@ fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str,
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(if launch { HANDOFF_DOUBT_LAUNCH_WHY } else { HANDOFF_DOUBT_WHY }).content(ContentKind::Document, text),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::HandoffDoubt), shortened: false,
     }
 }
 /// The cards that ask the user about an input Claude will never read.
@@ -2655,7 +2656,7 @@ fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> 
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(DROPPED_WHY).content(ContentKind::Document, text),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::Dropped), shortened: false,
     }
 }
 

@@ -164,7 +164,7 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
 fn claude_hold(task: &Task, context: &RenderContext<'_>) -> Option<crate::domain::ClaudeHold> {
     context.index.cards_of_task(&task.id).iter().rev().find_map(|id| {
         let card = context.domain.interactions.get(id).filter(|card| card.author == crate::domain::Author::System && context.domain.open(card))?;
-        crate::domain::ClaudeHold::of(&card.id)
+        crate::domain::ClaudeHold::of(card)
     })
 }
 
@@ -301,7 +301,7 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
             Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
         }
         LiveState::WaitingUser(cards) if cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)) => in_review(task, context),
-        LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) =>
+        LiveState::WaitingUser(cards) if cards.iter().all(|card| context.domain.node_pause_card(card)) =>
             Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting,
                 Some(with_pending(t!(lang, "You paused it", "La pausaste").to_owned(), task, context))),
         LiveState::WaitingUser(_) => match (claude_hold(task, context), context.index.mcp_wait_of_task(&task.id)) {

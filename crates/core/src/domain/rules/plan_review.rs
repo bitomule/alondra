@@ -175,7 +175,7 @@ impl DomainState {
 
     /// The user answered the problem about a review the orchestrator left unsettled.
     pub(super) fn settle_plan_review_problem(&mut self, card: &InteractionId, option: &str, lifecycles: &mut Lifecycles) -> Result<()> {
-        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(PLAN_REVIEW_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };
+        let Some(i) = self.interactions.get(card).filter(|i| matches!(i.system_card, Some(SystemCard::Inbox { about: InboxCard::PlanReviewProblem, .. })) && i.author == Author::System) else { return Ok(()) };
         let Some(problem) = PlanReviewProblem::from_body(&i.body) else { return Ok(()) };
         if option != PLAN_REVIEW_KEEP_PLANS {
             return Ok(());

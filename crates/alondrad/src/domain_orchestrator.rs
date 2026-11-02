@@ -3,6 +3,7 @@
 //! execution. The batch is claimed from the domain outbox before Claude runs
 //! and finished as handed, retryable or uncertain afterwards; finishing an
 //! invocation never completes a Task.
+use alondra_core::domain::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
@@ -707,7 +708,7 @@ impl Executor {
         let problem = StuckProblem { failures, error: error.to_owned() };
         let (need, why) = problem.text(alondra_core::views::Lang::En);
         let option = QuestionOption { id: STUCK_RETRY.into(), label: STUCK_RETRY_LABEL.into(), description: None };
-        match self.domain.raise_worded_problem(&id, STUCK_CAUSE, need, why, problem.to_body(), vec![option], Some(STUCK_RETRY)) {
+        match self.domain.raise_worded_problem(&id, Some(SystemCard::StuckProblem), STUCK_CAUSE, need, why, problem.to_body(), vec![option], Some(STUCK_RETRY)) {
             Ok(_) => Some(id),
             Err(error) => {
                 log!("orchestrator: could not tell the user Claude does not start: {error:?}");
@@ -723,7 +724,7 @@ impl Executor {
         problem.error = error.to_owned();
         let (need, why) = problem.text(alondra_core::views::Lang::En);
         let raised = self.domain.raise_worded_problem(
-            &format!("{PROBLEM_PREFIX}{run_id}"),
+            &format!("{PROBLEM_PREFIX}{run_id}"), Some(SystemCard::BatchProblem { run: run_id.to_string() }),
             BATCH_CAUSE,
             need,
             why,
@@ -753,7 +754,8 @@ impl Executor {
         }
         let active = runtime.active_run.map(|run| run.id);
         for (id, interaction) in &state.interactions {
-            let Some(run_id) = id.0.strip_prefix(PROBLEM_PREFIX) else { continue };
+            let Some(SystemCard::BatchProblem { run: run_id }) = &interaction.system_card else { continue };
+            let run_id = run_id.as_str();
             let InteractionPayload::Question { answer, .. } = &interaction.payload else { continue };
             if interaction.withdrawn {
                 continue;

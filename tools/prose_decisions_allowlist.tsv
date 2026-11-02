@@ -8,8 +8,8 @@ apple/iOS/UI/Sources/Tasks/TaskDetailView.swift	if let priority = detail.priorit
 apple/Features/Sources/TaskDetail/TaskDetail.swift	folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,	finding:A-03	folder fact picked by position and a leading slash
 apple/Features/Sources/Settings/CrashReport/CrashReportFeature.swift	if !detail.isEmpty { return .refused(detail) }	finding:A-04	report refused when the server's text is not empty
 apple/Data/Feed/Sources/ActionDeliveryError.swift	case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final	finding:A-06	retry decided by a code in a field that also carries prose
-crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	finding:C-04	merge failure rebuilt by parsing the hand-back body
-crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	finding:C-04	merge failure rebuilt by parsing the hand-back body
+crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
+crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/states.rs	|| HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-05	whether the user typed the prompt decided by its text
@@ -23,78 +23,13 @@ crates/alondra/src/tui.rs	if e.to_string().contains("No such file")	finding:D-13
 crates/alondra/src/tui.rs	|| e.to_string().contains("could not launch")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("no pude lanzar") =>	finding:D-13	tuicr missing decided by error text
 crates/alondrad/src/process_watch.rs	Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output().ok()	finding:D-15	processes found and killed from ps text
-crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/domain_orchestrator.rs	let Some(run_id) = id.0.strip_prefix(PROBLEM_PREFIX) else { continue };	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/domain_orchestrator_reads.rs	Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX)) =>	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/domain_schedule_runner.rs	let Some(failed) = id.0.strip_prefix(LAUNCH_PROBLEM_PREFIX) else { continue };	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/local_network_card.rs	.filter(|card| card.id.0.starts_with(LOCAL_NETWORK_PREFIX) && !card.withdrawn && matches!(card.payload, InteractionPayload::Question { answer: None, .. }))	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/machine_watch.rs	if open && id.0.starts_with(MACHINE_PREFIX) && current.as_deref() != Some(id.0.as_str()) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/mcp_waits.rs	if id.starts_with(MCP_WAIT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/mcp_waits.rs	id.starts_with(MCP_SERVER_PREFIX).then(|| Self::Server(id.to_owned()))	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/sdk_owner.rs	.any(|(card, reason)| reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX)))	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/usage_pause.rs	if id.0.strip_prefix(OVER_PACE_PREFIX) == Some(today.as_str()) && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/usage_pause.rs	} else if id.0.starts_with(PACE_RESUME_PREFIX) && answer.option_id == PACE_RESUME_OPTION && pause.claim_card(&id.0)	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/usage_pause.rs	if id.0.starts_with(PACE_RESUME_PREFIX) && !interaction.withdrawn && state.open(interaction) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/alondrad/src/views/live.rs	Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(alondra_core::domain::NODE_PAUSE_PREFIX)) => "paused",	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/claude_access.rs	if id.starts_with(SIGNED_OUT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/claude_access.rs	} else if id.starts_with(OUTAGE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/claude_access.rs	} else if id.starts_with(USAGE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/claude_access.rs	card.0.strip_prefix(USAGE_UNTIL)?.split('-').next()?.parse().ok()	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/crash_report.rs	LifecycleRecord::Paused { card, .. } if card.0.starts_with(HOST_LOST_PREFIX) => Some(ReportedFailure::NotResumed),	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/lifecycle.rs	.filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && i.id.0.starts_with(TURN_ENDED_PREFIX) && self.open(i))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/mcp_wait.rs	if card.author != Author::System || !card.id.0.starts_with(MCP_WAIT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/mcp_wait.rs	.filter(|card| card.id.0.starts_with(MCP_WAIT_PREFIX) && self.open(card))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/node_machine.rs	let (kind, rest) = card.0.strip_prefix(NODE_PAUSE_PREFIX)?.split_once('-')?;	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/node_machine.rs	&& self.open(i) && !i.id.0.starts_with(NODE_PAUSE_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/node_machine.rs	.filter(|i| i.id.0.starts_with(UNHEARD_PREFIX) && i.author == Author::Agent { agent_id: agent.clone() } && self.open(i))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/node_machine.rs	if cards.iter().any(|card| !card.0.starts_with(NODE_PAUSE_PREFIX) && Some(card) != delivery.as_ref()))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/node_machine.rs	.find(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/node_machine.rs	card.author == Author::System && card.id.0.starts_with(NODE_PAUSE_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/ownership.rs	i.recipient == Recipient::User && self.open(i) && !i.id.0.starts_with(super::NODE_PAUSE_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/ownership.rs	i.id.0.starts_with(START_PROBLEM_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if *task_id == task)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules.rs	let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(POST_MERGE_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules.rs	let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(START_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules.rs	&& !i.id.0.starts_with(UNHEARD_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules.rs	.filter(|i| i.author == Author::System && !i.withdrawn && i.id.0.starts_with(ENDED_UNANSWERED_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules/plan_review.rs	let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(PLAN_REVIEW_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/domain/rules/stall.rs	i.id.0.starts_with(STALLED_PREFIX) && i.author == Author::System && i.recipient == Recipient::Orchestrator	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	interaction.author == Author::System && interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	(interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::START_PROBLEM_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	(interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) && interaction.body.trim() != interaction.card.need.trim())	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if !interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DECISION_CANCELLED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::TURN_ENDED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DROPPED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_STOPPED_WHY {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_ENDED_WHY {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::INTERRUPTED_WHY {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_cards::UNSPLIT_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::PLAN_REVIEW_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	if interaction.id.0.starts_with(OVER_PACE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	interaction.id.0.starts_with(PACE_RESUME_PREFIX).then(|| (	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	} else if interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
-crates/core/src/views/task_state.rs	LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) =>	finding:D-16	card kind and effects deduced from its id prefix
-crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
-crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:G-16	crash report issues found by their GitHub title, which anyone can edit
+crates/alondrad/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
+crates/alondrad/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns
+crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	own-grammar	an Alondra card id built from another of its ids; decides nothing
+crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	format	GitHub release tag of a version
+crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
+crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
 crates/alondra/src/doctor/mod.rs	.any(|p| std::fs::read_to_string(p).map_or(true, |t| t.contains("/alondrad</string>"))),	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondra/src/setup.rs	.filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("/alondrad</string>")))	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondrad/src/machine.rs	let line = text.lines().find(|l| l.contains("memory free percentage"))?;	finding:D-21	free memory read from memory_pressure's text
@@ -253,6 +188,8 @@ crates/store/src/journal_format.rs	part.strip_prefix("CREATE ")	own-grammar	migr
 crates/store/src/journal_format.rs	let (kind, remaining) = if let Some(value) = body.strip_prefix("TABLE IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
+crates/alondrad/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
+crates/alondrad/src/domain_store/typed_cards.rs	let owner = cause.as_deref().and_then(|cause| cause.strip_prefix(REFUSED_CARDS_CAUSE));	own-grammar	one-time upgrade of refused-cards problems stored before system_card
 crates/alondra/src/account.rs	if header_host.is_none_or(|h| h.trim() != format!("127.0.0.1:{expected_port}")) {	security-parse	Host header of the loopback callback
 crates/alondra/src/report/canary.rs	let lowered = value.to_lowercase();	security-parse	privacy check of a failure report before it is sent
 crates/alondra/src/report/canary.rs	let lowered = text.to_lowercase();	security-parse	privacy check of a failure report before it is sent

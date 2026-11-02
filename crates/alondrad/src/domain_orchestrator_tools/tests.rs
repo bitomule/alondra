@@ -774,7 +774,7 @@ fn a_task_moves_to_another_provider_by_what_compaction_cut_never_by_a_marker_in_
     let mut earlier = task.clone();
     earlier.id = "earlier".into();
     earlier.final_presentation = Some("earlier-result".into());
-    let result = |shortened: bool| Interaction {
+    let result = |shortened: bool| Interaction { system_card: None,
         attachments: vec![], id: "earlier-result".into(), scope: Scope::Task { task_id: "earlier".into() }, author: Author::System,
         recipient: Recipient::User, body: "The colours live in one file now.".into(), blocking: false, subject: None,
         payload: InteractionPayload::Information { read_by: Default::default() }, revision: 1, order: 1, withdrawn: false,
@@ -875,7 +875,7 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     command(&f.domain, Actor::Agent { agent_id: old.clone() }, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
         interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true, nothing_to_review: false,
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
-    command(&f.domain, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets: targets(),
+    command(&f.domain, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets: targets(),
         body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });
     f.domain.stop_sdk_host(&old).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();

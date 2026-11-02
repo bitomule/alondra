@@ -30,7 +30,7 @@ impl McpServerKey {
 
     /// The server an MCP wait's card waits for.
     pub fn of_card(card: &Interaction) -> Option<Self> {
-        if card.author != Author::System || !card.id.0.starts_with(MCP_WAIT_PREFIX) {
+        if card.author != Author::System || card.system_card != Some(SystemCard::McpWait) {
             return None;
         }
         serde_json::from_str(&card.body).ok()
@@ -73,7 +73,7 @@ impl DomainState {
         let mut waiting: Vec<McpWaiting> = self
             .interactions
             .values()
-            .filter(|card| card.id.0.starts_with(MCP_WAIT_PREFIX) && self.open(card))
+            .filter(|card| card.system_card == Some(SystemCard::McpWait) && self.open(card))
             .filter_map(|card| {
                 let Scope::Task { task_id } = &card.scope else { return None };
                 if self.tasks.get(task_id).is_none_or(Task::over) {
@@ -214,6 +214,6 @@ fn mcp_card(id: InteractionId, task: &TaskId, server: &McpServerKey, revision: u
         order: revision,
         withdrawn: false,
         card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::McpWait), shortened: false,
     }
 }

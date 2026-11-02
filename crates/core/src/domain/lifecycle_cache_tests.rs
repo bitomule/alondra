@@ -189,7 +189,7 @@ fn feedback_hands_back_an_accepted_delivery_a_question_followed_while_its_turn_e
     assert!(s.lifecycle_of(&SDK.into()).unwrap().awaits().is_some(), "the delivery stands over the wait of the turn that ended on the question");
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "feedback".into(), expected_revision: s.revision,
-        command: Command::SubmitFeedback {
+        command: Command::SubmitFeedback { merge_failure: None,
             attachments: vec![], presentation_id: delivery(SDK, 3), targets: targets(), body: "Change it".into(), instruction: Instruction::Changes,
         },
     };

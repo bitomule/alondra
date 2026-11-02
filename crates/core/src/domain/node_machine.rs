@@ -23,7 +23,7 @@ const UNHEARD_WHY: &str = "Its turn ended without a result or a question for you
 pub const NODE_PAUSE_PREFIX: &str = "node-pause-";
 
 /// The card behind a pause of the gate of the node of `task`, which nobody sees.
-fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
+fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, system: SystemCard, revision: u64) -> Interaction {
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("Resume “{title}”"));
     Interaction {
         attachments: vec![],
@@ -42,36 +42,40 @@ fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, revisio
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(system), shortened: false,
     }
 }
 
 /// The card a pause of the gate takes in the lifecycle of a node of the Agent SDK, and who it
 /// waits for. An API error of such a node is its lifecycle's own hold, never the gate's.
-fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alondra_domain::Owner)> {
+fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alondra_domain::Owner, SystemCard)> {
     use alondra_domain::{Capacity, Owner};
-    let (kind, owner) = match pause.reason {
-        PauseReason::ByUser => ("user", Owner::User),
-        PauseReason::Declared { .. } | PauseReason::Memory => ("machine", Owner::Capacity(Capacity::Machine)),
-        PauseReason::Usage => ("usage", Owner::Capacity(Capacity::Usage)),
-        PauseReason::Disk => ("disk", Owner::Capacity(Capacity::Disk)),
+    let (kind, owner, pause_kind) = match pause.reason {
+        PauseReason::ByUser => ("user", Owner::User, NodePauseKind::User),
+        PauseReason::Declared { .. } | PauseReason::Memory => ("machine", Owner::Capacity(Capacity::Machine), NodePauseKind::Machine),
+        PauseReason::Usage => ("usage", Owner::Capacity(Capacity::Usage), NodePauseKind::Usage),
+        PauseReason::Disk => ("disk", Owner::Capacity(Capacity::Disk), NodePauseKind::Disk),
         PauseReason::ApiError(_) => return None,
     };
-    Some((InteractionId(format!("{NODE_PAUSE_PREFIX}{kind}-{}-{task}", pause.since)), owner))
+    let system = SystemCard::NodePause { pause: pause_kind, since: pause.since };
+    Some((InteractionId(format!("{NODE_PAUSE_PREFIX}{kind}-{}-{task}", pause.since)), owner, system))
 }
 
 /// The pause a card of `node_pause_card` stands for.
-fn pause_of_card(card: &InteractionId) -> Option<Pause> {
-    let (kind, rest) = card.0.strip_prefix(NODE_PAUSE_PREFIX)?.split_once('-')?;
-    let (since, _) = rest.split_once('-')?;
-    let reason = match kind {
-        "user" => PauseReason::ByUser,
-        "machine" => PauseReason::Declared { reason: String::new() },
-        "usage" => PauseReason::Usage,
-        "disk" => PauseReason::Disk,
-        _ => return None,
+fn pause_of_card(card: &Interaction) -> Option<Pause> {
+    let Some(SystemCard::NodePause { pause, since }) = &card.system_card else { return None };
+    let reason = match pause {
+        NodePauseKind::User => PauseReason::ByUser,
+        NodePauseKind::Machine => PauseReason::Declared { reason: String::new() },
+        NodePauseKind::Usage => PauseReason::Usage,
+        NodePauseKind::Disk => PauseReason::Disk,
     };
-    Some(Pause { reason, since: since.parse().ok()?, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false })
+    Some(Pause { reason, since: *since, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false })
+}
+
+/// Whether `card` is the card of a pause of the gate.
+pub fn is_node_pause(card: &Interaction) -> bool {
+    matches!(card.system_card, Some(SystemCard::NodePause { .. }))
 }
 
 /// Whether a task in `live` has its node at work: its turn, its own work, the work it declared for
@@ -644,7 +648,7 @@ impl DomainState {
         let (mut asked, mut carded) = (BTreeSet::new(), BTreeSet::new());
         for i in self.interactions.values().filter(|i| (i.recipient == Recipient::User || Self::asks_the_orchestrator(i))
             && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
-            && self.open(i) && !i.id.0.starts_with(NODE_PAUSE_PREFIX))
+            && self.open(i) && !is_node_pause(i))
         {
             if let Author::Agent { agent_id } = &i.author {
                 asked.insert(agent_id);
@@ -735,7 +739,7 @@ impl DomainState {
     /// The open cards that hold a node's last words for the user.
     fn unheard_cards(&self, agent: &AgentId) -> Vec<InteractionId> {
         self.interactions.values()
-            .filter(|i| i.id.0.starts_with(UNHEARD_PREFIX) && i.author == Author::Agent { agent_id: agent.clone() } && self.open(i))
+            .filter(|i| i.system_card == Some(SystemCard::Unheard) && i.author == Author::Agent { agent_id: agent.clone() } && self.open(i))
             .map(|i| i.id.clone())
             .collect()
     }
@@ -773,7 +777,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card,
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::Unheard), shortened: false,
         });
         Ok(())
     }
@@ -854,7 +858,7 @@ impl DomainState {
                 let facts = self.task_facts(agent);
                 let delivery = self.node_task(agent).and_then(|t| t.final_presentation.clone());
                 facts.card || facts.held || matches!(self.sdk_live(agent), Some(LiveState::WaitingUser(cards))
-                    if cards.iter().any(|card| !card.0.starts_with(NODE_PAUSE_PREFIX) && Some(card) != delivery.as_ref()))
+                    if cards.iter().any(|card| !self.node_pause_card(card) && Some(card) != delivery.as_ref()))
             }
             _ => false,
         }
@@ -893,7 +897,7 @@ impl DomainState {
         match self.node_phase(agent)? {
             NodePhase::Paused(pause) => Some(pause.clone()),
             NodePhase::ThroughSdk => self.node_task(agent).filter(|t| !t.over())
-                .and_then(|t| self.held_pause(&t.id)).and_then(|card| pause_of_card(&card)),
+                .and_then(|t| self.held_pause(&t.id)).and_then(|card| pause_of_card(self.interactions.get(&card)?)),
             _ => None,
         }
     }
@@ -902,7 +906,7 @@ impl DomainState {
     fn held_pause(&self, task: &TaskId) -> Option<InteractionId> {
         let lifecycle = self.lifecycle_of(task).ok()?;
         lifecycle.cards().into_iter()
-            .find(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX))
+            .find(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && self.node_pause_card(card))
             .map(|(card, _)| card.clone())
     }
 
@@ -914,7 +918,7 @@ impl DomainState {
         }).collect();
         for t in self.tasks.values().filter(|t| !t.over()) {
             let Some(agent) = t.agent_id.as_ref().filter(|agent| self.node_phase(agent) == Some(&NodePhase::ThroughSdk)) else { continue };
-            if let Some(pause) = self.held_pause(&t.id).and_then(|card| pause_of_card(&card)) {
+            if let Some(pause) = self.held_pause(&t.id).and_then(|card| pause_of_card(self.interactions.get(&card)?)) {
                 paused.insert(agent.clone(), pause);
             }
         }
@@ -933,9 +937,9 @@ impl DomainState {
                 if self.held_pause(&task).is_some() {
                     return refuse("already_paused", "The node is already paused");
                 }
-                let (card, owner) = node_pause_card(&task, pause)
+                let (card, owner, system) = node_pause_card(&task, pause)
                     .ok_or_else(|| DomainError::new("invalid_input", "A Claude API error of a node of the Agent SDK is held by its task's lifecycle"))?;
-                self.hold_node_pause(&task, card, owner, lifecycles)
+                self.hold_node_pause(&task, card, owner, system, lifecycles)
             }
             NodeEvent::Resumed => {
                 let card = task.as_ref().and_then(|task| self.held_pause(task)).ok_or_else(|| DomainError::new("not_paused", "The node is not paused"))?;
@@ -964,9 +968,9 @@ impl DomainState {
         let task = self.node_task(agent).filter(|t| !t.over()).map(|t| t.id.clone());
         if let (Some(pause), Some(task)) = (pause, task)
             && self.held_pause(&task).is_none()
-            && let Some((card, owner)) = node_pause_card(&task, &pause)
+            && let Some((card, owner, system)) = node_pause_card(&task, &pause)
         {
-            let _ = self.hold_node_pause(&task, card, owner, lifecycles);
+            let _ = self.hold_node_pause(&task, card, owner, system, lifecycles);
         }
         self.agents.get_mut(agent).expect("read above").phase = NodePhase::ThroughSdk;
         Ok(())
@@ -989,16 +993,21 @@ impl DomainState {
     }
 
     /// The lifecycle of `task` holds the gate's pause `card`, with the card behind it.
-    fn hold_node_pause(&mut self, task: &TaskId, card: InteractionId, owner: alondra_domain::Owner, lifecycles: &mut Lifecycles) -> Result<()> {
+    fn hold_node_pause(&mut self, task: &TaskId, card: InteractionId, owner: alondra_domain::Owner, system: SystemCard, lifecycles: &mut Lifecycles) -> Result<()> {
         self.decide(lifecycles, task, super::LifecycleRecord::Paused { card: card.clone(), owner: Some(owner.into()) })?;
         let title = self.tasks[task].title.clone();
-        self.interactions.insert(card.clone(), node_pause_interaction(card, task, &title, self.revision + 1));
+        self.interactions.insert(card.clone(), node_pause_interaction(card, task, &title, system, self.revision + 1));
         Ok(())
     }
 
     /// A card nobody sees: the gate's pause of a node of the Agent SDK.
     pub fn out_of_sight(&self, card: &Interaction) -> bool {
-        card.author == Author::System && card.id.0.starts_with(NODE_PAUSE_PREFIX)
+        card.author == Author::System && is_node_pause(card)
+    }
+
+    /// Whether the card named `card` is the card of a pause of the gate.
+    pub fn node_pause_card(&self, card: &InteractionId) -> bool {
+        self.interactions.get(card).is_some_and(is_node_pause)
     }
 
     /// Every node of the Agent SDK still in a phase an older daemon gave it takes `ThroughSdk`.

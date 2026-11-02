@@ -57,7 +57,7 @@ pub(in crate::domain_store) fn done_task(fixture: &Fixture) -> DomainStore {
     });
     run(&mut store, &user(), "answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "ask-1".into(), option_id: "cards".into(), inputs: Default::default() });
     run(&mut store, &agent(), "present-1", present("delivery-1"));
-    run(&mut store, &user(), "changes", Command::SubmitFeedback {
+    run(&mut store, &user(), "changes", Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "delivery-1".into(), targets: text(), body: "Shorter, please".into(), instruction: Instruction::Changes,
     });
     let spent = [usage("claude-sonnet-5-5", Some(2_000_000), 1_000), usage("claude-haiku-4-5", Some(100_000), 200)];

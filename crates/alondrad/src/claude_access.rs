@@ -7,7 +7,6 @@ use crate::domain_runtime::DomainRuntime;
 use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountBilling, Provider};
 use alondra_core::domain::{
     ClaudeHeld, ClaudeHold, Command, CommandEnvelope, Millis, OUTAGE_PROBE, PROTOCOL_VERSION, QUIET_RETRY,
-    usage_resets_at,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -39,7 +38,7 @@ impl Schedule {
             let at = if usage {
                 waiting
                     .iter()
-                    .filter_map(|held| usage_resets_at(&held.card))
+                    .filter_map(|held| held.resets_at)
                     .filter_map(|seconds| Millis::try_from(seconds).ok()?.checked_mul(1000))
                     .max()
                     .filter(|reset| *reset > since)
@@ -161,7 +160,7 @@ mod tests {
     }
 
     fn on(task: &str, hold: ClaudeHold, card: &str, account: &str) -> ClaudeHeld {
-        ClaudeHeld { provider: Provider::Claude, task: TaskId::from(task), hold, card: InteractionId::from(card), account: AccountId::parse(account).unwrap() }
+        ClaudeHeld { provider: Provider::Claude, task: TaskId::from(task), hold, card: InteractionId::from(card), account: AccountId::parse(account).unwrap(), resets_at: None }
     }
 
     fn wait(hold: ClaudeHold, account: Option<&str>) -> Wait {
@@ -185,7 +184,7 @@ mod tests {
     fn the_usage_limit_is_probed_when_it_resets_or_quietly_when_unknown() {
         let mut schedule = Schedule::default();
         let reset = 4_102_444_800_u64;
-        let known = [held("t", ClaudeHold::Usage, &format!("claude-usage-limit-until-{reset}-t-3"))];
+        let known = [ClaudeHeld { resets_at: Some(reset), ..held("t", ClaudeHold::Usage, "claude-usage-limit-t-3") }];
         let at = Millis::try_from(reset * 1000).unwrap();
         assert_eq!(schedule.due(&known, 1_000), (vec![], Some(at)));
         assert_eq!(schedule.due(&known, at), (vec![wait(ClaudeHold::Usage, Some(AccountId::DEFAULT))], Some(at + QUIET_RETRY)));
@@ -251,8 +250,8 @@ mod tests {
         let mut schedule = Schedule::default();
         let (main_reset, work_reset) = (4_102_444_800_u64, 4_102_448_400_u64);
         let held = [
-            on("t", ClaudeHold::Usage, &format!("claude-usage-limit-until-{main_reset}-t-3"), "default"),
-            on("u", ClaudeHold::Usage, &format!("claude-usage-limit-until-{work_reset}-u-4"), "work"),
+            ClaudeHeld { resets_at: Some(main_reset), ..on("t", ClaudeHold::Usage, "claude-usage-limit-t-3", "default") },
+            ClaudeHeld { resets_at: Some(work_reset), ..on("u", ClaudeHold::Usage, "claude-usage-limit-u-4", "work") },
             on("v", ClaudeHold::Outage, "claude-outage-v-5", "default"),
             on("w", ClaudeHold::Outage, "claude-outage-w-6", "work"),
         ];

@@ -482,6 +482,7 @@ fn interaction_row(i: &Interaction) -> Result<Map<String, Value>> {
     row.insert("clarification".into(), json!(i.clarification));
     row.insert("snoozed_until".into(), json!(i.snoozed_until));
     row.insert("resurfaced_at_revision".into(), json!(i.resurfaced_at_revision));
+    row.insert("system_card".into(), json!(i.system_card));
     let (scope, task, request) = match &i.scope {
         Scope::Task { task_id } => ("task", json!(task_id), Value::Null),
         Scope::Orchestrator { request_id } => ("orchestrator", Value::Null, json!(request_id)),
@@ -631,6 +632,7 @@ fn save_interaction_relations(
                 }
                 let mut row = object(f)?;
                 row.remove("attachments");
+                row.insert("merge_failure".into(), json!(f.merge_failure));
                 row.extend(object(&json!({"interaction_id":i.id,"ordinal":index}))?);
                 upsert(c, "delivery_feedback", &["interaction_id", "ordinal"], row)?;
                 if earlier.is_none_or(|e| e.len() <= index) {
@@ -1141,7 +1143,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         c,
         "interactions",
         &["blocking", "is_final", "acceptance_valid", "withdrawn", "shortened"],
-        &["options", "answer", "card", "clarification"],
+        &["options", "answer", "card", "clarification", "system_card"],
     )? {
         let kind = take(&mut row, "scope_kind");
         let task = take(&mut row, "task_id");
@@ -1225,7 +1227,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             anyhow::bail!("target on non-delivery");
         }
     }
-    for mut row in rows(c, "delivery_feedback", &[], &[])? {
+    for mut row in rows(c, "delivery_feedback", &[], &["merge_failure"])? {
         let id = take(&mut row, "interaction_id");
         let f: Feedback = decode(row)?;
         let i = state

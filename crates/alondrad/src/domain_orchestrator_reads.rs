@@ -78,7 +78,7 @@ fn live_fields(row: &mut Value, state: &DomainState, agent: &AgentId) {
         Some(LiveState::Working(Worker::Alondra(Step::Answering))) => "it waits for your answer to what it asked you",
         Some(LiveState::Working(Worker::Alondra(Step::Merging))) => "Alondra merges its PR",
         Some(LiveState::Working(Worker::Alondra(Step::Finishing))) => "its task is over; Alondra closes it",
-        Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX)) =>
+        Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| state.node_pause_card(card)) =>
             "the user paused it and only the user resumes it",
         Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| state.node_task(agent).and_then(|task| task.final_presentation.as_ref()) == Some(card)) =>
             "its result waits for the user's review",

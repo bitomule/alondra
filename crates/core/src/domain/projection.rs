@@ -214,8 +214,8 @@ impl DomainState {
         let InteractionPayload::Delivery { feedback, .. } = &self.interactions.get(task.final_presentation.as_ref()?)?.payload else {
             return None;
         };
-        let (number, reason) = merge_failure(&feedback.last()?.body)?;
-        Some((number, reason.to_owned()))
+        let failure = feedback.last()?.merge_failure.as_ref()?;
+        Some((failure.number, failure.reason.clone()))
     }
     pub fn task_handed_back(&self, task_id: &TaskId) -> Option<Instruction> {
         let task = self.tasks.get(task_id).filter(|t| !t.over())?;
@@ -362,6 +362,7 @@ impl DomainState {
                             targets: targets.clone(),
                             body: "feedback".into(),
                             instruction: Instruction::Changes,
+                            merge_failure: None,
                         },
                         Some(i.id.clone()),
                         None,

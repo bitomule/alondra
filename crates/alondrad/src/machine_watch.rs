@@ -17,6 +17,7 @@
 //!
 //! With the disk full the domain may not be able to write the card, so the user then hears it by
 //! a push, which writes nothing to disk.
+use alondra_core::domain::SystemCard;
 use crate::locks::Poisonable as _;
 use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause, MachineResource};
 use alondra_core::views::Lang;
@@ -597,7 +598,7 @@ fn withdraw_strays(domain: &DomainRuntime) {
     let current = domain.live.machine_watch.incident().filter(|incident| incident.cause != MachineCause::Declared).and_then(|incident| incident.card);
     for (id, card) in &state.interactions {
         let open = !card.withdrawn && matches!(card.payload, alondra_core::domain::InteractionPayload::Question { answer: None, .. });
-        if open && id.0.starts_with(MACHINE_PREFIX) && current.as_deref() != Some(id.0.as_str()) {
+        if open && card.author == alondra_core::domain::Author::System && card.system_card == Some(SystemCard::Machine) && current.as_deref() != Some(id.0.as_str()) {
             log!("withdrawing the stray machine card {}", id.0);
             let _ = domain.withdraw_problem(id);
         }
@@ -629,7 +630,7 @@ async fn act(domain: &std::sync::Arc<DomainRuntime>, alerts: &impl Alerts, actio
                 let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None };
                 let body = card.to_body();
                 let raising = domain.clone();
-                if let Err(error) = tokio::task::spawn_blocking(move || raising.raise_worded_problem(&id, MACHINE_CAUSE, need, why, body, vec![option], None)).await.expect("machine card worker failed") {
+                if let Err(error) = tokio::task::spawn_blocking(move || raising.raise_worded_problem(&id, Some(SystemCard::Machine), MACHINE_CAUSE, need, why, body, vec![option], None)).await.expect("machine card worker failed") {
                     log!("could not put the machine's card in front of the user, pushing it instead: {error:?}");
                     alerts.tell(push_text(card), false).await;
                 }
@@ -1151,7 +1152,7 @@ mod tests {
 
     fn open_machine_cards(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
         let state = domain.state().unwrap();
-        state.interactions.values().filter(|card| card.id.0.starts_with(MACHINE_PREFIX) && !card.withdrawn
+        state.interactions.values().filter(|card| card.system_card == Some(SystemCard::Machine) && !card.withdrawn
             && matches!(card.payload, InteractionPayload::Question { answer: None, .. })).cloned().collect()
     }
 
@@ -1263,6 +1264,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_card_named_like_a_machine_card_is_not_one() {
+        let (_home, domain) = world();
+        let options = || vec![alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None }];
+        domain.raise_worded_problem("machine-setup", None, "setup", "Choose the setup".into(), "Two ways to set it up".into(), "{}".into(), options(), None).unwrap();
+        domain.raise_worded_problem("machine-1", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory".into(), "Nodes wait".into(), "{}".into(), options(), None).unwrap();
+        withdraw_strays(&domain);
+        let state = domain.state().unwrap();
+        assert!(!state.interactions[&"machine-setup".into()].withdrawn, "a card is not a machine card by its id");
+        assert!(state.interactions[&"machine-1".into()].withdrawn, "a machine card no incident shows is withdrawn");
+    }
+
+    #[tokio::test]
     async fn when_the_card_cannot_be_written_the_user_hears_it_by_push() {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("fase0", None, "disk full", 0, now_millis());
@@ -1270,7 +1283,7 @@ mod tests {
         let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, healthy: 0 };
         domain.live.machine_watch.set_incident(Some(incident));
         // The card's id is taken already, so the domain refuses it as a full disk would.
-        domain.raise_worded_problem("machine-0-2", MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
+        domain.raise_worded_problem("machine-0-2", Some(SystemCard::Machine), MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
             alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None },
         ], None).unwrap();
         let clock = Clock::default();
@@ -1380,7 +1393,7 @@ mod tests {
         assert!(!holds(&domain, 62 * MIN), "the gate lets nodes start and resume once memory is back");
         assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
         let state = domain.state().unwrap();
-        let cards = state.interactions.values().filter(|card| card.id.0.starts_with(MACHINE_PREFIX) && matches!(card.payload, InteractionPayload::Question { .. })).count();
+        let cards = state.interactions.values().filter(|card| card.system_card == Some(SystemCard::Machine) && matches!(card.payload, InteractionPayload::Question { .. })).count();
         assert_eq!(cards, 0, "never a machine card, open or withdrawn");
         assert!(told.0.lock().unwrap().is_empty());
     }
@@ -1393,7 +1406,7 @@ mod tests {
         std::fs::write(home.join(FILE), serde_json::json!({"incident": left, "declared": {}}).to_string()).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let body = r#"{"cause":"memory","disk_free":0,"memory_free_percent":38,"memory_pressure":true,"single_node":true}"#;
-        domain.raise_worded_problem("machine-1000", MACHINE_CAUSE, "Free up memory: macOS reports memory pressure (38% free) with a single node working".into(), "something outside Alondra uses the memory".into(), body.into(), vec![
+        domain.raise_worded_problem("machine-1000", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory: macOS reports memory pressure (38% free) with a single node working".into(), "something outside Alondra uses the memory".into(), body.into(), vec![
             alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None },
         ], None).unwrap();
         assert_eq!(open_machine_cards(&domain).len(), 1);

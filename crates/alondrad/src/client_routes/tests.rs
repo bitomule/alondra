@@ -1480,7 +1480,8 @@ async fn the_mcp_sign_in_routes_take_only_a_signed_device_and_their_own_body() {
         assert_eq!(fixture.send("POST", &path, &extra).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{path}");
     }
     assert_eq!(fixture.send("POST", &format!("/mcp-sign-ins/{card}/return"), &json!({})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
-    for refused in ["/mcp-sign-ins/other-card/connect", "/mcp-sign-ins/mcp-sign-in-t/open", "/mcp-sign-ins/mcp-sign-in-t", "/mcp-sign-ins/mcp sign/connect"] {
+    assert_eq!(fixture.send("POST", "/mcp-sign-ins/other-card/connect", &json!({})).await.0, StatusCode::NOT_FOUND, "a card that waits for no server");
+    for refused in ["/mcp-sign-ins/mcp-sign-in-t/open", "/mcp-sign-ins/mcp-sign-in-t", "/mcp-sign-ins/mcp sign/connect"] {
         assert_eq!(parse_write(refused), None, "{refused}");
     }
 }

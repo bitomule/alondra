@@ -55,7 +55,7 @@ fn a_system_command_that_loses_the_race_to_another_commit_is_still_applied() {
 
         applied_after_the_race(runtime, "problem", |runtime| {
             runtime.raise_problem(
-                "problem-1", None, Scope::Orchestrator { request_id: None }, "Check the daemon".into(), "It raced".into(), "Another command committed first".into(), vec![],
+                "problem-1", None, None, Scope::Orchestrator { request_id: None }, "Check the daemon".into(), "It raced".into(), "Another command committed first".into(), vec![],
             ).unwrap();
         });
         assert!(runtime.state().unwrap().interactions.contains_key(&InteractionId::from("problem-1")));

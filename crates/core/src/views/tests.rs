@@ -74,7 +74,7 @@ fn fixture() -> DomainState {
         };
         state.interactions.insert(
             id.clone().into(),
-            Interaction {
+            Interaction { system_card: None,
                 attachments: vec![],
                 id: id.into(),
                 scope: Scope::Task {
@@ -100,7 +100,7 @@ fn fixture() -> DomainState {
     }
     state.interactions.insert(
         "i-4".into(),
-        Interaction {
+        Interaction { system_card: None,
             attachments: vec![],
             id: "i-4".into(),
             scope: Scope::Orchestrator { request_id: None },
@@ -258,7 +258,7 @@ fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
         let id = format!("q-{index:04}");
         state.interactions.insert(
             id.clone().into(),
-            Interaction {
+            Interaction { system_card: None,
                 attachments: vec![],
                 id: id.into(),
                 scope: Scope::Task {
@@ -381,7 +381,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
     );
     state.interactions.insert(
         "i-5".into(),
-        Interaction {
+        Interaction { system_card: None,
             attachments: vec![],
             id: "i-5".into(),
             scope: Scope::Task {
@@ -457,7 +457,7 @@ fn pr_fixture() -> DomainState {
     );
     state.interactions.insert(
         "i-5".into(),
-        Interaction {
+        Interaction { system_card: None,
             attachments: vec![],
             id: "i-5".into(),
             scope: Scope::Task {
@@ -481,7 +481,7 @@ fn pr_fixture() -> DomainState {
     );
     state.interactions.insert(
         "i-6".into(),
-        Interaction {
+        Interaction { system_card: None,
             attachments: vec![],
             id: "i-6".into(),
             scope: Scope::Task {
@@ -2605,7 +2605,7 @@ fn orchestrator_decide_fixture() -> DomainState {
     let option = |id: &str, label: &str, description: &str| QuestionOption {
         id: id.into(), label: label.into(), description: Some(description.into()),
     };
-    state.interactions.insert("memory-pause-livelock-ask".into(), Interaction {
+    state.interactions.insert("memory-pause-livelock-ask".into(), Interaction { system_card: None,
         attachments: vec![], id: "memory-pause-livelock-ask".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::Orchestrator { generation: 1 }, recipient: Recipient::User,
         body: "Who fixes the memory pauses that cut the same build in a loop?".into(), blocking: false, subject: None,
@@ -2825,6 +2825,7 @@ fn unheard_fixture() -> (DomainState, LiveSnapshot, String) {
         answer: None,
     };
     card.card = crate::domain::CardSpec::new(crate::domain::CardKind::Decide, "stopped and wrote to you").why(said);
+    card.system_card = Some(crate::domain::SystemCard::Unheard);
     (card.subject, card.blocking) = (None, false);
     state.interactions.retain(|_, i| !(i.recipient == Recipient::User && matches!(i.scope, Scope::Task { ref task_id } if *task_id == task)));
     state.interactions.insert(card.id.clone(), card);
@@ -3181,7 +3182,7 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
     let mut state = fixture();
     let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, resource: None, minutes: None, disk: None, still: false, purgeable: 0 };
     let (need, why) = disk.text(Lang::En);
-    state.interactions.insert("machine-1000".into(), Interaction {
+    state.interactions.insert("machine-1000".into(), Interaction { system_card: Some(crate::domain::SystemCard::Machine),
         attachments: vec![], id: "machine-1000".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: disk.to_body(),
         blocking: false, subject: None,
@@ -3209,7 +3210,7 @@ fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
     use crate::domain::{CardKind, ContentKind as Content};
     let mut state = fixture();
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
-    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
+    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction { system_card: Some(crate::domain::SystemCard::BatchProblem { run: "run-1".into() }),
         attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: "Claude exited without a successful terminal result".into(),
         blocking: false, subject: None,
@@ -3260,7 +3261,7 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     let mut card = spec(CardKind::Problem, &need, &why);
     card.recommended = Some(BATCH_CONTINUE.into());
-    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
+    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction { system_card: Some(crate::domain::SystemCard::BatchProblem { run: "run-1".into() }),
         attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: problem.to_body(),
         blocking: false, subject: None,
@@ -4594,7 +4595,7 @@ fn the_task_whose_node_resolves_conflicts_says_so_with_its_pr_in_both_languages(
     state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap().agent_id = Some(agent);
     let delivery = state.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap();
     if let InteractionPayload::Delivery { feedback, .. } = &mut delivery.payload {
-        feedback.push(crate::domain::Feedback {
+        feedback.push(crate::domain::Feedback { merge_failure: None,
             attachments: vec![], user_id: crate::domain::Feedback::ALONDRA.into(), body: "Conflicts".into(),
             at_revision: 99, instruction: crate::domain::Instruction::Conflicts,
         });
@@ -5308,7 +5309,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         (user.clone(), Instruction::Reply, "Answering you", "Respondiéndote"),
     ] {
         let mut state = presented.clone();
-        execute(&mut state, actor, Command::SubmitFeedback {
+        execute(&mut state, actor, Command::SubmitFeedback { merge_failure: None,
             attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
         });
@@ -5319,6 +5320,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
     }
     let mut state = presented.clone();
     execute(&mut state, Actor::System, Command::SubmitFeedback {
+        merge_failure: Some(crate::domain::MergeFailure { number: 12, reason: "its checks failed (lint)".into() }),
         attachments: vec![], presentation_id: "d".into(), instruction: Instruction::Conflicts,
         body: crate::domain::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)"),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
@@ -5344,7 +5346,7 @@ fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_tak
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         assert!(!why(&state, client, Lang::En).contains("Your reply"), "{client:?}: nothing was replied yet");
     }
-    execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "d".into(), body: "the design is poor, the toggles are poor".into(),
         instruction: Instruction::Reply, targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
     });
@@ -5397,7 +5399,7 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
             .find(|action| action.id.starts_with("reply:")).expect("the delivery offers a reply").clone();
         assert!(reply.resolves_card, "{client:?}: the client hides the delivery the moment the reply is sent");
     }
-    execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "d".into(), body: "te he pedido cambios pero este card no se va".into(),
         instruction: Instruction::Reply, targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
     });
@@ -5425,7 +5427,7 @@ fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() 
         (Instruction::Question, "has your question pending", "tiene pendiente tu pregunta"),
     ] {
         let mut state = presented_pr();
-        execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
+        execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback { merge_failure: None,
             attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
         });
@@ -6197,7 +6199,7 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
         targets: vec![crate::domain::DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
         is_final: true,
         acceptance: None,
-        feedback: vec![Feedback { attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
+        feedback: vec![Feedback { merge_failure: None, attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
     };
     assert_eq!(notice(&state, "card:i-3", Lang::Es).as_deref(), Some("Ya respondida"));
 
@@ -8404,7 +8406,15 @@ fn sdk_task() -> DomainState {
 /// comes back or that it is still starting.
 #[test]
 fn each_live_state_reads_one_way_on_every_client() {
-    let state = sdk_task();
+    let mut state = sdk_task();
+    let pause = crate::domain::InteractionId::from(format!("{}user-0-t-1", crate::domain::NODE_PAUSE_PREFIX));
+    state.interactions.insert(pause.clone(), Interaction { shortened: false,
+        attachments: vec![], id: pause, scope: Scope::Task { task_id: "t-1".into() }, author: Author::System, recipient: Recipient::User,
+        body: "Resume".into(), blocking: false, subject: None, payload: InteractionPayload::Question { options: vec![], answer: None },
+        revision: 1, order: 1, withdrawn: false, card: spec(CardKind::Decide, "Resume", ""), clarification: None, snoozed_until: None,
+        resurfaced_at_revision: None,
+        system_card: Some(crate::domain::SystemCard::NodePause { pause: crate::domain::NodePauseKind::User, since: 0 }),
+    });
     let live = LiveSnapshot::default();
     let mut shown = vec![];
     for in_state in live_states() {
@@ -8844,6 +8854,7 @@ fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
     state.interactions.clear();
     interaction.id = "claude-signed-out-t-1".into();
     interaction.author = Author::System;
+    interaction.system_card = Some(crate::domain::SystemCard::ClaudeSignedOut);
     state.interactions.insert(interaction.id.clone(), interaction);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         for lang in [Lang::En, Lang::Es] {

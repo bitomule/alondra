@@ -338,7 +338,7 @@ impl ObservationFailures {
             "Alondra asked GitHub about {url} {count} times in a row and every read failed, so it cannot see new pushes, merges or closes of this PR. Last error: {reason}. If the host looks wrong, the node can register the same PR again with the right host."
         );
         let _ = domain.raise_problem(
-            &format!("problem-pr-unreadable-{}", pr.slug()),
+            &format!("problem-pr-unreadable-{}", pr.slug()), None,
             Some(&format!("pr-unreadable:{}", pr.slug())),
             Scope::Task { task_id: pr.task_id.clone() },
             need, why, diagnosis, vec![],

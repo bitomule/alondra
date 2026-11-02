@@ -127,7 +127,7 @@ fn feedback(store: &mut DomainStore) -> CommandEnvelope {
     envelope(
         store,
         "feedback",
-        Command::SubmitFeedback {
+        Command::SubmitFeedback { merge_failure: None,
             attachments: vec![],
             presentation_id: "delivery-1".into(),
             targets: vec![DeliveryTarget::Text {
@@ -1087,7 +1087,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
         &mut store,
         &user(),
         "feedback",
-        Command::SubmitFeedback {
+        Command::SubmitFeedback { merge_failure: None,
             presentation_id: "delivery-1".into(),
             targets: vec![DeliveryTarget::Text {
                 text: "Result".into(),
@@ -1441,7 +1441,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     let feedback = envelope(
         &mut store,
         "user-withdraws",
-        Command::SubmitFeedback {
+        Command::SubmitFeedback { merge_failure: None,
             attachments: vec![],
             presentation_id: "delivery-2".into(),
             targets: vec![DeliveryTarget::Text {
@@ -2240,4 +2240,45 @@ fn snooze_survives_reopening_an_old_store_and_clears_its_sql_column_on_return() 
     assert_eq!(state.interactions[&InteractionId::from("delivery-1")].snoozed_until, None);
     assert_eq!(state.interactions[&InteractionId::from("delivery-1")].resurfaced_at_revision, returned);
     assert_eq!(ReadIndex::build(&state).waiting()[0].id, "interaction:delivery-1");
+}
+
+#[test]
+fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
+    use alondra_core::domain::{CardKind, CardSpec, MergeFailure, QuestionOption, Recipient, Scope, SystemCard};
+    let fixture = Fixture::new();
+    let text = || vec![DeliveryTarget::Text { text: "The answer".into() }];
+    let options = || vec![
+        QuestionOption { id: "resume".into(), label: "Resume now".into(), description: Some("Work goes on".into()) },
+        QuestionOption { id: "stay".into(), label: "Stay paused".into(), description: Some("Work waits".into()) },
+    ];
+    let ask = |id: &str, scope: Scope, card: CardSpec| Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope, recipient: Recipient::User, body: "Resume?".into(),
+        blocking: false, options: options(), card,
+    };
+    let resume = SystemCard::PaceResume { day: "2026-11-02".into() };
+    {
+        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        seeded(&mut store);
+        present(&mut store);
+        let body = alondra_core::domain::merge_failed_text(7, "https://github.com/o/r/pull/7", "main", "review required");
+        execute(&mut store, &Actor::System, "hand-back", Command::SubmitFeedback {
+            merge_failure: Some(MergeFailure { number: 7, reason: "review required".into() }),
+            attachments: vec![], presentation_id: "delivery-1".into(), targets: text(), body, instruction: Instruction::Conflicts,
+        });
+        let pace = CardSpec { system: Some(resume.clone()), ..CardSpec::new(CardKind::Decide, "Resume Claude work now?").why("You paused it until tomorrow.") };
+        execute(&mut store, &Actor::System, "pace", ask("pace-resume-2026-11-02", Scope::Orchestrator { request_id: None }, pace));
+        execute(&mut store, &agent(), "ask", ask("which-database", Scope::Task { task_id: "task-1".into() },
+            CardSpec::new(CardKind::Decide, "Choose the database").why("The cache needs one.")));
+        store.conn.execute_batch("ALTER TABLE interactions DROP COLUMN system_card; ALTER TABLE delivery_feedback DROP COLUMN merge_failure;").unwrap();
+    }
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let state = store.load().unwrap();
+    assert_eq!(state.interactions[&"pace-resume-2026-11-02".into()].system_card, Some(resume.clone()), "Alondra's card gets its kind");
+    assert_eq!(state.interactions[&"which-database".into()].system_card, None, "a node's card is never one of Alondra's");
+    let alondra_core::domain::InteractionPayload::Delivery { feedback, .. } = &state.interactions[&"delivery-1".into()].payload else { panic!("a delivery") };
+    assert_eq!(feedback.last().unwrap().merge_failure, Some(MergeFailure { number: 7, reason: "review required".into() }), "the hand-back says which merge failed");
+    store.conn.execute("UPDATE interactions SET system_card=NULL WHERE id='pace-resume-2026-11-02'", []).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().interactions[&"pace-resume-2026-11-02".into()].system_card, None, "the upgrade runs once");
 }

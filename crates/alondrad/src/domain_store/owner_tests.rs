@@ -853,7 +853,7 @@ fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
     let (fixture, mut store, execution) = running();
     let input = pending_input(&mut store);
     let state = store.load().unwrap();
-    store.execute_filling_revision(&agent(), &envelope(&state, "taken-card-id", ask(turn_ended_card().0.as_str()))).unwrap();
+    store.execute_filling_revision(&Actor::System, &envelope(&state, "taken-card-id", ask(turn_ended_card().0.as_str()))).unwrap();
     let runtime = runtime(&fixture, store);
     let observer = observer(&fixture);
     let before = counts(&observer);

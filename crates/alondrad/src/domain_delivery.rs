@@ -887,7 +887,7 @@ mod tests {
             }
             state.interactions.insert(
                 id.clone(),
-                Interaction {
+                Interaction { system_card: None,
                     attachments: vec![],
                     id,
                     scope: Scope::Task {
@@ -906,7 +906,7 @@ mod tests {
             );
         }
         let held = InteractionId::from(push_fixture_id("permission"));
-        state.interactions.insert(held.clone(), Interaction {
+        state.interactions.insert(held.clone(), Interaction { system_card: None,
             attachments: vec![], id: held.clone(), scope: Scope::Task { task_id: "task-a".into() },
             author: Author::System, recipient: Recipient::User,
             body: "Bash: Extract shared waiting-items helper in core views\n\n```\npython3 - <<'EOF'\nimport re\nEOF\n```".into(),
@@ -945,7 +945,7 @@ mod tests {
                 id: format!("option-{index}"), label: label.into(), description: None,
             })
             .collect();
-        state.interactions.insert(id.clone(), Interaction {
+        state.interactions.insert(id.clone(), Interaction { system_card: None,
             attachments: vec![], id, scope: Scope::Task { task_id: "task-a".into() },
             author: Author::System, recipient: Recipient::User, body: "¿Qué debería hacer?".into(),
             blocking: true, subject: None,
@@ -974,7 +974,7 @@ mod tests {
             ("info-2", Scope::Task { task_id: "task-a".into() }),
             ("orchestrator-1", Scope::Orchestrator { request_id: None }),
         ] {
-            state.interactions.insert(id.into(), Interaction {
+            state.interactions.insert(id.into(), Interaction { system_card: None,
                 attachments: vec![], id: id.into(), scope, author: Author::System,
                 recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
                 payload: InteractionPayload::Information { read_by: Default::default() },
@@ -1137,7 +1137,7 @@ mod tests {
         ] {
             let mut state = DomainState::new("epoch-1");
             let id = InteractionId::from("hold-1");
-            state.interactions.insert(id.clone(), Interaction {
+            state.interactions.insert(id.clone(), Interaction { system_card: None,
                 attachments: vec![], id: id.clone(), scope: Scope::Task { task_id: "task-a".into() },
                 author: Author::System, recipient: Recipient::User, body: "Bash: ls".into(),
                 blocking: true, subject: None,

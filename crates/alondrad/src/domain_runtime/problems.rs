@@ -9,6 +9,7 @@ impl DomainRuntime {
     pub(crate) fn raise_problem(
         &self,
         id: &str,
+        system: Option<SystemCard>,
         cause: Option<&str>,
         scope: Scope,
         need: String,
@@ -31,16 +32,18 @@ impl DomainRuntime {
                 scope,
                 body: diagnosis.clone(),
                 options,
-                card: CardSpec { cause: cause.map(str::to_owned), ..CardSpec::new(CardKind::Problem, need).why(why).content(ContentKind::Diagnosis, diagnosis) },
+                card: CardSpec { cause: cause.map(str::to_owned), system, ..CardSpec::new(CardKind::Problem, need).why(why).content(ContentKind::Diagnosis, diagnosis) },
             },
         })
     }
 
     /// A Problem whose `body` holds the numbers clients word in their own language, with no
     /// content of its own. `id` names it: raising it twice leaves the first.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn raise_worded_problem(
         &self,
         id: &str,
+        system: Option<SystemCard>,
         cause: &str,
         need: String,
         why: String,
@@ -48,7 +51,7 @@ impl DomainRuntime {
         options: Vec<QuestionOption>,
         recommended: Option<&str>,
     ) -> Result<CommandOutcome, StoreError> {
-        self.raise_worded_problem_in(Scope::Orchestrator { request_id: None }, id, cause, need, why, body, options, recommended)
+        self.raise_worded_problem_in(Scope::Orchestrator { request_id: None }, id, system, cause, need, why, body, options, recommended)
     }
 
     /// `raise_worded_problem` where `scope` says.
@@ -57,6 +60,7 @@ impl DomainRuntime {
         &self,
         scope: Scope,
         id: &str,
+        system: Option<SystemCard>,
         cause: &str,
         need: String,
         why: String,
@@ -70,6 +74,7 @@ impl DomainRuntime {
         }
         let mut card = CardSpec::new(CardKind::Problem, need).why(why);
         card.recommended = recommended.map(str::to_owned);
+        card.system = system;
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
@@ -88,7 +93,7 @@ impl DomainRuntime {
 
     /// Something the orchestrator hears in its next batch; `id` names it, so telling it twice
     /// leaves the first.
-    pub(crate) fn tell_orchestrator(&self, id: &str, body: String) -> Result<CommandOutcome, StoreError> {
+    pub(crate) fn tell_orchestrator(&self, id: &str, system: Option<SystemCard>, body: String) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;
         if state.interactions.contains_key(&InteractionId(id.to_owned())) {
             return Err(DomainError::new("invalid_input", "Already told").into());
@@ -103,7 +108,7 @@ impl DomainRuntime {
                 interaction_id: id.to_owned().into(),
                 scope: Scope::Orchestrator { request_id: None },
                 recipient: Recipient::Orchestrator,
-                card: CardSpec::derived(CardKind::Know, &body),
+                card: CardSpec { system, ..CardSpec::derived(CardKind::Know, &body) },
                 body,
             },
         })
@@ -135,9 +140,11 @@ impl DomainRuntime {
     /// A Decide card authored by Alondra that holds nothing back. `need` and `why` are the English
     /// source; clients render the text in their own language from the id and `body`. `id` names
     /// it, so asking twice leaves the first.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn ask_user(
         &self,
         id: &str,
+        system: Option<SystemCard>,
         need: String,
         why: String,
         body: String,
@@ -150,6 +157,7 @@ impl DomainRuntime {
         }
         let mut card = CardSpec::new(CardKind::Decide, need).why(why);
         card.recommended = Some(recommended.to_owned());
+        card.system = system;
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

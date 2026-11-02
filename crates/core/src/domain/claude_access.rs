@@ -19,7 +19,7 @@ pub const SIGNED_OUT_PREFIX: &str = "claude-signed-out-";
 pub const OUTAGE_PREFIX: &str = alondra_domain::CLAUDE_OUTAGE_CARD_PREFIX;
 /// The card of a task the usage limit holds; with its reset, in Unix seconds, after `USAGE_UNTIL`.
 pub const USAGE_PREFIX: &str = alondra_domain::CLAUDE_USAGE_CARD_PREFIX;
-const USAGE_UNTIL: &str = "claude-usage-limit-until-";
+pub(in crate::domain) const USAGE_UNTIL: &str = "claude-usage-limit-until-";
 /// The answers that send the task on as the probe of whether Claude works again.
 pub const SIGNED_IN: &str = "signed_in";
 pub const SIGNED_IN_LABEL: &str = "I signed in";
@@ -63,16 +63,19 @@ impl ClaudeHold {
             Self::Usage => Owner::Capacity(Capacity::Usage),
         }
     }
-    pub fn of(card: &InteractionId) -> Option<Self> {
-        let id = card.0.as_str();
-        if id.starts_with(SIGNED_OUT_PREFIX) {
-            Some(Self::SignedOut)
-        } else if id.starts_with(OUTAGE_PREFIX) {
-            Some(Self::Outage)
-        } else if id.starts_with(USAGE_PREFIX) {
-            Some(Self::Usage)
-        } else {
-            None
+    pub fn of(card: &Interaction) -> Option<Self> {
+        match card.system_card.as_ref()? {
+            SystemCard::ClaudeSignedOut => Some(Self::SignedOut),
+            SystemCard::ClaudeOutage => Some(Self::Outage),
+            SystemCard::ClaudeUsage { .. } => Some(Self::Usage),
+            _ => None,
+        }
+    }
+    fn system_card(self, resets_at: Option<u64>) -> SystemCard {
+        match self {
+            Self::SignedOut => SystemCard::ClaudeSignedOut,
+            Self::Outage => SystemCard::ClaudeOutage,
+            Self::Usage => SystemCard::ClaudeUsage { resets_at },
         }
     }
     /// What the task is told when Claude answers it again.
@@ -105,10 +108,6 @@ impl ClaudeHold {
     }
 }
 
-/// When the usage limit a card waits for resets, in Unix seconds, when Claude said.
-pub fn usage_resets_at(card: &InteractionId) -> Option<u64> {
-    card.0.strip_prefix(USAGE_UNTIL)?.split('-').next()?.parse().ok()
-}
 
 /// A task Claude holds, the card it waits on and the account it runs on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,6 +117,8 @@ pub struct ClaudeHeld {
     pub hold: ClaudeHold,
     pub card: InteractionId,
     pub account: AccountId,
+    /// When the usage limit resets, in Unix seconds, when Claude said.
+    pub resets_at: Option<u64>,
 }
 
 impl ClaudeHeld {
@@ -135,13 +136,14 @@ impl ClaudeHold {
 }
 
 /// A task's last pause (true) or resume (false) on a Claude hold, and whether a turn ended after it.
-fn last_hold(journal: &Journal) -> Option<(&InteractionId, bool, bool)> {
+fn last_hold<'a>(journal: &'a Journal, cards: &BTreeMap<InteractionId, Interaction>) -> Option<(&'a InteractionId, bool, bool)> {
+    let held = |card: &InteractionId| cards.get(card).and_then(ClaudeHold::of).is_some();
     let mut ended_since = false;
     for record in journal.iter().rev() {
         match record {
             LifecycleRecord::TurnEnded { .. } => ended_since = true,
-            LifecycleRecord::Paused { card, .. } if ClaudeHold::of(card).is_some() => return Some((card, true, ended_since)),
-            LifecycleRecord::Resumed { card, .. } if ClaudeHold::of(card).is_some() => return Some((card, false, ended_since)),
+            LifecycleRecord::Paused { card, .. } if held(card) => return Some((card, true, ended_since)),
+            LifecycleRecord::Resumed { card, .. } if held(card) => return Some((card, false, ended_since)),
             _ => {}
         }
     }
@@ -149,6 +151,19 @@ fn last_hold(journal: &Journal) -> Option<(&InteractionId, bool, bool)> {
 }
 
 impl DomainState {
+    /// The Claude hold `card` stands for, when it is one of Alondra's hold cards.
+    pub fn claude_hold(&self, card: &InteractionId) -> Option<ClaudeHold> {
+        self.interactions.get(card).and_then(ClaudeHold::of)
+    }
+
+    /// When the usage limit `card` waits for resets, in Unix seconds, when Claude said.
+    pub fn usage_resets_at(&self, card: &InteractionId) -> Option<u64> {
+        match self.interactions.get(card)?.system_card {
+            Some(SystemCard::ClaudeUsage { resets_at }) => resets_at,
+            _ => None,
+        }
+    }
+
     /// The account the task's current execution runs on.
     pub fn task_account(&self, task: &TaskId) -> AccountId {
         self.tasks.get(task).and_then(|task| task.account.clone()).unwrap_or_else(AccountId::default_account)
@@ -180,13 +195,13 @@ impl DomainState {
             if self.tasks.get(task).is_none_or(Task::over) {
                 continue;
             }
-            let Some((card, true, _)) = last_hold(journal) else { continue };
-            let Some(hold) = ClaudeHold::of(card) else { continue };
+            let Some((card, true, _)) = last_hold(journal, &self.interactions) else { continue };
+            let Some(hold) = self.claude_hold(card) else { continue };
             let waits = self.lifecycle_of(task).is_ok_and(|lifecycle| {
                 lifecycle.cards().iter().any(|(id, reason)| *id == card && *reason == LifecycleWait::Pause)
             });
             if waits && self.interactions.get(card).is_none_or(|card| self.current_hold_credentials(card)) {
-                held.push(ClaudeHeld { provider: self.task_account_key(task).provider, task: task.clone(), hold, card: card.clone(), account: self.task_account(task) });
+                held.push(ClaudeHeld { provider: self.task_account_key(task).provider, task: task.clone(), hold, card: card.clone(), account: self.task_account(task), resets_at: self.usage_resets_at(card) });
             }
         }
         held
@@ -194,7 +209,7 @@ impl DomainState {
 
     /// What a hold's card waits for: its hold, and the account of its task unless it waits for the API.
     pub fn claude_card_waits_for(&self, card: &Interaction) -> Option<(ClaudeHold, Option<AccountId>)> {
-        let hold = ClaudeHold::of(&card.id)?;
+        let hold = ClaudeHold::of(card)?;
         if !self.current_hold_credentials(card) { return None; }
         let account = match &card.scope {
             Scope::Task { task_id } => self.task_account(task_id),
@@ -214,8 +229,8 @@ impl DomainState {
         self.lifecycle_journal
             .iter()
             .filter(|(task, _)| self.tasks.get(*task).is_some_and(|t| !t.over()))
-            .filter_map(|(task, journal)| match last_hold(journal) {
-                Some((card, false, false)) if self.interactions.get(card).is_none_or(|card| self.current_hold_credentials(card)) => ClaudeHold::of(card).map(|hold| (self.task_account_key(task).provider, hold, hold.of_account(&self.task_account(task)))),
+            .filter_map(|(task, journal)| match last_hold(journal, &self.interactions) {
+                Some((card, false, false)) if self.interactions.get(card).is_none_or(|card| self.current_hold_credentials(card)) => self.claude_hold(card).map(|hold| (self.task_account_key(task).provider, hold, hold.of_account(&self.task_account(task)))),
                 _ => None,
             })
             .collect()
@@ -268,7 +283,7 @@ impl DomainState {
             .map(|(card, _)| card.clone());
         let replaced = match &standing {
             None => None,
-            Some(card) if ClaudeHold::of(card) == Some(ClaudeHold::Outage) && hold != ClaudeHold::Outage => Some(card.clone()),
+            Some(card) if self.claude_hold(card) == Some(ClaudeHold::Outage) && hold != ClaudeHold::Outage => Some(card.clone()),
             Some(_) => return Ok(()),
         };
         let revision = self.revision + 1;
@@ -295,7 +310,7 @@ impl DomainState {
             self.withdraw_hold(card);
         }
         let generation = self.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).map_or(1, |account| account.sign_ins + 1);
-        let mut card = hold_card(id.clone(), task, key.provider, hold, revision);
+        let mut card = hold_card(id.clone(), task, key.provider, hold, hold.system_card(resets_at), revision);
         card.card.cause = Some(credential_cause(&key, generation));
         self.interactions.insert(id.clone(), card);
         if announce {
@@ -339,7 +354,7 @@ impl DomainState {
 
     /// The user answered a hold's card: its task goes on as the probe. False for any other card.
     pub(super) fn settle_claude_card(&mut self, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<bool, DomainError> {
-        if ClaudeHold::of(card).is_none() {
+        if self.claude_hold(card).is_none() {
             return Ok(false);
         }
         if self.interactions.get(card).is_some_and(|card| !self.current_hold_credentials(card)) {
@@ -449,7 +464,7 @@ impl DomainState {
             })
             .collect();
         for card in self.interactions.values_mut() {
-            if card.author != Author::System || ClaudeHold::of(&card.id).is_none() { continue; }
+            if card.author != Author::System || ClaudeHold::of(card).is_none() { continue; }
             let Scope::Task { task_id } = &card.scope else { continue };
             let Some(task) = self.tasks.get(task_id) else { continue };
             let key = task.account_key();
@@ -489,7 +504,7 @@ fn credential_cause(key: &AccountKey, generation: u64) -> String {
     cause
 }
 
-fn hold_card(id: InteractionId, task: &TaskId, provider: Provider, hold: ClaudeHold, revision: u64) -> Interaction {
+fn hold_card(id: InteractionId, task: &TaskId, provider: Provider, hold: ClaudeHold, system: SystemCard, revision: u64) -> Interaction {
     let (need,why)=if provider==Provider::Claude {(hold.need(),hold.why())} else {match hold {
         ClaudeHold::SignedOut=>("Sign in to Codex outside Alondra","The Codex sign-in needs attention. On the Mac, run codex login, then press I signed in."),
         ClaudeHold::Outage=>("Codex is not answering: tasks wait for it","Alondra checks native account metadata before continuing an existing waiting task. No model prompt is sent as a health check."),
@@ -512,7 +527,7 @@ fn hold_card(id: InteractionId, task: &TaskId, provider: Provider, hold: ClaudeH
         order: revision,
         withdrawn: false,
         card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(system), shortened: false,
     }
 }
 

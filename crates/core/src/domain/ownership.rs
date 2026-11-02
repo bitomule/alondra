@@ -158,7 +158,7 @@ impl DomainState {
     /// A question or request of the task, from anyone, still waiting for the user.
     pub fn open_user_card(&self, task: &TaskId) -> Option<&Interaction> {
         self.interactions.values().find(|i| {
-            i.recipient == Recipient::User && self.open(i) && !i.id.0.starts_with(super::NODE_PAUSE_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)
+            i.recipient == Recipient::User && self.open(i) && !super::is_node_pause(i) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)
                 && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
         })
     }
@@ -166,7 +166,7 @@ impl DomainState {
     fn start_problems(&self, task: &TaskId) -> impl Iterator<Item = &Interaction> + '_ {
         let task = task.clone();
         self.interactions.values().filter(move |i| {
-            i.id.0.starts_with(START_PROBLEM_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if *task_id == task)
+            i.system_card == Some(SystemCard::StartProblem) && matches!(&i.scope, Scope::Task { task_id } if *task_id == task)
         })
     }
 

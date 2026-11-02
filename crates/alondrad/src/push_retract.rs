@@ -204,7 +204,7 @@ mod tests {
         use alondra_core::domain::*;
         let mut state = DomainState::new("epoch-1");
         for (order, id) in ids.iter().enumerate() {
-            state.interactions.insert(id.as_str().into(), Interaction {
+            state.interactions.insert(id.as_str().into(), Interaction { system_card: None,
                 attachments: vec![], id: id.as_str().into(),
                 scope: Scope::Orchestrator { request_id: None }, author: Author::Orchestrator { generation: 1 },
                 recipient: Recipient::User, body: "Read this".into(), blocking: false, subject: None,

@@ -275,12 +275,16 @@ pub fn merge_failed_text(number: u64, url: &str, base: &str, reason: &str) -> St
         reason = reason.trim().trim_end_matches('.'),
     )
 }
-/// The PR number and GitHub's reason in a hand-back `merge_failed_text` wrote.
-pub fn merge_failure(body: &str) -> Option<(u64, &str)> {
-    let rest = body.strip_prefix(MERGE_FAILED)?;
-    let (number, rest) = rest.split_once(' ')?;
-    let reason = rest.split_once("): ")?.1;
-    Some((number.parse().ok()?, reason.split_once(MERGE_FAILED_FIX).map_or(reason, |(reason, _)| reason)))
+impl MergeFailure {
+    /// The merge failure a hand-back stored before Alondra recorded it wrote in its body. Only the
+    /// database's one-time upgrade reads it.
+    pub fn of_stored_body(body: &str) -> Option<Self> {
+        let rest = body.strip_prefix(MERGE_FAILED)?;
+        let (number, rest) = rest.split_once(' ')?;
+        let reason = rest.split_once("): ")?.1;
+        let reason = reason.split_once(MERGE_FAILED_FIX).map_or(reason, |(reason, _)| reason);
+        Some(Self { number: number.parse().ok()?, reason: reason.to_owned() })
+    }
 }
 /// What a node is told when its task is finished and Alondra is about to close its session.
 pub fn cleanup_request(title: &str, task: &TaskId, worktrees: &[&str]) -> String {
@@ -686,6 +690,14 @@ impl DomainState {
             } },
             _ => self.card_author(actor, scope, source)?,
         };
+        if author != Author::System {
+            if card.system.is_some() {
+                return refuse("forbidden", "card.system", "Only Alondra marks a card as one of its own");
+            }
+            if reserved_card_id(&i.0) {
+                return refuse("invalid_input", "interaction_id", "This id names one of Alondra's own cards: choose another interaction_id");
+            }
+        }
         self.recipient(to)?;
         if card.kind == CardKind::Propose {
             self.suggestion(&author, scope, to, options)?;
@@ -729,10 +741,10 @@ impl DomainState {
                 revision: self.revision + 1,
                 order: self.revision + 1,
                 withdrawn: false,
-                card: card.clone(),
+                card: CardSpec { system: None, ..card.clone() },
                 clarification: None, snoozed_until: None,
                 resurfaced_at_revision: replaces_snoozed.then_some(self.revision + 1),
-                shortened: false,
+                system_card: card.system.clone(), shortened: false,
             },
         );
         self.blocks_acyclic(i)?;
@@ -1173,7 +1185,7 @@ impl DomainState {
             Some(headline) => CardSpec::new(CardKind::Know, clip(headline, CardSpec::NEED_MAX)).why(answer),
             None => CardSpec::derived(CardKind::Know, answer),
         };
-        self.tell_the_user(format!("{request}-answer"), request, answer.into(), card, created, effects);
+        self.tell_the_user(format!("{request}-answer"), request, answer.into(), card, None, created, effects);
         Ok(())
     }
     /// A request of the user closed once all its tasks are over tells them how it ended.
@@ -1196,10 +1208,11 @@ impl DomainState {
         };
         let (need, why) = done.text(crate::views::Lang::En);
         let card = CardSpec::new(CardKind::Know, need).why(why);
-        self.tell_the_user(crate::request_outcome::DoneCard::id(&request.0), request, done.to_body(), card, created, effects);
+        self.tell_the_user(crate::request_outcome::DoneCard::id(&request.0), request, done.to_body(), card, Some(SystemCard::RequestDone), created, effects);
         Ok(())
     }
-    fn tell_the_user(&mut self, id: String, request: &RequestId, body: String, card: CardSpec,
+    #[allow(clippy::too_many_arguments)]
+    fn tell_the_user(&mut self, id: String, request: &RequestId, body: String, card: CardSpec, system_card: Option<SystemCard>,
         created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
         let mut id = InteractionId(id);
         while self.interactions.contains_key(&id) {
@@ -1219,7 +1232,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card,
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card, shortened: false,
         });
         created.push(id.0.clone());
         effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
@@ -1709,7 +1722,7 @@ impl DomainState {
     pub(super) fn cancel(&mut self, task_id: &TaskId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.invalidate(task_id);
         let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
-            i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() })
+            i.system_card == Some(SystemCard::CloseProblem) && i.scope == (Scope::Task { task_id: task_id.clone() })
                 && !i.withdrawn && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
         }).map(|i| i.id.clone()).collect();
         for card in &closing_cards {
@@ -1748,7 +1761,7 @@ impl DomainState {
     /// The user chose to close the node on the card about its work after the merge: that choice is
     /// the fact that ends the work, in the same commit as the answer.
     fn settle_post_merge_problem(&mut self, card: &InteractionId, option: &str, lifecycles: &mut Lifecycles) -> Result<()> {
-        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(POST_MERGE_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };
+        let Some(i) = self.interactions.get(card).filter(|i| i.system_card == Some(SystemCard::PostMergeProblem) && i.author == Author::System) else { return Ok(()) };
         let Scope::Task { task_id } = i.scope.clone() else { return Ok(()) };
         if option != POST_MERGE_CLOSE || self.tasks.get(&task_id).is_none_or(Task::over) {
             return Ok(());
@@ -1758,7 +1771,7 @@ impl DomainState {
     /// What the user chose on a start problem card that the domain does itself: cancel the task, or
     /// let it start without the cancelled task it waited for. "Try again" is the daemon's to do.
     fn settle_start_problem(&mut self, card: &InteractionId, option: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(START_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };
+        let Some(i) = self.interactions.get(card).filter(|i| i.system_card == Some(SystemCard::StartProblem) && i.author == Author::System) else { return Ok(()) };
         let Scope::Task { task_id } = i.scope.clone() else { return Ok(()) };
         let Ok(problem) = serde_json::from_str::<StartProblem>(&i.body) else { return Ok(()) };
         if self.tasks.get(&task_id).is_none_or(Task::over) {
@@ -1836,7 +1849,7 @@ impl DomainState {
     pub(super) fn asked_aside(&self, i: &Interaction, t: &TaskId) -> bool {
         i.card.blocks.is_empty()
             && !matches!(self.holds.get(&i.id), Some(Hold::Permission | Hold::Elicitation))
-            && !i.id.0.starts_with(UNHEARD_PREFIX)
+            && i.system_card != Some(SystemCard::Unheard)
             && self.unanswered_card(i, t)
     }
     /// A card of the task that holds it on the user: a question to the orchestrator holds it on
@@ -1964,7 +1977,7 @@ impl DomainState {
             .flat_map(|t| self.interactions.values().filter(|i| self.unanswered_card(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
             .collect();
         let stale_notices: Vec<InteractionId> = self.interactions.values()
-            .filter(|i| i.author == Author::System && !i.withdrawn && i.id.0.starts_with(ENDED_UNANSWERED_PREFIX))
+            .filter(|i| i.author == Author::System && !i.withdrawn && matches!(i.system_card, Some(SystemCard::EndedUnanswered { .. })))
             .filter(|i| matches!(&i.scope, Scope::Task { task_id } if self.tasks.get(task_id).is_some_and(|t| t.state == TaskState::Cancelled)))
             .map(|i| i.id.clone())
             .collect();
@@ -1999,7 +2012,8 @@ impl DomainState {
                 order: self.revision + 1,
                 withdrawn: false,
                 card,
-                clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                system_card: Some(SystemCard::EndedUnanswered { question: question.clone() }), shortened: false,
             };
             self.interactions.insert(id.clone(), interaction);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: id });
@@ -2665,7 +2679,7 @@ impl DomainState {
                     StartProblem::DependencyCancelled { dependency } => self.tasks.get(dependency).map(|t| t.title.as_str()),
                     _ => None,
                 };
-                let card = crate::start_problem::card(&title, problem, dependency, crate::views::Lang::En);
+                let card = CardSpec { system: Some(SystemCard::StartProblem), ..crate::start_problem::card(&title, problem, dependency, crate::views::Lang::En) };
                 let options = crate::start_problem::options(problem, crate::views::Lang::En);
                 self.insert_interaction(
                     actor,
@@ -2699,9 +2713,10 @@ impl DomainState {
                         reason: reason.trim().to_owned(),
                     });
                     let problem = InteractionId(format!("{LAUNCH_PROBLEM_PREFIX}{}", run_id.0));
-                    let card = CardSpec::new(CardKind::Problem, clip(&format!("Scheduled task \"{}\" could not start", task.title), CardSpec::NEED_MAX))
+                    let mut card = CardSpec::new(CardKind::Problem, clip(&format!("Scheduled task \"{}\" could not start", task.title), CardSpec::NEED_MAX))
                         .why(clip(reason, CardSpec::WHY_MAX))
                         .content(ContentKind::Diagnosis, reason.trim());
+                    card.system = Some(SystemCard::LaunchProblem { run: run_id.0.clone() });
                     self.insert_interaction(
                         actor,
                         &problem,
@@ -3238,6 +3253,7 @@ impl DomainState {
                                     body: text.clone(),
                                     at_revision: revision,
                                     instruction: Instruction::Changes,
+                                    merge_failure: None,
                                 });
                             }
                             p.revision = revision;
@@ -4176,8 +4192,9 @@ impl DomainState {
                 targets,
                 body,
                 instruction,
+                merge_failure,
             } => {
-                let (u, task) = self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction)?;
+                let (u, task) = self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction, merge_failure.as_ref())?;
                 self.invalidate(&task);
                 let p = self.interactions.get_mut(presentation_id).unwrap();
                 if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
@@ -4187,6 +4204,7 @@ impl DomainState {
                         body: body.clone(),
                         at_revision: self.revision + 1,
                         instruction: *instruction,
+                        merge_failure: merge_failure.clone(),
                     });
                 }
                 p.revision = self.revision + 1;

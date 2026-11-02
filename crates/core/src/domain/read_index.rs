@@ -817,6 +817,11 @@ fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_dom
 /// on demand, card by card and task by task.
 #[cfg(test)]
 pub(super) fn assert_index_matches(state: &DomainState) {
+    for card in state.interactions.values().filter(|card| card.author == super::Author::System || card.system_card == Some(super::SystemCard::Unheard)) {
+        if !matches!(card.system_card, Some(super::SystemCard::RefusedCards { .. })) {
+            assert_eq!(card.system_card, super::SystemCard::of_stored_id(&card.id.0), "Alondra's card {} says what it is as its id does", card.id);
+        }
+    }
     if let Err(divergence) = state.kept_lifecycles_agree_with_journals() {
         panic!("the lifecycles the domain keeps are the ones its journals replay to: {divergence}");
     }

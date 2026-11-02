@@ -69,9 +69,8 @@ impl DomainRuntime {
     /// Problem Alondra raised for it would only be a second card for the same issue.
     fn withdraw_stuck_problems(&self, owner: &str) {
         let Ok(state) = self.state() else { return };
-        let prefix = format!("problem-{owner}-");
         let open: Vec<InteractionId> = state.interactions.values()
-            .filter(|card| card.id.0.starts_with(&prefix) && !card.withdrawn)
+            .filter(|card| matches!(&card.system_card, Some(SystemCard::RefusedCards { owner: of }) if of == owner) && !card.withdrawn)
             .filter(|card| matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
             .map(|card| card.id.clone())
             .collect();
@@ -93,6 +92,6 @@ impl DomainRuntime {
         );
         let need = clip(&format!("{name} is stuck: Alondra refused its card"), CardSpec::NEED_MAX);
         let why = clip(&format!("{} ({})", last.message, last.code), CardSpec::WHY_MAX);
-        let _ = self.raise_problem(&format!("problem-{owner}-{card}"), Some(&format!("refused-cards:{owner}")), scope, need, why, detail, vec![]);
+        let _ = self.raise_problem(&format!("problem-{owner}-{card}"), Some(SystemCard::RefusedCards { owner: owner.to_owned() }), Some(&format!("refused-cards:{owner}")), scope, need, why, detail, vec![]);
     }
 }

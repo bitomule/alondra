@@ -8,7 +8,7 @@
 //! the one that signed in too, connects it again.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
-    Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpServerState,
+    Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, McpServerKey, McpServerState,
     McpStatus, Millis, OpenSignIn, PROTOCOL_VERSION, TaskId,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -82,12 +82,10 @@ pub(crate) enum Target {
 }
 
 impl Target {
+    /// A server key names a server; anything else names a card, which must be one of Alondra's
+    /// MCP waits for anything to act on it.
     pub(crate) fn of(id: &str) -> Option<Self> {
-        if id.starts_with(MCP_WAIT_PREFIX) {
-            Some(Self::Card(InteractionId::from(id)))
-        } else {
-            id.starts_with(MCP_SERVER_PREFIX).then(|| Self::Server(id.to_owned()))
-        }
+        Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })
     }
 }
 

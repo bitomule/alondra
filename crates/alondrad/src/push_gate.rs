@@ -170,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn a_card_that_left_the_inbox_before_its_push_is_never_pushed() {
         let fixture = Fixture::presented();
-        fixture.run(Actor::User { user_id: "user".into() }, "feedback", Command::SubmitFeedback { attachments: vec![],
+        fixture.run(Actor::User { user_id: "user".into() }, "feedback", Command::SubmitFeedback { merge_failure: None, attachments: vec![],
             presentation_id: "result".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }],
             body: "Rename it".into(), instruction: Instruction::Changes });

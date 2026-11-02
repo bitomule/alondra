@@ -269,8 +269,8 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = open(&home);
-        domain.tell_orchestrator("handed", "Task one ended".into()).unwrap();
-        domain.tell_orchestrator("queued", "Task two ended".into()).unwrap();
+        domain.tell_orchestrator("handed", None, "Task one ended".into()).unwrap();
+        domain.tell_orchestrator("queued", None, "Task two ended".into()).unwrap();
         {
             let mut store = domain.store.lock().unwrap();
             let pending = store.pending_messages().unwrap();
@@ -300,7 +300,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let domain = open(&home);
         for n in 0..NOTICES {
-            domain.tell_orchestrator(&format!("notice-{n}"), format!("Task {n} ended")).unwrap();
+            domain.tell_orchestrator(&format!("notice-{n}"), None, format!("Task {n} ended")).unwrap();
         }
         {
             let mut store = domain.store.lock().unwrap();

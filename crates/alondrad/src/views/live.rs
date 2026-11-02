@@ -385,7 +385,7 @@ async fn gather_inner(
             let state_key = match (&agent.phase, reported.activity()) {
                 (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
                     Some(live) if alondra_core::domain::node_at_work(live) => "busy",
-                    Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(alondra_core::domain::NODE_PAUSE_PREFIX)) => "paused",
+                    Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| state.node_pause_card(card)) => "paused",
                     Some(alondra_domain::LiveState::WaitingCapacity(_)) => "waiting_machine",
                     _ => "free",
                 },

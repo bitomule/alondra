@@ -9,8 +9,8 @@
 //! the orchestrator is reminded once, then Alondra closes the task.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
-    Author, CardKind, DomainState, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
-    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, Task, TaskId, is_stall_case,
+    Author, CardKind, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
+    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, SystemCard, Task, TaskId, is_stall_case,
 };
 use alondra_core::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
@@ -27,15 +27,15 @@ const BODY_SHOWN: usize = 2_000;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Step {
     Close { request: RequestId, withdrawn: bool },
-    Remind { request: RequestId, id: String, text: String },
-    Raise { request: RequestId, id: String, problem: UnsplitProblem },
+    Remind { request: RequestId, id: String, card: SystemCard, text: String },
+    Raise { request: RequestId, id: String, card: SystemCard, problem: UnsplitProblem },
     /// A reminder about a node's question or suggestion.
-    Tell { id: String, text: String },
-    RaiseUnanswered { request: Option<RequestId>, id: String, problem: UnansweredProblem },
+    Tell { id: String, card: SystemCard, text: String },
+    RaiseUnanswered { request: Option<RequestId>, id: String, card: SystemCard, problem: UnansweredProblem },
     Withdraw { question: InteractionId },
     /// A reminder about a decision of the user whose held plans are not reviewed yet.
-    TellPlanReview { id: String, review: InteractionId, number: u32 },
-    RaisePlanReview { request: Option<RequestId>, id: String, problem: PlanReviewProblem },
+    TellPlanReview { id: String, card: SystemCard, review: InteractionId, number: u32 },
+    RaisePlanReview { request: Option<RequestId>, id: String, card: SystemCard, problem: PlanReviewProblem },
     /// The orchestrator was told and reminded and the task still waits for a cancelled task: the
     /// user decides whether it starts without it.
     RaiseDependencyCancelled { task: TaskId, dependency: TaskId },
@@ -86,8 +86,8 @@ pub(crate) fn unresolved(state: &DomainState, requests: &[RequestId], suggestion
         if request.closed
             || state.tasks.values().any(|task| task.request_id == *id)
             || asked_about(state, id)
-            || !numbered(state, UNSPLIT_NOTICE_PREFIX, &id.0).is_empty()
-            || !numbered(state, UNSPLIT_PROBLEM_PREFIX, &id.0).is_empty()
+            || !numbered(state, InboxCard::UnsplitNotice, &id.0).is_empty()
+            || !numbered(state, InboxCard::UnsplitProblem, &id.0).is_empty()
         {
             continue;
         }
@@ -124,16 +124,23 @@ fn asked_about(state: &DomainState, request: &RequestId) -> bool {
 }
 
 /// The cards of one kind about `request`, by their number.
-fn numbered<'a>(state: &'a DomainState, prefix: &str, subject: &str) -> Vec<(u32, &'a alondra_core::domain::Interaction)> {
-    let lead = format!("{prefix}{subject}-");
+fn numbered<'a>(state: &'a DomainState, kind: InboxCard, of: &str) -> Vec<(u32, &'a alondra_core::domain::Interaction)> {
     state.interactions.values()
-        .filter_map(|i| i.id.0.strip_prefix(&lead).and_then(|n| n.parse().ok()).map(|n| (n, i)))
+        .filter_map(|i| match &i.system_card {
+            Some(SystemCard::Inbox { about, subject, number }) if *about == kind && subject == of => Some((*number, i)),
+            _ => None,
+        })
         .collect()
 }
 
+/// The id and the kind of the `number`th card of the inbox about `subject`.
+fn inbox_card(prefix: &str, about: InboxCard, subject: &str, number: u32) -> (String, SystemCard) {
+    (format!("{prefix}{subject}-{number}"), SystemCard::Inbox { about, subject: subject.to_owned(), number })
+}
+
 fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
-    let reminders = numbered(state, UNSPLIT_NOTICE_PREFIX, &request.id.0).len() as u32;
-    let problems = numbered(state, UNSPLIT_PROBLEM_PREFIX, &request.id.0);
+    let reminders = numbered(state, InboxCard::UnsplitNotice, &request.id.0).len() as u32;
+    let problems = numbered(state, InboxCard::UnsplitProblem, &request.id.0);
     let mut last: Option<(u32, Option<&str>)> = None;
     for (n, problem) in &problems {
         let answer = match &problem.payload {
@@ -151,9 +158,11 @@ fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
     let raised = problems.len() as u32;
     if reminders > raised {
         let title = request.title.clone().unwrap_or_else(|| request.body.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned());
+        let (id, card) = inbox_card(UNSPLIT_PROBLEM_PREFIX, InboxCard::UnsplitProblem, &request.id.0, raised + 1);
         return Some(Step::Raise {
             request: request.id.clone(),
-            id: format!("{UNSPLIT_PROBLEM_PREFIX}{}-{}", request.id, raised + 1),
+            id,
+            card,
             problem: UnsplitProblem { request_id: request.id.0.clone(), title },
         });
     }
@@ -168,7 +177,8 @@ fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
                 request.id)
         }
     };
-    Some(Step::Remind { request: request.id.clone(), id: format!("{UNSPLIT_NOTICE_PREFIX}{}-{}", request.id, reminders + 1), text })
+    let (id, card) = inbox_card(UNSPLIT_NOTICE_PREFIX, InboxCard::UnsplitNotice, &request.id.0, reminders + 1);
+    Some(Step::Remind { request: request.id.clone(), id, card, text })
 }
 
 /// What the orchestrator does with a request that holds a plan the user approved from a final result.
@@ -210,6 +220,7 @@ fn unsettled(state: &DomainState, suggestion: &Interaction) -> Option<Step> {
     let id = format!("{UNSETTLED_NOTICE_PREFIX}{}", suggestion.id);
     (!state.interactions.contains_key(&InteractionId(id.clone()))).then(|| Step::Tell {
         id,
+        card: SystemCard::Inbox { about: InboxCard::UnsettledNotice, subject: suggestion.id.0.clone(), number: 1 },
         text: format!(
             "Suggestion {} from a node has no decision, and nothing else waits for you. Settle it now with settle_suggestion: new_task (the call creates it), current_task or discard with the reason. If you asked the user about it, settle it once they answer.\nSuggestion: {}",
             suggestion.id, quoted(suggestion)),
@@ -224,6 +235,7 @@ fn stalled(state: &DomainState, case: &Interaction) -> Option<Step> {
     }
     Some(Step::Tell {
         id,
+        card: SystemCard::Inbox { about: InboxCard::StallNotice, subject: case.id.0.clone(), number: 1 },
         text: format!(
             "Reminder: case {} about the stopped node of Task “{}” ({}) is still unsettled, and nothing else waits for you. Settle it now with settle_stall: instruct with one concrete next step, or close with the result. If you leave it unsettled again, Alondra closes the task itself, without a result of yours. Never ask the user about it.\nCase: {}",
             case.id, task.title, task.id, quoted(case)),
@@ -231,8 +243,8 @@ fn stalled(state: &DomainState, case: &Interaction) -> Option<Step> {
 }
 
 fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
-    let reminders = numbered(state, UNANSWERED_NOTICE_PREFIX, &question.id.0).len() as u32;
-    let problems = numbered(state, UNANSWERED_PROBLEM_PREFIX, &question.id.0);
+    let reminders = numbered(state, InboxCard::UnansweredNotice, &question.id.0).len() as u32;
+    let problems = numbered(state, InboxCard::UnansweredProblem, &question.id.0);
     let mut last: Option<(u32, Option<&str>)> = None;
     for (n, problem) in &problems {
         let answer = match &problem.payload {
@@ -250,14 +262,18 @@ fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
     let raised = problems.len() as u32;
     if reminders > raised {
         let task = task_of(state, question)?;
+        let (id, card) = inbox_card(UNANSWERED_PROBLEM_PREFIX, InboxCard::UnansweredProblem, &question.id.0, raised + 1);
         return Some(Step::RaiseUnanswered {
             request: state.requests.get(&task.request_id).filter(|request| !request.closed).map(|request| request.id.clone()),
-            id: format!("{UNANSWERED_PROBLEM_PREFIX}{}-{}", question.id, raised + 1),
+            id,
+            card,
             problem: UnansweredProblem { question_id: question.id.0.clone(), task_title: task.title.clone(), question: question.card.need.clone() },
         });
     }
+    let (id, card) = inbox_card(UNANSWERED_NOTICE_PREFIX, InboxCard::UnansweredNotice, &question.id.0, reminders + 1);
     Some(Step::Tell {
-        id: format!("{UNANSWERED_NOTICE_PREFIX}{}-{}", question.id, reminders + 1),
+        id,
+        card,
         text: format!(
             "Reminder {}: question {} from a node has no answer, and nothing else waits for you: its node stands still until you answer. Answer it now with answer_question, also if what it asked for is already done (say so). An answer written only in this conversation never reaches the node.\nQuestion: {}",
             reminders + 1, question.id, quoted(question)),
@@ -266,8 +282,8 @@ fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
 
 fn unreviewed(state: &DomainState, id: &InteractionId, review: &PlanReview) -> Option<Step> {
     state.plan_review_waiting(review).next()?;
-    let reminders = numbered(state, PLAN_REVIEW_NOTICE_PREFIX, &id.0).len() as u32;
-    let problems = numbered(state, PLAN_REVIEW_PROBLEM_PREFIX, &id.0);
+    let reminders = numbered(state, InboxCard::PlanReviewNotice, &id.0).len() as u32;
+    let problems = numbered(state, InboxCard::PlanReviewProblem, &id.0);
     if problems.iter().any(|(_, problem)| state.open(problem)) {
         return None;
     }
@@ -275,13 +291,16 @@ fn unreviewed(state: &DomainState, id: &InteractionId, review: &PlanReview) -> O
     let source = state.tasks.get(&review.task_id);
     if reminders > raised {
         let dependents = state.plan_review_waiting(review).map(|task| task.title.clone()).collect();
+        let (problem_id, card) = inbox_card(PLAN_REVIEW_PROBLEM_PREFIX, InboxCard::PlanReviewProblem, &id.0, raised + 1);
         return Some(Step::RaisePlanReview {
             request: source.and_then(|task| state.requests.get(&task.request_id)).filter(|request| !request.closed).map(|request| request.id.clone()),
-            id: format!("{PLAN_REVIEW_PROBLEM_PREFIX}{id}-{}", raised + 1),
+            id: problem_id,
+            card,
             problem: PlanReviewProblem { review_id: id.clone(), task_title: source.map(|task| task.title.clone()).unwrap_or_default(), dependents },
         });
     }
-    Some(Step::TellPlanReview { id: format!("{PLAN_REVIEW_NOTICE_PREFIX}{id}-{}", reminders + 1), review: id.clone(), number: reminders + 1 })
+    let (notice, card) = inbox_card(PLAN_REVIEW_NOTICE_PREFIX, InboxCard::PlanReviewNotice, &id.0, reminders + 1);
+    Some(Step::TellPlanReview { id: notice, card, review: id.clone(), number: reminders + 1 })
 }
 
 /// A task that waits for a cancelled task goes to the orchestrator twice, then to the user. Once
@@ -300,15 +319,17 @@ fn dependency_cancelled(state: &DomainState, task: &Task) -> Option<Step> {
         return None;
     }
     let subject = format!("{}--{dependency}", task.id);
-    let told = numbered(state, DEPENDENCY_CANCELLED_NOTICE_PREFIX, &subject).len() as u32;
+    let told = numbered(state, InboxCard::DependencyCancelledNotice, &subject).len() as u32;
     if told >= 2 {
         return Some(Step::RaiseDependencyCancelled { task: task.id.clone(), dependency });
     }
     let other = state.tasks.get(&dependency).map_or("", |t| t.title.as_str());
     let kept: Vec<&str> = task.dependencies.iter().filter(|d| **d != dependency).map(|d| d.0.as_str()).collect();
     let kept = if kept.is_empty() { "none".to_owned() } else { kept.join(", ") };
+    let (id, card) = inbox_card(DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice, &subject, told + 1);
     Some(Step::Tell {
-        id: format!("{DEPENDENCY_CANCELLED_NOTICE_PREFIX}{subject}-{}", told + 1),
+        id,
+        card,
         text: format!(
             "{}Task “{}” ({}) waits for “{other}” ({dependency}), which was cancelled, so it does not start. Re-plan it now with one \
              of these: if another task replaces “{other}”, make it depend on that one with set_dependencies, keeping its other \
@@ -325,41 +346,41 @@ pub(crate) fn settle(domain: &DomainRuntime) {
     for step in steps(&state) {
         let done = match &step {
             Step::Close { request, withdrawn } => domain.close_request_by_system(request, *withdrawn).map(drop),
-            Step::Remind { id, text, .. } => domain.tell_orchestrator(id, text.clone()).map(drop),
-            Step::Raise { request, id, problem } => {
+            Step::Remind { id, card, text, .. } => domain.tell_orchestrator(id, Some(card.clone()), text.clone()).map(drop),
+            Step::Raise { request, id, card, problem } => {
                 let (need, why) = problem.text(alondra_core::views::Lang::En);
                 let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
                 domain.raise_worded_problem_in(
                     Scope::Orchestrator { request_id: Some(request.clone()) },
-                    id, UNSPLIT_CAUSE, need, why, problem.to_body(),
+                    id, Some(card.clone()), UNSPLIT_CAUSE, need, why, problem.to_body(),
                     vec![option(UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL), option(UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL)],
                     Some(UNSPLIT_RETRY),
                 ).map(drop)
             }
-            Step::Tell { id, text } => domain.tell_orchestrator(id, text.clone()).map(drop),
-            Step::RaiseUnanswered { request, id, problem } => {
+            Step::Tell { id, card, text } => domain.tell_orchestrator(id, Some(card.clone()), text.clone()).map(drop),
+            Step::RaiseUnanswered { request, id, card, problem } => {
                 let (need, why) = problem.text(alondra_core::views::Lang::En);
                 let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
                 domain.raise_worded_problem_in(
                     Scope::Orchestrator { request_id: request.clone() },
-                    id, &unanswered_cause(&problem.question_id), need, why, problem.to_body(),
+                    id, Some(card.clone()), &unanswered_cause(&problem.question_id), need, why, problem.to_body(),
                     vec![option(UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL), option(UNANSWERED_WITHDRAW, UNANSWERED_WITHDRAW_LABEL)],
                     Some(UNANSWERED_REMIND),
                 ).map(drop)
             }
             Step::Withdraw { question } => domain.withdraw_problem(question).map(drop),
-            Step::TellPlanReview { id, review, number } => {
+            Step::TellPlanReview { id, card, review, number } => {
                 let plan_of = |task: &alondra_core::domain::TaskId| domain.launch_plan(task).ok().flatten();
                 let text = format!("Reminder {number}: these plans are still not reviewed, and nothing else waits for you. {}",
                     crate::plan_reviews::orchestrator_text(&state, review, &plan_of));
-                domain.tell_orchestrator(id, text).map(drop)
+                domain.tell_orchestrator(id, Some(card.clone()), text).map(drop)
             }
-            Step::RaisePlanReview { request, id, problem } => {
+            Step::RaisePlanReview { request, id, card, problem } => {
                 let (need, why) = problem.text(alondra_core::views::Lang::En);
                 let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
                 domain.raise_worded_problem_in(
                     Scope::Orchestrator { request_id: request.clone() },
-                    id, &format!("{PLAN_REVIEW_CAUSE}:{}", problem.review_id.0.chars().take(40).collect::<String>()),
+                    id, Some(card.clone()), &format!("{PLAN_REVIEW_CAUSE}:{}", problem.review_id.0.chars().take(40).collect::<String>()),
                     need, why, problem.to_body(),
                     vec![option(PLAN_REVIEW_REMIND, PLAN_REVIEW_REMIND_LABEL), option(PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_KEEP_LABEL)],
                     Some(PLAN_REVIEW_REMIND),

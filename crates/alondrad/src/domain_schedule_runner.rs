@@ -466,10 +466,11 @@ fn recover_uncertain(domain: &DomainRuntime, run_id: &ScheduleRunId) -> Result<(
 /// once more (the retry's run id derives from the failed one, so answering twice launches once);
 /// either way the failed run's Task never started and is cancelled, so it does not wait forever.
 fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
-    use alondra_core::domain::{InteractionPayload, LAUNCH_PROBLEM_PREFIX, LAUNCH_RETRY_OPTION};
+    use alondra_core::domain::{InteractionPayload, LAUNCH_RETRY_OPTION, SystemCard};
     let state = domain.state()?;
     for (id, interaction) in &state.interactions {
-        let Some(failed) = id.0.strip_prefix(LAUNCH_PROBLEM_PREFIX) else { continue };
+        let Some(SystemCard::LaunchProblem { run: failed }) = &interaction.system_card else { continue };
+        let failed = failed.as_str();
         let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
         if interaction.withdrawn {
             continue;

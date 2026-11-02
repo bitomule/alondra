@@ -116,9 +116,9 @@ fn answer_card(s: &mut DomainState, option: &str, n: usize) -> Result<CommandOut
             QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the node".into(), description: None },
             QuestionOption { id: POST_MERGE_LEAVE.into(), label: "Leave it".into(), description: None },
         ],
-        card: CardSpec::new(CardKind::Problem, "Decide whether to close the session")
+        card: CardSpec { system: Some(SystemCard::PostMergeProblem), ..CardSpec::new(CardKind::Problem, "Decide whether to close the session")
             .why("Its node says it still works after the merge and does not answer.")
-            .content(ContentKind::Diagnosis, "Still running?"),
+            .content(ContentKind::Diagnosis, "Still running?") },
     })?;
     exec(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: option.into(), inputs: Default::default() })
 }

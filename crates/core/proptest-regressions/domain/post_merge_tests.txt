@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a4b133ff7ae8fddf5be43b01ed373bc71c829f94a31a6e7d6b67f3a17d0ee2cf # shrinks to steps = [Card("close")]

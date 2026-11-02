@@ -431,7 +431,7 @@ fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
 fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainError) {
     let title = task_title(domain, task);
     let text = format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message);
-    if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", crate::auth::random_hex(4)), text) {
+    if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", crate::auth::random_hex(4)), None, text) {
         log!("could not tell the orchestrator how the replacement of {task}'s node ended: {error:?}");
     }
 }

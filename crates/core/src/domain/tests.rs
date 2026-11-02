@@ -543,7 +543,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
     exec(
         &mut s,
         user(),
-        Command::SubmitFeedback {
+        Command::SubmitFeedback { merge_failure: None,
             attachments: vec![],
             presentation_id: "delivery".into(),
             targets: text(),
@@ -992,7 +992,7 @@ fn alondra_authorizes_its_own_merge_only_for_an_untouched_auto_merge_delivery() 
     assert_eq!((authorization.user_id.as_str(), authorization.valid), (Feedback::ALONDRA, true));
     assert!(s.pull_requests[&"pr".into()].review.as_ref().unwrap().decisions.is_empty(), "no review decision is made up");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview, "no acceptance is made up");
-    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+    exec(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
         body: "Wait".into(), instruction: Instruction::Changes }).unwrap();
     assert!(!s.merge_authorizations[&"auto-1".into()].valid, "the user's feedback stops Alondra's merge");
 }
@@ -1011,10 +1011,33 @@ fn alondra_takes_over_an_uncertain_node_attempt() {
     assert_eq!((a.attempt, a.claimed_by.as_ref()), (MergeAttemptState::Claimed, None));
 }
 #[test]
-fn a_merge_failure_reads_back_its_number_and_reason() {
+fn a_hand_back_stored_before_merge_failure_reads_back_its_number_and_reason() {
     let body = merge_failed_text(7, "https://github.com/o/r/pull/7", "main", "its checks failed (lint).");
-    assert_eq!(merge_failure(&body), Some((7, "its checks failed (lint)")));
-    assert_eq!(merge_failure("The user asks you to resolve the conflicts"), None);
+    assert_eq!(MergeFailure::of_stored_body(&body), Some(MergeFailure { number: 7, reason: "its checks failed (lint)".into() }));
+    assert_eq!(MergeFailure::of_stored_body("The user asks you to resolve the conflicts"), None);
+}
+#[test]
+fn alondra_says_it_could_not_merge_with_the_feedback_whatever_its_words() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    exec(&mut s, Actor::System, Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+        body: "Alondra no pudo fusionar la PR: falta una revisión".into(), instruction: Instruction::Conflicts,
+        merge_failure: Some(MergeFailure { number: 3, reason: "review required".into() }) }).unwrap();
+    assert_eq!(s.task_merge_failure(&"t".into()), Some((3, "review required".into())));
+}
+#[test]
+fn feedback_worded_like_a_merge_failure_is_not_one() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let body = merge_failed_text(3, "https://github.com/o/r/pull/3", "main", "review required");
+    exec(&mut s, Actor::System, Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+        body: body.clone(), instruction: Instruction::Conflicts, merge_failure: None }).unwrap();
+    assert_eq!(s.task_merge_failure(&"t".into()), None, "conflicts Alondra handed back are not a failed merge");
+    let error = exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+        body, instruction: Instruction::Changes, merge_failure: Some(MergeFailure { number: 3, reason: "review required".into() }) }).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("forbidden", Some("merge_failure")));
 }
 #[test]
 fn a_claimed_attempt_of_a_superseded_delivery_does_not_hold_back_the_new_merge() {
@@ -2563,7 +2586,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
     exec(
         &mut s,
         user(),
-        Command::SubmitFeedback {
+        Command::SubmitFeedback { merge_failure: None,
             attachments: vec![],
             presentation_id: "d".into(),
             targets: targets.clone(),
@@ -3197,7 +3220,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: ids.task.into(),
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
             is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }, false),
-        (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
+        (Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: ids.interaction.into(),
             targets: text(), body: "Change".into(), instruction: Instruction::Changes }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
         (Command::DecideProposedPlan { presentation_id: ids.interaction.into(), targets: text(), choice: PlanChoice::Implement }, false),
@@ -3501,7 +3524,7 @@ fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox(
 }
 
 fn hand_back(s: &mut DomainState, actor: Actor, instruction: Instruction) -> Result<CommandOutcome, DomainError> {
-    exec(s, actor, Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+    exec(s, actor, Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
         body: "Back to you".into(), instruction })
 }
 
@@ -3772,7 +3795,7 @@ fn a_node_end_needs_a_closing_or_terminal_task() {
 fn a_node_removed_while_its_task_went_back_to_work_leaves_the_task_without_a_node() {
     let mut s = fixture();
     accept_text(&mut s);
-    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(),
+    exec(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(),
         targets: text(), body: "One more thing".into(), instruction: Instruction::Changes }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
@@ -3894,7 +3917,7 @@ fn feedback_on_an_accepted_text_delivery_during_cleanup_takes_the_task_back_and_
     let mut s = fixture();
     accept_text(&mut s);
     exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() }).unwrap();
-    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(),
+    exec(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(),
         targets: text(), body: "One more thing".into(), instruction: Instruction::Changes }).unwrap();
     let t = &s.tasks[&"t".into()];
     assert_eq!(t.state, TaskState::Running);
@@ -3909,7 +3932,7 @@ fn feedback_on_a_merged_delivery_during_cleanup_is_refused() {
     register(&mut s);
     present(&mut s, "d", pr_targets());
     merge_observed(&mut s);
-    reject_unchanged(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(),
+    reject_unchanged(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "d".into(),
         targets: pr_targets(), body: "More".into(), instruction: Instruction::Changes }, "task_closing");
 }
 #[test]
@@ -4056,7 +4079,7 @@ fn recording_the_end_of_a_node_the_task_no_longer_has_changes_nothing() {
     let mut s = fixture();
     register_b(&mut s);
     accept_text(&mut s);
-    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(),
+    exec(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(),
         targets: text(), body: "One more thing".into(), instruction: Instruction::Changes }).unwrap();
     exec(&mut s, orchestrator(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
     reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }, "conflict");
@@ -4490,7 +4513,7 @@ fn guards_refuse_what_the_commands_refuse() {
     merged_by_someone_else(&mut merged);
     let mut cancelled = presented.clone();
     exec(&mut cancelled, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
-    let feedback = |body: &str, instruction| Command::SubmitFeedback {
+    let feedback = |body: &str, instruction| Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "d".into(), targets: pr_targets(), body: body.into(), instruction,
     };
     let merge = |authorization: &str, head: &str, method| Command::AuthorizeMerge {

@@ -55,7 +55,7 @@ pub(in crate::domain) fn stalled_in_place_of(card: &InteractionId) -> Interactio
 
 /// Whether `i` is a case Alondra opened for the orchestrator about a stopped node.
 pub fn is_stall_case(i: &Interaction) -> bool {
-    i.id.0.starts_with(STALLED_PREFIX) && i.author == Author::System && i.recipient == Recipient::Orchestrator
+    i.system_card == Some(SystemCard::Stalled) && i.author == Author::System && i.recipient == Recipient::Orchestrator
 }
 
 fn stall_options(only_close: bool) -> Vec<QuestionOption> {
@@ -109,7 +109,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card: CardSpec::new(CardKind::Decide, clip(&need, CardSpec::NEED_MAX)),
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::Stalled), shortened: false,
         });
         effects.push(DomainEffect::NotifyOrchestrator { interaction_id: Some(card), request_id: None });
     }

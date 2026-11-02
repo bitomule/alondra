@@ -372,6 +372,9 @@ pub enum Command {
         /// Alondra on its own sends only `conflicts`.
         #[serde(default)]
         instruction: Instruction,
+        /// Only Alondra says the feedback is a merge it could not make.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge_failure: Option<MergeFailure>,
     },
     AcceptDelivery {
         presentation_id: InteractionId,

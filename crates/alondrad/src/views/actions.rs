@@ -1458,7 +1458,7 @@ fn map_action(
             let text = alondra_core::views::review_export::text_with_quotes(&comments, request.input.text.as_deref().unwrap_or_default());
             if text.trim().is_empty() { return None; }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(),
-                body: text, attachments: attachments.to_vec(), instruction: Instruction::Reply },
+                body: text, attachments: attachments.to_vec(), instruction: Instruction::Reply, merge_failure: None },
                 stamp("Reply sent", "Respuesta enviada")))
         }
         Verb::AskPr | Verb::Conflicts => {
@@ -1474,7 +1474,7 @@ fn map_action(
                     Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
             };
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
-                body, attachments, instruction }, stamp))
+                body, attachments, instruction, merge_failure: None }, stamp))
         }
         Verb::Retake => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
@@ -1547,7 +1547,7 @@ fn map_action(
                 }
             }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(), body,
-                attachments: attachments.to_vec(), instruction: Instruction::Changes }, stamp("Changes requested", "Cambios solicitados")))
+                attachments: attachments.to_vec(), instruction: Instruction::Changes, merge_failure: None }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Withdraw => {
             if !state.requests.get(&alondra_core::domain::RequestId(action.subject.clone()))?.closed {
@@ -2588,7 +2588,7 @@ mod tests {
     fn free_text_question_maps_to_empty_option_and_text_input() {
         use alondra_core::domain::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
         let mut state = alondra_core::domain::DomainState::new("epoch");
-        state.interactions.insert("q-1".into(), Interaction {
+        state.interactions.insert("q-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "Pick one or explain".into(),
             blocking: true, subject: None, payload: InteractionPayload::Question {
@@ -2624,7 +2624,7 @@ mod tests {
         use alondra_core::domain::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
         let mut state = alondra_core::domain::DomainState::new("epoch");
         let options = ["done", "cannot"].map(|id| QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec();
-        state.interactions.insert("q-1".into(), Interaction {
+        state.interactions.insert("q-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Rotate the key".into(),
             blocking: true, subject: None, payload: InteractionPayload::ActionRequest { options, answer: None },
@@ -2661,7 +2661,7 @@ mod tests {
         for (hold, expected) in [(Hold::Permission, Hold::DENY), (Hold::Plan, Hold::REQUEST_CHANGES),
             (Hold::Elicitation, Hold::ACCEPT), (Hold::Question, "")] {
             let mut state = alondra_core::domain::DomainState::new("epoch");
-            state.interactions.insert("hold-1".into(), Interaction {
+            state.interactions.insert("hold-1".into(), Interaction { system_card: None,
                 attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
                 author: Author::System, recipient: Recipient::User, body: "Run it?".into(), blocking: true, subject: None,
                 payload: InteractionPayload::Question { options: hold.options(), answer: None },
@@ -2680,7 +2680,7 @@ mod tests {
     fn requesting_changes_on_a_document_question_answers_it_with_the_block_comments() {
         use alondra_core::domain::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
         let mut state = alondra_core::domain::DomainState::new("epoch");
-        state.interactions.insert("q-1".into(), Interaction {
+        state.interactions.insert("q-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Approve the plan?".into(),
             blocking: true, subject: Some(InteractionSubject::DocumentReview {
@@ -2713,7 +2713,7 @@ mod tests {
     fn a_held_plan_is_approved_or_sent_back_with_the_comments_on_its_blocks() {
         use alondra_core::domain::{Author, InputValue, Interaction, Recipient, Scope};
         let mut state = alondra_core::domain::DomainState::new("epoch");
-        state.interactions.insert("hold-1".into(), Interaction {
+        state.interactions.insert("hold-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "# Plan\n\n1. Split the lexer".into(),
             blocking: true, subject: None,
@@ -2761,7 +2761,7 @@ mod tests {
                 InteractionPayload::Question { options: Hold::Plan.options(), answer: None }
             }
         };
-        state.interactions.insert(id.into(), Interaction {
+        state.interactions.insert(id.into(), Interaction { system_card: None,
             attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "Body".into(),
             blocking: true, subject: None, payload,
@@ -3964,7 +3964,7 @@ mod tests {
         let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         let mut state = alondra_core::domain::DomainState::new("epoch");
         let mut ask = |id: &str, options: Vec<QuestionOption>, hold: Option<Hold>| {
-            state.interactions.insert(id.into(), Interaction {
+            state.interactions.insert(id.into(), Interaction { system_card: None,
                 attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() }, author: Author::System,
                 recipient: Recipient::User, body: "Ask".into(), blocking: true, subject: None,
                 payload: InteractionPayload::Question { options, answer: None }, revision: 1, order: 1, withdrawn: false,

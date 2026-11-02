@@ -838,7 +838,7 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
 
 fn node_paused(state: &DomainState, task: &TaskId) -> bool {
     state.lifecycle_of(task).ok().is_some_and(|lifecycle| lifecycle.cards().into_iter()
-        .any(|(card, reason)| reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX)))
+        .any(|(card, reason)| reason == alondra_domain::WaitReason::Pause && state.node_pause_card(card)))
 }
 
 /// The gate ended the pause of a task whose execution no owner of this daemon holds, as one whose

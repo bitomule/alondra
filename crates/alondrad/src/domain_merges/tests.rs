@@ -235,7 +235,7 @@ async fn feedback_given_while_alondra_reads_github_stops_the_merge() {
     let (_home, domain, github) = presented("raced", false);
     accept(&domain);
     let racing = domain.clone();
-    *github.on_read.lock().unwrap() = Some(Box::new(move || command(&racing, user(), "changes", Command::SubmitFeedback {
+    *github.on_read.lock().unwrap() = Some(Box::new(move || command(&racing, user(), "changes", Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "d".into(), targets: targets(), body: "One more fix".into(), instruction: Instruction::Changes,
     })));
     now().merge_due(&domain, &github).await.unwrap();
@@ -537,7 +537,7 @@ async fn failing_checks_go_back_once_and_cancelled_or_skipped_ones_do_not() {
     assert_eq!(task(&domain), TaskState::Running);
     let feedback = feedback(&domain);
     assert_eq!(feedback.len(), 1, "{feedback:?}");
-    assert_eq!(merge_failure(&feedback[0]), Some((7, "its checks failed (lint)")));
+    assert_eq!(domain.state().unwrap().task_merge_failure(&"t".into()), Some((7, "its checks failed (lint)".into())), "the hand-back says which merge failed");
     assert_eq!(told(&domain), feedback, "the node gets the reason as it is");
 }
 

@@ -435,6 +435,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
                 targets: targets.clone(),
                 body: crate::domain_messages::conflicts_text(name, pr, state.branch_update),
                 instruction: Instruction::Conflicts,
+                merge_failure: None,
             },
         };
         if let Err(error) = domain.execute(&Actor::System, &envelope, None, || Ok(())) {
@@ -446,7 +447,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
 fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain::PullRequest) -> bool {
     state.interactions.values().any(|interaction| matches!(&interaction.payload,
         InteractionPayload::Delivery { targets, feedback, .. }
-            if feedback.iter().any(|f| f.instruction == Instruction::Conflicts && alondra_core::domain::merge_failure(&f.body).is_none())
+            if feedback.iter().any(|f| f.instruction == Instruction::Conflicts && f.merge_failure.is_none())
                 && targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, head }
                     if pr_id == &pr.id && head == &pr.head))))
 }
@@ -565,7 +566,8 @@ mod tests {
             pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7, head: "head1".into(),
             base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
         present(&domain, "first", "head1");
-        run(&domain, Actor::System, "merge-failed", Command::SubmitFeedback { attachments: vec![], presentation_id: "first".into(),
+        run(&domain, Actor::System, "merge-failed", Command::SubmitFeedback {
+            merge_failure: Some(alondra_core::domain::MergeFailure { number: 7, reason: "review required".into() }), attachments: vec![], presentation_id: "first".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
             body: alondra_core::domain::merge_failed_text(7, "https://github.com/me/app/pull/7", "main", "review required"),
             instruction: Instruction::Conflicts });

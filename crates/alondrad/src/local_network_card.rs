@@ -2,6 +2,7 @@
 //! denying it: opened once the denial outlasts the seconds macOS takes to let an updated binary
 //! through, withdrawn as soon as a check finds it allowed. "I've allowed it" checks again at once
 //! and, if macOS still denies it, opens a card that says so.
+use alondra_core::domain::SystemCard;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +52,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
 fn open_cards(domain: &DomainRuntime) -> Vec<InteractionId> {
     let Ok(state) = domain.state() else { return vec![] };
     state.interactions.values()
-        .filter(|card| card.id.0.starts_with(LOCAL_NETWORK_PREFIX) && !card.withdrawn && matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
+        .filter(|card| card.system_card == Some(SystemCard::LocalNetwork) && !card.withdrawn && matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
         .map(|card| card.id.clone())
         .collect()
 }
@@ -68,7 +69,7 @@ fn raise(domain: &DomainRuntime, launcher: bool, still: bool) -> Option<Interact
     let card = LocalNetworkCard { launcher, still };
     let (need, why) = card.text(Lang::En);
     let option = QuestionOption { id: LOCAL_NETWORK_ALLOWED_OPTION.into(), label: LOCAL_NETWORK_ALLOWED_LABEL.into(), description: None };
-    match domain.raise_worded_problem(&id, LOCAL_NETWORK_CAUSE, need, why, card.to_body(), vec![option], None) {
+    match domain.raise_worded_problem(&id, Some(SystemCard::LocalNetwork), LOCAL_NETWORK_CAUSE, need, why, card.to_body(), vec![option], None) {
         Ok(_) => Some(InteractionId(id)),
         Err(error) => {
             log!("could not put the local network card in front of the user: {error:?}");
@@ -161,7 +162,7 @@ mod tests {
 
     fn cards(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
         let state = domain.state().unwrap();
-        let mut open: Vec<_> = state.interactions.values().filter(|card| card.id.0.starts_with(LOCAL_NETWORK_PREFIX) && !card.withdrawn
+        let mut open: Vec<_> = state.interactions.values().filter(|card| card.system_card == Some(SystemCard::LocalNetwork) && !card.withdrawn
             && matches!(card.payload, InteractionPayload::Question { answer: None, .. })).cloned().collect();
         open.sort_by(|a, b| a.id.0.cmp(&b.id.0));
         open

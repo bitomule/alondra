@@ -455,7 +455,7 @@ fn the_node_resolving_conflicts_is_named_with_its_pr() {
     let mut s = pair();
     register_pr(&mut s, "wa", "a");
     present_pr(&mut s, "a", "wa", "da");
-    ok(&mut s, Actor::System, Command::SubmitFeedback {
+    ok(&mut s, Actor::System, Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "da".into(), targets: pr_target(), body: "Conflicts".into(), instruction: Instruction::Conflicts,
     });
     assert_eq!(s.attention(&s.tasks[&"a".into()]), Attention::Wait(WaitReason::NodeFixing { node: "wa".into(), pr: 1 }));

@@ -78,7 +78,7 @@ fn destination(state: &DomainState, policy: Policy, from: &AccountId, now: Milli
 /// When the limit the task leaves resets: what Claude said with it, else what the account's
 /// usage says, else one session window from now.
 fn resets(state: &DomainState, held: &ClaudeHeld, now: Millis) -> Millis {
-    usage_resets_at(&held.card)
+    held.resets_at
         .and_then(|seconds| Millis::try_from(seconds).ok()?.checked_mul(1000))
         .filter(|at| *at > now)
         .or_else(|| state.account_usage.iter().find(|usage| usage.account == held.account).and_then(|usage| usage.reset_after_limit(now)))

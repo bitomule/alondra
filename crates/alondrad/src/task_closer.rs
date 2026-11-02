@@ -5,6 +5,7 @@
 //! cancelled task's node has its turn cut. Work it declared after the merge holds the close until
 //! a fact ends it, never a clock. A close that keeps failing ends in a card the user answers.
 //! Nothing is closed while the node waits for the user.
+use alondra_core::domain::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
@@ -224,7 +225,7 @@ fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Opt
     let (Some(task), Some(agent)) = (state.tasks.get(task_id), agent) else { return Ok(()) };
     let name = state.agents.get(agent).map_or_else(|| agent.0.clone(), |known| known.name.clone());
     domain.live.remember_closed_task(&task_id.0, crate::client_routes::ClosedNode { name, cwd: domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd) });
-    let _ = domain.tell_orchestrator(&format!("node-closed-while-working-{task_id}-{}", crate::auth::random_hex(4)), format!(
+    let _ = domain.tell_orchestrator(&format!("node-closed-while-working-{task_id}-{}", crate::auth::random_hex(4)), None, format!(
         "The node of “{}” ({task_id}) was closed while the user asked for changes on it. The task waits for a new node: start it with launch (task {task_id}); its mission carries the changes asked for.",
         task.title));
     Ok(())
@@ -632,7 +633,7 @@ fn raise_card(domain: &DomainRuntime, task: &Task, stop: CloseStop, detail: &str
     let card = CloseProblem { title: task.title.clone(), cancelled: !cleanup, stop, detail: detail.trim().to_owned() };
     let (need, why) = card.text(Lang::En);
     let (options, recommended) = card.options();
-    match domain.raise_worded_problem_in(scope, &id, &format!("close-session:{}", task.id), need, why, card.to_body(), options, Some(recommended)) {
+    match domain.raise_worded_problem_in(scope, &id, Some(SystemCard::CloseProblem), &format!("close-session:{}", task.id), need, why, card.to_body(), options, Some(recommended)) {
         Ok(_) => Some(id),
         Err(error) => {
             log!("could not tell the user Alondra cannot close the session of {}: {error:?}", task.id);

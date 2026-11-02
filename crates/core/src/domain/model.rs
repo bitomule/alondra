@@ -1,4 +1,4 @@
-use super::{Checklist, ChecklistMark, Journals, LifecycleCache, NodeMcp, ScheduleState, TaskEnding};
+use super::{SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, NodeMcp, ScheduleState, TaskEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -718,6 +718,15 @@ pub struct Feedback {
     pub at_revision: Revision,
     #[serde(default)]
     pub instruction: Instruction,
+    /// The merge Alondra could not make, when this is the hand-back that says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_failure: Option<MergeFailure>,
+}
+/// A pull request Alondra could not merge, and GitHub's reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeFailure {
+    pub number: u64,
+    pub reason: String,
 }
 impl Feedback {
     pub const ALONDRA: &'static str = "alondra";
@@ -893,6 +902,10 @@ pub struct CardSpec {
     /// Only a held elicitation carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form: Option<crate::requested_form::RequestedForm>,
+    /// Which of Alondra's own cards this is, which the card keeps as `Interaction::system_card`.
+    /// Only Alondra sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<SystemCard>,
     /// The worktree Markdown files the author listed for the card, each included at the end of its
     /// content or plan under `## <path>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -992,6 +1005,7 @@ impl CardSpec {
             secret_destination: None,
             files: Vec::new(),
             form: None,
+            system: None,
         }
     }
     pub fn plan(mut self, plan: impl Into<String>) -> Self {
@@ -1125,6 +1139,9 @@ pub struct Interaction {
     pub snoozed_until: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resurfaced_at_revision: Option<Revision>,
+    /// What the card is, when it is one of Alondra's own: only the command that creates it says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_card: Option<SystemCard>,
     /// Its body no longer holds all its author wrote: the compaction of its ended Task cut it.
     #[serde(default)]
     pub shortened: bool,

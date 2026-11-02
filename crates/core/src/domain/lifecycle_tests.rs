@@ -757,7 +757,7 @@ fn listed_holds(s: &DomainState) -> Vec<String> {
     super::read_index::inbox_items(s).into_iter().filter(|item| item.pending).map(|item| {
         let InboxSubject::Interaction { interaction_id } = item.subject;
         interaction_id.0
-    }).filter(|id| ClaudeHold::of(&InteractionId::from(id.as_str())).is_some()).collect()
+    }).filter(|id| s.claude_hold(&InteractionId::from(id.as_str())).is_some()).collect()
 }
 fn notices(outcome: &CommandOutcome) -> usize {
     outcome.effects.iter().filter(|e| matches!(e, DomainEffect::NotifyUser { .. })).count()
@@ -846,7 +846,7 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     assert_eq!(listed_holds(&s).len(), 2, "one card for the outage, one for the limit: {:?}", listed_holds(&s));
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
     let limit = s.claude_held().into_iter().find(|held| held.hold == ClaudeHold::Usage).unwrap();
-    assert_eq!(usage_resets_at(&limit.card), Some(4_102_444_800), "the reset Claude gave");
+    assert_eq!(limit.resets_at, Some(4_102_444_800), "the reset Claude gave");
     assert_eq!(exec(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::SignedOut, account: None }).unwrap_err().code, "invalid_input",
         "only the user's answer probes the sign-in");
     assert_eq!(exec(&mut s, user(), Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None }).unwrap_err().code, "forbidden");
@@ -1512,7 +1512,7 @@ fn answering_the_reply_with_background_work(s: &mut DomainState) {
     sdk_turn(s, "t", "a");
     deliver(s, "t", "a", "result");
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    must(s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "result".into(),
+    must(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Why this way?".into(), instruction: Instruction::Reply });
     must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: Instruction::Reply.message("Why this way?"), from_user: false });
     let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
@@ -1612,7 +1612,7 @@ fn delivered_through_the_sdk(s: &mut DomainState, feedback: Option<Instruction>)
     deliver(s, "t", "a", "result");
     let Some(instruction) = feedback else { return };
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    must(s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "result".into(),
+    must(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Do not guess the state".into(), instruction });
     must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: instruction.message("Do not guess the state"), from_user: false });
     let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
@@ -2226,7 +2226,7 @@ fn typed_codex_holds_keep_creation_time_paid_authority_when_the_account_policy_c
         sdk_turn_on_provider(&mut state, Provider::Codex, "t", "a", "turn-1", None);
         record_creation(&mut state, "t", originally_paid);
         usage_turn(&mut state, "t", 4_102_444_800);
-        let card = state.interactions.values().find(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == "t") && ClaudeHold::of(&card.id) == Some(ClaudeHold::Usage)).unwrap().id.clone();
+        let card = state.interactions.values().find(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == "t") && ClaudeHold::of(card) == Some(ClaudeHold::Usage)).unwrap().id.clone();
         let journal = state.lifecycle_journal[&TaskId::from("t")].clone();
         let selection = state.tasks[&TaskId::from("t")].selection.clone();
         record_policy(&mut state, !originally_paid);
@@ -2269,7 +2269,7 @@ fn a_managed_codex_answer_never_heals_an_original_paid_target_with_the_same_publ
     let mut paid = TaskSelection::automatic(ModelProfile::General); paid.account = Some(key.clone()); paid.paid_account_grant = Some(key.clone());
     must(&mut state, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: paid, pending: None });
     usage_turn(&mut state, "t", 4_102_444_800);
-    let card = state.interactions.values().find(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == "t") && ClaudeHold::of(&card.id) == Some(ClaudeHold::Usage)).unwrap().id.clone();
+    let card = state.interactions.values().find(|card| matches!(&card.scope, Scope::Task { task_id } if task_id.0 == "t") && ClaudeHold::of(card) == Some(ClaudeHold::Usage)).unwrap().id.clone();
     let journal = state.lifecycle_journal[&TaskId::from("t")].clone(); let selection = state.tasks[&TaskId::from("t")].selection.clone();
     assert!(!state.grouped_away(&state.interactions[&card]));
     must(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "u".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });

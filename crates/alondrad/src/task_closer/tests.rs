@@ -497,7 +497,7 @@ async fn a_task_that_leaves_cleanup_forgets_its_closing_and_withdraws_its_card()
     let rig = Rig::new(thirty_minutes());
     failed_three_times(&rig).await;
     let card = rig.cards()[0].id.clone();
-    command(&rig.domain, user(), "feedback", Command::SubmitFeedback {
+    command(&rig.domain, user(), "feedback", Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "final".into(), targets: text(), body: "One more thing".into(),
         instruction: Instruction::Changes,
     });
@@ -570,7 +570,7 @@ async fn a_task_that_goes_back_to_work_while_its_session_is_removed_is_released_
     rig.confirm();
     let domain = rig.domain.clone();
     *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
-        command(&domain, user(), "feedback", Command::SubmitFeedback {
+        command(&domain, user(), "feedback", Command::SubmitFeedback { merge_failure: None,
             attachments: vec![], presentation_id: "final".into(), targets: text(), body: "One more thing".into(),
             instruction: Instruction::Changes,
         });
@@ -593,7 +593,7 @@ async fn a_node_that_replaces_the_one_being_removed_is_not_unassigned() {
     command(&rig.domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "New node".into(), at: 0 });
     let domain = rig.domain.clone();
     *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
-        command(&domain, user(), "feedback", Command::SubmitFeedback {
+        command(&domain, user(), "feedback", Command::SubmitFeedback { merge_failure: None,
             attachments: vec![], presentation_id: "final".into(), targets: text(), body: "One more thing".into(),
             instruction: Instruction::Changes,
         });
@@ -733,8 +733,8 @@ async fn a_node_whose_work_after_the_merge_the_user_ended_on_any_card_closes_wit
     command(&rig.domain, Actor::System, "raise", Command::RaiseProblem {
         attachments: vec![], interaction_id: card.as_str().into(), scope: Scope::Task { task_id: "t".into() }, body: "Its session closed".into(),
         options: vec![QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the task".into(), description: None }],
-        card: CardSpec::new(alondra_core::domain::CardKind::Problem, "Its work after the merge stopped")
-            .why("Its session closed while it ran its work after the merge.").content(alondra_core::domain::ContentKind::Diagnosis, "Its session closed"),
+        card: CardSpec { system: Some(alondra_core::domain::SystemCard::PostMergeProblem), ..CardSpec::new(alondra_core::domain::CardKind::Problem, "Its work after the merge stopped")
+            .why("Its session closed while it ran its work after the merge.").content(alondra_core::domain::ContentKind::Diagnosis, "Its session closed") },
     });
     command(&rig.domain, user(), "close", Command::AnswerQuestion {
         attachments: vec![], interaction_id: card.as_str().into(), option_id: POST_MERGE_CLOSE.into(), inputs: Default::default(),

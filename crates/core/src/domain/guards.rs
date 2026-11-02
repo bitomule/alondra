@@ -18,8 +18,8 @@ impl DomainState {
             Command::SnoozeCard { interaction_id, until, now } => self.snooze_guard(actor, interaction_id, *until, *now, holds),
             Command::UnsnoozeCard { interaction_id } => self.unsnooze_guard(actor, interaction_id),
             Command::ResurfaceDueCards { .. } => system(actor),
-            Command::SubmitFeedback { attachments, presentation_id, targets, body, instruction } => {
-                self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction).map(drop)
+            Command::SubmitFeedback { attachments, presentation_id, targets, body, instruction, merge_failure } => {
+                self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction, merge_failure.as_ref()).map(drop)
             }
             Command::AcceptDelivery { presentation_id, targets } => {
                 self.accept_delivery_guard(actor, presentation_id, targets, holds).map(drop)
@@ -106,9 +106,11 @@ impl DomainState {
         body: &str,
         attachments: &[AttachmentRef],
         instruction: Instruction,
+        merge_failure: Option<&MergeFailure>,
     ) -> Result<(String, TaskId)> {
         let u = match (actor, instruction) {
             (Actor::System, Instruction::Conflicts) => Feedback::ALONDRA.to_owned(),
+            _ if merge_failure.is_some() => return refuse("forbidden", "merge_failure", "Only Alondra says it could not merge a pull request"),
             _ => user(actor)?,
         };
         content(body, attachments)?;

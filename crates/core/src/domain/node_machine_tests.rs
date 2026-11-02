@@ -955,7 +955,7 @@ impl World {
                 let Some(agent) = self.pick(n, |_, t| t.is_some_and(|t| t.state == TaskState::ForYourReview)) else { return };
                 let task = self.open_task(&agent).unwrap();
                 let presentation = self.s.tasks[&task].final_presentation.clone().unwrap();
-                self.must(user(), Command::SubmitFeedback { attachments: vec![], presentation_id: presentation.clone(),
+                self.must(user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: presentation.clone(),
                     targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Why this way?".into(), instruction: Instruction::Reply });
                 let attends = self.s.node_attends(&self.s.interactions[&presentation]);
                 assert_eq!(self.replied_and_away(&agent), attends, "a reply takes the delivery away exactly when its node can act on it");
@@ -1242,7 +1242,7 @@ fn the_card_with_a_node_s_last_words_does_not_withdraw_its_final_delivery() {
     w.apply(&Step::Deliver(0));
     let delivery = w.s.tasks[&task].final_presentation.clone().expect("delivered");
     assert!(w.event(&agent, NodeEvent::TurnEnded, w.now));
-    w.must(user(), Command::SubmitFeedback { attachments: vec![], presentation_id: delivery.clone(),
+    w.must(user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: delivery.clone(),
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Measure each problem".into(), instruction: Instruction::Changes });
     assert!(w.event(&agent, NodeEvent::TurnStarted, w.now));
     w.must(Actor::System, Command::RecordLastWords { agent_id: agent.clone(), text: "Jira is measured; I wait for the git measurement.".into() });

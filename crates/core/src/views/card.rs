@@ -11,7 +11,7 @@ use super::{
     summary,
     text::{t, tf},
 };
-use crate::domain::{
+use crate::domain::{InboxCard, SystemCard, 
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
@@ -877,11 +877,11 @@ pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &Que
 
 /// The problem of Alondra's card for a task that cannot start by itself.
 fn is_machine_card(interaction: &Interaction) -> bool {
-    interaction.author == Author::System && interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX)
+    interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::Machine))
 }
 
 fn start_problem_of(interaction: &Interaction) -> Option<crate::domain::StartProblem> {
-    (interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::START_PROBLEM_PREFIX))
+    (interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::StartProblem)))
         .then(|| crate::start_problem::from_body(&interaction.body))
         .flatten()
 }
@@ -1101,14 +1101,14 @@ fn api_refusal_text(error: &str, lang: Lang) -> &'static str {
 
 /// What a node said last, when the card holds its words: the task's row shows them.
 pub(super) fn node_words(interaction: &Interaction) -> Option<&str> {
-    (interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) && interaction.body.trim() != interaction.card.need.trim())
+    (matches!(interaction.system_card, Some(SystemCard::Unheard)) && interaction.body.trim() != interaction.card.need.trim())
         .then_some(interaction.card.why.trim())
 }
 
 /// The card with the last words of a node whose turn ended with nothing for the user, in the
 /// viewer's language.
 fn unheard_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    if !interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) {
+    if !matches!(interaction.system_card, Some(SystemCard::Unheard)) {
         return None;
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
@@ -1127,7 +1127,7 @@ fn unheard_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> 
 /// The card that asks how a task goes on when Claude stopped waiting for the decision it asked
 /// for and nothing else explains its next step, in the viewer's language.
 fn decision_cancelled_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DECISION_CANCELLED_PREFIX) {
+    if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::DecisionCancelled)) {
         return None;
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
@@ -1141,7 +1141,7 @@ fn decision_cancelled_text(interaction: &Interaction, domain: &DomainState, lang
 /// The card that asks how a task goes on when its SDK turn ended with nothing that explains its
 /// next step, in the viewer's language.
 fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::TURN_ENDED_PREFIX) {
+    if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::TurnEnded)) {
         return None;
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
@@ -1213,7 +1213,7 @@ fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -
 
 /// The card about a message Claude will never read, in the viewer's language.
 fn dropped_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
-    if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DROPPED_PREFIX) {
+    if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::Dropped)) {
         return None;
     }
     Some((t!(lang, "Claude didn't get to read your message", "Claude no llegó a leer tu mensaje").into(), t!(lang,
@@ -1237,24 +1237,24 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
-    if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_STOPPED_WHY {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == crate::domain::POST_MERGE_STOPPED_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "You stopped “{title}” during its work after the merge: tell it how to go on",
             "Paraste «{title}» durante su trabajo tras el merge: dile cómo seguir"));
         return Some((need, t!(lang,
             "Its PR is merged and you stopped what it ran after the merge. Tell it to go on, with all its context, or close the task if that work is done.",
             "Su PR ya tiene el merge hecho y paraste lo que hacía tras el merge. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
     }
-    if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_ENDED_WHY {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == crate::domain::POST_MERGE_ENDED_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped its work after the merge when its session closed: tell it how to go on",
             "«{title}» dejó a medias su trabajo tras el merge al cerrarse su sesión: dile cómo seguir"));
         return Some((need, t!(lang,
             "Its PR is merged. Its session closed while it ran what it said comes after the merge, and whatever ran in the background stopped. Tell it to go on, with all its context, or close the task if that work is done.",
             "Su PR ya tiene el merge hecho. Su sesión se cerró mientras hacía lo que dijo que venía tras el merge, y lo que corría en segundo plano se paró. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
     }
-    if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::INTERRUPTED_WHY {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == crate::domain::INTERRUPTED_WHY {
         return Some(interrupted_text(title, lang));
     }
-    if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
             "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir"));
         let why = if interaction.card.why == crate::domain::SESSION_ENDED_AGAIN_WHY {
@@ -1266,7 +1266,7 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
         };
         return Some((need, why.into()));
     }
-    if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
+    if !matches!(interaction.system_card, Some(SystemCard::HandoffDoubt)) {
         return None;
     }
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” closed before confirming it read your message: send it again?", "«{title}» se cerró sin confirmar que leyó tu mensaje: ¿se lo reenvío?"));
@@ -1284,48 +1284,48 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
 /// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
 /// that ended with a card unanswered say, in the viewer's language.
 fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    use crate::usage::{OVER_PACE_PREFIX, PACE_RESUME_PREFIX, PaceNumbers};
+    use crate::usage::PaceNumbers;
     if interaction.author != Author::System {
         return None;
     }
-    if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {
-        let question = domain.interactions.get(&InteractionId(question.into()))?;
+    if let Some(SystemCard::EndedUnanswered { question }) = &interaction.system_card {
+        let question = domain.interactions.get(question)?;
         let need = shown_need(question, domain, lang);
         return Some((
             clip(&tf!(lang, "No longer waits for your answer: {need}", "Ya no espera tu respuesta: {need}", need = need), CardSpec::NEED_MAX),
             t!(lang, "The work was finished before you answered", "El trabajo se terminó antes de que respondieras").into(),
         ));
     }
-    if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::Machine)) {
         return crate::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::LocalNetwork)) {
         return crate::local_network_card::LocalNetworkCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::BatchProblem { .. })) {
         return crate::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::StuckProblem)) {
         return crate::orchestrator_cards::StuckProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::orchestrator_cards::UNSPLIT_PROBLEM_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::UnsplitProblem, .. })) {
         return crate::orchestrator_cards::UnsplitProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::RequestDone)) {
         return crate::request_outcome::DoneCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::UnansweredProblem, .. })) {
         return crate::orchestrator_cards::UnansweredProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::domain::PLAN_REVIEW_PROBLEM_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::PlanReviewProblem, .. })) {
         return crate::domain::PlanReviewProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
-    if interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)
+    if matches!(interaction.system_card, Some(SystemCard::CloseProblem))
         && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
     {
         return Some(card.text(lang));
     }
-    if interaction.id.0.starts_with(OVER_PACE_PREFIX) {
+    if matches!(interaction.system_card, Some(SystemCard::OverPace { .. })) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
         return Some((
             t!(lang, "Today is over its share of the weekly Claude usage", "Hoy vas por encima de tu parte del uso semanal").into(),
@@ -1335,7 +1335,7 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
                 spent = numbers.today_spent, share = numbers.today_share, week = numbers.week_percent),
         ));
     }
-    interaction.id.0.starts_with(PACE_RESUME_PREFIX).then(|| (
+    matches!(interaction.system_card, Some(SystemCard::PaceResume { .. })).then(|| (
         t!(lang, "Resume Claude work now?", "¿Reanudar el trabajo con Claude ahora?").into(),
         t!(lang, "Paused by you until tomorrow 00:00", "Pausado por ti hasta mañana 00:00").into(),
     ))
@@ -1350,7 +1350,7 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         return (own.label, own.description);
     }
     if interaction.author == Author::System
-        && interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX)
+        && matches!(interaction.system_card, Some(SystemCard::LocalNetwork))
         && let Some((label, description)) = crate::local_network_card::option_text(&option.id, &option.label, lang)
     {
         return (label.into(), Some(description.into()));
@@ -1769,7 +1769,7 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| {
-        start_problem_of(interaction).is_none() && !is_machine_card(interaction) && crate::domain::ClaudeHold::of(&interaction.id).is_none()
+        start_problem_of(interaction).is_none() && !is_machine_card(interaction) && crate::domain::ClaudeHold::of(interaction).is_none()
             && crate::domain::McpServerKey::of_card(interaction).is_none()
     })?;
     let answers = answered_by_reply(interaction)
@@ -1792,7 +1792,7 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             t!(lang, "Write it here or attach the file…", "Escríbelo aquí o adjunta el archivo…").into(),
         )
-    } else if interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {
+    } else if interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::HandoffDoubt)) {
         (
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             t!(lang, "Write what to send instead…", "Escribe qué enviarle en su lugar…").into(),
@@ -1864,7 +1864,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         return out;
     }
     if interaction.author == Author::System
-        && interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)
+        && matches!(interaction.system_card, Some(SystemCard::CloseProblem))
         && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
@@ -1875,7 +1875,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         return out;
     }
     if interaction.author == Author::System
-        && interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX)
+        && matches!(interaction.system_card, Some(SystemCard::StuckProblem))
         && let Some(card) = crate::orchestrator_cards::StuckProblem::from_body(&interaction.body)
     {
         let detail = card.detail(lang);
@@ -1885,7 +1885,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         return out;
     }
     if interaction.author == Author::System
-        && interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX)
+        && matches!(interaction.system_card, Some(SystemCard::RequestDone))
         && let Some(card) = crate::request_outcome::DoneCard::from_body(&interaction.body)
     {
         out.extend(card.full_summary().map(|summary| markdown(summary.into())));
@@ -1896,7 +1896,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         return out;
     }
     if interaction.author == Author::System
-        && interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX)
+        && matches!(interaction.system_card, Some(SystemCard::BatchProblem { .. }))
         && let Some(card) = crate::orchestrator_batch::BatchProblem::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
@@ -2233,10 +2233,10 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         InteractionPayload::Delivery { acceptance, feedback, .. } => {
             for (index, feedback) in feedback.iter().enumerate() {
                 use crate::domain::Instruction;
-                if let Some((number, reason)) = crate::domain::merge_failure(&feedback.body) {
+                if let Some(failure) = &feedback.merge_failure {
                     row(format!("feedback-{index}"), Icon::History,
-                        tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo hacer merge de la #{number}", number = number),
-                        Some(clip(reason, 240)));
+                        tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo hacer merge de la #{number}", number = failure.number),
+                        Some(clip(&failure.reason, 240)));
                     continue;
                 }
                 let title = match feedback.instruction {
@@ -2307,7 +2307,7 @@ mod model_change_notice_tests {
     use super::*;
     #[test]
     fn a_positive_model_refusal_is_localized_information_and_cannot_be_forged_by_an_agent() {
-        let mut interaction = Interaction {
+        let mut interaction = Interaction { system_card: None,
             attachments: vec![], id: "native-model-change-selection-owned".into(), scope: Scope::Task { task_id: "task".into() },
             author: Author::System, recipient: Recipient::User, body: "native_code_cells_active".into(), blocking: false, subject: None,
             payload: InteractionPayload::Information { read_by: std::collections::BTreeSet::new() }, revision: 1, order: 1, withdrawn: false,

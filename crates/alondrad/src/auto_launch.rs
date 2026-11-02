@@ -195,7 +195,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: &str, launched: Result<ser
 }
 
 fn tell(domain: &DomainRuntime, id: &str, body: String) {
-    if let Err(error) = domain.tell_orchestrator(id, body) {
+    if let Err(error) = domain.tell_orchestrator(id, None, body) {
         log!("could not tell the orchestrator about {id}: {error:?}");
     }
 }

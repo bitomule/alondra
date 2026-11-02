@@ -345,12 +345,14 @@ fn option(id: &str, label: &str) -> alondra_core::domain::QuestionOption {
 /// A launch going ahead over today's slice of the week puts a card in front of the user, once
 /// per local day: pause until tomorrow or keep going. The launch is never refused.
 pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
+    use alondra_core::domain::SystemCard;
     use alondra_core::usage::{OVER_PACE_KEEP_OPTION, OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PaceNumbers};
     let Some(usage) = crate::usage_probe::usage(domain, now).filter(|usage| usage.over_pace) else { return };
     let numbers = PaceNumbers::of(&usage);
-    let id = format!("{OVER_PACE_PREFIX}{}", crate::node_reports::local_day(now));
+    let day = crate::node_reports::local_day(now);
+    let id = format!("{OVER_PACE_PREFIX}{day}");
     let options = vec![option(OVER_PACE_PAUSE_OPTION, "Pause until tomorrow"), option(OVER_PACE_KEEP_OPTION, "Keep going")];
-    let raised = domain.ask_user(&id, "Today is over its share of the weekly Claude usage".into(),
+    let raised = domain.ask_user(&id, Some(SystemCard::OverPace { day: day.clone() }), "Today is over its share of the weekly Claude usage".into(),
         format!("{}% used today against a {}% share · {}% of the week used", numbers.today_spent, numbers.today_share, numbers.week_percent),
         numbers.to_body(), options, OVER_PACE_KEEP_OPTION);
     log_unless_repeated(raised, "the usage pace");
@@ -370,20 +372,23 @@ fn log_unless_repeated(result: Result<alondra_core::domain::CommandOutcome, crat
 /// answered cards bring the pause back as the user left it.
 pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
     use alondra_core::domain::InteractionPayload;
-    use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
+    use alondra_core::domain::SystemCard;
+    use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
     let Ok(state) = domain.state() else { return };
     let pause = &domain.live.usage_pause;
     for (id, interaction) in state.interactions.iter().filter(|(_, interaction)| !interaction.withdrawn) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
         let today = crate::node_reports::local_day(now);
-        if id.0.strip_prefix(OVER_PACE_PREFIX) == Some(today.as_str()) && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {
+        let over_today = matches!(&interaction.system_card, Some(SystemCard::OverPace { day }) if *day == today);
+        if over_today && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {
             pause.pause_by_user(next_local_midnight(now), now);
-            let resume = format!("{PACE_RESUME_PREFIX}{}", crate::node_reports::local_day(now));
+            let day = crate::node_reports::local_day(now);
+            let resume = format!("{PACE_RESUME_PREFIX}{day}");
             let options = vec![option(PACE_RESUME_OPTION, "Resume now"), option(PACE_STAY_OPTION, "Stay paused")];
-            let raised = domain.ask_user(&resume, "Resume Claude work now?".into(),
+            let raised = domain.ask_user(&resume, Some(SystemCard::PaceResume { day: day.clone() }), "Resume Claude work now?".into(),
                 "Paused by you until tomorrow 00:00".into(), "paused".into(), options, PACE_STAY_OPTION);
             log_unless_repeated(raised, "the pause");
-        } else if id.0.starts_with(PACE_RESUME_PREFIX) && answer.option_id == PACE_RESUME_OPTION && pause.claim_card(&id.0)
+        } else if matches!(interaction.system_card, Some(SystemCard::PaceResume { .. })) && answer.option_id == PACE_RESUME_OPTION && pause.claim_card(&id.0)
             && pause.current().is_some_and(|standing| standing.by_user)
         {
             pause.resume(now);
@@ -392,7 +397,7 @@ pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, n
     }
     if !pause.current().is_some_and(|standing| standing.by_user) {
         for (id, interaction) in &state.interactions {
-            if id.0.starts_with(PACE_RESUME_PREFIX) && !interaction.withdrawn && state.open(interaction) {
+            if matches!(interaction.system_card, Some(SystemCard::PaceResume { .. })) && !interaction.withdrawn && state.open(interaction) {
                 let _ = domain.withdraw_problem(id);
             }
         }

@@ -1412,7 +1412,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert_eq!((lifecycle(&slice.domain).phase(), lifecycle(&slice.domain).activity()), (alondra_domain::TaskPhase::Delivered, ActivityView::Resting));
-    slice.run(&user(), "reply", Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets,
+    slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
         body: "background-shell".into(), instruction: alondra_core::domain::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the reply is told to the node");
     driver.step(&|| false).unwrap();
@@ -4187,7 +4187,7 @@ fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
         .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true)).unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
-    slice.run(&user(), "reply", Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets,
+    slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
         body: "stall-before-starting".into(), instruction: alondra_core::domain::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1);
     driver.step(&|| false).unwrap();
