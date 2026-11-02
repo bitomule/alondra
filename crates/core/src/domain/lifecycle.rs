@@ -2414,7 +2414,7 @@ fn asks_how_it_goes_on(id: InteractionId, task: &TaskId, need: String, why: &str
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(why),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 
@@ -2487,7 +2487,7 @@ fn host_lost_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, r
         order: revision,
         withdrawn: false,
         card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 
@@ -2560,7 +2560,7 @@ fn post_merge_ended_card(id: InteractionId, task: &TaskId, title: &str, reason: 
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(why).content(ContentKind::Diagnosis, reason),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 
@@ -2586,7 +2586,7 @@ fn session_ended_card(id: InteractionId, task: &TaskId, title: &str, why: &str, 
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(why),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 const SESSION_ENDED_WHY: &str = "Its session closed mid-way, as when the Mac shuts down. It resumes with all its context; whatever ran in the background stopped.";
@@ -2615,7 +2615,7 @@ fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str,
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(if launch { HANDOFF_DOUBT_LAUNCH_WHY } else { HANDOFF_DOUBT_WHY }).content(ContentKind::Document, text),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 /// The cards that ask the user about an input Claude will never read.
@@ -2655,7 +2655,7 @@ fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> 
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need).why(DROPPED_WHY).content(ContentKind::Document, text),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 

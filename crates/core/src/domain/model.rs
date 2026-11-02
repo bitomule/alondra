@@ -1120,6 +1120,9 @@ pub struct Interaction {
     pub snoozed_until: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resurfaced_at_revision: Option<Revision>,
+    /// Its body no longer holds all its author wrote: the compaction of its ended Task cut it.
+    #[serde(default)]
+    pub shortened: bool,
 }
 impl Interaction {
     /// The long part the reader sees: the card's content, or else the body its author wrote, so a

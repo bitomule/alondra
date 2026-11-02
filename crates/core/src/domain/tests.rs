@@ -4421,7 +4421,7 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
         _ => None,
     }).collect();
     let result = s.interactions[s.tasks[&"t".into()].final_presentation.as_ref().unwrap()].body.clone();
-    let landed = Landed { title: "Result".into(), cancelled: false, result: Some(result_excerpt(&result)), merged_pr: None };
+    let landed = Landed { title: "Result".into(), cancelled: false, result: Some(result_excerpt(&result).text), merged_pr: None };
     assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&[landed], BranchUpdate::Rebase))]);
     let later = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));

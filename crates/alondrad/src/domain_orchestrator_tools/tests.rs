@@ -705,8 +705,8 @@ fn the_follow_up_context_is_empty_without_earlier_work_and_shortens_a_long_resul
     let f = world();
     let state = f.domain.state().unwrap();
     assert_eq!(follow_up_context(&state, &state.tasks[&TaskId::from("t")]), "");
-    assert_eq!(clipped(&"x".repeat(5), 3, "[shortened]"), "xxx[shortened]");
-    assert_eq!(clipped("short", 10, "[shortened]"), "short");
+    assert_eq!(clipped(&"x".repeat(5), 3, "[shortened]"), alondra_core::domain::Clipped { text: "xxx[shortened]".into(), shortened: true });
+    assert_eq!(clipped("short", 10, "[shortened]"), alondra_core::domain::Clipped { text: "short".into(), shortened: false });
 }
 
 #[test]
@@ -760,6 +760,35 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
     assert!(!context.complete);
     assert!(context.omitted_sources.contains(&format!("task:{}:input:oversized", task.id)));
     assert!(!context.text.contains("界"));
+}
+
+#[test]
+fn a_task_moves_to_another_provider_by_what_compaction_cut_never_by_a_marker_in_its_text() {
+    use alondra_core::domain::{Author, CardKind, CardSpec, Interaction, InteractionPayload, Recipient, Scope};
+    let f = world();
+    let mut state = f.domain.state().unwrap().as_ref().clone();
+    let mut task = state.tasks[&TaskId::from("t")].clone();
+    state.requests.get_mut(&task.request_id).unwrap().body = "Explain why a result that ends in [shortened] still moves".into();
+    assert!(crate::provider_transition::critical_context(&state, &task).is_ok(), "a literal marker written by a person cuts nothing");
+
+    let mut earlier = task.clone();
+    earlier.id = "earlier".into();
+    earlier.final_presentation = Some("earlier-result".into());
+    let result = |shortened: bool| Interaction {
+        attachments: vec![], id: "earlier-result".into(), scope: Scope::Task { task_id: "earlier".into() }, author: Author::System,
+        recipient: Recipient::User, body: "The colours live in one file now.".into(), blocking: false, subject: None,
+        payload: InteractionPayload::Information { read_by: Default::default() }, revision: 1, order: 1, withdrawn: false,
+        card: CardSpec::derived(CardKind::Know, "Read the result"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened,
+    };
+    state.tasks.insert(earlier.id.clone(), earlier);
+    task.dependencies.insert("earlier".into());
+    state.interactions.insert("earlier-result".into(), result(false));
+    assert!(crate::provider_transition::critical_context(&state, &task).is_ok());
+    state.interactions.insert("earlier-result".into(), result(true));
+    let context = canonical_task_context(&state, &task);
+    assert!(!context.complete);
+    assert!(context.omitted_sources.contains(&"interaction:earlier-result".to_owned()), "{:?}", context.omitted_sources);
+    assert!(crate::provider_transition::critical_context(&state, &task).is_err());
 }
 
 #[tokio::test]

@@ -666,6 +666,7 @@ impl DomainStore {
         tx.execute_batch(MODEL_METRICS)?;
         model_metrics::add_routing_columns(&tx)?;
         repository::add_snooze_columns(&tx)?;
+        repository::add_shortened_column(&tx)?;
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(API_FAILURES)?;
         tx.execute_batch(ALLOWED_RULES)?;

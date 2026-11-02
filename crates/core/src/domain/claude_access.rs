@@ -512,7 +512,7 @@ fn hold_card(id: InteractionId, task: &TaskId, provider: Provider, hold: ClaudeH
         order: revision,
         withdrawn: false,
         card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 

@@ -71,3 +71,11 @@ fn a_sign_in_that_ended_is_connected_again_on_every_node_that_reports_it_signed_
     let owed = due_after_sign_in(&mut reconnects, &connected, &signed_out, again + 13 * SIGN_IN_CACHE).0;
     assert_eq!(owed, [(TaskId::from("u"), "linear".to_owned())], "a node that reports it connected is not owed");
 }
+
+#[test]
+fn a_host_without_the_capability_is_refused_as_a_conflict_through_any_context() {
+    let wrapped = anyhow::Error::new(alondra_store::Error::UnsupportedCapability).context("commit the wait");
+    assert_eq!(refusal(crate::domain_store::StoreError::Storage(wrapped)).code, "conflict");
+    let other = anyhow::anyhow!("UnsupportedCapability in a message");
+    assert_eq!(refusal(crate::domain_store::StoreError::Storage(other)).code, "storage_unavailable");
+}

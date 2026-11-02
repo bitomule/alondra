@@ -16,13 +16,20 @@ use std::collections::BTreeSet;
 pub const RESULT_LIMIT: usize = 4_000;
 const TITLE_LIMIT: usize = 120;
 
+/// A text cut to a limit, and whether the cut left something out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clipped {
+    pub text: String,
+    pub shortened: bool,
+}
+
 /// What a Task that builds on another reads of its final result.
-pub fn result_excerpt(body: &str) -> String {
+pub fn result_excerpt(body: &str) -> Clipped {
     let body = body.trim();
     if body.chars().count() <= RESULT_LIMIT {
-        return body.to_owned();
+        return Clipped { text: body.to_owned(), shortened: false };
     }
-    format!("{}\n[shortened]", body.chars().take(RESULT_LIMIT).collect::<String>())
+    Clipped { text: format!("{}\n[shortened]", body.chars().take(RESULT_LIMIT).collect::<String>()), shortened: true }
 }
 
 /// A card's title as the orchestrator reads it: its first line that is not blank.
@@ -105,9 +112,15 @@ impl DomainState {
             return None;
         }
         let mut compact = i.clone();
-        let body = if task.final_presentation.as_ref() == Some(&i.id) { result_excerpt(&i.body) } else { body_title(&i.body) };
-        if !body.is_empty() || !i.attachments.is_empty() {
-            compact.body = body;
+        let body = if task.final_presentation.as_ref() == Some(&i.id) {
+            result_excerpt(&i.body)
+        } else {
+            let title = body_title(&i.body);
+            Clipped { shortened: title != i.body.trim(), text: title }
+        };
+        if !body.text.is_empty() || !i.attachments.is_empty() {
+            compact.body = body.text;
+            compact.shortened |= body.shortened;
         }
         if let Some(content) = &mut compact.card.content {
             content.body.clear();

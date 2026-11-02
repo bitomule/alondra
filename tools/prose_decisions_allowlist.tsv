@@ -44,9 +44,6 @@ crates/alondrad/src/pr_images.rs	let lower = error.to_ascii_lowercase();	finding
 crates/alondrad/src/pr_images.rs	if lower.contains("http 404") || lower.contains("not found") {	finding:D-07	gh api failure classified by text
 crates/alondrad/src/pr_images.rs	} else if lower.contains("gh auth login") || lower.contains("http 401") || lower.contains("bad credentials") {	finding:D-07	gh api failure classified by text
 crates/provider-claude/src/mcp.rs	output.contains("No MCP server named")	finding:D-08	MCP removal failure counted as success by a phrase
-crates/alondrad/src/provider_transition.rs	if !canonical.complete || canonical.text.contains("[shortened]"){return Err(failure(format!("Critical task context is incomplete: {}",canonical.omitted_sources.join(", "))).into())}	finding:D-09	handoff refused by a marker inside the context text
-crates/alondrad/src/service_files.rs	match error.to_string().as_str() {	finding:D-10	wire code chosen by the text of our own errors
-crates/alondrad/src/service.rs	Err(error) if error.to_string().contains("APNs budget") => {	finding:D-11	minimal push chosen by the text of our own error
 crates/alondra/src/doctor/checks.rs	let running = view.print.as_deref().map(|t| t.contains("state = running"));	finding:D-12	launchctl print output, not an API
 crates/alondra/src/setup.rs	&& String::from_utf8_lossy(&output.stderr).contains("Could not find service")	finding:D-12	launchctl print output, not an API
 crates/alondra/src/setup.rs	.filter_map(|line| line.trim().strip_prefix("pid = "))	finding:D-12	launchctl print output, not an API
@@ -134,7 +131,6 @@ crates/alondra/src/doctor/mod.rs	.any(|p| std::fs::read_to_string(p).map_or(true
 crates/alondra/src/setup.rs	.filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("/alondrad</string>")))	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondrad/src/machine.rs	let line = text.lines().find(|l| l.contains("memory free percentage"))?;	finding:D-21	free memory read from memory_pressure's text
 crates/alondrad/src/sdk_live.rs	let aborted = message["terminal_reason"].as_str().is_some_and(|reason| reason.starts_with("aborted"));	finding:D-22	aborted turn by a prefix of terminal_reason
-crates/alondrad/src/mcp_waits.rs	Err(crate::domain_store::StoreError::Storage(error)) if error.to_string().contains("UnsupportedCapability") => {	finding:D-25	host capability refusal decided by the store error's text
 crates/relay/src/management/keycloak.rs	.find(|grant| grant["key"] == "Offline Token")	finding:G-11	consent to revoke picked by its display label
 crates/core/src/view.rs	.is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))	finding:G-14	billing_error and overloaded treated as usage limit
 agent-host/frame.ts	const message = (error as Error).message;	finding:P-03	framing problem classified by our own Error.message

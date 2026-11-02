@@ -901,7 +901,7 @@ mod tests {
                     payload,
                     revision: 1,
                     order: 1,
-                    withdrawn: false, card, clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                    withdrawn: false, card, clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
                 },
             );
         }
@@ -916,7 +916,7 @@ mod tests {
             card: CardSpec::new(CardKind::Authorize, "Allow extracting the waiting-items helper")
                 .why("It rewrites a few files in core views.")
                 .content(ContentKind::Command, "python3 - <<'EOF'\nimport re\nEOF"),
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         state.holds.insert(held, Hold::Permission);
         state
@@ -952,7 +952,7 @@ mod tests {
             payload: InteractionPayload::Question { options, answer: None },
             revision: 117, order: 1, withdrawn: false,
             card: CardSpec::new(CardKind::Decide, "Elige qué hacer con las cookies").why("Sin tu elección la página no sigue."),
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
 
         let payload = user_push_payload(&state, Some("i-spanish"), Lang::En);
@@ -978,7 +978,7 @@ mod tests {
                 attachments: vec![], id: id.into(), scope, author: Author::System,
                 recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
                 payload: InteractionPayload::Information { read_by: Default::default() },
-                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
         }
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 3);
@@ -1142,7 +1142,7 @@ mod tests {
                 author: Author::System, recipient: Recipient::User, body: "Bash: ls".into(),
                 blocking: true, subject: None,
                 payload: InteractionPayload::Question { options: hold.options(), answer: None },
-                revision: 3, order: 1, withdrawn: false, card, clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                revision: 3, order: 1, withdrawn: false, card, clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
             state.holds.insert(id, hold);
             let payload = user_push_payload(&state, Some("hold-1"), Lang::En);

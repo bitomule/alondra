@@ -42,7 +42,7 @@ fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, revisio
         order: revision,
         withdrawn: false,
         card: CardSpec::new(CardKind::Decide, need),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     }
 }
 
@@ -773,7 +773,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card,
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         Ok(())
     }

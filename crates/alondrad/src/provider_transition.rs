@@ -123,11 +123,16 @@ fn drained(domain:&DomainRuntime,plan:&Plan)->Result<bool,DomainError>{
         && !matches!(lifecycle.activity(),ActivityView::Working|ActivityView::OwnWork)
         && lifecycle.cards().iter().all(|(card,_)|lifecycle.card_callback(card).is_none()) && lifecycle.doubts().is_empty())
 }
+/// The task's canonical context, or why it cannot move: something of it did not fit or was cut.
+pub(crate) fn critical_context(state:&DomainState,task:&alondra_core::domain::Task)->Result<String,DomainError>{
+    let canonical=crate::domain_orchestrator_tools::canonical_task_context(state,task);
+    if !canonical.complete{return Err(failure(format!("Critical task context is incomplete: {}",canonical.omitted_sources.join(", "))))}
+    Ok(canonical.text)
+}
 fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,DomainError>{
     domain.own(scope(domain)?,|owner|{
         let task=owner.state().tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?;
-        let canonical=crate::domain_orchestrator_tools::canonical_task_context(owner.state(),task);
-        if !canonical.complete || canonical.text.contains("[shortened]"){return Err(failure(format!("Critical task context is incomplete: {}",canonical.omitted_sources.join(", "))).into())}
+        let canonical=critical_context(owner.state(),task)?;
         let mut entries:Vec<ContextEntry>=vec![];let mut after=None;let mut coverage;
         loop{
             let page=owner.retained_context(&plan.task,after.as_ref(),256)?;coverage=page.coverage;
@@ -139,7 +144,7 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
         }
         if plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).is_none(){return Err(failure("This older execution has no complete retained public history; continue its current native session").into())}
         let window=owner.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==plan.target_model.model.model)).and_then(|model|model.context_window);
-        let prepared=alondra_store::prepare_context_handoff(&canonical.text,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:4096}).map_err(|error|failure(format!("The task context cannot be transferred: {error:?}")))?;
+        let prepared=alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:4096}).map_err(|error|failure(format!("The task context cannot be transferred: {error:?}")))?;
         if let Some(through)=&prepared.coverage.through{owner.pin_context(&plan.id,through)?;}
         owner.provider_transition_phase(&plan.id,Phase::SourceFenced,Phase::ContextReady,serde_json::to_value(&prepared).map_err(failure)?)?;
         Ok(prepared)

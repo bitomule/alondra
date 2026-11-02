@@ -13,7 +13,7 @@ pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_R
 mod guards;
 #[path = "compaction.rs"]
 mod compaction;
-pub use compaction::{body_title, result_excerpt, RESULT_LIMIT};
+pub use compaction::{body_title, result_excerpt, Clipped, RESULT_LIMIT};
 #[path = "decisions.rs"]
 mod decisions;
 #[path = "mcp.rs"]
@@ -753,6 +753,7 @@ impl DomainState {
                 card: card.clone(),
                 clarification: None, snoozed_until: None,
                 resurfaced_at_revision: replaces_snoozed.then_some(self.revision + 1),
+                shortened: false,
             },
         );
         self.blocks_acyclic(i)?;
@@ -1239,7 +1240,7 @@ impl DomainState {
             order: self.revision + 1,
             withdrawn: false,
             card,
-            clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         created.push(id.0.clone());
         effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
@@ -1426,7 +1427,7 @@ impl DomainState {
         t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).map(|dep| Landed {
             title: dep.title.clone(),
             cancelled: dep.cancelled(),
-            result: dep.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).map(|p| result_excerpt(&p.body)),
+            result: dep.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).map(|p| result_excerpt(&p.body).text),
             merged_pr: self.merged_pr(dep).map(|pr| format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)),
         }).collect()
     }
@@ -2019,7 +2020,7 @@ impl DomainState {
                 order: self.revision + 1,
                 withdrawn: false,
                 card,
-                clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             };
             self.interactions.insert(id.clone(), interaction);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: id });

@@ -1822,7 +1822,7 @@ impl Service {
         delivery: PushDelivery,
     ) -> Result<Vec<u8>> {
         match self.encode_push(id, device, binding, payload, with_sound, delivery) {
-            Err(error) if error.to_string().contains("APNs budget") => {
+            Err(error) if error.is::<OverApnsBudget>() => {
                 self.encode_push(id, device, binding, &minimal_push(payload), with_sound, delivery)
             }
             result => result,
@@ -1894,7 +1894,7 @@ pub(crate) fn seal_push(
         "with_sound": with_sound,
     }))?;
     if plaintext.len() > MAX_PUSH_PLAINTEXT {
-        bail!("content exceeds encrypted APNs budget");
+        return Err(OverApnsBudget { what: "content", bytes: plaintext.len(), limit: MAX_PUSH_PLAINTEXT }.into());
     }
     let envelope = seal_to_device(mac_id, signing, device_id, agreement, "push", &plaintext)?;
     let mut body = json!({"device_id":device_id,"envelope":envelope});
@@ -1913,7 +1913,7 @@ pub(crate) fn seal_push(
     }
     let body = serde_json::to_vec(&body)?;
     if body.len() > MAX_PUSH_BODY {
-        bail!("envelope exceeds APNs budget");
+        return Err(OverApnsBudget { what: "envelope", bytes: body.len(), limit: MAX_PUSH_BODY }.into());
     }
     Ok(body)
 }
@@ -1961,7 +1961,7 @@ pub(crate) fn seal_activity(
 ) -> Result<Vec<u8>> {
     let plaintext = serde_json::to_vec(&json!({"push_binding": binding, "payload": payload}))?;
     if plaintext.len() > MAX_PUSH_PLAINTEXT {
-        bail!("activity exceeds the encrypted APNs budget");
+        return Err(OverApnsBudget { what: "activity", bytes: plaintext.len(), limit: MAX_PUSH_PLAINTEXT }.into());
     }
     let envelope = seal_to_device(mac_id, signing, device_id, agreement, "activity", &plaintext)?;
     Ok(serde_json::to_vec(&json!({
@@ -1975,6 +1975,22 @@ pub(crate) fn seal_activity(
 
 /// The generic alert that stands in for content too large to push, keeping the
 /// `alondra` reference (kind, id, cursor) the app needs to fetch it.
+/// A push too large for Apple's budget, which the caller degrades to a minimal alert.
+#[derive(Debug)]
+pub(crate) struct OverApnsBudget {
+    what: &'static str,
+    bytes: usize,
+    limit: usize,
+}
+
+impl std::fmt::Display for OverApnsBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} of {} bytes is over the encrypted APNs limit of {}", self.what, self.bytes, self.limit)
+    }
+}
+
+impl std::error::Error for OverApnsBudget {}
+
 fn minimal_push(payload: &Value) -> Value {
     let mut aps = json!({"alert": {"title": "Alondra"}});
     for key in ["sound", "category", "interruption-level", "thread-id"] {
@@ -3853,7 +3869,8 @@ agreement_key = "{}"
         assert!(
             service
                 .encode_push("phone-1", &device, &binding, &huge, true, PushDelivery::Alert)
-                .is_err()
+                .unwrap_err()
+                .is::<OverApnsBudget>()
         );
         let minimal = service
             .encode_push_or_minimal("phone-1", &device, &binding, &huge, true, PushDelivery::Alert)

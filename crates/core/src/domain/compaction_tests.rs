@@ -117,6 +117,7 @@ fn an_ended_tasks_cards_keep_what_is_read_and_let_go_of_the_rest() {
     assert_eq!(result_excerpt(&card(&s, "final").body), result_excerpt(&card(&before, "final").body), "a task that builds on it reads the same result");
     assert!(card(&s, "final").body.chars().count() <= RESULT_LIMIT + 12);
     assert!(card(&before, "final").body.chars().count() > RESULT_LIMIT + 12);
+    assert!(card(&s, "final").shortened && !card(&before, "final").shortened, "the cut result says it was cut");
     assert_eq!(card(&s, "ask").body, "Which table goes first?");
     assert_eq!(card(&s, "read").body, "What I found, read");
     for id in ["final", "ask", "read"] {

@@ -859,6 +859,9 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
                 let mut text = format!("## Earlier work {}: {}", earlier.id, earlier.title);
                 if let Some(result) = earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
                     text.push_str(&format!("\n{}", result.body));
+                    if result.shortened {
+                        missing_inputs.push(format!("interaction:{}", result.id));
+                    }
                 }
                 if let Some(pr) = earlier.pr_id.as_ref().and_then(|id| state.pull_requests.get(id)) {
                     text.push_str(&format!("\nPull request: https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
@@ -881,11 +884,11 @@ fn prefixed(prefix: &str, text: String) -> String {
     if text.is_empty() { text } else { format!("{prefix}{text}") }
 }
 
-fn clipped(text: &str, limit: usize, mark: &str) -> String {
+fn clipped(text: &str, limit: usize, mark: &str) -> alondra_core::domain::Clipped {
     if text.chars().count() <= limit {
-        return text.to_owned();
+        return alondra_core::domain::Clipped { text: text.to_owned(), shortened: false };
     }
-    format!("{}{mark}", text.chars().take(limit).collect::<String>())
+    alondra_core::domain::Clipped { text: format!("{}{mark}", text.chars().take(limit).collect::<String>()), shortened: true }
 }
 
 /// What a task that builds on others starts from: each earlier task's final result and its pull
@@ -904,7 +907,7 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
             "not finished yet"
         };
         let body = match earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
-            Some(result) => alondra_core::domain::result_excerpt(&result.body),
+            Some(result) => alondra_core::domain::result_excerpt(&result.body).text,
             None => "No final result was recorded for it.".to_owned(),
         };
         let mut entry = format!("### “{}” ({status})\n{body}", earlier.title);
@@ -921,7 +924,7 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
     if entries.is_empty() {
         return String::new();
     }
-    clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "")
+    clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "").text
 }
 
 /// The plan the user approved on another task (a report's plan, or a plan it held), which this

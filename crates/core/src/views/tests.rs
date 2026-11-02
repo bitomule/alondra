@@ -94,7 +94,7 @@ fn fixture() -> DomainState {
                 payload,
                 revision: 1,
                 order: index as u64 + 1,
-                withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             },
         );
     }
@@ -115,7 +115,7 @@ fn fixture() -> DomainState {
             },
             revision: 1,
             order: 4,
-            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     state
@@ -275,7 +275,7 @@ fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
                 },
                 revision: 1,
                 order: index + 10,
-                withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+                withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             },
         );
     }
@@ -400,7 +400,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
             },
             revision: 1,
             order: 5,
-            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     let live = LiveSnapshot::default();
@@ -476,7 +476,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 5,
-            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     state.interactions.insert(
@@ -501,7 +501,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 6,
-            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     deliver_pr(&mut state, "pr-1");
@@ -2620,7 +2620,7 @@ fn orchestrator_decide_fixture() -> DomainState {
         card: spec(CardKind::Decide, "Decide who fixes the memory pauses that cut the same build in a loop",
             "A node found a loop in the memory rule that leaves a task stuck.")
             .content(Content::Diagnosis, "Resumed, the node relaunches the build; memory turns Tight in 50 s and it is paused again."),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     });
     state
 }
@@ -3191,7 +3191,7 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
         },
         revision: 1, order: 9, withdrawn: false,
         card: spec(CardKind::Problem, &need, &why),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     });
     let live = LiveSnapshot::default();
     for (client, lang) in [(Client::Ios, Lang::Es), (Client::Mac, Lang::En), (Client::Tui, Lang::Es)] {
@@ -3220,7 +3220,7 @@ fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
         revision: 1, order: 9, withdrawn: false,
         card: spec(CardKind::Problem, "The orchestrator failed partway", "Some of its actions may already have happened.")
             .content(Content::Diagnosis, "Claude exited without a successful terminal result\nretried once"),
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     });
     let live = LiveSnapshot::default();
     let home = render(&state, &live, Client::Ios, Lang::Es, "home", "");
@@ -3268,7 +3268,7 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
             options: vec![option(BATCH_CONTINUE, BATCH_CONTINUE_LABEL), option(BATCH_RETRY, BATCH_RETRY_LABEL)],
             answer: None,
         },
-        revision: 1, order: 9, withdrawn: false, card, clarification: None, snoozed_until: None, resurfaced_at_revision: None,
+        revision: 1, order: 9, withdrawn: false, card, clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
     });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:problem-orchestrator-run-1", "");
     let card = card_of(&view);

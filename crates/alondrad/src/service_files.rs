@@ -16,7 +16,29 @@ use std::{
 pub const CHUNK: usize = 64 * 1024;
 const TTL: Duration = Duration::from_secs(600);
 const SLOTS: usize = 2;
-const UNCERTAIN: &str = "transfer already finalized or interrupted; previous receipt unavailable";
+/// The transfer failures a client acts on; any other failure is a rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferError {
+    Unknown,
+    FinalizationUncertain,
+    Capacity,
+    FileChanged,
+}
+
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unknown => "transfer expired or missing; restart upload",
+            Self::FinalizationUncertain => "transfer already finalized or interrupted; previous receipt unavailable",
+            Self::Capacity => "transfer capacity reached; cancel or finish an existing transfer",
+            Self::FileChanged => "file changed; restart download",
+        })
+    }
+}
+
+impl std::error::Error for TransferError {}
+
+const UNCERTAIN: TransferError = TransferError::FinalizationUncertain;
 /// A holder that panics leaves it whole, so it is recovered: an upload that panics while finishing
 /// stays marked attempted without a result, which is refused as uncertain as after a restart.
 #[derive(Default)]
@@ -132,14 +154,11 @@ impl Transfers {
                 rusqlite::params![sender, &key.1],
                 |r| r.get(0),
             )?;
-            ensure!(
-                !seen,
-                "transfer already finalized or interrupted; previous receipt unavailable"
-            );
+            ensure!(!seen, UNCERTAIN);
             ensure!(
                 transfers.len() < 32
                     && transfers.values().filter(|t| !t.finalization_attempted).count() < SLOTS,
-                "transfer capacity reached; cancel or finish an existing transfer"
+                TransferError::Capacity
             );
             transfers.insert(
                 key,
@@ -172,7 +191,7 @@ impl Transfers {
         }
         let t = transfers
             .get_mut(&key)
-            .context("transfer expired or missing; restart upload")?;
+            .context(TransferError::Unknown)?;
         ensure!(!t.finalization_attempted || t.result.is_some(), UNCERTAIN);
         if route == "/v1/service/uploads/chunk" {
             let b: Chunk = serde_json::from_value(body)?;
@@ -229,7 +248,7 @@ impl Transfers {
         ensure!(!seen, UNCERTAIN);
         let count: i64 =
             transaction.query_row("SELECT count(*) FROM attempts", [], |r| r.get(0))?;
-        ensure!(count < 10000, "transfer ledger capacity reached");
+        ensure!(count < 10000, TransferError::Capacity);
         transaction.execute(
             "INSERT INTO attempts(sender,transfer_id) VALUES(?1,?2)",
             rusqlite::params![sender, &key.1],
@@ -260,15 +279,12 @@ impl Transfers {
     }
 }
 pub fn error_code(error: &anyhow::Error) -> &'static str {
-    match error.to_string().as_str() {
-        "transfer expired or missing; restart upload" => "attachment_transfer_unknown",
-        "transfer already finalized or interrupted; previous receipt unavailable" => {
-            "attachment_transfer_finalization_uncertain"
-        }
-        "transfer capacity reached; cancel or finish an existing transfer"
-        | "transfer ledger capacity reached" => "attachment_transfer_capacity",
-        "file changed; restart download" | "file changed during read" => "attachment_file_changed",
-        _ => "attachment_transfer_rejected",
+    match error.downcast_ref::<TransferError>() {
+        Some(TransferError::Unknown) => "attachment_transfer_unknown",
+        Some(TransferError::FinalizationUncertain) => "attachment_transfer_finalization_uncertain",
+        Some(TransferError::Capacity) => "attachment_transfer_capacity",
+        Some(TransferError::FileChanged) => "attachment_file_changed",
+        None => "attachment_transfer_rejected",
     }
 }
 fn attempted(home: &Path, sender: &str, id: &str) -> Result<bool> {
@@ -335,7 +351,7 @@ impl StoredReads {
             "invalid stored document");
         let current_version = file_version(&metadata);
         ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
-        ensure!(version.as_ref().is_none_or(|v| v == &current_version), "file changed; restart download");
+        ensure!(version.as_ref().is_none_or(|v| v == &current_version), TransferError::FileChanged);
         let key = (path, current_version.clone());
         let now = Instant::now();
         let (cached, reservation) = {
@@ -361,10 +377,10 @@ impl StoredReads {
             let mut data = vec![0; metadata.len() as usize];
             file.read_exact(&mut data)?;
             let mut extra = [0];
-            ensure!(file.read(&mut extra)? == 0, "file changed during read");
+            ensure!(file.read(&mut extra)? == 0, TransferError::FileChanged);
             let digest = hex_digest(Sha256::digest(&data).as_slice());
             self.hashed_bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
-            ensure!(file_version(&file.metadata()?) == current_version, "file changed during read");
+            ensure!(file_version(&file.metadata()?) == current_version, TransferError::FileChanged);
             ensure!(expected.is_none_or(|value| value == digest), "stored document digest does not match revision");
             let copy = std::sync::Arc::new(VerifiedCopy { data, digest, _reservation: reservation });
             let mut copies = self.copies.lock_or_recover("the stored read cache");
@@ -379,7 +395,7 @@ impl StoredReads {
             return read_chunk(home, reference, expected, offset, version, Some(&self.hashed_bytes), maximum);
         };
         ensure!(expected.is_none_or(|value| value == copy.digest), "stored document digest does not match revision");
-        ensure!(file_version(&file.metadata()?) == current_version, "file changed during read");
+        ensure!(file_version(&file.metadata()?) == current_version, TransferError::FileChanged);
         let start = offset as usize;
         let end = start.saturating_add(CHUNK).min(copy.data.len());
         Ok((json!({"version":current_version,"data":URL_SAFE_NO_PAD.encode(&copy.data[start..end]),
@@ -422,7 +438,7 @@ fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
         "invalid stored document");
     let current_version = file_version(&metadata);
     ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
-    ensure!(version.as_ref().is_none_or(|v| v == &current_version), "file changed; restart download");
+    ensure!(version.as_ref().is_none_or(|v| v == &current_version), TransferError::FileChanged);
     let mut hash = Sha256::new();
     let mut position = 0u64;
     let mut bytes = Vec::with_capacity(CHUNK.min((metadata.len() - offset) as usize));
@@ -446,7 +462,7 @@ fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
     ensure!(position == metadata.len() && expected.is_none_or(|digest| actual == digest),
         "stored document digest does not match revision");
     let after = file.metadata()?;
-    ensure!(file_version(&after) == current_version, "file changed during read");
+    ensure!(file_version(&after) == current_version, TransferError::FileChanged);
     let next = offset + bytes.len() as u64;
     Ok((json!({"version":current_version,"data":URL_SAFE_NO_PAD.encode(bytes),
         "offset":offset,"total":metadata.len(),"next_offset":next,"eof":next==metadata.len()}), actual))
@@ -543,7 +559,7 @@ fn download(home: &Path, b: Download) -> Result<Value> {
     );
     ensure!(
         b.version.as_ref().is_none_or(|v| v == &version),
-        "file changed; restart download"
+        TransferError::FileChanged
     );
     ensure!(
         total <= crate::uploads::MAX_UPLOAD_BYTES as u64 && b.offset <= total,
@@ -559,7 +575,7 @@ fn download(home: &Path, b: Download) -> Result<Value> {
             && metadata.mtime_nsec() == after.mtime_nsec()
             && metadata.ctime() == after.ctime()
             && metadata.ctime_nsec() == after.ctime_nsec(),
-        "file changed during read"
+        TransferError::FileChanged
     );
     let next = b.offset + data.len() as u64;
     Ok(
@@ -594,6 +610,16 @@ mod tests {
             "/v1/service/uploads/finish",
             json!({"transfer_id":ID}),
         )
+    }
+    #[test]
+    fn transfer_codes_survive_context_added_to_the_error() {
+        let h = home();
+        let t = Transfers::default();
+        let missing = send(&t, &h, 0, b"abc").unwrap_err();
+        assert_eq!(error_code(&missing), "attachment_transfer_unknown");
+        assert_eq!(error_code(&missing.context("upload")), "attachment_transfer_unknown");
+        let invalid = t.dispatch(&h, "phone-1", "/v1/service/uploads/chunk", json!({"transfer_id":"../x"})).unwrap_err();
+        assert_eq!(error_code(&invalid.context("upload")), "attachment_transfer_rejected");
     }
     #[test]
     fn attachments_above_the_upload_limit_download_without_growing_the_cache_budget() {

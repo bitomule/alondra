@@ -1140,7 +1140,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     for mut row in rows(
         c,
         "interactions",
-        &["blocking", "is_final", "acceptance_valid", "withdrawn"],
+        &["blocking", "is_final", "acceptance_valid", "withdrawn", "shortened"],
         &["options", "answer", "card", "clarification"],
     )? {
         let kind = take(&mut row, "scope_kind");
@@ -1474,6 +1474,22 @@ fn policy_name(policy: alondra_core::accounts::Policy) -> &'static str {
     }
 }
 
+/// Adds `interactions.shortened` and, that once, marks the final results an earlier compaction
+/// cut: their body is the excerpt it wrote, `RESULT_LIMIT` characters and its closing marker.
+pub(super) fn add_shortened_column(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let present = tx.query_row("SELECT count(*) FROM pragma_table_info('interactions') WHERE name='shortened'", [], |row| row.get::<_, i64>(0))? == 1;
+    if present {
+        return Ok(());
+    }
+    tx.execute_batch("ALTER TABLE interactions ADD COLUMN shortened INTEGER NOT NULL DEFAULT 0 CHECK(shortened IN(0,1))")?;
+    const MARKER: &str = "\n[shortened]";
+    tx.execute(
+        "UPDATE interactions SET shortened=1 WHERE id IN(SELECT final_presentation FROM tasks WHERE final_presentation IS NOT NULL)
+         AND length(body)=?1 AND substr(body,-?2)=?3",
+        rusqlite::params![(alondra_core::domain::RESULT_LIMIT + MARKER.chars().count()) as i64, MARKER.chars().count() as i64, MARKER],
+    )?;
+    Ok(())
+}
 pub(super) fn add_snooze_columns(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     for (column, definition) in [
         ("snoozed_until", "INTEGER"),

@@ -376,6 +376,29 @@ fn shown(state: &DomainState) -> Vec<serde_json::Value> {
 }
 
 #[test]
+fn a_result_compacted_before_interactions_knew_they_were_shortened_is_marked_once_on_opening() {
+    let fixture = Fixture::new();
+    drop(ended_task(&fixture));
+    let runtime = crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap();
+    assert_eq!(runtime.retain(alondra_core::now_millis()).unwrap().compacted, 1);
+    assert!(runtime.state().unwrap().interactions[&InteractionId::from("delivery-1")].shortened);
+    drop(runtime);
+    let store = DomainStore::open(&fixture.path()).unwrap();
+    store.conn.execute_batch("ALTER TABLE interactions DROP COLUMN shortened;").unwrap();
+    store.conn.execute("UPDATE interactions SET body=body||char(10)||'[shortened]' WHERE id='ask-1'", []).unwrap();
+    drop(store);
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let state = store.load().unwrap();
+    assert!(state.interactions[&InteractionId::from("delivery-1")].shortened, "the excerpt Alondra wrote is marked");
+    assert!(!state.interactions[&InteractionId::from("ask-1")].shortened, "a marker in a card that is not a final result marks nothing");
+    store.conn.execute("UPDATE interactions SET shortened=0 WHERE id='delivery-1'", []).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert!(!store.load().unwrap().interactions[&InteractionId::from("delivery-1")].shortened, "the text is read once, never again");
+}
+
+#[test]
 fn the_daemon_compacts_an_ended_tasks_cards_and_messages_and_the_apps_show_the_same() {
     let fixture = Fixture::new();
     let store = ended_task(&fixture);

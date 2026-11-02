@@ -53,11 +53,19 @@ fn system(domain: &DomainRuntime, command: Command) -> Result<u64, DomainError> 
     state.guard(&Actor::System, &envelope)?;
     match domain.execute_as_system(envelope) {
         Ok(_) => Ok(domain.read().state().revision),
-        Err(crate::domain_store::StoreError::Domain(error)) => Err(error),
-        Err(crate::domain_store::StoreError::Storage(error)) if error.to_string().contains("UnsupportedCapability") => {
-            Err(DomainError::new("conflict", "This node's Claude cannot do it from Alondra: it runs an Agent SDK host from before it could"))
+        Err(error) => Err(refusal(error)),
+    }
+}
+
+fn refusal(error: crate::domain_store::StoreError) -> DomainError {
+    match error {
+        crate::domain_store::StoreError::Domain(error) => error,
+        crate::domain_store::StoreError::Storage(error)
+            if matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::UnsupportedCapability)) =>
+        {
+            DomainError::new("conflict", "This node's Claude cannot do it from Alondra: it runs an Agent SDK host from before it could")
         }
-        Err(crate::domain_store::StoreError::Storage(error)) => Err(DomainError::new("storage_unavailable", error.to_string())),
+        crate::domain_store::StoreError::Storage(error) => DomainError::new("storage_unavailable", error.to_string()),
     }
 }
 
