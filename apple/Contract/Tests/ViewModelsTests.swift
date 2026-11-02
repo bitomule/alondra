@@ -17,6 +17,51 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    func testATaskDetailNamesTheKindOfItsFactsAndAnOlderDaemonSendsNone() throws {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))
+            .appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards")
+        for name in ["task-working-ios", "task-working-es-mac"] {
+            let view = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("\(name).json")))
+            let facts = { (id: String) -> [Fact] in
+                view.sections.filter { $0.id == id }.flatMap(\.items).flatMap { item -> [Fact] in
+                    if case let .facts(facts) = item { facts.items } else { [] }
+                }
+            }
+            XCTAssertEqual(facts("header").first?.kind, .state, name)
+            XCTAssertEqual(facts("header").filter { $0.kind == .folder }.map(\.value), ["/work/alondra/.claude/worktrees/t-1"], name)
+            XCTAssertEqual(facts("options").filter { $0.kind == .priority }.count, 1, name)
+            XCTAssertTrue(facts("readings").allSatisfy { $0.kind == nil }, name)
+        }
+        let older = try ContractCodec.decode(Fact.self, from: Data(#"{"label":"Prioridad","value":"Alta"}"#.utf8))
+        XCTAssertNil(older.kind)
+        XCTAssertEqual(older.value, "Alta")
+    }
+
+    func testAnElicitationCardCarriesItsTypedFormAndTheAnswerItsTypedValues() throws {
+        let env = ProcessInfo.processInfo.environment
+        let url = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))
+            .appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards/card-elicitation-form-ios.json")
+        let view = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
+        let card = try XCTUnwrap(view.sections.flatMap(\.items).compactMap { item -> Card? in if case let .card(card) = item { card } else { nil } }.first)
+        let fields = try XCTUnwrap(card.form?.fields)
+        XCTAssertEqual(fields.map(\.name), ["minutes", "remember"])
+        XCTAssertEqual(fields.map(\.kind), [.number(integer: true, minimum: 1, maximum: nil, defaultValue: nil), .boolean(defaultValue: nil)])
+        XCTAssertEqual(fields.map(\.required), [false, true])
+        XCTAssertEqual(fields.last?.title, "Remember me")
+
+        let request = ActionRequest(commandId: "c-1", dataEpoch: "e", client: .ios, lang: "en", actionId: "ans:i-1@1", optionId: "accept",
+                                    input: ActionInput(content: ["remember": .bool(true), "minutes": .integer(5)]))
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(request)) as? [String: Any])
+        let content = try XCTUnwrap((sent["input"] as? [String: Any])?["content"] as? [String: Any])
+        XCTAssertEqual(content["remember"] as? Bool, true)
+        XCTAssertEqual(content["minutes"] as? Int, 5)
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(ActionInput(text: "hi"))) as? [String: Any])
+        XCTAssertNil(plain["content"], "an answer without a form sends no content")
+    }
+
     func testDecodesRustGoldenViews() throws {
         let env = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))

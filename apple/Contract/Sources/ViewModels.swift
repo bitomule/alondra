@@ -272,9 +272,12 @@ public struct Card: Codable, Equatable, Sendable {
     /// The card anatomy: what is needed, why, who and where, one line of content, what it holds back, and the reply.
     public let kind: CardKind?; public let need: String?; public let why: String?; public let meta: String?; public let contentRow: ContentRow?
     public let blocks: [BlockChip]; public let blockedBy: [BlockChip]; public let reply: Action?; public let more: [Action]
+    /// The form an MCP server asks to fill while the card waits; its values go as `ActionInput.content`
+    /// with the option that accepts it. A field of a kind this app does not know leaves it out.
+    public let form: RequestedForm?
     enum CodingKeys: String, CodingKey {
         case id, link, icon, eyebrow, title, subtitle, badges, context, timestamps, state, detail, body, attachments, actions
-        case kind, need, why, meta, blocks, reply, more; case contentRow = "content_row"; case blockedBy = "blocked_by"
+        case kind, need, why, meta, blocks, reply, more, form; case contentRow = "content_row"; case blockedBy = "blocked_by"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -290,6 +293,7 @@ public struct Card: Codable, Equatable, Sendable {
         contentRow = try c.decodeIfPresent(ContentRow.self, forKey: .contentRow)
         blocks = try c.decodeIfPresent([BlockChip].self, forKey: .blocks) ?? []; blockedBy = try c.decodeIfPresent([BlockChip].self, forKey: .blockedBy) ?? []
         reply = try c.decodeIfPresent(Action.self, forKey: .reply); more = try c.decodeIfPresent([Action].self, forKey: .more) ?? []
+        form = try c.decodeKnownIfPresent(RequestedForm.self, forKey: .form)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -304,6 +308,72 @@ public struct Card: Codable, Equatable, Sendable {
         try c.encodeIfPresent(meta, forKey: .meta); try c.encodeIfPresent(contentRow, forKey: .contentRow)
         if !blocks.isEmpty { try c.encode(blocks, forKey: .blocks) }; if !blockedBy.isEmpty { try c.encode(blockedBy, forKey: .blockedBy) }
         try c.encodeIfPresent(reply, forKey: .reply); if !more.isEmpty { try c.encode(more, forKey: .more) }
+        try c.encodeIfPresent(form, forKey: .form)
+    }
+}
+
+public struct RequestedForm: Codable, Equatable, Sendable { public let fields: [RequestedField] }
+public struct RequestedField: Codable, Equatable, Sendable {
+    /// The key of its value in `ActionInput.content`.
+    public let name: String; public let title: String?; public let description: String?; public let required: Bool; public let kind: RequestedFieldKind
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name); title = try c.decodeIfPresent(String.self, forKey: .title)
+        description = try c.decodeIfPresent(String.self, forKey: .description); required = try c.decodeIfPresent(Bool.self, forKey: .required) ?? false
+        kind = try c.decode(RequestedFieldKind.self, forKey: .kind)
+    }
+}
+public struct RequestedChoice: Codable, Equatable, Sendable { public let value: String; public let title: String? }
+public enum RequestedTextFormat: String, Codable, Equatable, Sendable, FallbackDecodable {
+    case email, uri, date, dateTime = "date_time", other
+    public static let fallback = RequestedTextFormat.other
+}
+public enum RequestedFieldKind: Codable, Equatable, Sendable {
+    case text(format: RequestedTextFormat?, minLength: UInt64?, maxLength: UInt64?, defaultValue: String?)
+    case number(integer: Bool, minimum: Double?, maximum: Double?, defaultValue: Double?)
+    case boolean(defaultValue: Bool?)
+    /// One of the options.
+    case choice(options: [RequestedChoice], defaultValue: String?)
+    /// Any number of the options, each once.
+    case choices(options: [RequestedChoice], minItems: UInt64?, maxItems: UInt64?, defaultValue: [String])
+    private enum Keys: String, CodingKey {
+        case kind, format, integer, minimum, maximum, options, defaultValue = "default"
+        case minLength = "min_length", maxLength = "max_length", minItems = "min_items", maxItems = "max_items"
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(String.self, forKey: .kind) {
+        case "text":
+            self = .text(format: try c.decodeIfPresent(RequestedTextFormat.self, forKey: .format), minLength: try c.decodeIfPresent(UInt64.self, forKey: .minLength),
+                         maxLength: try c.decodeIfPresent(UInt64.self, forKey: .maxLength), defaultValue: try c.decodeIfPresent(String.self, forKey: .defaultValue))
+        case "number":
+            self = .number(integer: try c.decode(Bool.self, forKey: .integer), minimum: try c.decodeIfPresent(Double.self, forKey: .minimum),
+                           maximum: try c.decodeIfPresent(Double.self, forKey: .maximum), defaultValue: try c.decodeIfPresent(Double.self, forKey: .defaultValue))
+        case "boolean": self = .boolean(defaultValue: try c.decodeIfPresent(Bool.self, forKey: .defaultValue))
+        case "choice":
+            self = .choice(options: try c.decode([RequestedChoice].self, forKey: .options), defaultValue: try c.decodeIfPresent(String.self, forKey: .defaultValue))
+        case "choices":
+            self = .choices(options: try c.decode([RequestedChoice].self, forKey: .options), minItems: try c.decodeIfPresent(UInt64.self, forKey: .minItems),
+                            maxItems: try c.decodeIfPresent(UInt64.self, forKey: .maxItems), defaultValue: try c.decodeIfPresent([String].self, forKey: .defaultValue) ?? [])
+        case let kind: throw ContractCodec.UnknownValue(kind: kind)
+        }
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case let .text(format, minLength, maxLength, defaultValue):
+            try c.encode("text", forKey: .kind); try c.encodeIfPresent(format, forKey: .format); try c.encodeIfPresent(minLength, forKey: .minLength)
+            try c.encodeIfPresent(maxLength, forKey: .maxLength); try c.encodeIfPresent(defaultValue, forKey: .defaultValue)
+        case let .number(integer, minimum, maximum, defaultValue):
+            try c.encode("number", forKey: .kind); try c.encode(integer, forKey: .integer); try c.encodeIfPresent(minimum, forKey: .minimum)
+            try c.encodeIfPresent(maximum, forKey: .maximum); try c.encodeIfPresent(defaultValue, forKey: .defaultValue)
+        case let .boolean(defaultValue): try c.encode("boolean", forKey: .kind); try c.encodeIfPresent(defaultValue, forKey: .defaultValue)
+        case let .choice(options, defaultValue):
+            try c.encode("choice", forKey: .kind); try c.encode(options, forKey: .options); try c.encodeIfPresent(defaultValue, forKey: .defaultValue)
+        case let .choices(options, minItems, maxItems, defaultValue):
+            try c.encode("choices", forKey: .kind); try c.encode(options, forKey: .options); try c.encodeIfPresent(minItems, forKey: .minItems)
+            try c.encodeIfPresent(maxItems, forKey: .maxItems); if !defaultValue.isEmpty { try c.encode(defaultValue, forKey: .defaultValue) }
+        }
     }
 }
 public struct Row: Codable, Equatable, Identifiable, Sendable {
@@ -360,7 +430,13 @@ public struct Attachment: Codable, Equatable, Sendable {
     }
 }
 public struct Facts: Codable, Equatable, Sendable { public let items: [Fact] }
-public struct Fact: Codable, Equatable, Sendable { public let label: String; public let value: String; public let tone: Tone?; public let link: Link? }
+/// What a task's fact is, so a screen finds its state, request, folder or priority without reading
+/// the translated label or counting places; absent from an older daemon, `other` for a newer kind.
+public enum FactKind: String, Codable, Equatable, Sendable, FallbackDecodable {
+    case state, request, folder, priority, other
+    public static let fallback = FactKind.other
+}
+public struct Fact: Codable, Equatable, Sendable { public let kind: FactKind?; public let label: String; public let value: String; public let tone: Tone?; public let link: Link? }
 public struct Checks: Codable, Equatable, Sendable { public let items: [Check]; public let link: Link? }
 public struct Check: Codable, Equatable, Sendable { public let name: String; public let state: CheckState }
 public struct Timeline: Codable, Equatable, Sendable { public let entries: [TimelineEntry] }
@@ -658,6 +734,7 @@ extension Markdown {
 extension Fact {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(FactKind.self, forKey: .kind)
         label = try c.decode(String.self, forKey: .label); value = try c.decode(String.self, forKey: .value)
         tone = try c.decodeIfPresent(Tone.self, forKey: .tone); link = try c.decodeKnownIfPresent(Link.self, forKey: .link)
     }

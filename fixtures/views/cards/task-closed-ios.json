@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "vd21db84dd84a178b",
+  "version": "v960e85e9b0d155b0",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -68,11 +68,13 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "State",
               "value": "Stopped · You closed its session before it delivered",
               "tone": "warning"
             },
             {
+              "kind": "request",
               "label": "Request",
               "value": "Polish the Alondra beta"
             }
@@ -164,6 +166,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Priority",
               "value": "Normal"
             },

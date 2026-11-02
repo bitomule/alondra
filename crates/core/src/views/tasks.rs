@@ -1,6 +1,6 @@
 use super::{
     task_state::{self, Block},
-    BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, Notice, RenderContext,
+    BuildError, Confirm, Fact, FactKind, Facts, Icon, Item, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
@@ -892,6 +892,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     );
     let request = context.domain.requests.get(&task.request_id);
     let mut facts = vec![Fact {
+        kind: Some(FactKind::State),
         label: t!(context.lang, "State", "Estado").into(),
         value: detail_state(task, context),
         tone: Some(task_state::present(task, context).tone),
@@ -899,12 +900,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }];
     let mut model_readings = vec![];
     if let Some(model) = task_model_presentation(&task.id, context) {
-        model_readings.push(Fact { label: t!(context.lang, "Requested model", "Modelo solicitado").into(), value: model.requested, tone: None, link: None });
-        if let Some(effective) = model.effective { model_readings.push(Fact { label: t!(context.lang, "Effective model", "Modelo efectivo").into(), value: effective, tone: None, link: None }); }
-        if let Some(pending) = model.pending { model_readings.push(Fact { label: t!(context.lang, "Pending model", "Modelo pendiente").into(), value: pending, tone: Some(Tone::Warning), link: None }); }
-        if let Some(reason) = model.reason { model_readings.push(Fact { label: t!(context.lang, "Reason", "Motivo").into(), value: reason, tone: None, link: None }); }
+        model_readings.push(Fact { kind: None, label: t!(context.lang, "Requested model", "Modelo solicitado").into(), value: model.requested, tone: None, link: None });
+        if let Some(effective) = model.effective { model_readings.push(Fact { kind: None, label: t!(context.lang, "Effective model", "Modelo efectivo").into(), value: effective, tone: None, link: None }); }
+        if let Some(pending) = model.pending { model_readings.push(Fact { kind: None, label: t!(context.lang, "Pending model", "Modelo pendiente").into(), value: pending, tone: Some(Tone::Warning), link: None }); }
+        if let Some(reason) = model.reason { model_readings.push(Fact { kind: None, label: t!(context.lang, "Reason", "Motivo").into(), value: reason, tone: None, link: None }); }
     }
     facts.push(Fact {
+        kind: Some(FactKind::Request),
         label: t!(context.lang, "Request", "Solicitud").into(),
         value: request
             .and_then(|request| request.title.clone())
@@ -927,7 +929,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
         .and_then(|agent| context.domain.agents.get(agent));
     let live = agent.and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.id.0));
-    facts.extend(folder(task).map(|path| Fact { label: t!(context.lang, "Folder", "Carpeta").into(), value: path.clone(), tone: None, link: None }));
+    facts.extend(folder(task).map(|path| Fact { kind: Some(FactKind::Folder), label: t!(context.lang, "Folder", "Carpeta").into(), value: path.clone(), tone: None, link: None }));
     view.sections.push(common::section(
         "header",
         None,
@@ -935,7 +937,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     ));
     model_readings.extend(live.map(|node| super::task_node::node_readings(node, context)).unwrap_or_default());
     if let Some(&cents) = context.live.task_costs.get(&task.id.0) {
-        model_readings.push(Fact { label: t!(context.lang, "Cost", "Coste").into(), value: super::task_node::cost(cents, context.lang), tone: None, link: None });
+        model_readings.push(Fact { kind: None, label: t!(context.lang, "Cost", "Coste").into(), value: super::task_node::cost(cents, context.lang), tone: None, link: None });
     }
     let readings = model_readings;
     if !readings.is_empty() {
@@ -1033,11 +1035,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         ));
     }
     let mut task_options = vec![Fact {
+            kind: Some(FactKind::Priority),
             label: t!(context.lang, "Priority", "Prioridad").into(),
             value: super::pacing::priority_text(task.priority, context.lang).into(),
             tone: None,
             link: None,
         }, Fact {
+            kind: None,
             label: t!(context.lang, "PR handling", "Gestión de PR").into(),
             value: if task.review_prs {
                 t!(context.lang, "You review it; accepting it merges it", "La revisas tú; al aceptarla, Alondra hace el merge")
@@ -1049,6 +1053,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }];
     if let Some(project) = &task.project {
         task_options.push(Fact {
+            kind: None,
             label: t!(context.lang, "Project", "Proyecto").into(),
             value: project.clone(),
             tone: None,
@@ -1058,6 +1063,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(options) = context.live.task_options.get(id) {
         if let Some(effort) = &options.effort {
             task_options.push(Fact {
+                kind: None,
                 label: t!(context.lang, "Effort", "Esfuerzo").into(),
                 value: effort_label(effort, context.lang),
                 tone: None,
@@ -1075,11 +1081,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         if let Some(now) = running_model.filter(|now| model_family(now) != model_family(&launched.model)) {
             value.push_str(&tf!(context.lang, " (now: {model})", " (ahora: {model})", model = crate::model_label::model_label(now)));
         }
-        task_options.push(Fact { label: t!(context.lang, "Model", "Modelo").into(), value, tone: None, link: None });
+        task_options.push(Fact { kind: None, label: t!(context.lang, "Model", "Modelo").into(), value, tone: None, link: None });
     }
     if let Some(account) = account_text(task, context) {
         let provider = super::accounts::provider_name(task.provider);
-        task_options.push(Fact { label: tf!(context.lang, "{provider} account", "Cuenta de {provider}", provider = provider), value: account, tone: None, link: None });
+        task_options.push(Fact { kind: None, label: tf!(context.lang, "{provider} account", "Cuenta de {provider}", provider = provider), value: account, tone: None, link: None });
     }
     view.sections.push(common::section(
         "options",
@@ -1203,6 +1209,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
         None,
         vec![Item::Facts(Facts {
             items: vec![Fact {
+                kind: None,
                 label: t!(context.lang, "State", "Estado").into(),
                 value: request_state(
                     request,

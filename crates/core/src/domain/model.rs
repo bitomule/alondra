@@ -587,9 +587,13 @@ pub enum InputValue {
     Text(String),
     Boolean(bool),
     Integer(i64),
+    /// The values of a card's form, each of its field's type.
+    Form(serde_json::Map<String, serde_json::Value>),
 }
 /// The one answer field a card has: the user's own words, alone or with the option they pressed.
 pub const ANSWER_TEXT: &str = "text";
+/// The values the user filled in a card's form, beside the option that accepts it.
+pub const ANSWER_CONTENT: &str = "content";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionOption {
     pub id: String,
@@ -885,6 +889,10 @@ pub struct CardSpec {
     /// Where the secret a Provide card asks for is written: the answer then only says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_destination: Option<crate::secret_destination::SecretDestination>,
+    /// The form an MCP server asks the user to fill, when its schema is one a screen can draw.
+    /// Only a held elicitation carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<crate::requested_form::RequestedForm>,
 }
 /// A place that holds one open card at a time: a new card in it replaces the open one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -978,6 +986,7 @@ impl CardSpec {
             plan: None,
             kept_at: None,
             secret_destination: None,
+            form: None,
         }
     }
     pub fn plan(mut self, plan: impl Into<String>) -> Self {

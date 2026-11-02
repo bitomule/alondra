@@ -119,6 +119,23 @@ async fn historical_reads_require_the_exact_digest_epoch_and_current_approval_ge
     assert!(f.service.handle_direct(f.work("revoked-read", "GET", &path, None)).await.is_err());
 }
 
+/// A client retries an answer whose outcome the Mac could not tell by its `kind`, never by the
+/// text of `error`, which other 409s fill with sentences.
+#[tokio::test]
+async fn a_conflict_whose_outcome_is_unknown_names_its_kind() {
+    let f = Fixture::new();
+    let original = f.action();
+    f.direct(original.clone()).await;
+    let path = f.path(&original);
+    let mut stale = operation_results::lookup(&path).unwrap();
+    stale.data_epoch = format!("old-{}", stale.data_epoch);
+    let answer = f.service.operation_result("phone-1", &stale, Transport::Direct).await.unwrap();
+    assert_eq!((answer["status"].as_u64(), answer["body"]["kind"].as_str()), (Some(409), Some("outcome_unknown")), "{answer}");
+    let read = f.work("stale-epoch-read", "GET", &path.replace("data_epoch=", "data_epoch=old-"), None);
+    let answer = f.opened(&f.direct(read).await);
+    assert_eq!((answer["status"].as_u64(), answer["body"]["kind"].as_str()), (Some(409), Some("outcome_unknown")), "{answer}");
+}
+
 #[test]
 fn the_historical_route_grammar_and_digest_are_bounded_and_json_order_independent() {
     let f = Fixture::new();

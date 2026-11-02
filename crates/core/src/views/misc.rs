@@ -430,6 +430,7 @@ pub(super) fn machine(context: &RenderContext<'_>) -> View {
                 .gauges
                 .iter()
                 .map(|g| super::Fact {
+                    kind: None,
                     label: g.label.clone(),
                     value: g.text.clone(),
                     tone: None,

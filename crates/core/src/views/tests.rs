@@ -3755,6 +3755,45 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
     assert!(section_facts(&done, "header").contains(&("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into())), "an ended task keeps its folder");
 }
 
+/// A client finds the state, request, folder and priority of a task by their kind, never by a
+/// translated label or their place in the list.
+#[test]
+fn a_task_detail_names_the_kind_of_its_state_request_folder_and_priority() {
+    let (state, live) = task_working_fixture();
+    for (client, lang) in [(Client::Ios, Lang::Es), (Client::Mac, Lang::En), (Client::Tui, Lang::Es)] {
+        let view = render(&state, &live, client, lang, "task:t-1", "");
+        let kinds = |id: &str| -> Vec<(Option<FactKind>, String)> {
+            view.sections.iter().filter(|section| section.id == id).flat_map(|section| &section.items)
+                .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] })
+                .map(|fact| (fact.kind, fact.value)).collect()
+        };
+        let header = kinds("header");
+        assert_eq!(header[0].0, Some(FactKind::State), "{client:?}");
+        assert!(header.contains(&(Some(FactKind::Folder), "/work/alondra/.claude/worktrees/t-1".into())), "{client:?}: {header:?}");
+        if client != Client::Tui {
+            assert_eq!(header.iter().filter(|(kind, _)| *kind == Some(FactKind::Request)).count(), 1, "{client:?}: {header:?}");
+        }
+        let options = kinds("options");
+        assert_eq!(options.iter().filter(|(kind, _)| *kind == Some(FactKind::Priority)).count(), 1, "{client:?}: {options:?}");
+        assert!(kinds("readings").iter().all(|(kind, _)| kind.is_none()), "{client:?}");
+    }
+}
+
+/// An older daemon sends facts without a kind, and a newer one may send a kind this build does
+/// not know: both read as a fact without kind.
+#[test]
+fn a_fact_without_a_known_kind_reads_as_one_without_kind() {
+    let fact: Fact = serde_json::from_value(serde_json::json!({"label": "Prioridad", "value": "Alta"})).unwrap();
+    assert_eq!(fact.kind, None);
+    let fact: Fact = serde_json::from_value(serde_json::json!({"kind": "deadline", "label": "Plazo", "value": "mañana"})).unwrap();
+    assert_eq!((fact.kind, fact.value.as_str()), (None, "mañana"));
+    let fact: Fact = serde_json::from_value(serde_json::json!({"kind": "priority", "label": "Prioridad", "value": "Alta"})).unwrap();
+    assert_eq!(fact.kind, Some(FactKind::Priority));
+    assert_eq!(serde_json::to_value(&fact).unwrap()["kind"], "priority");
+    let untyped = Fact { kind: None, ..fact };
+    assert!(serde_json::to_value(&untyped).unwrap().get("kind").is_none(), "a fact without kind sends no field");
+}
+
 #[test]
 fn a_task_detail_says_the_model_its_node_runs_on_when_it_is_not_the_one_it_was_launched_with() {
     let mut state = fixture();
@@ -5191,6 +5230,35 @@ fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
     let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
     assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
         [(Some("accept"), "Accept", false), (Some("decline"), "Decline", false), (None, "Reply", true)]);
+}
+
+/// The form of an MCP server's request travels typed on its card while the card waits, so a
+/// screen draws one control per field instead of reading the hint.
+#[test]
+fn a_held_elicitation_card_carries_its_typed_form_until_it_is_answered() {
+    use crate::domain::{CardKind, Hold};
+    use crate::requested_form::RequestedForm;
+    let form = RequestedForm::from_schema(&serde_json::json!({"type": "object", "properties": {
+        "remember": {"type": "boolean", "title": "Remember me"}, "minutes": {"type": "integer", "minimum": 1}}, "required": ["remember"]})).unwrap();
+    let mut card = spec(CardKind::Provide, "Sign in to the calendar", "The server asks.");
+    card.form = Some(form.clone());
+    let mut state = held_fixture(Hold::Elicitation, card);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "card:i-1", "");
+        assert_eq!(card_of(&view).form.as_ref(), Some(&form), "{client:?}");
+        let json = serde_json::to_value(&view).unwrap();
+        let sent = json["sections"][0]["items"][0]["form"]["fields"].as_array().unwrap().iter()
+            .map(|field| (field["name"].as_str().unwrap(), field["kind"]["kind"].as_str().unwrap(), field["required"].as_bool().unwrap())).collect::<Vec<_>>();
+        assert_eq!(sent, [("minutes", "number", false), ("remember", "boolean", true)], "{client:?}");
+    }
+    assert_golden("card-elicitation-form-ios.json", &render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "2026-09-30T10:00:00Z"),
+        include_str!("../../../../fixtures/views/cards/card-elicitation-form-ios.json"));
+    if let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
+        *answer = Some(crate::domain::Answer { attachments: vec![], option_id: Hold::ACCEPT.into(), inputs: Default::default(),
+            responder: "u".into(), at_revision: state.revision, decision: None });
+    }
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(!serde_json::to_string(&view).unwrap().contains("\"form\""), "an answered card has nothing left to fill");
 }
 
 fn presented_pr() -> DomainState {

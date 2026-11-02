@@ -31,12 +31,14 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
     );
     let mut facts = vec![
         Fact {
+            kind: None,
             label: t!(context.lang, "Document", "Documento").into(),
             value: document.title.clone(),
             tone: None,
             link: None,
         },
         Fact {
+            kind: None,
             label: t!(context.lang, "Revision", "Revisión").into(),
             value: revision.number.to_string(),
             tone: None,
@@ -50,6 +52,7 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
         .find(|task| task.documents.contains_key(&document.id))
     {
         facts.push(Fact {
+            kind: None,
             label: t!(context.lang, "Task", "Tarea").into(),
             value: task.title.clone(),
             tone: None,
@@ -93,11 +96,12 @@ fn card_document(card: &str, part: &str, context: &RenderContext<'_>) -> Result<
         .ok_or(BuildError::NotFound)?;
     let markdown = document.markdown.ok_or(BuildError::NotFound)?;
     let mut view = common::view("document", &key, Some(document.title.clone()), context, vec![]);
-    let mut facts = vec![Fact { label: document.label, value: document.title, tone: None, link: None }];
+    let mut facts = vec![Fact { kind: None, label: document.label, value: document.title, tone: None, link: None }];
     if let crate::domain::Scope::Task { task_id } = &interaction.scope
         && let Some(task) = context.domain.tasks.get(task_id)
     {
         facts.push(Fact {
+            kind: None,
             label: t!(context.lang, "Task", "Tarea").into(),
             value: task.title.clone(),
             tone: None,
@@ -126,18 +130,21 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
     );
     let mut facts = vec![
         Fact {
+            kind: None,
             label: t!(context.lang, "Repository", "Repositorio").into(),
             value: pr.repository.clone(),
             tone: None,
             link: None,
         },
         Fact {
+            kind: None,
             label: t!(context.lang, "Base", "Base").into(),
             value: pr.base.clone(),
             tone: None,
             link: None,
         },
         Fact {
+            kind: None,
             label: t!(context.lang, "Head", "Rama").into(),
             value: live.and_then(|details| details.head_ref.clone()).unwrap_or_else(|| {
                 t!(context.lang, "Branch unavailable", "Rama no disponible").into()
@@ -148,6 +155,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
     ];
     if let Some(live) = live.filter(|live| live.changed_files > 0) {
         facts.push(Fact {
+            kind: None,
             label: t!(context.lang, "Changes", "Cambios").into(),
             value: super::card::changes_summary(live, context.lang),
             tone: None,
@@ -159,7 +167,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         "status",
         None,
         vec![Item::Facts(Facts {
-            items: vec![Fact { label: t!(context.lang, "State", "Estado").into(), value: status.text, tone: Some(status.tone), link: None }],
+            items: vec![Fact { kind: None, label: t!(context.lang, "State", "Estado").into(), value: status.text, tone: Some(status.tone), link: None }],
         })],
     ));
     view.sections.push(common::section(

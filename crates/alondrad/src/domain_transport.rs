@@ -893,6 +893,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
         InputValue::Text(value) => value.clone(),
         InputValue::Boolean(value) => value.to_string(),
         InputValue::Integer(value) => value.to_string(),
+        InputValue::Form(content) => serde_json::Value::Object(content.clone()).to_string(),
     }).filter(|value| !value.trim().is_empty()).collect();
     let mut text = match option {
         Some(option) if values.is_empty() => format!("{option}."),

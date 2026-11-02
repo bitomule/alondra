@@ -314,6 +314,7 @@ pub enum Item {
 }
 /// What a card asks of the user; the stable string clients draw the label, colour and icon from.
 pub use crate::domain::CardKind;
+pub use crate::requested_form::{RequestedChoice, RequestedField, RequestedFieldKind, RequestedForm, TextFormat};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Card {
@@ -368,6 +369,10 @@ pub struct Card {
     pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<CardAction>,
+    /// The form an MCP server asks the user to fill, while the card waits for its answer: its
+    /// values go as `input.content` with the option that accepts it.
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
+    pub form: Option<RequestedForm>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentRow {
@@ -524,8 +529,20 @@ pub struct Attachment {
 pub struct Facts {
     pub items: Vec<Fact>,
 }
+/// What a task's fact is, for a client that does something with it beyond showing it: the label
+/// is translated text and its place in the list may change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactKind {
+    State,
+    Request,
+    Folder,
+    Priority,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fact {
+    #[serde(default, deserialize_with = "known", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<FactKind>,
     pub label: String,
     /// Markdown, drawn on one line: a task's state quotes its question or its node's words.
     pub value: String,

@@ -195,6 +195,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }
     for (id, title, metrics) in sections(lang) {
         let items = metrics.iter().filter_map(|metric| report.value(*metric)).map(|value| Fact {
+            kind: None,
             label: label(value.metric, lang).into(),
             value: compared(value, lang),
             tone: value.better.map(|better| if better { Tone::Success } else { Tone::Warning }),

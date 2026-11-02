@@ -42,6 +42,7 @@ pub mod orchestrator_batch;
 pub mod orchestrator_cards;
 pub mod pr;
 pub mod request_outcome;
+pub mod requested_form;
 pub mod secret_destination;
 pub mod sessions;
 pub mod stack;

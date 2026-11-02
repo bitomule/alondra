@@ -141,6 +141,32 @@ fn every_answer_becomes_the_decision_claude_receives() {
     }
 }
 
+/// A form's typed values answer only the card that carries the form, with the option that accepts
+/// it, and only when they fill it; the answer keeps them as they were sent.
+#[test]
+fn a_forms_typed_values_answer_only_its_own_form() {
+    let form = crate::requested_form::RequestedForm::from_schema(&json!({"type": "object", "properties": {"remember": {"type": "boolean"}}, "required": ["remember"]}));
+    let DecisionPrompt::Card { body, options, mut card } = card_prompt(Hold::Elicitation, "Remember this device?") else { unreachable!() };
+    card.form = form;
+    let typed = |card: &str, option: &str, content: serde_json::Value| Command::AnswerQuestion { attachments: vec![], interaction_id: card.into(),
+        option_id: option.into(), inputs: BTreeMap::from([(ANSWER_CONTENT.to_owned(), InputValue::Form(content.as_object().unwrap().clone()))]) };
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, request(3, Hold::Elicitation, None, json!({}), None, DecisionPrompt::Card { body, options, card }));
+    for (option, content) in [(Hold::ACCEPT, json!({"remember": "vale"})), (Hold::ACCEPT, json!({})), (Hold::ACCEPT, json!({"remember": true, "for": 5})),
+        (Hold::DECLINE, json!({"remember": true}))] {
+        assert_eq!(refused_unchanged(&mut s, user(), typed(&card_of(3), option, content.clone())), "invalid_input", "{option} {content}");
+    }
+    must(&mut s, user(), typed(&card_of(3), Hold::ACCEPT, json!({"remember": true})));
+    let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&InteractionId(card_of(3))].payload else { panic!("unanswered") };
+    assert_eq!(answer.inputs.get(ANSWER_CONTENT), Some(&InputValue::Form(json!({"remember": true}).as_object().unwrap().clone())));
+
+    must(&mut s, Actor::System, request(4, Hold::Elicitation, None, json!({}), None, card_prompt(Hold::Elicitation, "Which repository?")));
+    assert_eq!(refused_unchanged(&mut s, user(), typed(&card_of(4), Hold::ACCEPT, json!({"repository": "alondra"}))), "invalid_input",
+        "a card without a form takes no form values");
+    assert_aggregate_rules(&s);
+}
+
 #[test]
 fn questions_asked_together_are_decided_once_the_last_is_answered() {
     let mut s = world();

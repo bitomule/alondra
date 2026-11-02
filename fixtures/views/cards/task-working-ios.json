@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v35df6a6282a4774d",
+  "version": "v1ccc05ec592fd570",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -53,15 +53,18 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "State",
               "value": "Working",
               "tone": "accent"
             },
             {
+              "kind": "request",
               "label": "Request",
               "value": "Build a feature"
             },
             {
+              "kind": "folder",
               "label": "Folder",
               "value": "/work/alondra/.claude/worktrees/t-1"
             }
@@ -391,6 +394,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Priority",
               "value": "Normal"
             },

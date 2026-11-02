@@ -48,8 +48,25 @@ fn page(text: &str, offset: usize) -> Option<(&str, Option<usize>)> {
     Some((&text[offset..end], (end < text.len()).then_some(end)))
 }
 
+/// Why the daemon turned down a report, for a screen to decide on: the error's text is only shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReportRefusal {
+    Invalid,
+    NoCli,
+    CliFailed,
+    TimedOut,
+    Gone,
+}
+
+fn refused(kind: ReportRefusal, code: &str, why: impl Into<String>) -> Reply {
+    let mut reply = Reply::error(DomainError::new(code, why));
+    reply.body["kind"] = json!(kind);
+    reply
+}
+
 fn invalid(why: &str) -> Reply {
-    Reply::error(DomainError::new("invalid_input", why))
+    refused(ReportRefusal::Invalid, "invalid_input", why)
 }
 
 fn failure_of(body: &Value) -> Result<&str, Reply> {
@@ -93,16 +110,16 @@ async fn run(cli: PathBuf, home: &Path, lang: &str, args: Vec<String>, input: Op
         Ok(Ok(output)) => output,
         Ok(Err(error)) => {
             log!("could not run alondra report: {error}");
-            return Err(Reply::error(DomainError::new("unavailable", "Alondra could not build the report")));
+            return Err(refused(ReportRefusal::CliFailed, "unavailable", "Alondra could not build the report"));
         }
-        Err(_) => return Err(Reply::error(DomainError::new("unavailable", "The report took too long"))),
+        Err(_) => return Err(refused(ReportRefusal::TimedOut, "unavailable", "The report took too long")),
     };
     match serde_json::from_slice::<Value>(&output.stdout) {
         Ok(document) if output.status.success() => Ok(document),
         _ => {
             let why = String::from_utf8_lossy(&output.stderr);
             let why = why.trim().trim_start_matches("Error: ").lines().next().unwrap_or_default().to_owned();
-            Err(Reply::error(DomainError::new("unavailable", if why.is_empty() { "Alondra could not build the report".to_owned() } else { why })))
+            Err(refused(ReportRefusal::CliFailed, "unavailable", if why.is_empty() { "Alondra could not build the report".to_owned() } else { why }))
         }
     }
 }
@@ -110,7 +127,7 @@ async fn run(cli: PathBuf, home: &Path, lang: &str, args: Vec<String>, input: Op
 impl Client {
     fn report_cli(&self) -> Result<PathBuf, Reply> {
         self.report_cli.lock_or_recover("the report CLI").clone()
-            .ok_or_else(|| Reply::error(DomainError::new("unavailable", "Alondra's command line is not beside the daemon")))
+            .ok_or_else(|| refused(ReportRefusal::NoCli, "unavailable", "Alondra's command line is not beside the daemon"))
     }
 
     #[cfg(test)]
@@ -167,7 +184,7 @@ impl Client {
                     None => invalid("not a place in the file").into_response(),
                 },
             },
-            Err(_) => Reply::error(DomainError::new("not_found", "That report is no longer on this Mac")).into_response(),
+            Err(_) => refused(ReportRefusal::Gone, "not_found", "That report is no longer on this Mac").into_response(),
         }
     }
 

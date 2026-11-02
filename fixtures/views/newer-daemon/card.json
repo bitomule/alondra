@@ -92,8 +92,8 @@
         {
           "type": "facts",
           "items": [
-            { "label": "Task", "value": "Plan the release week", "tone": "aurora", "link": { "kind": "view", "key": "task:t-31" } },
-            { "label": "Calendar", "value": "Work", "link": { "kind": "deep_link", "target": "calendar:work" } }
+            { "kind": "request", "label": "Task", "value": "Plan the release week", "tone": "aurora", "link": { "kind": "view", "key": "task:t-31" } },
+            { "kind": "calendar_slot", "label": "Calendar", "value": "Work", "link": { "kind": "deep_link", "target": "calendar:work" } }
           ]
         },
         { "type": "calendar_strip", "days": ["2026-10-26", "2026-10-27"] },

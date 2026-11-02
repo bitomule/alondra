@@ -190,16 +190,16 @@ fn workflow_items(id: &str, workflow: &super::LiveWorkflow, lang: super::Lang) -
                 phase = phase, index = index, count = count),
             _ => phase.clone(),
         };
-        facts.push(Fact { label: t!(lang, "Phase", "Fase").into(), value, tone: None, link: None });
+        facts.push(Fact { kind: None, label: t!(lang, "Phase", "Fase").into(), value, tone: None, link: None });
     }
     if workflow.running + workflow.done > 0 {
         let value = tf!(lang, "{running} running · {done} done", "{running} en marcha · {done} terminados",
             running = workflow.running, done = workflow.done);
         let tone = if workflow.running > 0 { Tone::Info } else { Tone::Success };
-        facts.push(Fact { label: t!(lang, "Agents", "Agentes").into(), value, tone: Some(tone), link: None });
+        facts.push(Fact { kind: None, label: t!(lang, "Agents", "Agentes").into(), value, tone: Some(tone), link: None });
     }
     if let Some(count) = workflow.total_tokens {
-        facts.push(Fact { label: t!(lang, "Tokens", "Tokens").into(), value: tokens(count), tone: None, link: None });
+        facts.push(Fact { kind: None, label: t!(lang, "Tokens", "Tokens").into(), value: tokens(count), tone: None, link: None });
     }
     let mut items = vec![];
     if !facts.is_empty() {
@@ -236,13 +236,14 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
     if !node.steps.is_empty() {
         let done = node.steps.iter().filter(|step| step.state == StepState::Completed).count();
         let mut facts = vec![Fact {
+            kind: None,
             label: t!(lang, "Progress", "Progreso").into(),
             value: tf!(lang, "{done} of {total}", "{done} de {total}", done = done, total = node.steps.len()),
             tone: Some(if done == node.steps.len() { Tone::Success } else { Tone::Info }),
             link: None,
         }];
         if let Some(step) = node.steps.iter().find(|step| step.state == StepState::InProgress) {
-            facts.push(Fact { label: t!(lang, "Now", "Ahora").into(),
+            facts.push(Fact { kind: None, label: t!(lang, "Now", "Ahora").into(),
                 value: step.active_form.clone().unwrap_or_else(|| step.subject.clone()), tone: None, link: None });
         }
         let mut items = vec![Item::Facts(Facts { items: facts })];
@@ -292,14 +293,14 @@ pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>)
             Some(at) => tf!(lang, "{tool} · since {at}", "{tool} · desde las {at}", tool = tool, at = at),
             None => tool.clone(),
         };
-        readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value, tone: None, link: None });
+        readings.push(Fact { kind: None, label: t!(lang, "Running", "Ejecutando").into(), value, tone: None, link: None });
     }
     if let Some(text) = &node.background_badge {
-        readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
+        readings.push(Fact { kind: None, label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
             tone: None, link: None });
     }
     if node.last_turn_aborted && !common::working(&node.agent_id, context) {
-        readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
+        readings.push(Fact { kind: None, label: t!(lang, "Last turn", "Último turno").into(),
             value: t!(lang, "Interrupted", "Interrumpido").into(), tone: Some(Tone::Warning), link: None });
     }
     if let Some(percent) = node.context_percent {
@@ -308,7 +309,7 @@ pub(super) fn node_readings(node: &super::LiveNode, context: &RenderContext<'_>)
             Some(window) => tf!(lang, "{percent}% of {window} tokens", "{percent}% de {window} tokens", percent = percent, window = tokens(window)),
             None => format!("{percent}%"),
         };
-        readings.push(Fact { label: t!(lang, "Context", "Contexto").into(), value, tone: Some(label.tone), link: None });
+        readings.push(Fact { kind: None, label: t!(lang, "Context", "Contexto").into(), value, tone: Some(label.tone), link: None });
     }
     readings
 }

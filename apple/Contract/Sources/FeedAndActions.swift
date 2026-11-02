@@ -24,9 +24,11 @@ public struct ActionInput: Codable, Equatable, Sendable {
     public let attachments: [String]?
     public let comments: [ActionComment]?
     public let fields: [String: JSONValue]?
-    enum CodingKeys: String, CodingKey { case text, attachments, comments, fields }
-    public init(text: String? = nil, attachments: [String]? = nil, comments: [ActionComment]? = nil, fields: [String: JSONValue]? = nil) {
-        self.text = text; self.attachments = attachments; self.comments = comments; self.fields = fields
+    /// The values of a card's `form`, each of its field's type, sent with the option that accepts it.
+    public let content: [String: JSONValue]?
+    enum CodingKeys: String, CodingKey { case text, attachments, comments, fields, content }
+    public init(text: String? = nil, attachments: [String]? = nil, comments: [ActionComment]? = nil, fields: [String: JSONValue]? = nil, content: [String: JSONValue]? = nil) {
+        self.text = text; self.attachments = attachments; self.comments = comments; self.fields = fields; self.content = content
     }
 }
 

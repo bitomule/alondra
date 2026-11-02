@@ -9,7 +9,7 @@ use crate::locks::Poisonable as _;
 mod model_input;
 
 use alondra_core::domain::{
-    Actor, ANSWER_TEXT, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
+    Actor, ANSWER_CONTENT, ANSWER_TEXT, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, Target, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, Outcome, OutcomeKind, VIEWS_PROTOCOL, refusal_text};
@@ -43,6 +43,9 @@ pub(crate) struct ActionInput {
     pub comments: Vec<Comment>,
     #[serde(default)]
     pub fields: serde_json::Map<String, Value>,
+    /// The values of a card's form, each of its field's type, sent with the option that accepts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1404,6 +1407,7 @@ fn map_action(
             let mut inputs = std::collections::BTreeMap::new();
             let option = options.iter().find(|option| option.id == option_id);
             if option_id.is_empty() {
+                if request.input.content.is_some() { return None; }
                 let text = request.input.text.as_ref()?.trim();
                 if text.is_empty() { return None; }
                 inputs.insert("text".into(), alondra_core::domain::InputValue::Text(text.into()));
@@ -1411,6 +1415,9 @@ fn map_action(
                 option?;
                 if let Some(text) = request.input.text.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
                     inputs.insert(ANSWER_TEXT.into(), alondra_core::domain::InputValue::Text(text.into()));
+                }
+                if let Some(content) = &request.input.content {
+                    inputs.insert(ANSWER_CONTENT.into(), alondra_core::domain::InputValue::Form(content.clone()));
                 }
             }
             Some((Command::AnswerQuestion {

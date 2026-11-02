@@ -1658,7 +1658,7 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     assert_eq!((built["args"].as_str(), built["stdin"].as_str()),
         (Some("--json --no-input report --app-section -"), Some("the app section")), "the app's section goes to the CLI on stdin");
     let (status, refused) = post("/reports", json!({"failure": "crash"})).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!((status, refused["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")), "{refused}");
 
     let (status, sent) = post("/reports/r-20261027-0000abcd/send", json!({"failure": "not-resumed"})).await;
     assert_eq!(status, StatusCode::OK, "{sent}");
@@ -1669,7 +1669,7 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     std::fs::write(fixture.home.join("fake-alondra"), "#!/bin/sh\necho 'Error: GitHub said no' >&2\nexit 1\n").unwrap();
     let (status, failed) = post("/reports/r-20261027-0000abcd/send", json!({})).await;
     assert_ne!(status, StatusCode::OK);
-    assert_eq!(failed["message"], "GitHub said no", "{failed}");
+    assert_eq!((failed["kind"].as_str(), failed["message"].as_str()), (Some("cli_failed"), Some("GitHub said no")), "{failed}");
 
     let dir = fixture.home.join("reports/r-20261027-0000abcd");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1688,7 +1688,11 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
         let (status, body) = fixture.get(path).await;
         assert_ne!(status, StatusCode::OK, "{path}");
         assert!(!String::from_utf8_lossy(&body).contains("t-secret"), "{path}");
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["kind"], "invalid", "{path}");
     }
+    std::fs::remove_file(dir.join("daemon.log")).unwrap();
+    let (status, gone) = fixture.get("/reports/r-20261027-0000abcd/files/daemon.log").await;
+    assert_eq!((status, serde_json::from_slice::<Value>(&gone).unwrap()["kind"].as_str()), (StatusCode::NOT_FOUND, Some("gone")));
     assert!(approved_read_path("/reports/r-20261027-0000abcd/files/daemon.log"), "the relay carries it too");
     for path in ["/reports/r-1/files/daemon.log", "/reports/r-20261027-0000abcd/files/..", "/reports/r-20261027-0000abcd/files/a/b"] {
         assert!(!approved_read_path(path), "{path}");

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v541f9daf2bca40c1",
+  "version": "vbd3627a8e182c089",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -68,15 +68,18 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "Estado",
               "value": "Te necesita · 5 preguntas abiertas",
               "tone": "warning"
             },
             {
+              "kind": "request",
               "label": "Solicitud",
               "value": "Polish the Alondra beta"
             },
             {
+              "kind": "folder",
               "label": "Carpeta",
               "value": "/demo/Demo Garden/.claude/worktrees/t-651c38484cd2f34e74d5107ba05f7f15"
             }
@@ -425,6 +428,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Prioridad",
               "value": "Normal"
             },

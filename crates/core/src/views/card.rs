@@ -110,7 +110,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         }
     }
     if let Some(destination) = &found.card.secret_destination {
-        let fact = |label: &str, value: &str| Fact { label: label.into(), value: format!("`{value}`"), tone: None, link: None };
+        let fact = |label: &str, value: &str| Fact { kind: None, label: label.into(), value: format!("`{value}`"), tone: None, link: None };
         sections.push(super::common::section("secret", Some(t!(context.lang, "Where the secret goes", "Dónde se guarda el secreto").into()), vec![Item::Facts(Facts { items: vec![
             fact(t!(context.lang, "File", "Fichero"), &destination.file),
             fact(t!(context.lang, "Variable", "Variable"), &destination.variable),
@@ -543,11 +543,15 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         body: None,
         attachments: vec![],
         actions: vec![],
+        form: None,
     };
     if !included {
         return Ok(card);
     }
     card.attachments = attachment_refs(interaction);
+    if interaction.is_some_and(|i| !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. })) {
+        card.form = spec.form.clone();
+    }
     if let Some(pr) = pr {
         let own_title = live_pr(pr, context).and_then(|detail| detail.title.as_deref()).map(str::trim).filter(|title| !title.is_empty());
         if let Some(title) = own_title {
@@ -1887,7 +1891,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         out.extend(card.full_summary().map(|summary| markdown(summary.into())));
         out.push(Item::Facts(Facts { items: card.tasks.iter().map(|task| {
             let (label, value) = crate::request_outcome::DoneCard::task_line(task, lang);
-            Fact { label, value, tone: (!task.cancelled).then_some(Tone::Success), link: Some(Link::View { key: format!("task:{}", task.id) }) }
+            Fact { kind: None, label, value, tone: (!task.cancelled).then_some(Tone::Success), link: Some(Link::View { key: format!("task:{}", task.id) }) }
         }).collect() }));
         return out;
     }
@@ -2008,6 +2012,7 @@ fn first_heading(markdown: &str) -> Option<String> {
 fn documents_section(item: &InboxItem, context: &RenderContext<'_>) -> Option<super::Section> {
     let interaction = interaction_of(item, context.domain)?;
     let items: Vec<Fact> = documents(interaction, context.domain, context.lang).into_iter().map(|document| Fact {
+        kind: None,
         label: document.label,
         value: document.title,
         tone: None,
@@ -2136,7 +2141,7 @@ fn context_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         return vec![];
     }
     let link = item.task_id.as_ref().map(|id| Link::View { key: format!("task:{id}") });
-    vec![Item::Facts(Facts { items: vec![Fact { label: t!(context.lang, "Task", "Tarea").into(), value: line, tone: None, link }] })]
+    vec![Item::Facts(Facts { items: vec![Fact { kind: None, label: t!(context.lang, "Task", "Tarea").into(), value: line, tone: None, link }] })]
 }
 
 /// The points of the task's approved plan its final delivery marked done, each with the evidence
@@ -2263,7 +2268,7 @@ pub(super) fn changes_summary(detail: &super::LivePullRequest, lang: Lang) -> St
 pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Facts, Option<Checks>) {
     let lang = context.lang;
     let live = context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0);
-    let fact = |label: &str, value: String| Fact { label: label.into(), value, tone: None, link: None };
+    let fact = |label: &str, value: String| Fact { kind: None, label: label.into(), value, tone: None, link: None };
     let mut facts = vec![
         fact(t!(lang, "Repository", "Repositorio"), format!("{} #{}", pr.repository, pr.number)),
         fact(t!(lang, "Base", "Base"), pr.base.clone()),
@@ -2276,6 +2281,7 @@ pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Fac
     }
     if let Some(stacked) = live.and_then(|detail| detail.stacked_on.as_deref()) {
         facts.push(Fact {
+            kind: None,
             label: t!(lang, "Stacked on", "Depende de").into(),
             value: context
                 .domain

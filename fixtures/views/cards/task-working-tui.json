@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "vc3f5f366b919008a",
+  "version": "v967e2d2ec773cfd7",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -53,11 +53,13 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "State",
               "value": "Working",
               "tone": "accent"
             },
             {
+              "kind": "folder",
               "label": "Folder",
               "value": "/work/alondra/.claude/worktrees/t-1"
             }
@@ -374,6 +376,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Priority",
               "value": "Normal"
             },

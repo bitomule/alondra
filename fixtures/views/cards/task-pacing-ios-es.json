@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "vafa6988d6578a338",
+  "version": "v00f8f7539e869572",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -68,11 +68,13 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "Estado",
               "value": "En cola · 1.º de 2 · Prioridad alta",
               "tone": "neutral"
             },
             {
+              "kind": "request",
               "label": "Solicitud",
               "value": "Build the importer"
             }
@@ -102,6 +104,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Prioridad",
               "value": "Alta"
             },

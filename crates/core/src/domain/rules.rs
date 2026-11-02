@@ -161,6 +161,9 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
         (Some(v), _) if v.trim().is_empty() => return refuse("invalid_input", "card.verify", "Say how you will check the user did it"),
         _ => {}
     }
+    if card.form.is_some() && (card.kind != CardKind::Provide || source != Source::Hold) {
+        return refuse("invalid_input", "card.form", "Only a held request for input from an MCP server carries a form");
+    }
     if let Some(destination) = &card.secret_destination {
         if card.kind != CardKind::Provide || source != Source::Question {
             return refuse("invalid_input", "card.secret_destination", "Only request_input with kind secret says where the secret goes");
@@ -3690,6 +3693,7 @@ impl DomainState {
                 }
                 validate_answer(options, option_id, inputs, attachments)?;
                 secret_answer_guard(&i.card, option_id, inputs, attachments)?;
+                form_answer_guard(&i.card, option_id, inputs)?;
                 self.mcp_answer_guard(&i, option_id)?;
                 validate_attachments(attachments)?;
                 if let (Some(Hold::Plan), Scope::Task { task_id }) = (self.holds.get(interaction_id), &i.scope)
@@ -5375,17 +5379,32 @@ fn secret_answer_guard(card: &CardSpec, option: &str, inputs: &BTreeMap<String, 
     }
     Ok(())
 }
+/// A form's values only answer a card that carries the form, with the option that accepts it, and
+/// only when they fill it.
+fn form_answer_guard(card: &CardSpec, option: &str, inputs: &BTreeMap<String, InputValue>) -> Result<()> {
+    let Some(InputValue::Form(content)) = inputs.get(ANSWER_CONTENT) else { return Ok(()) };
+    let Some(form) = &card.form else {
+        return refuse("invalid_input", "input.content", "Only a card with a form takes form values");
+    };
+    if option != Hold::ACCEPT {
+        return refuse("invalid_input", "input.content", "Form values go with the option that accepts the form");
+    }
+    form.check(content).or_else(|problem| refuse("invalid_input", "input.content", &problem.to_string()))
+}
 fn validate_answer(
     options: &[QuestionOption],
     option: &str,
     inputs: &BTreeMap<String, InputValue>,
     attachments: &[AttachmentRef],
 ) -> Result<()> {
-    let text = match inputs.iter().collect::<Vec<_>>().as_slice() {
-        [] => None,
-        [(_, InputValue::Text(text))] if text.len() <= 1_048_576 => Some(text.as_str()),
-        _ => return fail("invalid_input", "An answer carries at most one text: the words written on the card"),
-    };
+    let mut text = None;
+    for (key, value) in inputs {
+        match (key.as_str(), value) {
+            (ANSWER_CONTENT, InputValue::Form(_)) => {}
+            (_, InputValue::Text(written)) if text.is_none() && written.len() <= 1_048_576 => text = Some(written.as_str()),
+            _ => return fail("invalid_input", "An answer carries at most one text: the words written on the card"),
+        }
+    }
     if options.is_empty() || option.is_empty() {
         let written = text.is_some_and(|text| !text.trim().is_empty()) && inputs.contains_key(ANSWER_TEXT);
         if !option.is_empty() || !(written || text.is_none() && !attachments.is_empty()) {

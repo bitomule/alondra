@@ -286,6 +286,9 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
     };
     let mut card = hold_card(hold, &body, &options, recommended, title.as_deref());
     card.allow_always = allow;
+    if hold == Hold::Elicitation {
+        card.form = alondra_core::requested_form::RequestedForm::from_schema(&input);
+    }
     execute(domain, &state, Command::HoldHook {
         interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold, body, options, card,
     })?;
@@ -375,7 +378,11 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
             let (title, detail, card_options) = elicitation_card(&form);
             let mut options = hold.options_offering(false);
             options[0].description = card_options.into_iter().next().and_then(|option| option.description);
-            card(titled(title, detail), options, None, None, None)
+            let mut prompt = card(titled(title, detail), options, None, None, None);
+            if let DecisionPrompt::Card { card, .. } = &mut prompt {
+                card.form = alondra_core::requested_form::RequestedForm::from_schema(payload.get("requestedSchema").unwrap_or(&Value::Null));
+            }
+            prompt
         }
     };
     SdkDecision { hold, tool, input, mcp_server, prompt }

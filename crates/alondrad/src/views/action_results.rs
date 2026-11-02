@@ -341,7 +341,7 @@ pub(super) async fn execute_recorded(
 }
 
 fn unknown(status: StatusCode) -> Response {
-    (status, Json(json!({"error":"outcome_unknown"}))).into_response()
+    (status, Json(json!({"error":"outcome_unknown","kind":"outcome_unknown"}))).into_response()
 }
 
 pub(super) async fn read(

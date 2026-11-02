@@ -164,7 +164,7 @@ impl Service {
                 .map(str::to_owned)
         };
         if expected.as_deref() != Some(epoch.as_str()) {
-            return Ok(json!({"status":409,"body":{"error":"outcome_unknown"}}));
+            return Ok(json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
         }
         let scope = self.operation_journal_scope(sender, &device, transport, &epoch)?;
         let original_binding = scope.binding.clone();
@@ -253,7 +253,7 @@ impl Service {
         );
         Ok(match result {
             Some(result) => json!({"status":200,"body":result}),
-            None => json!({"status":409,"body":{"error":"outcome_unknown"}}),
+            None => json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}),
         })
     }
 
@@ -318,7 +318,7 @@ impl Service {
             .as_ref()
             .context("operation results require the domain store")?;
         if domain.state()?.data_epoch.0 != request.data_epoch {
-            return Ok(json!({"status":409,"body":{"error":"outcome_unknown"}}));
+            return Ok(json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
         }
         let binding = self.operation_binding(sender, &device, transport, &request.data_epoch)?;
         let (sender_owned, id, digest) = (sender.to_owned(), request.id.clone(), request.digest);
@@ -339,10 +339,10 @@ impl Service {
         if domain.state()?.data_epoch.0 != request.data_epoch
             || self.operation_binding(sender, &device, transport, &request.data_epoch)? != binding
         {
-            return Ok(json!({"status":409,"body":{"error":"outcome_unknown"}}));
+            return Ok(json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
         }
         let Some(bytes) = result else {
-            return Ok(json!({"status":404,"body":{"error":"outcome_unknown"}}));
+            return Ok(json!({"status":404,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
         };
         let response: Envelope = serde_json::from_slice(&bytes)?;
         if response.kind != "response"
@@ -351,19 +351,19 @@ impl Service {
             || response.recipient != sender
             || response.route != self.mac_id
         {
-            return Ok(json!({"status":404,"body":{"error":"outcome_unknown"}}));
+            return Ok(json!({"status":404,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
         }
         let complete = json!({"status":200,"body":{"request_id":request.id,"digest":request.digest_text,
             "data_epoch":request.data_epoch,"response":response}});
         let offset = request.offset.unwrap_or(0);
         if serde_json::to_vec(&complete)?.len() <= MAX_LOCAL_RESPONSE {
             if offset != 0 {
-                return Ok(json!({"status":422,"body":{"error":"outcome_unknown"}}));
+                return Ok(json!({"status":422,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
             }
             return Ok(complete);
         }
         if offset >= bytes.len() {
-            return Ok(json!({"status":422,"body":{"error":"outcome_unknown"}}));
+            return Ok(json!({"status":422,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
         }
         let end = offset.saturating_add(RESULT_CHUNK_BYTES).min(bytes.len());
         let chunk = base64::engine::general_purpose::STANDARD.encode(&bytes[offset..end]);

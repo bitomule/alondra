@@ -1365,6 +1365,15 @@ fn a_secret_card_is_answered_only_with_where_its_value_was_written() {
     ok(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "again".into(), option_id: "skip".into(), inputs: BTreeMap::new() });
 }
 
+/// A form is what an MCP server asks through a held hook: a node's own card never carries one.
+#[test]
+fn only_a_held_request_for_input_carries_a_form() {
+    let mut s = fixture();
+    let form = crate::requested_form::RequestedForm::from_schema(&serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}})).unwrap();
+    let card = CardSpec { form: Some(form), ..CardSpec::new(CardKind::Provide, "Send the project name").why("The server needs it") };
+    assert_eq!(refused(&mut s, agent(), ask("form", "t", false, card)), ("invalid_input".into(), Some("card.form".into())));
+}
+
 fn snooze(id: &str, until: i64) -> Command {
     Command::SnoozeCard { interaction_id: id.into(), until, now: 100 }
 }

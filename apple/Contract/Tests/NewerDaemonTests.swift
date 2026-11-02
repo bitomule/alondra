@@ -87,6 +87,36 @@ final class NewerDaemonTests: XCTestCase {
         XCTAssertEqual(facts.items.map(\.link), [.view(key: "task:t-31"), nil])
     }
 
+    func testAFactKeepsItsKnownKindAndANewerKindReadsAsOther() throws {
+        guard case let .facts(facts) = try newerCard().sections[1].items[0] else { return XCTFail("facts") }
+
+        XCTAssertEqual(facts.items.map(\.kind), [.request, .other])
+        XCTAssertEqual(facts.items.map(\.value), ["Plan the release week", "Work"])
+    }
+
+    func testAFormWithAFieldOfANewerKindIsLeftOutAndTheCardStays() throws {
+        let original = try ContractCodec.encode(try newerCard())
+        var value = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        var sections = try XCTUnwrap(value["sections"] as? [[String: Any]])
+        var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+        let form: [String: Any] = ["fields": [
+            ["name": "remember", "required": true, "kind": ["kind": "boolean"]],
+            ["name": "color", "kind": ["kind": "color_picker"]],
+        ]]
+        items[0]["form"] = form
+        sections[0]["items"] = items
+        value["sections"] = sections
+        let newer = try card(ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: value)))
+        XCTAssertNil(newer.form, "a form the app cannot fill whole is answered with words")
+        XCTAssertEqual(newer.title, try card(newerCard()).title)
+
+        items[0]["form"] = ["fields": [["name": "remember", "required": true, "kind": ["kind": "boolean"]]]]
+        sections[0]["items"] = items
+        value["sections"] = sections
+        let known = try card(ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: value)))
+        XCTAssertEqual(known.form?.fields.map(\.kind), [.boolean(defaultValue: nil)])
+    }
+
     func testAnUnknownItemStaysInItsPlaceAsUnsupported() throws {
         let items = try newerCard().sections[1].items
 
