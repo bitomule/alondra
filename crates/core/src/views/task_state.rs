@@ -24,8 +24,6 @@ pub(super) struct Presentation {
     pub fact: Option<String>,
     pub since: Option<String>,
     pub block: Block,
-    /// It waits for other open tasks, so it is listed in the chain of the first of them.
-    pub chained: bool,
     /// Its place in the queue of starts.
     pub queue: Option<usize>,
     /// When it last did something, to order the work in progress; a task at work shows no time.
@@ -41,7 +39,7 @@ impl Presentation {
     }
 
     fn new(state: impl Into<String>, tone: Tone, block: Block, fact: Option<String>) -> Self {
-        Self { state: state.into(), tone, icon: Icon::Task, fact, since: None, block, chained: false, queue: None, active_at: None, fact_in_state: false }
+        Self { state: state.into(), tone, icon: Icon::Task, fact, since: None, block, queue: None, active_at: None, fact_in_state: false }
     }
 }
 
@@ -409,11 +407,61 @@ pub(super) fn open_dependencies<'a>(task: &Task, context: &RenderContext<'a>) ->
         .collect()
 }
 
+/// A task waiting for other open tasks: "Waits for “Build a feature”", or for several "Waits for Install PR 4, 5
+/// and 7", each by the part of its title before ":", with what they share said once.
 fn chained(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
-    let fact = open_dependencies(task, context).first()
-        .map(|dependency| tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = dependency.title));
-    Presentation { chained: true, ..Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Block::Waiting, fact) }
+    let dependencies = open_dependencies(task, context);
+    let fact = match dependencies.as_slice() {
+        [] => None,
+        [only] => Some(tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = only.title)),
+        several => {
+            let names: Vec<String> = several.iter()
+                .map(|dependency| dependency.title.split_once(':').map_or(dependency.title.as_str(), |(head, _)| head).trim().to_owned())
+                .collect();
+            let names = shared_prefix_once(&names);
+            let (last, head) = names.split_last().expect("several names");
+            let head = head.join(", ");
+            Some(tf!(lang, "Waits for {head} and {last}", "Espera a {head} y {last}"))
+        }
+    };
+    Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Block::Waiting, fact)
+}
+
+/// ["Install PR 4", "Install PR 5"] reads as ["Install PR 4", "5"]: the words they share are said once.
+fn shared_prefix_once(names: &[String]) -> Vec<String> {
+    let [first, rest @ ..] = names else { return Vec::new() };
+    if rest.is_empty() {
+        return vec![first.clone()];
+    }
+    let mut shared = first.as_str();
+    for name in rest {
+        while !name.starts_with(shared) {
+            shared = match shared.trim_end().rsplit_once(' ') {
+                Some((head, _)) => &first[..head.len() + 1],
+                None => "",
+            };
+        }
+    }
+    let shared = &shared[..shared.rfind(' ').map_or(0, |at| at + 1)];
+    if shared.is_empty() || names.iter().any(|name| name.len() == shared.len()) {
+        return names.to_vec();
+    }
+    std::iter::once(first.clone()).chain(rest.iter().map(|name| name[shared.len()..].to_owned())).collect()
+}
+
+/// The one line the Waiting block says when the Mac itself holds every new start: no figure that changes by
+/// itself, and nothing while the Mac lets the next one start.
+pub(super) fn start_hold(listed: &[&Task], context: &RenderContext<'_>) -> Option<String> {
+    let lang = context.lang;
+    let hold = listed.iter().find_map(|task| common::gate_queued(task, context)).map(|queued| &queued.hold)?;
+    match hold {
+        LiveHold::Memory { .. } => Some(t!(lang, "New starts wait: the Mac is short of memory",
+            "Los arranques nuevos esperan: el Mac va justo de memoria").into()),
+        LiveHold::Cpu { .. } => Some(t!(lang, "New starts wait: the Mac is very busy",
+            "Los arranques nuevos esperan: el Mac está muy cargado").into()),
+        LiveHold::Slots { .. } | LiveHold::Next | LiveHold::Disk { .. } => None,
+    }
 }
 
 /// A decision of the user on a task this one waits for holds it until the orchestrator reviews its plan.
@@ -503,11 +551,8 @@ fn in_queue(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Prese
     let fact = match &queued.hold {
         LiveHold::Next if queued.position == 1 => Some(t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into()),
         LiveHold::Slots { working, limit } => Some(tf!(lang, "{working} of {limit} working", "Hay {working} de {limit} trabajando")),
-        LiveHold::Memory { free: Some(free) } => Some(tf!(lang, "The Mac is short of memory ({free}% free)", "El Mac va justo de memoria ({free} % libre)")),
-        LiveHold::Memory { free: None } => Some(t!(lang, "The Mac is short of memory", "El Mac va justo de memoria").into()),
-        LiveHold::Cpu { load, cpus } => Some(tf!(lang, "The Mac is very busy (load {load} on {cpus} cores)", "El Mac está muy cargado (carga {load} en {cpus} núcleos)")),
         LiveHold::Disk { free, needed, volume } => Some(common::disk_room_fact(*free, *needed, volume.as_deref(), lang)),
-        LiveHold::Next => priority(task, lang),
+        LiveHold::Memory { .. } | LiveHold::Cpu { .. } | LiveHold::Next => priority(task, lang),
     };
     Presentation {
         queue: Some(queued.position),

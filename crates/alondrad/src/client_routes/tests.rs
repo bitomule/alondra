@@ -1189,7 +1189,7 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_b
     assert!(!revival.is_finished(), "nothing brings it back while the Mac has no room");
     assert!(task_shown(&fixture, "task-1", "es").await[0].0.starts_with("En cola"), "its task's screen says it is queued");
     let held = view_json(&fixture, "tasks", "es").await.to_string();
-    assert!(held.contains("En cola · 1.º de 1") && held.contains("El Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
+    assert!(held.contains("En cola · 1.º de 1") && held.contains("Los arranques nuevos esperan: el Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
 
     memory(&fixture, MemoryPressure::Normal, &[alondra_core::now_millis()]);
     crate::admission::pass(&fixture.domain, &fixture.home).await.unwrap();

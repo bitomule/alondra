@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v14f75dd06659d594",
+  "version": "v319ef26ed278628f",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -132,7 +132,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "5 open questions",
+                  "title": "5 open questions · Polish the Alondra beta",
                   "trailing": {
                     "kind": "time",
                     "at": "2026-09-30T09:30:00Z",
@@ -140,38 +140,6 @@
                   },
                   "depth": 0,
                   "struck": false
-                },
-                {
-                  "id": "chain:t-651c38484cd2f34e74d5107ba05f7f15",
-                  "icon": "branch",
-                  "title": "+1 waiting for this",
-                  "depth": 2,
-                  "struck": false,
-                  "children": [
-                    {
-                      "id": "t-queued",
-                      "link": {
-                        "kind": "view",
-                        "key": "task:t-queued"
-                      },
-                      "icon": "branch",
-                      "title": "Wire the badge after the review",
-                      "subtitle": "waits for Restore the native review experience",
-                      "badges": [
-                        {
-                          "text": "Waiting",
-                          "tone": "info"
-                        },
-                        {
-                          "text": "Demo Garden",
-                          "tone": "neutral"
-                        }
-                      ],
-                      "depth": 3,
-                      "struck": false
-                    }
-                  ],
-                  "folded": true
                 }
               ]
             }
@@ -315,11 +283,46 @@
           "title": "Waiting",
           "trailing": {
             "kind": "text",
-            "text": "1"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
           "children": [
+            {
+              "id": "t-queued",
+              "link": {
+                "kind": "view",
+                "key": "task:t-queued"
+              },
+              "icon": "branch",
+              "title": "Wire the badge after the review",
+              "subtitle": "Waiting",
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "info"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Waits for “Restore the native review experience” · Polish the Alondra beta",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
             {
               "id": "t-paused-builder",
               "link": {

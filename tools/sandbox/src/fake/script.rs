@@ -35,6 +35,9 @@ pub struct TaskScript {
     /// Whether it answers Alondra's clean-up request with `cleanup_done`.
     #[serde(default = "yes")]
     pub cleans_up: bool,
+    /// The tasks it waits for: it starts once they are done.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 fn yes() -> bool {

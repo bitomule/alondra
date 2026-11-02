@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "va7715507a80ad46d",
+  "version": "v76a046fc184ef1c7",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vd4e8cd2ebf74fb69",
+    "version": "v241280f956cb5ca1",
     "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 8
+        "value": 9
       },
       {
         "id": "agents",
@@ -81,7 +81,7 @@
     {
       "id": "active",
       "title": "Activas",
-      "count": 8,
+      "count": 9,
       "collapsed": false,
       "items": [
         {
@@ -140,38 +140,6 @@
                   },
                   "depth": 0,
                   "struck": false
-                },
-                {
-                  "id": "chain:t-651c38484cd2f34e74d5107ba05f7f15",
-                  "icon": "branch",
-                  "title": "+1 esperando a esta",
-                  "depth": 2,
-                  "struck": false,
-                  "children": [
-                    {
-                      "id": "t-badge-decrement",
-                      "link": {
-                        "kind": "view",
-                        "key": "task:t-badge-decrement"
-                      },
-                      "icon": "branch",
-                      "title": "Decrement the badge on retraction",
-                      "subtitle": "espera a Restore the native review experience",
-                      "badges": [
-                        {
-                          "text": "Esperando",
-                          "tone": "info"
-                        },
-                        {
-                          "text": "Demo Garden",
-                          "tone": "neutral"
-                        }
-                      ],
-                      "depth": 3,
-                      "struck": false
-                    }
-                  ],
-                  "folded": true
                 }
               ]
             }
@@ -184,7 +152,7 @@
           "title": "En marcha",
           "trailing": {
             "kind": "text",
-            "text": "4"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -234,6 +202,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Badge accuracy",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:a-badge@6",
@@ -350,13 +327,91 @@
           "id": "block:waiting",
           "icon": "task",
           "title": "En espera",
+          "subtitle": "Los arranques nuevos esperan: el Mac va justo de memoria",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "5"
           },
           "depth": 0,
           "struck": false,
           "children": [
+            {
+              "id": "t-copy-screens",
+              "link": {
+                "kind": "view",
+                "key": "task:t-copy-screens"
+              },
+              "icon": "task",
+              "title": "Refresh the App Store screenshots",
+              "subtitle": "En cola · 1.º de 1",
+              "badges": [
+                {
+                  "text": "En cola · 1.º de 1",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:t-copy-screens@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-badge-decrement",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-decrement"
+              },
+              "icon": "task",
+              "title": "Decrement the badge on retraction",
+              "subtitle": "Esperando",
+              "badges": [
+                {
+                  "text": "Esperando",
+                  "tone": "info"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Espera a «Restore the native review experience» · Badge accuracy",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
             {
               "id": "t-hf-registry",
               "link": {

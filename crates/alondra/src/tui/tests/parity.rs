@@ -2533,35 +2533,6 @@ fn words_written_under_an_orchestrator_decide_answer_it_and_take_it_out() {
     assert!(!app.inbox_keys().contains(&Key(id)));
 }
 
-/// The chain the daemon folds, as each client gets it: id, folded and the tasks under it.
-fn chain_of(name: &str) -> (String, bool, Vec<String>) {
-    fn find(rows: &[alondra_core::views::Row]) -> Option<&alondra_core::views::Row> {
-        rows.iter().find_map(|row| if row.id.starts_with("chain:") { Some(row) } else { find(&row.children) })
-    }
-    let view: alondra_core::views::View = serde_json::from_value(view_fixture(name)).unwrap();
-    let rows: Vec<alondra_core::views::Row> = view.sections.iter().flat_map(|section| &section.items)
-        .filter_map(|item| match item { alondra_core::views::Item::Row(row) => Some(row.clone()), _ => None })
-        .collect();
-    let chain = find(&rows).unwrap_or_else(|| panic!("{name}: no chain"));
-    (chain.id.clone(), chain.folded, chain.children.iter().map(|row| row.id.clone()).collect())
-}
-
-#[test]
-fn the_tui_folds_the_chain_like_ios_and_mac() {
-    let tui = chain_of("tasks-tui.json");
-    assert_eq!(chain_of("tasks-ios.json"), tui, "iOS");
-    assert_eq!(chain_of("tasks-mac.json"), tui, "Mac");
-    assert!(tui.1, "every client starts with the chain folded");
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
-    app.reconcile();
-    let keys: Vec<String> = app.inbox_keys().into_iter().map(|key| key.0).collect();
-    assert!(keys.contains(&tui.0), "{keys:?}");
-    assert!(tui.2.iter().all(|member| !keys.contains(member)), "the TUI hides them like iOS and Mac: {keys:?}");
-}
-
 #[test]
 fn comments_a_node_takes_after_its_turn_count_as_sent_and_an_uncertain_handoff_does_not() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);

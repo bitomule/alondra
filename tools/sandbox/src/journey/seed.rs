@@ -42,6 +42,14 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         launched(report, &fakes, "t-working")?;
         state(report, &user, "t-working", "In the background")?;
 
+        let mut follow_up = task_script("req-follow-up", "t-follow-up", "Announce the release on the blog");
+        follow_up.tasks[0].dependencies = vec!["t-working".into()];
+        request(report, &fakes, &user, &follow_up, "Announce the release on the blog")?;
+        wait(report, "the orchestrator creates t-follow-up, which waits for t-working", || {
+            let seen = user.task_state("t-follow-up").unwrap_or_default();
+            Ok(((seen == "Waiting").then_some(()), seen))
+        })?;
+
         request(report, &fakes, &user, &task_script("req-question", "t-question", "Choose a name for the CLI flag"), "Choose a name for the CLI flag")?;
         let asking = launched(report, &fakes, "t-question")?;
         state(report, &user, "t-question", WORKING)?;
@@ -154,6 +162,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, one waiting for it, question, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

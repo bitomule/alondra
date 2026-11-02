@@ -103,7 +103,7 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
             let launch = json!({"name": format!("sandbox/{}", task.task_id), "cwd": fakes.repo(), "model": "sonnet", "reason": "A scripted sandbox node"});
             calls.push(("create_task", json!({
                 "task_id": task.task_id, "request_id": script.request_id, "title": task.title, "agent_id": null,
-                "review_prs": false, "dependencies": [], "launch": launch,
+                "review_prs": false, "dependencies": task.dependencies, "launch": launch,
             })));
         }
         made.extend(call_all(&dir, &program, &server_args, calls)?);

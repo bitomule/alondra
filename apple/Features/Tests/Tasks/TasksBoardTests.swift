@@ -88,8 +88,8 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(daemons.clearCompleted?.command, "clear_completed", "the daemon offers it in the Completed header")
         XCTAssertEqual(daemons.finished.title, "Completed")
         XCTAssertEqual(daemons.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
-        XCTAssertEqual(daemons.active.requests.count, 8)
-        XCTAssertEqual(daemons.active.count, 8, "the active work is counted in tasks")
+        XCTAssertEqual(daemons.active.requests.count, 10)
+        XCTAssertEqual(daemons.active.count, 9, "the active work is counted in tasks, not the request still being split")
     }
 
     func testAScheduledRunInProgressIsAnActiveRequestMarkedScheduled() throws {
@@ -115,25 +115,28 @@ final class TasksBoardTests: XCTestCase {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
 
         XCTAssertEqual(board.active.blocks.map(\.title), ["For you", "In progress", "Waiting"])
-        XCTAssertEqual(board.active.blocks.map(\.count), [1, 4, 3], "a block counts its tasks, not the ones folded in a chain")
+        XCTAssertEqual(board.active.blocks.map(\.count), [1, 3, 5], "a block counts its tasks, the ones that wait for another too")
         XCTAssertEqual(board.active.blocks.map(\.isCompact), [false, false, true], "only waiting work reads as short lines")
         let forYou = try XCTUnwrap(board.active.blocks.first)
         XCTAssertEqual(forYou.requests.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.state), ["Needs you"],
                        "only a task with a card waiting for you is For you")
     }
 
-    func testAChainOfWaitingTasksFoldsUnderItsFirstTaskFromOneAndOpensOneLevelDeep() throws {
+    func testATaskThatWaitsForAnotherIsInWaitingSayingWhatItWaitsFor() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        let head = try XCTUnwrap(board.active.requests.first { $0.id == "t-651c38484cd2f34e74d5107ba05f7f15" })
+        let waiting = try XCTUnwrap(board.active.blocks.first { $0.id == "block:waiting" })
+        let task = try XCTUnwrap(waiting.requests.flatMap(\.tasks).first { $0.id == "t-badge-decrement" })
 
-        XCTAssertEqual(head.lines(open: []).map(\.title), ["Restore the native review experience", "+1 waiting for this"])
-        XCTAssertEqual(head.lines(open: []).last?.isChain, true)
-        let open = head.lines(open: ["chain:t-651c38484cd2f34e74d5107ba05f7f15"])
-        XCTAssertEqual(open.map(\.title), ["Restore the native review experience", "+1 waiting for this", "Decrement the badge on retraction"])
-        XCTAssertEqual(open.last?.state, "waits for Restore the native review experience")
-        XCTAssertEqual(open.last?.chain, "chain:t-651c38484cd2f34e74d5107ba05f7f15")
+        XCTAssertEqual(task.activity, "Waits for “Restore the native review experience” · Badge accuracy")
+        XCTAssertFalse(board.active.requests.flatMap(\.tasks).contains { $0.isChain }, "nothing folds under the task it waits for")
         XCTAssertTrue(board.active.requests.flatMap(\.tasks).allSatisfy { !$0.isWait && $0.origin == nil },
                       "no «waits for» rows and no «from:» lines")
+    }
+
+    func testTheWaitingBlockSaysOnceWhatHoldsNewStarts() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios-es"))
+
+        XCTAssertEqual(board.active.blocks.map(\.note), [nil, nil, "Los arranques nuevos esperan: el Mac va justo de memoria"])
     }
 
     func testTheTasksOfAnUntitledRequestWithSeveralTasksStandLooseWithoutAHeader() throws {

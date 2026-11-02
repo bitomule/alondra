@@ -704,6 +704,10 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_request(&mut state, "r-legacy", None, "Look at the schedule editor and write the notes for the beta.");
     add_task(&mut state, "t-legacy-editor", "r-legacy", "Review the schedule editor", TaskState::ForYourReview, &[]);
     add_task(&mut state, "t-legacy-notes", "r-legacy", "Write the release notes", TaskState::NotStarted, &[]);
+    add_request(&mut state, "r-copy", None, "Refresh the App Store screenshots with the new onboarding.");
+    add_task(&mut state, "t-copy-screens", "r-copy", "Refresh the App Store screenshots", TaskState::NotStarted, &[]);
+    live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(11), tight: true, paused: vec![],
+        queued: vec![LiveQueued { pausable: true, task_id: "t-copy-screens".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(11) } }] });
     add_request(&mut state, "r-new", None, "Import lists from Notes. Keep the order and the checked items.");
     add_request(&mut state, "r-message", None, "[From Claude, for David · 09:58] Launch two more from the queue.");
     state.requests.get_mut(&"r-message".into()).unwrap().message = true;
@@ -980,7 +984,7 @@ fn every_task_shows_its_project_title_and_state_without_a_live_node() {
             let badges: Vec<&str> = row.badges.iter().map(|badge| badge.text.as_str()).collect();
             assert!(badges.contains(&project), "{client:?}: {id} shows its project: {badges:?}");
             let said = row.subtitle.as_deref().is_some_and(|text| text.to_lowercase().contains(&shown.to_lowercase())
-                || (id == "t-waiting" && text == "waits for Parse the lists"));
+                || (id == "t-waiting" && text == "Waits for “Parse the lists”"));
             if !badges.contains(&shown) && !said {
                 wrong.push(format!("{client:?}: {id} shows {shown}: {badges:?} {:?}", row.subtitle));
             }
@@ -1890,7 +1894,7 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
     let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } }], vec![], None);
     let (block, row) = active_row(&state, &held, Client::Mac, Lang::Es, "t-1");
     assert_eq!(row.badges[0].text, "En cola · 1.º de 1");
-    assert_eq!(row.subtitle.as_deref(), Some("El Mac va justo de memoria (12 % libre)"));
+    assert_eq!(row.subtitle, None, "memory is said once, in the block's header");
     assert_eq!(block, "block:waiting");
     let detail = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
     assert!(detail.contains("En cola") && !detail.contains("Reconectando"), "{detail}");
@@ -1923,7 +1927,7 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
     }
     let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
     let shown = serde_json::to_string(&active_row(&state, &held, Client::Ios, Lang::Es, "t-1").1).unwrap();
-    assert!(shown.contains("El Mac va justo de memoria (9 % libre)"), "{shown}");
+    assert!(shown.contains("En cola · 1.º de 1") && !shown.contains("memoria"), "{shown}");
 }
 
 fn node_in(state: &mut DomainState, phase: NodePhase) {
@@ -2981,8 +2985,15 @@ fn card_detail_context_is_one_line_with_no_task_state() {
     assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::Actions(_))));
 }
 
+/// What a task says beside its state, without the name of its request a loose task adds: the iPhone draws it in
+/// the row's `activity` line (its subtitle is the state), the Mac and the TUI as its subtitle.
+fn fact_of(row: &Row) -> Option<&str> {
+    let fact = row.children.iter().find(|child| child.id == "activity").map(|line| line.title.as_str()).or(row.subtitle.as_deref());
+    fact.and_then(|fact| fact.split(" · ").next())
+}
+
 #[test]
-fn a_task_that_waits_for_another_folds_under_it_from_one() {
+fn a_task_that_waits_for_another_is_in_waiting_saying_what_it_waits_for() {
     let mut state = fixture();
     let mut child = state.tasks.get(&"t-1".into()).unwrap().clone();
     child.id = "t-2".into();
@@ -2992,14 +3003,11 @@ fn a_task_that_waits_for_another_folds_under_it_from_one() {
     state.tasks.insert(child.id.clone(), child);
     state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Two steps".into());
     for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (block, waiting) = active_row(&state, &LiveSnapshot::default(), client, Lang::En, "t-2");
+        assert_eq!((block.as_str(), fact_of(&waiting)), ("block:waiting", Some("Waits for “Build a feature”")), "{client:?}");
         let rows = rows_of(&state, client, Lang::En);
-        let head = find(&rows, "t-1");
-        let fold = find(&head.children, "chain:t-1");
-        assert_eq!((fold.title.as_str(), fold.folded, fold.depth, fold.link.is_none()),
-            ("+1 waiting for this", true, 2, true), "{client:?}: one waiting task already folds");
-        let waiting = find(&fold.children, "t-2");
-        assert_eq!((waiting.subtitle.as_deref(), waiting.depth), (Some("waits for Build a feature"), 3), "{client:?}");
-        assert_eq!(occurrences(&rows, "group:r-1"), 0, "{client:?}: one task left loose needs no header");
+        assert!(rows.iter().all(|row| !row.id.starts_with("chain:")), "{client:?}: nothing folds under the task it waits for");
+        assert_eq!(occurrences(&rows, "group:r-1"), 0, "{client:?}: its two tasks are in different blocks, so neither needs a header");
     }
 }
 
@@ -3026,10 +3034,6 @@ fn find<'a>(rows: &'a [Row], id: &str) -> &'a Row {
         .unwrap_or_else(|| panic!("no row {id} in {:?}", rows.iter().map(|row| &row.id).collect::<Vec<_>>()))
 }
 
-fn count_ids(rows: &[Row], id: &str) -> usize {
-    rows.iter().map(|row| usize::from(row.id == id) + count_ids(&row.children, id)).sum()
-}
-
 fn rows_of(state: &DomainState, client: Client, lang: Lang) -> Vec<Row> {
     active_rows(state, &LiveSnapshot::default(), client, lang).into_iter().map(|(_, row)| row).collect()
 }
@@ -3040,25 +3044,19 @@ fn occurrences(rows: &[Row], id: &str) -> usize {
 }
 
 #[test]
-fn a_task_that_waits_for_another_requests_task_is_in_that_tasks_chain_and_nowhere_else() {
+fn a_task_that_waits_for_another_requests_task_is_in_waiting_once() {
     let state = across_requests();
     for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (block, waiting) = active_row(&state, &LiveSnapshot::default(), client, Lang::En, "t-4");
+        assert_eq!((block.as_str(), waiting.title.as_str(), fact_of(&waiting)),
+            ("block:waiting", "Decrement the badge", Some("Waits for “Build a feature”")), "{client:?}");
         let rows = rows_of(&state, client, Lang::En);
-        let fold = find(&find(&rows, "t-1").children, "chain:t-1");
-        let waiting = find(&fold.children, "t-4");
-        assert_eq!((waiting.title.as_str(), waiting.subtitle.as_deref()), ("Decrement the badge", Some("waits for Build a feature")), "{client:?}");
-        assert_eq!(occurrences(&rows, "t-4"), 1, "{client:?}: in the chain only");
+        assert_eq!(occurrences(&rows, "t-4"), 1, "{client:?}");
         assert!(rows.iter().all(|row| !row.id.starts_with("waits:") && row.id != "from"), "{client:?}: no «waits for» or «from» rows");
         assert_eq!(occurrences(&rows, "t-3"), 1, "{client:?}");
     }
-}
-
-#[test]
-fn the_spanish_labels_of_a_chain() {
-    let rows = rows_of(&across_requests(), Client::Tui, Lang::Es);
-    let fold = find(&find(&rows, "t-1").children, "chain:t-1");
-    assert_eq!(fold.title, "+1 esperando a esta");
-    assert_eq!(find(&fold.children, "t-4").subtitle.as_deref(), Some("espera a Build a feature"));
+    let (_, spanish) = active_row(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "t-4");
+    assert_eq!(fact_of(&spanish), Some("Espera a «Build a feature»"));
 }
 
 #[test]
@@ -3067,8 +3065,8 @@ fn a_task_whose_dependency_ended_stands_on_its_own() {
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     state.requests.get_mut(&"r-1".into()).unwrap().closed = true;
     let rows = rows_of(&state, Client::Ios, Lang::En);
-    assert!(rows.iter().all(|row| !row.id.starts_with("chain:")), "nothing open to wait for");
     assert_eq!(occurrences(&rows, "t-4"), 1);
+    assert_ne!(fact_of(find(&rows, "t-4")), Some("Waits for “Build a feature”"), "nothing open to wait for");
     assert!(!rows.iter().any(|row| row.id == "t-1"), "the finished task is not in the active list");
 }
 
@@ -3078,8 +3076,7 @@ fn a_task_that_waits_for_two_names_both_and_is_shown_once() {
     state.tasks.get_mut(&"t-4".into()).unwrap().dependencies.insert("t-3".into());
     let rows = rows_of(&state, Client::Ios, Lang::En);
     assert_eq!(occurrences(&rows, "t-4"), 1);
-    let fold = find(&find(&rows, "t-1").children, "chain:t-1");
-    assert_eq!(find(&fold.children, "t-4").subtitle.as_deref(), Some("waits for Build a feature and Count the pushes"));
+    assert_eq!(fact_of(find(&rows, "t-4")), Some("Waits for Build a feature and Count the pushes"));
 }
 
 #[test]
@@ -3109,23 +3106,65 @@ fn guided_install() -> DomainState {
 }
 
 #[test]
-fn a_chain_folds_flat_under_its_first_open_task_each_after_what_it_waits_for() {
+fn the_blocks_of_the_active_list_add_up_to_its_count() {
     let state = guided_install();
-    for client in [Client::Ios, Client::Mac, Client::Tui] {
-        let rows = rows_of(&state, client, Lang::En);
-        let fold = find(&find(&rows, "t-1").children, "chain:t-1");
-        assert_eq!(fold.title, "+8 waiting for this", "{client:?}");
-        let ids: Vec<_> = fold.children.iter().map(|row| row.id.as_str()).collect();
-        assert_eq!(ids, ["t-2b", "t-6", "t-7", "t-3", "t-4", "t-5", "t-8", "t-9"], "{client:?}: each after what it waits for");
-        assert!(fold.children.iter().all(|row| row.depth == 3 && row.children.is_empty()), "{client:?}: one level, no staircase");
-        for id in ids { assert_eq!(occurrences(&rows, id), 1, "{client:?}: {id} once"); }
+    let mut live = LiveSnapshot::default();
+    live.pacing = Some(LivePacing { working: 1, limit: 1, fixed: None, auto: 1, most: 12, memory_free: Some(40), tight: false, paused: vec![],
+        queued: vec![LiveQueued { pausable: true, task_id: "t-3".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 1 } }] });
+    let (listed, listed_live) = tasks_fixture();
+    for (state, live) in [(&state, &live), (&golden_fixture(), &golden_live()), (&listed, &listed_live)] {
+        let tab = render(state, live, Client::Tui, Lang::En, "tasks", "").status.counts.into_iter().find(|count| count.id == "tasks").unwrap().value;
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let view = render(state, live, client, Lang::En, "tasks", "");
+            let active = view.sections.iter().find(|section| section.id == "active").unwrap();
+            let counts: u32 = active.items.iter().map(|item| match item {
+                Item::Row(Row { trailing: Some(Trailing::Text { text }), .. }) => text.parse::<u32>().unwrap(),
+                other => panic!("{client:?}: not a block: {other:?}"),
+            }).sum();
+            assert_eq!((Some(counts), counts), (active.count, tab), "{client:?}: the blocks add up to the Active and the Tasks tab counts");
+        }
     }
-    let spanish = rows_of(&state, Client::Ios, Lang::Es);
-    let fold = find(&find(&spanish, "t-1").children, "chain:t-1");
-    assert_eq!(fold.title, "+8 esperando a esta");
-    assert_eq!(find(&fold.children, "t-8").subtitle.as_deref(), Some("espera a Install PR 4, 5 y 7"),
-        "what the names share is said once");
-    assert_eq!(find(&fold.children, "t-6").subtitle.as_deref(), Some("espera a Install PR 2b"));
+    let rows = active_rows(&state, &live, Client::Ios, Lang::En);
+    for id in ["t-2b", "t-4", "t-5", "t-6", "t-7", "t-8", "t-9"] {
+        let places: Vec<&str> = rows.iter().filter(|(_, row)| row.id == id).map(|(block, _)| block.as_str()).collect();
+        assert_eq!(places, ["block:waiting"], "{id} is listed once, in Waiting");
+    }
+    let spanish = active_rows(&state, &live, Client::Ios, Lang::Es);
+    let fact = |id: &str| spanish.iter().find(|(_, row)| row.id == id).and_then(|(_, row)| fact_of(row)).map(str::to_owned);
+    assert_eq!(fact("t-8").as_deref(), Some("Espera a Install PR 4, 5 y 7"), "what the names share is said once");
+    assert_eq!(fact("t-6").as_deref(), Some("Espera a «Install PR 2b: step»"));
+}
+
+/// The free memory changes by itself all the time. While it holds the same starts, the Tasks list says it once,
+/// with no figure, so its version, and what the clients fetch, does not change.
+#[test]
+fn free_memory_that_does_not_change_admission_does_not_change_the_tasks_list() {
+    let (state, live) = pacing_fixture();
+    let with_free = |free: u32| {
+        let mut live = live.clone();
+        let pacing = live.pacing.as_mut().unwrap();
+        pacing.memory_free = Some(free);
+        pacing.queued.iter_mut().for_each(|queued| queued.hold = LiveHold::Memory { free: Some(free) });
+        live
+    };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            let twelve = render(&state, &with_free(12), client, lang, "tasks", "");
+            assert_eq!(twelve.version, render(&state, &with_free(9), client, lang, "tasks", "").version, "{client:?} {lang:?}");
+            let blocks = active_blocks(&state, &with_free(12), client, lang);
+            let waiting = find(&blocks, "block:waiting");
+            let line = if lang == Lang::Es { "Los arranques nuevos esperan: el Mac va justo de memoria" } else { "New starts wait: the Mac is short of memory" };
+            assert_eq!(waiting.subtitle.as_deref(), Some(line), "{client:?} {lang:?}: said once, in the header");
+            for queued in ["t-queued-next", "t-queued-later"] {
+                let row = serde_json::to_string(find(&waiting.children, queued)).unwrap().to_lowercase();
+                assert!(!row.contains("memory") && !row.contains("memoria"), "{client:?} {lang:?}: {queued} does not say it: {row}");
+            }
+        }
+    }
+    let mut slots = live.clone();
+    slots.pacing.as_mut().unwrap().queued.iter_mut().for_each(|queued| queued.hold = LiveHold::Slots { working: 6, limit: 6 });
+    let blocks = active_blocks(&state, &slots, Client::Ios, Lang::Es);
+    assert_eq!(find(&blocks, "block:waiting").subtitle, None, "the Mac lets them start: nothing to say about it");
 }
 
 fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
@@ -6292,9 +6331,9 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(task.contains("Queued · 2nd of 3 · 6 of 6 working"), "{task}");
     let memory = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
-    assert_eq!(common::queued_label(&memory, Lang::Es), "En cola · 1.º de 1 · el Mac va justo de memoria (12 % libre)");
+    assert_eq!(common::queued_label(&memory, Lang::Es), "En cola · 1.º de 1 · el Mac va justo de memoria");
     let load = LiveQueued { hold: LiveHold::Cpu { load: 52, cpus: 11 }, ..memory };
-    assert_eq!(common::queued_label(&load, Lang::En), "Queued · 1st of 1 · the Mac is very busy (load 52 on 11 cores)");
+    assert_eq!(common::queued_label(&load, Lang::En), "Queued · 1st of 1 · the Mac is very busy");
 }
 
 /// 25 October: the disk filled with builds. A task the gate holds for room on the disk reads
@@ -6937,7 +6976,7 @@ fn rows_with_parents(view: &View) -> Vec<(Vec<String>, Row)> {
 }
 
 #[test]
-fn the_golden_tasks_list_folds_the_chain_and_lists_its_tasks_only_under_it() {
+fn the_golden_tasks_list_lists_the_tasks_that_wait_for_another_in_waiting() {
     for (name, golden) in [
         ("tasks-tui.json", include_str!("../../../../fixtures/views/cards/tasks-tui.json")),
         ("tasks-ios.json", include_str!("../../../../fixtures/views/cards/tasks-ios.json")),
@@ -6945,13 +6984,11 @@ fn the_golden_tasks_list_folds_the_chain_and_lists_its_tasks_only_under_it() {
     ] {
         let view: View = serde_json::from_str(golden).unwrap();
         let rows = rows_with_parents(&view);
-        let (_, chain) = rows.iter().find(|(_, row)| row.id.starts_with("chain:")).unwrap_or_else(|| panic!("{name}: no chain"));
-        assert!(chain.folded, "{name}: the chain starts folded");
-        assert!(!chain.children.is_empty(), "{name}");
-        for member in &chain.children {
-            let places: Vec<&Vec<String>> = rows.iter().filter(|(_, row)| row.id == member.id).map(|(parents, _)| parents).collect();
-            assert_eq!(places.len(), 1, "{name}: {} is listed once", member.id);
-            assert_eq!(places[0].last(), Some(&chain.id), "{name}: {} hangs only under the chain", member.id);
+        assert!(rows.iter().all(|(_, row)| !row.id.starts_with("chain:")), "{name}: no chain folds");
+        let waiting: Vec<_> = rows.iter().filter(|(_, row)| fact_of(row).is_some_and(|fact| fact.starts_with("Waits for"))).collect();
+        assert!(!waiting.is_empty(), "{name}: the golden has tasks that wait for another");
+        for (parents, row) in waiting {
+            assert_eq!(parents.first().map(String::as_str), Some("block:waiting"), "{name}: {} is in Waiting", row.id);
         }
     }
 }

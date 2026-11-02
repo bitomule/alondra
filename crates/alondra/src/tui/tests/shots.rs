@@ -233,21 +233,3 @@ fn indexed(index: u8) -> String {
     }
 }
 
-#[test]
-#[ignore]
-fn real_chain_shots_tmp() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
-    let out = std::path::PathBuf::from(std::env::var("TEST_UNDECLARED_OUTPUTS_DIR").unwrap());
-    let view: alondra_core::views::View =
-        serde_json::from_str(&std::fs::read_to_string(std::env::var("REAL_TUI").unwrap()).unwrap()).unwrap();
-    let (tx, _rx) = std::sync::mpsc::sync_channel(64);
-    let mut app = App::new(tx);
-    app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(view)));
-    app.reconcile();
-    let chain = app.inbox_keys().iter().position(|key| key.0.starts_with("chain:") && key.0.contains("onb-2-")).unwrap();
-    app.move_inbox(chain as isize);
-    std::fs::write(out.join("chain-folded-es.html"), page(&mut app)).unwrap();
-    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    std::fs::write(out.join("chain-open-es.html"), page(&mut app)).unwrap();
-}

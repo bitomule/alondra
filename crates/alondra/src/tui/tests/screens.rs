@@ -230,18 +230,20 @@ fn tasks_list_one_row_per_single_task_request_with_people_times() {
 }
 
 #[test]
-fn the_tasks_list_is_three_blocks_with_the_chain_folded_and_names_a_new_request_by_its_first_sentence() {
+fn the_tasks_list_is_three_blocks_with_waiting_for_another_in_waiting_and_names_a_new_request_by_its_first_sentence() {
     let mut app = app_on(Screen::Tasks, fixture_view("tasks-tui.json"));
-    let screen = rendered(&mut app, 120, 30);
+    let screen = rendered(&mut app, 120, 34);
     dump("tasks (blocks)", &screen);
     let lines: Vec<&str> = screen.lines().collect();
     let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {screen}"));
-    assert!(at("FOR YOU 1") < at("IN PROGRESS 4") && at("IN PROGRESS 4") < at("WAITING 3"), "{screen}");
+    assert!(at("FOR YOU 1") < at("IN PROGRESS 3") && at("IN PROGRESS 3") < at("WAITING 5"), "{screen}");
     assert!(!screen.contains("ACTIVE"), "the blocks replace the Active title: {screen}");
-    let head = at("Restore the native review experience");
-    assert!(lines[head + 1..].iter().take(3).any(|line| line.contains("▸ +1 waiting for this")), "{screen}");
-    assert!(!screen.contains("Decrement the badge on retraction"), "folded until opened: {screen}");
-    assert!(!screen.contains("from: ") && !screen.contains("waits for Restore"), "{screen}");
+    assert_eq!(at("New starts wait: the Mac is short of memory"), at("WAITING 5") + 1, "said once, under the header: {screen}");
+    assert!(!screen.contains("% free") && screen.matches("memory").count() == 1, "{screen}");
+    let waiting = at("Decrement the badge on retraction");
+    assert!(waiting > at("WAITING 5"), "{screen}");
+    assert!(lines[waiting..waiting + 2].iter().any(|line| line.contains("Waits for")), "it says what it waits for: {screen}");
+    assert!(!screen.contains("waiting for this") && !screen.contains("from: "), "{screen}");
     for loose in ["Review the schedule editor", "Write the release notes"] {
         assert!(lines[at(loose)].contains(loose), "{screen}");
     }
@@ -292,51 +294,6 @@ fn completed_starts_folded_and_enter_on_the_header_opens_and_folds_it() {
     press(&mut app, KeyCode::Char('o'));
     let again = rendered(&mut app, 100, 30);
     assert!(again.contains("▸ COMPLETADAS") && !again.contains(WEEKLY), "{again}");
-}
-
-#[test]
-fn a_chain_of_waiting_tasks_folds_under_its_first_task_and_enter_opens_it() {
-    let mut domain = DomainState::new("screens");
-    domain.revision = 1;
-    let mut request = Request::new("r-onb".into(), "Instalación guiada y nueva CLI".into());
-    request.title = Some("Instalación guiada y nueva CLI: plan por fases".into());
-    domain.requests.insert("r-onb".into(), request);
-    for (id, title, state, dependencies) in [
-        ("t-2", "Textos y versión", TaskState::NotStarted, &[][..]),
-        ("t-2b", "Versión en la TUI", TaskState::WaitingDependency, &["t-2"][..]),
-        ("t-3", "Motor de comprobaciones", TaskState::WaitingDependency, &["t-2"][..]),
-        ("t-4", "Asistente de instalación", TaskState::WaitingDependency, &["t-3"][..]),
-        ("t-5", "Fórmula de Homebrew", TaskState::WaitingDependency, &["t-4"][..]),
-        ("t-6", "API de ajustes", TaskState::WaitingDependency, &["t-2b"][..]),
-        ("t-7", "Ajustes en las apps", TaskState::WaitingDependency, &["t-6"][..]),
-        ("t-8", "API de la CLI", TaskState::WaitingDependency, &["t-4", "t-5", "t-7"][..]),
-        ("t-9", "Documentación", TaskState::WaitingDependency, &["t-8"][..]),
-    ] {
-        let mut row = task(id, "r-onb", None, title, state);
-        row.dependencies = dependencies.iter().map(|id| (*id).into()).collect();
-        domain.tasks.insert(id.into(), row);
-    }
-    let live = LiveSnapshot::default();
-    let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
-    let folded = rendered(&mut app, 100, 30);
-    dump("tasks (chain folded)", &folded);
-    assert!(folded.contains("▸ +8 esperando a esta"), "{folded}");
-    assert!(!folded.contains("Documentación") && !folded.contains("API de la CLI"), "{folded}");
-
-    let fold = app.inbox_keys().iter().position(|key| key.0 == "chain:t-2").unwrap();
-    app.move_inbox(fold as isize);
-    press(&mut app, KeyCode::Enter);
-    let open = rendered(&mut app, 100, 30);
-    dump("tasks (chain open)", &open);
-    assert!(open.contains("▾ +8 esperando a esta"), "{open}");
-    let lines: Vec<&str> = open.lines().collect();
-    let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {open}"));
-    assert!(at("Versión en la TUI") < at("API de ajustes") && at("Fórmula de Homebrew") < at("API de la CLI")
-        && at("API de la CLI") < at("Documentación"), "each after what it waits for: {open}");
-
-    press(&mut app, KeyCode::Enter);
-    let again = rendered(&mut app, 100, 30);
-    assert!(again.contains("▸ +8 esperando a esta") && !again.contains("Documentación"), "{again}");
 }
 
 /// A task whose node kept stopping closes without a delivery: the terminal says so, with what
@@ -1279,67 +1236,6 @@ fn l_on_the_tasks_never_changes_the_limit() {
     app.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(app.card_menu.is_none(), "the limit is changed with `alondra config set max_working_nodes`");
     assert!(app.posted.borrow().is_empty());
-}
-
-/// The golden Tasks list with a chain of two tasks waiting for the first, as the daemon folds it.
-fn chain_of_two() -> views::View {
-    let mut value = super::parity::view_fixture("tasks-tui.json");
-    fn grow(rows: &mut serde_json::Value) {
-        for row in rows.as_array_mut().into_iter().flatten() {
-            if row["id"].as_str().is_some_and(|id| id.starts_with("chain:")) {
-                let mut second = row["children"][0].clone();
-                second["id"] = "t-badge-sync".into();
-                second["link"]["key"] = "task:t-badge-sync".into();
-                second["title"] = "Sync the badge across devices".into();
-                row["children"].as_array_mut().unwrap().push(second);
-                row["title"] = "+2 waiting for this".into();
-            }
-            if let Some(children) = row.get_mut("children") {
-                grow(children);
-            }
-        }
-    }
-    for section in value["sections"].as_array_mut().unwrap() {
-        grow(&mut section["items"]);
-    }
-    serde_json::from_value(value).unwrap()
-}
-
-#[test]
-fn a_chain_starts_folded_and_its_key_unfolds_and_folds_it() {
-    const MEMBERS: [&str; 2] = ["Decrement the badge on retraction", "Sync the badge across devices"];
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let mut app = app_on(Screen::Tasks, chain_of_two());
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let folded = rendered(&mut app, 120, 34);
-    dump("chain (folded)", &folded);
-    assert!(folded.contains("▸ +2 waiting for this"), "{folded}");
-    for member in MEMBERS {
-        assert!(!folded.contains(member), "{member} is hidden while folded: {folded}");
-    }
-    assert!(!app.inbox_keys().iter().any(|key| key.0 == "t-badge-decrement" || key.0 == "t-badge-sync"),
-        "a folded task cannot be selected");
-
-    app.sel = app.inbox_keys().into_iter().find(|key| key.0.starts_with("chain:"));
-    assert!(draw::footer_keys(&app).contains(&("o/⏎".into(), "unfold".into())), "{:?}", draw::footer_keys(&app));
-    assert!(!draw::footer_keys(&app).iter().any(|(key, _)| key == "r" || key == "1"),
-        "no other task's actions on the chain line: {:?}", draw::footer_keys(&app));
-    press(&mut app, KeyCode::Char('o'));
-    let open = rendered(&mut app, 120, 34);
-    dump("chain (unfolded)", &open);
-    assert!(open.contains("▾ +2 waiting for this"), "{open}");
-    let lines: Vec<&str> = open.lines().collect();
-    let indent = |needle: &str| lines.iter().find(|line| line.contains(needle)).and_then(|line| line.chars().position(|c| c == '↳'))
-        .unwrap_or_else(|| panic!("{needle}: {open}"));
-    for member in MEMBERS {
-        assert!(indent(member) > indent("+2 waiting for this"), "{member} hangs under the chain line: {open}");
-    }
-    assert!(draw::footer_keys(&app).contains(&("o/⏎".into(), "fold".into())));
-    press(&mut app, KeyCode::Char('o'));
-    let again = rendered(&mut app, 120, 34);
-    for member in MEMBERS {
-        assert!(!again.contains(member), "{member} is hidden once folded again: {again}");
-    }
 }
 
 const SIGN_IN_EN: &str = "Sign in to the Claude account Trabajo on the Mac";

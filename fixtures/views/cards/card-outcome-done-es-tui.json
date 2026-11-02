@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "tui",
-  "version": "vfe65d11033c644e8",
+  "version": "ve654ab367c48b95f",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
-    "version": "vcffd2dd2233dd72c",
+    "version": "v755fdb1ea06c16ed",
     "summary": "2 por leer · 0 nodos trabajando",
     "badge": 2,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 1
+        "value": 0
       },
       {
         "id": "agents",

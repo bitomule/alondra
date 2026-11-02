@@ -262,17 +262,6 @@ fn states() -> Vec<State> {
             app.sel = Some(Key("section:finished".into()));
             app
         })),
-        ("tasks, a folded chain", false, Box::new(|| {
-            let mut app = on(Screen::Tasks, "tasks-tui.json");
-            app.sel = app.inbox_keys().into_iter().find(|key| key.0.starts_with("chain:"));
-            app
-        })),
-        ("tasks, an unfolded chain", false, Box::new(|| {
-            let mut app = on(Screen::Tasks, "tasks-tui.json");
-            app.sel = app.inbox_keys().into_iter().find(|key| key.0.starts_with("chain:"));
-            app.on_key(plain(KeyCode::Char('o')));
-            app
-        })),
         ("tasks, scheduled", false, Box::new(|| {
             let mut app = on(Screen::Tasks, "tasks-tui.json");
             app.on_key(plain(KeyCode::Char('s')));

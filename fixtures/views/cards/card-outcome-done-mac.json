@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "mac",
-  "version": "ve73cb258b20aee7a",
+  "version": "vcf500b7660e602f7",
   "cursor": "cursor-1",
   "title": "Done in part: 1 of 3 tasks was cancelled",
   "status": {
-    "version": "v2470fc732803317d",
+    "version": "vae718333019ee8a1",
     "summary": "2 to read · 0 nodes working",
     "badge": 2,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 1
+        "value": 0
       },
       {
         "id": "agents",

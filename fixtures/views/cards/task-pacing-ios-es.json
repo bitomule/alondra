@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v3d6fab1e8649357f",
+  "version": "vafa6988d6578a338",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -69,7 +69,7 @@
           "items": [
             {
               "label": "Estado",
-              "value": "En cola · 1.º de 2 · El Mac va justo de memoria (12 % libre)",
+              "value": "En cola · 1.º de 2 · Prioridad alta",
               "tone": "neutral"
             },
             {

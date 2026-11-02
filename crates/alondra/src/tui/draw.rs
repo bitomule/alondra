@@ -721,6 +721,10 @@ fn draw_views_inbox_list(
             continue;
         }
         for item in &section.items {
+            if let alondra_core::views::Item::Notice(notice) = item {
+                lines.push(Line::from(Span::styled(format!("  {}", notice.text), Style::new().fg(DIM))));
+                continue;
+            }
             if let alondra_core::views::Item::Card(card) = item {
                 let selected = app.sel.as_ref().is_some_and(|key| key.0 == card.id);
                 let start = lines.len();

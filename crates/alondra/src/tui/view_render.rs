@@ -121,7 +121,8 @@ pub fn has_blocks(section: &Section) -> bool {
     section.items.iter().any(|item| matches!(item, Item::Row(row) if row.id.starts_with("block:")))
 }
 
-/// The TUI lists each block of the Tasks list as a section of its own, its title over its tasks.
+/// The TUI lists each block of the Tasks list as a section of its own, its title over its tasks and, when the
+/// block has one, the line that says what holds all of them.
 pub fn lift_blocks(sections: &mut Vec<Section>) {
     let Some(at) = sections.iter().position(has_blocks) else { return };
     let section = sections.remove(at);
@@ -138,7 +139,9 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
             title: Some(block.title),
             count,
             collapsed: false,
-            items: block.children.into_iter().map(Item::Row).collect(),
+            items: block.subtitle.map(|text| Item::Notice(alondra_core::views::Notice {
+                text, tone: alondra_core::views::Tone::Neutral, action: None,
+            })).into_iter().chain(block.children.into_iter().map(Item::Row)).collect(),
             card_ids: vec![],
             card_waits: vec![],
             more: None, style: None, actions: vec![],

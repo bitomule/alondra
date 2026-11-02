@@ -75,6 +75,9 @@ public struct TasksBoard: Equatable, Sendable {
         public let id: String
         public let title: String
         public let count: Int
+        /// One line under the title, when something holds every task of the block, such as the Mac holding new
+        /// starts.
+        public let note: String?
         public let requests: [Request]
         /// Waiting work asks nothing of anyone: each task is two short lines, not a card.
         public var isCompact: Bool { id == "block:waiting" }
@@ -186,7 +189,7 @@ extension TasksBoard.Block {
             )
         }
         let count: Int = if case .text(let text)? = row.trailing { Int(text) ?? requests.count } else { requests.count }
-        self.init(id: row.id, title: row.title, count: count, requests: requests)
+        self.init(id: row.id, title: row.title, count: count, note: row.subtitle, requests: requests)
     }
 }
 

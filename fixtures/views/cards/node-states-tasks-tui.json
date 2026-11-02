@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vc29c9abb8110ffde",
+  "version": "v102d2b5b0687dbe4",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -104,7 +104,7 @@
               },
               "icon": "action",
               "title": "Restore the native review experience",
-              "subtitle": "5 preguntas abiertas",
+              "subtitle": "5 preguntas abiertas · Polish the Alondra beta",
               "badges": [
                 {
                   "text": "Te necesita",
@@ -128,37 +128,7 @@
                 "format": "relative"
               },
               "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "chain:t-651c38484cd2f34e74d5107ba05f7f15",
-                  "icon": "branch",
-                  "title": "+1 esperando a esta",
-                  "depth": 2,
-                  "struck": false,
-                  "children": [
-                    {
-                      "id": "t-queued",
-                      "link": {
-                        "kind": "view",
-                        "key": "task:t-queued"
-                      },
-                      "icon": "branch",
-                      "title": "Wire the badge after the review",
-                      "subtitle": "espera a Restore the native review experience",
-                      "badges": [
-                        {
-                          "text": "Demo Garden",
-                          "tone": "neutral"
-                        }
-                      ],
-                      "depth": 3,
-                      "struck": false
-                    }
-                  ],
-                  "folded": true
-                }
-              ]
+              "struck": false
             }
           ]
         },
@@ -270,11 +240,33 @@
           "title": "En espera",
           "trailing": {
             "kind": "text",
-            "text": "1"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
           "children": [
+            {
+              "id": "t-queued",
+              "link": {
+                "kind": "view",
+                "key": "task:t-queued"
+              },
+              "icon": "branch",
+              "title": "Wire the badge after the review",
+              "subtitle": "Espera a «Restore the native review experience» · Polish the Alondra beta",
+              "badges": [
+                {
+                  "text": "Esperando",
+                  "tone": "info"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
             {
               "id": "t-paused-builder",
               "link": {

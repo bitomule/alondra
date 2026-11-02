@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:r-encrypt-answer",
   "client": "tui",
-  "version": "v6c245ae63873a670",
+  "version": "v575780b08adba9a3",
   "cursor": "cursor-1",
   "title": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
   "status": {
-    "version": "v2470fc732803317d",
+    "version": "vae718333019ee8a1",
     "summary": "2 to read · 0 nodes working",
     "badge": 2,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 1
+        "value": 0
       },
       {
         "id": "agents",

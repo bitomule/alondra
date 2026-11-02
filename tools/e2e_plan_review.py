@@ -93,7 +93,7 @@ def main():
         tui.keys("1")
         wait_for(sandbox.orchestrator_log + ".settled", "reminding the orchestrator never got the plans reviewed", seconds=TIMEOUT * 2)
         tasks_screen(tui)
-        tui.until(lambda s: "+2 esperando a esta" in s and HELD not in s,
+        tui.until(lambda s: s.count("Espera a «") >= 2 and HELD not in s,
                   "the phases did not go back to waiting for phase B once reviewed")
         tui.capture("reviewed")
         assert phases_held(sandbox.home) == 0

@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v3280833070461855",
+  "version": "vd19b562de32eb9e2",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "vdc99634e44d70ce7",
+    "version": "v7bd6622d72998685",
     "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 8
+        "value": 9
       },
       {
         "id": "agents",
@@ -81,7 +81,7 @@
     {
       "id": "active",
       "title": "Active",
-      "count": 8,
+      "count": 9,
       "collapsed": false,
       "items": [
         {
@@ -127,41 +127,7 @@
                 "text": "5 questions"
               },
               "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "chain:t-651c38484cd2f34e74d5107ba05f7f15",
-                  "icon": "branch",
-                  "title": "+1 waiting for this",
-                  "depth": 2,
-                  "struck": false,
-                  "children": [
-                    {
-                      "id": "t-badge-decrement",
-                      "link": {
-                        "kind": "view",
-                        "key": "task:t-badge-decrement"
-                      },
-                      "icon": "branch",
-                      "title": "Decrement the badge on retraction",
-                      "subtitle": "waits for Restore the native review experience",
-                      "badges": [
-                        {
-                          "text": "Waiting",
-                          "tone": "info"
-                        },
-                        {
-                          "text": "Demo Garden",
-                          "tone": "neutral"
-                        }
-                      ],
-                      "depth": 3,
-                      "struck": false
-                    }
-                  ],
-                  "folded": true
-                }
-              ]
+              "struck": false
             }
           ]
         },
@@ -172,7 +138,7 @@
           "title": "In progress",
           "trailing": {
             "kind": "text",
-            "text": "4"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -198,6 +164,7 @@
               },
               "icon": "mission",
               "title": "Count the retracted pushes",
+              "subtitle": "Badge accuracy",
               "badges": [
                 {
                   "text": "Working",
@@ -323,13 +290,73 @@
           "id": "block:waiting",
           "icon": "task",
           "title": "Waiting",
+          "subtitle": "New starts wait: the Mac is short of memory",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "5"
           },
           "depth": 0,
           "struck": false,
           "children": [
+            {
+              "id": "t-copy-screens",
+              "link": {
+                "kind": "view",
+                "key": "task:t-copy-screens"
+              },
+              "icon": "task",
+              "title": "Refresh the App Store screenshots",
+              "badges": [
+                {
+                  "text": "Queued · 1st of 1",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:t-copy-screens@6",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-badge-decrement",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-decrement"
+              },
+              "icon": "task",
+              "title": "Decrement the badge on retraction",
+              "subtitle": "Waits for “Restore the native review experience” · Badge accuracy",
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "info"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
             {
               "id": "t-hf-registry",
               "link": {

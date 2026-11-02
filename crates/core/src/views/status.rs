@@ -56,7 +56,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
             Count {
                 id: "tasks".into(),
                 label: t!(context.lang, "Tasks", "Tareas").into(),
-                value: context.domain.tasks.values().filter(|task| task.active()).count() as u32,
+                value: super::tasks::active_count(context.domain),
             },
             Count {
                 id: "agents".into(),

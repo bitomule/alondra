@@ -24,6 +24,12 @@ struct TaskBlockSection: View {
             .padding(.horizontal, 4)
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
+            if let note = block.note {
+                Text(verbatim: note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
             if block.isCompact {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(block.requests.flatMap { $0.lines(open: openChains) }) { line in

@@ -441,9 +441,6 @@ fn merge_order<'a>(context: &RenderContext<'a>, task: &'a Task) -> Vec<&'a Task>
     order
 }
 
-/// From how many waiting tasks a chain folds them under its first task.
-const CHAIN_FOLDS_FROM: usize = 1;
-
 /// One entry of the active list: a task alone, or a request with a real title and several tasks under its header.
 enum Entry<'a> {
     Task(&'a Task),
@@ -453,20 +450,15 @@ enum Entry<'a> {
 }
 
 /// The active list in three blocks, For you, In progress and Waiting: one row per task, a header only for a
-/// request that is not a message to the orchestrator and has several tasks here, and the tasks that wait on
-/// others folded in a chain under the first of them.
+/// request that is not a message to the orchestrator and has several tasks here. A task that waits on another
+/// is in Waiting, saying what it waits for, and a block counts only tasks: the blocks add up to the Tasks tab.
 fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<'_>) -> (Vec<Item>, u32) {
     let domain = context.domain;
-    let listed: Vec<&Task> = domain.tasks.values()
-        .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == Bucket::Active))
-        .collect();
+    let listed = listed_active(domain, buckets);
     let shown: BTreeMap<&TaskId, task_state::Presentation> = listed.iter()
         .map(|task| (&task.id, task_state::present(task, context))).collect();
-    let chains = chains(&listed, &shown, context);
-    let in_chain: BTreeSet<&TaskId> = chains.values().flatten().map(|task| &task.id).collect();
-    let loose: Vec<&Task> = listed.iter().copied().filter(|task| !in_chain.contains(&task.id)).collect();
     let mut by_request: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
-    for task in &loose {
+    for task in &listed {
         by_request.entry(&task.request_id).or_default().push(task);
     }
     let grouped = |task: &Task| by_request.get(&task.request_id).filter(|tasks| tasks.len() > 1)
@@ -474,7 +466,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
         .filter(|request| !request.message && request.title.is_some());
     let mut entries: Vec<Entry<'_>> = Vec::new();
     let mut placed = BTreeSet::new();
-    for task in &loose {
+    for task in &listed {
         match grouped(task) {
             Some(request) if placed.insert(&request.id) => entries.push(Entry::Group(request, by_request[&request.id].clone())),
             Some(_) => {}
@@ -533,19 +525,21 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
         };
         let mut row = common::row(id, "", Icon::Task, title.into(), None);
         row.link = None;
+        if block == Block::Waiting {
+            row.subtitle = task_state::start_hold(&listed, context);
+        }
         let mut count = 0;
         for (entry, _) in entries {
             match entry {
                 Entry::Task(task) => {
                     count += 1;
-                    let mut line = entry_row(task, 1, &shown, &chains, context);
+                    let mut line = entry_row(task, 1, &shown, context);
                     if let Some(name) = grouped(task).map(request_name) {
                         append_fact(&mut line, &name, context);
                     }
                     row.children.push(line);
                 }
                 Entry::Request(request) => {
-                    count += 1;
                     let mut line = common::row(&request.id.0, &format!("request:{}", request.id), Icon::Mission,
                         request_name(request), Some(request_state(request, &[], context).into()));
                     line.depth = 1;
@@ -558,7 +552,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
                     let mut header = group_row(request, &tasks, context);
                     for task in &tasks {
                         count += 1;
-                        header.children.push(entry_row(task, 2, &shown, &chains, context));
+                        header.children.push(entry_row(task, 2, &shown, context));
                     }
                     row.children.push(header);
                 }
@@ -568,6 +562,17 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
         items.push(Item::Row(row));
     }
     (items, listed.len() as u32)
+}
+
+fn listed_active<'a>(domain: &'a DomainState, buckets: &BTreeMap<&RequestId, Bucket>) -> Vec<&'a Task> {
+    domain.tasks.values()
+        .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == Bucket::Active))
+        .collect()
+}
+
+/// How many tasks Active lists: the Tasks tab's count, and the sum of its blocks' counts.
+pub(super) fn active_count(domain: &DomainState) -> u32 {
+    listed_active(domain, &request_buckets(domain)).len() as u32
 }
 
 /// A request not split yet waits for the user while the orchestrator stopped and its card asking
@@ -633,118 +638,11 @@ fn group_row(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) ->
     row
 }
 
-/// A task with the chain of tasks that wait for it folded under it.
-fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Presentation>,
-    chains: &BTreeMap<&TaskId, Vec<&Task>>, context: &RenderContext<'_>) -> super::Row {
+fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Presentation>, context: &RenderContext<'_>) -> super::Row {
     let mut row = presented_row(task, &shown[&task.id], context);
     row.model = task_model_presentation(&task.id, context);
     row.depth = depth;
-    let Some(waiting) = chains.get(&task.id).filter(|waiting| waiting.len() >= CHAIN_FOLDS_FROM) else { return row };
-    let mut fold = common::row(&format!("chain:{}", task.id), "", Icon::Branch,
-        tf!(context.lang, "+{count} waiting for this", "+{count} esperando a esta", count = waiting.len()), None);
-    fold.link = None;
-    fold.folded = true;
-    fold.depth = depth.saturating_add(1);
-    for member in waiting {
-        let mut line = common::row(&member.id.0, &format!("task:{}", member.id), Icon::Branch, member.title.clone(),
-            Some(waits_for(member, context)));
-        line.depth = depth.saturating_add(2);
-        line.badges.push(super::Label { text: shown[&member.id].state.clone(), tone: shown[&member.id].tone, elapsed: None });
-        if context.client == super::Client::Tui {
-            line.badges.clear();
-        }
-        line.badges.extend(member.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral, elapsed: None }));
-        fold.children.push(line);
-    }
-    row.children.push(fold);
     row
-}
-
-/// "waits for Guided install PR 4, 5 and 7": the tasks it waits for directly, each by the part of its title
-/// before ":", with what they share said once.
-fn waits_for(task: &Task, context: &RenderContext<'_>) -> String {
-    let names: Vec<String> = task_state::open_dependencies(task, context).iter()
-        .map(|dependency| dependency.title.split_once(':').map_or(dependency.title.as_str(), |(head, _)| head).trim().to_owned())
-        .collect();
-    let names = shared_prefix_once(&names);
-    let joined = match names.as_slice() {
-        [] => String::new(),
-        [only] => only.clone(),
-        [head @ .., last] => {
-            let and = t!(context.lang, "and", "y");
-            format!("{} {and} {last}", head.join(", "))
-        }
-    };
-    tf!(context.lang, "waits for {joined}", "espera a {joined}")
-}
-
-/// ["Install PR 4", "Install PR 5"] reads as ["Install PR 4", "5"]: the words they share are said once.
-fn shared_prefix_once(names: &[String]) -> Vec<String> {
-    let [first, rest @ ..] = names else { return Vec::new() };
-    if rest.is_empty() {
-        return vec![first.clone()];
-    }
-    let mut shared = first.as_str();
-    for name in rest {
-        while !name.starts_with(shared) {
-            shared = match shared.trim_end().rsplit_once(' ') {
-                Some((head, _)) => &first[..head.len() + 1],
-                None => "",
-            };
-        }
-    }
-    let shared = &shared[..shared.rfind(' ').map_or(0, |at| at + 1)];
-    if shared.is_empty() || names.iter().any(|name| name.len() == shared.len()) {
-        return names.to_vec();
-    }
-    std::iter::once(first.clone()).chain(rest.iter().map(|name| name[shared.len()..].to_owned())).collect()
-}
-
-/// The tasks that wait on others, under the first open task of their chain, each after what it waits for.
-fn chains<'a>(listed: &[&'a Task], shown: &BTreeMap<&TaskId, task_state::Presentation>,
-    context: &RenderContext<'a>) -> BTreeMap<&'a TaskId, Vec<&'a Task>> {
-    let by_id: BTreeMap<&TaskId, &Task> = listed.iter().map(|task| (&task.id, *task)).collect();
-    let chained = |task: &Task| shown.get(&task.id).is_some_and(|presentation| presentation.chained);
-    let waits_on = |task: &Task| -> Vec<&'a Task> {
-        task_state::open_dependencies(task, context).into_iter().filter(|dependency| by_id.contains_key(&dependency.id)).collect()
-    };
-    let head = |task: &'a Task| -> Option<&'a Task> {
-        let mut seen = BTreeSet::new();
-        let mut current = task;
-        loop {
-            if !seen.insert(&current.id) { return None; }
-            let next = waits_on(current).into_iter().min_by_key(|dependency| (chained(dependency), dependency.id.clone()))?;
-            if !chained(next) { return Some(next); }
-            current = next;
-        }
-    };
-    let mut members: BTreeMap<&TaskId, Vec<&Task>> = BTreeMap::new();
-    for task in listed.iter().copied().filter(|task| chained(task)) {
-        if let Some(head) = head(task) {
-            members.entry(&head.id).or_default().push(task);
-        }
-    }
-    members.into_iter().map(|(head, tasks)| {
-        let mut ordered: Vec<&Task> = Vec::new();
-        let mut placed: BTreeSet<&TaskId> = BTreeSet::from([head]);
-        fn visit<'a>(from: &TaskId, tasks: &[&'a Task], placed: &mut BTreeSet<&'a TaskId>, ordered: &mut Vec<&'a Task>,
-            ready: &dyn Fn(&Task, &BTreeSet<&'a TaskId>) -> bool) {
-            for task in tasks.iter().copied().filter(|task| task.dependencies.contains(from) || task.delivered_dependencies.contains(from)) {
-                if placed.contains(&task.id) || !ready(task, placed) { continue; }
-                placed.insert(&task.id);
-                ordered.push(task);
-                visit(&task.id, tasks, placed, ordered, ready);
-            }
-        }
-        let inside: BTreeSet<&TaskId> = tasks.iter().map(|task| &task.id).chain([head]).collect();
-        let ready = |task: &Task, placed: &BTreeSet<&TaskId>| task.dependencies.iter().chain(&task.delivered_dependencies)
-            .filter(|id| inside.contains(id)).all(|id| placed.contains(id));
-        visit(head, &tasks, &mut placed, &mut ordered, &ready);
-        for task in &tasks {
-            if !placed.contains(&task.id) { placed.insert(&task.id); ordered.push(task); }
-        }
-        (head, ordered)
-    }).collect()
 }
 
 pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
