@@ -226,8 +226,6 @@ pub enum BatchEnd {
     Denied { calls: Vec<String>, why: String },
     /// Usage ran out before Claude answered: the batch waits for the reset.
     Limited { reset: Option<i64> },
-    /// The resumed conversation is gone: the next run starts a new one.
-    SessionMissing,
     /// The user stopped the run; `effects` are the changes the daemon let it make, if it made any.
     Cancelled { effects: Option<Vec<String>> },
 }
@@ -254,7 +252,6 @@ pub struct Stream {
     pub compacted: bool,
     pub post_compact_tokens: Option<u64>,
     pub acted: bool,
-    pub missing_session: bool,
     pub denied: bool,
     pub(crate) native_request_rejected: bool,
     /// Claude said the plan's usage ran out, and the reset it reported in Unix milliseconds.
@@ -291,16 +288,9 @@ impl Stream {
         let said = |text: &str| crate::usage_pause::says_usage_limit(text).then(|| crate::usage_pause::reset_in(text, alondra_core::now_millis()));
         self.error.as_deref().and_then(said).or_else(|| said(diagnostic))
     }
-    fn session_missing(&self, exit_ok: bool, diagnostic: &str, session: &str) -> bool {
-        !self.initialized && !self.acted && !self.compacted && self.missing_session && !exit_ok
-            && (self.input.is_some() || diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}")))
-    }
     /// How the batch's turn ended.
-    pub fn end(&self, exit_ok: bool, diagnostic: &str, session: &str, resumed: bool) -> BatchEnd {
+    pub fn end(&self, exit_ok: bool, diagnostic: &str) -> BatchEnd {
         let effects = self.may_have_effects().then(|| self.alondra_calls.clone());
-        if resumed && self.session_missing(exit_ok, diagnostic, session) {
-            return BatchEnd::SessionMissing;
-        }
         if exit_ok && self.success && self.result && self.initialized && self.error.is_none() {
             return BatchEnd::Handled;
         }
@@ -421,9 +411,6 @@ impl Stream {
                 }
                 self.result = true;
                 self.spent = crate::metrics_capture::claude_usage(&v);
-                self.missing_session = v["subtype"] == "error_during_execution" && v["is_error"] == true
-                    && v["num_turns"] == 0 && v["duration_api_ms"] == 0
-                    && v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));
                 self.success = v["subtype"] == "success" && v["is_error"] == false;
                 if self.success {
                     self.note = v["result"].as_str().map(str::to_owned);
@@ -494,8 +481,8 @@ impl Output {
         Self { stream: Stream::default(), diagnostic: why.to_owned(), exit_ok: false }
     }
 
-    pub fn end(&self, session: &str, resumed: bool) -> BatchEnd {
-        self.stream.end(self.exit_ok, &self.diagnostic, session, resumed)
+    pub fn end(&self) -> BatchEnd {
+        self.stream.end(self.exit_ok, &self.diagnostic)
     }
 }
 
@@ -509,7 +496,7 @@ mod tests {
     const CREATED: &str = r#"{"type":"assistant","session_id":"s","message":{"model":"opus","content":[{"type":"tool_use","id":"t","name":"mcp__alondra-orchestrator__create_task","input":{}}],"usage":{"input_tokens":2}}}"#;
     const DONE: &str = r#"{"type":"result","session_id":"s","subtype":"success","is_error":false,"permission_denials":[]}"#;
 
-    fn ended(input: Option<&str>, lines: &[&str], exit_ok: bool, diagnostic: &str, resumed: bool) -> BatchEnd {
+    fn ended(input: Option<&str>, lines: &[&str], exit_ok: bool, diagnostic: &str) -> BatchEnd {
         let mut stream = match input {
             Some(input) => Stream::for_input(input),
             None => Stream { restricted: true, ..Stream::default() },
@@ -520,7 +507,7 @@ mod tests {
                 break;
             }
         }
-        stream.end(exit_ok, diagnostic, "s", resumed)
+        stream.end(exit_ok, diagnostic)
     }
 
     #[test]
@@ -530,18 +517,17 @@ mod tests {
         let limited_result = r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"result":"You have hit your session limit"}"#;
         let missing = r#"{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"num_turns":0,"duration_api_ms":0,"errors":["No conversation found with session ID: s"]}"#;
         let created = vec!["create_task".to_owned()];
-        assert_eq!(ended(None, &[INIT, WORKED, DONE], true, "", false), BatchEnd::Handled);
-        assert!(matches!(ended(None, &[], false, "cannot launch Claude", false), BatchEnd::NotStarted { why } if why == "cannot launch Claude"));
-        assert!(matches!(ended(None, &[INIT, WORKED], false, "", false), BatchEnd::Interrupted { calls, .. } if calls.is_empty()),
+        assert_eq!(ended(None, &[INIT, WORKED, DONE], true, ""), BatchEnd::Handled);
+        assert!(matches!(ended(None, &[], false, "cannot launch Claude"), BatchEnd::NotStarted { why } if why == "cannot launch Claude"));
+        assert!(matches!(ended(None, &[INIT, WORKED], false, ""), BatchEnd::Interrupted { calls, .. } if calls.is_empty()),
             "Claude was answering when it ended: what came next is unknown");
-        assert!(matches!(ended(None, &[INIT, CREATED], false, "", false), BatchEnd::Interrupted { calls, .. } if calls == created));
-        assert!(matches!(ended(None, &[INIT, CREATED, &denied], true, "", false), BatchEnd::Denied { calls, .. } if calls == created));
-        assert_eq!(ended(None, &[INIT, limited, limited_result], false, "", false), BatchEnd::Limited { reset: Some(1_900_000_000_000) });
-        assert_eq!(ended(None, &[missing], false, "No conversation found with session ID: s", true), BatchEnd::SessionMissing);
-        assert!(matches!(ended(None, &[missing], false, "", true), BatchEnd::NotStarted { .. }),
-            "claude -p says it on stderr too, or it is not the lost conversation");
-        assert_eq!(ended(Some("00000000-0000-4000-8000-000000000001"), &[missing], false, "", true), BatchEnd::SessionMissing,
-            "through the SDK the result is the fact");
+        assert!(matches!(ended(None, &[INIT, CREATED], false, ""), BatchEnd::Interrupted { calls, .. } if calls == created));
+        assert!(matches!(ended(None, &[INIT, CREATED, &denied], true, ""), BatchEnd::Denied { calls, .. } if calls == created));
+        assert_eq!(ended(None, &[INIT, limited, limited_result], false, ""), BatchEnd::Limited { reset: Some(1_900_000_000_000) });
+        for (input, diagnostic) in [(None, "No conversation found with session ID: s"), (Some("00000000-0000-4000-8000-000000000001"), "")] {
+            assert!(matches!(ended(input, &[missing], false, diagnostic), BatchEnd::NotStarted { .. }),
+                "what Claude wrote about the conversation decides nothing: the batch is offered again");
+        }
     }
 
     #[test]
@@ -549,10 +535,10 @@ mod tests {
         let input = "00000000-0000-4000-8000-000000000001";
         let bound = DONE.replace(r#""permission_denials":[]"#, &format!(r#""permission_denials":[],"user_message_uuid":"{input}""#));
         let other = DONE.replace(r#""permission_denials":[]"#, r#""permission_denials":[],"user_message_uuid":"00000000-0000-4000-8000-0000000000ff""#);
-        assert_eq!(ended(Some(input), &[INIT, WORKED, &bound], true, "", false), BatchEnd::Handled);
-        assert!(matches!(ended(Some(input), &[INIT, WORKED, &other], true, "", false),
+        assert_eq!(ended(Some(input), &[INIT, WORKED, &bound], true, ""), BatchEnd::Handled);
+        assert!(matches!(ended(Some(input), &[INIT, WORKED, &other], true, ""),
             BatchEnd::Interrupted { why, .. } if why.contains("another input")));
-        assert!(matches!(ended(Some(input), &[INIT, WORKED, DONE], true, "", false), BatchEnd::Interrupted { .. }),
+        assert!(matches!(ended(Some(input), &[INIT, WORKED, DONE], true, ""), BatchEnd::Interrupted { .. }),
             "a result that names no input is not this batch's either");
     }
 
@@ -800,7 +786,7 @@ mod tests {
             let mut native = Stream::native(input); native.error = Some(text.into());
             assert_eq!(native.limit(text), None);
             let output = Output { stream: native, diagnostic: text.into(), exit_ok: false };
-            assert!(!matches!(output.end("session", false), BatchEnd::Limited { .. }));
+            assert!(!matches!(output.end(), BatchEnd::Limited { .. }));
         }
         let mut native = Stream::native(Some("input")); native.limited = true; native.limit_reset = Some(20);
         assert_eq!(native.limit(text), Some(Some(20)), "positive native account-limit evidence remains authoritative");

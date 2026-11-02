@@ -165,7 +165,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
         }
     }
     host.stop().unwrap();
-    assert_eq!(stream.end(true, "", session, false), process::BatchEnd::Handled);
+    assert_eq!(stream.end(true, ""), process::BatchEnd::Handled);
     assert_eq!(f.prompts(), ["fixture:hold the first batch"], "the refused prompt never reached Claude");
 }
 

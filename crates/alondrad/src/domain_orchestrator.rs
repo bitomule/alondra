@@ -549,7 +549,7 @@ impl Executor {
         } else if !effects_confirmed {
             BatchEnd::Interrupted { calls: changes.clone(), why: "Some admitted mutations have no confirmed durable result; reconcile them before continuing".into() }
         } else {
-            match output.end(&session,false) {
+            match output.end() {
                 BatchEnd::NotStarted { why } if !changes.is_empty() => BatchEnd::Interrupted { calls: changes.clone(),why },
                 other => other,
             }
@@ -560,7 +560,7 @@ impl Executor {
                 run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));
             runtime.last_context = Some(context);
         }
-        if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. } | BatchEnd::SessionMissing)
+        if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. })
             && let Some(reset) = output.stream.limit(&output.diagnostic)
         {
             crate::orchestrator_provider::record_limit(&self.domain, &selection, reset, now_millis());
@@ -570,14 +570,6 @@ impl Executor {
             BatchEnd::Cancelled { effects: None } => self.acknowledge(&run.id),
             BatchEnd::Cancelled { effects: Some(calls) } => {
                 self.failed(runtime, &run, "Orchestrator execution was cancelled; check its effects before retrying".into(), Some(problem(BatchStop::Cancelled, calls)))
-            }
-            BatchEnd::SessionMissing => {
-                self.finish(&run, State::Retryable, Some("orchestrator_session_missing"))?;
-                runtime.session_id = None;
-                runtime.active_run = None;
-                runtime.last_error = Some("The saved Claude conversation is missing; a new conversation will be created".into());
-                runtime.failure = Some(Failure::SessionMissing);
-                save(&self.home, &runtime)
             }
             BatchEnd::Limited { .. } => {
                 if !changes.is_empty() {

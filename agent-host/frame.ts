@@ -107,14 +107,20 @@ const frameSchema = z.strictObject({ protocol_version: z.literal(PROTOCOL_VERSIO
 ]) });
 export type Frame = z.infer<typeof frameSchema>;
 
+export type FramingProblem = 'size' | 'depth' | 'lone_surrogate';
+const FRAMING_MESSAGES: Record<FramingProblem, string> = { size: 'Frame size', depth: 'JSON depth', lone_surrogate: 'Invalid JSON string' };
+/** A value the frame cannot carry as it is, and why. */
+export class FramingError extends Error {
+  constructor(readonly problem: FramingProblem) { super(FRAMING_MESSAGES[problem]); }
+}
 /** Check plain JSON before schema parsing or serialization can clone/allocate its contents. */
 function boundedJSON(value: unknown): void {
   let bytes = 0;
   const active = new WeakSet<object>();
-  const add = (amount: number) => { bytes += amount; if (bytes > MAX_FRAME_BYTES) throw new Error('Frame size'); };
+  const add = (amount: number) => { bytes += amount; if (bytes > MAX_FRAME_BYTES) throw new FramingError('size'); };
   const string = (value: string) => {
-    if (value.length > MAX_FRAME_BYTES) throw new Error('Frame size');
-    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) throw new Error('Invalid JSON string');
+    if (value.length > MAX_FRAME_BYTES) throw new FramingError('size');
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) throw new FramingError('lone_surrogate');
     add(2 + Buffer.byteLength(value));
     for (let i = 0; i < value.length; i += 1) {
       const code = value.charCodeAt(i);
@@ -123,12 +129,12 @@ function boundedJSON(value: unknown): void {
     }
   };
   const visit = (value: unknown, depth: number): void => {
-    if (depth > MAX_JSON_DEPTH) throw new Error('JSON depth');
+    if (depth > MAX_JSON_DEPTH) throw new FramingError('depth');
     if (value === null) { add(4); return; }
     if (typeof value === 'string') { string(value); return; }
     if (typeof value === 'boolean') { add(value ? 4 : 5); return; }
     if (typeof value === 'number' && Number.isFinite(value)) { add(String(value).length); return; }
-    if (depth >= MAX_JSON_DEPTH) throw new Error('JSON depth');
+    if (depth >= MAX_JSON_DEPTH) throw new FramingError('depth');
     if (!value || typeof value !== 'object' || types.isProxy(value)) throw new Error('Plain JSON required');
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== null && prototype !== Object.prototype && prototype !== Array.prototype) throw new Error('Plain JSON required');
@@ -142,7 +148,7 @@ function boundedJSON(value: unknown): void {
     active.add(value);
     add(2);
     if (Array.isArray(value)) {
-      if (value.length > MAX_FRAME_BYTES) throw new Error('Frame size');
+      if (value.length > MAX_FRAME_BYTES) throw new FramingError('size');
       for (let i = 0; i < value.length; i += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
         if (!descriptor || !('value' in descriptor)) throw new Error('Plain JSON array required');
@@ -192,7 +198,7 @@ function validateJSONTokens(source: string): void {
   for (const match of source.matchAll(/"(?:\\.|[^"\\])*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|[{}\[\],:]/g)) {
     const token = match[0];
     const parent = stack.at(-1);
-    if ((token === '{' || token === '[') && stack.length >= MAX_JSON_DEPTH) throw new Error('JSON depth');
+    if ((token === '{' || token === '[') && stack.length >= MAX_JSON_DEPTH) throw new FramingError('depth');
     if (token === '{') stack.push({ type: 'object', path: valuePath(), keys: new Set(), expectKey: true });
     else if (token === '[') stack.push({ type: 'array', path: valuePath(), index: 0 });
     else if (token === '}' || token === ']') { stack.pop(); complete(); }
@@ -211,7 +217,7 @@ function validateJSONTokens(source: string): void {
   }
 }
 export function parsePayload(payload: Uint8Array): Frame {
-  if (payload.length === 0 || payload.length > MAX_FRAME_BYTES) throw new Error('Frame size');
+  if (payload.length === 0 || payload.length > MAX_FRAME_BYTES) throw new FramingError('size');
   const source = new TextDecoder('utf-8', { fatal: true }).decode(payload);
   const value: unknown = JSON.parse(source);
   validateJSONTokens(source);
@@ -240,10 +246,9 @@ export function commandDigest(payload: Uint8Array): string {
 }
 
 /** Why this frame cannot be encoded as it is: its size, its depth or a lone UTF-16 surrogate. */
-export function framingProblem(frame: unknown): 'size' | 'depth' | 'lone_surrogate' | 'not_plain_json' | undefined {
+export function framingProblem(frame: unknown): FramingProblem | 'not_plain_json' | undefined {
   try { boundedJSON(frame); return undefined; } catch (error) {
-    const message = (error as Error).message;
-    return message === 'Frame size' ? 'size' : message === 'JSON depth' ? 'depth' : message === 'Invalid JSON string' ? 'lone_surrogate' : 'not_plain_json';
+    return error instanceof FramingError ? error.problem : 'not_plain_json';
   }
 }
 /** Twice the request has to fit an answer under the frame limit: in `asked` and in `updated_input`. */
@@ -321,7 +326,7 @@ export function fitObservation<T extends SdkObservation>(observation: T, problem
     };
     if (problem(candidate) === undefined) return candidate;
   }
-  throw new Error('Frame size');
+  throw new FramingError('size');
 }
 /** The value shrunk until its JSON takes at most `budget` bytes; null when nothing of it fits. */
 export function fitValue(value: unknown, budget: number): unknown {

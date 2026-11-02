@@ -374,7 +374,7 @@ mod tests {
             native.fold(&json!({"method":"item/started","params":{"threadId":"native","turnId":"turn","item":{"type":"userMessage","clientId":"input"}}}), "input", "batch", &mut stream).unwrap();
             native.fold(&json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"completed"}}}), "input", "batch", &mut stream).unwrap();
             assert!(!stream.native_request_rejected && stream.error.is_none());
-            assert!(matches!(stream.end(true,"","batch",false),crate::orchestrator_process::BatchEnd::Handled));
+            assert!(matches!(stream.end(true,""),crate::orchestrator_process::BatchEnd::Handled));
         }
     }
 
@@ -519,15 +519,15 @@ mod tests {
             failure(&json!({"codexErrorInfo":kind,"message":"You've hit your session limit"}), &mut stream);
             assert_eq!(stream.limit("You've hit your weekly limit"), None, "{kind} has no native account-quota evidence");
             let output = Output { stream, diagnostic: "You've hit your weekly limit".into(), exit_ok: false };
-            assert!(!matches!(output.end("batch", false), crate::orchestrator_process::BatchEnd::Limited { .. }));
+            assert!(!matches!(output.end(), crate::orchestrator_process::BatchEnd::Limited { .. }));
         }
         let early = failed("You've hit your session limit before a native host was confirmed".into());
         assert_eq!(early.stream.limit(&early.diagnostic), None);
-        assert!(!matches!(early.end("batch", false), crate::orchestrator_process::BatchEnd::Limited { .. }));
+        assert!(!matches!(early.end(), crate::orchestrator_process::BatchEnd::Limited { .. }));
         let mut stream = Stream::native(Some("input"));
         failure(&json!({"codexErrorInfo":"usageLimitExceeded","message":"Native account quota exhausted"}), &mut stream);
         assert_eq!(stream.limit(""), Some(None));
-        assert!(matches!(Output { stream, diagnostic: String::new(), exit_ok: false }.end("batch", false), crate::orchestrator_process::BatchEnd::Limited { .. }));
+        assert!(matches!(Output { stream, diagnostic: String::new(), exit_ok: false }.end(), crate::orchestrator_process::BatchEnd::Limited { .. }));
     }
 
 }

@@ -31,8 +31,6 @@ crates/alondrad/src/usage_pause.rs	let text = text.to_lowercase();	finding:D-04	
 crates/alondrad/src/usage_pause.rs	text.contains("hit your") && text.contains("limit") && !text.contains("spend limit") && !text.contains("shared budget")	finding:D-04	usage limit and reset read from Claude's prose
 crates/alondrad/src/usage_pause.rs	let after = &text[text.to_lowercase().find("resets ")? + "resets ".len()..];	finding:D-04	usage limit and reset read from Claude's prose
 crates/alondrad/src/usage_pause.rs	let lower = word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()).to_lowercase();	finding:D-04	usage limit and reset read from Claude's prose
-crates/alondrad/src/orchestrator_process.rs	&& (self.input.is_some() || diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}")))	finding:D-05	missing session by an exact phrase
-crates/alondrad/src/orchestrator_process.rs	&& v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));	finding:D-05	missing session by an exact phrase
 crates/alondrad/src/orchestrator_sdk.rs	if text=="Unexpected native decision in the Alondra orchestrator" {output.stream.error=Some(text.clone());exited=true;}	finding:D-06	batch stop by equality with a diagnostic text
 crates/alondrad/src/pr_images.rs	let lower = error.to_ascii_lowercase();	finding:D-07	gh api failure classified by text
 crates/alondrad/src/pr_images.rs	if lower.contains("http 404") || lower.contains("not found") {	finding:D-07	gh api failure classified by text
@@ -126,7 +124,6 @@ crates/alondrad/src/machine.rs	let line = text.lines().find(|l| l.contains("memo
 crates/alondrad/src/sdk_live.rs	let aborted = message["terminal_reason"].as_str().is_some_and(|reason| reason.starts_with("aborted"));	finding:D-22	aborted turn by a prefix of terminal_reason
 crates/relay/src/management/keycloak.rs	.find(|grant| grant["key"] == "Offline Token")	finding:G-11	consent to revoke picked by its display label
 crates/core/src/view.rs	.is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))	finding:G-14	billing_error and overloaded treated as usage limit
-agent-host/frame.ts	const message = (error as Error).message;	finding:P-03	framing problem classified by our own Error.message
 crates/provider-claude/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
 crates/provider-codex/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
 crates/alondrad/src/orchestrator_codex.rs	let detail = bounded_public(&item.to_string(),16384).to_lowercase();	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { encode, decode, commandDigest, parsePayload, MAX_FRAME_BYTES, fitObservation, fitValue, framingProblem, ACTION_CAPABILITIES, HOST_CAPABILITIES } from './frame.js';
+import { encode, decode, commandDigest, parsePayload, MAX_FRAME_BYTES, fitObservation, fitValue, framingProblem, FramingError, ACTION_CAPABILITIES, HOST_CAPABILITIES } from './frame.js';
 process.env.HOME = process.env.TEST_TMPDIR;
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CLAUDE_HOME;
@@ -158,5 +158,18 @@ for (const code of catalog.TerminalReason) assert(classify({ type: 'result', sub
   const plain = classify(toolResult('small'));
   assert.equal(fitObservation(plain, (candidate) => framingProblem(framed(candidate))), plain, 'what fits is framed as it is');
   assert(Buffer.byteLength(JSON.stringify(fitValue({ message: 'z'.repeat(100_000), unresolved_input_ids: [] }, 16_384))) <= 16_384);
+}
+{
+  for (const [value, problem] of [['x'.repeat(MAX_FRAME_BYTES + 1), 'size'], ['half \ud83d', 'lone_surrogate']]) {
+    assert.equal(framingProblem(value), problem);
+    assert.throws(() => encode(value), (error) => error instanceof FramingError && error.problem === problem);
+  }
+  let deep = 0;
+  for (let i = 0; i < 200; i += 1) deep = [deep];
+  assert.equal(framingProblem(deep), 'depth');
+  // An error from elsewhere that happens to say what a framing error says is not a framing problem.
+  const byteLength = Buffer.byteLength;
+  Buffer.byteLength = () => { throw new Error('Frame size'); };
+  try { assert.equal(framingProblem({ text: 'fits' }), 'not_plain_json'); } finally { Buffer.byteLength = byteLength; }
 }
 console.log('Rust-shared frame bytes/digest and inspected SDK error catalog: pass');
