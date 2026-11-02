@@ -741,6 +741,7 @@ impl SdkNode {
         std::fs::DirBuilder::new().mode(0o700).create(self.home.join("plugin")).unwrap();
         crate::sdk_owner::tests::kill_host(&self.driver);
         self.domain.driven_by_hand.lock().unwrap().remove(self.driver.agent());
+        self.driver.let_go();
         assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
     }
 

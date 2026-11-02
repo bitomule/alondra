@@ -7590,6 +7590,39 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Para revisar");
 }
 
+/// 30 October: the user wrote to a node resting on its delivery and Claude never started on it, yet
+/// the task read «Answering you» with no turn running. Until a turn takes the message, the task
+/// reads that Claude has not started, and still offers Interrupt.
+#[test]
+fn a_message_claude_has_not_started_reads_waiting_for_claude() {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Working);
+    state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("d".into());
+    let told = vec![
+        LifecycleRecord::Planned { input: "input:t-1:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a-1".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
+        LifecycleRecord::Presented { delivery: "d".into() },
+        LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into(), wake: None, text: None, awaits: None, stalled: false },
+        LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Are you there?".into()) },
+    ];
+    let live = LiveSnapshot::default();
+    state.lifecycle_journal.insert("t-1".into(), told.clone());
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for Claude to start");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que Claude empiece");
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        let ids = action_ids(&render(&state, &live, client, Lang::En, "task:t-1", ""));
+        assert!(ids.iter().any(|id| id.starts_with("interrupt:a-1")), "{client:?}: a node Claude has not started on offers Interrupt: {ids:?}");
+    }
+    state.lifecycle_journal.insert("t-1".into(), [told, vec![LifecycleRecord::TurnStarted { turn: "turn-2".into(), input: "input:t-1:2".into() }]].concat());
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "a turn took the message");
+}
+
 #[test]
 fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
@@ -8324,10 +8357,10 @@ fn each_live_state_reads_one_way_on_every_client() {
         }
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
-    assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Working", "Working", "Working", "Closing", "Closing",
+    assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Waiting for Claude to start", "Working", "Working", "Closing", "Closing",
         "Ready for review", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit",
         "Waiting for the Claude API", "Waiting"]);
-    assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Trabajando", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
+    assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Esperando a que Claude empiece", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
         "Para revisar", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando al límite de uso de Claude",
         "Esperando a la API de Claude", "Esperando"]);
 }

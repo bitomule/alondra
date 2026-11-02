@@ -60,10 +60,14 @@ pub struct DomainRuntime {
     /// and puts back the list with only field and atomic reads in between; the hosts stop outside
     /// it.
     pub(crate) sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
-    /// The executions the user asked to take over again, while that runs.
+    /// The executions being taken over again, each with its task, while that runs.
     /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
     /// thread already spawned.
-    pub(crate) retakes: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    pub(crate) retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
+    /// The tasks whose SDK execution is in hand, with how many hold it: a launch or a takeover
+    /// under way, or the driver of its host. Nothing takes over an execution in hand.
+    /// A holder that panics leaves it whole, so it is recovered: one count up or down.
+    pub(crate) in_hand: Mutex<std::collections::BTreeMap<TaskId, usize>>,
     /// The executions whose takeover found the disk full: taken over again once the machine watch
     /// measures space, never given up for it.
     /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
@@ -164,6 +168,7 @@ impl DomainRuntime {
             sdk: Default::default(),
             sdk_owners: Default::default(),
             retakes: Default::default(),
+            in_hand: Default::default(),
             waiting_for_space: Default::default(),
             #[cfg(test)]
             full_disk: Default::default(),
@@ -260,7 +265,7 @@ impl DomainRuntime {
     /// Waits until every execution being taken over again is taken, or has its card.
     pub(crate) fn join_retakes(&self) {
         let retakes = std::mem::take(&mut *self.retakes.lock_or_recover("the retakes"));
-        for retake in retakes {
+        for (_, retake) in retakes {
             let _ = retake.join();
         }
     }
@@ -896,6 +901,7 @@ impl DomainRuntime {
             crate::task_closer::settle_unattended(self, &commit.state);
             self.allowed_always(&prepared.envelope.command, &commit.state);
             self.retake_lost(&prepared.envelope.command, &commit.state);
+            self.retake_told(&prepared.envelope.command);
         }
         Ok(commit.outcome)
     }
@@ -909,6 +915,14 @@ impl DomainRuntime {
         }
         let Some(Scope::Task { task_id }) = state.interactions.get(interaction_id).map(|card| &card.scope) else { return };
         crate::sdk_owner::retake_manually(self, task_id.clone());
+    }
+
+    /// Something was told to the node of an SDK task whose execution no owner of this daemon
+    /// holds: a host that resumes its session takes it over, so what it was told reaches it.
+    fn retake_told(&self, command: &Command) {
+        if let Command::TellNode { task_id, .. } = command {
+            crate::sdk_owner::take_if_unowned(self, task_id);
+        }
     }
 
     /// «Allow always», chosen on the card of a decision Claude asked for through the SDK and

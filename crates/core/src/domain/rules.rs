@@ -4731,7 +4731,7 @@ impl DomainState {
                 system(actor)?;
                 self.compact_ended_tasks(task_ids)?;
             }
-            Command::TellNode { task_id, text, .. } => {
+            Command::TellNode { task_id, text, from_user } => {
                 system(actor)?;
                 nonempty(text)?;
                 if self.task(task_id)?.state.terminal() {
@@ -4741,8 +4741,14 @@ impl DomainState {
                     return fail("conflict", &format!("Task {task_id} has no node running through the Agent SDK"));
                 }
                 let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
-                let record = LifecycleRecord::Told { input: self.next_input(task_id), text: Some(text.clone()) };
-                self.decide(lifecycles, task_id, record)?;
+                // The user writing to a task whose host was lost is their «Try again», with what they wrote.
+                let lost = held.iter().find(|card| *from_user && self.interactions.get(*card).is_some_and(retakes)).cloned();
+                if let Some(card) = lost {
+                    self.settle_host_lost(&card, RETAKE, Some(text), lifecycles)?;
+                } else {
+                    let record = LifecycleRecord::Told { input: self.next_input(task_id), text: Some(text.clone()) };
+                    self.decide(lifecycles, task_id, record)?;
+                }
                 let answered: Vec<InteractionId> = {
                     let still = self.lifecycle(lifecycles, task_id)?.cards();
                     held.into_iter().filter(|card| !still.iter().any(|(held, _)| *held == card)).collect()

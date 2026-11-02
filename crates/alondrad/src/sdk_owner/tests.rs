@@ -4086,3 +4086,123 @@ fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {
     let stale = slice.domain.execute_with(&user(), &request, None, None, || Ok(())).unwrap_err();
     assert!(matches!(stale, StoreError::Domain(error) if error.code == "stale_revision"));
 }
+
+async fn tell_as_user(domain: &DomainRuntime, home: &Path, agent: &AgentId, text: &str) -> serde_json::Value {
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
+    crate::domain_messages::deliver(domain, home, &user(), "David", agent, message, true).await.unwrap()
+}
+
+/// Waits until the last prompt Claude got ends with `text`, or fails once a minute passed: a
+/// message that never arrives is a failure, never a hang.
+async fn until_last_prompt_ends_with(domain: &DomainRuntime, capture: &Path, text: &str) {
+    let mut changed = domain.subscribe();
+    let arrived = changed.wait_for(|_| prompts_at(capture).last().is_some_and(|prompt| prompt.ends_with(text)));
+    tokio::time::timeout(std::time::Duration::from_secs(60), arrived).await
+        .unwrap_or_else(|_| panic!("the message never reached Claude: {:?}", prompts_at(capture))).unwrap();
+}
+
+// 30 October: a node read «Answering you» doing nothing, and what the user wrote to it never reached
+// it. Its execution had no owner in the daemon: its host's owner was gone and nothing took it over,
+// so the message waited for an owner that never came. Writing to it now takes it over: a host that
+// resumes the same Claude session takes the message.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_to_a_task_whose_execution_no_owner_holds_takes_it_over_and_reaches_its_session() {
+    let slice = Slice::new();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let agent = driver.agent().clone();
+    let (session, _) = strand_host(&slice, driver);
+    assert!(!slice.domain.owns_sdk_host(&agent));
+    tell_as_user(&slice.domain, &slice._home, &agent, "Are you there?").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Are you there?").await;
+    assert!(slice.domain.owns_sdk_host(&agent), "the execution was taken over");
+    slice.domain.stop_sdk_owners();
+    assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {:?}", slice.starts());
+}
+
+// The task's card says Alondra could not resume its session, with «Try again» and «Cancel». The user
+// writes to the node instead: the message was held behind that card and nothing resumed. Writing is
+// their «Try again»: the card leaves and a host that resumes the session gets what they wrote.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_users_message_to_a_task_whose_host_was_lost_is_its_try_again() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let (session, _) = strand_host(&slice, driver);
+    let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&restarted, &slice.backend);
+    let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has the card to try again");
+    refuse(false);
+    let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    let told = tell_as_user(&restarted, &slice._home, &agent, "Are you there?").await;
+    assert_ne!(told["reaches"], "pause", "nothing holds the message: {told}");
+    assert!(open_card(&restarted, &card.id.0).is_none(), "the card left the user's inbox");
+    until_last_prompt_ends_with(&restarted, &slice.capture, "Are you there?").await;
+    let prompts = prompts_at(&slice.capture);
+    assert!(prompts.last().unwrap().starts_with("Your session was cut off when its host stopped"), "{prompts:?}");
+    restarted.stop_sdk_owners();
+    assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {:?}", slice.starts());
+}
+
+// The thread that owns a node's host panics: it held nothing any more but still counted as the
+// owner, so nothing could take the execution over until the daemon restarted. It no longer counts,
+// and the user's message takes the execution over.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_whose_thread_panicked_owns_nothing_and_a_message_takes_its_execution_over() {
+    let slice = Slice::new();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let agent = driver.agent().clone();
+    driver.panic_next_step = true;
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    while !slice.domain.sdk_owners.lock().unwrap().iter().all(|owner| owner.thread.as_ref().is_some_and(std::thread::JoinHandle::is_finished)) {
+        std::thread::yield_now();
+    }
+    assert!(!slice.domain.owns_sdk_host(&agent), "an owner whose thread is gone owns nothing");
+    tell_as_user(&slice.domain, &slice._home, &agent, "Are you there?").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Are you there?").await;
+    slice.domain.stop_sdk_owners();
+}
+
+// The user replied to a delivery and Claude, busy, never started on the reply: the task read
+// «Answering you» although no turn ran. It reads that Claude has not started, until a turn does.
+#[test]
+fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
+    use alondra_core::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let node = Actor::Agent { agent_id: driver.agent().clone() };
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true)).unwrap();
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    slice.run(&user(), "reply", Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets,
+        body: "stall-before-starting".into(), instruction: alondra_core::domain::Instruction::Reply });
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1);
+    driver.step(&|| false).unwrap();
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
+    let shown = |lang| {
+        let read = slice.domain.read();
+        let live = LiveSnapshot::default();
+        let view = build(&format!("task:{TASK}"), RenderContext {
+            domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang,
+            transport: Transport::Loopback, cursor: "test", rendered_at: "",
+        }).unwrap();
+        serde_json::to_string(&view).unwrap()
+    };
+    let (english, spanish) = (shown(Lang::En), shown(Lang::Es));
+    assert!(english.contains("Waiting for Claude to start") && !english.contains("Answering you"), "{english}");
+    assert!(spanish.contains("Esperando a que Claude empiece") && !spanish.contains("Respondiéndote"), "{spanish}");
+    driver.stop().unwrap();
+}

@@ -289,6 +289,8 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
         LiveState::Working(Worker::Alondra(Step::Merging | Step::Finishing)) => closing(task, context),
         LiveState::Working(Worker::Alondra(Step::Answering)) if task.stalls > 0 => Presentation { active_at,
             ..Presentation::new(t!(lang, "Alondra is getting it going again", "Alondra lo está reconduciendo"), Tone::Accent, Block::InProgress, step) },
+        LiveState::Working(Worker::Alondra(Step::Delivering)) => Presentation { active_at,
+            ..Presentation::new(t!(lang, "Waiting for Claude to start", "Esperando a que Claude empiece"), Tone::Accent, Block::InProgress, step) },
         LiveState::Working(_) => {
             let state = match context.reading(&task.id).and_then(|read| read.handed_back) {
                 Some(Instruction::Changes) => t!(lang, "Making changes", "Corrigiendo"),

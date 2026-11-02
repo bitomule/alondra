@@ -186,7 +186,33 @@ impl Preparer for Worker {
 }
 
 /// One execution's owner: its worker and the task whose dispatches and controls only it claims.
+/// The task's SDK execution is in hand while this lives.
+pub(crate) struct InHand {
+    domain: Arc<DomainRuntime>,
+    task: TaskId,
+}
+
+impl InHand {
+    fn new(domain: &Arc<DomainRuntime>, task: &TaskId) -> Self {
+        *domain.in_hand.lock_or_recover("the executions in hand").entry(task.clone()).or_default() += 1;
+        Self { domain: Arc::clone(domain), task: task.clone() }
+    }
+}
+
+impl Drop for InHand {
+    fn drop(&mut self) {
+        let mut held = self.domain.in_hand.lock_or_recover("the executions in hand");
+        if let Some(count) = held.get_mut(&self.task) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.task);
+            }
+        }
+    }
+}
+
 pub(crate) struct Driver {
+    in_hand: Option<InHand>,
     domain: Arc<DomainRuntime>,
     worker: Worker,
     scope: AuthorityScope,
@@ -220,6 +246,8 @@ pub(crate) struct Driver {
     plugin: Option<PathBuf>,
     #[cfg(test)]
     pub(crate) fail_next_step: bool,
+    #[cfg(test)]
+    pub(crate) panic_next_step: bool,
 }
 
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
@@ -315,6 +343,7 @@ pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 }
 
 fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>) -> Result<Driver, Failed> {
+    let _in_hand = InHand::new(&domain, &launch.task);
     crate::accounts::require_initial_check(&domain).map_err(|error| Failed::new(error.message))?;
     let provider = launch.options.provider;
     let backend = &backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("{error:#}")))?;
@@ -510,6 +539,7 @@ pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: Task
 /// admitting it never started (its folder holds no host): the launch it never sent goes now, with
 /// a new owner generation.
 pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: &std::path::Path) -> Result<Driver, Failed> {
+    let _in_hand = InHand::new(&domain, &task);
     crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?;
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
     let provider = state.tasks.get(&task).map(|task| task.provider).ok_or_else(|| Failed::new("the task is missing".into()))?;
@@ -578,6 +608,7 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
 /// `end_refused`, it is ended by the lock it holds and the execution is taken again, now with a
 /// host that ended. A live host of a release this one can carry on with is adopted as it runs.
 fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool) -> Result<Option<Driver>, Failed> {
+    let _in_hand = InHand::new(&domain, &task);
     if relaunch { crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?; }
     let base_backend = backend;
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
@@ -833,8 +864,11 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     };
     let backend = backend.clone();
     let mut retakes = domain.retakes.lock_or_recover("the retakes");
-    retakes.retain(|retake| !retake.is_finished());
-    retakes.push(std::thread::spawn(move || {
+    retakes.retain(|(_, retake)| !retake.is_finished());
+    if retakes.iter().any(|(taking, _)| *taking == task) {
+        return;
+    }
+    retakes.push((task.clone(), std::thread::spawn(move || {
         if runtime.state().ok().and_then(|state| state.tasks.get(&task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
             return;
         }
@@ -852,13 +886,14 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
             }
             Err(failed) => not_taken(&runtime, &task, failed),
         }
-    }));
+    })));
 }
 
-/// Whether the task runs through the SDK, has not ended, and no owner of this daemon or move to
-/// another account holds its execution.
+/// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch or
+/// takeover under way, or move to another account holds its execution.
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| !domain.owns_sdk_host(agent))
+        && !domain.in_hand.lock_or_recover("the executions in hand").contains_key(task)
         && !crate::account_move::holds_execution(domain, task)
         && !crate::provider_transition::holds_execution(domain, task)
         && state.lifecycle_of(task).ok().is_some_and(|lifecycle| {
@@ -1000,11 +1035,17 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, plugin: None, #[cfg(test)] fail_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, plugin: None, #[cfg(test)] fail_next_step: false, #[cfg(test)] panic_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
         &self.agent
+    }
+
+    /// The driver no longer holds its execution, as one whose owner is gone though its value lives.
+    #[cfg(test)]
+    pub(crate) fn let_go(&mut self) {
+        self.in_hand = None;
     }
 
     fn log_host(&self, what: &str) {
@@ -1267,6 +1308,8 @@ impl Driver {
         if std::mem::take(&mut self.fail_next_step) {
             return Err(Failed::new("a step of the owner failed".into()));
         }
+        #[cfg(test)]
+        assert!(!std::mem::take(&mut self.panic_next_step), "a step of the owner panicked");
         if self.worker.native_liveness().map_err(adapter("checking the native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
             self.host_closed = true;
             return Err(Failed::new("the Codex host lost its app-server".into()));
@@ -1581,8 +1624,9 @@ impl Owner {
         &self.agent
     }
 
+    /// The owner ended on its own, or its thread is gone, a panic included: it owns nothing.
     pub(crate) fn ended(&self) -> bool {
-        self.ended.load(Ordering::SeqCst)
+        self.ended.load(Ordering::SeqCst) || self.thread.as_ref().is_some_and(std::thread::JoinHandle::is_finished)
     }
 
     /// The process group of the node's host, while the owner holds one.

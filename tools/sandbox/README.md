@@ -88,7 +88,8 @@ login is needed. The extra `NEW_MAC=1` Mac stays unconfigured for the setup wiza
   While `fakes/hold-interrupt` exists, the native Claude accepts an interrupt and its turn goes
   on, so only «Force stop» ends it. While `fakes/fail-turn` exists, each turn ends as Claude Code
   ends one at its turn limit (`error_max_turns`); while `fakes/drop-input` exists, each input after
-  the mission is completed without being started, so Claude never reads it.
+  the mission is completed without being started, so Claude never reads it. While `fakes/hold-input` exists, each input after the
+  mission is queued and none is started, as a Claude busy with something else.
 - **Claude accounts**: the native Claude runs on the account its `CLAUDE_CONFIG_DIR` folder names,
   `default` without one, and writes it in each start. `claude auth status|login|logout` keep each
   folder's sign-in in its `.sandbox-account`; the synthetic HOME's `~/.claude` is signed in. The

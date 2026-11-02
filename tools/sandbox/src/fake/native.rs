@@ -544,6 +544,9 @@ pub const FAIL_TURN: &str = "fail-turn";
 /// While this file exists in `fakes/`, the native Claude completes each input after the mission
 /// without starting it, as one its transcript already holds: no turn ever answers it.
 pub const DROP_INPUT: &str = "drop-input";
+/// While this file exists in `fakes/`, the native Claude queues each input after the mission and
+/// starts none, as a Claude busy with something else: the input waits and no turn takes it.
+pub const HOLD_INPUT: &str = "hold-input";
 /// While `fakes/refuse/<account>` holds `rate_limit` or `authentication_failed`, the API refuses
 /// every turn on that account as it refuses one for its usage limit or for an expired sign-in.
 pub const REFUSE: &str = "refuse";
@@ -653,6 +656,9 @@ impl Native<'_> {
         self.lifecycle(input, "queued")?;
         if let Some(queued) = self.own.as_mut().or(self.unheard.as_mut()) {
             queued.push(input.into());
+            return Ok(());
+        }
+        if !mission && self.fakes.dir.join(HOLD_INPUT).exists() {
             return Ok(());
         }
         if !mission && self.fakes.dir.join(DROP_INPUT).exists() {
