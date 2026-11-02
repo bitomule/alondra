@@ -5,7 +5,7 @@
 //! before `gh pr merge`. A
 //! merge counts only when GitHub reports the PR merged. A merge GitHub refuses goes back to the
 //! node with GitHub's reason, as feedback on that delivery.
-use crate::domain_github::{GhCli, execute_system, pr_url};
+use crate::domain_github::{GhCli, GhFailure, execute_system, pr_url};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
@@ -37,6 +37,8 @@ pub(crate) struct Status {
     pub head: String,
     pub base: String,
     pub checks: Checks,
+    /// The names of the checks that succeeded or need nothing more.
+    pub passed: BTreeSet<String>,
     pub merge_state: MergeState,
 }
 
@@ -64,7 +66,7 @@ impl MergeState {
     }
 }
 
-type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Send + 'a>>;
 
 pub(crate) trait PrMerger: Send + Sync + 'static {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status>;
@@ -76,6 +78,8 @@ pub(crate) trait PrMerger: Send + Sync + 'static {
     fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()>;
     /// The checks the PR's base branch requires, from its rulesets and its classic branch protection.
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
+    /// Whether the signed-in account may merge into the PR's repository (`viewerPermission` WRITE or above).
+    fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
 }
 
 impl<T: PrMerger> PrMerger for Arc<T> {
@@ -97,6 +101,9 @@ impl<T: PrMerger> PrMerger for Arc<T> {
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         (**self).required_checks(pr, base)
     }
+    fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        (**self).can_merge(pr)
+    }
 }
 
 impl PrMerger for GhCli {
@@ -105,9 +112,10 @@ impl PrMerger for GhCli {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
             let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeStateStatus,mergeable"], None,
                 Duration::from_secs(30)).await?;
-            let value: Value = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
-            let facts = crate::domain_github::parse(&value)?;
-            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value), merge_state: MergeState::of(&value) })
+            let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
+            let facts = crate::domain_github::parse(&value).map_err(GhFailure::Unreadable)?;
+            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value), passed: passed(&value),
+                merge_state: MergeState::of(&value) })
         })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
@@ -128,7 +136,7 @@ impl PrMerger for GhCli {
             match String::from_utf8_lossy(&out).trim() {
                 "true" => Ok(true),
                 "false" => Ok(false),
-                other => Err(format!("GitHub did not say whether the PR is a draft: {other}")),
+                other => Err(GhFailure::Unreadable(format!("GitHub did not say whether the PR is a draft: {other}"))),
             }
         })
     }
@@ -142,28 +150,37 @@ impl PrMerger for GhCli {
         Box::pin(async move {
             let host = alondra_core::domain::normalize_pr_host(&pr.host);
             let repo = format!("repos/{}", pr.repository);
-            let mut required = match self.run(&["api", "--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], None,
-                Duration::from_secs(30)).await
-            {
-                Ok(rules) => ruleset_checks(&serde_json::from_slice(&rules).map_err(|e| e.to_string())?),
-                Err(reason) if no_rules(&reason) => vec![],
-                Err(reason) => return Err(reason),
+            let rules = self.api(&["--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], Duration::from_secs(30)).await?;
+            let mut required = match rules_read(&rules)? {
+                Some(rules) => ruleset_checks(&rules),
+                None => vec![],
             };
-            match self.run(&["api", "--hostname", &host, &format!("{repo}/branches/{base}/protection/required_status_checks")], None,
-                Duration::from_secs(30)).await
-            {
-                Ok(classic) => required.extend(classic_checks(&serde_json::from_slice(&classic).map_err(|e| e.to_string())?)),
-                Err(reason) if no_rules(&reason) => {}
-                Err(reason) => return Err(reason),
+            let classic = self.api(&["--hostname", &host, &format!("{repo}/branches/{base}/protection/required_status_checks")],
+                Duration::from_secs(30)).await?;
+            if let Some(classic) = rules_read(&classic)? {
+                required.extend(classic_checks(&classic));
             }
             required.sort();
             required.dedup();
             Ok(required)
         })
     }
+    fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        Box::pin(async move {
+            let url = format!("https://{}/{}", alondra_core::domain::normalize_pr_host(&pr.host), pr.repository);
+            let out = self.run(&["repo", "view", &url, "--json", "viewerPermission", "--jq", ".viewerPermission"], None,
+                Duration::from_secs(30)).await?;
+            match String::from_utf8_lossy(&out).trim() {
+                "ADMIN" | "MAINTAIN" | "WRITE" => Ok(true),
+                "TRIAGE" | "READ" | "null" => Ok(false),
+                other => Err(GhFailure::Unreadable(format!("GitHub reported an unknown permission {other:?}"))),
+            }
+        })
+    }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         Box::pin(async move {
-            let (owner, name) = pr.repository.split_once('/').ok_or("the PR's repository is not owner/name")?;
+            let (owner, name) = pr.repository.split_once('/')
+                .ok_or_else(|| GhFailure::Unreadable("the PR's repository is not owner/name".into()))?;
             let host = alondra_core::domain::normalize_pr_host(&pr.host);
             let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue}}}";
             let (owner, name, number) = (format!("owner={owner}"), format!("name={name}"), format!("number={}", pr.number));
@@ -173,7 +190,7 @@ impl PrMerger for GhCli {
             match String::from_utf8_lossy(&out).trim() {
                 "true" => Ok(true),
                 "false" => Ok(false),
-                other => Err(format!("GitHub did not say whether the PR is in its merge queue: {other}")),
+                other => Err(GhFailure::Unreadable(format!("GitHub did not say whether the PR is in its merge queue: {other}"))),
             }
         })
     }
@@ -186,10 +203,16 @@ pub(crate) fn ruleset_checks(rules: &Value) -> Vec<String> {
         .filter_map(|check| check["context"].as_str().map(str::to_owned)).collect()
 }
 
-/// GitHub has no rules to show: none set (404), or a private repository whose plan has no branch
-/// protection (403). Either way no required check is known, and `mergeStateStatus` decides.
-fn no_rules(reason: &str) -> bool {
-    has(reason, &["http 404", "http 403"])
+/// The rules GitHub answered, or `None` when it has none to show: none set (404), or a private
+/// repository whose plan has no branch protection (403 that is not its rate limit). Either way no
+/// required check is known, and `mergeStateStatus` decides.
+fn rules_read(answer: &crate::domain_github::HttpAnswer) -> Result<Option<Value>, GhFailure> {
+    match answer.status {
+        _ if answer.success() => serde_json::from_slice(&answer.body).map(Some).map_err(GhFailure::unreadable),
+        404 => Ok(None),
+        403 if !answer.rate_limited() => Ok(None),
+        _ => Err(answer.failure()),
+    }
 }
 
 /// The checks a branch's classic protection requires (`.../protection/required_status_checks`).
@@ -223,6 +246,15 @@ pub(crate) fn rollup(value: &Value) -> Checks {
     } else {
         Checks::Passed
     }
+}
+
+/// The checks GitHub reports done for a PR's head: none of them holds a merge.
+fn passed(value: &Value) -> BTreeSet<String> {
+    value["statusCheckRollup"].as_array().into_iter().flatten().filter(|check| {
+        let s = |key: &str| check.get(key).and_then(Value::as_str).unwrap_or_default();
+        matches!(s("conclusion"), "SUCCESS" | "NEUTRAL" | "SKIPPED") || s("state") == "SUCCESS"
+    }).filter_map(|check| ["name", "context"].into_iter().filter_map(|key| check[key].as_str()).find(|name| !name.is_empty()))
+        .map(str::to_owned).collect()
 }
 
 /// One PR of a final delivery Alondra should merge now.
@@ -279,18 +311,6 @@ fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -
             && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain))
 }
 
-fn has(reason: &str, signs: &[&str]) -> bool {
-    let reason = reason.to_ascii_lowercase();
-    signs.iter().any(|sign| reason.contains(sign))
-}
-
-/// GitHub or the network did not answer, or GitHub failed on its side: "GraphQL: Something went
-/// wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."
-fn transient(reason: &str) -> bool {
-    has(reason, &["error connecting", "timed out", "timeout", "did not finish", "could not resolve", "connection", "http 5", "502", "503",
-        "504", "rate limit", "something went wrong", "internal server error", "bad gateway", "service unavailable"])
-}
-
 /// A final delivery whose PR GitHub confirms is still a draft cannot be merged, so it is refused;
 /// when GitHub does not answer, the delivery is accepted and the merger marks the PR ready itself.
 pub(crate) async fn draft_refusal(state: &DomainState, targets: &[DeliveryTarget], github: &impl PrMerger) -> Option<DomainError> {
@@ -303,21 +323,6 @@ pub(crate) async fn draft_refusal(state: &DomainState, targets: &[DeliveryTarget
         }
     }
     None
-}
-
-/// `gh` itself cannot work here: missing, logged out, or without access.
-fn environment(reason: &str) -> bool {
-    has(reason, &["gh auth login", "not logged", "authentication", "no such file", "command not found", "http 401", "http 403",
-        "bad credentials", "admin rights", "permission", "not authorized", "resource not accessible"])
-}
-
-/// GitHub refuses only because required checks have not reported yet.
-fn checks_waiting(reason: &str) -> bool {
-    has(reason, &["required status check", "status checks are pending", "is expected", "waiting for status"])
-}
-
-fn already_merged(reason: &str) -> bool {
-    has(reason, &["already merged", "was merged"])
 }
 
 enum Step {
@@ -529,11 +534,10 @@ impl Merger {
             Ok(false) => Ok(()),
             Ok(true) | Err(_) => github.ready(pr).await,
         };
-        let merged = match marked {
-            Ok(()) => github.merge(pr, &item.head, item.method).await,
-            Err(reason) => Err(reason),
-        };
-        match merged {
+        if let Err(failure) = marked {
+            return self.not_ready(domain, item, &failure);
+        }
+        match github.merge(pr, &item.head, item.method).await {
             Ok(()) => {
                 self.transient.remove(&pr.id);
                 if let Some(Trouble { card: Some(card), .. }) = self.merge_trouble.remove(&pr.id) {
@@ -542,34 +546,83 @@ impl Merger {
                 log!("asked GitHub to merge {} at {}", pr_url(&pr.host, &pr.repository, pr.number), item.head);
                 self.confirm(domain, github, pr).await
             }
-            Err(reason) if already_merged(&reason) => self.confirm(domain, github, pr).await,
-            Err(reason) if has(&reason, &["merge queue"]) => {
-                self.queued.insert(pr.id.clone());
-                Ok(Step::Wait)
+            Err(failure) => self.merge_failed(domain, github, item, &failure).await,
+        }
+    }
+
+    /// `gh pr merge` failed: what GitHub says of the PR now decides, never what gh wrote.
+    async fn merge_failed(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, failure: &GhFailure) -> Result<Step> {
+        let pr = &item.pr;
+        if failure.needs_setup() {
+            self.merge_troubled(domain, pr, failure);
+            return Ok(Step::Wait);
+        }
+        let status = match github.status(pr).await {
+            Ok(status) => status,
+            Err(_) => return self.retry(domain, item, failure),
+        };
+        match status.state {
+            PrState::Merged => {
+                record_merged(domain, pr, &status)?;
+                self.forget(domain, &pr.id);
+                return Ok(Step::Settled);
             }
-            Err(reason) if checks_waiting(&reason) => Ok(Step::Wait),
-            Err(reason) if environment(&reason) => {
-                self.merge_troubled(domain, pr, &reason);
-                Ok(Step::Wait)
-            }
-            Err(reason) if transient(&reason) => {
-                let failures = self.transient.get(&pr.id).map_or(0, |retry| retry.failures) + 1;
-                if failures < TRANSIENT_MERGE_TRIES {
-                    let wait = merge_retry_wait(self.first_retry, failures);
-                    log!("merging {} failed, trying again in {} s: {reason}", pr.id, wait.as_secs());
-                    self.transient.insert(pr.id.clone(), Retry { failures, at: Instant::now() + wait });
-                    return Ok(Step::Retry);
-                }
-                self.transient.remove(&pr.id);
-                self.failed(domain, item, &format!("GitHub kept failing after {failures} tries: {reason}"))?;
-                Ok(Step::Settled)
-            }
-            Err(reason) => {
-                self.transient.remove(&pr.id);
-                self.failed(domain, item, &reason)?;
-                Ok(Step::Settled)
+            PrState::Closed => return Ok(Step::Settled),
+            PrState::Open if status.head != item.head => return Ok(Step::Settled),
+            PrState::Open => {}
+        }
+        if github.in_queue(pr).await == Ok(true) {
+            self.queued.insert(pr.id.clone());
+            return Ok(Step::Wait);
+        }
+        if status.checks == Checks::Pending {
+            return Ok(Step::Wait);
+        }
+        if status.merge_state == MergeState::Other && !matches!(status.checks, Checks::Failed(_) | Checks::ActionRequired(_)) {
+            match github.required_checks(pr, &status.base).await {
+                Ok(required) if required.iter().any(|check| !status.passed.contains(check)) => return Ok(Step::Wait),
+                Ok(_) => {}
+                Err(_) => return self.retry(domain, item, failure),
             }
         }
+        if github.can_merge(pr).await == Ok(false) {
+            self.merge_troubled(domain, pr, failure);
+            return Ok(Step::Wait);
+        }
+        if failure.timed_out() || status.merge_state == MergeState::Clean {
+            return self.retry(domain, item, failure);
+        }
+        self.transient.remove(&pr.id);
+        self.failed(domain, item, &failure.to_string())?;
+        Ok(Step::Settled)
+    }
+
+    fn not_ready(&mut self, domain: &DomainRuntime, item: &Due, failure: &GhFailure) -> Result<Step> {
+        if failure.needs_setup() {
+            self.merge_troubled(domain, &item.pr, failure);
+            return Ok(Step::Wait);
+        }
+        if failure.timed_out() {
+            return self.retry(domain, item, failure);
+        }
+        self.transient.remove(&item.pr.id);
+        self.failed(domain, item, &failure.to_string())?;
+        Ok(Step::Settled)
+    }
+
+    /// A failure GitHub may not repeat: tried again after a doubling wait, then handed back.
+    fn retry(&mut self, domain: &DomainRuntime, item: &Due, failure: &GhFailure) -> Result<Step> {
+        let pr = &item.pr;
+        let failures = self.transient.get(&pr.id).map_or(0, |retry| retry.failures) + 1;
+        if failures < TRANSIENT_MERGE_TRIES {
+            let wait = merge_retry_wait(self.first_retry, failures);
+            log!("merging {} failed, trying again in {} s: {failure}", pr.id, wait.as_secs());
+            self.transient.insert(pr.id.clone(), Retry { failures, at: Instant::now() + wait });
+            return Ok(Step::Retry);
+        }
+        self.transient.remove(&pr.id);
+        self.failed(domain, item, &format!("GitHub kept failing after {failures} tries: {failure}"))?;
+        Ok(Step::Settled)
     }
 
     /// After `gh pr merge`, only GitHub saying MERGED records the merge; otherwise the PR waits
@@ -599,14 +652,17 @@ impl Merger {
         hand_back(domain, item, reason)
     }
 
-    fn troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
+    /// Reading the PR failed. Only `gh` that needs installing or a sign-in counts toward the card
+    /// at once; anything else raises it once it has gone on for `give_up`.
+    fn troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure) {
         let trouble = self.trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: Instant::now(), card: None });
-        raise_trouble(domain, pr, reason, trouble, self.give_up);
+        raise_trouble(domain, pr, failure, failure.needs_setup(), trouble, self.give_up);
     }
 
-    fn merge_troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
+    /// Merging needs `gh` set up or access to the repository, which only the user can give.
+    fn merge_troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure) {
         let trouble = self.merge_trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: Instant::now(), card: None });
-        raise_trouble(domain, pr, reason, trouble, self.give_up);
+        raise_trouble(domain, pr, failure, true, trouble, self.give_up);
     }
 
     /// Everything kept about a PR that is no longer due, with the cards raised for it.
@@ -638,9 +694,10 @@ impl Merger {
     }
 }
 
-fn raise_trouble(domain: &DomainRuntime, pr: &PullRequest, reason: &str, trouble: &mut Trouble, give_up: Duration) {
+fn raise_trouble(domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure, counts: bool, trouble: &mut Trouble, give_up: Duration) {
+    let reason = failure.to_string();
     log!("cannot merge {}: {reason}", pr.id);
-    if !transient(reason) {
+    if counts {
         trouble.count += 1;
     }
     if trouble.card.is_some() || (trouble.count < NON_TRANSIENT_FAILURES_BEFORE_CARD && trouble.since.elapsed() < give_up) {
@@ -758,8 +815,8 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, github: Arc<impl PrMerger>, 
 
 #[cfg(test)]
 pub(crate) struct FakeGithub {
-    pub statuses: std::sync::Mutex<BTreeMap<u64, Result<Status, String>>>,
-    pub merges: std::sync::Mutex<BTreeMap<u64, Result<(), String>>>,
+    pub statuses: std::sync::Mutex<BTreeMap<u64, Result<Status, GhFailure>>>,
+    pub merges: std::sync::Mutex<BTreeMap<u64, Result<(), GhFailure>>>,
     /// PRs a successful merge puts in GitHub's merge queue instead of merging.
     pub queue: std::sync::Mutex<BTreeMap<u64, bool>>,
     pub merged: std::sync::Mutex<Vec<(u64, String, MergeMethod)>>,
@@ -768,12 +825,18 @@ pub(crate) struct FakeGithub {
     /// PRs the queue merges between Alondra's status read and its queue check.
     pub merged_by_queue: std::sync::Mutex<BTreeSet<u64>>,
     /// What GitHub answers to "is it a draft", per PR; unlisted PRs are not drafts.
-    pub drafts: std::sync::Mutex<BTreeMap<u64, Result<bool, String>>>,
-    pub readies: std::sync::Mutex<BTreeMap<u64, Result<(), String>>>,
+    pub drafts: std::sync::Mutex<BTreeMap<u64, Result<bool, GhFailure>>>,
+    pub readies: std::sync::Mutex<BTreeMap<u64, Result<(), GhFailure>>>,
     /// `ready` and `merge` calls, in the order they happened.
     pub calls: std::sync::Mutex<Vec<String>>,
     /// The checks each PR's base requires; unlisted PRs require none.
-    pub required: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, String>>>,
+    pub required: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, GhFailure>>>,
+    /// What a failed merge leaves GitHub reporting of the PR's merge state.
+    pub refused_as: std::sync::Mutex<BTreeMap<u64, MergeState>>,
+    /// PRs GitHub merges although `gh pr merge` reports a failure.
+    pub merged_anyway: std::sync::Mutex<BTreeSet<u64>>,
+    /// PRs the signed-in account may not merge into.
+    pub no_access: std::sync::Mutex<BTreeSet<u64>>,
 }
 
 #[cfg(test)]
@@ -782,11 +845,12 @@ impl FakeGithub {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
             merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default(),
             drafts: Default::default(), readies: Default::default(), calls: Default::default(),
-            required: Default::default() }
+            required: Default::default(), refused_as: Default::default(), merged_anyway: Default::default(),
+            no_access: Default::default() }
     }
     pub(crate) fn open(&self, number: u64, head: &str, checks: Checks) {
         self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks,
-            merge_state: MergeState::Clean }));
+            passed: BTreeSet::new(), merge_state: MergeState::Clean }));
     }
     /// An open PR whose `mergeStateStatus` is BLOCKED.
     pub(crate) fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
@@ -804,12 +868,24 @@ impl PrMerger for FakeGithub {
         if let Some(hook) = self.on_read.lock().unwrap().take() {
             hook();
         }
-        let status = self.statuses.lock().unwrap().get(&pr.number).cloned().unwrap_or_else(|| Err("no such PR".into()));
+        let status = self.statuses.lock().unwrap().get(&pr.number).cloned().unwrap_or_else(|| Err(GhFailure::Exit(Some(1), "no such PR".into())));
         Box::pin(async move { status })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
         let result = self.merges.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
         self.calls.lock().unwrap().push(format!("merge {}", pr.number));
+        if result.is_err()
+            && let Some(merge_state) = self.refused_as.lock().unwrap().get(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+        {
+            status.merge_state = *merge_state;
+        }
+        if result.is_err()
+            && self.merged_anyway.lock().unwrap().contains(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+        {
+            status.state = PrState::Merged;
+        }
         if result.is_ok() {
             self.merged.lock().unwrap().push((pr.number, head.to_owned(), method));
             if !self.queue.lock().unwrap().contains_key(&pr.number)
@@ -833,6 +909,10 @@ impl PrMerger for FakeGithub {
         self.calls.lock().unwrap().push(format!("required {}", pr.number));
         let required = self.required.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(vec![]));
         Box::pin(async move { required })
+    }
+    fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        let allowed = !self.no_access.lock().unwrap().contains(&pr.number);
+        Box::pin(async move { Ok(allowed) })
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         if self.merged_by_queue.lock().unwrap().contains(&pr.number)

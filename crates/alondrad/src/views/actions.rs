@@ -581,14 +581,10 @@ async fn execute_external(
             if was_open {
                 if let Err(detail) = client.github().close_pr(&pr.host, &pr.repository, pr.number).await {
                     log!("could not close PR #{number} on GitHub: {detail}");
-                    let said = detail.to_ascii_lowercase();
-                    if said.contains("already merged") || said.contains("was merged") {
-                        return Ok(refused_value(&Refusal::PrAlreadyMerged { number }, lang));
-                    }
-                    if said.contains("already closed") {
-                        was_open = false;
-                    } else {
-                        return Ok(refused_value(&Refusal::GithubUnreachable, lang));
+                    match client.github().pr_state(&pr.host, &pr.repository, pr.number).await {
+                        Ok(alondra_core::domain::PrState::Merged) => return Ok(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
+                        Ok(alondra_core::domain::PrState::Closed) => was_open = false,
+                        Ok(alondra_core::domain::PrState::Open) | Err(_) => return Ok(refused_value(&Refusal::GithubUnreachable, lang)),
                     }
                 }
             }
@@ -3215,6 +3211,9 @@ mod tests {
                 Ok(())
             })
         }
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+            Box::pin(async { Err("not used".into()) })
+        }
         fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> crate::node_close::Answer<'a, Result<crate::pr_viewed::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
         fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
@@ -3471,7 +3470,8 @@ mod tests {
         assert!(!approved_path("POST", "/actions/"));
     }
 
-    struct ClosesPrs(std::sync::Mutex<Vec<u64>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>);
+    /// Closes PRs, or fails with the error in `.1`; `.3` is the state GitHub then reports, `None` when it does not answer.
+    struct ClosesPrs(std::sync::Mutex<Vec<u64>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>, Option<alondra_core::domain::PrState>);
     impl crate::client_routes::Github for ClosesPrs {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
@@ -3486,6 +3486,9 @@ mod tests {
                 self.0.lock().unwrap().push(number);
                 Ok(())
             })
+        }
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+            Box::pin(async move { self.3.ok_or_else(|| "GitHub did not answer".to_owned()) })
         }
         fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> crate::node_close::Answer<'a, Result<crate::pr_viewed::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
         fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
@@ -3676,22 +3679,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closing_a_pr_github_says_is_already_closed_or_merged_says_so_in_its_own_words() {
-        for (error, cancelled, title) in [
-            ("! Pull request me/app#7 is already closed", true, "La PR #7 ya estaba cerrada. Tarea cancelada."),
-            ("X Pull request me/app#7 can't be closed because it was already merged", false,
-                "La PR #7 ya estaba mergeada, así que no se puede cerrar sin hacer merge."),
+    async fn a_close_github_refuses_is_decided_by_the_state_github_reports_not_by_its_words() {
+        use alondra_core::domain::PrState;
+        for (error, state, cancelled, title) in [
+            ("unexpected wording", PrState::Closed, true, "La PR #7 ya estaba cerrada. Tarea cancelada."),
+            ("unexpected wording", PrState::Merged, false, "La PR #7 ya estaba mergeada, así que no se puede cerrar sin hacer merge."),
+            ("! Pull request me/app#7 is already closed", PrState::Open, false, "Alondra no pudo contactar con GitHub. No cambió nada; inténtalo de nuevo."),
         ] {
             let (home, domain, client) = action_home();
-            client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some(error), None)));
+            client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some(error), None, Some(state))));
             presented_pr(&domain);
             let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
             let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
             let state = domain.state().unwrap();
             assert_eq!(state.tasks[&"task".into()].cancelled(), cancelled, "{reply}");
             let said = if cancelled { reply["result"]["title"].clone() } else { reply["message"].clone() };
-            assert_eq!(said, title, "{reply}");
-            assert!(!reply.to_string().contains("contactar con GitHub"), "{reply}");
+            assert_eq!(said, title, "{error} with GitHub saying {state:?}: {reply}");
         }
     }
 
@@ -3850,7 +3853,7 @@ mod tests {
     #[tokio::test]
     async fn closing_a_pr_without_merging_closes_it_on_github_and_cancels_the_task() {
         let (home, domain, client) = action_home();
-        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None));
+        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
         client.use_github(github.clone());
         presented_pr(&domain);
         let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
@@ -3863,7 +3866,7 @@ mod tests {
     #[tokio::test]
     async fn closing_a_pr_when_github_does_not_answer_keeps_the_task_and_hides_the_raw_error() {
         let (home, domain, client) = action_home();
-        client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some("GitHub is down: raw gh error"), None)));
+        client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some("GitHub is down: raw gh error"), None, None)));
         presented_pr(&domain);
         let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
         let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
@@ -3879,7 +3882,7 @@ mod tests {
         presented_pr(&domain);
         let moved = domain.clone();
         client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), None,
-            Some(Box::new(move || present_again(&moved, "result-2"))))));
+            Some(Box::new(move || present_again(&moved, "result-2"))), None)));
         let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
         let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["outcome"], "applied", "the task moved while GitHub answered and is still cancelled: {reply}");
@@ -3889,7 +3892,7 @@ mod tests {
     #[tokio::test]
     async fn closing_an_already_closed_pr_cancels_the_task_without_talking_about_merging() {
         let (home, domain, client) = action_home();
-        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None));
+        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
         client.use_github(github.clone());
         presented_pr(&domain);
         apply_seed_command(&domain, Actor::System, "closed-on-github", Command::ObservePrState {

@@ -20,6 +20,8 @@ pub(crate) trait Github: Send + Sync + 'static {
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>>;
     /// Closes the PR on GitHub without merging it.
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<(), String>>;
+    /// Whether GitHub has the PR open, closed or merged now.
+    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_core::domain::PrState, String>>;
     fn viewed_files<'a>(&'a self, pr: &'a alondra_core::domain::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>>;
 }
@@ -42,6 +44,22 @@ impl Github for Gh {
                 .run(&["pr", "close", &url], None, std::time::Duration::from_secs(60))
                 .await
                 .map(|_| ())
+                .map_err(String::from)
+        })
+    }
+
+    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_core::domain::PrState, String>> {
+        Box::pin(async move {
+            let url = crate::domain_github::pr_url(host, repository, number);
+            let out = crate::domain_github::GhCli::new()
+                .run(&["pr", "view", &url, "--json", "state", "--jq", ".state"], None, std::time::Duration::from_secs(30))
+                .await?;
+            match String::from_utf8_lossy(&out).trim() {
+                "OPEN" => Ok(alondra_core::domain::PrState::Open),
+                "CLOSED" => Ok(alondra_core::domain::PrState::Closed),
+                "MERGED" => Ok(alondra_core::domain::PrState::Merged),
+                other => Err(format!("gh reported an unknown PR state {other:?}")),
+            }
         })
     }
 

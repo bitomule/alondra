@@ -278,6 +278,11 @@ impl Gh {
         Self { cli: crate::domain_github::GhCli::new(), web: std::sync::OnceLock::new() }
     }
 
+    #[cfg(test)]
+    pub(crate) fn at(program: std::path::PathBuf) -> Self {
+        Self { cli: crate::domain_github::GhCli::at(program), web: std::sync::OnceLock::new() }
+    }
+
     fn web(&self) -> &reqwest::Client {
         self.web.get_or_init(|| {
             reqwest::Client::builder()
@@ -291,19 +296,17 @@ impl Gh {
     async fn api(&self, host: &str, endpoint: &str, accept: &str) -> Result<Vec<u8>, Failure> {
         let host = alondra_core::domain::normalize_pr_host(host);
         let accept = format!("Accept: {accept}");
-        let args = ["api", "--hostname", host.as_str(), "-H", accept.as_str(), endpoint];
-        self.cli.run(&args, None, LIMIT).await.map_err(|error| gh_failure(&error))
-    }
-}
-
-fn gh_failure(error: &str) -> Failure {
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("http 404") || lower.contains("not found") {
-        Failure::NotFound
-    } else if lower.contains("gh auth login") || lower.contains("http 401") || lower.contains("bad credentials") {
-        Failure::SignedOut
-    } else {
-        Failure::Transient
+        let args = ["--hostname", host.as_str(), "-H", accept.as_str(), endpoint];
+        match self.cli.api(&args, LIMIT).await {
+            Ok(answer) if answer.success() => Ok(answer.body),
+            Ok(answer) => Err(match answer.status {
+                404 => Failure::NotFound,
+                401 => Failure::SignedOut,
+                _ => Failure::Transient,
+            }),
+            Err(failure) if failure.signed_out() => Err(Failure::SignedOut),
+            Err(_) => Err(Failure::Transient),
+        }
     }
 }
 

@@ -348,16 +348,31 @@ fn a_report_the_final_check_refuses_never_reaches_github() {
     assert_eq!(gh.0.borrow().tries, 0, "{:?}", gh.0.borrow().calls);
 }
 
+/// What `gh api --include` writes for a GitHub answer with `status`, `headers` and `body`.
+fn answered(status: &str, headers: &[&str], body: &str) -> super::github::Answer {
+    let headers: String = ["Content-Type: application/json"].iter().chain(headers).map(|header| format!("{header}\r\n")).collect();
+    super::github::Answer::parse(format!("HTTP/2.0 {status}\n{headers}\r\n{body}").as_bytes()).unwrap()
+}
+
 #[test]
 fn gh_failures_are_told_apart() {
-    assert_eq!(classify(Some(1), "gh: Not Found (HTTP 404)", r#"{"message":"Not Found"}"#), GhError::NotFound);
-    assert_eq!(classify(Some(1), "gh: Bad credentials (HTTP 401)", ""), GhError::SignedOut);
-    assert_eq!(classify(Some(4), "To get started with GitHub CLI, please run:  gh auth login", ""), GhError::SignedOut);
-    assert!(matches!(classify(Some(1), "gh: Server Error (HTTP 502)", ""), GhError::Unavailable(_)));
-    assert!(matches!(classify(Some(1), "gh: API rate limit exceeded (HTTP 403)", r#"{"message":"API rate limit exceeded for user"}"#), GhError::Unavailable(_)));
-    assert!(matches!(classify(Some(1), "error connecting to api.github.com", ""), GhError::Unavailable(_)));
-    assert_eq!(classify(Some(1), "gh: Reference already exists (HTTP 422)", r#"{"message":"Reference already exists"}"#), GhError::Refused(422, "Reference already exists".into()));
-    assert_eq!(classify(Some(1), "gh: Must have admin rights (HTTP 403)", r#"{"message":"Must have admin rights"}"#), GhError::Refused(403, "Must have admin rights".into()));
+    let not_found = answered("404 Not Found", &[], r#"{"message":"Not Found"}"#);
+    assert_eq!(classify(Some(1), Some(&not_found), "gh: Not Found (HTTP 404)"), GhError::NotFound);
+    assert_eq!(classify(Some(1), Some(&answered("401 Unauthorized", &[], "")), "gh: Bad credentials (HTTP 401)"), GhError::SignedOut);
+    assert_eq!(classify(Some(4), None, "To get started with GitHub CLI, please run:  gh auth login"), GhError::SignedOut);
+    assert!(matches!(classify(Some(1), Some(&answered("502 Bad Gateway", &[], "")), "gh: Server Error (HTTP 502)"), GhError::Unavailable(_)));
+    let limited = answered("403 Forbidden", &["X-Ratelimit-Remaining: 0"], r#"{"message":"You have exceeded a secondary limit"}"#);
+    assert!(matches!(classify(Some(1), Some(&limited), "gh: You have exceeded a secondary limit (HTTP 403)"), GhError::Unavailable(_)));
+    let wait = answered("403 Forbidden", &["Retry-After: 60", "X-Ratelimit-Remaining: 4999"], r#"{"message":"Slow down"}"#);
+    assert!(matches!(classify(Some(1), Some(&wait), ""), GhError::Unavailable(_)));
+    assert!(matches!(classify(Some(1), None, "error connecting to api.github.com"), GhError::Unavailable(_)));
+    let exists = answered("422 Unprocessable Entity", &[], r#"{"message":"Reference already exists"}"#);
+    assert_eq!(classify(Some(1), Some(&exists), ""), GhError::Refused(422, "Reference already exists".into()));
+    let admin = answered("403 Forbidden", &["X-Ratelimit-Remaining: 4999"], r#"{"message":"Must have admin rights to the rate limit settings"}"#);
+    assert_eq!(classify(Some(1), Some(&admin), "gh: Must have admin rights (HTTP 403)"),
+        GhError::Refused(403, "Must have admin rights to the rate limit settings".into()), "the words «rate limit» decide nothing");
+    assert_eq!(classify(Some(1), None, "gh: Not Found (HTTP 404)"), GhError::Unavailable("gh: Not Found (HTTP 404)".into()),
+        "without an answer from GitHub its status is not read from the error text");
     let missing = super::github::Gh { program: "/nonexistent/gh".into(), timeout: std::time::Duration::from_secs(5) };
     assert_eq!(missing.api("GET", "user", None), Err(GhError::Missing));
 }

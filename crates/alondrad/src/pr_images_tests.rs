@@ -272,16 +272,36 @@ async fn more_images_than_the_limit_say_so_and_are_not_asked_for() {
 }
 
 #[test]
-fn gh_errors_read_as_why_github_did_not_answer() {
-    assert_eq!(gh_failure("gh: Not Found (HTTP 404)"), Failure::NotFound);
-    assert_eq!(gh_failure("To get started with GitHub CLI, please run:  gh auth login"), Failure::SignedOut);
-    assert_eq!(gh_failure("gh: Bad credentials (HTTP 401)"), Failure::SignedOut);
-    assert_eq!(gh_failure("error connecting to api.github.com"), Failure::Transient);
-    assert_eq!(gh_failure("gh: Server Error (HTTP 502)"), Failure::Transient);
-}
-
-#[test]
 fn signed_links_are_read_from_the_rendered_description_by_the_uploads_uuid() {
     let html = format!("<a href=\"{0}\"><img src=\"{0}\" alt=\"Image\"></a><img src=\"https://camo.githubusercontent.com/x\">", signed(UUID).replace('&', "&amp;"));
     assert_eq!(signed_links(&html), BTreeMap::from([(UUID.to_owned(), signed(UUID))]));
+}
+
+/// A `gh` that answers every call with `stdout` on its standard output, `stderr` on its error
+/// output and exits with `code`.
+fn answering_gh(dir: &Path, stdout: &str, stderr: &str, code: i32) -> Gh {
+    use std::os::unix::fs::PermissionsExt;
+    let program = dir.join("gh");
+    std::fs::write(&program, format!("#!/bin/sh\nprintf '{stdout}'\nprintf '%s\\n' '{stderr}' >&2\nexit {code}\n")).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Gh::at(program)
+}
+
+#[tokio::test]
+async fn githubs_http_status_decides_a_failed_read_and_its_words_never_do() {
+    let cases = [
+        ("HTTP/2.0 502 Bad Gateway\\r\\nContent-Type: application/json\\r\\n\\r\\n{\"message\":\"upstream not found\"}",
+            "gh: Server Error: upstream not found (HTTP 502)", 1, ImageProblem::Retrying),
+        ("HTTP/2.0 401 Unauthorized\\r\\n\\r\\n{\"message\":\"Requires authentication\"}", "gh: Requires authentication (HTTP 401)", 1,
+            ImageProblem::SignedOut),
+        ("", "To get started with GitHub CLI, please run:  gh auth login", 4, ImageProblem::SignedOut),
+        ("", "error connecting to api.github.com: not found", 1, ImageProblem::Retrying),
+    ];
+    for (stdout, stderr, code, expected) in cases {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let gh = answering_gh(&dir, stdout, stderr, code);
+        let brought = bring(&gh, &dir, &target(), "![](a.png)", &BTreeMap::new()).await;
+        assert_eq!(problem(&brought.images[0].shown), expected, "{stderr}");
+    }
 }

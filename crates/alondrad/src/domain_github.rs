@@ -89,17 +89,36 @@ impl GhCli {
         parse_methods(&value)
     }
 
-    pub(crate) async fn run(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<Vec<u8>, String> {
+    pub(crate) async fn run(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<Vec<u8>, GhFailure> {
+        let output = self.output(args, dir, limit).await?;
+        if output.status.success() {
+            return Ok(output.stdout);
+        }
+        Err(GhFailure::Exit(output.status.code(), String::from_utf8_lossy(&output.stderr).trim().to_owned()))
+    }
+
+    /// One `gh api` call with `--include`: GitHub's HTTP status, headers and body, whatever the status.
+    /// A failure is only `gh` failing before GitHub answered.
+    pub(crate) async fn api(&self, args: &[&str], limit: Duration) -> Result<HttpAnswer, GhFailure> {
+        let args: Vec<&str> = ["api", "--include"].into_iter().chain(args.iter().copied()).collect();
+        let output = self.output(&args, None, limit).await?;
+        match HttpAnswer::parse(&output.stdout) {
+            Some(answer) => Ok(answer),
+            None if output.status.success() => Err(GhFailure::Unreadable("gh api answered without an HTTP status".into())),
+            None => Err(GhFailure::Exit(output.status.code(), String::from_utf8_lossy(&output.stderr).trim().to_owned())),
+        }
+    }
+
+    async fn output(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<std::process::Output, GhFailure> {
         let mut command = tokio::process::Command::new(&self.program);
         command.args(args).kill_on_drop(true);
         if let Some(dir) = dir {
             command.current_dir(dir);
         }
         match tokio::time::timeout(limit, command.output()).await {
-            Ok(Ok(output)) if output.status.success() => Ok(output.stdout),
-            Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-            Ok(Err(error)) => Err(error.to_string()),
-            Err(_) => Err(format!("gh {} did not finish within {} s", args.first().copied().unwrap_or_default(), limit.as_secs())),
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(error)) => Err(GhFailure::Launch(error.kind(), error.to_string())),
+            Err(_) => Err(GhFailure::TimedOut(format!("gh {} did not finish within {} s", args.first().copied().unwrap_or_default(), limit.as_secs()))),
         }
     }
 
@@ -113,6 +132,100 @@ impl GhCli {
         let (host, path) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?;
         let (repository, number) = path.split_once("/pull/")?;
         Some((alondra_core::domain::normalize_pr_host(host), repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
+    }
+}
+
+/// Why a `gh` run failed, as the system and `gh` report it. The text in each case is only shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GhFailure {
+    /// `gh` could not be started here.
+    Launch(std::io::ErrorKind, String),
+    TimedOut(String),
+    /// `gh` exited with this code, `None` when a signal ended it. 4 is `gh` needing a sign-in (`gh help exit-codes`).
+    Exit(Option<i32>, String),
+    /// GitHub answered with an HTTP status the call does not expect.
+    Http(u16, String),
+    /// `gh` answered something Alondra cannot read.
+    Unreadable(String),
+}
+
+impl GhFailure {
+    /// `gh` cannot work on this Mac until someone installs it or signs it in.
+    pub(crate) fn needs_setup(&self) -> bool {
+        matches!(self, Self::Launch(..) | Self::Exit(Some(4), _))
+    }
+
+    pub(crate) fn signed_out(&self) -> bool {
+        matches!(self, Self::Exit(Some(4), _))
+    }
+
+    pub(crate) fn timed_out(&self) -> bool {
+        matches!(self, Self::TimedOut(_))
+    }
+
+    pub(crate) fn unreadable(error: impl std::fmt::Display) -> Self {
+        Self::Unreadable(error.to_string())
+    }
+}
+
+impl std::fmt::Display for GhFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Launch(_, text) | Self::TimedOut(text) | Self::Exit(_, text) | Self::Unreadable(text) => f.write_str(text),
+            Self::Http(status, text) => write!(f, "{text} (HTTP {status})"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for GhFailure {
+    fn from(stderr: &str) -> Self {
+        Self::Exit(Some(1), stderr.to_owned())
+    }
+}
+
+impl From<GhFailure> for String {
+    fn from(failure: GhFailure) -> Self {
+        failure.to_string()
+    }
+}
+
+/// What GitHub answered to a `gh api --include` call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpAnswer {
+    pub status: u16,
+    /// Header names in lower case.
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpAnswer {
+    /// `HTTP/<version> <status> <reason>`, header lines, an empty line, then the body.
+    pub(crate) fn parse(stdout: &[u8]) -> Option<Self> {
+        let end = stdout.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let head = std::str::from_utf8(&stdout[..end]).ok()?;
+        let mut lines = head.lines();
+        let status = lines.next()?.strip_prefix("HTTP/")?.split_whitespace().nth(1)?.parse().ok()?;
+        let headers = lines.filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();
+        Some(Self { status, headers, body: stdout[end + 4..].to_vec() })
+    }
+
+    pub(crate) fn success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+
+    /// GitHub refused for its rate limit: a 429, or a 403 with no requests left or a wait to respect.
+    pub(crate) fn rate_limited(&self) -> bool {
+        self.status == 429 || (self.status == 403
+            && (self.headers.get("x-ratelimit-remaining").is_some_and(|left| left == "0") || self.headers.contains_key("retry-after")))
+    }
+
+    /// The answer as a failure, with GitHub's `message` for showing.
+    pub(crate) fn failure(&self) -> GhFailure {
+        let message = serde_json::from_slice::<Value>(&self.body).ok()
+            .and_then(|value| value["message"].as_str().map(str::to_owned)).unwrap_or_default();
+        GhFailure::Http(self.status, message)
     }
 }
 

@@ -224,7 +224,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
 #[tokio::test]
 async fn an_auto_merge_goes_through_the_claims_checks() {
     let (_home, domain, github) = presented("auto-base", true);
-    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed, merge_state: MergeState::Clean }));
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean }));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);
@@ -307,8 +307,9 @@ fn private_repo_gh(home: &Home, view: &str) -> (GhCli, std::path::PathBuf) {
     std::fs::write(&program, format!(r#"#!/bin/sh
 printf '%s\n' "$*" >> {log}
 case "$*" in
-  *protection*) echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1;;
-  *rules/branches*) echo '[]';;
+  *protection*) printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 4999\r\n\r\n{{"message":"Upgrade to GitHub Pro"}}'
+    echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1;;
+  *rules/branches*) printf 'HTTP/2.0 200 OK\r\n\r\n[]';;
   *isDraft*) echo false;;
   *"pr merge"*) touch {merged};;
   *statusCheckRollup*) if [ -f {merged} ]; then printf '%s' '{{"state":"MERGED","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[]}}'; else printf '%s' '{view}'; fi;;
@@ -428,6 +429,8 @@ async fn a_restarted_merger_picks_up_an_authorization_it_never_saw() {
 #[tokio::test]
 async fn github_waiting_for_required_checks_keeps_the_acceptance() {
     let (_home, domain, github) = presented("required", false);
+    github.open_blocked(7, HEAD, Checks::Passed);
+    github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
     github.merges.lock().unwrap().insert(7, Err("Pull request #7 is not mergeable: Required status check \"build\" is expected.".into()));
     accept(&domain);
     let mut merger = now();
@@ -489,6 +492,7 @@ async fn a_pr_the_queue_merges_while_alondra_checks_it_is_recorded_not_handed_ba
 async fn a_merge_refused_for_access_raises_one_card_while_reads_work_until_a_merge_succeeds() {
     let (_home, domain, github) = presented("no-access", false);
     github.merges.lock().unwrap().insert(7, Err("GraphQL: must have admin rights to Repository. (mergePullRequest)".into()));
+    github.no_access.lock().unwrap().insert(7);
     accept(&domain);
     let mut merger = now();
     for _ in 0..2 {
@@ -576,6 +580,7 @@ async fn checks_that_need_someone_on_github_raise_one_card_and_wait() {
 async fn a_merge_github_refuses_hands_the_task_back_with_the_reason() {
     let (_home, domain, github) = presented("refused", false);
     github.merges.lock().unwrap().insert(7, Err("Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created".into()));
+    github.refused_as.lock().unwrap().insert(7, MergeState::Conflicting);
     accept(&domain);
     let mut merger = now();
     merger.merge_due(&domain, &github).await.unwrap();
@@ -609,6 +614,11 @@ const SOMETHING_WENT_WRONG: &str =
 /// with `error` its first `failures` times, then merges it. Returns it and the file each merge
 /// try is logged to.
 fn scripted_gh(home: &Home, failures: u32, error: &str) -> (GhCli, std::path::PathBuf) {
+    refusing_gh(home, failures, error, "CLEAN")
+}
+
+/// [`scripted_gh`] whose PR reads as `refused` (its `mergeStateStatus`) after a failed try.
+fn refusing_gh(home: &Home, failures: u32, error: &str, refused: &str) -> (GhCli, std::path::PathBuf) {
     let program = home.0.join("gh");
     let tries = home.0.join("merge-tries");
     let merged = home.0.join("merged");
@@ -621,7 +631,8 @@ case "$*" in
   *isDraft*) echo false;;
   *statusCheckRollup*)
     state=OPEN; [ -e '{merged}' ] && state=MERGED
-    printf '{{"state":"%s","headRefOid":"{HEAD}","baseRefName":"main","mergeStateStatus":"CLEAN","statusCheckRollup":[{{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}}]}}' "$state";;
+    merge_state=CLEAN; [ -e '{tries}' ] && merge_state={refused}
+    printf '{{"state":"%s","headRefOid":"{HEAD}","baseRefName":"main","mergeStateStatus":"%s","statusCheckRollup":[{{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}}]}}' "$state" "$merge_state";;
 esac
 "#, tries = tries.display(), merged = merged.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -671,7 +682,7 @@ async fn a_merge_github_keeps_failing_on_its_side_goes_back_after_the_last_try()
 #[tokio::test]
 async fn a_merge_github_refuses_goes_back_at_once_with_its_reason() {
     let (home, domain, _) = presented("refused-at-once", false);
-    let (gh, log) = scripted_gh(&home, u32::MAX, "Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created.");
+    let (gh, log) = refusing_gh(&home, u32::MAX, "Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created.", "DIRTY");
     accept(&domain);
     now().merge_due(&domain, &gh).await.unwrap();
     assert_eq!(tries(&log), 1);
@@ -697,25 +708,100 @@ fn transient_merge_retries_double_from_thirty_seconds() {
     assert_eq!(waits, [30, 60, 120, 240, 480]);
 }
 
-#[test]
-fn github_failing_on_its_side_is_transient_and_a_real_refusal_is_not() {
-    for reason in [SOMETHING_WENT_WRONG, "HTTP 502: Bad Gateway", "HTTP 503: Service Unavailable", "gh pr did not finish within 120 s",
-        "error connecting to api.github.com"]
-    {
-        assert!(transient(reason), "{reason}");
+/// D-01: a rule violation whose words say «permission» is GitHub refusing this PR, not gh without
+/// access: with the PR blocked and no required check pending it goes back to its node, without a card.
+#[tokio::test]
+async fn a_rule_violation_that_mentions_permission_goes_back_to_the_node_without_a_sign_in_card() {
+    let (_home, domain, github) = presented("rule-violation", false);
+    github.open_blocked(7, HEAD, Checks::None);
+    github.merges.lock().unwrap().insert(7,
+        Err("GraphQL: Repository rule violations found\n\nyou need permission to bypass the required reviews (mergePullRequest)".into()));
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Running, "the node deals with the rule");
+    assert!(feedback(&domain)[0].contains("Repository rule violations"), "{:?}", feedback(&domain));
+    assert!(problems(&domain).is_empty(), "no card about gh's sign-in or access");
+}
+
+/// D-01: whatever gh wrote, a PR GitHub then reports merged is merged.
+#[tokio::test]
+async fn a_pr_github_reports_merged_after_a_failed_merge_is_recorded_whatever_gh_wrote() {
+    let (_home, domain, github) = presented("merged-anyway", false);
+    github.merges.lock().unwrap().insert(7, Err("unexpected wording from a newer gh".into()));
+    github.merged_anyway.lock().unwrap().insert(7);
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert!(feedback(&domain).is_empty(), "{:?}", feedback(&domain));
+    assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr")].state, PrState::Merged);
+    end_node(&domain);
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_merge_gh_cannot_run_for_raises_the_card_and_keeps_the_acceptance() {
+    for failure in [GhFailure::Exit(Some(4), "needs a sign-in".into()), GhFailure::Launch(std::io::ErrorKind::NotFound, "no gh".into())] {
+        let (_home, domain, github) = presented("gh-cannot-run", false);
+        github.merges.lock().unwrap().insert(7, Err(failure.clone()));
+        accept(&domain);
+        let mut merger = now();
+        for _ in 0..NON_TRANSIENT_FAILURES_BEFORE_CARD {
+            merger.merge_due(&domain, &github).await.unwrap();
+        }
+        assert_eq!(problems(&domain).len(), 1, "{failure:?}");
+        assert_eq!(task(&domain), TaskState::WaitingDependency, "{failure:?}");
+        assert!(feedback(&domain).is_empty(), "{failure:?}");
     }
-    for reason in ["Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created.",
-        "Pull request owner/repo#7 is still a draft", "GraphQL: Base branch was modified. Review and try the merge again."]
-    {
-        assert!(!transient(reason), "{reason}");
-    }
+}
+
+#[tokio::test]
+async fn a_merge_gh_did_not_finish_is_tried_again() {
+    let (_home, domain, github) = presented("timed-out", false);
+    github.open_blocked(7, HEAD, Checks::Passed);
+    github.merges.lock().unwrap().insert(7, Err(GhFailure::TimedOut("gh pr did not finish within 120 s".into())));
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert!(feedback(&domain).is_empty());
+    github.merges.lock().unwrap().remove(&7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr")].state, PrState::Merged);
+}
+
+/// A `gh` whose `gh api --include` answers the rulesets with `rules` and the classic branch
+/// protection with `protection`, each a status line and headers.
+fn api_gh(home: &Home, rules: &str, protection: &str) -> GhCli {
+    let program = home.0.join("gh");
+    std::fs::write(&program, format!(r#"#!/bin/sh
+case "$*" in
+  *protection*) printf '{protection}\r\n\r\n{{"message":"whatever GitHub says"}}'; exit 1;;
+  *rules/branches*) printf '{rules}\r\n\r\n[]';;
+esac
+"#)).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    GhCli::at(program)
+}
+
+/// D-14: the HTTP status GitHub answered decides whether a branch has rules, never gh's words.
+#[tokio::test]
+async fn required_checks_are_read_from_githubs_http_status_and_its_rate_limit() {
+    let home = Home(crate::test_support::Directory::new());
+    std::fs::create_dir(&home.0).unwrap();
+    let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
+        number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
+        allowed_methods: vec![MergeMethod::Squash], review: None };
+    let none = api_gh(&home, "HTTP/2.0 200 OK", "HTTP/2.0 404 Not Found\\r\\nX-Ratelimit-Remaining: 4999");
+    assert_eq!(none.required_checks(&pr, "main").await, Ok(vec![]));
+    let limited = api_gh(&home, "HTTP/2.0 200 OK", "HTTP/2.0 403 Forbidden\\r\\nX-Ratelimit-Remaining: 0");
+    assert!(matches!(limited.required_checks(&pr, "main").await, Err(GhFailure::Http(403, _))), "a rate limit is not «no rules»");
+    let failing = api_gh(&home, "HTTP/2.0 502 Bad Gateway", "HTTP/2.0 404 Not Found");
+    assert!(matches!(failing.required_checks(&pr, "main").await, Err(GhFailure::Http(502, _))));
 }
 
 #[tokio::test]
 async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
     let (_home, domain, github) = presented("logged-out", false);
     accept(&domain);
-    github.statuses.lock().unwrap().insert(7, Err("To get started with GitHub CLI, please run:  gh auth login".into()));
+    github.statuses.lock().unwrap().insert(7, Err(GhFailure::Exit(Some(4), "To get started with GitHub CLI, please run:  gh auth login".into())));
     let mut merger = now();
     for _ in 0..2 {
         merger.merge_due(&domain, &github).await.unwrap();

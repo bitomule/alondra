@@ -671,6 +671,9 @@ impl Github for FakeGithub {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("closing is not available here".into()) })
     }
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+        Box::pin(async { Err("unexpected PR state".into()) })
+    }
 
     fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async { Err("viewed files are not available here".into()) })
@@ -1411,6 +1414,9 @@ impl Github for HeldIssueSearch {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+        Box::pin(async { Err("unexpected PR state".into()) })
+    }
     fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async { Err("unexpected viewed files".into()) })
     }
@@ -1563,6 +1569,9 @@ impl Github for ViewedGithub {
     }
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
+    }
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+        Box::pin(async { Err("unexpected PR state".into()) })
     }
     fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async { self.marks.clone() })

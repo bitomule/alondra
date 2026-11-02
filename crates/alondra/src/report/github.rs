@@ -63,7 +63,7 @@ impl Default for Gh {
 impl Github for Gh {
     fn api(&self, method: &str, path: &str, body: Option<&Value>) -> GhResult<Value> {
         let mut command = Command::new(&self.program);
-        command.args(["api", "--method", method, "-H", "Accept: application/vnd.github+json", path]);
+        command.args(["api", "--include", "--method", method, "-H", "Accept: application/vnd.github+json", path]);
         if body.is_some() {
             command.args(["--input", "-"]);
         }
@@ -87,11 +87,11 @@ impl Github for Gh {
                 return Err(GhError::Unavailable(tr!("gh did not answer", "gh no respondió").into()));
             }
         };
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let answer = Answer::parse(&output.stdout);
         if output.status.success() {
-            return Ok(if stdout.trim().is_empty() { Value::Null } else { serde_json::from_str(&stdout).unwrap_or(Value::Null) });
+            return Ok(answer.and_then(|answer| serde_json::from_str(&answer.body).ok()).unwrap_or(Value::Null));
         }
-        Err(classify(output.status.code(), &String::from_utf8_lossy(&output.stderr), &stdout))
+        Err(classify(output.status.code(), answer.as_ref(), &String::from_utf8_lossy(&output.stderr)))
     }
 
     fn raw(&self, url: &str) -> GhResult<String> {
@@ -115,19 +115,48 @@ impl Github for Gh {
     }
 }
 
-/// What a failed `gh api` means, from its exit status, its error and the body GitHub answered.
-pub fn classify(code: Option<i32>, stderr: &str, stdout: &str) -> GhError {
-    let status = stderr.rsplit_once("(HTTP ").and_then(|(_, rest)| rest.split(')').next()).and_then(|s| s.trim().parse::<u16>().ok());
-    let message = serde_json::from_str::<Value>(stdout).ok().and_then(|v| v["message"].as_str().map(str::to_owned)).unwrap_or_else(|| stderr.trim().to_owned());
-    let rate_limited = message.to_ascii_lowercase().contains("rate limit");
-    match status {
-        Some(401) => GhError::SignedOut,
-        Some(404) => GhError::NotFound,
-        Some(403 | 429) if rate_limited => GhError::Unavailable(message),
-        Some(status) if status >= 500 => GhError::Unavailable(message),
-        Some(status) => GhError::Refused(status, message),
-        None if code == Some(4) || stderr.contains("gh auth login") => GhError::SignedOut,
-        None => GhError::Unavailable(message),
+/// What GitHub answered to a `gh api --include` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub status: u16,
+    /// Header names in lower case.
+    pub headers: std::collections::BTreeMap<String, String>,
+    pub body: String,
+}
+
+impl Answer {
+    /// `HTTP/<version> <status> <reason>`, header lines, an empty line, then the body.
+    pub fn parse(stdout: &[u8]) -> Option<Answer> {
+        let end = stdout.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let head = std::str::from_utf8(&stdout[..end]).ok()?;
+        let mut lines = head.lines();
+        let status = lines.next()?.strip_prefix("HTTP/")?.split_whitespace().nth(1)?.parse().ok()?;
+        let headers = lines.filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();
+        Some(Answer { status, headers, body: String::from_utf8_lossy(&stdout[end + 4..]).into_owned() })
+    }
+
+    /// A 429, or a 403 with no requests left or a wait to respect.
+    fn rate_limited(&self) -> bool {
+        self.status == 429 || (self.status == 403
+            && (self.headers.get("x-ratelimit-remaining").is_some_and(|left| left == "0") || self.headers.contains_key("retry-after")))
+    }
+}
+
+/// What a failed `gh api` means: GitHub's HTTP status and headers when it answered, else `gh`'s exit
+/// status (4 is a missing sign-in). The words are only shown.
+pub fn classify(code: Option<i32>, answer: Option<&Answer>, stderr: &str) -> GhError {
+    let Some(answer) = answer else {
+        return if code == Some(4) { GhError::SignedOut } else { GhError::Unavailable(stderr.trim().to_owned()) };
+    };
+    let message = serde_json::from_str::<Value>(&answer.body).ok().and_then(|v| v["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| stderr.trim().to_owned());
+    match answer.status {
+        401 => GhError::SignedOut,
+        404 => GhError::NotFound,
+        _ if answer.rate_limited() => GhError::Unavailable(message),
+        status if status >= 500 => GhError::Unavailable(message),
+        status => GhError::Refused(status, message),
     }
 }
 
