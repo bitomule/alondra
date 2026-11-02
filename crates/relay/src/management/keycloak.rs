@@ -418,8 +418,9 @@ impl Keycloak {
         Ok(())
     }
     /// The account's live offline sessions for one client. Reading consents first needs only
-    /// `manage-users`: looking the client up by its id would need `view-clients` as well. No
-    /// offline grant for the client means no live offline session.
+    /// `manage-users`: looking the client up by its id would need `view-clients` as well. The
+    /// only additional grant Keycloak lists is the offline one, and its `client` is the client's
+    /// internal id; no such grant means no live offline session.
     pub async fn offline_session_ids(
         &self,
         subject: &str,
@@ -454,8 +455,7 @@ impl Keycloak {
             .iter()
             .filter(|consent| consent["clientId"] == client_id)
             .flat_map(|consent| consent["additionalGrants"].as_array().into_iter().flatten())
-            .find(|grant| grant["key"] == "Offline Token")
-            .and_then(|grant| grant["client"].as_str())
+            .find_map(|grant| grant["client"].as_str())
             .map(str::to_owned);
         let Some(client) = client else {
             return Ok(Default::default());
@@ -646,6 +646,75 @@ mod integration_tests {
             kc.verify_realm().await.is_err(),
             "credentials representation must never enter admin event details"
         );
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn offline_sessions_follow_the_grant_client_whatever_its_label() -> Result<()> {
+        use axum::{
+            Json, Router,
+            extract::{Path, State},
+            routing::{get, post},
+        };
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone, Default)]
+        struct Fixture {
+            consents: Arc<Mutex<Value>>,
+            listed: Arc<Mutex<Vec<String>>>,
+        }
+        let fixture = Fixture::default();
+        let router = Router::new()
+            .route(
+                "/realms/test/protocol/openid-connect/token",
+                post(|| async { Json(json!({"access_token":"synthetic"})) }),
+            )
+            .route(
+                "/admin/realms/test/users/{user}/consents",
+                get(|State(f): State<Fixture>| async move {
+                    Json(f.consents.lock().unwrap().clone())
+                }),
+            )
+            .route(
+                "/admin/realms/test/users/{user}/offline-sessions/{client}",
+                get(
+                    |State(f): State<Fixture>, Path((_, client)): Path<(String, String)>| async move {
+                        f.listed.lock().unwrap().push(client);
+                        Json(json!([{"id":"sid-1"},{"id":"sid-2"}]))
+                    },
+                ),
+            )
+            .with_state(fixture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let kc = Keycloak::new(
+            "https://identity.example/realms/test".into(),
+            format!("{base}/admin/realms/test/").parse()?,
+            format!("{base}/realms/test/protocol/openid-connect/token").parse()?,
+            "fixture".into(),
+            "synthetic".into(),
+        )?;
+        for grant in [
+            json!({"client":"uuid-ios","key":"Token sin conexión"}),
+            json!({"client":"uuid-ios"}),
+        ] {
+            *fixture.consents.lock().unwrap() = json!([
+                {"clientId":"other","additionalGrants":[{"client":"uuid-other","key":"Offline Token"}]},
+                {"clientId":"alondra-ios","additionalGrants":[grant]}
+            ]);
+            let live = kc.offline_session_ids("user-1", "alondra-ios").await?;
+            assert_eq!(
+                live,
+                ["sid-1", "sid-2"].map(str::to_owned).into(),
+                "grant {grant}"
+            );
+            assert_eq!(fixture.listed.lock().unwrap().pop().as_deref(), Some("uuid-ios"));
+        }
+        *fixture.consents.lock().unwrap() =
+            json!([{"clientId":"alondra-ios","additionalGrants":[]}]);
+        assert!(kc.offline_session_ids("user-1", "alondra-ios").await?.is_empty());
+        assert!(fixture.listed.lock().unwrap().is_empty());
         task.abort();
         Ok(())
     }

@@ -27,7 +27,6 @@ crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_
 crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	format	GitHub release tag of a version
 crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
 crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
-crates/relay/src/management/keycloak.rs	.find(|grant| grant["key"] == "Offline Token")	finding:G-11	consent to revoke picked by its display label
 crates/core/src/view.rs	.is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))	finding:G-14	billing_error and overloaded treated as usage limit
 crates/provider-claude/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
 crates/provider-codex/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
