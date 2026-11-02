@@ -96,6 +96,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
         ["pr", "view", url, "--json", fields, rest @ ..] if url.starts_with("https://") => view(fakes, url, fields, rest),
         ["pr", "view", "--json", fields, ..] => view_branch(fakes, fields),
         ["pr", "merge", url, method, "--match-head-commit", head] => merge(fakes, url, method, head),
+        ["pr", "diff", url] => diff(fakes, url),
         ["pr", "ready", url] => change(fakes, url, |pr| pr.draft = false),
         ["pr", "close", url, ..] => change(fakes, url, |pr| pr.state = "CLOSED".into()),
         ["repo", "view", _, "--json", _] => Ok(json!({"mergeCommitAllowed": false, "squashMergeAllowed": true, "rebaseMergeAllowed": false}).to_string()),
@@ -233,6 +234,13 @@ fn facts(fakes: &Fakes, pr: &Pr, fields: &str) -> Result<Value, String> {
         picked.insert(field.into(), all.get(field).cloned().ok_or_else(|| format!("Unknown JSON field: {field:?}"))?);
     }
     Ok(Value::Object(picked))
+}
+
+/// `gh pr diff`: the PR's unified diff against its base, as GitHub gives it.
+fn diff(fakes: &Fakes, url: &str) -> Result<String, String> {
+    let pr = found(fakes, url)?;
+    let head = fakes.head(&pr).map_err(|error| error.to_string())?;
+    git(&fakes.remote(), &["diff", &format!("{}...{head}", pr.base)]).map_err(|error| error.to_string())
 }
 
 fn view(fakes: &Fakes, url: &str, fields: &str, rest: &[&str]) -> Result<String, String> {

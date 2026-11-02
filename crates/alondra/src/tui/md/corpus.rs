@@ -97,6 +97,9 @@ fn outline(blocks: &[Block]) -> Vec<String> {
                 }
             }
             Kind::Rule => format!("rule {depth} |"),
+            Kind::DiffFiles { .. } | Kind::DiffEntry(_) | Kind::DiffFile(_) | Kind::DiffLine(_) => {
+                format!("diff {depth} | {text}")
+            }
         };
         if !matches!(b.kind, Kind::Row { .. }) {
             row = 0;

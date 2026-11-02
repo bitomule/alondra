@@ -54,6 +54,7 @@ rust_test(
     crate_name = "alondra",
     crate_root = "src/lib.rs",
     compile_data = [
+        "//fixtures/diffs",
         "//launchd:alondra.plist.in",
         "//:plugin/skills/alondra/SKILL.md",
         "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",

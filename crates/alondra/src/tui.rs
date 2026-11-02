@@ -17,6 +17,7 @@ mod mcp_servers;
 mod metrics;
 mod tasks;
 mod title;
+mod unified_diff;
 mod updated;
 mod usage_banner;
 mod version_watch;
@@ -93,12 +94,28 @@ fn view_action_result(value: serde_json::Value) -> std::result::Result<ViewActio
     Ok(ViewActionReply::Outcome(outcome))
 }
 
-fn diff_reader_text(diff: crate::client::PullRequestDiff, truncated_notice: &str) -> String {
-    if diff.truncated {
-        format!("{}\n\n{truncated_notice}", diff.text)
-    } else {
-        diff.text
+/// Where a PR diff is kept: its route at the head it was read for, so new commits read it again.
+fn diff_key(route: &str, head: &str) -> String {
+    format!("{route}@{head}")
+}
+
+/// The PR whose diff a content route fetches: `/pull-requests/{id}/diff`, the id path-encoded.
+fn diff_pull_request(route: &str) -> Option<String> {
+    let segment = route.strip_prefix("/pull-requests/")?.strip_suffix("/diff")?;
+    let mut bytes = vec![];
+    let mut rest = segment.as_bytes();
+    while let Some((&first, tail)) = rest.split_first() {
+        if first == b'%' {
+            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(first);
+            rest = tail;
+        }
     }
+    let id = String::from_utf8(bytes).ok()?;
+    (alondra_core::views::id::valid(&id) && alondra_core::views::id::path_segment(&id) == segment).then_some(id)
 }
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -319,6 +336,19 @@ impl Find {
 pub enum Part {
     Text(String),
     File { name: String, route: String },
+    /// A PR's diff, read by file.
+    Diff { route: String, id: String, head: String },
+}
+
+impl Part {
+    /// What the part reads from `App::files`.
+    fn key(&self) -> Option<String> {
+        match self {
+            Part::Text(_) => None,
+            Part::File { route, .. } => Some(route.clone()),
+            Part::Diff { route, head, .. } => Some(diff_key(route, head)),
+        }
+    }
 }
 
 pub struct Reader {
@@ -340,6 +370,12 @@ pub struct Reader {
     pub find: Option<Find>,
     /// The numbered list of what the selected block opens, when it opens more than one thing.
     pub picking: bool,
+    /// The diff files the user folded or unfolded; the rest keep how they start.
+    folds: HashMap<md::diff::At, bool>,
+    /// Puts the cursor on the diff's files as soon as the diff is on screen.
+    to_diff: bool,
+    /// The block the next frame scrolls to the top.
+    pub show_from: Option<usize>,
 }
 
 impl Reader {
@@ -350,7 +386,7 @@ impl Reader {
             if i < 0 || i >= self.blocks.len() as isize {
                 return;
             }
-            if self.blocks[i as usize].commentable() {
+            if self.blocks[i as usize].selectable() {
                 self.cursor = i as usize;
                 return;
             }
@@ -379,7 +415,7 @@ impl Reader {
 
     fn bottom(&mut self) {
         self.cursor = self.blocks.len().saturating_sub(1);
-        if !self.blocks.get(self.cursor).is_some_and(Block::commentable) {
+        if !self.blocks.get(self.cursor).is_some_and(Block::selectable) {
             self.step(-1);
         }
         self.scroll = self.total.saturating_sub(self.view_h);
@@ -403,7 +439,7 @@ impl Reader {
             return;
         }
         let ok = |i: &usize| {
-            self.blocks.get(*i).is_some_and(Block::commentable)
+            self.blocks.get(*i).is_some_and(Block::selectable)
                 && self.ranges.get(*i).is_some_and(|r| fits(r) || covers(r))
         };
         let n = self.ranges.len();
@@ -415,7 +451,7 @@ impl Reader {
         if let Some(i) = found {
             self.cursor = i;
         } else if let Some(i) = (0..n).find(|&i| {
-            self.blocks.get(i).is_some_and(Block::commentable) && self.ranges[i].0 >= top
+            self.blocks.get(i).is_some_and(Block::selectable) && self.ranges[i].0 >= top
         }) {
             self.cursor = i;
         }
@@ -432,7 +468,7 @@ impl Reader {
         };
         (0..self.blocks.len())
             .filter(|&i| {
-                self.blocks[i].commentable() && self.blocks[i].plain().to_lowercase().contains(&q)
+                self.blocks[i].selectable() && self.blocks[i].plain().to_lowercase().contains(&q)
             })
             .collect()
     }
@@ -461,8 +497,32 @@ impl Reader {
 
     fn settle_cursor(&mut self) {
         self.cursor = self.cursor.min(self.blocks.len().saturating_sub(1));
-        if !self.blocks.get(self.cursor).is_some_and(Block::commentable) {
+        if !self.blocks.get(self.cursor).is_some_and(Block::selectable) {
             self.step(1);
+        }
+    }
+
+    fn header(&self, at: md::diff::At) -> Option<usize> {
+        self.blocks.iter().position(|b| matches!(&b.kind, md::Kind::DiffFile(h) if h.at == at))
+    }
+
+    fn has_files(&self) -> bool {
+        self.blocks.iter().any(|b| matches!(b.kind, md::Kind::DiffFile(_)))
+    }
+
+    /// Moves to the header of the next or previous file of the diff and brings it to the top.
+    fn next_file(&mut self, forward: bool) {
+        let headers: Vec<usize> = (0..self.blocks.len())
+            .filter(|&i| matches!(self.blocks[i].kind, md::Kind::DiffFile(_)))
+            .collect();
+        let next = if forward {
+            headers.iter().find(|&&i| i > self.cursor)
+        } else {
+            headers.iter().rev().find(|&&i| i < self.cursor)
+        };
+        if let Some(&i) = next {
+            self.cursor = i;
+            self.show_from = Some(i);
         }
     }
 }
@@ -1804,21 +1864,16 @@ impl App {
     }
 
     fn fetch_diff(&mut self, route: &str, id: &str, expected_head: &str) {
-        if self.files.contains_key(route) || !self.loading.insert(route.to_string()) {
+        let route = diff_key(route, expected_head);
+        if self.files.contains_key(&route) || !self.loading.insert(route.clone()) {
             return;
         }
-        let route = route.to_string();
         let id = id.to_string();
         let expected_head = expected_head.to_string();
-        let truncated_notice = tr!(
-            "Diff truncated. Open the PR on GitHub to read the rest.",
-            "Diferencias incompletas. Abre la PR en GitHub para leer el resto."
-        )
-        .to_string();
         self.spawn(move |tx, target| {
             let result = Client::for_target(target, Duration::from_secs(30))
                 .pull_request_diff(&id, &expected_head)
-                .map(|diff| files::FileBody::Text(diff_reader_text(diff, &truncated_notice)))
+                .map(|diff| files::FileBody::Diff(std::sync::Arc::new(unified_diff::Diff::read(&diff.text, diff.truncated))))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::File { route, result });
         });
@@ -2080,9 +2135,10 @@ impl App {
                     self.card_view_asked = None;
                     self.view_data_epoch = Some(view.data_epoch.clone());
                     self.card_view = Some(view);
+                    self.prefetch_diffs();
                     if self.reader_after_view.as_deref() == Some(&key) {
                         self.reader_after_view = None;
-                        self.open_reader();
+                        self.open_reader_at(true);
                     }
                 }
             }
@@ -2217,9 +2273,7 @@ impl App {
                 }
                 self.files.insert(route.clone(), result);
                 if self.reader.as_ref().is_some_and(|r| {
-                    r.parts
-                        .iter()
-                        .any(|p| matches!(p, Part::File { route: fr, .. } if *fr == route))
+                    r.parts.iter().any(|p| p.key().as_deref() == Some(route.as_str()))
                 }) {
                     self.rebuild_reader();
                 }
@@ -3019,6 +3073,32 @@ impl App {
     }
 
     fn open_reader(&mut self) {
+        self.open_reader_at(false);
+    }
+
+    /// Asks for the PR diffs the detail on screen references, so it counts them and `d` opens at once.
+    fn prefetch_diffs(&mut self) {
+        let Some(view) = self.card_view.as_ref() else { return };
+        let diffs: Vec<(String, String, String)> = view
+            .sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .filter_map(|item| match item {
+                alondra_core::views::Item::ContentRef(content)
+                    if content.kind == alondra_core::views::ContentKind::Diff =>
+                {
+                    Some((content.fetch.clone(), diff_pull_request(&content.fetch)?, content.digest.clone()?))
+                }
+                _ => None,
+            })
+            .collect();
+        for (route, id, head) in diffs {
+            self.fetch_diff(&route, &id, &head);
+        }
+    }
+
+    /// Opens the reader on what is selected; `to_diff` puts the cursor on the diff's files.
+    fn open_reader_at(&mut self, to_diff: bool) {
         if let Some(view) = self
             .card_view
             .as_ref()
@@ -3028,7 +3108,6 @@ impl App {
             let title = view.title.clone().unwrap_or_else(|| view.key.clone());
             let mut text = format!("# {title}");
             let mut parts = Vec::new();
-            let mut diffs = HashMap::new();
             for section in &view.sections {
                 for item in &section.items {
                     match item {
@@ -3037,25 +3116,18 @@ impl App {
                                 text.push_str(&format!("\n\n{}", markdown.text));
                             }
                         }
-                        alondra_core::views::Item::ContentRef(content) => {
-                            if content.kind == alondra_core::views::ContentKind::Diff {
-                                let Some(id) = view.key.strip_prefix("pull_request:") else {
-                                    continue;
-                                };
-                                if !alondra_core::views::id::valid(id)
-                                    || content.fetch
-                                        != format!(
-                                            "/pull-requests/{}/diff",
-                                            alondra_core::views::id::path_segment(id)
-                                        )
-                                {
-                                    continue;
-                                }
-                                let Some(head) = content.digest.as_ref() else {
-                                    continue;
-                                };
-                                diffs.insert(content.fetch.clone(), (id.to_string(), head.clone()));
+                        alondra_core::views::Item::ContentRef(content)
+                            if content.kind == alondra_core::views::ContentKind::Diff =>
+                        {
+                            if let (Some(id), Some(head)) = (diff_pull_request(&content.fetch), content.digest.as_ref()) {
+                                parts.push(Part::Diff {
+                                    route: content.fetch.clone(),
+                                    id,
+                                    head: head.clone(),
+                                });
                             }
+                        }
+                        alondra_core::views::Item::ContentRef(content) => {
                             parts.push(Part::File {
                                 name: content.title.clone(),
                                 route: content.fetch.clone(),
@@ -3083,12 +3155,10 @@ impl App {
             }
             parts.insert(0, Part::Text(text));
             for part in &parts {
-                if let Part::File { route, .. } = part {
-                    if let Some((id, head)) = diffs.get(route) {
-                        self.fetch_diff(route, id, head);
-                    } else {
-                        self.fetch(route);
-                    }
+                match part {
+                    Part::Diff { route, id, head } => self.fetch_diff(route, id, head),
+                    Part::File { route, .. } => self.fetch(route),
+                    Part::Text(_) => {}
                 }
             }
             let first_card = view
@@ -3133,6 +3203,9 @@ impl App {
                 total: 0,
                 find: None,
                 picking: false,
+                folds: HashMap::new(),
+                to_diff,
+                show_from: None,
             });
             self.rebuild_reader();
             return;
@@ -3191,6 +3264,9 @@ impl App {
                 total: 0,
                 find: None,
                 picking: false,
+                folds: HashMap::new(),
+                to_diff,
+                show_from: None,
             });
             self.rebuild_reader();
             return;
@@ -3202,9 +3278,20 @@ impl App {
             return;
         };
         let mut blocks = vec![];
-        for part in &r.parts {
+        for (index, part) in r.parts.iter().enumerate() {
             match part {
                 Part::Text(t) => blocks.extend(md::parse(t)),
+                Part::Diff { route, head, .. } => match self.files.get(&diff_key(route, head)) {
+                    Some(Ok(files::FileBody::Diff(diff))) => blocks.extend(md::diff::blocks(diff, index, |file| {
+                        let at = md::diff::At { part: index, file };
+                        r.folds.get(&at).copied().unwrap_or_else(|| diff.files[file].starts_folded())
+                    })),
+                    Some(Err(e)) => blocks.push(Block::para(&trf!(
+                        "Could not load the changes: {e}",
+                        "No se pudieron cargar los cambios: {e}"
+                    ))),
+                    _ => blocks.push(Block::para(tr!("Loading the changes…", "Cargando los cambios…"))),
+                },
                 Part::File { name, route } => {
                     blocks.push(Block::label(&format!("📎 {name}")));
                     match self.files.get(route) {
@@ -3225,6 +3312,32 @@ impl App {
         }
         r.blocks = blocks;
         r.settle_cursor();
+        if r.to_diff
+            && let Some(first) = r.blocks.iter().position(|b| matches!(b.kind, md::Kind::DiffEntry(_)))
+        {
+            r.to_diff = false;
+            r.cursor = first;
+            r.show_from = Some(first - 1);
+        }
+    }
+
+    /// Folds or unfolds the diff file under the cursor; on the list, unfolds it and goes to it.
+    fn diff_file(&mut self) {
+        let Some(r) = self.reader.as_mut() else { return };
+        let (header, open) = match r.blocks.get(r.cursor).map(|b| &b.kind) {
+            Some(md::Kind::DiffFile(header)) => (header.clone(), false),
+            Some(md::Kind::DiffEntry(header)) => (header.clone(), true),
+            _ => return,
+        };
+        r.folds.insert(header.at, !open && !header.folded);
+        self.rebuild_reader();
+        let Some(r) = self.reader.as_mut() else { return };
+        if let Some(at) = r.header(header.at) {
+            r.cursor = at;
+            if open {
+                r.show_from = Some(at);
+            }
+        }
     }
 
     fn reader_cmd(&mut self, cmd: Cmd) {

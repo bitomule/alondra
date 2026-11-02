@@ -72,6 +72,8 @@ pub(super) enum Act {
     ReaderOpen,
     ReaderPick,
     ReaderPickClose,
+    ReaderDiffFile,
+    ReaderNextFile(bool),
     ModalConfirm,
     ModalCancel,
     Pairing(bool),
@@ -316,6 +318,18 @@ impl App {
         t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::ReaderFind);
         if targets > 0 {
             t.add(vec![char('v')], "v", tr!("open", "abrir"), Act::ReaderOpen);
+        }
+        match r.blocks.get(r.cursor).map(|block| &block.kind) {
+            Some(super::md::Kind::DiffFile(header)) => t.add(vec![plain(KeyCode::Enter)], "⏎",
+                if header.folded { tr!("unfold the file", "desplegar el archivo") } else { tr!("fold the file", "plegar el archivo") },
+                Act::ReaderDiffFile),
+            Some(super::md::Kind::DiffEntry(_)) => t.add(vec![plain(KeyCode::Enter)], "⏎",
+                tr!("go to the file", "ir al archivo"), Act::ReaderDiffFile),
+            _ => {}
+        }
+        if r.has_files() {
+            t.add(vec![char(']')], "]", tr!("next file", "archivo siguiente"), Act::ReaderNextFile(true));
+            t.add(vec![char('[')], "[", tr!("previous file", "archivo anterior"), Act::ReaderNextFile(false));
         }
         if r.blocks.get(r.cursor).is_some_and(|block| block.commentable()) {
             t.add(vec![char('c'), plain(KeyCode::Enter)], "c", tr!("comment", "comentar"), Act::ReaderComment);
@@ -563,7 +577,7 @@ impl App {
                 t.add(vec![char('e'), plain(KeyCode::Enter)], "e", tr!("edit", "editar"), Act::Form);
             }
             if has_diff(view) {
-                t.add(vec![char('d')], "d", tr!("diff and comments", "diff y comentarios"), Act::Diff);
+                t.add(vec![char('d')], "d", tr!("view changes", "ver cambios"), Act::Diff);
             }
             if view_render::documents_menu(view).is_some() {
                 t.add(vec![char('f')], "f", tr!("documents", "documentos"), Act::Documents);
@@ -685,7 +699,7 @@ impl App {
                 }
             }
             Act::Open => self.open_reader(),
-            Act::Diff => self.open_reader(),
+            Act::Diff => self.open_reader_at(true),
             Act::Documents => self.card_menu = self.current_view().and_then(view_render::documents_menu),
             Act::Form => {
                 if let Some(view) = self.current_view().map(|view| view.key.clone()) {
@@ -798,6 +812,12 @@ impl App {
             Act::ReaderAnswer => self.answer_with_comments(key),
             Act::ReaderOpen => self.open_block(),
             Act::ReaderPick => self.pick_target(key),
+            Act::ReaderDiffFile => self.diff_file(),
+            Act::ReaderNextFile(forward) => {
+                if let Some(reader) = self.reader.as_mut() {
+                    reader.next_file(forward);
+                }
+            }
             Act::ReaderPickClose => {
                 if let Some(reader) = self.reader.as_mut() {
                     reader.picking = false;

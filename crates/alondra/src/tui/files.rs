@@ -8,6 +8,8 @@ pub enum FileBody {
     Text(String),
     Image(Arc<image::DynamicImage>),
     Binary { bytes: usize },
+    /// A PR's diff, read by file.
+    Diff(Arc<super::unified_diff::Diff>),
 }
 
 impl FileBody {
@@ -42,7 +44,7 @@ pub fn not_text(body: &FileBody) -> String {
                 "Fichero binario, {s} · v lo abre con su aplicación"
             )
         }
-        FileBody::Text(_) => String::new(),
+        FileBody::Text(_) | FileBody::Diff(_) => String::new(),
     }
 }
 
@@ -95,6 +97,7 @@ mod tests {
                 FileBody::Text(_) => "text",
                 FileBody::Image(_) => "image",
                 FileBody::Binary { .. } => "binary",
+                FileBody::Diff(_) => "diff",
             };
             assert_eq!(got, want, "{what}");
         }
