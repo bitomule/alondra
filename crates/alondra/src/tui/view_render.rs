@@ -437,6 +437,14 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     if let Some(body) = &card.body {
         out.extend(super::md::render(&super::md::parse(&body.text), width).lines);
     }
+    if !card.attachments.is_empty() {
+        out.push(Line::default());
+        out.extend(card.attachments.iter().map(|attachment| Line::from(super::files::attachment_line(attachment))));
+        out.push(Line::from(Span::styled(
+            tr!("o opens the card to see and open them", "o abre la tarjeta para verlos y abrirlos"),
+            Style::new().fg(DIM),
+        )));
+    }
     out
 }
 

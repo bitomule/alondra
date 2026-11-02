@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use alondra_core::views::{Attachment, AttachmentKind};
+
 #[derive(Clone)]
 pub enum FileBody {
     Text(String),
@@ -27,14 +29,75 @@ impl FileBody {
     }
 }
 
+/// A terminal graphics protocol that draws the image itself. Half-blocks only approximate it in
+/// coloured cells, so a terminal that has nothing better shows the attachment's line instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Graphics {
+    Kitty,
+    Iterm2,
+    Sixel,
+}
+
+pub fn graphics(protocol: ratatui_image::picker::ProtocolType) -> Option<Graphics> {
+    use ratatui_image::picker::ProtocolType;
+    match protocol {
+        ProtocolType::Kitty => Some(Graphics::Kitty),
+        ProtocolType::Iterm2 => Some(Graphics::Iterm2),
+        ProtocolType::Sixel => Some(Graphics::Sixel),
+        ProtocolType::Halfblocks => None,
+    }
+}
+
+/// Whether the reader reads the attachment as it opens: an image to draw or a text to read.
+/// A video or another file is only downloaded when the user opens it.
+pub fn read_up_front(kind: Option<AttachmentKind>) -> bool {
+    !matches!(kind, Some(AttachmentKind::Video | AttachmentKind::Binary))
+}
+
+pub fn glyph(kind: Option<AttachmentKind>) -> &'static str {
+    match kind {
+        Some(AttachmentKind::Image) => "📷",
+        Some(AttachmentKind::Video) => "🎬",
+        Some(AttachmentKind::Text) => "📄",
+        Some(AttachmentKind::Binary) | None => "📎",
+    }
+}
+
+pub fn kind_name(kind: AttachmentKind) -> &'static str {
+    match kind {
+        AttachmentKind::Image => tr!("Image", "Imagen"),
+        AttachmentKind::Video => tr!("Video", "Vídeo"),
+        AttachmentKind::Text => tr!("Text", "Texto"),
+        AttachmentKind::Binary => tr!("File", "Fichero"),
+    }
+}
+
+/// The attachment as one line of the card: glyph, name, kind and size.
+pub fn attachment_line(attachment: &Attachment) -> String {
+    let (glyph, name, kind) = (glyph(Some(attachment.kind)), &attachment.name, kind_name(attachment.kind));
+    let size = size(attachment.size as usize);
+    format!("{glyph} {name} · {kind} · {size}")
+}
+
+/// What stands in for an attachment the reader leaves to the Mac until the user opens it.
+pub fn not_read(kind: Option<AttachmentKind>, bytes: Option<u64>) -> String {
+    let kind = kind_name(kind.unwrap_or(AttachmentKind::Binary));
+    let size = bytes.map(|b| format!(" · {}", size(b as usize))).unwrap_or_default();
+    trf!(
+        "{kind}{size} · v downloads it and opens it with its app",
+        "{kind}{size} · v lo baja y lo abre con su aplicación"
+    )
+}
+
 /// What stands in for a file that is not text: its kind, size, and the key that opens it.
-pub fn not_text(body: &FileBody) -> String {
+pub fn not_text(body: &FileBody, bytes: Option<u64>) -> String {
     match body {
         FileBody::Image(img) => {
             let (w, h) = (img.width(), img.height());
+            let size = bytes.map(|b| format!(" · {}", size(b as usize))).unwrap_or_default();
             trf!(
-                "Image {w}×{h} · v opens it in Preview",
-                "Imagen {w}×{h} · v la abre en Vista Previa"
+                "Image {w}×{h}{size} · v opens it in Preview",
+                "Imagen {w}×{h}{size} · v la abre en Vista Previa"
             )
         }
         FileBody::Binary { bytes } => {
@@ -70,6 +133,16 @@ pub(crate) fn png(w: u32, h: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kitty_iterm2_and_sixel_draw_images_and_half_blocks_fall_back_to_the_line() {
+        use ratatui_image::picker::ProtocolType;
+        assert_eq!(graphics(ProtocolType::Kitty), Some(Graphics::Kitty));
+        assert_eq!(graphics(ProtocolType::Iterm2), Some(Graphics::Iterm2));
+        assert_eq!(graphics(ProtocolType::Sixel), Some(Graphics::Sixel));
+        assert_eq!(graphics(ProtocolType::Halfblocks), None);
+        assert_eq!(graphics(ratatui_image::picker::Picker::halfblocks().protocol_type()), None, "a terminal that does not answer");
+    }
 
     #[test]
     fn an_attachment_is_read_as_text_drawn_as_an_image_or_left_as_bytes() {

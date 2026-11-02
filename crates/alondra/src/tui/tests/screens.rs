@@ -1282,3 +1282,70 @@ fn the_reader_border_names_the_card_whole_or_leaves_it_to_the_page() {
         }
     }
 }
+
+const SHOT: &str = "/interactions/i-1/attachments/shot.png/content";
+const CLIP: &str = "/interactions/i-1/attachments/clip.mp4/content";
+
+fn card_with_attachments() -> views::View {
+    edited("card-question.json", |card| {
+        card["attachments"] = serde_json::json!([
+            {"id": "shot.png", "name": "shot.png", "kind": "image", "size": 348_160, "digest": "a".repeat(64), "fetch": SHOT},
+            {"id": "clip.mp4", "name": "clip.mp4", "kind": "video", "size": 13_002_342, "digest": "b".repeat(64), "fetch": CLIP},
+        ]);
+    })
+}
+
+fn reader_with_attachments(protocol: ratatui_image::picker::ProtocolType) -> App {
+    let mut app = card_screen(card_with_attachments(), crate::i18n::Lang::Es);
+    app.picker.as_mut().unwrap().set_protocol_type(protocol);
+    app.open_reader();
+    app.on_msg(Msg::File { route: SHOT.into(), result: Ok(files::FileBody::classify(files::png(64, 32))) });
+    app
+}
+
+#[test]
+fn a_terminal_with_a_graphics_protocol_draws_the_cards_image_under_its_caption() {
+    let mut app = reader_with_attachments(ratatui_image::picker::ProtocolType::Kitty);
+    let screen = rendered(&mut app, 120, 40);
+    assert!(screen.contains("\x1b_G"), "the image goes out as Kitty graphics: {screen:?}");
+    assert!(screen.contains("Imagen 64×32 · 340 KB · v la abre en Vista Previa"), "{screen}");
+    let reader = app.reader.as_ref().unwrap();
+    assert!(reader.blocks.iter().any(|block| matches!(block.kind, md::Kind::Image { .. }) && block.targets.iter().any(|t| t.url == SHOT)));
+}
+
+#[test]
+fn a_terminal_without_a_graphics_protocol_shows_the_image_as_a_line_that_opens_it() {
+    let mut app = reader_with_attachments(ratatui_image::picker::ProtocolType::Halfblocks);
+    let screen = rendered(&mut app, 120, 40);
+    assert!(!screen.contains("\x1b_G") && !screen.contains('▀'), "nothing is drawn in its place: {screen}");
+    let reader = app.reader.as_ref().unwrap();
+    assert!(reader.blocks.iter().any(|block| block.plain() == "📷 shot.png"));
+    assert!(!reader.blocks.iter().any(|block| matches!(block.kind, md::Kind::Image { .. })));
+    let line = reader.blocks.iter().find(|block| block.targets.iter().any(|t| t.url == SHOT)).unwrap();
+    assert_eq!(line.plain(), "Imagen 64×32 · 340 KB · v la abre en Vista Previa");
+}
+
+#[test]
+fn a_video_is_one_line_with_its_kind_and_size_and_is_only_downloaded_when_opened() {
+    let mut app = reader_with_attachments(ratatui_image::picker::ProtocolType::Kitty);
+    assert!(app.loading.contains(SHOT) || app.files.contains_key(SHOT));
+    assert!(!app.loading.contains(CLIP) && !app.files.contains_key(CLIP), "opening the card downloads no video");
+    let screen = rendered(&mut app, 120, 40);
+    assert!(screen.contains("Vídeo · 12.4 MB"), "{screen}");
+    let reader = app.reader.as_mut().unwrap();
+    assert!(reader.blocks.iter().any(|block| block.plain() == "🎬 clip.mp4"));
+    let at = reader.blocks.iter().position(|block| block.targets.iter().any(|t| t.url == CLIP)).unwrap();
+    assert_eq!(reader.blocks[at].plain(), "Vídeo · 12.4 MB · v lo baja y lo abre con su aplicación");
+    reader.cursor = at;
+    let spawned = app.spawned.borrow().len();
+    app.on_key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('v')));
+    assert_eq!(app.spawned.borrow().len(), spawned + 1);
+    assert_eq!(app.flash.as_ref().map(|flash| flash.text.as_str()), Some("Bajando «clip.mp4»…"));
+}
+
+#[test]
+fn the_card_detail_lists_each_attachment_with_its_kind_and_size() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let drawn = view_render::document_lines(&card_with_attachments(), 100, false, false).iter().map(text).collect::<Vec<_>>().join("\n");
+    assert!(drawn.contains("📷 shot.png · Imagen · 340 KB\n🎬 clip.mp4 · Vídeo · 12.4 MB\no abre la tarjeta para verlos y abrirlos"), "{drawn}");
+}

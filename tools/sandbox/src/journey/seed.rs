@@ -22,6 +22,25 @@ fn reworking(request: &str, task: &str, title: &str, pr: u64, file: &str) -> Req
     script
 }
 
+/// The files a card carries, copied into Mac 1's files folder the way a node registers them.
+fn attachments(sandbox: &Sandbox) -> Result<serde_json::Value> {
+    let files: [(&str, &[u8]); 2] = [
+        ("onboarding.png", include_bytes!("../../fixtures/onboarding.png")),
+        ("onboarding.mp4", include_bytes!("../../fixtures/onboarding.mp4")),
+    ];
+    let home = sandbox.mac(1)?.mac.home;
+    std::fs::create_dir_all(home.join("files"))?;
+    let mut registered = Vec::new();
+    for (name, bytes) in files {
+        std::fs::write(home.join("files").join(name), bytes)?;
+        registered.push(serde_json::json!({
+            "id": name, "name": name, "bytes": bytes.len(), "content_reference": format!("files/{name}"),
+            "content_digest": crate::sandbox::hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()),
+        }));
+    }
+    Ok(registered.into())
+}
+
 fn outcome_card(report: &mut Report, user: &User, id: &str, what: &str) -> Result<()> {
     wait(report, what, || {
         let (card, seen) = card_in_inbox(user, id)?;
@@ -55,6 +74,22 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         state(report, &user, "t-question", WORKING)?;
         let ask = Step::Ask { id: "q-flag".into(), need: "Pick the name of the new flag".into(), options: vec!["--quiet".into(), "--silent".into()] };
         act(report, &fakes, &asking, "the node asks", &[ask])?;
+
+        request(report, &fakes, &user, &task_script("req-attachments", "t-attachments", "Redesign the onboarding screen"), "Redesign the onboarding screen")?;
+        let designing = launched(report, &fakes, "t-attachments")?;
+        state(report, &user, "t-attachments", WORKING)?;
+        let ask_with_files = Step::Call { tool: "ask".into(), arguments: serde_json::json!({
+            "interaction_id": "q-onboarding", "scope": {"kind": "task", "task_id": "t-attachments"}, "recipient": {"kind": "user"}, "blocking": true,
+            "need": "Choose the onboarding screen to ship",
+            "why": "The screenshot and the recording show the new screen; the old one stays until you pick.",
+            "options": [
+                {"id": "new", "label": "Ship the new screen", "description": "The new onboarding replaces the old one in the next release"},
+                {"id": "old", "label": "Keep the current one", "description": "Nothing changes; the new design is archived"},
+            ],
+            "recommended": "new",
+            "attachments": attachments(sandbox)?,
+        }) };
+        act(report, &fakes, &designing, "the node asks with a screenshot and a recording", &[ask_with_files])?;
 
         request(report, &fakes, &user, &task_script("req-documents", "t-documents", "Research how other apps index a library"), "Research how other apps index a library")?;
         let researching = launched(report, &fakes, "t-documents")?;
@@ -162,6 +197,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, one waiting for it, question, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, one waiting for it, question, a card with an image and a video, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

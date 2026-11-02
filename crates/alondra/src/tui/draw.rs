@@ -1058,15 +1058,7 @@ fn draw_mcp_servers(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// What a row says first: a child's own text, a root's name.
-const IMAGE_MAX_ROWS: usize = 20;
 const PREVIEW_ROWS: u16 = 6;
-
-fn image_rows(img: &image::DynamicImage, width: usize) -> usize {
-    let rows =
-        (width as f64 * img.height() as f64 / img.width().max(1) as f64 / 2.0).ceil() as usize;
-    rows.clamp(4, IMAGE_MAX_ROWS)
-}
 
 fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     let still_there = app.reader.as_ref().is_some_and(|r| {
@@ -1247,6 +1239,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
         );
     }
     md::hyperlinks(f.buffer_mut(), doc, &r.blocks, app.hyperlinks);
+    draw_reader_images(f, &r.blocks, &r.ranges, r.scroll, doc, width, &mut app.images);
     if r.picking {
         if let Some(b) = r.blocks.get(r.cursor).filter(|b| b.targets.len() > 1) {
             draw_targets(f, doc, &b.targets);
@@ -1256,6 +1249,44 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(side) = side {
         let cursor = r.cursor;
         draw_comments(f, app, side, cursor);
+    }
+}
+
+/// Draws each image block wholly on screen in the rows its caption reserved. One cut by the
+/// scroll says where it is instead of drawing half of it.
+fn draw_reader_images(
+    f: &mut Frame,
+    blocks: &[md::Block],
+    ranges: &[(usize, usize)],
+    scroll: usize,
+    doc: Rect,
+    width: usize,
+    images: &mut HashMap<String, ratatui_image::protocol::StatefulProtocol>,
+) {
+    let h = doc.height as usize;
+    for (block, &(_, end)) in blocks.iter().zip(ranges) {
+        let md::Kind::Image { cols, rows } = block.kind else { continue };
+        let Some(state) = block.targets.first().and_then(|t| images.get_mut(&t.url)) else { continue };
+        let top = end - md::image_rows(cols, rows, width);
+        if end <= scroll || top >= scroll + h {
+            continue;
+        }
+        if top < scroll || end > scroll + h {
+            let y = doc.y + top.max(scroll).saturating_sub(scroll) as u16;
+            let line = Line::from(Span::styled(
+                tr!("   ↕ scroll to see the whole image", "   ↕ desplázate para ver la imagen entera"),
+                Style::new().fg(DIM),
+            ));
+            f.render_widget(Paragraph::new(line), Rect { y, height: 1, ..doc });
+            continue;
+        }
+        let area = Rect {
+            x: doc.x + 3,
+            y: doc.y + (top - scroll) as u16,
+            width: width as u16,
+            height: (end - top) as u16,
+        };
+        f.render_stateful_widget(ratatui_image::StatefulImage::default(), area, state);
     }
 }
 

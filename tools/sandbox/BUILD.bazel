@@ -3,6 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 rust_binary(
     name = "alondra-sandbox",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = glob(["fixtures/**"]),
     crate_name = "alondra_sandbox",
     edition = "2024",
     visibility = ["//visibility:public"],

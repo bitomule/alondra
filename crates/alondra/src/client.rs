@@ -674,6 +674,7 @@ fn content_via(route: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Resul
     let mut bytes = Vec::new();
     let mut version: Option<String> = None;
     let sep = if route.contains('?') { '&' } else { '?' };
+    let limit = if route.starts_with("/interactions/") { alondra_core::domain::MAX_ATTACHMENT_BYTES } else { MAX_ATTACHMENT_BYTES };
     loop {
         let path = match &version {
             Some(v) => format!("{route}{sep}offset={}&version={}", bytes.len(), crate::mcp::urlencode(v)),
@@ -683,7 +684,7 @@ fn content_via(route: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Resul
         let v = chunk["version"].as_str().context("content version missing")?.to_string();
         anyhow::ensure!(version.as_ref().is_none_or(|old| *old == v) && chunk["offset"].as_u64() == Some(bytes.len() as u64), "the file changed while it was read");
         let total = chunk["total"].as_u64().context("content size missing")?;
-        anyhow::ensure!(total <= MAX_ATTACHMENT_BYTES, "the file is larger than 20 MB");
+        anyhow::ensure!(total <= limit, "the file is larger than {} MB", limit / (1024 * 1024));
         let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(chunk["data"].as_str().context("content data missing")?)?;
         bytes.extend_from_slice(&data);
         anyhow::ensure!(bytes.len() as u64 <= total && chunk["next_offset"].as_u64() == Some(bytes.len() as u64), "invalid content chunk");
@@ -976,6 +977,23 @@ mod tests {
         assert!(changed.unwrap_err().to_string().contains("changed"));
         let contract = crate::runtime::fixture("requests.json")["attachment_content"]["response"].clone();
         assert_eq!(content_via("/attachments/att-1/content", |_| Ok(contract.clone())).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn a_card_attachment_may_be_as_large_as_the_daemon_allows_and_a_stored_file_stays_at_20_mb() {
+        use base64::Engine as _;
+        let first = |total: u64| move |path: &str| {
+            if path.ends_with("offset=0") {
+                Ok(json!({"version": "v-1", "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("ab"), "offset": 0, "total": total, "next_offset": 2, "eof": false}))
+            } else {
+                Err(anyhow!("second chunk asked"))
+            }
+        };
+        let video = "/interactions/i-1/attachments/clip.mp4/content";
+        let thirty = 30 * 1024 * 1024;
+        assert_eq!(content_via(video, first(thirty)).unwrap_err().to_string(), "second chunk asked");
+        assert_eq!(content_via("/files/chunk?path=a", first(thirty)).unwrap_err().to_string(), "the file is larger than 20 MB");
+        assert_eq!(content_via(video, first(alondra_core::domain::MAX_ATTACHMENT_BYTES + 1)).unwrap_err().to_string(), "the file is larger than 64 MB");
     }
 
     #[test]

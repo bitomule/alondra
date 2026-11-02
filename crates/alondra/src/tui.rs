@@ -129,7 +129,7 @@ use alondra_core::domain::{
 };
 use alondra_core::now_millis;
 use crate::client::Delivery;
-use alondra_core::views::{Outcome, OutcomeKind, Status as ViewStatus, View as ViewDocument};
+use alondra_core::views::{AttachmentKind, Outcome, OutcomeKind, Status as ViewStatus, View as ViewDocument};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -335,12 +335,22 @@ impl Find {
 /// A piece of what the reader shows: Markdown, or a stored file loaded by its content route.
 pub enum Part {
     Text(String),
-    File { name: String, route: String },
+    /// `kind` and `size` come with a card's attachment; a document's own content has neither.
+    File { name: String, route: String, kind: Option<AttachmentKind>, size: Option<u64> },
     /// A PR's diff, read by file.
     Diff { route: String, id: String, head: String },
 }
 
 impl Part {
+    fn attachment(attachment: &alondra_core::views::Attachment) -> Self {
+        Part::File {
+            name: attachment.name.clone(),
+            route: attachment.fetch.clone(),
+            kind: Some(attachment.kind),
+            size: Some(attachment.size),
+        }
+    }
+
     /// What the part reads from `App::files`.
     fn key(&self) -> Option<String> {
         match self {
@@ -645,6 +655,7 @@ enum Msg {
     },
     Offline,
     SyncError(String),
+    Opened(String),
     TaskActions {
         task: TaskId,
         revision: Revision,
@@ -2195,6 +2206,7 @@ impl App {
             Msg::Service(service) => self.service_seen(service),
             Msg::DiskVersion { version, disk } => self.disk_checked(version, disk),
             Msg::SyncError(error) => self.fail(error),
+            Msg::Opened(text) => self.flash(text),
             Msg::Offline => {
                 self.connected = false;
                 self.offline = true;
@@ -3131,6 +3143,8 @@ impl App {
                             parts.push(Part::File {
                                 name: content.title.clone(),
                                 route: content.fetch.clone(),
+                                kind: None,
+                                size: None,
                             });
                         }
                         alondra_core::views::Item::Card(card) => {
@@ -3144,10 +3158,7 @@ impl App {
                             if let Some(body) = &card.body {
                                 text.push_str(&format!("\n\n{}", body.text));
                             }
-                            parts.extend(card.attachments.iter().map(|attachment| Part::File {
-                                name: attachment.name.clone(),
-                                route: attachment.fetch.clone(),
-                            }));
+                            parts.extend(card.attachments.iter().map(Part::attachment));
                         }
                         _ => {}
                     }
@@ -3157,8 +3168,8 @@ impl App {
             for part in &parts {
                 match part {
                     Part::Diff { route, id, head } => self.fetch_diff(route, id, head),
-                    Part::File { route, .. } => self.fetch(route),
-                    Part::Text(_) => {}
+                    Part::File { route, kind, .. } if files::read_up_front(*kind) => self.fetch(route),
+                    Part::File { .. } | Part::Text(_) => {}
                 }
             }
             let first_card = view
@@ -3238,12 +3249,11 @@ impl App {
                 text.push_str(&format!("\n\n{}", body.text));
             }
             let mut parts = vec![Part::Text(text)];
-            parts.extend(card.attachments.iter().map(|attachment| Part::File {
-                name: attachment.name.clone(),
-                route: attachment.fetch.clone(),
-            }));
+            parts.extend(card.attachments.iter().map(Part::attachment));
             for part in &parts {
-                if let Part::File { route, .. } = part {
+                if let Part::File { route, kind, .. } = part
+                    && files::read_up_front(*kind)
+                {
                     self.fetch(route);
                 }
             }
@@ -3277,6 +3287,7 @@ impl App {
         let Some(r) = self.reader.as_mut() else {
             return;
         };
+        let drawn = self.picker.as_ref().filter(|p| files::graphics(p.protocol_type()).is_some());
         let mut blocks = vec![];
         for (index, part) in r.parts.iter().enumerate() {
             match part {
@@ -3292,15 +3303,31 @@ impl App {
                     ))),
                     _ => blocks.push(Block::para(tr!("Loading the changes…", "Cargando los cambios…"))),
                 },
-                Part::File { name, route } => {
-                    blocks.push(Block::label(&format!("📎 {name}")));
+                Part::File { name, route, kind, size } => {
+                    blocks.push(Block::label(&format!("{} {name}", files::glyph(*kind))));
+                    let opens = md::Target {
+                        kind: md::TargetKind::Stored,
+                        url: route.clone(),
+                        label: name.clone(),
+                    };
+                    if !files::read_up_front(*kind) {
+                        blocks.push(Block::para(&files::not_read(*kind, *size)).opening(opens));
+                        continue;
+                    }
                     match self.files.get(route) {
                         Some(Ok(files::FileBody::Text(text))) => blocks.extend(md::parse(text)),
-                        Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body)).opening(md::Target {
-                            kind: md::TargetKind::Stored,
-                            url: route.clone(),
-                            label: name.clone(),
-                        })),
+                        Some(Ok(body @ files::FileBody::Image(img))) if drawn.is_some() && self.images.contains_key(route) => {
+                            let (font_w, font_h) = drawn.map_or((10, 20), |picker| {
+                                let font = picker.font_size();
+                                (font.width, font.height)
+                            });
+                            let cells = |px: u32, cell: u16| u16::try_from(px.div_ceil(u32::from(cell.max(1)))).unwrap_or(u16::MAX);
+                            blocks.push(
+                                Block::image(&files::not_text(body, *size), cells(img.width(), font_w), cells(img.height(), font_h))
+                                    .opening(opens),
+                            );
+                        }
+                        Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body, *size)).opening(opens)),
                         Some(Err(e)) => blocks.push(Block::para(&trf!(
                             "Could not load the file: {e}",
                             "No he podido cargar el fichero: {e}"
@@ -3459,14 +3486,15 @@ impl App {
                 None => target.label.clone(),
             };
             let route = route.to_owned();
-            self.pending(trf!("Opening “{label}”…", "Abriendo «{label}»…"));
+            self.pending(trf!("Downloading “{label}”…", "Bajando «{label}»…"));
             self.spawn(move |tx, mac| {
-                if let Err(e) = open_stored(mac, &name, &route) {
-                    let _ = tx.send(Msg::SyncError(trf!(
+                let _ = tx.send(match open_stored(mac, &name, &route) {
+                    Ok(()) => Msg::Opened(trf!("Opened “{label}”", "Abierto «{label}»")),
+                    Err(e) => Msg::SyncError(trf!(
                         "Could not open {name}: {e}",
                         "No he podido abrir {name}: {e}"
-                    )));
-                }
+                    )),
+                });
             });
         } else if target.openable() {
             open_with_mac(&target.url);

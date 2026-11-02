@@ -32,6 +32,11 @@ pub enum Kind {
     DiffEntry(diff::Header),
     DiffFile(diff::Header),
     DiffLine(diff::Row),
+    /// An image the terminal draws under its caption, `cols`×`rows` cells at its own size.
+    Image {
+        cols: u16,
+        rows: u16,
+    },
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -147,6 +152,10 @@ impl Block {
 
     pub fn para(text: &str) -> Self {
         Block::plain_text(Kind::Para, text)
+    }
+
+    pub fn image(caption: &str, cols: u16, rows: u16) -> Self {
+        Block::plain_text(Kind::Image { cols, rows }, caption)
     }
 
     pub fn plain(&self) -> String {
@@ -921,6 +930,16 @@ fn hard_wrap(text: &str, width: usize, prefix: Span<'static>, style: Style) -> V
     out
 }
 
+pub const IMAGE_MAX_ROWS: usize = 20;
+
+/// The rows an image takes at `width` cells: its own size, smaller when it is wider than the
+/// text, and never taller than `IMAGE_MAX_ROWS`.
+pub fn image_rows(cols: u16, rows: u16, width: usize) -> usize {
+    let (cols, rows) = (usize::from(cols.max(1)), usize::from(rows));
+    let rows = if cols > width { (rows * width).div_ceil(cols) } else { rows };
+    rows.clamp(1, IMAGE_MAX_ROWS)
+}
+
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
     pub ranges: Vec<(usize, usize)>,
@@ -1338,6 +1357,11 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
         }
         Kind::Rule => vec![Line::styled("─".repeat(width), Style::new().fg(DIM))],
         Kind::DiffFiles { .. } | Kind::DiffEntry(_) | Kind::DiffFile(_) | Kind::DiffLine(_) => diff::render(b, width),
+        Kind::Image { cols, rows } => {
+            let mut out = wrap_text(b, Style::new().fg(DIM), width, vec![], vec![]);
+            out.extend(std::iter::repeat_n(Line::default(), image_rows(*cols, *rows, width)));
+            out
+        }
         Kind::Label => {
             let text = b.plain();
             let head = format!("── {} ", truncate(&text, width.saturating_sub(4)));

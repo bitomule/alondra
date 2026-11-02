@@ -403,7 +403,7 @@ fn v_offers_and_opens_only_what_the_selected_block_opens() {
 
 #[test]
 fn v_on_a_stored_file_fetches_it_to_open() {
-    let parts = vec![Part::File { name: "build.zip".into(), route: "/files/build.zip".into() }];
+    let parts = vec![Part::File { name: "build.zip".into(), route: "/files/build.zip".into(), kind: None, size: None }];
     let mut app = reader_on(parts, 0);
     app.files.insert("/files/build.zip".into(), Ok(files::FileBody::Binary { bytes: 2048 }));
     app.rebuild_reader();
