@@ -291,43 +291,6 @@ impl UsagePause {
     }
 }
 
-/// Whether Claude's own words say a plan usage window ran out. A spend limit is not one: it
-/// does not come back by itself.
-pub(crate) fn says_usage_limit(text: &str) -> bool {
-    let text = text.to_lowercase();
-    text.contains("hit your") && text.contains("limit") && !text.contains("spend limit") && !text.contains("shared budget")
-}
-
-/// The reset time in "You've hit your session limit · resets 3:45pm" or "... · resets Mon 12:00am",
-/// the next time the local clock shows it.
-pub(crate) fn reset_in(text: &str, now: Millis) -> Option<Millis> {
-    let after = &text[text.to_lowercase().find("resets ")? + "resets ".len()..];
-    let mut words = after.split_whitespace();
-    let mut word = words.next()?;
-    let weekday = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].iter()
-        .position(|day| word.len() >= 3 && word[..3].eq_ignore_ascii_case(day));
-    if weekday.is_some() {
-        word = words.next()?;
-    }
-    let lower = word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()).to_lowercase();
-    let (clock, pm) = match (lower.strip_suffix("am"), lower.strip_suffix("pm")) {
-        (Some(clock), _) => (clock, false),
-        (_, Some(clock)) => (clock, true),
-        _ => return None,
-    };
-    let (hour, minute) = match clock.split_once(':') {
-        Some((hour, minute)) => (hour.parse::<i32>().ok()?, minute.parse::<i32>().ok()?),
-        None => (clock.parse::<i32>().ok()?, 0),
-    };
-    if !(1..=12).contains(&hour) || !(0..60).contains(&minute) {
-        return None;
-    }
-    let hour24 = hour % 12 + if pm { 12 } else { 0 };
-    (0..=8).map(|days| local_at(now, days, hour24, minute)).find(|at| {
-        *at > now && weekday.is_none_or(|wanted| local_weekday(*at) == wanted)
-    })
-}
-
 fn local_at(now: Millis, days_ahead: i32, hour: i32, minute: i32) -> Millis {
     let t = now.div_euclid(1000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -342,13 +305,6 @@ fn local_at(now: Millis, days_ahead: i32, hour: i32, minute: i32) -> Millis {
 
 fn local_midnight(millis: Millis) -> Millis {
     local_at(millis, 0, 0, 0)
-}
-
-fn local_weekday(millis: Millis) -> usize {
-    let t = millis.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    tm.tm_wday as usize
 }
 
 /// "15:45", with the weekday in front when it is not today.
@@ -613,17 +569,6 @@ fn legacy_account_retry_ready(usage: &alondra_core::usage::AccountUsage, now: Mi
     })
 }
 
-/// Records the exhaustion a Claude message describes: its own reset time when it names one,
-/// otherwise the one the plan windows say.
-pub(crate) fn record_from_text(domain: &crate::domain_runtime::DomainRuntime, text: &str) -> bool {
-    if !says_usage_limit(text) {
-        return false;
-    }
-    let now = now_millis();
-    domain.live.usage_pause.exhaust(reset_in(text, now).or_else(|| domain.live.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now)), now);
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,31 +734,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_plan_window_is_a_usage_limit() {
-        for (text, limited) in [
-            ("You've hit your session limit · resets 3:45pm", true),
-            ("You've hit your weekly limit · resets Mon 12:00am", true),
-            ("You've hit your Opus limit · resets 3:45pm", true),
-            ("You've hit your monthly spend limit · raise it at claude.ai/settings/usage", false),
-            ("You've hit your team's shared budget · ask your admin to raise it", false),
-            ("Rate limit exceeded", false),
-        ] {
-            assert_eq!(says_usage_limit(text), limited, "{text}");
-        }
-    }
-
-    #[test]
-    fn the_reset_time_is_the_next_time_the_local_clock_shows_it() {
-        let now = at(7, 14, 0);
-        assert_eq!(reset_in("You've hit your session limit · resets 3:45pm", now), Some(at(7, 15, 45)));
-        assert_eq!(reset_in("You've hit your session limit · resets 1:05pm", now), Some(at(8, 13, 5)), "already past today: tomorrow");
-        assert_eq!(reset_in("You've hit your session limit · resets 12am (Europe/Madrid)", now), Some(at(8, 0, 0)));
-        assert_eq!(reset_in("You've hit your weekly limit · resets Mon 12:00am", now), Some(at(12, 0, 0)), "7 Oct 2026 is a Wednesday");
-        assert_eq!(reset_in("You've hit your session limit", now), None);
-        assert_eq!(reset_in("resets soon", now), None);
-    }
-
-    #[test]
     fn the_notice_names_the_time_in_the_users_language_and_the_day_when_it_is_not_today() {
         let now = at(7, 14, 0);
         let out_text = |until, now, spanish| out_text(&Exhausted { until, since: now, by_user: false, no_session: false }, now, spanish);
@@ -864,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_stopped_by_the_limit_sets_the_exhaustion_to_the_reset_claude_names_or_the_plan_reports() {
+    fn a_node_stopped_by_the_limit_sets_the_exhaustion_to_the_reset_the_plan_reports() {
         let (domain, home) = domain();
         let now = now_millis();
         domain.live.observe(&stop_failure("s1", "overloaded", None));
@@ -876,9 +796,11 @@ mod tests {
         assert!((until - (now + 2 * 3_600_000)).abs() < 2_000, "the 5-hour window's reset: {until}");
 
         let (named, named_home) = self::domain();
+        let before = now_millis();
         named.live.observe(&stop_failure("s1", "rate_limit", Some("You've hit your session limit · resets 11:59pm")));
+        let after = now_millis();
         let until = named.live.usage_pause.current().unwrap().until;
-        assert!(until > now && until <= now + 24 * 3_600_000 && clock_text(until, now, false).ends_with("23:59"), "{until}");
+        assert!((before + UNKNOWN_RESET_WAIT_MS..=after + UNKNOWN_RESET_WAIT_MS).contains(&until), "a reset in the error's words is not one: {until}");
 
         let (unknown, unknown_home) = self::domain();
         let before = now_millis();

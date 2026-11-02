@@ -4,7 +4,7 @@
 use crate::adapter::{ClaudeConfiguration, bootstrap, random_uuid};
 use crate::records::SessionRecord;
 use crate::wire::{Connection, ControlIdentity, HostOwner, execution, fence};
-use alondra_agent_protocol::{Action, Body, Command, Observation, SdkEventKind};
+use alondra_agent_protocol::{Action, Body, Command, FailureSurface, Observation, SdkEventKind, SdkFailure};
 use alondra_agent_runtime::owned_host::OwnedHost;
 use alondra_foundation::{CommandId, MessageUuid};
 use alondra_provider_contract::{AdapterError, Handoff};
@@ -39,10 +39,43 @@ pub struct McpServer {
 pub enum HostEvent {
     /// A message of the SDK, exactly as it came.
     Sdk(Value),
-    /// What Claude wrote to stderr, or why the host could not read the SDK any further.
-    Diagnostic(String),
+    /// What Claude wrote to stderr, or why the host could not read the SDK any further. Its text is
+    /// for display and logs only.
+    Diagnostic { source: DiagnosticSource, text: String },
+    /// The native session asked the orchestrator for a decision it never grants.
+    UnexpectedDecision,
     /// Claude's process ended.
     Exited { code: Option<i32>, signal: Option<String> },
+}
+
+/// Where a diagnostic came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiagnosticSource {
+    Stderr,
+    Failure { surface: FailureSurface, code: String },
+    Unknown,
+}
+
+fn diagnostic(payload: &Value, failures: &[SdkFailure]) -> HostEvent {
+    if payload["source"] == "stderr" && let Some(text) = payload["text"].as_str() {
+        return HostEvent::Diagnostic { source: DiagnosticSource::Stderr, text: text.to_owned() };
+    }
+    match failures.first() {
+        Some(failure) => HostEvent::Diagnostic {
+            source: DiagnosticSource::Failure { surface: failure.surface, code: failure.code.clone() },
+            text: payload["text"].as_str().unwrap_or(&failure.code).to_owned(),
+        },
+        None => HostEvent::Diagnostic { source: DiagnosticSource::Unknown, text: payload["text"].as_str().unwrap_or("diagnostic").to_owned() },
+    }
+}
+
+fn host_event(observation: &Observation) -> HostEvent {
+    match observation {
+        Observation::Sdk { kind: SdkEventKind::Diagnostic, payload, failures, .. } => diagnostic(payload, failures),
+        Observation::Sdk { payload, .. } => HostEvent::Sdk(payload.clone()),
+        Observation::DecisionRequested { .. } | Observation::DecisionSettled { .. } => HostEvent::UnexpectedDecision,
+        Observation::ProcessExited { exit_code, signal } => HostEvent::Exited { code: *exit_code, signal: signal.clone() },
+    }
 }
 
 pub struct PendingHostEvent {
@@ -150,16 +183,7 @@ impl<O: HostOwner> BatchHost<O> {
         let Body::Event(event) = &received.frame().body else {
             return Err(AdapterError::InvalidObservation);
         };
-        let seen = match &event.observation {
-            Observation::Sdk { kind: SdkEventKind::Diagnostic, payload, failures, .. } => HostEvent::Diagnostic(
-                payload["text"].as_str().map(str::to_owned)
-                    .or_else(|| failures.first().map(|failure| failure.code.clone()))
-                    .unwrap_or_else(|| "diagnostic".into()),
-            ),
-            Observation::Sdk { payload, .. } => HostEvent::Sdk(payload.clone()),
-            Observation::DecisionRequested { .. } | Observation::DecisionSettled { .. } => HostEvent::Diagnostic("Unexpected native decision in the Alondra orchestrator".into()),
-            Observation::ProcessExited { exit_code, signal } => HostEvent::Exited { code: *exit_code, signal: signal.clone() },
-        };
+        let seen = host_event(&event.observation);
         let cursor = event.cursor;
         self.pending = Some(cursor);
         Ok(PendingHostEvent { cursor,event:seen,evidence:received.payload().to_vec() })
@@ -204,4 +228,26 @@ impl<O: HostOwner> BatchHost<O> {
 
 fn deadline(timeout: Duration) -> Result<Instant, AdapterError> {
     Instant::now().checked_add(timeout).ok_or(AdapterError::Disconnected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn observed(observation: Value) -> HostEvent {
+        host_event(&serde_json::from_value(observation).unwrap())
+    }
+
+    #[test]
+    fn a_native_decision_is_its_own_event_and_a_diagnostic_says_where_it_came_from() {
+        let phrase = "Unexpected native decision in the Alondra orchestrator";
+        assert_eq!(observed(json!({"type": "decision_requested", "request_id": "r-1", "kind": "question", "payload": {}})), HostEvent::UnexpectedDecision);
+        assert_eq!(observed(json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {"source": "stderr", "text": phrase}, "failures": []})),
+            HostEvent::Diagnostic { source: DiagnosticSource::Stderr, text: phrase.into() });
+        assert_eq!(observed(json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {}, "failures": [{"surface": "transport", "code": "decision_too_large", "details": {}}]})),
+            HostEvent::Diagnostic { source: DiagnosticSource::Failure { surface: FailureSurface::Transport, code: "decision_too_large".into() }, text: "decision_too_large".into() });
+        assert_eq!(observed(json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {}, "failures": []})),
+            HostEvent::Diagnostic { source: DiagnosticSource::Unknown, text: "diagnostic".into() });
+    }
 }

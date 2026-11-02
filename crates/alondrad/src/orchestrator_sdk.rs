@@ -84,11 +84,8 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
                 if output.stream.result && output.stream.success && !consumed {output.stream.error=Some("A successful Claude terminal result without positive input consumption cannot settle its batch".into());}
                 BatchReport{kind:message["type"].as_str().filter(|kind|!kind.is_empty() && kind.len()<=128).unwrap_or("sdk_unknown").into(),input_consumed:consumed,turn_completed:output.stream.result,native_turn:None,failure:output.stream.error.clone(),public_result:output.stream.note.as_ref().map(|text|bounded(text.clone())),..Default::default()}
             }
-            HostEvent::Diagnostic(text)=>{
-                if text=="Unexpected native decision in the Alondra orchestrator" {output.stream.error=Some(text.clone());exited=true;}
-                output.diagnostic=bounded(format!("{}{text}\n",output.diagnostic));
-                BatchReport{kind:"diagnostic".into(),failure:output.stream.error.clone(),..Default::default()}
-            }
+            HostEvent::Diagnostic{text,..}=>output.diagnosed(&text),
+            HostEvent::UnexpectedDecision=>{exited=true;output.unexpected_decision()}
             HostEvent::Exited{code,..}=>{
                 output.exit_ok=code==Some(0);exited=true;
                 BatchReport{kind:"process_exited".into(),input_consumed:consumed,turn_completed:output.stream.result,native_turn:None,failure:output.stream.error.clone(),public_result:output.stream.note.as_ref().map(|text|bounded(text.clone())),..Default::default()}

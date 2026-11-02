@@ -9,12 +9,49 @@ use alondra_core::activity::Activity;
 use alondra_core::metrics::steps::StepCounts;
 use alondra_core::views::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
+use serde::Deserialize;
 use serde_json::Value;
 
 const ANSWER_LIMIT: usize = 8_000;
 const SUMMARY_LIMIT: usize = 300;
 const REMEMBERED: usize = 50;
 const PROGRESS_TOOLS: [&str; 4] = ["TaskCreate", "TaskUpdate", "TaskList", "Workflow"];
+
+/// Why a turn of the SDK stopped: `TerminalReason` of `@anthropic-ai/claude-agent-sdk` 0.3.300.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TerminalReason {
+    BlockingLimit,
+    RapidRefillBreaker,
+    PromptTooLong,
+    ImageError,
+    ModelError,
+    ApiError,
+    MalformedToolUseExhausted,
+    AbortedStreaming,
+    AbortedTools,
+    StopHookPrevented,
+    HookStopped,
+    ToolDeferred,
+    MaxTurns,
+    BackgroundRequested,
+    Completed,
+    BudgetExhausted,
+    StructuredOutputRetryExhausted,
+    ToolDeferredUnavailable,
+    TurnSetupFailed,
+    #[serde(other)]
+    Unknown,
+}
+
+impl TerminalReason {
+    fn of(result: &Value) -> Option<Self> {
+        Self::deserialize(result.get("terminal_reason")?).ok()
+    }
+    fn aborted(self) -> bool {
+        matches!(self, Self::AbortedStreaming | Self::AbortedTools)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Readings {
@@ -93,7 +130,7 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) -> O
             let answer = message["result"].as_str().filter(|answer| !answer.trim().is_empty()).map(str::to_owned)
                 .or_else(|| readings.said.take())
                 .unwrap_or_default();
-            let aborted = message["terminal_reason"].as_str().is_some_and(|reason| reason.starts_with("aborted"));
+            let aborted = TerminalReason::of(message).is_some_and(TerminalReason::aborted);
             session.record(Report::TurnComplete { answer: answer.chars().take(ANSWER_LIMIT).collect(), aborted }, now);
             readings.said = None;
             readings.in_turn = false;
@@ -417,6 +454,22 @@ mod tests {
         let answer = session.answer.unwrap();
         assert_eq!((answer.text.as_str(), answer.at, answer.aborted), ("Half way through", 5, true), "an interrupted turn says what it said last");
         assert_eq!(session.sdk.unwrap().cost_cents, Some(250), "the cost is the session's running total, never a sum");
+    }
+
+    #[test]
+    fn a_turn_is_aborted_only_by_a_reason_the_sdk_names_as_one() {
+        let reason = |value: Value| TerminalReason::of(&json!({"type": "result", "terminal_reason": value}));
+        assert_eq!(reason(json!("aborted_tools")), Some(TerminalReason::AbortedTools));
+        assert!(reason(json!("aborted_streaming")).is_some_and(TerminalReason::aborted));
+        assert_eq!(reason(json!("aborted_by_a_future_release")), Some(TerminalReason::Unknown));
+        assert!(!reason(json!("aborted_by_a_future_release")).is_some_and(TerminalReason::aborted), "a value nobody knows is not a guess");
+        assert!(!reason(json!("completed")).is_some_and(TerminalReason::aborted));
+        assert_eq!(TerminalReason::of(&json!({"type": "result"})), None);
+        let reports = reports(&[
+            (assistant(None, json!([{"type": "text", "text": "Half way through"}])), 1),
+            (json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "terminal_reason": "aborted_by_a_future_release", "session_id": "native"}), 2),
+        ]);
+        assert!(!reports.session("sdk-a").unwrap().answer.unwrap().aborted);
     }
 
     #[test]

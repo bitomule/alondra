@@ -233,7 +233,6 @@ pub enum BatchEnd {
 #[derive(Default, Debug)]
 pub struct Stream {
     restricted: bool,
-    native_limits_only: bool,
     /// The id the SDK gives the batch's one prompt: a result that names another is not this batch's.
     input: Option<String>,
     pub initialized: bool,
@@ -254,7 +253,7 @@ pub struct Stream {
     pub acted: bool,
     pub denied: bool,
     pub(crate) native_request_rejected: bool,
-    /// Claude said the plan's usage ran out, and the reset it reported in Unix milliseconds.
+    /// Claude reported that the plan's usage ran out, and the reset it gave in Unix milliseconds.
     pub limited: bool,
     pub limit_reset: Option<i64>,
     /// The model answered at least once, so the batch may have done something.
@@ -269,24 +268,14 @@ impl Stream {
     pub fn for_input(input: &str) -> Self {
         Self { restricted: true, input: Some(input.to_owned()), ..Self::default() }
     }
-    pub(crate) fn native(input: Option<&str>) -> Self {
-        let mut stream = input.map_or_else(Self::default, Self::for_input);
-        stream.native_limits_only = true;
-        stream
-    }
 
     /// The context the batch read, once the model answered at least once.
     pub fn context(&self) -> Option<crate::domain_orchestrator::BatchContext> {
         Some(crate::domain_orchestrator::BatchContext { first: self.first_input_tokens?, last: self.input_tokens?, window: self.window })
     }
     /// Whether usage ran out, with the reset Claude reported if it did.
-    pub fn limit(&self, diagnostic: &str) -> Option<Option<i64>> {
-        if self.limited {
-            return Some(self.limit_reset);
-        }
-        if self.native_limits_only { return None; }
-        let said = |text: &str| crate::usage_pause::says_usage_limit(text).then(|| crate::usage_pause::reset_in(text, alondra_core::now_millis()));
-        self.error.as_deref().and_then(said).or_else(|| said(diagnostic))
+    pub fn limit(&self) -> Option<Option<i64>> {
+        self.limited.then_some(self.limit_reset)
     }
     /// How the batch's turn ended.
     pub fn end(&self, exit_ok: bool, diagnostic: &str) -> BatchEnd {
@@ -294,7 +283,7 @@ impl Stream {
         if exit_ok && self.success && self.result && self.initialized && self.error.is_none() {
             return BatchEnd::Handled;
         }
-        if let Some(reset) = self.limit(diagnostic) && !self.worked {
+        if let Some(reset) = self.limit() && !self.worked {
             return BatchEnd::Limited { reset };
         }
         let why = self.error.clone().unwrap_or_else(|| if diagnostic.trim().is_empty() {
@@ -423,10 +412,6 @@ impl Stream {
                     self.denied = true;
                     self.error = Some("Claude denied a required tool permission in auto mode".into());
                 }
-                if !self.success && v.get("result").and_then(Value::as_str).is_some_and(crate::usage_pause::says_usage_limit) {
-                    self.limited = true;
-                    self.limit_reset = self.limit_reset.or_else(|| v["result"].as_str().and_then(|text| crate::usage_pause::reset_in(text, alondra_core::now_millis())));
-                }
                 if !self.success && self.error.is_none() {
                     self.error = Some(bounded(v.get("errors").or_else(|| v.get("result")).unwrap_or(&Value::Null).to_string()));
                 }
@@ -476,6 +461,16 @@ pub fn uuid() -> Result<String> {
 pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: bool }
 
 impl Output {
+    /// What the host wrote beside the SDK: shown and logged, never decided on.
+    pub(crate) fn diagnosed(&mut self, text: &str) -> crate::domain_store::batch_effects::BatchReport {
+        self.diagnostic = bounded(format!("{}{text}\n", self.diagnostic));
+        crate::domain_store::batch_effects::BatchReport { kind: "diagnostic".into(), failure: self.stream.error.clone(), ..Default::default() }
+    }
+    /// The native session asked for a decision the orchestrator never grants: the batch ends.
+    pub(crate) fn unexpected_decision(&mut self) -> crate::domain_store::batch_effects::BatchReport {
+        self.stream.error = Some("Unexpected native decision in the Alondra orchestrator".into());
+        crate::domain_store::batch_effects::BatchReport { kind: "unexpected_decision".into(), failure: self.stream.error.clone(), ..Default::default() }
+    }
     /// A batch that never started, and why.
     pub fn not_started(why: &str) -> Self {
         Self { stream: Stream::default(), diagnostic: why.to_owned(), exit_ok: false }
@@ -578,7 +573,7 @@ mod tests {
     }
     /// The result Claude 2.1.287 emits after `--restricted` refuses a Read outside the working directories.
     #[test]
-    fn a_rejected_rate_limit_or_a_limit_result_marks_the_stream_limited_with_its_reset() {
+    fn a_rejected_rate_limit_or_an_assistant_rate_limit_error_marks_the_stream_limited() {
         let accept = |lines: &[&str]| {
             let mut s = Stream::default();
             for line in lines {
@@ -593,9 +588,7 @@ mod tests {
         let assistant = accept(&[r#"{"type":"assistant","session_id":"a","error":"rate_limit","message":{"content":[]}}"#]);
         assert_eq!((assistant.limited, assistant.worked), (true, false));
         let result = accept(&[r#"{"type":"result","session_id":"a","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 3:45pm"}"#]);
-        assert!(result.limited && result.limit_reset.is_some(), "{result:?}");
-        let worked = accept(&[r#"{"type":"assistant","session_id":"a","message":{"model":"opus","content":[]}}"#, r#"{"type":"result","session_id":"a","subtype":"success","is_error":true,"result":"You've hit your weekly limit · resets Mon 12:00am"}"#]);
-        assert!(worked.limited && worked.worked);
+        assert!(!result.limited, "the result's words are not the limit: {result:?}");
     }
 
     const REFUSED_READ_RESULT: &[u8] = br#"{"type":"result","session_id":"a","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":4,"result":"Done.","permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01Hi3ayKKFGKNW3JAR2tb9Z2","tool_input":{"file_path":"/Users/example/.zshrc","limit":1}}]}"#;
@@ -778,18 +771,27 @@ mod tests {
 
 
     #[test]
-    fn structured_native_streams_never_infer_account_limits_from_legacy_error_or_diagnostic_text() {
-        let text = "You've hit your session limit";
-        let mut legacy = Stream::for_input("input"); legacy.error = Some(text.into());
-        assert_eq!(legacy.limit(""), Some(None), "the existing Claude text protocol stays supported");
-        for input in [None, Some("input")] {
-            let mut native = Stream::native(input); native.error = Some(text.into());
-            assert_eq!(native.limit(text), None);
-            let output = Output { stream: native, diagnostic: text.into(), exit_ok: false };
-            assert!(!matches!(output.end(), BatchEnd::Limited { .. }));
-        }
-        let mut native = Stream::native(Some("input")); native.limited = true; native.limit_reset = Some(20);
-        assert_eq!(native.limit(text), Some(Some(20)), "positive native account-limit evidence remains authoritative");
+    fn a_diagnostic_never_ends_a_batch_and_a_native_decision_does() {
+        let mut output = Output::not_started("");
+        let report = output.diagnosed("Unexpected native decision in the Alondra orchestrator");
+        assert_eq!((report.failure, output.stream.error.as_deref()), (None, None), "stderr that quotes the phrase is only shown");
+        assert!(output.diagnostic.contains("Unexpected native decision"));
+        let report = output.unexpected_decision();
+        assert!(report.failure.is_some() && output.stream.error.is_some());
+        assert!(matches!(output.end(), BatchEnd::NotStarted { .. }));
     }
 
+    #[test]
+    fn a_limit_is_only_what_claude_reports_as_one_never_its_words() {
+        let quoted = r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"result":"I hit your limit on retries"}"#;
+        assert!(!matches!(ended(None, &[INIT, quoted], false, ""), BatchEnd::Limited { .. }));
+        for words in ["You've hit your session limit · resets 3:45pm", "I hit your daily limit of 3 tasks"] {
+            let mut stream = Stream::for_input("input"); stream.error = Some(words.into());
+            assert_eq!(stream.limit(), None);
+            let output = Output { stream, diagnostic: words.into(), exit_ok: false };
+            assert!(!matches!(output.end(), BatchEnd::Limited { .. }), "{words}");
+        }
+        let mut reported = Stream::for_input("input"); reported.limited = true; reported.limit_reset = Some(20);
+        assert_eq!(reported.limit(), Some(Some(20)));
+    }
 }

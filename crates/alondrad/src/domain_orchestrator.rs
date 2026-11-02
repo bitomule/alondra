@@ -544,7 +544,7 @@ impl Executor {
             BatchEnd::Denied { calls:changes.clone(),why:output.stream.error.clone().unwrap_or_else(|| "The provider denied an Alondra tool".into()) }
         } else if output.stream.native_request_rejected {
             BatchEnd::Interrupted { calls: changes.clone(), why: output.stream.error.clone().unwrap_or_else(|| "The native request was rejected; correct it before explicitly retrying".into()) }
-        } else if let Some(reset) = output.stream.limit(&output.diagnostic) && effects_confirmed {
+        } else if let Some(reset) = output.stream.limit() && effects_confirmed {
             BatchEnd::Limited { reset }
         } else if !effects_confirmed {
             BatchEnd::Interrupted { calls: changes.clone(), why: "Some admitted mutations have no confirmed durable result; reconcile them before continuing".into() }
@@ -561,7 +561,7 @@ impl Executor {
             runtime.last_context = Some(context);
         }
         if !matches!(end, BatchEnd::Handled | BatchEnd::Cancelled { .. })
-            && let Some(reset) = output.stream.limit(&output.diagnostic)
+            && let Some(reset) = output.stream.limit()
         {
             crate::orchestrator_provider::record_limit(&self.domain, &selection, reset, now_millis());
         }

@@ -25,7 +25,7 @@ pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Resu
     output.stream.error = Some("Orchestrator execution was cancelled; reconcile its effects before retrying".into());
     output
 }
-fn failed(why: String) -> Output { Output { stream: Stream::native(None), diagnostic: bounded(why), exit_ok: false } }
+fn failed(why: String) -> Output { Output { stream: Stream::default(), diagnostic: bounded(why), exit_ok: false } }
 
 #[derive(Default)]
 struct NativeTurn {
@@ -244,7 +244,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         Ok(guard) => guard,
         Err(error) => { stop(host, &batch.directory); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
     };
-    let mut output = Output { stream: Stream::native(Some(host.input())), diagnostic: String::new(), exit_ok: false };
+    let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
     let mut native = NativeTurn::default();
     if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
@@ -265,10 +265,8 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         let mut exited = false;
         let report = match pending.event {
             HostEvent::Sdk(message) => native.fold(&message, host.input(), &batch.session, &mut output.stream),
-            HostEvent::Diagnostic(text) => {
-                output.diagnostic = bounded(format!("{}{text}\n", output.diagnostic));
-                Ok(BatchReport { kind: "diagnostic".into(), ..BatchReport::default() })
-            }
+            HostEvent::Diagnostic { text, .. } => Ok(output.diagnosed(&text)),
+            HostEvent::UnexpectedDecision => { exited = true; Ok(output.unexpected_decision()) }
             HostEvent::Exited { code, signal } => {
                 output.exit_ok = code == Some(0) || (native.consumed && output.stream.result && output.stream.success && signal.as_deref() == Some("SIGTERM"));
                 exited = true;
@@ -361,7 +359,7 @@ mod tests {
     #[test]
     fn only_a_correlated_terminal_failed_turn_parks_a_native_request_rejection() {
         for kind in ["badRequest", "contextWindowExceeded"] {
-            let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input")); ready(&mut native, &mut stream);
+            let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input"); ready(&mut native, &mut stream);
             native.fold(&json!({"method":"error","params":{"threadId":"native","turnId":"turn","willRetry":true,"error":{"codexErrorInfo":kind,"message":"The native request is being retried"}}}), "input", "batch", &mut stream).unwrap();
             assert!(!stream.native_request_rejected && !stream.result, "a nonterminal error is not a terminal rejection");
             let wrong = json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"turn","status":"failed","error":{"codexErrorInfo":kind}}}});
@@ -369,7 +367,7 @@ mod tests {
             native.fold(&json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"failed","error":{"codexErrorInfo":kind,"message":"The native request was rejected"}}}}), "input", "batch", &mut stream).unwrap();
             assert!(stream.native_request_rejected && stream.result && !stream.denied && !stream.limited);
 
-            let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input")); ready(&mut native, &mut stream);
+            let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input"); ready(&mut native, &mut stream);
             native.fold(&json!({"method":"error","params":{"threadId":"native","turnId":"turn","willRetry":true,"error":{"codexErrorInfo":kind,"message":"A temporary native error"}}}), "input", "batch", &mut stream).unwrap();
             native.fold(&json!({"method":"item/started","params":{"threadId":"native","turnId":"turn","item":{"type":"userMessage","clientId":"input"}}}), "input", "batch", &mut stream).unwrap();
             native.fold(&json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"completed"}}}), "input", "batch", &mut stream).unwrap();
@@ -380,18 +378,18 @@ mod tests {
 
     #[test]
     fn native_policy_refusal_is_terminal_and_preserves_positive_no_submission_evidence() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input"));
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
         let refused = json!({"method":"alondra/inputRefused","params":{"inputId":"input","nativeSubmitted":false,"code":"paid_authorization_required"}});
         let report = native.fold(&refused,"input","batch",&mut stream).unwrap();
         assert_eq!(report.kind,"native_policy_refused"); assert!(report.failure.as_ref().unwrap().contains("explicit payment authorization"));
         assert!(!native.consumed && !report.input_consumed && !stream.result && !stream.limited);assert!(stream.denied,"an account policy denial cannot trigger provider retry");
         for invalid in [json!({"inputId":"other","nativeSubmitted":false,"code":"paid_authorization_required"}),json!({"inputId":"input","nativeSubmitted":true,"code":"paid_authorization_required"})] {
-            assert!(NativeTurn::default().fold(&json!({"method":"alondra/inputRefused","params":invalid}),"input","batch",&mut Stream::native(Some("input"))).is_err());
+            assert!(NativeTurn::default().fold(&json!({"method":"alondra/inputRefused","params":invalid}),"input","batch",&mut Stream::for_input("input")).is_err());
         }
     }
     #[test]
     fn accepted_batch_without_correlated_consumption_cannot_settle_the_inbox() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input"));
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
         ready(&mut native,&mut stream);
         assert!(!native.consumed);
         let completed = json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"completed"}}});
@@ -405,7 +403,7 @@ mod tests {
     }
     #[test]
     fn batch_history_excludes_private_reasoning_and_native_quota_is_not_permission_to_retry_a_denial() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input"));
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
         ready(&mut native,&mut stream);
         let reasoning = native.fold(&json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn","item":{"type":"reasoning","text":"private reasoning"}}}),"input","batch",&mut stream).unwrap();
         assert!(reasoning.public_result.is_none()); assert!(stream.note.is_none());
@@ -417,7 +415,7 @@ mod tests {
     #[test]
     fn native_request_and_context_rejections_do_not_exhaust_a_batch_account() {
         for (kind, guidance) in [("badRequest", "catalog does not prove request acceptance"), ("contextWindowExceeded", "Reduce the next batch's input")] {
-            let mut stream = Stream::native(Some("input"));
+            let mut stream = Stream::for_input("input");
             failure(&json!({"codexErrorInfo":kind,"message":"Native request rejected"}), &mut stream);
             assert!(!stream.limited && !stream.success && !stream.denied);
             let error = stream.error.as_deref().unwrap(); assert!(error.starts_with("Native request rejected")); assert!(error.contains(guidance));
@@ -425,18 +423,18 @@ mod tests {
     }
     #[test]
     fn only_the_pinned_native_account_limit_error_marks_a_batch_exhausted() {
-        let mut stream = Stream::native(Some("input"));
+        let mut stream = Stream::for_input("input");
         failure(&json!({"codexErrorInfo":"usageLimitExceeded","message":"Account quota exhausted"}), &mut stream);
         assert!(stream.limited);
         for kind in ["rateLimitExceeded", "sessionBudgetExceeded", "contextWindowExceeded", "usageLimitReached"] {
-            let mut stream = Stream::native(Some("input"));
+            let mut stream = Stream::for_input("input");
             failure(&json!({"codexErrorInfo":kind,"message":"Native error"}), &mut stream);
             assert!(!stream.limited, "{kind} is not evidence of an account quota limit");
         }
     }
     #[test]
     fn codex_subscription_tokens_have_no_invented_price_and_partial_updates_preserve_usage() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input"));
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
         stream.model = Some("advertised-model".into()); ready(&mut native,&mut stream);
         native.fold(&json!({"method":"thread/tokenUsage/updated","params":{"threadId":"native","turnId":"turn","tokenUsage":{"modelContextWindow":32000,"last":{"inputTokens":100,"totalTokens":125},"total":{"inputTokens":100,"cachedInputTokens":40,"outputTokens":25}}}}),"input","batch",&mut stream).unwrap();
         assert_eq!(stream.first_input_tokens,Some(100)); assert_eq!(stream.window,Some(32000));
@@ -452,11 +450,11 @@ mod tests {
             json!({"threadId":"native","item":{"type":"userMessage","clientId":"input"}}),
             json!({"threadId":"native","turnId":"","item":{"type":"userMessage","clientId":"input"}}),
         ] {
-            let mut native=NativeTurn::default();let mut stream=Stream::native(Some("input"));ready(&mut native,&mut stream);
+            let mut native=NativeTurn::default();let mut stream=Stream::for_input("input");ready(&mut native,&mut stream);
             assert!(native.fold(&json!({"method":"item/completed","params":params}),"input","batch",&mut stream).is_err());
             assert!(!native.consumed && !stream.result);
         }
-        let mut native=NativeTurn::default();let mut stream=Stream::native(Some("input"));ready(&mut native,&mut stream);
+        let mut native=NativeTurn::default();let mut stream=Stream::for_input("input");ready(&mut native,&mut stream);
         native.consumed=true;
         assert!(native.fold(&json!({"method":"turn/completed","params":{"turn":{"status":"completed"}}}),"input","batch",&mut stream).is_err());
         assert!(!stream.result);
@@ -470,7 +468,7 @@ mod tests {
 
     #[test]
     fn native_acceptance_and_rerouting_report_actual_models_without_relabeling_earlier_usage() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input")); ready(&mut native, &mut stream);
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input"); ready(&mut native, &mut stream);
         assert_eq!(stream.model.as_deref(), Some("advertised-model"));
         sample(&mut native, &mut stream, 100, 10);
         let report = native.fold(&routed(), "input", "batch", &mut stream).unwrap();
@@ -488,7 +486,7 @@ mod tests {
 
     #[test]
     fn metadata_for_another_or_missing_thread_or_turn_cannot_change_the_effective_model_or_metrics() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input")); ready(&mut native, &mut stream); sample(&mut native, &mut stream, 100, 10);
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input"); ready(&mut native, &mut stream); sample(&mut native, &mut stream, 100, 10);
         for (field, value) in [("threadId", json!("other")), ("turnId", json!("other")), ("threadId", Value::Null), ("turnId", Value::Null)] {
             let mut event = routed(); event["params"][field] = value;
             assert!(native.fold(&event, "input", "batch", &mut stream).is_err());
@@ -501,7 +499,7 @@ mod tests {
 
     #[test]
     fn native_reroute_before_delayed_acceptance_is_not_overwritten_by_its_configured_model() {
-        let mut native = NativeTurn::default(); let mut stream = Stream::native(Some("input"));
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
         native.fold(&json!({"method":"alondra/threadReady","params":{"threadId":"native","logicalConversationId":"batch","processGeneration":"process"}}),"input","batch",&mut stream).unwrap();
         native.fold(&json!({"method":"turn/started","params":{"threadId":"native","turn":{"id":"turn"}}}),"input","batch",&mut stream).unwrap();
         native.fold(&routed(), "input", "batch", &mut stream).unwrap();
@@ -515,18 +513,18 @@ mod tests {
     #[test]
     fn native_non_account_errors_with_legacy_limit_text_cannot_exhaust_the_account() {
         for kind in ["sessionBudgetExceeded", "rateLimitExceeded", "contextWindowExceeded"] {
-            let mut stream = Stream::native(Some("input"));
+            let mut stream = Stream::for_input("input");
             failure(&json!({"codexErrorInfo":kind,"message":"You've hit your session limit"}), &mut stream);
-            assert_eq!(stream.limit("You've hit your weekly limit"), None, "{kind} has no native account-quota evidence");
+            assert_eq!(stream.limit(), None, "{kind} has no native account-quota evidence");
             let output = Output { stream, diagnostic: "You've hit your weekly limit".into(), exit_ok: false };
             assert!(!matches!(output.end(), crate::orchestrator_process::BatchEnd::Limited { .. }));
         }
         let early = failed("You've hit your session limit before a native host was confirmed".into());
-        assert_eq!(early.stream.limit(&early.diagnostic), None);
+        assert_eq!(early.stream.limit(), None);
         assert!(!matches!(early.end(), crate::orchestrator_process::BatchEnd::Limited { .. }));
-        let mut stream = Stream::native(Some("input"));
+        let mut stream = Stream::for_input("input");
         failure(&json!({"codexErrorInfo":"usageLimitExceeded","message":"Native account quota exhausted"}), &mut stream);
-        assert_eq!(stream.limit(""), Some(None));
+        assert_eq!(stream.limit(), Some(None));
         assert!(matches!(Output { stream, diagnostic: String::new(), exit_ok: false }.end(), crate::orchestrator_process::BatchEnd::Limited { .. }));
     }
 

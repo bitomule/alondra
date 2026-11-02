@@ -226,15 +226,14 @@ impl Live {
         if !view.nodes.contains_key(&session_id) {
             view.apply(self.next(), now, &Event::Joined { session_id });
         }
-        let limit = (event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit")).then(|| crate::hook_text::str_field(payload, "error_details"));
+        let limit = event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit");
         if event.event == "StopFailure" && event.error_type.as_deref() == Some("authentication_failed") {
             self.account_check.notify_one();
         }
         view.apply(self.next(), now, &Event::Hook(event));
         drop(view);
-        if let Some(details) = limit {
-            let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now));
-            self.usage_pause.exhaust(until, now);
+        if limit {
+            self.usage_pause.exhaust(self.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now), now);
         }
         self.changed.publish();
     }

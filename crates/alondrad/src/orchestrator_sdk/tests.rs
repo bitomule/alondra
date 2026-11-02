@@ -157,7 +157,8 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
     loop {
         match host.next().unwrap() {
             HostEvent::Sdk(message) => assert!(!stream.accept(&serde_json::to_vec(&message).unwrap(), session).is_err()),
-            HostEvent::Diagnostic(text) => panic!("{text}"),
+            HostEvent::Diagnostic { text, .. } => panic!("{text}"),
+            HostEvent::UnexpectedDecision => panic!("unexpected native decision"),
             HostEvent::Exited { code, .. } => {
                 assert_eq!(code, Some(0));
                 break;

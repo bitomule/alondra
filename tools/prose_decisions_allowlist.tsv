@@ -15,26 +15,8 @@ crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whethe
 crates/core/src/states.rs	|| HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/tasks/derive.rs	while let Some(i) = text[from..].find("t-").map(|i| from + i) {	finding:C-06	old view assigns PRs and reports by t- mentions
-crates/alondrad/src/domain_merges.rs	has(reason, &["http 404", "http 403"])	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/domain_merges.rs	let reason = reason.to_ascii_lowercase();	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/domain_merges.rs	signs.iter().any(|sign| reason.contains(sign))	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/domain_merges.rs	has(reason, &["error connecting", "timed out", "timeout", "did not finish", "could not resolve", "connection", "http 5", "502", "503",	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/domain_merges.rs	has(reason, &["gh auth login", "not logged", "authentication", "no such file", "command not found", "http 401", "http 403",	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/domain_merges.rs	has(reason, &["required status check", "status checks are pending", "is expected", "waiting for status"])	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/domain_merges.rs	has(reason, &["already merged", "was merged"])	finding:D-01	merge outcome classified by gh's stderr
-crates/alondrad/src/views/actions.rs	let said = detail.to_ascii_lowercase();	finding:D-02	closing a PR decided by gh's stderr
-crates/alondrad/src/views/actions.rs	if said.contains("already merged") || said.contains("was merged") {	finding:D-02	closing a PR decided by gh's stderr
-crates/alondrad/src/views/actions.rs	if said.contains("already closed") {	finding:D-02	closing a PR decided by gh's stderr
 crates/alondrad/src/node_close.rs	Ok(text) if text.contains(&format!("removed {short}")) => said = text,	finding:D-03	node close decided by the wording of claude rm
 crates/alondrad/src/node_close.rs	Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {	finding:D-03	node close decided by the wording of claude rm
-crates/alondrad/src/usage_pause.rs	let text = text.to_lowercase();	finding:D-04	usage limit and reset read from Claude's prose
-crates/alondrad/src/usage_pause.rs	text.contains("hit your") && text.contains("limit") && !text.contains("spend limit") && !text.contains("shared budget")	finding:D-04	usage limit and reset read from Claude's prose
-crates/alondrad/src/usage_pause.rs	let after = &text[text.to_lowercase().find("resets ")? + "resets ".len()..];	finding:D-04	usage limit and reset read from Claude's prose
-crates/alondrad/src/usage_pause.rs	let lower = word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()).to_lowercase();	finding:D-04	usage limit and reset read from Claude's prose
-crates/alondrad/src/orchestrator_sdk.rs	if text=="Unexpected native decision in the Alondra orchestrator" {output.stream.error=Some(text.clone());exited=true;}	finding:D-06	batch stop by equality with a diagnostic text
-crates/alondrad/src/pr_images.rs	let lower = error.to_ascii_lowercase();	finding:D-07	gh api failure classified by text
-crates/alondrad/src/pr_images.rs	if lower.contains("http 404") || lower.contains("not found") {	finding:D-07	gh api failure classified by text
-crates/alondrad/src/pr_images.rs	} else if lower.contains("gh auth login") || lower.contains("http 401") || lower.contains("bad credentials") {	finding:D-07	gh api failure classified by text
 crates/provider-claude/src/mcp.rs	output.contains("No MCP server named")	finding:D-08	MCP removal failure counted as success by a phrase
 crates/alondra/src/doctor/checks.rs	let running = view.print.as_deref().map(|t| t.contains("state = running"));	finding:D-12	launchctl print output, not an API
 crates/alondra/src/setup.rs	&& String::from_utf8_lossy(&output.stderr).contains("Could not find service")	finding:D-12	launchctl print output, not an API
@@ -42,9 +24,6 @@ crates/alondra/src/setup.rs	.filter_map(|line| line.trim().strip_prefix("pid = "
 crates/alondra/src/tui.rs	if e.to_string().contains("No such file")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("could not launch")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("no pude lanzar") =>	finding:D-13	tuicr missing decided by error text
-crates/alondra/src/report/github.rs	let status = stderr.rsplit_once("(HTTP ").and_then(|(_, rest)| rest.split(')').next()).and_then(|s| s.trim().parse::<u16>().ok());	finding:D-14	gh api status read from stderr
-crates/alondra/src/report/github.rs	let rate_limited = message.to_ascii_lowercase().contains("rate limit");	finding:D-14	gh api status read from stderr
-crates/alondra/src/report/github.rs	None if code == Some(4) || stderr.contains("gh auth login") => GhError::SignedOut,	finding:D-14	gh api status read from stderr
 crates/alondrad/src/process_watch.rs	Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output().ok()	finding:D-15	processes found and killed from ps text
 crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:D-16	card kind and effects deduced from its id prefix
 crates/alondrad/src/domain_orchestrator.rs	let Some(run_id) = id.0.strip_prefix(PROBLEM_PREFIX) else { continue };	finding:D-16	card kind and effects deduced from its id prefix
@@ -121,7 +100,6 @@ crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PR
 crates/alondra/src/doctor/mod.rs	.any(|p| std::fs::read_to_string(p).map_or(true, |t| t.contains("/alondrad</string>"))),	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondra/src/setup.rs	.filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("/alondrad</string>")))	finding:D-19	LaunchAgent recognised by a substring of its XML
 crates/alondrad/src/machine.rs	let line = text.lines().find(|l| l.contains("memory free percentage"))?;	finding:D-21	free memory read from memory_pressure's text
-crates/alondrad/src/sdk_live.rs	let aborted = message["terminal_reason"].as_str().is_some_and(|reason| reason.starts_with("aborted"));	finding:D-22	aborted turn by a prefix of terminal_reason
 crates/relay/src/management/keycloak.rs	.find(|grant| grant["key"] == "Offline Token")	finding:G-11	consent to revoke picked by its display label
 crates/core/src/view.rs	.is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))	finding:G-14	billing_error and overloaded treated as usage limit
 crates/provider-claude/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
@@ -323,3 +301,5 @@ crates/core/src/options.rs	let q = query.to_lowercase();	user-search	search or s
 crates/core/src/options.rs	let mut out: Vec<String> = ranked.iter().filter(|n| q.split_whitespace().all(|w| n.to_lowercase().contains(w))).cloned().collect();	user-search	search or sort over text the user filters
 crates/core/src/views/misc.rs	.to_ascii_lowercase();	user-search	search or sort over text the user filters
 crates/core/src/views/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains(&q))	user-search	search or sort over text the user filters
+crates/alondra/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
+crates/alondrad/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
