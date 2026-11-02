@@ -1,0 +1,291 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:d",
+  "client": "mac",
+  "version": "vf54bb3b1afc9a0e2",
+  "cursor": "cursor-1",
+  "title": "Review the result",
+  "status": {
+    "version": "v63843208edea3b28",
+    "summary": "1 to read · 0 nodes working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "d",
+          "kind": "review",
+          "need": "Review the result",
+          "why": "Your reply arrived and waits: **Fix it** is paused and reads it when it resumes. “the design is poor, the toggles are poor”",
+          "meta": "owner/repo · → main",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "1 point"
+          },
+          "reply": {
+            "id": "reply:d@7",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply to Fix it…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent",
+            "key": "r",
+            "resolves_card": false
+          },
+          "more": [
+            {
+              "id": "close_unmerged:d@7",
+              "label": "Close without merging",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close PR #1 without merging?",
+                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+                "button": "Close PR"
+              },
+              "enabled": true,
+              "stamp": "Closing…",
+              "key": "3",
+              "resolves_card": true
+            },
+            {
+              "id": "clarify:d@7",
+              "label": "Request clarification",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "It is unclear",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "It contradicts something",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "It lacks context",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "What should it clarify?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clarification requested",
+              "key": "c",
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:d"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Review · PR #1",
+            "tone": "accent"
+          },
+          "title": "Review the result",
+          "subtitle": "Your reply arrived and waits: **Fix it** is paused and reads it when it resumes. “the design is poor, the toggles are poor”",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Fix it",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              },
+              "state": {
+                "text": "Ready for review",
+                "tone": "info"
+              }
+            }
+          ],
+          "state": {
+            "text": "Checking with GitHub…",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:d@7~head1-d",
+              "label": "Squash and merge",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Merging…",
+              "key": "1",
+              "resolves_card": true
+            },
+            {
+              "id": "changes:pr@7~head1",
+              "label": "Request changes",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe the changes",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "comments": {
+                "kind": "diff_lines"
+              },
+              "enabled": true,
+              "stamp": "Changes requested",
+              "key": "2",
+              "link": {
+                "kind": "view",
+                "key": "pull_request:pr"
+              },
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "title": "Diff",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "head1",
+          "fetch": "/pull-requests/pr/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "title": "Description",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Review the result",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Fix it",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "title": "History",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "feedback-0",
+          "icon": "history",
+          "title": "You replied",
+          "subtitle": "the design is poor, the toggles are poor",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    }
+  ]
+}

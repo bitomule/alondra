@@ -5224,6 +5224,44 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         && !card.contains("Conflicts were reported"), "{card}");
 }
 
+/// t-duo-blurcamera-video-editor, 28 October: a reply to its result reached the daemon while its
+/// node was paused, so the result stayed in Waiting for You looking exactly as before, and the
+/// reply was taken for lost. The card says the reply arrived and what it waits for.
+#[test]
+fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_takes_it() {
+    use crate::domain::{Actor, Command, DeliveryTarget, Instruction};
+    let live = LiveSnapshot::default();
+    let why = |state: &DomainState, client, lang| card_of(&render(state, &live, client, lang, "card:d", "")).why.clone().unwrap_or_default();
+    let mut state = presented_pr();
+    pause_for_memory(&mut state);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert!(!why(&state, client, Lang::En).contains("Your reply"), "{client:?}: nothing was replied yet");
+    }
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "d".into(), body: "the design is poor, the toggles are poor".into(),
+        instruction: Instruction::Reply, targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+    });
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let english = why(&state, client, Lang::En);
+        assert!(english.starts_with("Your reply arrived and waits: **Fix it** is paused and reads it when it resumes. “the design is poor, the toggles are poor”"),
+            "{client:?}: {english}");
+        let spanish = why(&state, client, Lang::Es);
+        assert!(spanish.starts_with("Tu respuesta llegó y espera: **Fix it** está en pausa y la leerá cuando se reanude. «the design is poor, the toggles are poor»"),
+            "{client:?}: {spanish}");
+    }
+    for (filename, lang, expected) in [
+        ("card-reply-waiting-mac.json", Lang::En, include_str!("../../../../fixtures/views/cards/card-reply-waiting-mac.json")),
+        ("card-reply-waiting-es-mac.json", Lang::Es, include_str!("../../../../fixtures/views/cards/card-reply-waiting-es-mac.json")),
+    ] {
+        assert_golden(filename, &render(&state, &live, Client::Mac, lang, "card:d", ""), expected);
+    }
+    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Resumed, at: 3 });
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = serde_json::to_string(&render(&state, &live, client, Lang::En, "card:d", "")).unwrap();
+        assert!(!view.contains("Your reply arrived"), "{client:?}: the node has the reply now: {view}");
+    }
+}
+
 fn pause_for_memory(state: &mut DomainState) {
     let pause = crate::domain::Pause { reason: crate::domain::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
         cleanup: Default::default(), released: false };

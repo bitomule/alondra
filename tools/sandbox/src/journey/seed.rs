@@ -73,7 +73,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         state(report, &user, "t-secret", WORKING)?;
         let ask_secret = Step::Call { tool: "request_input".into(), arguments: serde_json::json!({
             "scope": {"kind": "task", "task_id": "t-secret"}, "interaction_id": "q-stripe-key", "need": "Send the Stripe test key", "why": "The payments test calls Stripe with it",
-            "kind": "secret", "blocking": false, "destination": {"file": ".env", "variable": "STRIPE_KEY"},
+            "recipient": {"kind": "user"}, "kind": "secret", "blocking": false, "destination": {"file": ".env", "variable": "STRIPE_KEY"},
         }) };
         act(report, &fakes, &secret, "the node asks for a secret that goes to .env", &[ask_secret])?;
 

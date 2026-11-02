@@ -462,6 +462,30 @@ fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<St
     Some(super::messages::refusal_text(&refusal, context.lang))
 }
 
+/// A reply to a delivery whose node cannot take it now keeps the delivery in front of the user
+/// (`resolves::reply_nobody_attends`): the card says the reply arrived and what it waits for.
+fn waiting_reply(item: &InboxItem, interaction: &Interaction, context: &RenderContext<'_>) -> Option<String> {
+    let domain = context.domain;
+    if !domain.open_reply(interaction) || domain.node_attends(interaction) {
+        return None;
+    }
+    let InteractionPayload::Delivery { feedback, .. } = &interaction.payload else { return None };
+    let reply = clip(&feedback.last()?.body, 120);
+    let node = node_name(item, context);
+    let paused = match &interaction.scope {
+        Scope::Task { task_id } => domain.tasks.get(task_id).and_then(|task| task.agent_id.as_ref())
+            .is_some_and(|agent| domain.node_pause(agent).is_some()),
+        _ => false,
+    };
+    Some(if paused {
+        tf!(context.lang, "Your reply arrived and waits: **{node}** is paused and reads it when it resumes. “{reply}”",
+            "Tu respuesta llegó y espera: **{node}** está en pausa y la leerá cuando se reanude. «{reply}»", node = node, reply = reply)
+    } else {
+        tf!(context.lang, "Your reply arrived and waits: **{node}** is not running and reads it when it is back. “{reply}”",
+            "Tu respuesta llegó y espera: **{node}** no está en marcha y la leerá cuando vuelva. «{reply}»", node = node, reply = reply)
+    })
+}
+
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let lang = context.lang;
     let domain = context.domain;
@@ -490,6 +514,10 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             humanize_task_ids(&spec.need, domain),
             Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty()),
         ),
+    };
+    let why = match interaction.and_then(|i| waiting_reply(item, i, context)) {
+        Some(reply) => Some(why.map_or_else(|| reply.clone(), |why| format!("{reply}\n\n{why}"))),
+        None => why,
     };
     let mut card = Card {
         id: public_id(item).into(),

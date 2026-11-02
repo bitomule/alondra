@@ -266,6 +266,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_aReplyWaitingForAPausedNodeSaysSo() throws {
+        let store = try presentation(detail: "card-reply-waiting-mac")
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aReplyWaitingForAPausedNodeSaysSo_spanish() throws {
+        let store = try presentation(detail: "card-reply-waiting-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     // MARK: What an action asks first, and what it says after
 
     /// The alert the system draws for a question an action asks: the view goes into a real window,
