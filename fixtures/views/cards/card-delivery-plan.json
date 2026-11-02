@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "vd5f060a91e4d0c6b",
+  "version": "vf9b31790cdc84e59",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
@@ -63,67 +63,25 @@
             "summary": "3 steps"
           },
           "reply": {
-            "id": "reply:result-1@4",
-            "label": "Reply",
+            "id": "changes:result-1@4",
+            "label": "Request changes",
             "style": "secondary",
             "role": "neutral",
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Reply to Redraft: analyse the whole library at once…",
+              "placeholder": "Describe the changes",
               "required": true,
               "multiline": true
             },
             "attachments": true,
+            "comments": {
+              "kind": "blocks"
+            },
             "enabled": true,
-            "stamp": "Sent",
+            "stamp": "Changes requested",
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "clarify:result-1@4",
-              "label": "Request clarification",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "It is unclear",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "It contradicts something",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "It lacks context",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "What should it clarify?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Clarification requested",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:result-1"
@@ -163,26 +121,6 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Approved",
-              "resolves_card": true
-            },
-            {
-              "id": "changes:result-1@4",
-              "label": "Request changes",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Describe the changes",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "comments": {
-                "kind": "blocks"
-              },
-              "enabled": true,
-              "stamp": "Changes requested",
               "resolves_card": true
             }
           ]

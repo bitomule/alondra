@@ -1199,7 +1199,7 @@ fn real_pr_id_opens_detail_diff_and_actions() {
             "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff")));
     let tui = render(&state, &live, Client::Tui, Lang::En, &format!("card:{id}"), "");
     let Item::Card(tui_card) = &tui.sections[0].items[0] else { panic!("PR card") };
-    assert!(tui_card.more.iter().any(|action| action.key.as_deref() == Some("d") &&
+    assert!(tui_card.more.iter().any(|action| action.key.as_deref() == Some("l") &&
         matches!(&action.link, Some(Link::Local { local: LocalLink::ReviewClone { pr_id, pr: 12, .. } }) if pr_id == id)));
 }
 
@@ -1216,8 +1216,8 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     });
     let view = render(&state, &live, Client::Ios, Lang::En, &format!("card:{pr_id}"), "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("the card remains visible") };
-    assert!(!card.actions.iter().any(|action| action.label == "Request changes"));
-    assert!(card.more.iter().any(|action| action.label == "Close without merging"),
+    assert!(!card.actions.iter().chain(&card.reply).any(|action| action.label == "Request changes"));
+    assert!(card.actions.iter().any(|action| action.label == "Close without merging"),
         "a valid action after the invalid action should still render");
     let result = build(&format!("card:{pr_id}"), RenderContext {
         domain: &state,
@@ -1443,7 +1443,7 @@ fn document_review_card_exposes_revision_content_and_review_actions() {
     assert!(card.actions.iter().any(|action| action.label == "Approve"
         && action.style == Style::Primary
         && action.stamp.as_deref() == Some("Approved")), "{:?}", card.actions);
-    assert!(card.actions.iter().any(|action| action.label == "Request changes"));
+    assert!(card.reply.as_ref().is_some_and(|reply| reply.label == "Request changes"));
 }
 
 fn plan_question_fixture() -> DomainState {
@@ -1498,7 +1498,7 @@ fn a_question_about_a_plan_opens_the_plan_for_review_with_its_options_and_reques
         let card = card_of(&view);
         let answer = card.actions.iter().find(|action| action.id.starts_with("ans:i-1@")).expect("the node's options");
         assert_eq!(answer.option_id.as_deref(), Some("separate"));
-        let changes = card.actions.iter().find(|action| action.id.starts_with("changes:i-1@")).expect("request changes");
+        let changes = card.reply.as_ref().filter(|action| action.id.starts_with("changes:i-1@")).expect("request changes");
         assert_eq!((changes.label.as_str(), changes.stamp.as_deref(), changes.enabled), ("Pedir cambios", Some("Cambios solicitados"), true));
         assert_eq!(changes.comments, Some(CommentSpec { kind: CommentKind::Blocks }));
         assert!(changes.key.is_none());
@@ -1568,12 +1568,11 @@ fn a_report_alone_offers_seen_and_request_changes_with_a_reply_to_the_node() {
     let seen = card.actions.iter().find(|action| action.label == "Seen").expect("seen");
     assert_eq!((seen.style, seen.role), (Style::Primary, Some(Role::Advance)));
     assert_eq!(seen.stamp.as_deref(), Some("Seen"));
-    let changes = card.actions.iter().find(|action| action.label == "Request changes").expect("request changes");
-    assert_eq!(changes.role, Some(Role::Neutral));
-    let reply = reply_to_node(&card);
-    assert_eq!(reply.label, "Reply");
-    assert!(matches!(&reply.input, Input::Text { placeholder, required: true, .. } if placeholder == "Reply to Build a feature…"));
-    assert_eq!(reply.stamp.as_deref(), Some("Sent"));
+    assert!(card.actions.iter().all(|action| action.label != "Request changes"), "the field asks for changes");
+    let changes = card.reply.as_ref().expect("the card's field");
+    assert_eq!(changes.label.as_str(), "Request changes");
+    assert!(matches!(&changes.input, Input::Text { placeholder, required: true, .. } if placeholder == "Describe the changes"));
+    assert_eq!(changes.stamp.as_deref(), Some("Changes requested"));
 }
 
 #[test]
@@ -1593,9 +1592,8 @@ fn delivery_with_a_document_offers_the_review_with_comments_beside_the_reply() {
     attach_document(&mut state);
     let card = decidable_card(&state, Lang::En, "i-3");
     assert!(card.actions.iter().any(|action| action.label == "Approve" && action.style == Style::Primary));
-    let changes = card.actions.iter().find(|action| action.id.starts_with("changes:")).expect("review feedback");
+    let changes = card.reply.as_ref().filter(|action| action.id.starts_with("changes:")).expect("review feedback");
     assert!(changes.comments.is_some());
-    reply_to_node(&card);
     assert_eq!(card.content_row.as_ref().map(|row| (row.kind.as_str(), row.summary.as_str())), Some(("document", "Design notes")));
 }
 
@@ -1605,10 +1603,10 @@ fn a_delivery_carrying_a_claude_artifact_asks_for_changes_in_a_sheet_with_commen
     state.interactions.get_mut(&"i-3".into()).unwrap().body =
         "Plan ready: https://claude.ai/artifact/abc123".into();
     let card = decidable_card(&state, Lang::En, "i-3");
-    let changes = card.actions.iter().find(|action| action.label == "Request changes").expect("request changes");
+    let changes = card.reply.as_ref().filter(|action| action.label == "Request changes").expect("request changes");
     assert!(matches!(&changes.input, Input::Text { placeholder, .. } if placeholder == "Describe the changes"));
+    assert!(changes.comments.is_none(), "an artifact on claude.ai has no blocks to comment here");
     assert!(card.actions.iter().any(|action| action.label == "Seen" && action.style == Style::Primary));
-    reply_to_node(&card);
 }
 
 #[test]
@@ -3334,21 +3332,13 @@ fn spanish_builder_text_differs() {
 }
 
 #[test]
-fn request_clarification_is_behind_more_and_allows_a_blank_note() {
+fn no_card_offers_to_ask_for_a_clarification() {
     let state = fixture();
-    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "card:i-1", "");
-    let card = card_of(&view);
-    assert!(card.actions.iter().all(|action| !action.id.starts_with("clarify:")), "it never takes a visible button");
-    let action = card
-        .more
-        .iter()
-        .find(|action| action_id::ActionId::parse(&action.id).is_ok_and(|id| id.verb == action_id::Verb::Clarify))
-        .expect("an agent's card can be sent back to be clarified");
-    assert_eq!(action.label, "Request clarification");
-    assert!(matches!(action.input, Input::Text { required: false, .. }));
-    assert_eq!(action.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["unclear", "contradicts", "missing_context"]);
-    let spanish = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
-    assert!(card_of(&spanish).more.iter().any(|action| action.label == "Pedir aclaración"));
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "card:i-1", "");
+        let card = card_of(&view);
+        assert!(card.actions.iter().chain(&card.more).all(|action| !action.id.starts_with("clarify:")), "{client:?}: {card:?}");
+    }
 }
 
 #[test]
@@ -3990,7 +3980,7 @@ fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
             }
         }
     }
-    assert!(compared > 100, "the property compared {compared} actions");
+    assert!(compared > 50, "the property compared {compared} actions");
 }
 
 #[test]
@@ -4938,10 +4928,12 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes() {
     assert_eq!(card.title, "Ship the parser");
     assert_eq!(card.content_row.as_ref().map(|row| (row.kind.as_str(), row.summary.as_str())), Some(("plan", "2 steps")));
     assert_eq!(card.actions.iter().map(|a| (a.label.as_str(), a.key.as_deref(), a.role.unwrap())).collect::<Vec<_>>(),
-        [("Approve", Some("1"), Role::Advance), ("Request changes", Some("2"), Role::Neutral)]);
+        [("Approve", Some("1"), Role::Advance)]);
+    let changes = card.reply.as_ref().expect("the card's field");
+    assert_eq!((changes.label.as_str(), changes.key.as_deref(), changes.comments.is_some()), ("Request changes", Some("r"), true));
     let pushed = push_actions(&state, "i-1", Lang::Es).unwrap();
-    assert_eq!(pushed.iter().map(|a| (a.label.as_str(), a.text)).collect::<Vec<_>>(), [("Aprobar", false), ("Responder", true)],
-        "the lock screen approves or replies; changes need the comments only the app takes");
+    assert_eq!(pushed.iter().map(|a| (a.label.as_str(), a.text)).collect::<Vec<_>>(), [("Aprobar", false), ("Pedir cambios", true)],
+        "the lock screen approves or asks for changes in words; comments on its blocks need the app");
     let ios = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     assert!(card_of(&ios).actions.iter().all(|action| action.key.is_none()));
 }
@@ -4950,9 +4942,7 @@ fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("request_action", vec![("done", "Done"), ("cannot", "I can't do it")]),
         ("request_test", vec![("works", "Works"), ("fails", "Doesn't work")]),
-        ("request_input", vec![("provide", "Send the file"), ("skip", "I can't provide it")]),
-        ("request_input", vec![("provide", "Send the text"), ("skip", "I can't provide it")]),
-        ("request_input", vec![("provide", "Send the secret"), ("skip", "I can't provide it")]),
+        ("request_input", vec![("skip", "I can't provide it")]),
         ("problem", vec![("continue", "Continue without running it again"), ("retry", "Run it again from the start")]),
     ]
 }
@@ -5008,7 +4998,7 @@ fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
     let state = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps."));
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
-    let review: Vec<_> = card.actions.iter()
+    let review: Vec<_> = card.actions.iter().chain(&card.reply)
         .filter(|action| action.id.starts_with("changes:i-1@") || action.id.starts_with("accept:i-1@"))
         .map(|action| (action.label.as_str(), action.style, action.comments.is_some(), action.stamp.as_deref()))
         .collect();
@@ -5032,13 +5022,13 @@ fn a_permission_card_that_can_stop_asking_offers_allow_always_saying_exactly_wha
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
     assert_eq!(answers(card).iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str(), a.role)).collect::<Vec<_>>(),
-        [("allow", "Permitir", Some(Role::Risk)), ("always", "Permitir siempre", Some(Role::Neutral)),
-         ("deny", "Denegar", Some(Role::Neutral))]);
-    assert_eq!(answers(card)[1].description.as_deref(), Some("Permite esto ahora y en `alondra` deja de preguntar por:\n\
+        [("allow", "Permitir", Some(Role::Risk)), ("deny", "Denegar", Some(Role::Neutral)),
+         ("always", "Permitir siempre", Some(Role::Neutral))]);
+    assert_eq!(answers(card)[2].description.as_deref(), Some("Permite esto ahora y en `alondra` deja de preguntar por:\n\
         · `make mac-snapshots-record` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia\n\
         `tail` y `git status` ya no preguntaban. Puedes quitarlo en Ajustes › Permisos."));
     let view = render(&state, &LiveSnapshot::default(), Client::Mac, Lang::En, "card:i-1", "");
-    assert_eq!(answers(card_of(&view))[1].description.as_deref(), Some("Allows this now and stops asking in `alondra` for:\n\
+    assert_eq!(answers(card_of(&view))[2].description.as_deref(), Some("Allows this now and stops asking in `alondra` for:\n\
         · `make mac-snapshots-record` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n\
         `tail` and `git status` already didn't ask. You can remove it in Settings › Permissions."));
     let option = QuestionOption { id: Hold::ALWAYS.into(), label: "Allow always".into(), description: None };
@@ -5395,8 +5385,7 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
         assert!(waiting(&state, client), "{client:?}: the presented result waits for the user");
         let presented = render(&state, &live, client, Lang::Es, "card:d", "");
         let presented = card_of(&presented);
-        let reply = presented.actions.iter().chain(&presented.more).chain(&presented.reply)
-            .find(|action| action.id.starts_with("reply:")).expect("the delivery offers a reply").clone();
+        let reply = presented.reply.clone().filter(|action| action.id.starts_with("changes:")).expect("the delivery's field asks for changes");
         assert!(reply.resolves_card, "{client:?}: the client hides the delivery the moment the reply is sent");
     }
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback { merge_failure: None,
@@ -5780,20 +5769,11 @@ fn a_question_asked_together_says_where_it_stands_in_the_group_on_every_client()
 }
 
 #[test]
-fn change_answers_lists_what_was_answered_while_the_group_is_incomplete() {
-    let live = LiveSnapshot::default();
-    let more = |state: &DomainState, id: &str| render(state, &live, Client::Ios, Lang::En, &format!("card:{id}"), "").sections[0].items.iter()
-        .find_map(|item| match item { Item::Card(card) => Some(card.more.clone()), _ => None }).unwrap();
-    let change = |more: &[CardAction]| more.iter().find(|a| a.id.starts_with("retake:")).cloned();
-    assert!(change(&more(&group_state(&[]), "g-q1")).is_none(), "nothing answered, nothing to change");
+fn no_question_of_a_group_offers_to_change_an_answer_already_given() {
     let state = group_state(&[0, 2]);
-    let action = change(&more(&state, "g-q2")).expect("Change answers on the one still open");
-    assert_eq!((action.label.as_str(), action.presentation), ("Change answers", Presentation::Options));
-    assert_eq!(action.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
-        [("g-q1", "Which name? → Second"), ("g-q3", "Which channel? → Second")]);
-    let spanish = render(&state, &live, Client::Ios, Lang::Es, "card:g-q2", "").sections[0].items.iter()
-        .find_map(|item| match item { Item::Card(card) => card.more.iter().find(|a| a.id.starts_with("retake:")).map(|a| a.label.clone()), _ => None });
-    assert_eq!(spanish.as_deref(), Some("Cambiar respuestas"));
+    let card = render(&state, &LiveSnapshot::default(), Client::Mac, Lang::En, "card:g-q2", "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => Some(card.clone()), _ => None }).unwrap();
+    assert!(card.actions.iter().chain(&card.more).all(|action| !action.id.starts_with("retake:")), "{card:?}");
 }
 
 #[test]
@@ -6138,7 +6118,7 @@ fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_is_nev
             match card_or_notice(&view) {
                 Ok(card) => {
                     assert!(!accepted, "an accepted delivery is shown: {case}");
-                    let ids: Vec<&str> = card.actions.iter().chain(&card.more).map(|action| action.id.as_str()).collect();
+                    let ids: Vec<&str> = card.actions.iter().chain(&card.more).chain(&card.reply).map(|action| action.id.as_str()).collect();
                     if pending {
                         assert!(ids.iter().any(|id| id.starts_with("accept:")), "an open delivery has no accept: {case} {ids:?}");
                         assert!(ids.iter().any(|id| id.starts_with("changes:")), "an open delivery cannot be sent back: {case} {ids:?}");
@@ -6976,22 +6956,21 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     let question = "a98d034b-249e-4487-a89b-57de38c26372";
     assert_eq!(resolving(&state, &format!("card:{question}")), owned(&[
         (&format!("ans:{question}"), true), (&format!("ans:{question}"), true),
-        (&format!("clarify:{question}"), false), (&format!("reply:{question}"), true),
-    ]), "an option and a written answer both answer the question; asking to clarify keeps it");
+        (&format!("reply:{question}"), true),
+    ]), "an option and a written answer both answer the question");
     let notice = "f12d034b-249e-4487-a89b-57de38c26372";
     assert_eq!(resolving(&state, &format!("card:{notice}")), owned(&[
         (&format!("read:{notice}"), true), (&format!("reply:{notice}"), false),
     ]), "a notice leaves when read; a reply to it is a message to its node");
     assert_eq!(resolving(&state, "card:hf-weekly-2026-09-30"), owned(&[
-        ("merge:hf-weekly-2026-09-30", true), ("changes:github.com/example/repo#12", true),
-        ("merge:hf-weekly-2026-09-30", true), ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", false),
-    ]), "merging (either way), asking for changes and closing settle the delivery; the link opens GitHub; with no node to act on it, a reply leaves it in place");
+        ("merge:hf-weekly-2026-09-30", true), ("close_unmerged:hf-weekly-2026-09-30", true), ("", false),
+        ("changes:github.com/example/repo#12", true),
+    ]), "merging, asking for changes in the card's field and closing settle the delivery; the link opens GitHub");
 
     let mut group = group_state(&[0]);
     assert_eq!(resolving(&group, "card:g-q2"), owned(&[
-        ("ans:g-q2", true), ("ans:g-q2", true),
-        ("clarify:g-q2", false), ("retake:g-q2", false), ("reply:g-q2", true),
-    ]), "a question of a group is answered alone; reopening another one keeps this one");
+        ("ans:g-q2", true), ("ans:g-q2", true), ("reply:g-q2", true),
+    ]), "a question of a group is answered alone");
     group.holds.insert("g-q2".into(), crate::domain::Hold::Question);
     let held = resolving(&group, "card:g-q2");
     assert!(held.contains(&("reply:g-q2".to_owned(), true)), "words written on a held question answer it in its session: {held:?}");
@@ -7020,8 +6999,8 @@ fn document_question_card_for_the_terminal_matches_golden() {
     let view = render(&document_question_state(), &golden_live(), Client::Tui, Lang::Es,
         &format!("card:{DOCUMENT_QUESTION_CARD}"), "2026-09-30T10:00:00Z");
     let card = card_of(&view);
-    assert!(card.actions.iter().any(|action| action.id.starts_with("changes:")), "{:?}", card.actions);
-    assert!(card.more.iter().chain(&card.actions).any(|action| action.id.starts_with("clarify:")), "{card:?}");
+    assert!(card.reply.as_ref().is_some_and(|action| action.id.starts_with("changes:") && action.key.as_deref() == Some("r")), "{:?}", card.reply);
+    assert!(card.more.iter().chain(&card.actions).all(|action| !action.id.starts_with("clarify:")), "{card:?}");
     assert_golden("card-document-question-es-tui.json", &view,
         include_str!("../../../../fixtures/views/cards/card-document-question-es-tui.json"));
 }
@@ -7274,7 +7253,7 @@ fn a_result_that_proposes_a_plan_is_a_plan_card_with_its_report_as_a_document() 
     }
     let view = render(&state, &live, Client::Tui, Lang::Es, "card:result-1", "");
     let card = card_of(&view);
-    let labels: Vec<&str> = card.actions.iter().map(|action| action.label.as_str()).collect();
+    let labels: Vec<&str> = card.actions.iter().chain(&card.reply).map(|action| action.label.as_str()).collect();
     assert_eq!(labels, ["Aprobar", "Pedir cambios"]);
     assert!(card.actions[0].id.contains("implement"), "{}", card.actions[0].id);
     let text: String = view.sections.iter().filter(|section| section.id != "documents").map(|section| serde_json::to_string(section).unwrap()).collect();
@@ -7299,7 +7278,8 @@ fn a_report_alone_is_only_marked_seen() {
     let live = LiveSnapshot::default();
     for (lang, labels) in [(Lang::Es, ["Visto", "Pedir cambios"]), (Lang::En, ["Seen", "Request changes"])] {
         let view = render(&state, &live, Client::Tui, lang, "card:result-2", "");
-        let actual: Vec<&str> = card_of(&view).actions.iter().map(|action| action.label.as_str()).collect();
+        let card = card_of(&view);
+        let actual: Vec<&str> = card.actions.iter().chain(&card.reply).map(|action| action.label.as_str()).collect();
         assert_eq!(actual, labels);
     }
     for (client, lang, filename, expected) in [
@@ -8152,8 +8132,7 @@ fn the_merge_button_says_the_method_set_in_settings_and_merges_with_one_press() 
         assert_eq!((merge.label.as_str(), merge.option_id.as_deref()), ("Squash and merge", Some("squash")), "{client:?}");
         assert_eq!(merge.presentation, Presentation::Button, "{client:?}: no menu");
         assert!(merge.options.is_empty() && merge.confirm.is_none() && merge.description.is_none(), "{client:?}: {merge:?}");
-        assert_eq!(others, [("Merge with a merge commit".to_owned(), Some("merge".to_owned())), ("Merge with rebase".to_owned(), Some("rebase".to_owned()))],
-            "{client:?}: the other ways are under More");
+        assert!(others.is_empty(), "{client:?}: one way to merge, the one in Settings: {others:?}");
     }
     for (method, english, spanish) in [
         (MergeMethod::Merge, "Merge", "Hacer merge"),
@@ -8169,7 +8148,7 @@ fn the_merge_button_says_the_method_set_in_settings_and_merges_with_one_press() 
     let (merge, others) = merge_of(&state, Client::Ios, Lang::Es);
     assert_eq!((merge.label.as_str(), merge.option_id.as_deref()), ("Hacer merge", Some("merge")));
     assert_eq!(merge.description.as_deref(), Some("Este repositorio no permite squash: se hará con merge commit"));
-    assert_eq!(others, [("Hacer merge con rebase".to_owned(), Some("rebase".to_owned()))]);
+    assert!(others.is_empty(), "{others:?}");
     let english = merge_of(&state, Client::Mac, Lang::En).0;
     assert_eq!(english.description.as_deref(), Some("This repository does not allow squash: it merges with a merge commit"));
 }
@@ -9261,4 +9240,150 @@ fn codex_login_views_show_device_url_and_code_using_existing_contract_elements()
             assert_golden(&format!("accounts-device-code-{client_name}{suffix}.json"), &view, if lang == Lang::En { english } else { spanish });
         }
     }
+}
+
+/// Every class of card the fixtures hold, as the terminal and the Mac see it: 1-9 are only the
+/// card's own options, the main one on 1; each letter means the same on every card; «More» never
+/// holds a single action; no card offers to clarify it or to change answers, and «Request
+/// changes» is the card's field, not a button.
+#[test]
+fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_one_meaning() {
+    use crate::allow_always::AllowAlways;
+    use crate::domain::{CardKind, Hold, QuestionOption};
+    use action_id::{ActionId, Verb};
+    let mut permission = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
+    let held = permission.interactions.get_mut(&"i-1".into()).unwrap();
+    held.payload = InteractionPayload::Question { options: Hold::Permission.permission_offering(true, true), answer: None };
+    held.card.allow_always = Some(AllowAlways::Offered { repo: "alondra".into(), rules: vec!["make build".into()], quiet: vec![] });
+    held.card.allow_for_task = Some(crate::allow_for_task::AllowForTask::Exact { command: "make build".into(), cwd: "/repo".into() });
+    let mut provide = fixture();
+    let asked = provide.interactions.get_mut(&"i-1".into()).unwrap();
+    asked.payload = fixed_answers(&[("skip", "I can't provide it")]);
+    asked.card = spec(CardKind::Provide, "Send the API key", "The build signs with it");
+    let mut pace = fixture();
+    let mut over = pace.interactions.remove(&"i-1".into()).unwrap();
+    over.id = format!("{}2026-10-30", crate::usage::OVER_PACE_PREFIX).into();
+    over.author = Author::System;
+    over.system_card = Some(crate::domain::SystemCard::OverPace { day: "2026-10-30".into() });
+    over.payload = fixed_answers(&[(crate::usage::OVER_PACE_PAUSE_OPTION, "Pause until tomorrow"), (crate::usage::OVER_PACE_KEEP_OPTION, "Keep going")]);
+    over.card = spec(CardKind::Decide, "Usage is ahead of today's pace", "");
+    pace.interactions.insert(over.id.clone(), over);
+    let mut many = fixture();
+    let asked = many.interactions.get_mut(&"i-1".into()).unwrap();
+    asked.payload = InteractionPayload::Question {
+        options: (1..=6).map(|n| QuestionOption { id: format!("o{n}"), label: format!("Option {n}"), description: None }).collect(),
+        answer: None,
+    };
+    asked.card = spec(CardKind::Decide, "Pick one", "");
+    asked.card.recommended = Some("o3".into());
+    let states = [
+        fixture(), golden_fixture(), pr_fixture(), plan_question_fixture(), proposed_plan_fixture(), checklist_delivery_fixture(),
+        orchestrator_decide_fixture(), described_question_fixture(), documents_fixture(), group_state(&[0]),
+        held_fixture(Hold::Plan, spec(CardKind::Review, "Approve the plan", "")), permission, provide, pace, many,
+    ];
+    let mut meaning: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut problems = vec![];
+    for state in &states {
+        let domain = with_cards(state);
+        let index = crate::domain::ReadIndex::build(&domain);
+        let live = golden_live();
+        for client in [Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let context = RenderContext { domain: &domain, index: &index, live: &live, client, lang, transport: Transport::Loopback,
+                    cursor: "cursor-1", rendered_at: "" };
+                for item in inbox_items(&domain) {
+                    let card = card::from_item(&item, &context, true).unwrap();
+                    let at = format!("{} ({client:?}, {lang:?})", item.id);
+                    let hold = domain.holds.get(&item.id.strip_prefix("interaction:").unwrap_or(&item.id).into()).copied();
+                    let verb = |action: &CardAction| ActionId::parse(&action.id).ok().map(|id| id.verb);
+                    let extra = |action: &CardAction| matches!(action.link, Some(Link::Url { .. }) | Some(Link::Local { .. }))
+                        || verb(action) == Some(Verb::CloseUnmerged);
+                    if card.more.len() == 1 {
+                        problems.push(format!("{at}: «More» holds only {}", card.more[0].label));
+                    }
+                    for action in card.actions.iter().chain(&card.more).chain(&card.reply) {
+                        if matches!(verb(action), Some(Verb::Clarify | Verb::Retake)) {
+                            problems.push(format!("{at}: offers {}", action.label));
+                        }
+                    }
+                    if card.actions.iter().chain(&card.more).any(|action| verb(action) == Some(Verb::Changes)) {
+                        problems.push(format!("{at}: «Request changes» is a button"));
+                    }
+                    if card.actions.iter().chain(&card.more).filter(|action| verb(action) == Some(Verb::Merge)).count() > 1 {
+                        problems.push(format!("{at}: more than one way to merge"));
+                    }
+                    let field_first = card.reply.as_ref().is_some_and(|reply| reply.key.as_deref() == Some("1"));
+                    let mut next = if field_first { 2 } else { 1 };
+                    for action in card.actions.iter().chain(&card.more) {
+                        let key = action.key.clone().unwrap_or_default();
+                        match key.parse::<u32>() {
+                            Ok(n) if extra(action) => problems.push(format!("{at}: the extra {} takes number {n}", action.label)),
+                            Ok(n) if n != next => problems.push(format!("{at}: {} is {n}, expected {next}", action.label)),
+                            Ok(_) => next += 1,
+                            Err(_) if !extra(action) => problems.push(format!("{at}: the option {} has no number ({key:?})", action.label)),
+                            Err(_) => {
+                                let what = match (&action.link, verb(action)) {
+                                    (Some(Link::Url { .. }), _) => "open on GitHub",
+                                    (Some(Link::Local { .. }), _) => "local clone",
+                                    _ => "close without merging",
+                                };
+                                seen.insert(what);
+                                if let Some(before) = meaning.insert(key.clone(), what.into()).filter(|before| before != what) {
+                                    problems.push(format!("{at}: {key} is {what} here and {before} elsewhere"));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(reply) = &card.reply {
+                        let what = if verb(reply) == Some(Verb::Changes) { "request changes" } else { "write" };
+                        if verb(reply) == Some(Verb::Changes) {
+                            seen.insert("request changes");
+                            if reply.label != match lang { Lang::En => "Request changes", Lang::Es => "Pedir cambios" } {
+                                problems.push(format!("{at}: the field reads {}", reply.label));
+                            }
+                        }
+                        if !field_first && reply.key.as_deref() != Some("r") {
+                            problems.push(format!("{at}: the field ({what}) is on {:?}", reply.key));
+                        }
+                    }
+                    let first = card.actions.first();
+                    let main = card.actions.iter().chain(&card.more).filter(|action| action.role == Some(Role::Advance));
+                    for action in main {
+                        if action.key.as_deref() != Some("1") {
+                            problems.push(format!("{at}: the main {} is on {:?}", action.label, action.key));
+                        }
+                    }
+                    match item.card.kind {
+                        CardKind::Provide if hold.is_none()
+                            && card.reply.as_ref().is_some_and(|reply| verb(reply) == Some(Verb::Reply)) => {
+                            seen.insert("provide");
+                            if !field_first {
+                                problems.push(format!("{at}: the field of a Provide card is not on 1"));
+                            }
+                        }
+                        CardKind::Authorize if hold == Some(Hold::Permission) => {
+                            let options: Vec<&str> = card.actions.iter().filter_map(|action| action.option_id.as_deref()).collect();
+                            seen.insert("permission");
+                            if options != [Hold::ALLOW, Hold::FOR_TASK, Hold::DENY, Hold::ALWAYS] {
+                                problems.push(format!("{at}: a permission offers {options:?}"));
+                            }
+                        }
+                        _ => {}
+                    }
+                    if item.id.strip_prefix("interaction:").unwrap_or(&item.id).starts_with(crate::usage::OVER_PACE_PREFIX) {
+                        seen.insert("pace");
+                        if first.and_then(|action| action.option_id.as_deref()) != Some(crate::usage::OVER_PACE_KEEP_OPTION) {
+                            problems.push(format!("{at}: «Keep going» is not on 1"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+    assert_eq!(meaning, BTreeMap::from([("k".into(), "close without merging".into()), ("l".into(), "local clone".into()),
+        ("w".into(), "open on GitHub".into())]));
+    assert_eq!(seen, BTreeSet::from(["close without merging", "local clone", "open on GitHub", "pace", "permission", "provide", "request changes"]),
+        "every class of card was reached");
 }

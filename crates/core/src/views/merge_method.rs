@@ -1,5 +1,4 @@
-//! How this Mac merges PRs: the one-press button on a PR card, the other ways under "More", and
-//! the "PR merges" row in Settings.
+//! How this Mac merges PRs: the one-press button on a PR card and the "PR merges" row in Settings.
 
 use super::{
     Action, ActionOption, Icon, Input, Item, Lang, Presentation, RenderContext, Role, Style,
@@ -42,33 +41,20 @@ fn setting_description(method: MergeMethod, lang: Lang) -> &'static str {
     }
 }
 
-/// The merge button for `pr` and, for "More", one button per other way its repository allows.
-/// None while GitHub has not said how the repository merges.
-pub(super) fn pr_actions(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Option<(Action, Vec<Action>)> {
+/// The merge button for `pr`, with the way its repository allows. None while GitHub has not said
+/// how the repository merges.
+pub(super) fn pr_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let preferred = context.index.merge_method();
     let method = MergeMethod::for_pr(preferred, &pr.allowed_methods)?;
-    let press = |method: MergeMethod, label: String| {
-        let mut action = super::card::button(id.clone(), &label, Role::Advance);
-        action.option_id = Some(method.id().into());
-        action.stamp = Some(t!(lang, "Merging…", "Haciendo merge…").into());
-        action
-    };
-    let mut merge = press(method, button_label(method, lang).into());
+    let mut merge = super::card::button(id, button_label(method, lang), Role::Advance);
+    merge.option_id = Some(method.id().into());
+    merge.stamp = Some(t!(lang, "Merging…", "Haciendo merge…").into());
     if method != preferred {
         merge.description = Some(tf!(lang, "This repository does not allow {preferred}: it merges with {method}",
             "Este repositorio no permite {preferred}: se hará con {method}", preferred = noun(preferred, lang), method = noun(method, lang)));
     }
-    let others = MergeMethod::ALL.into_iter()
-        .filter(|other| *other != method && pr.allowed_methods.contains(other))
-        .map(|other| {
-            let mut action = press(other, tf!(lang, "Merge with {method}", "Hacer merge con {method}", method = noun(other, lang)));
-            action.role = Some(Role::Neutral);
-            action.style = Style::Secondary;
-            action
-        })
-        .collect();
-    Some((merge, others))
+    Some(merge)
 }
 
 /// "PR merges": the way this Mac merges every PR, picked once in Settings.

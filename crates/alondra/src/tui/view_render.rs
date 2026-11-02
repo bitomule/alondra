@@ -440,7 +440,7 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-pub const BUTTONS: usize = 3;
+pub const BUTTONS: usize = 9;
 
 /// The card's own field: the one place on it where the user writes.
 pub fn card_reply(view: &View) -> Option<Action> {

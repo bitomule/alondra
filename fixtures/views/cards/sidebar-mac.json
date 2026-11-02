@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v5aa9e639151bcaf5",
+  "version": "vaa794eb6edf74927",
   "cursor": "cursor-1",
   "status": {
     "version": "v6aa5809268a89138",
@@ -261,7 +261,7 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v6f9649afdad0f709",
+      "version": "vd4c43e61b1c02720",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
@@ -352,52 +352,6 @@
                 "key": "r",
                 "resolves_card": true
               },
-              "more": [
-                {
-                  "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
-                  "label": "Request clarification",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "presentation": "options",
-                  "options": [
-                    {
-                      "id": "unclear",
-                      "label": "It is unclear",
-                      "style": "secondary",
-                      "input": {
-                        "kind": "none"
-                      }
-                    },
-                    {
-                      "id": "contradicts",
-                      "label": "It contradicts something",
-                      "style": "secondary",
-                      "input": {
-                        "kind": "none"
-                      }
-                    },
-                    {
-                      "id": "missing_context",
-                      "label": "It lacks context",
-                      "style": "secondary",
-                      "input": {
-                        "kind": "none"
-                      }
-                    }
-                  ],
-                  "input": {
-                    "kind": "text",
-                    "placeholder": "What should it clarify?",
-                    "required": false,
-                    "multiline": true
-                  },
-                  "attachments": false,
-                  "enabled": true,
-                  "stamp": "Clarification requested",
-                  "key": "c",
-                  "resolves_card": false
-                }
-              ],
               "link": {
                 "kind": "view",
                 "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
@@ -694,7 +648,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "v4d1792211bc2d16a",
+      "version": "v362eacf42fb95ea3",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
@@ -768,40 +722,31 @@
                 "summary": "4 files · +120 −30"
               },
               "reply": {
-                "id": "reply:hf-weekly-2026-09-30@1",
-                "label": "Reply",
+                "id": "changes:github.com/example/repo#12@6~abcdef12",
+                "label": "Request changes",
                 "style": "secondary",
                 "role": "neutral",
                 "presentation": "button",
                 "input": {
                   "kind": "text",
-                  "placeholder": "Reply to Restore the native review experience…",
+                  "placeholder": "Describe the changes",
                   "required": true,
                   "multiline": true
                 },
                 "attachments": true,
+                "comments": {
+                  "kind": "diff_lines"
+                },
                 "enabled": true,
-                "stamp": "Sent",
+                "stamp": "Changes requested",
                 "key": "r",
-                "resolves_card": false
+                "link": {
+                  "kind": "view",
+                  "key": "pull_request:github.com/example/repo#12"
+                },
+                "resolves_card": true
               },
               "more": [
-                {
-                  "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-                  "label": "Merge with a merge commit",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "option_id": "merge",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": false,
-                  "enabled": true,
-                  "stamp": "Merging…",
-                  "key": "3",
-                  "resolves_card": true
-                },
                 {
                   "id": "close_unmerged:hf-weekly-2026-09-30@1",
                   "label": "Close without merging",
@@ -819,7 +764,7 @@
                   },
                   "enabled": true,
                   "stamp": "Closing…",
-                  "key": "4",
+                  "key": "k",
                   "resolves_card": true
                 },
                 {
@@ -890,31 +835,6 @@
                   "enabled": true,
                   "stamp": "Merging…",
                   "key": "1",
-                  "resolves_card": true
-                },
-                {
-                  "id": "changes:github.com/example/repo#12@6~abcdef12",
-                  "label": "Request changes",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "text",
-                    "placeholder": "Describe the changes",
-                    "required": true,
-                    "multiline": true
-                  },
-                  "attachments": true,
-                  "comments": {
-                    "kind": "diff_lines"
-                  },
-                  "enabled": true,
-                  "stamp": "Changes requested",
-                  "key": "2",
-                  "link": {
-                    "kind": "view",
-                    "key": "pull_request:github.com/example/repo#12"
-                  },
                   "resolves_card": true
                 }
               ]

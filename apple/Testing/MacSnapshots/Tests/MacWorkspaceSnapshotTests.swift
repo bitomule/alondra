@@ -349,7 +349,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             let reply = try ContractCodec.decode(ActionResponse.self, from: Data(try XCTUnwrap(Self.changedReply[spanish]).utf8))
             guard case .ask(let changed) = OutcomeStyle(reply) else { return XCTFail("a changed answer asks") }
             let store = try pullRequest(spanish: spanish) { actions, card in
-                actions.action = card.actions.first { $0.id?.hasPrefix("changes:") == true }
+                actions.action = card.reply
                 actions.changed = changed
             }
             await assertAlert(spanish: spanish) { MacViewActionSheet(presentation: store) }
@@ -555,19 +555,6 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 2000), spanish: spanish, testName: testName) {
             MacServiceDetail(presentation: store).environment(\.storedFiles, files)
         }
-    }
-
-    func test_card_clarificationSheet() throws {
-        let store = try presentation(detail: "card-question-mac", edit: { state in
-            let card = state.detailDocument?.sections.flatMap(\.items).compactMap { item -> Card? in
-                if case let .card(card) = item { card } else { nil }
-            }.first
-            state.actionFeature.action = card?.more.first { $0.asksForClarification }
-            state.actionFeature.selectedOptionID = "missing_context"
-            state.actionFeature.text = "Which build do you mean?"
-            state.actionPresented = true
-        })
-        assertWindow(size: CGSize(width: 460, height: 460)) { MacViewActionSheet(presentation: store) }
     }
 
     func test_card_permissionAllowedInTask() throws {

@@ -152,12 +152,8 @@ import Testing
         #expect(deliveryCard.need == "Review the beta candidate")
     }
 
-    @Test func pullRequestOpensDiffAndContextNoteIsOptional() async throws {
+    @Test func pullRequestOpensDiffAndItsCardRequestsChangesInItsField() async throws {
         let client = ViewsClient.demo()
-        guard case let .document(home) = try await client.load(.home, nil) else {
-            Issue.record("The demo home must load")
-            return
-        }
         let prID = "github.com/example/repo#12"
         guard case let .document(pr) = try await client.load(.pullRequest(prID), nil) else {
             Issue.record("Missing demo pull request")
@@ -182,22 +178,10 @@ import Testing
             Issue.record("Missing demo PR home card")
             return
         }
-        let review = try #require(prCard.actions.first { $0.label == "Request changes" })
+        let review = try #require(prCard.reply)
+        #expect(review.label == "Request changes")
         #expect(review.comments?.kind == .diffLines)
         #expect(review.enabled)
         #expect(review.link == .view(key: "pull_request:\(prID)"))
-
-        let ids = try #require(home.sections.first?.cardIds)
-        guard case let .document(cardView) = try await client.load(.card(ids[0]), nil),
-              case let .card(card) = try #require(cardView.sections.flatMap(\.items).first) else {
-            Issue.record("Missing demo question card")
-            return
-        }
-        let context = try #require(card.more.first { $0.id?.hasPrefix("clarify:") == true })
-        guard case let .text(_, required, _, _) = context.input else {
-            Issue.record("The clarification must retain its optional note")
-            return
-        }
-        #expect(!required)
     }
 }

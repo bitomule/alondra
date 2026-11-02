@@ -3,7 +3,7 @@
 
 use super::{
     CardAction,
-    Action, ActionOption, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
+    Action, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
     Checks, Client, CommentSpec, ContentRef, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
     Label, Lang, Link, LocalLink, Markdown, Notice, Presentation, RenderContext, Role, Row, SETTLED_VIEW, Settled, Stamp, Style,
     TimeFormat, Tone, VIEWS_PROTOCOL, View,
@@ -11,8 +11,8 @@ use super::{
     summary,
     text::{t, tf},
 };
-use crate::domain::{InboxCard, SystemCard, 
-    AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
+use crate::domain::{InboxCard, SystemCard,
+    AvailableAction, Author, CardKind, CardSpec, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
     included_files, without_included_files,
@@ -560,24 +560,37 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         card.meta = Some(pr_meta(pr, context));
     }
     let (mut visible, mut more) = actions(item, interaction, context)?;
-    more.extend(extra_actions(item, interaction, context));
+    let changes = visible.iter().position(|action| ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Changes))
+        .map(|at| visible.remove(at))
+        .filter(|changes| changes.enabled);
+    more.extend(extra_actions(interaction, context));
     visible.retain(|action| action.enabled);
     more.retain(|action| action.enabled);
     if visible.len() > VISIBLE_ACTIONS {
         let rest = visible.split_off(VISIBLE_ACTIONS);
         more.splice(0..0, rest);
     }
-    if context.client != Client::Ios {
-        for (index, action) in visible.iter_mut().enumerate() {
-            action.key = Some((index + 1).to_string());
+    if more.len() == 1 {
+        visible.append(&mut more);
+    }
+    let mut reply = match changes {
+        Some(mut changes) => {
+            changes.key = (context.client != Client::Ios).then(|| "r".into());
+            changes.enabled = interaction.is_some_and(|interaction| !interaction.withdrawn);
+            Some(changes)
         }
-        let mut next = visible.len() + 1;
-        for action in more.iter_mut().filter(|action| action.key.is_none()) {
-            if next > 9 {
-                break;
-            }
-            action.key = Some(next.to_string());
-            next += 1;
+        None => reply_action(item, interaction, context),
+    };
+    if context.client != Client::Ios {
+        let held = interaction.and_then(|interaction| context.domain.holds.get(&interaction.id)).is_some_and(|hold| *hold != Hold::Question);
+        let field_first = item.card.kind == CardKind::Provide && !held
+            && reply.as_ref().is_some_and(|reply| ActionId::parse(&reply.id).is_ok_and(|id| id.verb == Verb::Reply));
+        if field_first && let Some(reply) = reply.as_mut() {
+            reply.key = Some("1".into());
+        }
+        let options = visible.iter_mut().chain(more.iter_mut()).filter(|action| action.key.is_none());
+        for (action, n) in options.zip((if field_first { 2 } else { 1 })..=9) {
+            action.key = Some(n.to_string());
         }
     }
     let worded = interaction.map(|interaction| claudes_worded_options(interaction, context.domain)).unwrap_or_default();
@@ -585,7 +598,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         action.resolves_card = ActionId::parse(&action.id).is_ok_and(|id| super::resolves_card(context.domain, &id));
         painted(action, &worded)
     };
-    card.reply = reply_action(item, interaction, context).map(settles).and_then(CardAction::usable);
+    card.reply = reply.map(settles).and_then(CardAction::usable);
     card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
     card.more = more.into_iter().map(settles).filter_map(CardAction::usable).collect();
     Ok(card)
@@ -1430,9 +1443,6 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         ("works", "Works") => (t!(lang, "Works", "Funciona"), None),
         ("fails", "Doesn't work") => (t!(lang, "Doesn't work", "No funciona"), None),
         ("skip", "I can't provide it") => (t!(lang, "I can't provide it", "No puedo dárselo"), None),
-        ("provide", "Send the file") => (t!(lang, "Send the file", "Enviar el archivo"), None),
-        ("provide", "Send the text") => (t!(lang, "Send the text", "Enviar el texto"), None),
-        ("provide", "Send the secret") => (t!(lang, "Send the secret", "Enviar el secreto"), None),
         (crate::orchestrator_batch::BATCH_CONTINUE, crate::orchestrator_batch::BATCH_CONTINUE_LABEL) => (
             t!(lang, "Continue without running it again", "Seguir sin repetirlo"),
             Some(t!(lang,
@@ -1475,6 +1485,17 @@ fn answer_actions(
             ordered.insert(0, first);
         }
     }
+    if hold == Some(Hold::Permission)
+        && let Some(at) = ordered.iter().position(|option| option.id == Hold::ALWAYS)
+    {
+        let always = ordered.remove(at);
+        ordered.push(always);
+    }
+    let pace = interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::OverPace { .. }));
+    if pace && let Some(at) = ordered.iter().position(|option| option.id == crate::usage::OVER_PACE_KEEP_OPTION) {
+        let keep = ordered.remove(at);
+        ordered.insert(0, keep);
+    }
     for (index, option) in ordered.into_iter().enumerate() {
         let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) else { continue };
         let recommended = interaction.card.recommended.as_deref() == Some(option.id.as_str());
@@ -1486,6 +1507,7 @@ fn answer_actions(
         };
         let role = match hold {
             Some(hold) if hold.approves(&option.id) => if kind == CardKind::Authorize { Role::Risk } else { Role::Advance },
+            Some(Hold::Question) | None if kind == CardKind::Provide => Role::Neutral,
             Some(Hold::Question) | None if kind == CardKind::Decide => if recommended { Role::Advance } else { Role::Neutral },
             Some(Hold::Question) | None => if index == 0 { Role::Advance } else { Role::Neutral },
             Some(_) => Role::Neutral,
@@ -1630,10 +1652,9 @@ fn delivery_actions(
     } else if let Some(available) = find("authorize_merge").filter(|available| available.enabled) {
         let head = available.expected_head.as_ref().map(|head| merge_extra(head, &interaction.id.0));
         if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head)
-            && let Some((merge, others)) = super::merge_method::pr_actions(id.to_string(), pr, context)
+            && let Some(merge) = super::merge_method::pr_action(id.to_string(), pr, context)
         {
             visible.push(merge);
-            more.extend(others);
         }
     } else if find("authorize_merge").is_none() {
         visible.extend(accept(Role::Advance, accept_label));
@@ -1658,6 +1679,7 @@ fn close_unmerged_action(pr: &PullRequest, subject: &str, revision: u64, context
     let id = action_id(Verb::CloseUnmerged, subject, revision, None)?;
     let mut action = button(id.to_string(), t!(lang, "Close without merging", "Cerrar sin hacer merge"), Role::Risk);
     action.stamp = Some(t!(lang, "Closing…", "Cerrando…").into());
+    action.key = (context.client != Client::Ios).then(|| "k".into());
     action.confirm = Some(super::Confirm {
         title: tf!(lang, "Close PR #{number} without merging?", "¿Cerrar la PR #{number} sin hacer merge?", number = pr.number),
         message: t!(lang, "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
@@ -1667,46 +1689,9 @@ fn close_unmerged_action(pr: &PullRequest, subject: &str, revision: u64, context
     Some(action)
 }
 
-/// Always behind "More": open the PR, ask the author to say it again, and the terminal's local
-/// shortcuts.
-/// "Change answers": while the rest of the questions asked together are still open, an answer
-/// already given can be taken back from any card still waiting; its card comes back to the stack.
-fn change_answers(interaction: &Interaction, context: &RenderContext<'_>) -> Option<Action> {
-    let lang = context.lang;
-    let domain = context.domain;
-    interaction.card.group.as_ref()?;
-    if !domain.open(interaction) || context.index.group_complete(domain, interaction) {
-        return None;
-    }
-    let answered: Vec<ActionOption> = context.index.group_members(domain, interaction).into_iter().filter_map(|member| {
-        let InteractionPayload::Question { options, answer: Some(answer), .. } = &member.payload else { return None };
-        let said = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.clone())
-            .or_else(|| answer.inputs.values().find_map(|value| match value {
-                crate::domain::InputValue::Text(text) if !text.trim().is_empty() => Some(clip(text, 40)),
-                _ => None,
-            }))?;
-        Some(ActionOption {
-            id: member.id.0.clone(),
-            label: format!("{} → {}", clip(&member.card.need, 50), said),
-            description: None,
-            style: Style::Secondary,
-            input: Input::None,
-            key: None,
-        })
-    }).collect();
-    if answered.is_empty() {
-        return None;
-    }
-    let id = action_id(Verb::Retake, &interaction.id.0, interaction.revision, None)?;
-    let mut action = button(id.to_string(), t!(lang, "Change answers", "Cambiar respuestas"), Role::Neutral);
-    action.presentation = Presentation::Options;
-    action.options = answered;
-    action.stamp = Some(t!(lang, "Question reopened", "Pregunta reabierta").into());
-    action.key = (context.client != Client::Ios).then(|| "x".into());
-    Some(action)
-}
-
-fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Vec<Action> {
+/// The ways out of the card besides its options: open the PR on GitHub and, in the terminal on
+/// this Mac, review its local clone.
+fn extra_actions(interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Vec<Action> {
     let lang = context.lang;
     let mut out = vec![];
     let Some(interaction) = interaction else { return out };
@@ -1719,35 +1704,11 @@ fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &
         open.key = (context.client != Client::Ios).then(|| "w".into());
         out.push(open);
     }
-    if let Some(available) = item.available_actions.iter().find(|action| action.kind == "request_clarification") {
-        if let Some(id) = action_id(Verb::Clarify, &interaction.id.0, interaction.revision, None) {
-            let option = |reason: ClarificationReason, label: &str| ActionOption {
-                id: super::action_id::clarification_name(reason).into(),
-                label: label.into(),
-                description: None,
-                style: Style::Secondary,
-                input: Input::None,
-                key: None,
-            };
-            let mut ask = button(id.to_string(), t!(lang, "Request clarification", "Pedir aclaración"), Role::Neutral);
-            ask.presentation = Presentation::Options;
-            ask.options = vec![
-                option(ClarificationReason::Unclear, t!(lang, "It is unclear", "No se entiende")),
-                option(ClarificationReason::Contradicts, t!(lang, "It contradicts something", "Se contradice")),
-                option(ClarificationReason::MissingContext, t!(lang, "It lacks context", "Le falta contexto")),
-            ];
-            ask.input = text_input(t!(lang, "What should it clarify?", "¿Qué debe aclarar?"), false);
-            ask.stamp = Some(t!(lang, "Clarification requested", "Aclaración solicitada").into());
-            ask.key = (context.client != Client::Ios).then(|| "c".into());
-            out.push(with_availability(ask, Some(available), lang));
-        }
-    }
-    out.extend(change_answers(interaction, context));
     if context.client == Client::Tui && context.transport == super::Transport::Loopback {
         if let Some(pr) = pr {
             out.push(local_action(
                 t!(lang, "Review local clone", "Revisar copia local"),
-                "d",
+                "l",
                 LocalLink::ReviewClone { repo: pr.repository.clone(), branch: pr.head.clone(), pr: pr.number, pr_id: pr.id.0.clone() },
             ));
         }

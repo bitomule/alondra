@@ -385,7 +385,7 @@ final class TriageSnapshotTests: XCTestCase {
             let reply = try ContractCodec.decode(ActionResponse.self, from: Data(try XCTUnwrap(Self.changedReply[spanish]).utf8))
             guard case .ask(let changed) = OutcomeStyle(reply) else { return XCTFail("a changed answer asks") }
             let store = try pullRequest(spanish: spanish) { actions, card in
-                actions.action = card.actions.first { $0.id?.hasPrefix("changes:") == true }
+                actions.action = card.reply
                 actions.changed = changed
             }
             await assertPresented(language: language(spanish), named: spanish ? "light_es" : "light") { Harness(store: store) }
@@ -477,25 +477,6 @@ final class TriageSnapshotTests: XCTestCase {
                 "Tu Mac no lo confirmó. Puede que llegara: vuelve a intentarlo y no se hará dos veces."
         }
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
-    }
-
-    // MARK: Asking the node to clarify
-
-    private func sheet(_ composition: TriageCardFeature.Composition) -> some View {
-        CompositionSheet(
-            composition: composition, tint: Palette.dawn,
-            reasonChanged: { _ in }, noteChanged: { _ in }, cancel: {}, send: {}
-        )
-        .background(Palette.night)
-    }
-
-    func test_clarifySheet() throws {
-        var composition = TriageCardFeature.Composition(action: try XCTUnwrap(
-            try Fixtures.card(Fixtures.questionID).firstCard?.more.first { $0.id?.hasPrefix("clarify:") == true }
-        ))
-        composition.reason = "contradicts"
-        composition.note = "The two options say opposite things"
-        assertScreenVariants(inNavigationStack: false) { sheet(composition) }
     }
 
     // MARK: A queue

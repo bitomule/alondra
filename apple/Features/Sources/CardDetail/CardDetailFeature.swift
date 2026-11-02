@@ -255,8 +255,9 @@ public struct CardDetailFeature: Sendable {
                 state.reply = text
                 return .none
             case .actionTapped(let action):
-                if case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
-                guard action.link == nil, state.isSendable(action) else { return .none }
+                let field = action == state.subject?.replyAction
+                if !field, case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
+                guard field || action.link == nil, state.isSendable(action) else { return .none }
                 if action.comments == nil, action != state.subject?.replyAction, TriageCardFeature.asksForWords(action) {
                     state.composition = TriageCardFeature.Composition(action: action)
                     return .none

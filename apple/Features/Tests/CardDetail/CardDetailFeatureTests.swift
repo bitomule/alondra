@@ -95,7 +95,7 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(subject.card?.kind, .decide)
         XCTAssertEqual(subject.sections.map(\.id), ["content", "context"])
         XCTAssertEqual(labels(store), ["★ Ship the concise copy", "Keep the warmer copy"])
-        XCTAssertEqual(subject.menu.map(\.label), ["Request clarification"])
+        XCTAssertEqual(subject.menu, [])
         XCTAssertEqual(subject.replyAction?.id, "reply:\(Fixtures.questionID)@1")
     }
 
@@ -158,7 +158,7 @@ final class CardDetailFeatureTests: XCTestCase {
             if case .card(let card) = item { card } else { nil }
         }.first
         XCTAssertEqual(store.state.subject?.allActions.map(\.label),
-                       ((onTheCard?.actions.prefix(3).map(\.label) ?? []) + (onTheCard?.more.map(\.label) ?? []) + ["Reply"]))
+                       ((onTheCard?.actions.prefix(3).map(\.label) ?? []) + (onTheCard?.more.map(\.label) ?? []) + ["Request changes"]))
     }
 
     // MARK: Block comments
@@ -251,7 +251,7 @@ final class CardDetailFeatureTests: XCTestCase {
             await store.send(.composingChanged("note on \(block.plainText)"))
             await store.send(.commentSaved)
         }
-        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+        let changes = try XCTUnwrap(store.state.subject?.replyAction)
 
         await store.send(.actionTapped(changes))
         await store.skipReceivedActions()
@@ -268,7 +268,8 @@ final class CardDetailFeatureTests: XCTestCase {
         let feed = FeedStub()
         let dismissed = LockIsolated(0)
         let store = try await planStore(feed: feed, dismissed: dismissed)
-        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+        let changes = try XCTUnwrap(store.state.subject?.replyAction)
+        XCTAssertEqual(changes.id?.hasPrefix("changes:"), true, "the plan's field requests changes")
         XCTAssertFalse(store.state.isSendable(changes))
         await store.send(.actionTapped(changes))
         XCTAssertEqual(feed.requests, [], "nothing to send yet")
@@ -298,7 +299,7 @@ final class CardDetailFeatureTests: XCTestCase {
     func testAReviewSendsExactlyEveryCommentAsItIsWhenSentAndOpensEmptyAfterwards() async throws {
         let feed = FeedStub()
         let store = try await planStore(feed: feed)
-        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+        let changes = try XCTUnwrap(store.state.subject?.replyAction)
         let blocks = store.state.blocks.filter(\.isCommentable)
         XCTAssertGreaterThanOrEqual(blocks.count, 2)
         for block in blocks {
@@ -335,7 +336,7 @@ final class CardDetailFeatureTests: XCTestCase {
     func testBlockCommentsAloneSatisfyAChangeRequestThatRequiresText() async throws {
         let feed = FeedStub()
         let store = try await planStore(feed: feed)
-        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+        let changes = try XCTUnwrap(store.state.subject?.replyAction)
         guard case .text(_, let required, _, _) = changes.input else { return XCTFail("the server asks for text") }
         XCTAssertTrue(required)
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
@@ -383,7 +384,7 @@ final class CardDetailFeatureTests: XCTestCase {
         await store.send(.blockTapped(anchor: block.anchor, quote: block.plainText))
         await store.send(.composingChanged("keep me"))
         await store.send(.commentSaved)
-        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+        let changes = try XCTUnwrap(store.state.subject?.replyAction)
 
         await store.send(.actionTapped(changes))
         await store.receive(\.actions.sent)
@@ -458,26 +459,17 @@ final class CardDetailFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testRequestingClarificationFromTheDetailAsksForTheReasonFirst() async throws {
+    func testRequestChangesInAPullRequestsFieldSendsItsWordsInsteadOfOpeningThePullRequest() async throws {
         let feed = FeedStub()
-        let store = store(try Fixtures.card(Fixtures.questionID), feed: feed)
-        let clarify = try XCTUnwrap(store.state.subject?.menu.first { $0.id?.hasPrefix("clarify:") == true })
+        let store = store(try Fixtures.card(Fixtures.pullRequestID), feed: feed)
+        let field = try XCTUnwrap(store.state.subject?.replyAction)
+        XCTAssertEqual(field.id?.hasPrefix("changes:"), true, "the PR card's field requests changes")
 
-        await store.send(.actionTapped(clarify))
-        XCTAssertEqual(store.state.composition?.action, clarify)
-        XCTAssertEqual(feed.requests, [])
-        await store.send(.compositionConfirmed)
-        XCTAssertEqual(feed.requests, [], "no reason, nothing sent")
-        await store.send(.reasonChanged("unclear"))
-        await store.send(.noteChanged("Which copy ships first?"))
-        await store.send(.compositionConfirmed)
+        await store.send(.replyChanged("Rename the flag"))
+        await store.send(.actionTapped(field))
         await store.skipReceivedActions()
-
-        let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.actionId, clarify.id)
-        XCTAssertEqual(request.optionId, "unclear")
-        XCTAssertEqual(request.input.text, "Which copy ships first?")
-        XCTAssertNil(store.state.composition)
+        XCTAssertEqual(feed.requests.first?.actionId, field.id)
+        XCTAssertEqual(feed.requests.first?.input.text, "Rename the flag")
     }
 
     @MainActor

@@ -1133,7 +1133,7 @@ mod tests {
                 json!([{"option": "allow", "label": "Allow"}, {"option": "deny", "label": "Deny"},
                     {"label": "Reply", "text": true, "placeholder": "Deny it with a reason…"}])),
             (Hold::Plan, plan, "active",
-                json!([{"label": "Approve"}, {"label": "Reply", "text": true, "placeholder": "Write what to change…"}])),
+                json!([{"label": "Approve"}, {"label": "Request changes", "text": true, "placeholder": "Describe the changes"}])),
         ] {
             let mut state = DomainState::new("epoch-1");
             let id = InteractionId::from("hold-1");

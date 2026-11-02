@@ -80,7 +80,9 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
     ));
     if let Some(item) = super::card::item_for_revision(context, &revision.id) {
         let card = super::card::from_item(&item, context, true)?;
-        let actions: Vec<super::Action> = card.actions.into_iter().chain(card.more.into_iter().filter(|action| action.link.is_none())).map(Into::into).collect();
+        let changes = card.reply.filter(|action| action.comments.is_some());
+        let actions: Vec<super::Action> = card.actions.into_iter().chain(changes)
+            .chain(card.more.into_iter().filter(|action| action.link.is_none())).map(Into::into).collect();
         if !actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })])); }
     }
     Ok(view)

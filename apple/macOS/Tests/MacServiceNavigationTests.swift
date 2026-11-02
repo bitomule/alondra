@@ -486,6 +486,34 @@ struct MacAnsweringTests {
     }
 
     @Test
+    func requestChangesInTheCardsFieldOpensTheSheetWithItsWordsToAddBlockComments() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let changes = try decodeAction(#"{"id":"changes:a@1","label":"Request changes","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"comments":{"kind":"blocks"},"enabled":true,"resolves_card":true}"#)
+        await store.send(.sendReply(changes, text: "Split the second step"))
+        await store.skipReceivedActions()
+        #expect(store.state.actionPresented, "the sheet holds the comments on the blocks")
+        #expect(store.state.actionFeature.text == "Split the second step")
+        #expect(sent.value.isEmpty, "nothing goes until the sheet sends it")
+    }
+
+    @Test
+    func requestChangesOnAPRCarriesTheDiffComments() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { _ in try response("applied") }
+        await store.send(.diffCommentsChanged(["f.swift:3": ActionComment(anchor: "f.swift:3", text: "Rename it")]))
+        let changes = try decodeAction(#"{"id":"changes:a@1","label":"Request changes","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"comments":{"kind":"diff_lines"},"enabled":true,"resolves_card":true}"#)
+        await store.send(.sendReply(changes, text: ""))
+        await store.skipReceivedActions()
+        #expect(store.state.actionPresented)
+        #expect(store.state.actionFeature.comments.map(\.text) == ["Rename it"])
+    }
+
+    @Test
     func aReplyTheServerSaysAnswersTheQuestionTakesTheCardOutAtOnce() async throws {
         let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
         store.dependencies.viewsClient.perform = { _ in try response("applied") }

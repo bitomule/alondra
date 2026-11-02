@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v88e03fad0784a263",
+  "version": "vf72a94a9fe86d4bd",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -94,51 +94,6 @@
             "stamp": "You answered",
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Request clarification",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "It is unclear",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "It contradicts something",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "It lacks context",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "What should it clarify?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Clarification requested",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:a98d034b-249e-4487-a89b-57de38c26372"

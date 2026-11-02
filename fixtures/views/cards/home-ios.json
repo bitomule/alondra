@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v6640bf90d5a17cbd",
+  "version": "v8252626de3d26bd9",
   "cursor": "cursor-1",
   "status": {
     "version": "vf84c4996f0984c30",
@@ -88,7 +88,7 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v88e03fad0784a263",
+      "version": "vf72a94a9fe86d4bd",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
@@ -178,51 +178,6 @@
                 "stamp": "You answered",
                 "resolves_card": true
               },
-              "more": [
-                {
-                  "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
-                  "label": "Request clarification",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "presentation": "options",
-                  "options": [
-                    {
-                      "id": "unclear",
-                      "label": "It is unclear",
-                      "style": "secondary",
-                      "input": {
-                        "kind": "none"
-                      }
-                    },
-                    {
-                      "id": "contradicts",
-                      "label": "It contradicts something",
-                      "style": "secondary",
-                      "input": {
-                        "kind": "none"
-                      }
-                    },
-                    {
-                      "id": "missing_context",
-                      "label": "It lacks context",
-                      "style": "secondary",
-                      "input": {
-                        "kind": "none"
-                      }
-                    }
-                  ],
-                  "input": {
-                    "kind": "text",
-                    "placeholder": "What should it clarify?",
-                    "required": false,
-                    "multiline": true
-                  },
-                  "attachments": false,
-                  "enabled": true,
-                  "stamp": "Clarification requested",
-                  "resolves_card": false
-                }
-              ],
               "link": {
                 "kind": "view",
                 "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
@@ -514,7 +469,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v9f3ed303a554fe25",
+      "version": "v72ba53f115a4d45f",
       "cursor": "cursor-1",
       "title": "Add the compact schedule editor",
       "status": {
@@ -588,38 +543,30 @@
                 "summary": "4 files · +120 −30"
               },
               "reply": {
-                "id": "reply:hf-weekly-2026-09-30@1",
-                "label": "Reply",
+                "id": "changes:github.com/example/repo#12@6~abcdef12",
+                "label": "Request changes",
                 "style": "secondary",
                 "role": "neutral",
                 "presentation": "button",
                 "input": {
                   "kind": "text",
-                  "placeholder": "Reply to Restore the native review experience…",
+                  "placeholder": "Describe the changes",
                   "required": true,
                   "multiline": true
                 },
                 "attachments": true,
+                "comments": {
+                  "kind": "diff_lines"
+                },
                 "enabled": true,
-                "stamp": "Sent",
-                "resolves_card": false
+                "stamp": "Changes requested",
+                "link": {
+                  "kind": "view",
+                  "key": "pull_request:github.com/example/repo#12"
+                },
+                "resolves_card": true
               },
               "more": [
-                {
-                  "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-                  "label": "Merge with a merge commit",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "option_id": "merge",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": false,
-                  "enabled": true,
-                  "stamp": "Merging…",
-                  "resolves_card": true
-                },
                 {
                   "id": "close_unmerged:hf-weekly-2026-09-30@1",
                   "label": "Close without merging",
@@ -705,30 +652,6 @@
                   "attachments": false,
                   "enabled": true,
                   "stamp": "Merging…",
-                  "resolves_card": true
-                },
-                {
-                  "id": "changes:github.com/example/repo#12@6~abcdef12",
-                  "label": "Request changes",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "text",
-                    "placeholder": "Describe the changes",
-                    "required": true,
-                    "multiline": true
-                  },
-                  "attachments": true,
-                  "comments": {
-                    "kind": "diff_lines"
-                  },
-                  "enabled": true,
-                  "stamp": "Changes requested",
-                  "link": {
-                    "kind": "view",
-                    "key": "pull_request:github.com/example/repo#12"
-                  },
                   "resolves_card": true
                 }
               ]

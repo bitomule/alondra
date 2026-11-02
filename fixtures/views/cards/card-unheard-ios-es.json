@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "ios",
-  "version": "v152954e91f849b0a",
+  "version": "vc1ead0ae07154bd5",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
@@ -88,51 +88,6 @@
             "stamp": "Respondiste",
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "clarify:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90@1",
-              "label": "Pedir aclaración",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "No se entiende",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "Se contradice",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "Le falta contexto",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "¿Qué debe aclarar?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Aclaración solicitada",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90"

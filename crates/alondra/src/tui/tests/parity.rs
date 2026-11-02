@@ -220,30 +220,6 @@ fn merge_end_to_end_one_press_one_post_then_started() {
 }
 
 #[test]
-fn another_method_is_one_press_from_more_with_no_confirmation() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    served_merge_card(&mut app);
-    let more = served_more();
-    let index = more.iter().position(|action| action["label"] == "Merge with a merge commit").expect("More offers the merge commit");
-    let other = &more[index];
-
-    press(&mut app, KeyCode::Char('m'));
-    assert!(posted(&app).is_empty());
-    let drawn = screen(&mut app, 120, 30);
-    assert!(drawn.contains("Merge with a merge commit"), "{drawn}");
-
-    press(&mut app, KeyCode::Char(char::from(b'1' + index as u8)));
-    assert!(app.modal.is_none(), "the other method merges with one press too");
-    let sent = posted(&app);
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].1["action_id"], other["id"]);
-    assert_eq!(sent[0].1["option_id"], "merge");
-    assert_eq!(flash(&app), "Merging…");
-}
-
-#[test]
 fn escape_on_the_more_menu_sends_nothing() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
@@ -1697,7 +1673,7 @@ fn held_plan_card() -> alondra_core::views::View {
 }
 
 #[test]
-fn a_held_plan_is_approved_with_1_and_sent_back_with_2() {
+fn a_held_plan_is_approved_with_1_and_sent_back_from_its_field() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let reader_on_plan = || {
         let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -1711,7 +1687,7 @@ fn a_held_plan_is_approved_with_1_and_sent_back_with_2() {
     press(&mut app, KeyCode::Char('1'));
     assert!(posted(&app)[0].1["action_id"].as_str().is_some_and(|id| id.starts_with("accept:hold-1@")), "{:?}", posted(&app));
     let mut app = reader_on_plan();
-    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('r'));
     assert!(matches!(app.composer.as_ref().map(|composer| &composer.target),
         Some(Target::ViewAction { action_id, .. }) if action_id.starts_with("changes:hold-1@")));
     typed(&mut app, "Split it in two PRs");
@@ -1875,7 +1851,7 @@ fn a_reply_written_on_a_delivery_leaves_the_queue_and_the_detail_at_once() {
     assert_eq!(listed(&app), count.map(|count| count - 1), "and so does its section");
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
-    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("reply:"), "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("changes:"), "the field of a PR asks for changes: {sent:?}");
     assert!(!app.inbox_keys().contains(&Key(id.into())), "out of the queue before the Mac answers");
     let drawn = screen(&mut app, 120, 30);
     assert!(!drawn.contains("Review the beta candidate"), "out of the detail too: {drawn}");

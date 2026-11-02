@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v75a49705fa28ca93",
+  "version": "v0cf9fa88ad0683d5",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
@@ -93,51 +93,6 @@
             "stamp": "Enviado",
             "resolves_card": false
           },
-          "more": [
-            {
-              "id": "clarify:cc2d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Pedir aclaración",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "No se entiende",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "Se contradice",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "Le falta contexto",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "¿Qué debe aclarar?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Aclaración solicitada",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"

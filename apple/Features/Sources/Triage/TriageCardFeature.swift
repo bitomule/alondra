@@ -149,6 +149,7 @@ public struct TriageCardFeature: Sendable {
                     .send(.actions(.present(action))), .send(.actions(.chooseOption(optionID))), .send(.submit)
                 )
             case .replySent(let action):
+                if action.comments != nil, state.reply.isEmpty { return tapped(action, state: &state) }
                 return .concatenate(
                     state.actions.action == action ? .none : .send(.actions(.present(action))),
                     state.reply.isEmpty ? .none : .send(.actions(.textChanged(state.reply))),

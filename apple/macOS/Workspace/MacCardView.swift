@@ -70,7 +70,7 @@ struct MacCardView: View {
 
     private func send(_ action: AlondraContract.Action) {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || action.comments != nil else { return }
         reply = ""
         onReply(action, text)
     }

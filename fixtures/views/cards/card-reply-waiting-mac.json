@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "vf54bb3b1afc9a0e2",
+  "version": "v64ee513d1a8b731a",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -63,89 +63,30 @@
             "summary": "1 point"
           },
           "reply": {
-            "id": "reply:d@7",
-            "label": "Reply",
+            "id": "changes:pr@7~head1",
+            "label": "Request changes",
             "style": "secondary",
             "role": "neutral",
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Reply to Fix it…",
+              "placeholder": "Describe the changes",
               "required": true,
               "multiline": true
             },
             "attachments": true,
-            "enabled": true,
-            "stamp": "Sent",
-            "key": "r",
-            "resolves_card": false
-          },
-          "more": [
-            {
-              "id": "close_unmerged:d@7",
-              "label": "Close without merging",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close PR #1 without merging?",
-                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
-                "button": "Close PR"
-              },
-              "enabled": true,
-              "stamp": "Closing…",
-              "key": "3",
-              "resolves_card": true
+            "comments": {
+              "kind": "diff_lines"
             },
-            {
-              "id": "clarify:d@7",
-              "label": "Request clarification",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "It is unclear",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "It contradicts something",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "It lacks context",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "What should it clarify?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Clarification requested",
-              "key": "c",
-              "resolves_card": false
-            }
-          ],
+            "enabled": true,
+            "stamp": "Changes requested",
+            "key": "r",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:pr"
+            },
+            "resolves_card": true
+          },
           "link": {
             "kind": "view",
             "key": "card:d"
@@ -194,28 +135,23 @@
               "resolves_card": true
             },
             {
-              "id": "changes:pr@7~head1",
-              "label": "Request changes",
-              "style": "secondary",
-              "role": "neutral",
+              "id": "close_unmerged:d@7",
+              "label": "Close without merging",
+              "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
-                "kind": "text",
-                "placeholder": "Describe the changes",
-                "required": true,
-                "multiline": true
+                "kind": "none"
               },
-              "attachments": true,
-              "comments": {
-                "kind": "diff_lines"
+              "attachments": false,
+              "confirm": {
+                "title": "Close PR #1 without merging?",
+                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+                "button": "Close PR"
               },
               "enabled": true,
-              "stamp": "Changes requested",
-              "key": "2",
-              "link": {
-                "kind": "view",
-                "key": "pull_request:pr"
-              },
+              "stamp": "Closing…",
+              "key": "k",
               "resolves_card": true
             }
           ]

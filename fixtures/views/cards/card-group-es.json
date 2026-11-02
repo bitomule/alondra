@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "v855ca6abb3f1deaa",
+  "version": "v83bf561a5dfc528f",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -73,75 +73,6 @@
             "stamp": "Respondiste",
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "clarify:g-q2@1",
-              "label": "Pedir aclaración",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "No se entiende",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "Se contradice",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "Le falta contexto",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "¿Qué debe aclarar?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Aclaración solicitada",
-              "resolves_card": false
-            },
-            {
-              "id": "retake:g-q2@1",
-              "label": "Cambiar respuestas",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "g-q1",
-                  "label": "Which name? → Second",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Pregunta reabierta",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:g-q2"

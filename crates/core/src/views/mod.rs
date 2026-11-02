@@ -293,6 +293,9 @@ fn push_level(kind: crate::domain::CardKind, blocking: bool) -> &'static str {
     }
 }
 
+/// The answers a notification carries besides its text reply: the card's first three.
+const PUSHED_ANSWERS: usize = 3;
+
 pub fn push_content(
     read: &crate::domain::ReadSnapshot,
     card_id: &str,
@@ -330,6 +333,7 @@ pub fn push_content(
         if action.id.is_empty() || action.link.is_some() || !action.enabled || action.confirm.is_some() ||
             action.comments.is_some() { continue; }
         if !push_supported_option(domain, action) { continue; }
+        if pushed.len() == PUSHED_ANSWERS { break; }
         let (text, placeholder) = push_text(&action.input);
         pushed.push(PushAction { id: action.id.clone(), option: action.option_id.clone(),
             label: action.label.clone(), text, placeholder, open: false });

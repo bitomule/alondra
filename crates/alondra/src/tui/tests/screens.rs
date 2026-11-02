@@ -539,8 +539,8 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
     assert!(at("Content") < at("Context"));
     assert!(at("Context") < at(" 1  ★ Ship the concise copy"));
     assert!(at(" 1  ★ Ship the concise copy") < at(" 2  Keep the warmer copy"));
-    assert!(at(" 2  Keep the warmer copy") < at(" m  More… (1)"));
-    assert!(at(" m  More… (1)") < at(" r  Reply"));
+    assert!(at(" 2  Keep the warmer copy") < at(" r  Reply"));
+    assert!(!screen.contains("More…"), "nothing waits behind More: {screen}");
     let footer = draw::footer_keys(&app);
     assert_eq!(
         footer
@@ -548,7 +548,7 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
             .map(|(key, _)| key.as_str())
             .filter(|key| matches!(*key, "1" | "2" | "3" | "m" | "r" | "⏎/o"))
             .collect::<Vec<_>>(),
-        ["1", "2", "m", "r", "⏎/o"],
+        ["1", "2", "r", "⏎/o"],
         "{footer:?}"
     );
 }
@@ -805,47 +805,6 @@ fn a_secret_card_names_its_file_and_its_value_is_typed_hidden() {
     assert!(app.to_restore().composer.is_none(), "a secret is never kept for the next process");
 }
 
-#[test]
-fn clarify_is_a_reason_picker_then_an_optional_text() {
-    let mut app = english(fixture_view("card-question.json"));
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
-    let screen = rendered(&mut app, 120, 40);
-    dump("detail: clarification reasons", &screen);
-    assert!(screen.contains("REQUEST CLARIFICATION"), "{screen}");
-    assert!(
-        screen.contains(" 1  It is unclear")
-            && screen.contains(" 2  It contradicts something")
-            && screen.contains(" 3  It lacks context"),
-        "{screen}"
-    );
-    press(&mut app, KeyCode::Char('2'));
-    assert!(app.card_menu.is_none() && app.posted.borrow().is_empty(), "the text comes before it is sent");
-    assert!(matches!(
-        app.composer.as_ref().map(|composer| &composer.target),
-        Some(Target::ViewAction { option_id: Some(reason), required: false, .. }) if reason == "contradicts"
-    ));
-    typed(&mut app, "The two copies disagree");
-    press(&mut app, KeyCode::Enter);
-    let sent = app.posted.borrow().clone();
-    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("clarify:"), "{sent:?}");
-    assert_eq!(sent[0].1["option_id"], "contradicts");
-    assert_eq!(sent[0].1["input"]["text"], "The two copies disagree");
-}
-
-#[test]
-fn clarify_without_text_is_sent_with_just_the_reason() {
-    let mut app = english(fixture_view("card-question.json"));
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
-    let sent = app.posted.borrow().clone();
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert_eq!(sent[0].1["option_id"], "unclear");
-    assert_eq!(sent[0].1["input"], serde_json::json!({}));
-}
-
 fn with_note_input(required: bool) -> views::View {
     edited("card-question.json", |card| {
         for action in card["actions"].as_array_mut().unwrap() {
@@ -1018,7 +977,9 @@ fn keys_beyond_the_buttons_do_nothing_and_a_menu_swallows_the_rest() {
     assert!(app.posted.borrow().is_empty() && app.composer.is_none() && app.card_menu.is_none());
     let mut app = english(fixture_view("card-question.json"));
     press(&mut app, KeyCode::Char('3'));
-    assert!(app.posted.borrow().is_empty(), "a Decide with two buttons has no third");
+    press(&mut app, KeyCode::Char('m'));
+    assert!(app.posted.borrow().is_empty() && app.card_menu.is_none(), "a Decide with two buttons has no third and nothing behind More");
+    let mut app = english(fixture_view("card-pr.json"));
     press(&mut app, KeyCode::Char('m'));
     press(&mut app, KeyCode::Char('j'));
     assert!(app.card_menu.is_some(), "a menu keeps keys that are not its own");
@@ -1031,10 +992,12 @@ fn cards_read_in_spanish() {
     let mut app = card_screen(fixture_view("card-question.json"), crate::i18n::Lang::Es);
     let screen = rendered(&mut app, 120, 40);
     dump("detalle: Decidir", &screen);
-    assert!(screen.contains(" m  Más… (1)"), "{screen}");
+    assert!(!screen.contains("Más…"), "nothing waits behind More: {screen}");
     let footer = draw::footer_keys(&app);
     assert!(footer.iter().any(|(key, label)| key == "r" && label == "responder"), "{footer:?}");
     assert!(footer.iter().any(|(key, label)| key == "⏎/o" && label == "abrir"), "{footer:?}");
+    let mut app = card_screen(fixture_view("card-pr-es.json"), crate::i18n::Lang::Es);
+    assert!(rendered(&mut app, 120, 40).contains(" m  Más… (2)"));
     press(&mut app, KeyCode::Char('m'));
     assert!(rendered(&mut app, 120, 40).contains("MÁS"));
 }

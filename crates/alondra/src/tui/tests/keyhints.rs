@@ -355,7 +355,7 @@ fn the_reader_on_a_document_question_offers_each_key_once_and_its_digits_answer(
         assert!(!labels.contains(&absent), "{absent}: {bar:?}");
     }
     assert!(bar.contains(&("c".into(), "comentar".into())), "{bar:?}");
-    assert!(bar.contains(&("3".into(), "Pedir cambios".into())), "{bar:?}");
+    assert!(bar.contains(&("r".into(), "responder".into())), "the field asks for changes: {bar:?}");
     app.on_key(plain(KeyCode::Char('1')));
     assert_eq!(app.posted.borrow().last().map(|(_, body)| body["option_id"].clone()),
         Some(serde_json::json!("clear")), "1 answers the option the bar names");

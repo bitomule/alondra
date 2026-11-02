@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "v40a088854652ab00",
+  "version": "vdedbc8cb6c159e37",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -78,69 +78,26 @@
             "summary": "2 opciones"
           },
           "reply": {
-            "id": "reply:a98d034b-249e-4487-a89b-57de38c26372@1",
-            "label": "Responder",
+            "id": "changes:a98d034b-249e-4487-a89b-57de38c26372@1",
+            "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a Restore the native review experience…",
+              "placeholder": "Describe los cambios",
               "required": true,
               "multiline": true
             },
             "attachments": true,
+            "comments": {
+              "kind": "blocks"
+            },
             "enabled": true,
-            "stamp": "Respondiste",
+            "stamp": "Cambios solicitados",
             "key": "r",
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Pedir aclaración",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "No se entiende",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "Se contradice",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "Le falta contexto",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "¿Qué debe aclarar?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Aclaración solicitada",
-              "key": "c",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
@@ -206,27 +163,6 @@
               "enabled": true,
               "stamp": "Respondida",
               "key": "2",
-              "resolves_card": true
-            },
-            {
-              "id": "changes:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Pedir cambios",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Describe los cambios",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "comments": {
-                "kind": "blocks"
-              },
-              "enabled": true,
-              "stamp": "Cambios solicitados",
-              "key": "3",
               "resolves_card": true
             }
           ]

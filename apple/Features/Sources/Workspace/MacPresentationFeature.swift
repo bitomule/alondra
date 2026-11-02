@@ -191,6 +191,11 @@ public struct MacPresentationFeature: Sendable {
                 state.actionFeature.unsure = action.id.flatMap { state.unsure[$0] }
                 state.activeForm = nil
                 state.actionTarget = state.selectedViewKey.flatMap(Self.cardID)
+                if let comments = action.comments {
+                    state.actionPresented = true
+                    let diff = comments.kind == .diffLines ? state.diffComments.values.sorted { $0.anchor < $1.anchor } : []
+                    return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.commentsChanged(diff))))
+                }
                 state.actionPresented = false
                 return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.submit)))
             case .beginViewForm(let form):

@@ -501,7 +501,7 @@ impl App {
         let actions = view.to_string();
         let id = view["sections"].as_array().into_iter().flatten()
             .flat_map(|section| section["items"].as_array().into_iter().flatten())
-            .flat_map(|item| item["actions"].as_array().into_iter().flatten())
+            .flat_map(|item| item["actions"].as_array().into_iter().flatten().chain(item.get("reply").filter(|reply| reply.is_object())))
             .filter_map(|action| action["id"].as_str())
             .find(|id| id.starts_with("changes:"))
             .unwrap_or_else(|| panic!("no request-changes action on card {card}: {actions}"))
@@ -717,7 +717,7 @@ impl App {
 
 /// Every kind of card the phone answers leaves its queue when the server said it would, and only
 /// then: an option, a text, a reply on a question, a question of a group, a permission and a
-/// delivery; asking to clarify keeps its card. Each card of a group opens on its own screen.
+/// delivery. Each card of a group opens on its own screen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_returns() {
     let scratch_directory = crate::test_support::Directory::new();
@@ -738,7 +738,6 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     node_calls(&home, &daemon, &capability, vec![
         ask("option", "Pick the release channel"),
         ask("reply", "Name the new settings screen"),
-        ask("clarify", "Pick the launch day"),
         ("request_input", json!({"data_epoch": epoch, "command_id": "text", "expected_revision": 0, "interaction_id": "text",
             "scope": scope, "recipient": {"kind": "user"}, "need": "Write the release note", "why": "The release notes need it.",
             "kind": "text", "blocking": false})),
@@ -756,7 +755,6 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     app.settle("option", "ans:", Some("stable"), None, true).await;
     app.settle("text", "ans:", None, Some("Faster sync and a new settings screen"), true).await;
     app.settle("reply", "reply:", None, Some("Call it Preferences"), true).await;
-    app.settle("clarify", "clarify:", Some("unclear"), Some("Which time zone?"), false).await;
     app.settle(&group[2], "reply:", None, Some("David signs it"), true).await;
     for (card, option) in [(&group[0], "a"), (&group[1], "b"), (&group[3], "a")] {
         app.settle(card, "ans:", Some(option), None, true).await;
@@ -777,8 +775,7 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     let decision = permission.join().unwrap();
     assert_eq!(decision["hookSpecificOutput"]["decision"]["behavior"], "allow", "{decision}");
 
-    node_calls(&home, &daemon, &capability, vec![("withdraw", tool_args(&epoch, "withdraw-clarify", 0, json!({"interaction_id": "clarify"}))),
-        ("present_result", tool_args(&epoch, "delivery", 0, json!({
+    node_calls(&home, &daemon, &capability, vec![("present_result", tool_args(&epoch, "delivery", 0, json!({
         "task_id": task.0, "interaction_id": "delivery", "need": "Review the migration report", "body": "The store moved in one go.",
         "targets": [{"kind": "text", "text": "The store moved in one go."}], "is_final": true})))]);
     app.settle("delivery", "accept:", None, None, true).await;

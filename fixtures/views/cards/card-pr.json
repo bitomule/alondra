@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vad0e05aa449f0b0d",
+  "version": "v01be5eff81f1a103",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -78,38 +78,30 @@
             "summary": "4 files · +120 −30"
           },
           "reply": {
-            "id": "reply:hf-weekly-2026-09-30@1",
-            "label": "Reply",
+            "id": "changes:github.com/example/repo#12@6~abcdef12",
+            "label": "Request changes",
             "style": "secondary",
             "role": "neutral",
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Reply to Restore the native review experience…",
+              "placeholder": "Describe the changes",
               "required": true,
               "multiline": true
             },
             "attachments": true,
+            "comments": {
+              "kind": "diff_lines"
+            },
             "enabled": true,
-            "stamp": "Sent",
-            "resolves_card": false
+            "stamp": "Changes requested",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:github.com/example/repo#12"
+            },
+            "resolves_card": true
           },
           "more": [
-            {
-              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
-              "label": "Merge with a merge commit",
-              "style": "secondary",
-              "role": "neutral",
-              "option_id": "merge",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Merging…",
-              "resolves_card": true
-            },
             {
               "id": "close_unmerged:hf-weekly-2026-09-30@1",
               "label": "Close without merging",
@@ -195,30 +187,6 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Merging…",
-              "resolves_card": true
-            },
-            {
-              "id": "changes:github.com/example/repo#12@6~abcdef12",
-              "label": "Request changes",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Describe the changes",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "comments": {
-                "kind": "diff_lines"
-              },
-              "enabled": true,
-              "stamp": "Changes requested",
-              "link": {
-                "kind": "view",
-                "key": "pull_request:github.com/example/repo#12"
-              },
               "resolves_card": true
             }
           ]

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "tui",
-  "version": "v8d7350f6330800dc",
+  "version": "vf05484493a1bd3a5",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
@@ -95,52 +95,6 @@
             "key": "r",
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "clarify:memory-pause-livelock-ask@1",
-              "label": "Request clarification",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "It is unclear",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "It contradicts something",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "It lacks context",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "What should it clarify?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Clarification requested",
-              "key": "c",
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:memory-pause-livelock-ask"

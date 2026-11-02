@@ -342,8 +342,8 @@ pub struct Card {
     /// Send text to the node (or the orchestrator) the card came from; on every card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<CardAction>,
-    /// What does not fit the three visible `actions`, with "Request clarification" and
-    /// "Open on GitHub".
+    /// What does not fit the three visible `actions` and the card's extra ways out ("Open on
+    /// GitHub", "Close without merging"); never a single one, which goes with `actions`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub more: Vec<CardAction>,
     #[serde(skip_serializing_if = "Option::is_none")]

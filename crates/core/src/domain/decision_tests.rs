@@ -338,7 +338,7 @@ fn the_push_of_an_sdk_permission_card_offers_its_answers_bound_to_the_same_reque
     let read = ReadSnapshot::build(std::sync::Arc::new(s.clone()));
     let pushed = push_actions(&read, &card, Lang::En).unwrap();
     let options: Vec<&str> = pushed.iter().filter_map(|action| action.option.as_deref()).collect();
-    assert_eq!(options, ["allow", "always", "deny"], "{pushed:?}");
+    assert_eq!(options, ["allow", "deny", "always"], "{pushed:?}");
     let view = build(&format!("card:{card}"), RenderContext {
         domain: &s, index: read.index(), live: &LiveSnapshot::default(), client: Client::Ios, lang: Lang::En,
         transport: Transport::Relay, cursor: "", rendered_at: "",

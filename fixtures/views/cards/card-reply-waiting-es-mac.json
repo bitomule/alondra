@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "ve29eda4be7bd7fbd",
+  "version": "vc76a410fe867a7e3",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -63,89 +63,30 @@
             "summary": "1 punto"
           },
           "reply": {
-            "id": "reply:d@7",
-            "label": "Responder",
+            "id": "changes:pr@7~head1",
+            "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",
             "presentation": "button",
             "input": {
               "kind": "text",
-              "placeholder": "Responder a Fix it…",
+              "placeholder": "Describe los cambios",
               "required": true,
               "multiline": true
             },
             "attachments": true,
-            "enabled": true,
-            "stamp": "Enviado",
-            "key": "r",
-            "resolves_card": false
-          },
-          "more": [
-            {
-              "id": "close_unmerged:d@7",
-              "label": "Cerrar sin hacer merge",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "¿Cerrar la PR #1 sin hacer merge?",
-                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
-                "button": "Cerrar la PR"
-              },
-              "enabled": true,
-              "stamp": "Cerrando…",
-              "key": "3",
-              "resolves_card": true
+            "comments": {
+              "kind": "diff_lines"
             },
-            {
-              "id": "clarify:d@7",
-              "label": "Pedir aclaración",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "options",
-              "options": [
-                {
-                  "id": "unclear",
-                  "label": "No se entiende",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "contradicts",
-                  "label": "Se contradice",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "missing_context",
-                  "label": "Le falta contexto",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "text",
-                "placeholder": "¿Qué debe aclarar?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Aclaración solicitada",
-              "key": "c",
-              "resolves_card": false
-            }
-          ],
+            "enabled": true,
+            "stamp": "Cambios solicitados",
+            "key": "r",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:pr"
+            },
+            "resolves_card": true
+          },
           "link": {
             "kind": "view",
             "key": "card:d"
@@ -194,28 +135,23 @@
               "resolves_card": true
             },
             {
-              "id": "changes:pr@7~head1",
-              "label": "Pedir cambios",
-              "style": "secondary",
-              "role": "neutral",
+              "id": "close_unmerged:d@7",
+              "label": "Cerrar sin hacer merge",
+              "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
-                "kind": "text",
-                "placeholder": "Describe los cambios",
-                "required": true,
-                "multiline": true
+                "kind": "none"
               },
-              "attachments": true,
-              "comments": {
-                "kind": "diff_lines"
+              "attachments": false,
+              "confirm": {
+                "title": "¿Cerrar la PR #1 sin hacer merge?",
+                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
+                "button": "Cerrar la PR"
               },
               "enabled": true,
-              "stamp": "Cambios solicitados",
-              "key": "2",
-              "link": {
-                "kind": "view",
-                "key": "pull_request:pr"
-              },
+              "stamp": "Cerrando…",
+              "key": "k",
               "resolves_card": true
             }
           ]

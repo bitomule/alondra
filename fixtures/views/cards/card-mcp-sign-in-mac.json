@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "mac",
-  "version": "ve9121e0b36f053f1",
+  "version": "vb4b5c04578ae2c75",
   "cursor": "cursor-1",
   "title": "Sign in to linear: 2 tasks wait for it",
   "status": {
@@ -122,7 +122,7 @@
               "attachments": false,
               "enabled": true,
               "stamp": "The tasks go on without linear",
-              "key": "2",
+              "key": "1",
               "resolves_card": true
             },
             {
@@ -136,7 +136,7 @@
               },
               "attachments": false,
               "enabled": true,
-              "key": "3",
+              "key": "2",
               "link": {
                 "kind": "local",
                 "local": {

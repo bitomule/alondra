@@ -26,8 +26,7 @@ final class MacCardTests: XCTestCase {
         let buttons = MacCardButtons(question)
         XCTAssertEqual(buttons.visible.map(\.optionId), ["clear", "warm"])
         XCTAssertEqual(buttons.visible.map(\.paintedRole), [.advance, .neutral])
-        XCTAssertEqual(buttons.more.map(\.label), ["Request clarification"])
-        XCTAssertTrue(buttons.more.contains(where: \.asksForClarification), "clarification lives behind More…")
+        XCTAssertTrue(buttons.more.isEmpty)
     }
 
     func test_actionBar_showsThreeAndMovesTheOverflowIntoMore() throws {
@@ -53,10 +52,12 @@ final class MacCardTests: XCTestCase {
     func test_pullRequest_advancesWithMergeAndHoldsTheRestBehindMore() throws {
         let review = try card("card-pr-mac")
         let buttons = MacCardButtons(review)
-        XCTAssertEqual(buttons.visible.map(\.paintedRole), [.advance, .neutral])
+        XCTAssertEqual(buttons.visible.map(\.paintedRole), [.advance])
         XCTAssertEqual(buttons.visible.first?.enabled, true, "a card in Waiting for You offers a merge that works")
         XCTAssertTrue(review.blockedBy.isEmpty)
+        XCTAssertEqual(buttons.more.map(\.label), ["Close without merging", "Open on GitHub"])
         XCTAssertTrue(buttons.more.contains { $0.link != nil }, "Open on GitHub is a link in More…")
+        XCTAssertEqual(review.reply?.label, "Request changes")
     }
 
     func test_everyCardAlwaysCanBeRepliedTo() throws {

@@ -47,7 +47,7 @@ extension Fixtures {
         return try document.replacingMarkdown(of: "content", with: content)
     }
 
-    /// Permission for a command Claude Code held: Yes advances, Always and No sit under it.
+    /// Permission for a command Claude Code held: Yes advances, then No, then Allow always.
     static func authorizeCard(id: String = "perm-1") throws -> ViewDocument {
         try retargeted(
             id: id, kind: "authorize", need: "Allow publishing Brew 0.2.36",
@@ -58,9 +58,9 @@ extension Fixtures {
             item["content_row"] = ["kind": "command", "icon": "warning", "label": "Command", "summary": "alondra update"]
             item["actions"] = [
                 button("ans:\(id)@1", "Yes", role: "advance", optionID: "allow"),
+                button("ans:\(id)@1", "No", optionID: "deny"),
                 button("ans:\(id)@1", "Allow always", optionID: "always",
                        extra: ["description": "Allows this now and stops asking in `alondra` for:\n· `make build` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n`tail` already didn't ask. You can remove it in Settings › Permissions."]),
-                button("ans:\(id)@1", "No", optionID: "deny"),
             ]
         }
     }
@@ -115,7 +115,7 @@ extension Fixtures {
     }
 
     /// A decision with five options, as the daemon sends it: three buttons, and the other two
-    /// under "More…" before its own extras.
+    /// under "More…".
     static func crowdedDecision(id: String = "decide-5") throws -> ViewDocument {
         try retargeted(
             id: id, kind: "decide", need: "Pick the release channel", why: "Five channels are open and one ships first."
@@ -126,23 +126,8 @@ extension Fixtures {
                        optionID: name.lowercased())
             }
             item["actions"] = Array(options.prefix(3))
-            item["more"] = Array(options.dropFirst(3)) + [clarify(id: id)]
+            item["more"] = Array(options.dropFirst(3))
         }
-    }
-
-    /// "Request clarification": which reason applies, and an optional word on what to clarify.
-    static func clarify(id: String) -> [String: Any] {
-        var value = button(
-            "clarify:\(id)@1", "Request clarification",
-            input: ["kind": "text", "placeholder": "What should it clarify?", "required": false, "multiline": true], stamp: "Clarification requested"
-        )
-        value["presentation"] = "options"
-        value["options"] = [
-            ["id": "unclear", "label": "It is unclear", "style": "secondary", "input": ["kind": "none"]],
-            ["id": "contradicts", "label": "It contradicts something", "style": "secondary", "input": ["kind": "none"]],
-            ["id": "missing_context", "label": "It lacks context", "style": "secondary", "input": ["kind": "none"]],
-        ]
-        return value
     }
 
     /// A plan to approve: the text behind a content reference the detail fetches and can comment on.
@@ -153,13 +138,10 @@ extension Fixtures {
         ) { item in
             item["content_row"] = ["kind": "plan", "icon": "document", "label": "Plan", "summary": "6 steps"]
             item["blocked_by"] = nil
-            item["actions"] = [
-                button("accept:\(id)@1", "Approve", role: "advance", stamp: "Approved"),
-                button("changes:\(id)@1", "Request changes", input: ["kind": "text", "placeholder": "Describe the changes",
-                                                                    "required": true, "multiline": true],
-                       stamp: "Changes requested", extra: ["attachments": true, "comments": ["kind": "blocks"]]),
-            ]
-            item["more"] = [clarify(id: id)]
+            item["actions"] = [button("accept:\(id)@1", "Approve", role: "advance", stamp: "Approved")]
+            item["reply"] = button("changes:\(id)@1", "Request changes", input: ["kind": "text", "placeholder": "Describe the changes",
+                                                                                "required": true, "multiline": true],
+                                   stamp: "Changes requested", extra: ["attachments": true, "comments": ["kind": "blocks"]])
         }
         return try document.replacingSections([
             ["id": "card", "collapsed": false, "items": try document.itemsJSON(of: "card")],
