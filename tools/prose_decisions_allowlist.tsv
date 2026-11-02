@@ -1,0 +1,339 @@
+# Lines the prose-decision guard (//tools:prose_decisions_test) matches and allows.
+# path<TAB>line with spaces collapsed<TAB>category<TAB>reason
+# Categories: display, log, user-search, format, own-grammar, security-parse, or finding:<id> for a
+# case of docs/architecture/typed-control-decisions.md still to fix. The list only shrinks: the
+# phase that fixes a finding removes its lines, and a line that no longer matches fails the test.
+apple/Data/Transport/Sources/Direct/DirectRouter.swift	&& userInfo["_NSURLErrorNWPathKey"].map { String(describing: $0).localizedCaseInsensitiveContains("local network prohibited") } == true	finding:A-01	local network permission read from a private key's description
+apple/iOS/UI/Sources/Tasks/TaskDetailView.swift	if let priority = detail.priority, fact.label == priority.label {	finding:A-02	priority menu only when two translated labels match
+apple/Features/Sources/TaskDetail/TaskDetail.swift	folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,	finding:A-03	folder fact picked by position and a leading slash
+apple/Features/Sources/Settings/CrashReport/CrashReportFeature.swift	if !detail.isEmpty { return .refused(detail) }	finding:A-04	report refused when the server's text is not empty
+apple/Data/Feed/Sources/ActionDeliveryError.swift	case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final	finding:A-06	retry decided by a code in a field that also carries prose
+crates/core/src/usage.rs	let text = text.to_lowercase();	finding:C-01	card refused by usage and stop words
+crates/core/src/usage.rs	let usage = words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| text.contains(phrase));	finding:C-01	card refused by usage and stop words
+crates/core/src/usage.rs	let stop = words.iter().any(|word| stop_words.contains(word)) || stop_phrases.iter().any(|phrase| text.contains(phrase));	finding:C-01	card refused by usage and stop words
+crates/core/src/usage.rs	let reason = reason.to_lowercase();	finding:C-02	machine wait refused by usage words in its reason
+crates/core/src/usage.rs	words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| reason.contains(phrase))	finding:C-02	machine wait refused by usage words in its reason
+crates/core/src/domain/cited_files.rs	let lower = line.to_ascii_lowercase();	finding:C-03	any Markdown path mentioned is read or the card refused
+crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	finding:C-04	merge failure rebuilt by parsing the hand-back body
+crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	finding:C-04	merge failure rebuilt by parsing the hand-back body
+crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whether the user typed the prompt decided by its text
+crates/core/src/states.rs	|| HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))	finding:C-05	whether the user typed the prompt decided by its text
+crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-05	whether the user typed the prompt decided by its text
+crates/core/src/tasks/derive.rs	while let Some(i) = text[from..].find("t-").map(|i| from + i) {	finding:C-06	old view assigns PRs and reports by t- mentions
+crates/core/src/domain/rules.rs	if options.iter().filter(|o| o.label.trim_end().ends_with("(Recommended)")).count() > 1 {	finding:C-07	card refused by the (Recommended) suffix of two labels
+crates/alondrad/src/domain_merges.rs	has(reason, &["http 404", "http 403"])	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/domain_merges.rs	let reason = reason.to_ascii_lowercase();	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/domain_merges.rs	signs.iter().any(|sign| reason.contains(sign))	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/domain_merges.rs	has(reason, &["error connecting", "timed out", "timeout", "did not finish", "could not resolve", "connection", "http 5", "502", "503",	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/domain_merges.rs	has(reason, &["gh auth login", "not logged", "authentication", "no such file", "command not found", "http 401", "http 403",	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/domain_merges.rs	has(reason, &["required status check", "status checks are pending", "is expected", "waiting for status"])	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/domain_merges.rs	has(reason, &["already merged", "was merged"])	finding:D-01	merge outcome classified by gh's stderr
+crates/alondrad/src/views/actions.rs	let said = detail.to_ascii_lowercase();	finding:D-02	closing a PR decided by gh's stderr
+crates/alondrad/src/views/actions.rs	if said.contains("already merged") || said.contains("was merged") {	finding:D-02	closing a PR decided by gh's stderr
+crates/alondrad/src/views/actions.rs	if said.contains("already closed") {	finding:D-02	closing a PR decided by gh's stderr
+crates/alondrad/src/node_close.rs	Ok(text) if text.contains(&format!("removed {short}")) => said = text,	finding:D-03	node close decided by the wording of claude rm
+crates/alondrad/src/node_close.rs	Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {	finding:D-03	node close decided by the wording of claude rm
+crates/alondrad/src/usage_pause.rs	let text = text.to_lowercase();	finding:D-04	usage limit and reset read from Claude's prose
+crates/alondrad/src/usage_pause.rs	text.contains("hit your") && text.contains("limit") && !text.contains("spend limit") && !text.contains("shared budget")	finding:D-04	usage limit and reset read from Claude's prose
+crates/alondrad/src/usage_pause.rs	let after = &text[text.to_lowercase().find("resets ")? + "resets ".len()..];	finding:D-04	usage limit and reset read from Claude's prose
+crates/alondrad/src/usage_pause.rs	let lower = word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()).to_lowercase();	finding:D-04	usage limit and reset read from Claude's prose
+crates/alondrad/src/orchestrator_process.rs	&& (self.input.is_some() || diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}")))	finding:D-05	missing session by an exact phrase
+crates/alondrad/src/orchestrator_process.rs	&& v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));	finding:D-05	missing session by an exact phrase
+crates/alondrad/src/orchestrator_sdk.rs	if text=="Unexpected native decision in the Alondra orchestrator" {output.stream.error=Some(text.clone());exited=true;}	finding:D-06	batch stop by equality with a diagnostic text
+crates/alondrad/src/pr_images.rs	let lower = error.to_ascii_lowercase();	finding:D-07	gh api failure classified by text
+crates/alondrad/src/pr_images.rs	if lower.contains("http 404") || lower.contains("not found") {	finding:D-07	gh api failure classified by text
+crates/alondrad/src/pr_images.rs	} else if lower.contains("gh auth login") || lower.contains("http 401") || lower.contains("bad credentials") {	finding:D-07	gh api failure classified by text
+crates/provider-claude/src/mcp.rs	output.contains("No MCP server named")	finding:D-08	MCP removal failure counted as success by a phrase
+crates/alondrad/src/provider_transition.rs	if !canonical.complete || canonical.text.contains("[shortened]"){return Err(failure(format!("Critical task context is incomplete: {}",canonical.omitted_sources.join(", "))).into())}	finding:D-09	handoff refused by a marker inside the context text
+crates/alondrad/src/service_files.rs	match error.to_string().as_str() {	finding:D-10	wire code chosen by the text of our own errors
+crates/alondrad/src/service.rs	Err(error) if error.to_string().contains("APNs budget") => {	finding:D-11	minimal push chosen by the text of our own error
+crates/alondra/src/doctor/checks.rs	let running = view.print.as_deref().map(|t| t.contains("state = running"));	finding:D-12	launchctl print output, not an API
+crates/alondra/src/setup.rs	&& String::from_utf8_lossy(&output.stderr).contains("Could not find service")	finding:D-12	launchctl print output, not an API
+crates/alondra/src/setup.rs	.filter_map(|line| line.trim().strip_prefix("pid = "))	finding:D-12	launchctl print output, not an API
+crates/alondra/src/tui.rs	if e.to_string().contains("No such file")	finding:D-13	tuicr missing decided by error text
+crates/alondra/src/tui.rs	|| e.to_string().contains("could not launch")	finding:D-13	tuicr missing decided by error text
+crates/alondra/src/tui.rs	|| e.to_string().contains("no pude lanzar") =>	finding:D-13	tuicr missing decided by error text
+crates/alondra/src/report/github.rs	let status = stderr.rsplit_once("(HTTP ").and_then(|(_, rest)| rest.split(')').next()).and_then(|s| s.trim().parse::<u16>().ok());	finding:D-14	gh api status read from stderr
+crates/alondra/src/report/github.rs	let rate_limited = message.to_ascii_lowercase().contains("rate limit");	finding:D-14	gh api status read from stderr
+crates/alondra/src/report/github.rs	None if code == Some(4) || stderr.contains("gh auth login") => GhError::SignedOut,	finding:D-14	gh api status read from stderr
+crates/alondrad/src/process_watch.rs	Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output().ok()	finding:D-15	processes found and killed from ps text
+crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/domain_orchestrator.rs	let Some(run_id) = id.0.strip_prefix(PROBLEM_PREFIX) else { continue };	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/domain_orchestrator_reads.rs	Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX)) =>	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/domain_schedule_runner.rs	let Some(failed) = id.0.strip_prefix(LAUNCH_PROBLEM_PREFIX) else { continue };	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/local_network_card.rs	.filter(|card| card.id.0.starts_with(LOCAL_NETWORK_PREFIX) && !card.withdrawn && matches!(card.payload, InteractionPayload::Question { answer: None, .. }))	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/machine_watch.rs	if open && id.0.starts_with(MACHINE_PREFIX) && current.as_deref() != Some(id.0.as_str()) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/mcp_waits.rs	if id.starts_with(MCP_WAIT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/mcp_waits.rs	id.starts_with(MCP_SERVER_PREFIX).then(|| Self::Server(id.to_owned()))	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/sdk_owner.rs	.any(|(card, reason)| reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX)))	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/usage_pause.rs	if id.0.strip_prefix(OVER_PACE_PREFIX) == Some(today.as_str()) && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/usage_pause.rs	} else if id.0.starts_with(PACE_RESUME_PREFIX) && answer.option_id == PACE_RESUME_OPTION && pause.claim_card(&id.0)	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/usage_pause.rs	if id.0.starts_with(PACE_RESUME_PREFIX) && !interaction.withdrawn && state.open(interaction) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondrad/src/views/live.rs	Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(alondra_core::domain::NODE_PAUSE_PREFIX)) => "paused",	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/claude_access.rs	if id.starts_with(SIGNED_OUT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/claude_access.rs	} else if id.starts_with(OUTAGE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/claude_access.rs	} else if id.starts_with(USAGE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/claude_access.rs	card.0.strip_prefix(USAGE_UNTIL)?.split('-').next()?.parse().ok()	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/crash_report.rs	LifecycleRecord::Paused { card, .. } if card.0.starts_with(HOST_LOST_PREFIX) => Some(ReportedFailure::NotResumed),	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/lifecycle.rs	.filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && i.id.0.starts_with(TURN_ENDED_PREFIX) && self.open(i))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/mcp_wait.rs	if card.author != Author::System || !card.id.0.starts_with(MCP_WAIT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/mcp_wait.rs	.filter(|card| card.id.0.starts_with(MCP_WAIT_PREFIX) && self.open(card))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/node_machine.rs	let (kind, rest) = card.0.strip_prefix(NODE_PAUSE_PREFIX)?.split_once('-')?;	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/node_machine.rs	&& self.open(i) && !i.id.0.starts_with(NODE_PAUSE_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/node_machine.rs	.filter(|i| i.id.0.starts_with(UNHEARD_PREFIX) && i.author == Author::Agent { agent_id: agent.clone() } && self.open(i))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/node_machine.rs	if cards.iter().any(|card| !card.0.starts_with(NODE_PAUSE_PREFIX) && Some(card) != delivery.as_ref()))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/node_machine.rs	.find(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && card.0.starts_with(NODE_PAUSE_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/node_machine.rs	card.author == Author::System && card.id.0.starts_with(NODE_PAUSE_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/ownership.rs	i.recipient == Recipient::User && self.open(i) && !i.id.0.starts_with(super::NODE_PAUSE_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/ownership.rs	i.id.0.starts_with(START_PROBLEM_PREFIX) && matches!(&i.scope, Scope::Task { task_id } if *task_id == task)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules.rs	let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(POST_MERGE_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules.rs	let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(START_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules.rs	&& !i.id.0.starts_with(UNHEARD_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules.rs	.filter(|i| i.author == Author::System && !i.withdrawn && i.id.0.starts_with(ENDED_UNANSWERED_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules/plan_review.rs	let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(PLAN_REVIEW_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/domain/rules/stall.rs	i.id.0.starts_with(STALLED_PREFIX) && i.author == Author::System && i.recipient == Recipient::Orchestrator	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	interaction.author == Author::System && interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	(interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::START_PROBLEM_PREFIX))	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	(interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) && interaction.body.trim() != interaction.card.need.trim())	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if !interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DECISION_CANCELLED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::TURN_ENDED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.author != Author::System || !interaction.id.0.starts_with(crate::domain::DROPPED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_STOPPED_WHY {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::POST_MERGE_ENDED_WHY {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) && interaction.card.why == crate::domain::INTERRUPTED_WHY {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::SESSION_ENDED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if !interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_cards::UNSPLIT_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::domain::PLAN_REVIEW_PROBLEM_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	if interaction.id.0.starts_with(OVER_PACE_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	interaction.id.0.starts_with(PACE_RESUME_PREFIX).then(|| (	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	} else if interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::HANDOFF_DOUBT_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::request_outcome::DONE_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/card.rs	&& interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX)	finding:D-16	card kind and effects deduced from its id prefix
+crates/core/src/views/task_state.rs	LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) =>	finding:D-16	card kind and effects deduced from its id prefix
+crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	finding:D-16	card kind and effects deduced from its id prefix
+crates/alondra/src/mcp.rs	let listed = !lines.is_empty() && lines.iter().all(|line| line.starts_with("- ") || line.starts_with("* ") || line.chars().take_while(char::is_ascii_digit).count() > 0 && line.contains(". "));	finding:D-17	plan content turned into steps or report by its shape
+crates/alondra/src/doctor/mod.rs	.any(|p| std::fs::read_to_string(p).map_or(true, |t| t.contains("/alondrad</string>"))),	finding:D-19	LaunchAgent recognised by a substring of its XML
+crates/alondra/src/setup.rs	.filter(|p| std::fs::read_to_string(p).is_ok_and(|t| t.contains("/alondrad</string>")))	finding:D-19	LaunchAgent recognised by a substring of its XML
+crates/alondrad/src/machine.rs	let line = text.lines().find(|l| l.contains("memory free percentage"))?;	finding:D-21	free memory read from memory_pressure's text
+crates/alondrad/src/sdk_live.rs	let aborted = message["terminal_reason"].as_str().is_some_and(|reason| reason.starts_with("aborted"));	finding:D-22	aborted turn by a prefix of terminal_reason
+crates/alondrad/src/mcp_waits.rs	Err(crate::domain_store::StoreError::Storage(error)) if error.to_string().contains("UnsupportedCapability") => {	finding:D-25	host capability refusal decided by the store error's text
+crates/relay/src/management/keycloak.rs	.find(|grant| grant["key"] == "Offline Token")	finding:G-11	consent to revoke picked by its display label
+crates/core/src/view.rs	.is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))	finding:G-14	billing_error and overloaded treated as usage limit
+agent-host/frame.ts	const message = (error as Error).message;	finding:P-03	framing problem classified by our own Error.message
+crates/provider-claude/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
+crates/provider-codex/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
+crates/alondrad/src/orchestrator_codex.rs	let detail = bounded_public(&item.to_string(),16384).to_lowercase();	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
+crates/alondrad/src/orchestrator_codex.rs	if detail.contains("forbidden") || detail.contains("permission_denied") || detail.contains("permission denied") || detail.contains("user denied") {	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
+crates/alondra/src/client.rs	&& serde_json::from_slice::<Value>(&answer).is_ok_and(|value| value["error"] == "wrong signature")	finding:G-15	signed retry decided by a code in a field that also carries verify's phrases
+agent-host/codex-session.ts	this.config.nativeRpcError?.(pending.method, String(error.code ?? 'failed'), typeof error.message === 'string' ? error.message.slice(0, 2000) : '');	display	message carried through to the card or diagnostic as it is
+agent-host/codex-session.ts	this.childStates.set(child, { parent, activation: activating ? id : old?.activation ?? id, status, pending: activating && started, ...(text(state.message) ? { report: text(state.message) } : old?.report && (!activating || old.activation === id) ? { report: old.report } : {}) });	display	message carried through to the card or diagnostic as it is
+agent-host/codex-session.ts	...(kind === 'elicitation' ? Object.fromEntries(Object.entries({ serverName: params.serverName, message: params.message ?? params.description, requestedSchema: params.requestedSchema, url: params.url }).filter(([, value]) => value !== undefined)) : {}),	display	message carried through to the card or diagnostic as it is
+agent-host/session.ts	serverName: request.serverName, message: request.message, mode: request.mode, url: request.url, elicitationId: request.elicitationId,	display	message carried through to the card or diagnostic as it is
+agent-host/session.ts	this.diagnostic(this.closing ? 'aborted' : 'iterator_error', { name: error instanceof Error ? error.name : 'Error', message: safeDiagnostic(error instanceof Error ? error.message : String(error)), unresolved_input_ids: [...this.inputs] }, this.closing ? 'control' : 'iterator');	display	message carried through to the card or diagnostic as it is
+apple/Data/Account/Sources/Composition/AccountSession.swift	catch { throw CleanupFailure(details: "Could not restore the previous Mac selection: " + error.localizedDescription) }	display	error text only shown
+apple/Data/Account/Sources/Composition/AccountSession.swift	do { try await deactivate() } catch { failures.append(error.localizedDescription) }	display	error text only shown
+apple/Data/Account/Sources/Composition/AccountSession.swift	} catch { failures.append(error.localizedDescription) }	display	error text only shown
+apple/Data/Attachments/Sources/AttachmentFeature.swift	} catch { await send(.batchFailed(error.localizedDescription, batchID)) }	display	error text only shown
+apple/Data/Attachments/Sources/AttachmentFeature.swift	catch { events.continuation.yield(.uploaded(draft.id, .failure(AttachmentFailure(message: error.localizedDescription)))) }	display	error text only shown
+apple/Data/Attachments/Sources/AttachmentPicker.swift	case .failure(let error): store.send(.importFailed(error.localizedDescription))	display	error text only shown
+apple/Data/Transport/Sources/Errors/APIError.swift	if status == 422, let message = object?["message"] as? String, !message.isEmpty {	display	picks which text to show
+apple/Design/Sources/Attachments/AttachButton.swift	case .failure(let error): store.send(.importFailed(error.localizedDescription))	display	error text only shown
+apple/Features/Sources/Settings/MacSettings.swift	if case .server(422, _, let detail?, _) = error as? APIError, !detail.isEmpty { return detail }	display	picks which text to show
+apple/Features/Sources/Shared/AlondraError.swift	if let detail, !detail.isEmpty { return .server(refusalMessage(kind: kind, detail: detail)) }	display	picks which text to show
+apple/Features/Sources/Shared/AlondraError.swift	if let message = (json?["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {	display	picks which text to show
+apple/Features/Sources/Shared/AlondraError.swift	guard let urlError = self as? URLError else { return localizedDescription }	display	error text only shown
+apple/Features/Sources/Shared/AlondraError.swift	default: return urlError.localizedDescription	display	error text only shown
+apple/Features/Sources/TaskDetail/TaskDetailFeature.swift	if state.message.isEmpty { state.message = request.input.text ?? "" }	display	whether there is text to show
+apple/iOS/UI/Sources/Tasks/TaskBlockSection.swift	if !detail.isEmpty {	display	whether there is text to show
+crates/alondra/src/report/collect.rs	let after = text.split_once("sec = ")?.1;	display	launchctl fields copied into the report as they are
+crates/alondra/src/report/collect.rs	if let Ok(number) = digits.parse::<i64>() { Value::from(number) } else if code.contains("never exited") { Value::from("never exited") } else { Value::Null }	display	launchctl fields copied into the report as they are
+crates/alondra/src/tui.rs	.map(|eyebrow| eyebrow.text.to_lowercase())	display	text picked or cased for display
+crates/alondra/src/tui/view_render.rs	match value.split_once(" · ") {	display	text split or cased for display
+crates/alondra/src/tui/view_render.rs	Item::Card(card) => card.eyebrow.as_ref().map(|eyebrow| eyebrow.text.to_lowercase()),	display	text split or cased for display
+crates/alondra/src/update/brew.rs	let stage = if line.starts_with("==> Auto-updating Homebrew") || line.starts_with("==> Updating Homebrew") {	display	brew output read only to show the update's progress
+crates/alondra/src/update/brew.rs	} else if (line.starts_with("==> Upgrading ") && !line.ends_with(':')) || line.starts_with("==> Installing") || line.starts_with("==> Pouring") {	display	brew output read only to show the update's progress
+crates/alondra/src/update/brew.rs	let rest = line.strip_prefix("Warning: ")?.strip_suffix(" already installed")?;	display	brew output read only to show the update's progress
+crates/alondrad/src/views/actions.rs	Verb::Ans if stamp.contains(" · ") => Outcome::done(stamp.to_owned()),	display	outcome text shown as it is
+crates/core/src/domain/rules.rs	if !labels.insert(option.label.trim().to_lowercase()) {	display	two buttons with the same text cannot be told apart: equality, not interpretation (like G-04)
+crates/core/src/domain/rules.rs	return fail("unchanged", &format!("Task {} is already {} priority: nothing changed", task_id.0, format!("{priority:?}").to_lowercase()));	display	priority name inside a refusal message
+crates/core/src/views/card.rs	let extension = extension.to_ascii_lowercase();	display	text picked or cased for display
+crates/core/src/views/card.rs	let refusal = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.need.ends_with(crate::domain::api_refusal(error)))	display	card text re-chosen from its stored text, display only (G-01)
+crates/core/src/views/card.rs	markdown.lines().find_map(|line| line.strip_prefix("# ")).map(str::trim).filter(|title| !title.is_empty()).map(str::to_owned)	display	text picked or cased for display
+crates/core/src/views/card.rs	.filter(|line| !(line.trim_start().to_ascii_lowercase().starts_with("pr:") && line.contains(&marker)))	display	text picked or cased for display
+crates/core/src/views/card.rs	.filter(|text| report.as_deref().is_none_or(|report| !report.contains(*text) && !text.contains(report)))	display	text picked or cased for display
+web/app/components/device-label.tsx	{error instanceof Error && !(error instanceof ApiError) ? <p className="feedback error" role="alert">{error.message}</p> : error != null && <Feedback error={error}/>}	display	error text only shown
+apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("diff --git ") {	format	git diff headers
+apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("new file mode") { status = .added; continue }	format	git diff headers
+apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("deleted file mode") { status = .deleted; continue }	format	git diff headers
+apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("rename from ") {	format	git diff headers
+apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("rename to ") { path = String(raw.dropFirst(10)); continue }	format	git diff headers
+apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("Binary files ") || raw == "GIT binary patch" { binary = true; continue }	format	git diff headers
+apple/Mermaid/Sources/Parse/Sequence.swift	if let alias = text.range(of: " as ") {	format	Mermaid diagram syntax
+apple/Mermaid/Sources/Parse/State.swift	if line == "end note" {	format	Mermaid diagram syntax
+crates/alondra/src/account_native_smoke.rs	.to_ascii_lowercase()	format	environment variable names compare without case
+crates/alondra/src/cli.rs	let value = value.trim().to_ascii_lowercase();	format	flag or setting value
+crates/alondra/src/i18n.rs	let v = v.trim().to_ascii_lowercase();	format	flag or setting value
+crates/alondra/src/provider_accounts.rs	let email = rows.iter().find(|row| row.provider == provider && &row.id == id)?.email.as_deref()?.to_lowercase();	format	emails and account names compare without case
+crates/alondra/src/provider_accounts.rs	rows.iter().find(|row| row.provider == provider && &row.id != id && row.email.as_deref().is_some_and(|other| other.to_lowercase() == email))	format	emails and account names compare without case
+crates/alondra/src/report/extract.rs	while let Some(at) = rest.find("enum ") {	format	enum names read from Rust sources for the report's vocabulary
+crates/alondra/src/report/extract.rs	parts.last_mut().expect("a part").extend(c.to_lowercase());	format	enum names read from Rust sources for the report's vocabulary
+crates/alondra/src/report/extract.rs	let mut out = vec![variant.to_owned(), variant.to_lowercase(), parts.join("_"), parts.join("-")];	format	enum names read from Rust sources for the report's vocabulary
+crates/alondra/src/report/github.rs	if !url.starts_with(RAW_GISTS) {	format	GitHub gist URL
+crates/alondra/src/report/send.rs	let rest = text.strip_prefix("https://github.com/")?;	format	GitHub URL
+crates/alondra/src/service_setup.rs	anyhow::ensure!(config.agreement_key_path == format!("{prefix}/service-keys/{AGREEMENT_FILE}")	format	configured file paths
+crates/alondra/src/service_setup.rs	&& config.journal_path.as_deref() == Some(format!("{prefix}/service-receipts.sqlite").as_str()), "mixed service generation");	format	configured file paths
+crates/alondra/src/tui.rs	t.split_once(". ")	format	tuicr's export format: numbered comments
+crates/alondra/src/tui/dropped.rs	.map(|e| e.to_string_lossy().to_lowercase())	format	file extension or URL scheme
+crates/alondra/src/tui/md.rs	let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());	format	file extension or URL scheme
+crates/alondra/src/tui/unified_diff.rs	if let Some(header) = raw.strip_prefix("diff --git ") {	format	git diff headers
+crates/alondra/src/tui/unified_diff.rs	if raw.starts_with("new file mode") {	format	git diff headers
+crates/alondra/src/tui/unified_diff.rs	if raw.starts_with("deleted file mode") {	format	git diff headers
+crates/alondra/src/tui/unified_diff.rs	if let Some(from) = raw.strip_prefix("rename from ") {	format	git diff headers
+crates/alondra/src/tui/unified_diff.rs	if let Some(to) = raw.strip_prefix("rename to ") {	format	git diff headers
+crates/alondra/src/tui/unified_diff.rs	if raw.starts_with("Binary files ") || raw == "GIT binary patch" {	format	git diff headers
+crates/alondrad/src/domain_api.rs	for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {	format	git diff headers
+crates/alondrad/src/domain_messages.rs	hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest	format	digest hex
+crates/alondrad/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
+crates/alondrad/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
+crates/alondrad/src/launch_worktree.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
+crates/alondrad/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
+crates/alondrad/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
+crates/alondrad/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
+crates/alondrad/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
+crates/alondrad/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
+crates/alondrad/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
+crates/core/src/accounts.rs	if !names.insert(name.to_lowercase()) {	format	emails and account names compare without case
+crates/core/src/artifact.rs	if kind == "claude.ai/artifact/" && text[..i].ends_with("claude.ai/code/") {	format	artifact URL
+crates/core/src/config.rs	let flag = |v: String| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");	format	flag or setting value
+crates/core/src/domain/command.rs	let host = host.trim().to_ascii_lowercase();	format	host and repository names are case-insensitive
+crates/core/src/domain/command.rs	repository.trim().to_ascii_lowercase()	format	host and repository names are case-insensitive
+crates/core/src/domain/rules.rs	|| host != host.to_ascii_lowercase()	format	host and repository names are case-insensitive
+crates/core/src/domain/rules.rs	|| repo != repo.to_ascii_lowercase()	format	host and repository names are case-insensitive
+crates/core/src/launcher.rs	text.starts_with(NAME).then_some(text)	format	version string (D-20)
+crates/core/src/markdown/html.rs	let name = src[start..i].to_ascii_lowercase();	format	HTML tag and attribute names
+crates/core/src/markdown/html.rs	let key = src[key_start..i].to_ascii_lowercase();	format	HTML tag and attribute names
+crates/core/src/markdown/images.rs	let text = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_ascii_lowercase();	format	image type sniffed from its bytes
+crates/core/src/markdown/images.rs	} else if text.trim_start().starts_with("<svg") || (text.trim_start().starts_with("<?xml") && text.contains("<svg")) {	format	image type sniffed from its bytes
+crates/core/src/secret_destination.rs	let mut lines: Vec<String> = existing.lines().filter(|old| !old.trim_start().strip_prefix("export ").unwrap_or(old.trim_start()).starts_with(&prefix)).map(str::to_owned).collect();	format	export lines of a shell file
+crates/core/src/usage.rs	let plan: String = plan.unwrap_or_default().to_lowercase().chars().filter(char::is_ascii_alphanumeric).collect();	format	plan name from claude auth status JSON
+crates/core/src/views/summary.rs	if line.starts_with("diff --git ") {	format	git diff headers
+crates/relay/src/management/keycloak.rs	admin_realm.path() == format!("/admin/realms/{realm}/")	format	URL path of the configured realm
+crates/relay/src/management/keycloak.rs	&& token_url.path() == format!("/realms/{realm}/protocol/openid-connect/token")	format	URL path of the configured realm
+crates/relay/src/management/mod.rs	let value = input.trim().to_ascii_lowercase();	format	email or flag normalised
+crates/relay/src/management/waitlist.rs	let value = value.to_ascii_lowercase();	format	email or flag normalised
+crates/relay/src/push.rs	.strip_prefix("-----BEGIN PRIVATE KEY-----")	format	PEM armour of the APNs key
+crates/relay/src/push.rs	.and_then(|s| s.trim().strip_suffix("-----END PRIVATE KEY-----"))	format	PEM armour of the APNs key
+plugin/hooks/register.ts	if (step.value.stream !== 'stdout') continue	format	stream name of the mod's process API
+agent-host/diagnostics.ts	if (stream === process.stdout) readySink = (chunk, callback) => write(chunk, callback);	log	error text only logged or reported as a diagnostic
+agent-host/main.ts	session.finished.catch((error) => { process.stderr.write(String(error)); process.exitCode = 1; });	log	error text only logged or reported as a diagnostic
+agent-host/persistent-core.ts	return bounded((error as { message?: unknown })?.message) ?? bounded(String(error)) ?? 'Claude gave no reason';	log	error text only logged or reported as a diagnostic
+agent-host/persistent-core.ts	this.diagnostic('sdk_action_uncertain ' + ((error as { message?: string })?.message ?? String(error)));	log	error text only logged or reported as a diagnostic
+agent-host/persistent-main.ts	probe().then(() => process.exit(0), (error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`.slice(0, 512)); process.exit(1); });	log	error text only logged or reported as a diagnostic
+agent-host/probe.ts	const message = String((error as { message?: unknown })?.message ?? error).slice(0, 240);	log	error text only logged or reported as a diagnostic
+apple/Data/Account/Sources/Auth/AuthSession.swift	default: String(describing: type(of: error))	log	error type name for diagnostics
+apple/Data/Account/Sources/Connection/ConnectionClassifier.swift	default: String(describing: type(of: error))	log	error type name for diagnostics
+apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("Action intent store unavailable: \(String(describing: error), privacy: .public)")	log	error only logged
+apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("Could not set the unreadable action intent store aside: \(String(describing: error), privacy: .public)")	log	error only logged
+apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("A new action intent store failed to open: \(String(describing: error), privacy: .public)")	log	error only logged
+apple/Data/Feed/Sources/RequestObservation.swift	default: String(describing: type(of: error))	log	error type name for diagnostics
+plugin/hooks/register.ts	if (sent.exitCode !== 0) $.ui.log(`Alondra did not take ${report.event}: ${sent.stderr.trim()}`, { to: 'debug' })	log	stderr only shown in the log or the thrown error
+plugin/hooks/register.ts	if (sent.exitCode !== 0) $.ui.log(`Alondra did not take the ack of ${id}: ${sent.stderr.trim()}`, { to: 'debug' })	log	stderr only shown in the log or the thrown error
+plugin/hooks/register.ts	if (run.exitCode !== 0) throw new Error(`alondra node hold exited ${run.exitCode}: ${run.stderr.trim()}`)	log	stderr only shown in the log or the thrown error
+apple/Data/Feed/Sources/ViewTransport.swift	guard message != lastRetirement else { return }	own-grammar	compares two typed acknowledgments, not text
+apple/iOS/UI/Sources/Shared/CardParts.swift	let picked = composition.reason == option.id	own-grammar	compares an option id
+crates/alondra/src/client.rs	match route.strip_prefix(FILES) {	own-grammar	route grammar
+crates/alondra/src/direct_client.rs	let kind = kind.map(|kind| format!("{kind:?}").to_lowercase());	own-grammar	id built by Alondra
+crates/alondra/src/report/bundle.rs	let Some(id) = header.strip_prefix(HEADER).map(str::trim).filter(|id| is_id(id)) else {	own-grammar	report bundle header written by Alondra
+crates/alondra/src/report/send.rs	if let Some(issue) = repo.issues(&format!("creator={login}&state=all"))?.into_iter().find(|i| i.body.contains(&marker)) {	own-grammar	report deduplicated by its own marker (D-24)
+crates/alondra/src/tui.rs	if let Some(view) = self.card_view.clone().filter(|view| view.key == format!("card:{}", key.0)) {	own-grammar	view key grammar
+crates/alondra/src/tui/bindings.rs	_ => match hint.to_ascii_lowercase().as_str() {	own-grammar	key hint grammar
+crates/alondra/src/tui/inbox.rs	match hint.to_ascii_lowercase().as_str() {	own-grammar	key hint grammar
+crates/alondra/src/tui/view_render.rs	key.strip_prefix(SECTION_HEADER)	own-grammar	view key grammar
+crates/alondrad/src/claude_access.rs	command_id: format!("probe-{provider:?}-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),	own-grammar	id built by Alondra
+crates/alondrad/src/domain_store.rs	ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");	own-grammar	policy revision Alondra composes
+crates/alondrad/src/hook_text.rs	tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;	own-grammar	MCP tool name token mcp__<server>__<tool>
+crates/alondrad/src/orchestrator_provider.rs	if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {	own-grammar	policy revision Alondra composes
+crates/alondrad/src/views/actions.rs	value.as_bytes()[19].to_ascii_lowercase(),	own-grammar	operation id grammar
+crates/core/src/activity.rs	let alondra_call = h.event == "PostToolUse" && h.tool_name.as_deref().is_some_and(|t| t.starts_with(ALONDRA_TOOLS));	own-grammar	MCP tool name token mcp__<server>__<tool>
+crates/core/src/domain/cited_files.rs	let path = line.strip_prefix("## ")?.trim();	own-grammar	heading Alondra writes for an included file
+crates/core/src/domain/decisions.rs	let alondra = tool.is_some_and(|tool| tool.starts_with(crate::activity::ALONDRA_TOOLS))	own-grammar	MCP tool name token mcp__<server>__<tool>
+crates/core/src/markdown/images.rs	let reference = url.strip_prefix(ROUTE)?;	own-grammar	Alondra's own image route
+crates/core/src/markdown/images.rs	let name = reference.strip_prefix(FOLDER)?.strip_prefix('/')?;	own-grammar	Alondra's own image route
+crates/core/src/metrics/report.rs	_ => if let Some(version) = text.strip_prefix("release:").filter(|v| !v.is_empty()) {	own-grammar	metrics --compare argument grammar
+crates/core/src/metrics/report.rs	let day = text.strip_prefix("date:")?;	own-grammar	metrics --compare argument grammar
+crates/core/src/model_label.rs	let base = id.split('[').next().unwrap_or(id).trim().to_ascii_lowercase();	own-grammar	model id grammar
+crates/core/src/model_sheets.rs	let base = model.split('[').next().unwrap_or(model).trim().to_ascii_lowercase();	own-grammar	model id grammar
+crates/core/src/model_table.rs	Provider::Codex => bare.to_ascii_lowercase(),	own-grammar	model id grammar
+crates/core/src/operation_id.rs	value.as_bytes()[19].to_ascii_lowercase(),	own-grammar	operation id grammar
+crates/core/src/views/id.rs	if path != path.to_ascii_lowercase() {	own-grammar	id grammar
+crates/core/src/views/task_node.rs	let message = node.last_message.as_ref().filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())?;	own-grammar	MCP tool name token (P-05)
+crates/foundation/src/lib.rs	Ok(Self(value.to_ascii_lowercase()))	own-grammar	id grammar
+crates/provider-codex/src/normalizer.rs	let legacy:Vec<String>=state.work.keys().filter(|key|key.starts_with(LEGACY_CELL_WORK)).cloned().collect();	own-grammar	keys of our own state map
+crates/store/src/journal_format.rs	part.strip_prefix("CREATE ")	own-grammar	migration by equality with our own DDL (G-10)
+crates/store/src/journal_format.rs	let (kind, remaining) = if let Some(value) = body.strip_prefix("TABLE IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
+crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
+crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
+crates/alondra/src/account.rs	if header_host.is_none_or(|h| h.trim() != format!("127.0.0.1:{expected_port}")) {	security-parse	Host header of the loopback callback
+crates/alondra/src/report/canary.rs	let lowered = value.to_lowercase();	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/canary.rs	let lowered = text.to_lowercase();	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/canary.rs	let lowered = line.to_ascii_lowercase();	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/check/schema.rs	for prefix in ["domain.db could not be opened (", "domain.db could not be read (", "domain.db no se pudo abrir (", "domain.db no se pudo leer ("] {	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/check/schema.rs	for prefix in ["alondrad.log could not be read (", "alondrad.log no se pudo leer ("] {	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/private.rs	&& what == "the name of a repository"	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/private.rs	for sql in ["SELECT path FROM task_worktree_records", "SELECT dir FROM task_worktrees"] {	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/redact.rs	let reason_slot = template.pieces.iter().any(|piece| matches!(piece, Piece::Text(text) if text == ") for " || text == " started a turn while paused for "));	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/templates.rs	message[at..].starts_with(text.as_str()).then_some(at)	security-parse	privacy check of a failure report before it is sent
+crates/alondra/src/report/templates.rs	(message.len() >= at + text.len() && message.ends_with(text.as_str())).then(|| message.len() - text.len())	security-parse	privacy check of a failure report before it is sent
+crates/alondrad/src/domain_api.rs	.and_then(|value| value.strip_prefix("Bearer "));	security-parse	Authorization header scheme (RFC 6750)
+crates/alondrad/src/domain_api.rs	let Some(token) = header.to_str().ok().and_then(|value| value.strip_prefix("Bearer ")) else {	security-parse	Authorization header scheme (RFC 6750)
+crates/alondrad/src/domain_bootstrap.rs	.and_then(|value| value.strip_prefix("Bearer "));	security-parse	Authorization header scheme (RFC 6750)
+crates/alondrad/src/domain_bootstrap.rs	let bearer=headers.get("authorization").and_then(|header|header.to_str().ok()).and_then(|header|header.strip_prefix("Bearer ")).unwrap_or_default();	security-parse	Authorization header scheme (RFC 6750)
+crates/alondrad/src/domain_bootstrap.rs	let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else {	security-parse	Authorization header scheme (RFC 6750)
+crates/alondrad/src/domain_bootstrap.rs	let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else { return forbidden("A current node capability is required"); };	security-parse	Authorization header scheme (RFC 6750)
+crates/alondrad/src/domain_bootstrap.rs	let bearer = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "))	security-parse	Authorization header scheme (RFC 6750)
+crates/core/src/allow_always.rs	!text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+')) && !text.starts_with(['-', '.'])	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/allow_always.rs	'~' if word.as_ref().is_none_or(|w| w.text.is_empty() || w.text.ends_with(['=', ':'])) => return None,	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/allow_always.rs	if OVERWRITES.contains(&name) || (name == "sed" && words.iter().any(|w| w.text.starts_with("-i") || w.text.starts_with("--in-place"))) {	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/allow_always.rs	if sub == "-C" || sub == "-c" || words.iter().any(|w| w.text.starts_with("--git-dir") || w.text.starts_with("--work-tree") || w.text.starts_with("--exec-path")) {	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/allow_always.rs	if READ_ONLY_GIT.contains(&sub) && words.iter().any(|w| w.text.starts_with("--output") || w.text.starts_with("--ext-diff")) {	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/allow_for_task.rs	let has = |options: &[&str]| words.iter().any(|word| options.iter().any(|option| word.text.starts_with(option)));	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/node_guard.rs	let touches_key = |s: &str| s.contains(USER_KEY_FILE) || (s.contains("Application Support") && s.to_lowercase().contains("alondra"));	security-parse	shell command policy that parses the command it judges (G-12)
+crates/relay/src/auth.rs	.strip_prefix("Bearer ")?;	security-parse	Authorization header scheme (RFC 6750)
+crates/relay/src/auth.rs	.strip_prefix("Bearer ")	security-parse	Authorization header scheme (RFC 6750)
+crates/relay/src/auth.rs	.strip_prefix("Bearer ").context("expected Bearer token")?;	security-parse	Authorization header scheme (RFC 6750)
+crates/relay/src/main.rs	.and_then(|v| v.strip_prefix("Bearer "))	security-parse	Authorization header scheme (RFC 6750)
+apple/Features/Sources/NewRequest/RequestOptionsFeature.swift	!item.id.isEmpty && words.allSatisfy { item.label.lowercased().contains($0) }	user-search	filter typed by the user
+apple/macOS/Workspace/MacServiceWorkspace.swift	return text.localizedCaseInsensitiveContains(filterText)	user-search	filter typed by the user
+crates/alondra/src/tui.rs	self.input.text().trim().to_lowercase()	user-search	the TUI's search box
+crates/alondra/src/tui.rs	self.blocks[i].selectable() && self.blocks[i].plain().to_lowercase().contains(&q)	user-search	the TUI's search box
+crates/alondra/src/tui/work.rs	let query = query.trim().to_lowercase();	user-search	search or sort over text the user filters
+crates/alondra/src/tui/work.rs	.filter(|item| query.is_empty() || [item.label.as_str(), item.group.as_deref().unwrap_or_default(), item.description.as_deref().unwrap_or_default()].join(" ").to_lowercase().contains(&query))	user-search	search or sort over text the user filters
+crates/alondrad/src/classify.rs	text.to_lowercase()	user-search	search or sort over text the user filters
+crates/alondrad/src/scoped_reads.rs	if text.contains(&query.query) {	user-search	search or sort over text the user filters
+crates/core/src/issues.rs	let hay = format!("{} {} {}", self.reference(), self.title, self.labels.join(" ")).to_lowercase();	user-search	search or sort over text the user filters
+crates/core/src/issues.rs	query.to_lowercase().split_whitespace().all(|w| hay.contains(w))	user-search	search or sort over text the user filters
+crates/core/src/issues.rs	format!("{login} ({})", association.unwrap_or_default().to_lowercase())	user-search	search or sort over text the user filters
+crates/core/src/options.rs	out.sort_by_key(|(n, _)| n.to_lowercase());	user-search	search or sort over text the user filters
+crates/core/src/options.rs	out.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(b.nodes.cmp(&a.nodes)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));	user-search	search or sort over text the user filters
+crates/core/src/options.rs	let q = query.to_lowercase();	user-search	search or sort over text the user filters
+crates/core/src/options.rs	let mut out: Vec<String> = ranked.iter().filter(|n| q.split_whitespace().all(|w| n.to_lowercase().contains(w))).cloned().collect();	user-search	search or sort over text the user filters
+crates/core/src/views/misc.rs	.to_ascii_lowercase();	user-search	search or sort over text the user filters
+crates/core/src/views/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains(&q))	user-search	search or sort over text the user filters

@@ -25,6 +25,21 @@ sh_test(
     size = "small",
 )
 
+# Reads the checkout itself through the Makefile's runfiles link, so it is never cached: a glob
+# would not cross into the packages under crates/, apple/ and agent-host/.
+sh_test(
+    name = "prose_decisions_test",
+    srcs = ["tests/test_prose_decisions.py"],
+    data = [
+        "prose_decisions.py",
+        "prose_decisions_allowlist.tsv",
+        "testdata/prose_decisions_corpus.tsv",
+        "//:Makefile",
+    ],
+    size = "small",
+    tags = ["external", "local"],
+)
+
 sh_test(
     name = "load_bench_test",
     srcs = ["tests/test_load_bench.py"],

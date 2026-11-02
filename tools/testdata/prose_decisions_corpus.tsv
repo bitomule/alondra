@@ -1,0 +1,56 @@
+# Every finding of docs/architecture/typed-control-decisions.md §4 and §5, as it reads in the code
+# the audit found. Each line must stay detected: finding<TAB>language<TAB>snippet.
+D-01	rust	    let reason = reason.to_ascii_lowercase();
+D-01	rust	    has(reason, &["already merged", "was merged"])
+D-02	rust	                    if said.contains("already merged") || said.contains("was merged") {
+D-03	rust	            Ok(text) if text.contains(&format!("removed {short}")) => said = text,
+D-03	rust	            Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {
+D-04	rust	    text.contains("hit your") && text.contains("limit") && !text.contains("spend limit") && !text.contains("shared budget")
+D-04	rust	    let after = &text[text.to_lowercase().find("resets ")? + "resets ".len()..];
+D-05	rust	            && (self.input.is_some() || diagnostic.lines().any(|line| line.trim() == format!("No conversation found with session ID: {session}")))
+D-05	rust	                    && v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));
+D-06	rust	                if text=="Unexpected native decision in the Alondra orchestrator" {output.stream.error=Some(text.clone());exited=true;}
+D-07	rust	    let lower = error.to_ascii_lowercase();
+D-07	rust	    if lower.contains("http 404") || lower.contains("not found") {
+D-08	rust	    output.contains("No MCP server named")
+D-09	rust	        if !canonical.complete || canonical.text.contains("[shortened]"){return Err(failure(format!("Critical task context is incomplete: {}",canonical.omitted_sources.join(", "))).into())}
+D-10	rust	    match error.to_string().as_str() {
+D-11	rust	            Err(error) if error.to_string().contains("APNs budget") => {
+D-12	rust	        && String::from_utf8_lossy(&output.stderr).contains("Could not find service")
+D-12	rust	        .filter_map(|line| line.trim().strip_prefix("pid = "))
+D-12	rust	    let running = view.print.as_deref().map(|t| t.contains("state = running"));
+D-13	rust	                    || e.to_string().contains("could not launch")
+D-14	rust	    has(reason, &["http 404", "http 403"])
+D-14	rust	    let status = stderr.rsplit_once("(HTTP ").and_then(|(_, rest)| rest.split(')').next()).and_then(|s| s.trim().parse::<u16>().ok());
+D-14	rust	    let rate_limited = message.to_ascii_lowercase().contains("rate limit");
+D-15	rust	    Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output().ok()
+D-16	rust	        Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX)) =>
+D-16	rust	                    Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(alondra_core::domain::NODE_PAUSE_PREFIX)) => "paused",
+D-16	rust	        } else if id.0.starts_with(PACE_RESUME_PREFIX) && answer.option_id == PACE_RESUME_OPTION && pause.claim_card(&id.0)
+D-16	rust	        if open && id.0.starts_with(MACHINE_PREFIX) && current.as_deref() != Some(id.0.as_str()) {
+D-16	rust	        if card.author != Author::System || !card.id.0.starts_with(MCP_WAIT_PREFIX) {
+D-17	rust	    let listed = !lines.is_empty() && lines.iter().all(|line| line.starts_with("- ") || line.starts_with("* ") || line.chars().take_while(char::is_ascii_digit).count() > 0 && line.contains(". "));
+D-19	rust	            .any(|p| std::fs::read_to_string(p).map_or(true, |t| t.contains("/alondrad</string>"))),
+D-21	rust	    let line = text.lines().find(|l| l.contains("memory free percentage"))?;
+D-22	rust	            let aborted = message["terminal_reason"].as_str().is_some_and(|reason| reason.starts_with("aborted"));
+D-25	rust	        Err(crate::domain_store::StoreError::Storage(error)) if error.to_string().contains("UnsupportedCapability") => {
+C-01	rust	    let text = text.to_lowercase();
+C-02	rust	    let reason = reason.to_lowercase();
+C-03	rust	    let lower = line.to_ascii_lowercase();
+C-04	rust	    let rest = body.strip_prefix(MERGE_FAILED)?;
+C-05	rust	    if prompt.starts_with("[Alondra]")
+C-05	rust	        || HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))
+C-06	rust	    while let Some(i) = text[from..].find("t-").map(|i| from + i) {
+C-07	rust	    if options.iter().filter(|o| o.label.trim_end().ends_with("(Recommended)")).count() > 1 {
+G-11	rust	            .find(|grant| grant["key"] == "Offline Token")
+G-15	rust	            && serde_json::from_slice::<Value>(&answer).is_ok_and(|value| value["error"] == "wrong signature")
+G-14	rust	                    .is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))
+P-03	ts	    const message = (error as Error).message;
+P-04	rust	            "boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),
+A-01	swift	            && userInfo["_NSURLErrorNWPathKey"].map { String(describing: $0).localizedCaseInsensitiveContains("local network prohibited") } == true
+A-02	swift	                            if let priority = detail.priority, fact.label == priority.label {
+A-03	swift	            folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,
+A-04	swift	            if !detail.isEmpty { return .refused(detail) }
+A-06	swift	            case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final
+codex-mcp-denial	rust	                            let detail = bounded_public(&item.to_string(),16384).to_lowercase();
+codex-mcp-denial	rust	                            if detail.contains("forbidden") || detail.contains("permission_denied") || detail.contains("permission denied") || detail.contains("user denied") {

@@ -33,9 +33,15 @@ checks:
       - "tests/sandbox/journeys.sh"
       - "tests/sandbox/seed.sh"
       - "tests/system/macos/**"
+      - "tools/prose_decisions.py"
+      - "tools/prose_decisions_allowlist.tsv"
+      - "tools/testdata/prose_decisions_corpus.tsv"
+      - "tools/tests/test_prose_decisions.py"
+      - "web/app/**"
     with:
       targets:
         - //crates/...
+        - //tools:prose_decisions_test
         - //tools:sandbox_accounts_test
         - //tools/sandbox:alondra-sandbox_test
         - //tests/system/macos:local_daemon_test
@@ -60,6 +66,7 @@ checks:
       - "agent-host/**"
     with:
       targets:
+        - //tools:prose_decisions_test
         - //agent-host:sdk_test
         - //agent-host:release_host
         - //agent-host:sea_test
