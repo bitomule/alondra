@@ -16,7 +16,6 @@ crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-0
 crates/core/src/tasks/derive.rs	while let Some(i) = text[from..].find("t-").map(|i| from + i) {	finding:C-06	old view assigns PRs and reports by t- mentions
 crates/alondrad/src/node_close.rs	Ok(text) if text.contains(&format!("removed {short}")) => said = text,	finding:D-03	node close decided by the wording of claude rm
 crates/alondrad/src/node_close.rs	Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {	finding:D-03	node close decided by the wording of claude rm
-crates/provider-claude/src/mcp.rs	output.contains("No MCP server named")	finding:D-08	MCP removal failure counted as success by a phrase
 crates/alondra/src/doctor/checks.rs	let running = view.print.as_deref().map(|t| t.contains("state = running"));	finding:D-12	launchctl print output, not an API
 crates/alondra/src/setup.rs	&& String::from_utf8_lossy(&output.stderr).contains("Could not find service")	finding:D-12	launchctl print output, not an API
 crates/alondra/src/setup.rs	.filter_map(|line| line.trim().strip_prefix("pid = "))	finding:D-12	launchctl print output, not an API

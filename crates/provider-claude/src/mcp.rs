@@ -1,6 +1,7 @@
 //! How Claude Code's MCP servers read in Alondra's neutral terms: whose each one is, where Claude
 //! found it and how the user connects it.
 use alondra_foundation::{McpConnect, McpOrigin, McpScope, McpTraits};
+use std::path::{Path, PathBuf};
 
 /// The traits of a server Claude lists with `source` (its `scope` in `mcpServerStatus`), its
 /// transport (`config.type`) and `status`. Init lists no transport: a server that needs a sign-in
@@ -39,9 +40,28 @@ pub fn remove_arguments(name: &str, traits: McpTraits) -> Option<Vec<String>> {
     Some(["mcp", "remove", "--scope", scope, "--", name].map(str::to_owned).to_vec())
 }
 
-/// Whether what `claude mcp remove` wrote says the server was not in those settings any more.
-pub fn removal_found_nothing(output: &str) -> bool {
-    output.contains("No MCP server named")
+/// The file Claude Code keeps the user's own MCP servers in, and each project's private ones:
+/// `.claude.json` in its configuration folder (`CLAUDE_CONFIG_DIR`), or else in HOME.
+pub fn settings_file(profile: Option<&Path>, home: &Path) -> PathBuf {
+    profile.unwrap_or(home).join(".claude.json")
+}
+
+/// Whether `settings`, that file read as JSON, still has the server `name` where `traits` say it
+/// was: the top-level `mcpServers` for the user's settings, those of `project`'s entry for its
+/// private ones. `None` for a server Alondra does not delete.
+pub fn still_configured(settings: &serde_json::Value, name: &str, traits: McpTraits, project: &Path) -> Option<bool> {
+    let holds = |entry: &serde_json::Value| entry.get("mcpServers").and_then(|servers| servers.get(name)).is_some();
+    match traits.origin {
+        McpOrigin::UserSettings if traits.remove => Some(holds(settings)),
+        McpOrigin::LocalSettings if traits.remove => {
+            let project = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+            let projects = settings.get("projects").and_then(serde_json::Value::as_object);
+            Some(projects.into_iter().flatten()
+                .filter(|(key, _)| Path::new(key).canonicalize().unwrap_or_else(|_| PathBuf::from(key)) == project)
+                .any(|(_, entry)| holds(entry)))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -75,7 +95,24 @@ mod tests {
         }
         assert_eq!(remove_arguments("-x", mcp_traits(Some("user"), None, "connected")).unwrap().last().map(String::as_str), Some("-x"),
             "a name that looks like an option is still the name");
-        assert!(removal_found_nothing("No MCP server named \"linear\" in user scope"));
-        assert!(!removal_found_nothing("Removed MCP server linear from user config"));
+    }
+
+    #[test]
+    fn a_server_is_still_configured_only_while_its_scope_in_claude_json_names_it() {
+        let user = mcp_traits(Some("user"), Some("http"), "connected");
+        let local = mcp_traits(Some("local"), None, "connected");
+        let settings = serde_json::json!({
+            "mcpServers": {"linear": {"type": "http"}},
+            "projects": {"/work/quill": {"mcpServers": {"db": {}}}, "/work/lumo": {"mcpServers": {"linear": {}}}},
+        });
+        let quill = Path::new("/work/quill");
+        assert_eq!(still_configured(&settings, "linear", user, quill), Some(true));
+        assert_eq!(still_configured(&settings, "db", user, quill), Some(false), "a project's server is not the user's");
+        assert_eq!(still_configured(&settings, "db", local, quill), Some(true));
+        assert_eq!(still_configured(&settings, "linear", local, quill), Some(false), "another project's server is not this one's");
+        assert_eq!(still_configured(&serde_json::json!({}), "linear", user, quill), Some(false));
+        assert_eq!(still_configured(&settings, "linear", mcp_traits(Some("project"), None, "connected"), quill), None);
+        assert_eq!(settings_file(None, Path::new("/Users/me")), Path::new("/Users/me/.claude.json"));
+        assert_eq!(settings_file(Some(Path::new("/accounts/work")), Path::new("/Users/me")), Path::new("/accounts/work/.claude.json"));
     }
 }

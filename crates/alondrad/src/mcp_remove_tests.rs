@@ -21,8 +21,8 @@ fn target(name: &str, url: Option<&str>) -> String {
     McpServerKey { name: name.into(), url: url.map(Into::into) }.target()
 }
 
-/// A home with a fake `claude` that keeps each call's folder and arguments, and answers as Claude
-/// Code does: removed, not there (`missing`), or unable to write its settings (`broken`).
+/// A home with a fake `claude` that keeps each call's folder and arguments and removes the server,
+/// or fails with what `fails` holds and leaves `.claude.json` as the test wrote it.
 struct Fixture {
     home: crate::test_support::Directory,
     backend: SdkBackend,
@@ -37,8 +37,7 @@ impl Fixture {
         let native = home.join("claude");
         std::fs::write(&native, r#"#!/bin/sh
 printf '%s|%s\n' "$PWD" "$*" >> "$HOME/calls"
-if [ -e "$HOME/missing" ]; then echo "No MCP server named \"$6\" in user scope" >&2; exit 1; fi
-if [ -e "$HOME/broken" ]; then echo "Error: could not write the settings" >&2; exit 1; fi
+if [ -e "$HOME/fails" ]; then cat "$HOME/fails" >&2; exit 1; fi
 echo "Removed MCP server $6"
 "#).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -50,6 +49,11 @@ echo "Removed MCP server $6"
         };
         let projects = vec![ProjectEntry { name: "quill".into(), path: project, last_used: None, nodes: 0 }];
         Self { home, backend, projects }
+    }
+
+    fn fails(&self, output: &str, settings: serde_json::Value) {
+        std::fs::write(self.home.join("fails"), output).unwrap();
+        std::fs::write(self.home.join(".claude.json"), settings.to_string()).unwrap();
     }
 
     fn calls(&self) -> Vec<String> {
@@ -85,21 +89,39 @@ fn a_server_in_the_user_s_own_settings_is_deleted_through_claude_code() {
     assert!(matches!(&probes.snapshot()["lumo"], LiveMcpProbe::Checked { servers, .. } if servers.is_empty()), "a check that found it no longer lists it");
 }
 
+// Claude's words never decide: after a failure the server counts as deleted only when its scope in
+// `.claude.json` no longer has it.
 #[test]
-fn a_server_no_longer_in_the_settings_counts_as_deleted_and_a_failure_says_why() {
+fn a_failed_deletion_counts_as_done_only_when_the_settings_no_longer_have_the_server() {
     let fixture = Fixture::new();
-    let nodes = [node("zeta", 1, vec![server("linear", "user", Some(LINEAR))])];
+    let nodes = [node("zeta", 1, vec![server("linear", "user", Some(LINEAR)), server("db", "local", None)])];
+    let quill = fixture.projects[0].path.display().to_string();
+    let linear = target("linear", Some(LINEAR));
+    let db = format!("{}.{}", target("db", None), project_target("quill"));
+
     let probes = McpProbes::default();
-    std::fs::write(fixture.home.join("missing"), "").unwrap();
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &target("linear", Some(LINEAR))), Ok("linear".into()),
-        "deleted elsewhere since: it is gone, which is what the user asked");
-    std::fs::remove_file(fixture.home.join("missing")).unwrap();
-    std::fs::write(fixture.home.join("broken"), "").unwrap();
-    let probes = McpProbes::default();
-    let refused = remove(&nodes, &probes, &fixture.projects, &fixture.backend, &target("linear", Some(LINEAR))).unwrap_err();
-    assert_eq!(refused, (Some("linear".into()), Refused::Failed("Error: could not write the settings".into())));
-    assert_eq!(refused.1.message("linear", Lang::Es), "Claude Code no pudo borrar linear: Error: could not write the settings");
+    fixture.fails("No MCP server named \"linear\" in user scope", serde_json::json!({"mcpServers": {"linear": {"type": "http"}}}));
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &linear).unwrap_err(),
+        (Some("linear".into()), Refused::Failed("No MCP server named \"linear\" in user scope".into())),
+        "still in the user's settings, whatever Claude wrote");
     assert!(probes.removals().is_empty(), "a server Claude could not delete stays on the screen");
+
+    fixture.fails("Server linear not found", serde_json::json!({"mcpServers": {}, "projects": {quill.clone(): {"mcpServers": {"linear": {}}}}}));
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &linear), Ok("linear".into()),
+        "deleted elsewhere since: it is gone, which is what the user asked");
+
+    fixture.fails("Server db not found", serde_json::json!({"mcpServers": {"db": {}}, "projects": {quill.clone(): {"mcpServers": {"db": {}}}}}));
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &db).unwrap_err().1, Refused::Failed("Server db not found".into()),
+        "still in the project's private settings");
+    fixture.fails("Server db not found", serde_json::json!({"mcpServers": {"db": {}}, "projects": {quill.clone(): {"mcpServers": {}}}}));
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &db), Ok("db".into()), "only the project's own settings count");
+    assert_eq!(probes.removals().len(), 2);
+
+    fixture.fails("Error: could not write the settings", serde_json::json!({}));
+    std::fs::write(fixture.home.join(".claude.json"), "{not json").unwrap();
+    let refused = remove(&nodes, &McpProbes::default(), &fixture.projects, &fixture.backend, &linear).unwrap_err();
+    assert_eq!(refused, (Some("linear".into()), Refused::Failed("Error: could not write the settings".into())), "settings it cannot read are no proof");
+    assert_eq!(refused.1.message("linear", Lang::Es), "Claude Code no pudo borrar linear: Error: could not write the settings");
 }
 
 // A repository's shared settings, a plugin, the account's connector and the organization's server

@@ -10,7 +10,7 @@ use alondra_core::domain::{McpNodeReading, McpServerKey, McpServerState};
 use alondra_core::options::ProjectEntry;
 use alondra_core::views::mcp_servers::project_target;
 use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
-use alondra_foundation::McpOrigin;
+use alondra_foundation::{McpOrigin, McpTraits};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -26,6 +26,7 @@ const MAX_OUTPUT: u64 = 64 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Removal {
     pub(crate) key: McpServerKey,
+    pub(crate) traits: McpTraits,
     pub(crate) arguments: Vec<String>,
     /// The project whose own settings hold it; none for the user's settings of every project.
     pub(crate) project: Option<ProjectEntry>,
@@ -106,12 +107,13 @@ pub(crate) fn resolve(
         .filter(|node| node.servers.iter().any(|reported| key.names(reported) && reported.traits.origin == server.traits.origin))
         .map(|node| (node.agent.0.clone(), node.generation))
         .collect();
-    Ok((name, Removal { key, arguments, project, loaded }))
+    Ok((name, Removal { key, traits: server.traits, arguments, project, loaded }))
 }
 
 /// Runs the provider's deletion in `directory` with the native agent the nodes run, within
-/// `DEADLINE`. A server that was no longer in those settings counts as deleted.
-pub(crate) fn run(backend: &SdkBackend, arguments: &[String], directory: &Path) -> Result<(), String> {
+/// `DEADLINE`. When Claude fails, the server counts as deleted only if its settings, read again,
+/// no longer have it.
+pub(crate) fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> Result<(), String> {
     let backend = backend.for_start().map_err(|error| error.to_string())?;
     let mut command = match &backend.confinement {
         Some(profile) => {
@@ -121,7 +123,7 @@ pub(crate) fn run(backend: &SdkBackend, arguments: &[String], directory: &Path) 
         }
         None => Command::new(&backend.native),
     };
-    let mut child = command.args(arguments).current_dir(directory).env_clear().envs(&backend.native_environment)
+    let mut child = command.args(&removal.arguments).current_dir(directory).env_clear().envs(&backend.native_environment)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0)
         .spawn().map_err(|error| format!("could not start Claude Code: {error}"))?;
     let read = |mut pipe: Box<dyn Read + Send>| {
@@ -147,11 +149,20 @@ pub(crate) fn run(backend: &SdkBackend, arguments: &[String], directory: &Path) 
         return Err(format!("it did not answer within {} s", DEADLINE.as_secs()));
     };
     let status = child.wait().map_err(|error| error.to_string())?;
-    if status.success() || alondra_provider_claude::removal_found_nothing(&output) {
+    if status.success() || still_configured(&backend.native_environment, &removal.key.name, removal.traits, directory) == Some(false) {
         return Ok(());
     }
     let why = output.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("it gave no reason");
     Err(why.chars().take(240).collect())
+}
+
+/// Whether Claude's settings, read with the environment it runs in, still have the server. `None`
+/// when they cannot be read.
+fn still_configured(environment: &BTreeMap<String, String>, name: &str, traits: McpTraits, directory: &Path) -> Option<bool> {
+    let profile = alondra_core::claude_account::configured_profile(&|key: &str| environment.get(key).cloned());
+    let home = PathBuf::from(environment.get("HOME")?);
+    let settings = std::fs::read(alondra_provider_claude::settings_file(profile.as_deref(), &home)).ok()?;
+    alondra_provider_claude::still_configured(&serde_json::from_slice(&settings).ok()?, name, traits, directory)
 }
 
 /// Deletes the server `subject` names and has the screen stop listing it. `Ok` is its name.
@@ -167,7 +178,7 @@ pub(crate) fn remove(
         Some(project) => project.path.clone(),
         None => backend.native_environment.get("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/")),
     };
-    run(backend, &removal.arguments, &directory).map_err(|why| (Some(name.clone()), Refused::Failed(why)))?;
+    run(backend, &removal, &directory).map_err(|why| (Some(name.clone()), Refused::Failed(why)))?;
     log!("deleted the MCP server {name} from the agent's settings");
     probes.removed(LiveMcpRemoval { key: removal.key, loaded: removal.loaded }, removal.project.as_ref().map(|project| project.name.as_str()));
     Ok(name)
