@@ -695,7 +695,7 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
     create(&domain, "t1");
     start(&domain, "t1", 1_000);
     let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 };
+        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
     run(&domain, Actor::System, Command::RecordAccounts { accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve() });
     let record = |provider, windows| crate::usage_probe::record_for_provider(&domain, &AccountKey::new(provider, AccountId::default_account()),
         UsageReading { windows, plan: None, complete: true }, 1_000);

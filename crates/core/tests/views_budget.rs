@@ -274,7 +274,7 @@ fn real_size() -> DomainState {
     }
     state.accounts = ["default", "work", "team"].into_iter().map(|id| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: format!("Synthetic {id}"), state: AccountState::SignedIn,
-        native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }).collect();
     let accounts: Vec<AccountId> = state.accounts.iter().map(|account| account.id.clone()).collect();
     for (number, task) in state.tasks.values_mut().enumerate() {
@@ -292,7 +292,7 @@ fn model_controls_fixture(state: &mut DomainState) {
     use alondra_core::accounts::AccountKey;
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelCandidate, ModelKey, ModelProfile, ModelSelection, RoleModelPolicy, TaskSelection};
     state.accounts.push(AccountStatus { provider: Provider::Codex, id: AccountId::default_account(), name: "Synthetic Codex".into(), state: AccountState::SignedIn,
-        native_identity: None, email: Some("codex@example.invalid".into()), plan: Some("plus".into()), billing: AccountBilling::default(), sign_ins: 0 });
+        native_identity: None, email: Some("codex@example.invalid".into()), plan: Some("plus".into()), billing: AccountBilling::default(), sign_ins: 0, profile: None });
     state.account_order = state.accounts.iter().map(|account| AccountKey::new(account.provider, account.id.clone())).collect();
     state.account_config_version = "budget-account-order".into();
     state.model_profiles_version = "budget-model-profiles".into();

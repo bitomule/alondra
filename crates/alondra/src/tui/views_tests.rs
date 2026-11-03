@@ -631,7 +631,8 @@ fn settings_list_the_claude_accounts_between_general_and_mcp_servers_and_run_the
     select(&mut app, "Work");
     let screen = drawn(&mut app, 140, 80);
     for shown in ["Settings", "ACCOUNTS", "Default  Signed in", "someone@work.example · max_20x · weight 8, set by you",
-        "5 h 61 % · week 48 % · 1 node", "Personal  Signed out", "Old  Off", "Add a Claude account", "New work", "Most room first",
+        "5 h 61 % · week 48 % · 1 node", "Personal  Signed out",
+        "Open Terminal on the Mac, run CLAUDE_CONFIG_DIR=~/.alondra/accounts/personal claude and sign in with /login", "Old  Off", "Add a Claude account", "New work", "Most room first",
         "Move a node when its account runs out  Off", "Continue with the next eligible account in your order when quota runs out",
         "1 Weight   2 Move up   3 Move down   4 Turn off", "MCP SERVERS"] {
         assert!(screen.contains(shown), "{shown}: {screen}");
@@ -668,22 +669,21 @@ fn settings_list_the_claude_accounts_between_general_and_mcp_servers_and_run_the
 }
 
 #[test]
-fn adding_an_account_asks_its_name_then_signs_it_in_on_this_screen() {
+fn adding_an_account_asks_its_name_and_sends_it_without_signing_in() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = accounts_open("accounts-ios.json");
     select(&mut app, "Add a Claude account");
     press(&mut app, KeyCode::Char('1'));
-    assert!(matches!(&app.composer, Some(c) if matches!(c.target, Target::AccountName { .. })), "it asks only for a name");
     app.on_paste("Side project");
     let flow = app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(&flow, Flow::AccountSignIn(sign_in) if sign_in.args == ["accounts", "add", "Side project"]),
-        "the sign-in runs on the screen: {:?}", matches!(flow, Flow::Go));
+    assert!(matches!(flow, Flow::Go), "nothing runs on this screen");
+    let (_, body) = app.posted.borrow().last().cloned().unwrap();
+    assert!(body["action_id"].as_str().unwrap().starts_with("account_add:claude@"), "{body}");
+    assert_eq!(body["input"]["text"], "Side project");
 
     select(&mut app, "Personal");
-    let flow = app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
-    assert!(matches!(&flow, Flow::AccountSignIn(sign_in) if sign_in.args == ["accounts", "login", "Personal"]));
-    app.account_signed_in(Err(anyhow::anyhow!("That Claude account is already in Alondra as Default")));
-    assert!(drawn(&mut app, 140, 50).contains("That Claude account is already in Alondra as Default"));
+    let screen = drawn(&mut app, 140, 50);
+    assert!(!screen.contains("Sign in"), "a signed-out account has no sign-in button: {screen}");
 }
 
 /// A Mac that takes 22 nodes offers 23 choices: the first nine have a number, ↑↓ reach the rest.
@@ -807,20 +807,6 @@ fn provider_order_version_conflict_retains_the_draft_and_requires_explicit_reloa
     let draft = app.mcp_servers.as_ref().unwrap().order.as_ref().unwrap();
     assert!(!draft.conflict); assert_eq!(draft.version, "cfg-two"); assert_eq!(draft.keys()[0].wire_id(), "codex/work");
     press(&mut app, KeyCode::Esc); assert!(app.mcp_servers.as_ref().unwrap().order.is_none());
-}
-
-#[test]
-fn a_restored_account_composer_cannot_execute_another_cli_command() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let mut app = accounts_open("accounts-ios.json");
-    app.compose(Target::AccountName { provider: alondra_core::accounts::Provider::Codex, argv: vec!["accounts".into(), "remove".into()] }, "");
-    app.on_paste("Keep this name");
-    let flow = app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(flow, Flow::Go));
-    assert!(app.composer.is_some());
-    assert_eq!(app.flash.as_ref().unwrap().text, "Reload Accounts before adding this account");
-    let screen = drawn(&mut app, 140, 50);
-    assert!(screen.contains("Reload Accounts before adding this account"), "{screen}");
 }
 
 #[test]

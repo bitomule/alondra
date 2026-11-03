@@ -1686,10 +1686,6 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
             "Inicia sesión en {server} en el navegador y pega la dirección de la página que no carga"
         ),
         Target::AccountPosition => tr!("New position in the account order", "Posición nueva en el orden de cuentas").into(),
-        Target::AccountName { provider, .. } => {
-            let provider = alondra_core::views::accounts::provider_name(*provider);
-            trf!("Name of the new {provider} account; then finish native sign-in", "Nombre de la cuenta nueva de {provider}; después completa el inicio de sesión nativo")
-        },
         Target::ReportDescription { .. } => tr!(
             "What happened? Optional; it goes as you write it, anyone who sees the report can read it",
             "¿Qué pasó? Opcional; va tal cual lo escribas, lo podrá leer cualquiera que vea el informe"
@@ -1767,7 +1763,6 @@ fn composer_action(t: &Target) -> &'static str {
             tr!("sends it back", "la devuelve")
         }
         Target::Comment { .. } | Target::General { send: false } => tr!("saves", "guarda"),
-        Target::AccountName { .. } => tr!("adds it", "la añade"),
         Target::AccountPosition => tr!("moves it in the draft", "la mueve en el borrador"),
         Target::ReportDescription { .. } => tr!("builds the report", "crea el informe"),
         _ => tr!("sends", "envía"),

@@ -23,31 +23,6 @@ public struct ViewService: Codable, Equatable, Sendable {
     }
 }
 
-/// Only account operations may be opened in Terminal; argv is never a shell program.
-public enum AccountCommand {
-    public static func validatedArguments(_ argv: [String], provider: AccountProvider, adding: Bool) -> [String]? {
-        let prefix = ["accounts", adding ? "add" : "login", "--provider", provider.rawValue]
-        guard argv.starts(with: prefix), argv.count == prefix.count + (adding ? 0 : 1),
-              argv.allSatisfy({ !$0.contains("\0") && !$0.contains("\n") && !$0.contains("\r") }),
-              adding || argv.last.map({ !$0.isEmpty && !$0.hasPrefix("-") }) == true else { return nil }
-        return argv
-    }
-
-    public static func command(_ argv: [String], provider: AccountProvider, adding: Bool, newName: String? = nil) -> String? {
-        guard var arguments = validatedArguments(argv, provider: provider, adding: adding) else { return nil }
-        if adding {
-            guard let name = newName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
-                  !name.contains("\0") && !name.contains("\n") && !name.contains("\r") else { return nil }
-            arguments += ["--", name]
-        }
-        return (["alondra"] + arguments).map(shellQuoted).joined(separator: " ")
-    }
-
-    private static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-}
-
 public struct AccountIdentity: Codable, Equatable, Hashable, Sendable {
     public let provider: AccountProvider
     public let account: String

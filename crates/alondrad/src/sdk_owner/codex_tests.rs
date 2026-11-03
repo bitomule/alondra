@@ -5,7 +5,7 @@ fn configured(slice: &Slice, mode: &str) -> PathBuf {
     let state = slice.domain.state().unwrap();
     let mut accounts = state.accounts.clone();
     if !accounts.iter().any(|account| account.provider == Provider::Codex && account.id.is_default()) {
-        accounts.push(alondra_core::accounts::AccountStatus { provider: Provider::Codex, id: AccountId::default_account(), name: "Codex fixture".into(), state: alondra_core::accounts::AccountState::SignedIn, native_identity: Some("fixture-workspace".into()), email: Some("first@example.test".into()), plan: None, billing: Default::default(), sign_ins: 0 });
+        accounts.push(alondra_core::accounts::AccountStatus { provider: Provider::Codex, id: AccountId::default_account(), name: "Codex fixture".into(), state: alondra_core::accounts::AccountState::SignedIn, native_identity: Some("fixture-workspace".into()), email: Some("first@example.test".into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None });
     }
     slice.run(&system(), "codex-fixture-account", Command::RecordAccounts { accounts, reserve: state.account_reserve });
     slice.run(&system(), "codex-fixture-catalog", Command::RecordModelCatalog { catalog: AccountModelCatalog {
@@ -972,7 +972,7 @@ fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alon
     let account = accounts.iter_mut().find(|account| account.provider == Provider::Codex && account.id.is_default()).unwrap();
     account.email = Some("first@example.test".into()); account.native_identity = Some("fixture-workspace".into());
     accounts.push(alondra_core::accounts::AccountStatus { provider: Provider::Codex, id: AccountId::parse("spare").unwrap(), name: "Spare".into(), state: AccountState::SignedOut,
-        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 });
+        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None });
     slice.run(&system(), "current-codex-known-identity", Command::RecordAccounts { accounts, reserve: state.account_reserve });
     slice.run(&system(), "current-codex-configuration", Command::RecordAccountConfiguration {
         order: config.ordered_accounts().into_iter().map(|(key, _)| key).collect(), version: alondra_core::accounts::config_version(&config) });
@@ -1561,7 +1561,7 @@ fn claude_ready(slice:&Slice){
     let state=slice.domain.state().unwrap();
     let mut accounts=state.accounts.clone();
     accounts.retain(|account|!(account.provider==Provider::Claude && account.id.is_default()));
-    accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0});
+    accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0,profile:None});
     slice.run(&system(),"claude-fixture-account",Command::RecordAccounts{accounts,reserve:state.account_reserve});
     slice.run(&system(),"claude-fixture-catalog",Command::RecordModelCatalog{catalog:AccountModelCatalog{
         account:AccountKey::native(Provider::Claude),revision:"claude-catalog".into(),measured_at:1,native_default:Some("claude-fixture".into()),

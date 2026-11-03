@@ -310,14 +310,6 @@ impl Real {
         if running { self.start_service(Action::RestartService) } else { Ok(()) }
     }
 
-    fn sign_in(&self) -> Result<()> {
-        let mut command = self.context().map_err(anyhow::Error::msg)?.command()?;
-        let status = command.args(["auth", "login"]).stdout(std::io::stderr()).status().context("claude auth login")?;
-        if !status.success() {
-            bail!(tr!("Claude login did not finish; run `claude auth login`", "el inicio de sesión de Claude no terminó; ejecuta `claude auth login`"));
-        }
-        Ok(())
-    }
 }
 
 impl System for Real {
@@ -544,7 +536,6 @@ impl System for Real {
             Action::PrepareIdentity => crate::service_setup::prepare_local_quietly(&self.home).map(|_| ()),
             Action::RepairPlugin if self.sandbox.is_some() => Ok(()),
             Action::RepairPlugin => self.install().repair_plugin(),
-            Action::SignIn => self.sign_in(),
             Action::EnableRelay => self.enable_relay(),
             Action::SetProjects => Ok(()),
         };

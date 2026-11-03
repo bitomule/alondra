@@ -83,7 +83,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
                           as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
-    private static let englishMargin = #"[{"id":"claude_margin","label":"Claude · margin","value":0.0,"text":"0%","detail":"Every Claude account is at its limit: new work waits","level":"hot","parts":[{"label":"Principal","value":0.0,"text":"limit","detail":"At its limit; back in 2 h (14:30) · week 100% · 5 h 40%","level":"hot"},{"label":"Trabajo","value":0.0,"text":"signed out","detail":"Sign in on the Mac: alondra accounts login \"Trabajo\"","level":"hot"}]},{"id":"claude_five_hours","label":"Claude 5 h","value":0.4,"text":"40%","detail":"5-hour limit resets in 2 h (14:30)","level":"calm"}]"#
+    private static let englishMargin = #"[{"id":"claude_margin","label":"Claude · margin","value":0.0,"text":"0%","detail":"Every Claude account is at its limit: new work waits","level":"hot","parts":[{"label":"Principal","value":0.0,"text":"limit","detail":"At its limit; back in 2 h (14:30) · week 100% · 5 h 40%","level":"hot"},{"label":"Trabajo","value":0.0,"text":"signed out","detail":"Signed out. Open Terminal on the Mac, run CLAUDE_CONFIG_DIR=~/.alondra/accounts/trabajo claude and sign in with /login","level":"hot"}]},{"id":"claude_five_hours","label":"Claude 5 h","value":0.4,"text":"40%","detail":"5-hour limit resets in 2 h (14:30)","level":"calm"}]"#
 
     func test_popover_breaksTheMachineDownIntoRamAndCpu() throws {
         let status = try ContractCodec.decode(ViewStatus.self, from: Data(Self.status.utf8))

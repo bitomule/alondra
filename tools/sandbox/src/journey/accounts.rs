@@ -154,7 +154,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })
     });
-    report.case("A4", "Trabajo's sign-in expires: its task's card says to run alondra accounts login on the Mac, the account reads signed out and new work starts on the default", |report| {
+    report.case("A4", "Trabajo's sign-in expires: its task's card says to run claude with Trabajo's profile folder on the Mac and sign in with /login, the account reads signed out and new work starts on the default", |report| {
         let second = session(fakes, "t-acc2")?;
         mac.refuse(DEFAULT, None)?;
         mac.write_usage(DEFAULT, 10.0, 30.0, now_ms() + 3 * HOUR)?;
@@ -168,8 +168,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         report.step("Trabajo's sign-in expires: claude auth status says it is signed out", || mac.claude(WORK, &["auth", "logout"]))?;
         message(report, &user, "t-acc4", "Also add a test")?;
         let (_, card) = hold_card(report, &user, SIGNED_OUT_CARD, "t-acc4", "Sign in to the Claude account Trabajo on the Mac")?;
-        report.step("the card says what to run on the Mac: alondra accounts login \"Trabajo\"", || {
-            ensure!(mentions(&card, "run alondra accounts login \"Trabajo\""), "it reads {card}");
+        report.step("the card says what to run on the Mac: claude with Trabajo's profile folder, signing in with /login; Alondra never signs in", || {
+            ensure!(mentions(&card, &format!("/accounts/{WORK} claude and sign in with /login")), "it reads {card}");
+            ensure!(mentions(&card, "run CLAUDE_CONFIG_DIR="), "it reads {card}");
+            ensure!(!mentions(&card, "alondra accounts"), "it reads {card}");
             Ok(())
         })?;
         report.step("alondra accounts list on the Mac shows Trabajo signed out", || {

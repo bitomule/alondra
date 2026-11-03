@@ -68,8 +68,9 @@ fn take_from(path: &Path) -> Option<Restore> {
     let bytes = std::fs::read(path);
     let _ = std::fs::remove_file(path);
     let mut value: serde_json::Value = serde_json::from_slice(&bytes.ok()?).ok()?;
-    if value.pointer("/composer/target").and_then(serde_json::Value::as_str) == Some("AccountName") {
-        *value.pointer_mut("/composer/target")? = serde_json::json!({"AccountName":{"provider":"claude","argv":["accounts","add"]}});
+    let target = value.pointer("/composer/target");
+    if target.and_then(serde_json::Value::as_str) == Some("AccountName") || target.and_then(|target| target.get("AccountName")).is_some() {
+        *value.pointer_mut("/composer")? = serde_json::Value::Null;
     }
     serde_json::from_value(value).ok()
 }
@@ -126,15 +127,14 @@ mod tests {
         assert!(take_from(&path).is_none());
     }
     #[test]
-    fn an_old_account_name_composer_survives_upgrade_with_its_other_restore_state() {
+    fn an_old_account_name_composer_is_dropped_and_the_rest_of_the_restore_state_survives() {
         let root = crate::test_support::Directory::new();
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("legacy-restore.json");
         std::fs::write(&path, serde_json::to_vec(&serde_json::json!({"restarted_for":"old","screen":"tasks","schedules_open":false,"detail_focused":true,"sel":"card-keep","list_scroll":4,"detail_scroll":9,"task_sel":null,"task_scroll":2,"task_detail_scroll":1,"agent_sel":null,"agent_scroll":0,"agent_detail_scroll":0,"composer":{"target":"AccountName","text":"Side project","chips":[]}})).unwrap()).unwrap();
         let restored = take_from(&path).unwrap();
         assert_eq!(restored.sel.unwrap().0, "card-keep"); assert_eq!(restored.list_scroll, 4);
-        let composer = restored.composer.unwrap(); assert_eq!(composer.text, "Side project");
-        assert!(matches!(composer.target, Target::AccountName { provider: alondra_core::accounts::Provider::Claude, ref argv } if argv == &["accounts", "add"]));
+        assert!(restored.composer.is_none(), "adding an account no longer runs a command");
         assert!(!path.exists());
     }
 

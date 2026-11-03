@@ -20,7 +20,7 @@ impl DomainState {
             let billing = previous.filter(|previous| previous.billing == AccountBilling::PayPerUse).map_or_else(|| account.billing.clone(), |_| AccountBilling::PayPerUse);
             AccountStatus { provider: key.provider, id: key.account.clone(), name: account.name.clone(), billing,
                 state: if !account.enabled { AccountState::Disabled } else { previous.map_or(AccountState::Unchecked, |previous| if previous.state == AccountState::Disabled { AccountState::Unchecked } else { previous.state }) },
-                native_identity: previous.and_then(|previous| previous.native_identity.clone()), email: previous.and_then(|previous| previous.email.clone()), plan: previous.and_then(|previous| previous.plan.clone()), sign_ins: previous.map_or(0, |previous| previous.sign_ins) }
+                native_identity: previous.and_then(|previous| previous.native_identity.clone()), email: previous.and_then(|previous| previous.email.clone()), plan: previous.and_then(|previous| previous.plan.clone()), sign_ins: previous.map_or(0, |previous| previous.sign_ins), profile: previous.and_then(|previous| previous.profile.clone()) }
         }).collect();
         self.record_accounts(&statuses);
         self.account_order = ordered.into_iter().map(|(key, _)| key).collect();
@@ -83,6 +83,10 @@ impl DomainState {
             return match change {
                 AccountChange::SetPolicy { policy } if *policy == self.account_policy => fail("unchanged", "The accounts are already spread this way"),
                 AccountChange::SetMoveWhenExhausted { on } if *on == self.account_moves => fail("unchanged", "Moving nodes is already so"),
+                AccountChange::Connect if self.accounts.iter().any(|status| status.provider == provider) => fail("unchanged", "This provider is already connected"),
+                AccountChange::Add { .. } if !self.accounts.iter().any(|status| status.provider == provider) => fail("not_found", "Connect this provider before adding an account"),
+                AccountChange::Add { name } if name.trim().is_empty() || name.trim().chars().count() > 60 || name.chars().any(char::is_control) => fail("invalid_input", "An account name has 1 to 60 characters"),
+                AccountChange::Add { name } if self.accounts.iter().any(|other| other.provider == provider && other.name.trim().eq_ignore_ascii_case(name.trim())) => fail("invalid_input", "Another account already has this name"),
                 _ => Ok(()),
             };
         };
@@ -133,6 +137,7 @@ impl DomainState {
             }
             AccountChange::SetPolicy { policy } => self.account_policy = *policy,
             AccountChange::SetMoveWhenExhausted { on } => self.account_moves = *on,
+            AccountChange::Connect | AccountChange::Add { .. } => {}
             AccountChange::Enable { account } => {
                 if let Some(at) = at(self, account) {
                     self.accounts[at].state = AccountState::Unchecked;

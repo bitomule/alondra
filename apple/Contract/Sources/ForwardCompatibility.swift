@@ -50,4 +50,8 @@ extension KeyedDecodingContainer {
     func decodeKnownElementsIfPresent<Value: Decodable>(_ type: [Value].Type, forKey key: Key) throws -> [Value] {
         try decodeIfPresent([Known<Value>].self, forKey: key)?.compactMap(\.value) ?? []
     }
+
+    func decodeOfferedActions(forKey key: Key) throws -> [Action] {
+        try decodeIfPresent([Action].self, forKey: key)?.filter { $0.link?.isOffered ?? true } ?? []
+    }
 }

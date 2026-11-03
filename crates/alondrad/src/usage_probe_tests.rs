@@ -174,7 +174,7 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
     let account = AccountId::default_account();
     readiness_accounts(&domain, vec![AccountStatus {
         provider: Provider::Claude, id: account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }]);
     let key = AccountKey::native(Provider::Claude);
     let commands = [
@@ -277,7 +277,7 @@ fn the_readings_and_the_days_start_survive_a_restart() {
 
 fn two_accounts(domain: &DomainRuntime) {
     let accounts = ["default", "work"].map(|account| AccountStatus {
-        provider: Provider::Claude, id: id(account), name: account.into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        provider: Provider::Claude, id: id(account), name: account.into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }).to_vec();
     let read = domain.read();
     let envelope = CommandEnvelope {
@@ -329,7 +329,7 @@ fn readiness_accounts(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
 
 fn codex_status(state: AccountState) -> AccountStatus {
     AccountStatus { provider: Provider::Codex, id: id("default"), name: "Personal".into(), state, native_identity: None, email: None, plan: None,
-        billing: AccountBilling::default(), sign_ins: 0 }
+        billing: AccountBilling::default(), sign_ins: 0, profile: None }
 }
 
 #[test]

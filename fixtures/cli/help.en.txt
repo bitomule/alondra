@@ -18,7 +18,7 @@ Devices and Macs
   device       Devices that use a Mac  (list · approve · deny · remove · invite)
   mac          The Macs this terminal uses  (list · connect · forget · ping · reset-identity)
   account      Your Alondra account  (status · login · logout)
-  accounts     The Claude accounts nodes may run on  (list · add · login · enable · disable · remove · move)
+  accounts     The Claude accounts nodes may run on  (list · add · enable · disable · remove · move)
   relay        Notifications and access away from home  (status · on · off)
 
 More

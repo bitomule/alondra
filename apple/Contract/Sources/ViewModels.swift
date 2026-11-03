@@ -214,7 +214,7 @@ public struct ViewSection: Codable, Equatable, Sendable {
         items = try c.decode([ViewItem].self, forKey: .items); cardIds = try c.decodeIfPresent([String].self, forKey: .cardIds)
         more = try c.decodeIfPresent(More.self, forKey: .more); cardWaits = try c.decodeIfPresent([String].self, forKey: .cardWaits)
         style = try c.decodeIfPresent(String.self, forKey: .style)
-        actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        actions = try c.decodeOfferedActions(forKey: .actions)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -412,7 +412,7 @@ public struct Row: Codable, Equatable, Identifiable, Sendable {
         title = try c.decode(String.self, forKey: .title); subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
         badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; trailing = try c.decodeKnownIfPresent(Trailing.self, forKey: .trailing)
         depth = try c.decode(UInt8.self, forKey: .depth); struck = try c.decode(Bool.self, forKey: .struck)
-        children = try c.decodeIfPresent([Row].self, forKey: .children) ?? []; actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        children = try c.decodeIfPresent([Row].self, forKey: .children) ?? []; actions = try c.decodeOfferedActions(forKey: .actions)
         kind = (try? c.decodeIfPresent(CardKind.self, forKey: .kind)) ?? nil
         folded = try c.decodeIfPresent(Bool.self, forKey: .folded) ?? false
         account = try c.decodeKnownIfPresent(AccountPresentation.self, forKey: .account)
@@ -672,16 +672,23 @@ public enum Link: Codable, Equatable, Sendable {
         }
     }
 }
+public extension Link {
+    var isOffered: Bool {
+        switch self {
+        case .local(.accountAdd), .local(.accountSignIn): false
+        case .view, .url, .local: true
+        }
+    }
+}
+
 public enum LocalLink: Codable, Equatable, Sendable {
     case attach(session: String), reviewClone(repo: String, branch: String, pr: UInt64), openPath(path: String)
     /// Opens the sign-in to the MCP server the card's tasks wait for.
     case mcpSignIn(card: String, server: String)
     /// Has the nodes that wait for the card's MCP server read their sign-in again.
     case mcpReconnect(card: String)
-    /// Asks for the new Claude account's name, then signs it in by running `command` with the
-    /// shell-quoted name appended in Terminal on the daemon's Mac.
+    /// Sent by daemons older than the rule that the person signs in to a provider in their own terminal; no app acts on it.
     case accountAdd(command: String, provider: AccountProvider = .claude, argv: [String]? = nil)
-    /// Signs `account` in to Claude by running `command`, as is, in Terminal on the daemon's Mac.
     case accountSignIn(account: String, command: String, provider: AccountProvider = .claude, argv: [String]? = nil)
     private enum Keys: String, CodingKey { case kind, session, repo, branch, pr, path, card, server, command, account, provider, argv }
     public init(from decoder: Decoder) throws {

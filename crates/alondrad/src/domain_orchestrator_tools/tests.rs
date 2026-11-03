@@ -1725,7 +1725,7 @@ fn with_work_account(f: &Fixture) -> PathBuf {
     std::fs::create_dir_all(&folder).unwrap();
     let accounts = ["default", "work"].map(|id| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }).to_vec();
     command(&f.domain, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
     folder
@@ -1879,7 +1879,7 @@ fn connect_claude_and_codex(f: &Fixture) {
     config.set_order(keys.clone()).unwrap();
     std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
     let statuses = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).collect();
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }).collect();
     command(&f.domain, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::Share::of(config.distribution.reserve) });
     command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: keys.clone(), version: alondra_core::accounts::config_version(&config) });
     let model = |name: &str| CatalogModel { model: name.into(), display_name: name.into(), reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],

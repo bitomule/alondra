@@ -1734,9 +1734,13 @@ fn account_part(provider: Provider, line: &AccountLine, lang: Lang, now: Millis)
         }
         (AccountStand::Disabled, _) => match lang { Lang::En => "off", Lang::Es => "desactivada" }.to_owned(),
         (AccountStand::SignedOut, _) => {
+            let hint = match &line.sign_in {
+                Some(command) => alondra_core::views::accounts::command_hint(provider, command, lang),
+                None => alondra_core::views::accounts::named_hint(provider, &line.name, lang),
+            };
             lines.push(match lang {
-                Lang::En => format!("Signed out: sign in on the Mac with alondra accounts login \"{}\"", line.name),
-                Lang::Es => format!("Sin sesión: inicia sesión en el Mac con alondra accounts login \"{}\"", line.name),
+                Lang::En => format!("Signed out. {hint}"),
+                Lang::Es => format!("Sin sesión. {hint}"),
             });
             match lang { Lang::En => "signed out", Lang::Es => "sin sesión" }.to_owned()
         }
@@ -2053,7 +2057,7 @@ mod tests {
     fn line(name: &str, stand: AccountStand, week: Option<f64>, five: Option<f64>, today: Option<(f64, f64)>) -> AccountLine {
         let mut line = AccountLine { name: name.into(), stand, margin: week.map(|week| 1.0 - week / 100.0), week_percent: week,
             five_hour_percent: five, today_spent: today.map(|(spent, _)| spent), today_share: today.map(|(_, share)| share),
-            week_resets_at: Some(NOW + 4 * 24 * HOUR), five_hour_resets_at: Some(NOW + 2 * HOUR), measured_at: Some(NOW), state: None };
+            week_resets_at: Some(NOW + 4 * 24 * HOUR), five_hour_resets_at: Some(NOW + 2 * HOUR), measured_at: Some(NOW), state: None, sign_in: None };
         line.state = usage::usage_state(&line, usage::default_reserve());
         line
     }
@@ -2140,12 +2144,13 @@ mod tests {
         let mut out = room();
         out[0].accounts = vec![line("Principal", AccountStand::AtLimit { until: Some(NOW + 2 * HOUR) }, None, None, None),
             line("Trabajo", AccountStand::SignedOut, None, None, None)];
+        out[0].accounts[1].sign_in = Some("CLAUDE_CONFIG_DIR=~/.alondra/accounts/trabajo claude".into());
         let usage = usage_of(&out, Lang::Es);
         assert_eq!((usage.label.as_str(), usage.level), ("Claude", Level::Hot));
         assert!(usage.text.starts_with("sin margen · vuelve "), "{}", usage.text);
         let detail = usage.detail.unwrap();
         assert!(detail.starts_with("Claude no tiene margen: sus tareas nuevas esperan · vuelve en 2 h (") && detail.ends_with(") · Codex sigue"), "{detail}");
-        assert_eq!(usage.parts[1].lines, ["Sin sesión: inicia sesión en el Mac con alondra accounts login \"Trabajo\""]);
+        assert_eq!(usage.parts[1].lines, ["Sin sesión. Abre Terminal en el Mac, ejecuta CLAUDE_CONFIG_DIR=~/.alondra/accounts/trabajo claude e inicia sesión con /login"]);
         let alone = usage_of(&out[..1], Lang::En);
         assert!(!alone.detail.unwrap().contains("goes on"), "no one else to go on");
         let signed_out = [provider(Provider::Claude, vec![line("Trabajo", AccountStand::SignedOut, None, None, None)])];

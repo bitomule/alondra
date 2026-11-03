@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v3371aa80c6cf9a42",
+  "version": "v4e1024d8f0639859",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
@@ -473,7 +473,7 @@
               "text": "Signed out",
               "tone": "your_turn"
             },
-            "reason": "Sign in on the Mac to use this account",
+            "reason": "Open Terminal on the Mac, run CLAUDE_CONFIG_DIR=~/.alondra/accounts/personal claude and sign in with /login",
             "active_nodes": 0,
             "freshness": {
               "text": "Usage not reported",
@@ -494,28 +494,6 @@
           "depth": 0,
           "struck": false,
           "actions": [
-            {
-              "id": "",
-              "label": "Sign in",
-              "style": "primary",
-              "role": "advance",
-              "description": "Opens Claude sign-in on the Mac",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "account_sign_in",
-                  "account": "Personal",
-                  "command": "alondra accounts login 'personal'"
-                }
-              },
-              "resolves_card": false
-            },
             {
               "id": "account_weight:personal@6",
               "label": "Weight",
@@ -887,28 +865,25 @@
           "id": "claude-add",
           "icon": "action",
           "title": "Add a Claude account",
-          "subtitle": "Choose a name, then finish native sign-in on the Mac",
+          "subtitle": "Choose a name; then sign it in to Claude in Terminal on the Mac",
           "depth": 0,
           "struck": false,
           "actions": [
             {
-              "id": "",
+              "id": "account_add:claude@6",
               "label": "Add",
               "style": "primary",
               "role": "advance",
               "presentation": "button",
               "input": {
-                "kind": "none"
+                "kind": "text",
+                "placeholder": "Account name",
+                "required": true,
+                "multiline": false
               },
               "attachments": false,
               "enabled": true,
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "account_add",
-                  "command": "alondra accounts add"
-                }
-              },
+              "stamp": "Added",
               "resolves_card": false
             }
           ]
@@ -918,21 +893,23 @@
           "id": "codex-connect",
           "icon": "machine",
           "title": "Connect Codex",
-          "subtitle": "Use the session on the Mac, or sign in with a code on any device",
+          "subtitle": "Use the Codex session you signed in to on the Mac",
           "depth": 0,
           "struck": false,
           "actions": [
             {
-              "id": "account_login:default@6~codex",
+              "id": "provider_connect:codex@6",
               "label": "Connect",
               "style": "primary",
               "role": "advance",
+              "description": "On the Mac, run codex login",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
               "enabled": true,
+              "stamp": "Connected",
               "resolves_card": false
             }
           ]

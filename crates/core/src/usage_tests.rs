@@ -11,7 +11,7 @@ fn id(text: &str) -> AccountId {
 }
 
 fn status(text: &str, state: AccountState, billing: AccountBilling) -> AccountStatus {
-    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0 }
+    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None }
 }
 
 fn window(kind: WindowKind, used: f64, resets_at: Millis) -> WindowReading {
@@ -373,7 +373,7 @@ fn line(stand: AccountStand, week: Option<f64>, five: Option<f64>, today: Option
     let mut line = AccountLine {
         name: "Principal".into(), stand, margin: None, week_percent: week, five_hour_percent: five,
         today_spent: today.map(|(spent, _)| spent), today_share: today.map(|(_, share)| share),
-        week_resets_at: None, five_hour_resets_at: None, measured_at: None, state: None,
+        week_resets_at: None, five_hour_resets_at: None, measured_at: None, state: None, sign_in: None,
     };
     line.state = usage_state(&line, default_reserve());
     line

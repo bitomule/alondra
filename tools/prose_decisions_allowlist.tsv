@@ -64,8 +64,6 @@ apple/Mermaid/Sources/Parse/State.swift	if line == "end note" {	format	Mermaid d
 crates/alondra/src/account_native_smoke.rs	.to_ascii_lowercase()	format	environment variable names compare without case
 crates/alondra/src/cli.rs	let value = value.trim().to_ascii_lowercase();	format	flag or setting value
 crates/alondra/src/i18n.rs	let v = v.trim().to_ascii_lowercase();	format	flag or setting value
-crates/alondra/src/provider_accounts.rs	let email = rows.iter().find(|row| row.provider == provider && &row.id == id)?.email.as_deref()?.to_lowercase();	format	emails and account names compare without case
-crates/alondra/src/provider_accounts.rs	rows.iter().find(|row| row.provider == provider && &row.id != id && row.email.as_deref().is_some_and(|other| other.to_lowercase() == email))	format	emails and account names compare without case
 crates/alondra/src/report/extract.rs	while let Some(at) = rest.find("enum ") {	format	enum names read from Rust sources for the report's vocabulary
 crates/alondra/src/report/extract.rs	parts.last_mut().expect("a part").extend(c.to_lowercase());	format	enum names read from Rust sources for the report's vocabulary
 crates/alondra/src/report/extract.rs	let mut out = vec![variant.to_owned(), variant.to_lowercase(), parts.join("_"), parts.join("-")];	format	enum names read from Rust sources for the report's vocabulary

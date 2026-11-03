@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
-    io::{IsTerminal, Read},
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -79,14 +79,6 @@ pub(crate) fn effective_username() -> Result<String> {
         bail!(tr!("effective OS account has an empty username", "la cuenta efectiva del sistema tiene el nombre de usuario vacío"));
     }
     Ok(name.to_owned())
-}
-
-/// The Claude profile the installed daemon runs its nodes' default account with, read from its
-/// launchd job: `None` for Claude's default profile, or with no daemon installed.
-pub fn installed_profile(user_home: &Path) -> Option<PathBuf> {
-    let label = alondra_core::config::Config::load().map(|c| c.service_label).unwrap_or_else(|_| alondra_core::config::Config::defaults().service_label);
-    let job = crate::setup::read_plist(&user_home.join("Library/LaunchAgents").join(format!("{label}.plist"))).ok()?;
-    job_profile(&job)
 }
 
 /// The profile a launchd job's environment names, as the daemon reads its own.
@@ -183,44 +175,6 @@ impl ContextEnv {
             .context(tr!("Claude took too long to say whether it is signed in", "Claude tardó demasiado en decir si hay sesión iniciada"))??;
         parse_status(exit.success(), &bytes)
     }
-
-    fn login(&self) -> Result<()> {
-        println!("Claude Code needs its own login. Opening `claude auth login`…");
-        self.sign_in()
-    }
-
-    /// `claude auth login` in this terminal, for this context's profile.
-    pub(crate) fn sign_in(&self) -> Result<()> {
-        let mut child = self
-            .command()?
-            .args(["auth", "login"])
-            .spawn()
-            .context(tr!("could not start the Claude sign-in", "no se pudo empezar a iniciar sesión en Claude"))?;
-        if !wait(&mut child, Duration::from_secs(300))?.success() {
-            bail!(tr!(
-                "Claude login did not finish; run `claude auth login`, then run `alondra doctor --fix`",
-                "el inicio de sesión de Claude no terminó; ejecuta `claude auth login` y ejecuta `alondra doctor --fix`"
-            ));
-        }
-        Ok(())
-    }
-
-    /// `claude auth logout` for this context's profile, which removes its sign-in from the Keychain.
-    pub(crate) fn sign_out(&self) -> Result<()> {
-        let status = self.command()?.args(["auth", "logout"]).stdin(Stdio::null()).status().context(tr!("could not start the Claude sign-out", "no se pudo empezar a cerrar la sesión de Claude"))?;
-        if !status.success() {
-            bail!(tr!("Claude could not sign the account out", "Claude no pudo cerrar la sesión de la cuenta"));
-        }
-        Ok(())
-    }
-
-    pub fn ensure(&self, no_input: bool) -> Result<()> {
-        ensure_with(
-            !no_input && std::io::stdin().is_terminal(),
-            || self.status(),
-            || self.login(),
-        )
-    }
 }
 
 fn wait(child: &mut std::process::Child, timeout: Duration) -> Result<std::process::ExitStatus> {
@@ -253,30 +207,6 @@ fn parse_status(success: bool, bytes: &[u8]) -> Result<bool> {
     }
 }
 
-fn ensure_with(
-    interactive: bool,
-    mut status: impl FnMut() -> Result<bool>,
-    mut login: impl FnMut() -> Result<()>,
-) -> Result<()> {
-    if status()? {
-        return Ok(());
-    }
-    if !interactive {
-        bail!(tr!(
-            "Claude Code is not signed in. Run `claude auth login` for this Mac user, then run `alondra doctor --fix`",
-            "Claude Code no tiene la sesión iniciada. Ejecuta `claude auth login` con este usuario de Mac y ejecuta `alondra doctor --fix`"
-        ));
-    }
-    login()?;
-    if !status()? {
-        bail!(tr!(
-            "Claude Code is still not signed in; complete `claude auth login` and run `alondra doctor --fix`",
-            "Claude Code sigue sin tener la sesión iniciada; completa `claude auth login` y ejecuta `alondra doctor --fix`"
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,38 +237,6 @@ mod tests {
                 .to_string()
                 .contains("install Claude Code")
         );
-    }
-    #[test]
-    fn noninteractive_never_starts_login() {
-        assert!(ensure_with(false, || Ok(false), || panic!("must not login")).is_err());
-        assert!(ensure_with(false, || Ok(true), || panic!("must not login")).is_ok());
-        assert!(
-            ensure_with(
-                true,
-                || bail!("corrupt status"),
-                || panic!("must not login")
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn interactive_rechecks_after_login() {
-        let mut checks = 0;
-        let mut logins = 0;
-        ensure_with(
-            true,
-            || {
-                checks += 1;
-                Ok(checks == 2)
-            },
-            || {
-                logins += 1;
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!((checks, logins), (2, 1));
-        assert!(ensure_with(true, || Ok(false), || Ok(())).is_err());
     }
     #[test]
     fn status_executes_daemon_binary_in_its_home_and_config() {
@@ -431,8 +329,6 @@ fi
             6,
             "only explicit identity/path/profile variables are passed"
         );
-        // The same command factory is used for interactive login and plugin operations.
-        context.ensure(true).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

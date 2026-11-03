@@ -229,7 +229,7 @@ mod tests {
         let runtime = DomainRuntime::open(&home).unwrap();
         seed(&runtime, Command::RecordAccounts { accounts: keys.iter().map(|key| AccountStatus {
             provider: key.provider, id: key.account.clone(), name: key.provider.as_str().into(), state: AccountState::SignedIn,
-            native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+            native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
         }).collect(), reserve: alondra_core::usage::default_reserve() });
         seed(&runtime, Command::RecordAccountConfiguration { order: keys, version: "old-order".into() });
         seed(&runtime, Command::RecordModelProfiles { profiles: Default::default(), version: alondra_core::model_selection::profiles_version(&Default::default()) });

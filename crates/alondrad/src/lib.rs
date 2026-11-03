@@ -57,7 +57,6 @@ use alondra_daemon_support::schedule_clock;
 
 mod account_move;
 mod accounts;
-mod codex_sign_in;
 mod native_probe;
 mod allow_always;
 mod operation_journal;
@@ -622,7 +621,7 @@ async fn serve_domain(
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();
-    client.codex_sign_ins.recover_after_backend();
+    accounts::end_abandoned_sign_ins(&domain);
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr)

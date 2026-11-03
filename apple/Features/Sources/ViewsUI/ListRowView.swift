@@ -165,6 +165,7 @@ struct ListToneSymbol: View {
         case (.project, _): "folder.fill"
         case (.action, nil): "plus"
         case (.node, nil): "arrow.triangle.branch"
+        case (.machine, nil): "desktopcomputer"
         default: ListTone.symbol(tone)
         }
     }

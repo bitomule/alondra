@@ -6,8 +6,7 @@ import Foundation
 /// A part of Settings the daemon draws: it observes one view, shows its sections and runs their
 /// actions through `ActionFeature`, as every server-driven screen does. The only links it handles
 /// itself are the MCP sign-in and reconnect, which open the sign-in sheet here (Settings is a sheet
-/// of its own, and another sheet can only open from it), and the Claude account ones, whose command
-/// runs in Terminal on the daemon's Mac.
+/// of its own, and another sheet can only open from it).
 @Reducer public struct ServerSettingsFeature: Sendable {
     @ObservableState public struct State: Equatable {
         public let key: ViewKey
@@ -16,9 +15,6 @@ import Foundation
         public var notice: String?
         public var error: String?
         @Presents public var signIn: McpSignInFeature.State?
-        public var newAccount: NewAccount?
-        public var claudeSignIn: ClaudeSignIn?
-        public var macName: String?
         public var accountDetail: AlondraContract.Row?
         public var afterAccountDetail: AccountDetailCommand?
         public var orderDraft: AccountOrderDraft?
@@ -52,47 +48,14 @@ import Foundation
         case actions(ActionFeature.Action)
         case reconnected(McpSignInFeature.Failure?)
         case signIn(PresentationAction<McpSignInFeature.Action>)
-        case newAccountNameChanged(String), newAccountAdded, newAccountCancelled
-        case terminalAnswered(command: String, opened: Bool, provider: AccountProvider = .claude, macName: String? = nil)
-        case claudeSignInPresented(ClaudeSignIn?)
         case accountOpened(String), accountDetailPresented(AlondraContract.Row?)
         case fromAccountDetail(AccountDetailCommand), accountDetailClosed
         case orderBegan, orderMoved(String, to: Int), orderRowsMoved(IndexSet, to: Int), orderSaved
         case orderDraftPresented(AccountOrderDraft?)
     }
 
-    /// The name the person gives a new Claude account before it signs in.
-    public struct NewAccount: Equatable, Sendable {
-        public let command: String
-        public let provider: AccountProvider
-        public let argv: [String]?
-        public var name = ""
-        public var canAdd: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        public init(command: String, name: String = "", provider: AccountProvider = .claude, argv: [String]? = nil) {
-            self.command = command; self.name = name; self.provider = provider; self.argv = argv
-        }
-    }
-
-    /// A provider sign-in left for the person to finish in Terminal: on this Mac, where Terminal is
-    /// open with the command copied, or on the daemon's Mac.
-    public struct ClaudeSignIn: Equatable, Identifiable, Sendable {
-        public let command: String
-        public let terminalOpen: Bool
-        public let provider: AccountProvider
-        public let macName: String?
-        public var id: String { command }
-        public init(command: String, terminalOpen: Bool, provider: AccountProvider = .claude, macName: String? = nil) {
-            self.command = command; self.terminalOpen = terminalOpen; self.provider = provider; self.macName = macName
-        }
-    }
-
-    public static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.mcpSignIn) var mcpSignIn
-    @Dependency(\.claudeTerminal) var claudeTerminal
     private enum CancelID { case observe }
     public init() {}
 
@@ -201,52 +164,9 @@ import Foundation
                         await send(.reconnected(nil))
                     } catch { await send(.reconnected(McpSignInFeature.failure(of: error, opening: true))) }
                 }
-            case let .follow(.local(.accountAdd(command, provider, argv))):
-                guard provider == .claude && argv == nil || argv.flatMap({ AccountCommand.validatedArguments($0, provider: provider, adding: true) }) != nil else {
-                    state.error = String(localized: "This account action is unavailable. Update Alondra and try again.")
-                    return .none
-                }
-                state.newAccount = NewAccount(command: command, provider: provider, argv: argv)
+            case .follow(.local(.accountAdd)), .follow(.local(.accountSignIn)):
                 return .none
-            case let .follow(.local(.accountSignIn(account, command, provider, argv))):
-                if let argv {
-                    guard provider != .codex || argv.last == account,
-                          let command = AccountCommand.command(argv, provider: provider, adding: false) else {
-                        state.error = String(localized: "This account action is unavailable. Update Alondra and try again.")
-                        return .none
-                    }
-                    return openTerminal(command, provider: provider, macName: state.macName)
-                }
-                guard provider == .claude else {
-                    state.error = String(localized: "This account action is unavailable. Update Alondra and try again.")
-                    return .none
-                }
-                return openTerminal(command, macName: state.macName)
             case .follow:
-                return .none
-            case .newAccountNameChanged(let name):
-                state.newAccount?.name = name
-                return .none
-            case .newAccountAdded:
-                guard let account = state.newAccount, account.canAdd else { return .none }
-                let name = account.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                let command: String
-                if let argv = account.argv {
-                    guard let rendered = AccountCommand.command(argv, provider: account.provider, adding: true, newName: name) else { return .none }
-                    command = rendered
-                } else {
-                    command = "\(account.command) \(Self.shellQuoted(name))"
-                }
-                state.newAccount = nil
-                return openTerminal(command, provider: account.provider, macName: state.macName)
-            case .newAccountCancelled:
-                state.newAccount = nil
-                return .none
-            case let .terminalAnswered(command, opened, provider, macName):
-                state.claudeSignIn = ClaudeSignIn(command: command, terminalOpen: opened, provider: provider, macName: macName)
-                return .none
-            case .claudeSignInPresented(let signIn):
-                state.claudeSignIn = signIn
                 return .none
             case .reconnected(let failure):
                 switch McpSignInFeature.reconnectNotice(failure) {
@@ -300,12 +220,6 @@ import Foundation
             }
         }
         .ifLet(\.$signIn, action: \.signIn) { McpSignInFeature() }
-    }
-
-    private func openTerminal(_ command: String, provider: AccountProvider = .claude, macName: String? = nil) -> Effect<Action> {
-        .run { [claudeTerminal] send in
-            await send(.terminalAnswered(command: command, opened: await claudeTerminal.open(command), provider: provider, macName: macName))
-        }
     }
 }
 

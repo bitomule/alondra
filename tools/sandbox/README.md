@@ -159,8 +159,9 @@ that its working task has a native session and positive simulated tokens recorde
   - A3: with Trabajo out too the Mac waits, a reopened task reads «Didn't start · Claude usage ran
     out» and nothing starts; once Claude reports Trabajo's window reset, both start on Trabajo, its
     held task goes on, and the default's still waits.
-  - A4: Trabajo's sign-in expires: its task's card says to run `alondra accounts login "Trabajo"`,
-    `alondra accounts list` shows it signed out, a new task starts on the default and the default's
+  - A4: Trabajo's sign-in expires: its task's card says to run `CLAUDE_CONFIG_DIR=<its folder> claude`
+    on the Mac and sign in with `/login` (Alondra never signs in), `alondra accounts list` shows it
+    signed out, a new task starts on the default and the default's
     held task goes on. Trabajo is removed afterwards.
 - B1, after them: the sandbox's `claude` ran only as the SDK host's native Claude, never `--bg` or `-p`.
 

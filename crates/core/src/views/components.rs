@@ -751,9 +751,8 @@ pub enum LocalLink {
     McpReconnect {
         card: String,
     },
-    /// The client asks for the new account's name, then signs it in on the Mac: the terminal
-    /// runs `command` followed by the name, the Mac app opens Terminal with it, and the iPhone
-    /// shows it to finish on the Mac.
+    /// Sent only by older daemons, which had the client sign a new account in on the Mac. Kept so
+    /// their views still decode; Alondra never signs in to a provider, so clients do nothing with it.
     AccountAdd {
         command: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -761,7 +760,7 @@ pub enum LocalLink {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         argv: Option<Vec<String>>,
     },
-    /// The client signs the account in on the Mac, as for `AccountAdd`, with `command` whole.
+    /// Sent only by older daemons, as `AccountAdd`, for an account to sign in.
     AccountSignIn {
         account: String,
         command: String,

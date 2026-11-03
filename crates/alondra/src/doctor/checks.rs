@@ -437,18 +437,17 @@ pub fn profile_check(profile: Result<Option<String>, String>, home: &Path) -> Ou
     }
 }
 
+/// Alondra never signs in to a provider: the person does it with the provider's own tool.
+fn claude_sign_in() -> &'static str {
+    tr!("run claude in Terminal and sign in with /login, then alondra doctor", "ejecuta claude en Terminal e inicia sesión con /login; después, alondra doctor")
+}
+
 pub fn signin_check(result: anyhow::Result<bool>) -> Outcome {
     match result {
         Ok(true) => outcome("claude.signin", "sign-in", Group::Claude, Status::Pass,
             tr!("signed in for the daemon", "sesión iniciada para el servidor"), None),
-        Ok(false) => outcome("claude.signin", "sign-in", Group::Claude, Status::Fail, tr!("not signed in", "sin sesión iniciada"),
-            Some(Fix::Ask {
-                question: tr!("Sign in to Claude Code now? It opens your browser.", "¿Inicias sesión en Claude Code ahora? Se abre el navegador.").into(),
-                default: true,
-                action: Action::SignIn,
-                instead: tr!("claude auth login, then alondra doctor --fix", "claude auth login, y después alondra doctor --fix").into(),
-            })),
-        Err(error) => outcome("claude.signin", "sign-in", Group::Claude, Status::Fail, error.to_string(), manual("claude auth login")),
+        Ok(false) => outcome("claude.signin", "sign-in", Group::Claude, Status::Fail, tr!("not signed in", "sin sesión iniciada"), Some(Fix::Person(claude_sign_in().into()))),
+        Err(error) => outcome("claude.signin", "sign-in", Group::Claude, Status::Fail, error.to_string(), manual(claude_sign_in())),
     }
 }
 
@@ -527,7 +526,7 @@ fn run_codex_signin(env: &Env) -> Option<Outcome> {
     Some(if signed_in { outcome("codex.signin", "Codex sign-in", Group::Service, Status::Pass,
         tr!("The latest account check reports an enabled Codex session", "La última comprobación indica una sesión de Codex habilitada"), None) }
     else { outcome("codex.signin", "Codex sign-in", Group::Service, Status::Warn,
-        tr!("No enabled Codex session is available. Sign in from Accounts.", "No hay ninguna sesión de Codex habilitada disponible. Inicia sesión desde Cuentas."), manual("alondra accounts --provider codex login default")) })
+        tr!("No enabled Codex session is available. Sign in with Codex on the Mac.", "No hay ninguna sesión de Codex habilitada disponible. Inicia sesión con Codex en el Mac."), Some(Fix::Person("codex login".into()))) })
 }
 fn run_claude(env: &Env) -> Option<Outcome> {
     if !connected(env, alondra_core::accounts::Provider::Claude) { return None; }

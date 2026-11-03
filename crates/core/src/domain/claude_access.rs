@@ -440,6 +440,7 @@ impl DomainState {
                     status.email = prior.and_then(|prior| prior.email.clone());
                 }
                 if status.native_identity.is_none() { status.native_identity = prior.and_then(|prior| prior.native_identity.clone()); }
+                if status.profile.is_none() { status.profile = prior.and_then(|prior| prior.profile.clone()); }
                 let was_out = prior.is_some_and(|prior| prior.state == AccountState::SignedOut);
                 let key = AccountKey::new(status.provider, status.id.clone());
                 let identity_changed = prior.is_some_and(|prior|
@@ -541,7 +542,7 @@ mod credential_identity_tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut state = DomainState::new("epoch");
             let mut seen = AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-                native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 999 };
+                native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 999, profile: None };
             state.record_accounts(&[seen.clone()]); assert_eq!(state.accounts[0].sign_ins,0);
             seen.email = Some("first@example.invalid".into());
             state.record_accounts(&[seen.clone()]); assert_eq!(state.accounts[0].sign_ins,0,"discovering an identity is not proof it changed");
@@ -561,7 +562,7 @@ mod credential_identity_tests {
 
     fn account(provider: Provider, email: &str) -> AccountStatus {
         AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-            native_identity: None, email: Some(email.into()), plan: None, billing: AccountBilling::default(), sign_ins: 0 }
+            native_identity: None, email: Some(email.into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
     }
 
     fn cache(state: &mut DomainState, key: &AccountKey) {

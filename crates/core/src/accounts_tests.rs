@@ -17,7 +17,7 @@ fn connected_providers_do_not_synthesize_unrelated_native_accounts() {
 fn global_eligibility_follows_account_order_without_weights_or_phantom_defaults() {
     let keys = [AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex), AccountKey::new(Provider::Claude, AccountId::parse("work").unwrap())];
     let mut accounts: Vec<_> = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: key.wire_id(),
-        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).collect();
+        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }).collect();
     assert_eq!(crate::usage::eligible_account_keys(&keys, &accounts, &[], 1), keys);
     accounts[0].state = AccountState::SignedOut;
     assert_eq!(crate::usage::eligible_account_keys(&keys, &accounts, &[], 1), keys[1..]);
@@ -256,7 +256,7 @@ fn fresh_accounts_never_enable_node_account_movement_and_existing_preferences_su
 #[test]
 fn absent_native_identity_preserves_legacy_account_bytes() {
     let account = AccountStatus { provider: Provider::Claude, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 };
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
     let value = serde_json::to_value(&account).unwrap();
     assert!(value.get("native_identity").is_none());
     assert_eq!(serde_json::from_value::<AccountStatus>(value).unwrap(), account);

@@ -74,6 +74,7 @@ pub enum Verb {
     AccountMoves,
     AccountRename,
     AccountOrder,
+    /// Codex device sign-in from older daemons: still read, always refused.
     AccountLogin,
     AccountLoginCancel,
     AccountCheck,
@@ -81,9 +82,13 @@ pub enum Verb {
     ModelProfile,
     TaskSelection,
     MoveTask,
+    /// Use a provider, named as the subject, through its own sign-in on the Mac. It never signs in.
+    ProviderConnect,
+    /// Add an account to the provider named as the subject, with the name given as text.
+    AccountAdd,
 }
 impl Verb {
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 61] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -143,6 +148,8 @@ impl Verb {
         Self::ModelProfile,
         Self::TaskSelection,
         Self::MoveTask,
+        Self::ProviderConnect,
+        Self::AccountAdd,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -205,6 +212,8 @@ impl Verb {
             Self::ModelProfile => "model_profile",
             Self::TaskSelection => "task_selection",
             Self::MoveTask => "move_task",
+            Self::ProviderConnect => "provider_connect",
+            Self::AccountAdd => "account_add",
         }
     }
     fn parse(value: &str) -> Option<Self> {

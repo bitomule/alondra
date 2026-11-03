@@ -468,7 +468,7 @@ fn or_implicit(accounts: &[AccountStatus]) -> std::borrow::Cow<'_, [AccountStatu
     }
     let account = crate::accounts::ProviderAccount::implicit_default();
     std::borrow::Cow::Owned(vec![AccountStatus {
-        provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0,
+        provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None,
     }])
 }
 
@@ -716,6 +716,9 @@ pub struct AccountLine {
     pub measured_at: Option<Millis>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<UsageState>,
+    /// What the user runs in Terminal on the Mac to sign the account in, when its profile is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<String>,
 }
 
 /// Every account of `provider`, in the user's order, with where it stands and its own margin.
@@ -752,6 +755,7 @@ pub fn account_lines(provider: Provider, accounts: &[AccountStatus], usage: &[Ac
                 measured_at: measured.and_then(AccountUsage::measured_at),
                 stand,
                 state: None,
+                sign_in: (account.id.is_default() || account.profile.is_some()).then(|| crate::accounts::sign_in_command(account.provider, account.profile.as_deref())),
             };
             line.state = if account.state == AccountState::Unchecked { None } else { usage_state(&line, reserve) };
             line

@@ -54,7 +54,6 @@ pub enum Action {
     RestartService,
     PrepareIdentity,
     RepairPlugin,
-    SignIn,
     SetProjects,
     EnableRelay,
 }
@@ -66,7 +65,7 @@ impl Action {
 
     /// A browser sign-in: `--yes` cannot do it for a person who is not there.
     fn needs_person(self) -> bool {
-        matches!(self, Action::SignIn | Action::EnableRelay)
+        matches!(self, Action::EnableRelay)
     }
 
     fn progress(self) -> Option<&'static str> {
@@ -76,7 +75,7 @@ impl Action {
             Action::PrepareIdentity => Some(tr!("Preparing this Mac for your devices…", "Preparando este Mac para tus dispositivos…")),
             Action::RepairPlugin => Some(tr!("Setting up the Claude plugin…", "Configurando el plugin de Claude…")),
             Action::EnableRelay => Some(tr!("Turning on notifications and access away from home…", "Activando las notificaciones y el acceso desde fuera de casa…")),
-            Action::SignIn | Action::SetProjects => None,
+            Action::SetProjects => None,
         }
     }
 }
@@ -90,13 +89,16 @@ pub enum Fix {
     /// A value to pick, such as the projects folder; `instead` as for `Ask`.
     Choose { question: String, proposal: projects::Proposal, instead: String },
     Manual(String),
+    /// What only the person does, with another tool: signing in to a provider, which Alondra
+    /// never does for them.
+    Person(String),
 }
 
 impl Fix {
     pub fn text(&self) -> String {
         match self {
             Fix::Auto(_) | Fix::Ask { .. } | Fix::Choose { .. } => "alondra doctor --fix".into(),
-            Fix::Manual(text) => text.clone(),
+            Fix::Manual(text) | Fix::Person(text) => text.clone(),
         }
     }
 }
@@ -117,7 +119,7 @@ impl Outcome {
     }
 
     fn waits_for_person(&self) -> bool {
-        matches!(self.fix, Some(Fix::Ask { .. } | Fix::Choose { .. }))
+        matches!(self.fix, Some(Fix::Ask { .. } | Fix::Choose { .. } | Fix::Person(_)))
     }
 
     fn next_step(&self) -> String {
@@ -518,9 +520,13 @@ fn wizard() -> i32 {
         let mut code = exit_code(&repaired.outcomes);
         let connected = sys.options_text().and_then(|text| alondra_core::options::OptionsFile::parse(&text).ok()).is_some_and(|options| !options.accounts.connected_providers().is_empty());
         if code == 0 && !connected && let Some(provider) = choose_provider(&mut ui)? {
-            if let Err(error) = crate::provider_accounts::login_for(provider, "default", false) {
-                ui.step(Status::Fail, tr!("Provider sign-in", "Inicio de sesión del proveedor"), &error.to_string(), Some("alondra doctor --fix"));
-                return Ok((1, repaired));
+            match crate::provider_accounts::connect(provider) {
+                Err(error) => {
+                    ui.step(Status::Fail, tr!("Provider", "Proveedor"), &error.to_string(), Some("alondra doctor --fix"));
+                    return Ok((1, repaired));
+                }
+                Ok(Some(sign_in)) => ui.step(Status::Warn, tr!("Provider sign-in", "Inicio de sesión del proveedor"), &sign_in, None),
+                Ok(None) => {}
             }
             repaired = repair(&env, &mut ui)?;
             code = exit_code(&repaired.outcomes);

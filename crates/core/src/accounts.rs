@@ -283,6 +283,16 @@ impl AccountsConfig {
         }
     }
 
+    /// Writes the order out once more than one provider is connected or the user set one, so
+    /// every account, a new one too, has its place.
+    pub fn order_every_account(&mut self) -> Result<(), String> {
+        if self.connected_providers().len() > 1 || !self.distribution.order.is_empty() {
+            let order = self.ordered_accounts().into_iter().map(|(key, _)| key).collect();
+            self.set_order(order)?;
+        }
+        Ok(())
+    }
+
     pub fn ordered_accounts(&self) -> Vec<(AccountKey, ProviderAccount)> {
         let mut remaining: Vec<_> = self.connected_providers().iter().flat_map(|provider| self.accounts(*provider).into_iter().map(|account| (AccountKey::new(*provider, account.id.clone()), account))).collect();
         let mut ordered = vec![];
@@ -427,6 +437,11 @@ pub enum AccountChange {
     SetPolicy { policy: Policy },
     /// Whether a node whose account reaches its limit goes on with another one.
     SetMoveWhenExhausted { on: bool },
+    /// Use the provider through its own sign-in on this Mac. Alondra never signs in for the user.
+    Connect,
+    /// A new account of the provider, named so: it stays signed out until the user signs it in
+    /// with the provider's own tool in Terminal.
+    Add { name: String },
 }
 
 impl AccountChange {
@@ -439,7 +454,7 @@ impl AccountChange {
             | AccountChange::MoveDown { account }
             | AccountChange::Rename { account, .. }
             | AccountChange::SetWeight { account, .. } => Some(account),
-            AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } => None,
+            AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } | AccountChange::Connect | AccountChange::Add { .. } => None,
         }
     }
 }
@@ -457,6 +472,25 @@ impl AccountsConfig {
             }
             AccountChange::SetMoveWhenExhausted { on } => {
                 next.distribution.move_when_exhausted = *on;
+                return Ok(next);
+            }
+            AccountChange::Connect => {
+                next.connect(provider);
+                next.order_every_account()?;
+                return Ok(next);
+            }
+            AccountChange::Add { name } => {
+                let name = name.trim();
+                if next.accounts(provider).iter().any(|account| account.name.trim().eq_ignore_ascii_case(name)) {
+                    return Err(format!("There is already an account called {name}"));
+                }
+                let first = !next.is_connected(provider);
+                next.connect(provider);
+                let taken: Vec<AccountId> = next.accounts(provider).into_iter().map(|account| account.id).collect();
+                let id = if first { AccountId::default_account() } else { AccountId::for_name(name, &taken) };
+                next.listed_mut(provider).push(ProviderAccount { id, name: name.into(), enabled: true, billing: AccountBilling::default() });
+                next.order_every_account()?;
+                next.check()?;
                 return Ok(next);
             }
             _ => {}
@@ -489,7 +523,7 @@ impl AccountsConfig {
                 AccountBilling::Subscription { weight: set, .. } => *set = *weight,
                 AccountBilling::PayPerUse => return Err(format!("account {account} is paid per use and has no weight")),
             },
-            AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } => unreachable!("handled above"),
+            AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } | AccountChange::Connect | AccountChange::Add { .. } => unreachable!("handled above"),
         }
         let implicit = ProviderAccount::implicit_default();
         let untouched_default = !self.listed(provider).iter().any(|a| a.id.is_default())
@@ -540,6 +574,10 @@ pub struct AccountStatus {
     /// of the credential its executions run on.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sign_ins: u64,
+    /// The folder of a named account's provider profile, as the user types it in Terminal (`~`
+    /// for their home), so a screen can say which command signs it in; none for the default one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -611,6 +649,43 @@ pub fn provider_folder(home: &Path, key: &AccountKey) -> Option<PathBuf> {
     match key.provider {
         Provider::Claude => folder(home, &key.account),
         Provider::Codex => (!key.account.is_default()).then(|| home.join(MANAGED_PROVIDER_FOLDER).join("codex").join(key.account.as_str())),
+    }
+}
+
+/// `folder` as the user types it in Terminal: under `user_home` it starts with `~`.
+pub fn shown_folder(folder: &Path, user_home: &Path) -> String {
+    match folder.strip_prefix(user_home) {
+        Ok(inside) if !user_home.as_os_str().is_empty() => format!("~/{}", inside.display()),
+        _ => folder.display().to_string(),
+    }
+}
+
+/// The folder of a named account's provider profile, as [`shown_folder`] shows it.
+pub fn shown_profile(home: &Path, user_home: &Path, key: &AccountKey) -> Option<String> {
+    provider_folder(home, key).map(|folder| shown_folder(&folder, user_home))
+}
+
+/// What the user runs in Terminal on the Mac to sign an account in with the provider's own tool:
+/// with its profile folder for a named one. Alondra never runs it.
+pub fn sign_in_command(provider: Provider, profile: Option<&str>) -> String {
+    let (variable, command) = match provider {
+        Provider::Claude => ("CLAUDE_CONFIG_DIR", "claude"),
+        Provider::Codex => ("CODEX_HOME", "codex login"),
+    };
+    match profile {
+        Some(folder) => format!("{variable}={} {command}", shell_folder(folder)),
+        None => command.into(),
+    }
+}
+
+fn shell_folder(folder: &str) -> String {
+    let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | '@' | ':' | ','));
+    let quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
+    match folder.strip_prefix("~/") {
+        Some(rest) if plain(rest) => folder.into(),
+        Some(rest) => format!("~/{}", quoted(rest)),
+        None if plain(folder) => folder.into(),
+        None => quoted(folder),
     }
 }
 

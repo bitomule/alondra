@@ -290,7 +290,7 @@ impl LocalActionResource {
             Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
             Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
-            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile => add(Self::AccountSettings, true),
+            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ProviderConnect | Verb::AccountAdd | Verb::ModelProfile => add(Self::AccountSettings, true),
             Verb::TaskSelection | Verb::MoveTask => add(Self::Task(action.subject.clone()), true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
             Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(Self::Mcp(action.subject.clone()), true),
@@ -370,7 +370,7 @@ fn is_external(verb: Verb) -> bool {
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
-        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask)
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ProviderConnect | Verb::AccountAdd | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask)
 }
 
 pub(crate) async fn execute_action(
@@ -462,6 +462,9 @@ async fn execute_external(
     if authorize().is_err() {
         return Ok(device_not_approved_value(lang));
     }
+    if matches!(action.verb, Verb::AccountLogin | Verb::AccountLoginCancel) {
+        return Ok(no_longer_available(lang, "Alondra no longer signs in for you: sign in with the provider in Terminal on the Mac"));
+    }
     let user_id = format!("device:{device}");
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
     let stamp = match action.verb {
@@ -499,8 +502,8 @@ async fn execute_external(
         Verb::ModelProfile => "Model profile saved",
         Verb::TaskSelection => "Selection change requested",
         Verb::MoveTask => "Moving",
-        Verb::AccountLogin => "Checking sign-in",
-        Verb::AccountLoginCancel => "Sign-in cancelled",
+        Verb::ProviderConnect => "Connected",
+        Verb::AccountAdd => "Added",
         Verb::AccountCheck => "Accounts checked",
         Verb::AccountModels => "Models refreshed",
         Verb::AccountPolicy => "Updated",
@@ -519,7 +522,7 @@ async fn execute_external(
         Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", Verb::McpRemove => "Borrado",
         Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
         Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado",
-        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::AccountLogin => "Comprobando sesión", Verb::AccountLoginCancel => "Inicio de sesión cancelado", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", Verb::MoveTask => "Moviéndola", _ => stamp,
+        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::ProviderConnect => "Conectado", Verb::AccountAdd => "Añadida", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", Verb::MoveTask => "Moviéndola", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -805,29 +808,21 @@ async fn execute_external(
                 Err(message) => Ok(error_value("unavailable", &message)),
             }
         }
-        Verb::AccountLogin | Verb::AccountLoginCancel => {
-            let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else {
-                return Ok(rejected_field(lang, "account", "Choose a Codex account"));
+        Verb::ProviderConnect | Verb::AccountAdd => {
+            let Ok(provider) = alondra_core::accounts::Provider::parse(&action.subject) else {
+                return Ok(rejected_field(lang, "provider", "Choose an available provider"));
             };
-            let account = alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Codex, account);
             let actor = Actor::User { user_id: user_id.clone() };
-            let result = if action.verb == Verb::AccountLogin {
-                if action.extra.as_deref() != Some("codex") { return Ok(rejected_field(lang, "provider", "Choose Codex")); }
-                let approved = crate::auth::approved_devices(home).ok().and_then(|devices| devices.iter().find(|known| known.id == device).cloned());
-                let owner = request.input.fields.get("cli_pid").and_then(Value::as_i64).map(|pid| i32::try_from(pid).ok()
-                    .and_then(|pid| alondra_process_group::process(pid).ok().flatten()));
-                let home = home.to_path_buf();
-                let authorized: crate::codex_sign_in::Authorization = std::sync::Arc::new(move || owner.as_ref().is_none_or(|owner| owner.as_ref().is_some_and(|member| alondra_process_group::alive(member).unwrap_or(false))) && approved.as_ref().is_some_and(|original| {
-                    crate::auth::approved_devices(&home).ok().is_some_and(|devices| devices.iter().any(|current| current.id == original.id && current.public_key == original.public_key))
-                }));
-                client.codex_sign_ins.start(&actor, account, authorized, !flag(&request.input, "check_only")).map(|login| json!({"sign_in":login}))
-            } else {
-                let Some(attempt) = action.extra.clone() else { return Ok(rejected_field(lang, "attempt", "Choose the current sign-in")); };
-                client.codex_sign_ins.cancel(&actor, account, attempt).map(|_| json!({"cancelled":true}))
+            let made = if action.verb == Verb::ProviderConnect { crate::accounts::connect(domain, home, &actor, provider, &authorize) } else {
+                let Some(name) = request.input.text.as_deref().map(str::trim).filter(|name| !name.is_empty()) else {
+                    return Ok(rejected_field(lang, "text", "This option needs text"));
+                };
+                crate::accounts::change_for_provider_authorized(domain, home, &actor, provider, &alondra_core::accounts::AccountChange::Add { name: name.into() }, &authorize)
             };
-            match result {
-                Ok(body) => Ok(to_applied(200, body)),
-                Err(error) => Ok(domain_refusal_value(&error, lang)),
+            match made {
+                Ok(()) => Ok(to_applied(200, json!({"accounts": action.subject}))),
+                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
             }
         }
         Verb::AccountCheck => {
@@ -2045,6 +2040,7 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "Alondra could not save the secret" => "Alondra no pudo guardar el secreto",
         "Write the secret: it cannot go as a file" => "Escribe el secreto: no puede ir como archivo",
         "Update Alondra" => "Actualiza Alondra",
+        "Alondra no longer signs in for you: sign in with the provider in Terminal on the Mac" => "Alondra ya no inicia sesión por ti: inicia sesión con el proveedor en Terminal en el Mac",
         "invalid action request" => "Solicitud de acción no válida",
         "Alondra has too many pending actions. Try again." => "Alondra tiene demasiadas acciones pendientes. Vuelve a intentarlo.",
         "invalid client" => "Cliente no válido",
@@ -2318,6 +2314,69 @@ mod tests {
             for holder in holders { holder.await.unwrap(); }
             println!("external_jobs_held=2 fast_action=applied physical_jobs_drained=true");
         });
+    }
+
+    /// Codex with a session the user signed in to in Terminal. It logs every command line and
+    /// request it gets; it never signs in.
+    const SIGNED_IN_CODEX: &str = r#"#!/usr/bin/python3
+import json,os,sys
+from pathlib import Path
+calls=Path(os.environ['HOME'])/'calls'
+with calls.open('a') as log: log.write(' '.join(['codex']+sys.argv[1:])+'\n')
+if 'login' in sys.argv: raise SystemExit(1)
+for line in sys.stdin:
+ request=json.loads(line); method=request['method']
+ with calls.open('a') as log: log.write(method+'\n')
+ if 'id' not in request: continue
+ if method=='initialize': result={}
+ elif method=='account/read': result={'account':{'type':'chatgpt','email':'fixture@example.test','planType':'plus'},'requiresOpenaiAuth':True}
+ elif method=='getAuthStatus': result={'authMethod':'chatgpt'}
+ elif method=='config/read': result={'config':{'cli_auth_credentials_store':'file'}}
+ elif method=='model/list': result={'data':[{'id':'model','model':'model','displayName':'Model','isDefault':True,'hidden':False,'supportedReasoningEfforts':[]}]}
+ elif method=='account/rateLimits/read': result={}
+ else: raise AssertionError(method)
+ print(json.dumps({'id':request['id'],'result':result}),flush=True)
+"#;
+
+    #[tokio::test]
+    async fn alondra_refuses_to_sign_in_and_connects_a_provider_with_the_session_already_on_the_mac() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use alondra_core::accounts::Provider;
+        let directory = crate::test_support::Directory::new();
+        let (home, user) = (directory.join("alondra"), directory.join("user"));
+        std::fs::create_dir_all(&home).unwrap(); std::fs::create_dir_all(&user).unwrap();
+        let native = directory.join("codex");
+        std::fs::write(&native, SIGNED_IN_CODEX).unwrap();
+        std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(alondra_core::options::path_in(&home), alondra_core::accounts::AccountsConfig::fresh().to_toml()).unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        domain.enable_sdk(crate::sdk_owner::SdkBackend { provider: Provider::Codex, origin: None, native,
+            node: directory.join("unused-node"), host: directory.join("unused-host"), node_sha256: String::new(), host_sha256: String::new(), native_sha256: String::new(),
+            host_environment: Default::default(), native_environment: std::collections::BTreeMap::from([("HOME".into(), user.to_string_lossy().into_owned()), ("PATH".into(), "/usr/bin:/bin".into())]),
+            confinement: None, state_root: directory.join("host-state"), io_timeout_seconds: 30, installed_native: false });
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let request = |verb: Verb, subject: &str, extra: Option<&str>| {
+            let state = domain.state().unwrap();
+            ActionRequest { action_id: ActionId::new(verb, subject, state.revision, extra.map(Into::into)).unwrap().to_string(), option_id: None,
+                ..pacing_request(&state, verb, subject, "", "en") }
+        };
+
+        for (verb, extra) in [(Verb::AccountLogin, "codex"), (Verb::AccountLoginCancel, "attempt")] {
+            let reply = execute_action(&domain, &client, &home, "test-device", request(verb, "default", Some(extra)), None, || Ok(())).await.unwrap();
+            assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
+        }
+        assert!(domain.state().unwrap().account_logins.is_empty(), "no sign-in was started");
+        assert!(!user.join("calls").exists(), "Codex was never run to sign in");
+
+        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::ProviderConnect, "codex", None), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert!(crate::accounts::config(&home).unwrap().is_connected(Provider::Codex));
+        let state = domain.state().unwrap();
+        let codex = state.accounts.iter().find(|account| account.provider == Provider::Codex).expect("the provider's own account");
+        assert_eq!(codex.state, alondra_core::accounts::AccountState::SignedIn, "the session already on the Mac is used");
+        assert!(state.account_logins.is_empty());
+        let calls = std::fs::read_to_string(user.join("calls")).unwrap();
+        assert!(!calls.contains("login"), "nothing signs in: {calls}");
     }
 
     #[tokio::test]

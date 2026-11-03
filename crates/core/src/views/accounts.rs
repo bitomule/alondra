@@ -1,15 +1,14 @@
 //! Settings › provider accounts: each account in the user's order with its email, plan, weight,
 //! state, usage and nodes, as the committed read index holds them, never a folder; how new work
-//! is spread over them; and adding one, which only asks for a name and signs it in on the Mac.
+//! is spread over them; and adding one, which only asks for a name. Alondra never signs an
+//! account in: a signed-out one says which command of the provider the user runs on the Mac.
 use super::action_id::Verb;
 use super::text::{t, tf};
-use super::{common, Action, Confirm, Icon, Input, Item, Label, Lang, Link, LocalLink, Presentation, RenderContext, Role, Style, Tone, View};
-use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountKey, AccountState, AccountStatus, Policy, Provider};
+use super::{common, Action, Confirm, Icon, Input, Item, Label, Lang, Presentation, RenderContext, Role, Style, Tone, View};
+use crate::accounts::{AccountBilling, AccountChange, AccountKey, AccountState, AccountStatus, Policy, Provider};
 use crate::usage::WindowKind;
 
 pub const KEY: &str = "accounts";
-/// What the Mac runs to add an account, followed by its name.
-pub const ADD_COMMAND: &str = "alondra accounts add";
 
 const WEIGHTS: [u32; 7] = [1, 2, 3, 5, 10, 15, 20];
 
@@ -30,7 +29,6 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         let key = AccountKey { provider: account.provider, account: account.id.clone() };
         account_row(account, at + 1, measured.get(&key).copied(), context)
     }).collect();
-    rows.splice(0..0, context.index.account_logins().iter().filter_map(|login| login_row(login, context)));
     let mut view = common::view(KEY, KEY, Some(t!(lang, "Accounts", "Cuentas").into()), context, vec![]);
     view.account_configuration = (!context.index.account_config_version().is_empty()).then(|| super::AccountConfigurationPresentation { version: context.index.account_config_version().into() });
     let mut section = list_style(common::section("accounts", None, std::mem::take(&mut rows)));
@@ -44,7 +42,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     if let Some(check) = common::action(Verb::AccountCheck, "accounts", context.domain.revision, t!(lang, "Check accounts", "Comprobar cuentas"), Style::Secondary) { section.actions.push(check); }
     view.sections.push(section);
     let provider_rows = [Provider::Claude, Provider::Codex].into_iter().map(|provider| {
-        if accounts.iter().any(|account| account.provider == provider) { add_row(provider, lang) } else { connect_row(provider, context) }
+        if accounts.iter().any(|account| account.provider == provider) { add_row(provider, context) } else { connect_row(provider, context) }
     }).collect();
     view.sections.push(list_style(common::section("providers", Some(t!(lang, "Providers", "Proveedores").into()), provider_rows)));
     if accounts.len() > 1 {
@@ -162,22 +160,6 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&crate
     row.link = None;
     row.account = Some(account_presentation(account, position, measured, context));
     row.badges.push(state_badge(account.state, lang));
-    if account.provider == Provider::Codex && account.state == AccountState::SignedOut {
-        row.actions.extend(login_action(&AccountKey::new(Provider::Codex, account.id.clone()), None, context));
-    } else if account.state == AccountState::SignedOut {
-        let mut sign_in = common::view_link("", t!(lang, "Sign in", "Iniciar sesión"));
-        sign_in.link = Some(Link::Local { local: LocalLink::AccountSignIn {
-            account: if account.provider == Provider::Claude { shown.clone() } else { account.id.as_str().into() },
-            command: login_command(account.provider, account.id.as_str()),
-            provider: (account.provider != Provider::Claude).then(|| account.provider.as_str().into()),
-            argv: (account.provider != Provider::Claude).then(|| login_arguments(account.provider, account.id.as_str())),
-        } });
-        sign_in.style = Style::Primary;
-        sign_in.role = Some(Role::Advance);
-        let provider = provider_name(account.provider);
-        sign_in.description = Some(tf!(lang, "Opens {provider} sign-in on the Mac", "Abre el inicio de sesión de {provider} en el Mac"));
-        row.actions.push(sign_in);
-    }
     if legacy_margin_available(context) && context.index.account_policy() == Policy::Margin { row.actions.extend(weight_action(account, measured_plan, context)); }
     let up = AccountChange::MoveUp { account: account.id.clone() };
     row.actions.extend(change_action(Verb::AccountUp, account, up, t!(lang, "Move up", "Subir"), Style::Secondary, context));
@@ -246,21 +228,18 @@ fn remove_action(account: &AccountStatus, shown: &str, context: &RenderContext<'
     Some(remove)
 }
 
-fn add_row(provider: Provider, lang: Lang) -> Item {
+fn add_row(provider: Provider, context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
     let name = provider_name(provider);
-    let id = format!("{}-add", provider.as_str());
-    let mut row = common::row(&id, KEY, Icon::Action, tf!(lang, "Add a {name} account", "Añadir una cuenta de {name}"),
-        Some(t!(lang, "Choose a name, then finish native sign-in on the Mac", "Elige un nombre y completa el inicio de sesión nativo en el Mac").into()));
+    let mut row = common::row(&format!("{}-add", provider.as_str()), KEY, Icon::Action, tf!(lang, "Add a {name} account", "Añadir una cuenta de {name}"),
+        Some(tf!(lang, "Choose a name; then sign it in to {name} in Terminal on the Mac", "Elige un nombre; luego inicia su sesión de {name} en Terminal en el Mac")));
     row.link = None;
-    let mut add = common::view_link("", t!(lang, "Add", "Añadir"));
-    add.link = Some(Link::Local { local: LocalLink::AccountAdd {
-        command: if provider == Provider::Claude { ADD_COMMAND.into() } else { format!("alondra accounts add --provider {}", provider.as_str()) },
-        provider: (provider != Provider::Claude).then(|| provider.as_str().into()),
-        argv: (provider != Provider::Claude).then(|| vec!["accounts".into(), "add".into(), "--provider".into(), provider.as_str().into()]),
-    } });
-    add.style = Style::Primary;
-    add.role = Some(Role::Advance);
-    row.actions.push(add);
+    if let Some(mut add) = common::action(Verb::AccountAdd, provider.as_str(), context.domain.revision, t!(lang, "Add", "Añadir"), Style::Primary) {
+        add.role = Some(Role::Advance);
+        add.input = Input::Text { placeholder: t!(lang, "Account name", "Nombre de la cuenta").into(), required: true, multiline: false, secret: false };
+        add.stamp = Some(t!(lang, "Added", "Añadida").into());
+        row.actions.push(add);
+    }
     Item::Row(row)
 }
 
@@ -268,17 +247,16 @@ fn connect_row(provider: Provider, context: &RenderContext<'_>) -> Item {
     let lang = context.lang;
     let name = provider_name(provider);
     let mut row = common::row(&format!("{}-connect", provider.as_str()), KEY, Icon::Machine,
-        tf!(lang, "Connect {name}", "Conectar {name}"), Some(t!(lang, "Use this provider's native sign-in on the Mac", "Usar el inicio de sesión nativo de este proveedor en el Mac").into()));
+        tf!(lang, "Connect {name}", "Conectar {name}"), Some(tf!(lang, "Use the {name} session you signed in to on the Mac", "Usar la sesión de {name} que iniciaste en el Mac")));
     row.link = None;
-    if provider == Provider::Codex {
-        row.subtitle = Some(t!(lang, "Use the session on the Mac, or sign in with a code on any device", "Usa la sesión del Mac o inicia sesión con un código en cualquier dispositivo").into());
-        row.actions.extend(login_action(&AccountKey::native(provider), None, context));
-        return Item::Row(row);
+    if allowed(context, provider, AccountChange::Connect).is_ok()
+        && let Some(mut connect) = common::action(Verb::ProviderConnect, provider.as_str(), context.domain.revision, t!(lang, "Connect", "Conectar"), Style::Primary)
+    {
+        connect.role = Some(Role::Advance);
+        connect.description = Some(sign_in_hint(provider, None, lang));
+        connect.stamp = Some(t!(lang, "Connected", "Conectado").into());
+        row.actions.push(connect);
     }
-    let mut connect = common::view_link("", t!(lang, "Connect", "Conectar"));
-    connect.link = Some(Link::Local { local: LocalLink::AccountSignIn { account: "default".into(), command: login_command(provider, "default"),
-        provider: (provider != Provider::Claude).then(|| provider.as_str().into()), argv: (provider != Provider::Claude).then(|| login_arguments(provider, "default")), } });
-    row.actions.push(connect);
     Item::Row(row)
 }
 
@@ -370,13 +348,33 @@ fn scoped_action(verb: Verb, account: &AccountStatus, label: &str, style: Style,
     Some(action)
 }
 
-fn login_arguments(provider: Provider, slug: &str) -> Vec<String> {
-    vec!["accounts".into(), "login".into(), "--provider".into(), provider.as_str().into(), slug.into()]
+/// How the user signs an account in with the provider's own tool on the Mac, the command whole.
+pub fn sign_in_hint(provider: Provider, profile: Option<&str>, lang: Lang) -> String {
+    command_hint(provider, &crate::accounts::sign_in_command(provider, profile), lang)
 }
 
-fn login_command(provider: Provider, slug: &str) -> String {
-    if provider == Provider::Claude { format!("alondra accounts login {}", shell_word(slug)) }
-    else { format!("alondra accounts login --provider {} {}", provider.as_str(), shell_word(slug)) }
+/// [`sign_in_hint`] for a command already built.
+pub fn command_hint(provider: Provider, command: &str, lang: Lang) -> String {
+    match provider {
+        Provider::Claude => tf!(lang, "Open Terminal on the Mac, run {command} and sign in with /login", "Abre Terminal en el Mac, ejecuta {command} e inicia sesión con /login"),
+        Provider::Codex => tf!(lang, "On the Mac, run {command}", "En el Mac, ejecuta {command}"),
+    }
+}
+
+/// [`sign_in_hint`] for `account`. A named account whose profile folder is not known yet is named
+/// instead, never sent to the default profile.
+pub fn account_sign_in_hint(account: &AccountStatus, lang: Lang) -> String {
+    match &account.profile {
+        _ if account.id.is_default() => sign_in_hint(account.provider, None, lang),
+        Some(profile) => sign_in_hint(account.provider, Some(profile), lang),
+        None => named_hint(account.provider, &account.name, lang),
+    }
+}
+
+/// How a named account whose profile folder is not known yet is signed in: by its name.
+pub fn named_hint(provider: Provider, name: &str, lang: Lang) -> String {
+    let provider = provider_name(provider);
+    tf!(lang, "Sign {name} in to {provider} in Terminal on the Mac, with its own profile", "Inicia la sesión de {name} en {provider} en Terminal en el Mac, con su propio perfil")
 }
 
 fn window_label(provider: Provider, kind: &WindowKind, lang: Lang) -> String {
@@ -417,7 +415,7 @@ fn account_presentation(account: &AccountStatus, position: usize, measured: Opti
     };
     let freshness = Label { text, tone: if windows.iter().any(|window| window.stale) { Tone::Warning } else { Tone::Neutral }, elapsed: None };
     let reason = if native_limit_reported(measured) { Some(t!(lang, "The provider reported a usage limit. Check accounts again or choose another account; no usage percentage was reported.", "El proveedor ha comunicado un límite de uso. Vuelve a comprobar las cuentas o elige otra; no se ha informado un porcentaje de uso.").into()) } else { match account.state {
-        AccountState::SignedOut => Some(t!(lang, "Sign in on the Mac to use this account", "Inicia sesión en el Mac para usar esta cuenta").into()),
+        AccountState::SignedOut => Some(account_sign_in_hint(account, lang)),
         AccountState::Unavailable => Some(t!(lang, "The native provider could not be checked", "No se pudo comprobar el proveedor nativo").into()),
         AccountState::Disabled => Some(t!(lang, "New work is disabled; running work continues", "Trabajo nuevo desactivado; el trabajo en curso continúa").into()),
         _ => None,
@@ -425,75 +423,4 @@ fn account_presentation(account: &AccountStatus, position: usize, measured: Opti
     let model_catalog = context.index.model_catalogs().iter().find(|catalog| catalog.account == key).cloned();
     super::AccountPresentation { model_catalog, key: key.clone(), position: u32::try_from(position).unwrap_or(u32::MAX), availability: state_badge(account.state, lang), reason,
         email: account.email.clone(), plan: account.plan.clone(), active_nodes: u32::try_from(context.index.nodes_on_account_key(&key)).unwrap_or(u32::MAX), freshness, windows }
-}
-
-
-pub fn account_arguments(provider: Option<&str>, argv: Option<&[String]>, account: Option<&str>, adding: bool) -> Option<Vec<String>> {
-    let provider = provider.map(Provider::parse).transpose().ok()?.unwrap_or(Provider::Claude);
-    let operation = if adding { "add" } else { "login" };
-    if let Some(argv) = argv {
-        let prefix = ["accounts", operation, "--provider", provider.as_str()];
-        if argv.len() != prefix.len() + usize::from(!adding) || !argv.iter().take(4).map(String::as_str).eq(prefix)
-            || argv.iter().any(|word| word.chars().any(char::is_control)) { return None; }
-        if !adding {
-            let slug = argv.last()?;
-            AccountId::parse(slug).ok()?;
-            if provider == Provider::Codex && account != Some(slug.as_str()) { return None; }
-        }
-        return Some(argv.to_vec());
-    }
-    if provider != Provider::Claude { return None; }
-    let mut args = vec!["accounts".into(), operation.into()];
-    if !adding {
-        let account = account.filter(|account| !account.is_empty() && !account.chars().any(char::is_control))?;
-        if account.starts_with('-') { args.push("--".into()); }
-        args.push(account.into());
-    }
-    Some(args)
-}
-
-fn login_action(account: &AccountKey, cancel: Option<&str>, context: &RenderContext<'_>) -> Option<Action> {
-    let available = context.domain.account_login_action(account.clone(), cancel);
-    if !available.enabled { return None; }
-    let (verb, label, extra) = match cancel {
-        Some(attempt) => (Verb::AccountLoginCancel, t!(context.lang, "Cancel sign-in", "Cancelar inicio de sesión"), attempt),
-        None if context.index.accounts().iter().any(|known| known.provider == account.provider && known.id == account.account) =>
-            (Verb::AccountLogin, t!(context.lang, "Sign in with a code", "Iniciar sesión con un código"), "codex"),
-        None => (Verb::AccountLogin, t!(context.lang, "Connect", "Conectar"), "codex"),
-    };
-    let mut action = common::action(verb, account.account.as_str(), context.domain.revision, label, Style::Primary)?;
-    action.id = super::action_id::ActionId::new(verb, account.account.as_str(), context.domain.revision, Some(extra.into())).ok()?.to_string();
-    Some(action)
-}
-
-fn login_row(login: &crate::domain::AccountLogin, context: &RenderContext<'_>) -> Option<Item> {
-    use crate::domain::AccountLoginPhase;
-    let lang = context.lang;
-    if login.phase == AccountLoginPhase::Connected { return None; }
-    let account_name = context.index.accounts().iter().find(|known| known.provider == login.account.provider && known.id == login.account.account)
-        .map(|known| name(known, lang)).unwrap_or_else(|| if login.account.account.is_default() { t!(lang, "Default", "Principal").into() } else { login.account.account.to_string() });
-    let title = tf!(lang, "Sign in to Codex · {account_name}", "Iniciar sesión en Codex · {account_name}");
-    let detail = match login.phase {
-        AccountLoginPhase::Starting => t!(lang, "Checking the session on the Mac…", "Comprobando la sesión del Mac…").into(),
-        AccountLoginPhase::Publishing => t!(lang, "Finishing sign-in…", "Terminando el inicio de sesión…").into(),
-        AccountLoginPhase::Pending => {
-            let challenge = login.challenge.as_ref()?;
-            let url = &challenge.url;
-            let code = &challenge.code;
-            tf!(lang, "Open {url} on any device and enter this code:\n{code}", "Abre {url} en cualquier dispositivo e introduce este código:\n{code}")
-        },
-        AccountLoginPhase::Cancelled => t!(lang, "Sign-in cancelled. The previous session was preserved.", "Inicio de sesión cancelado. Se ha conservado la sesión anterior.").into(),
-        AccountLoginPhase::Failed => t!(lang, "Sign-in did not complete. The previous session was preserved. Try again or check Codex on the Mac.", "No se completó el inicio de sesión. Se ha conservado la sesión anterior. Vuelve a intentarlo o comprueba Codex en el Mac.").into(),
-        AccountLoginPhase::Connected => return None,
-    };
-    let mut row = common::row(&format!("codex-login-{}", login.account.account), KEY, Icon::Machine, title, Some(detail));
-    row.link = None;
-    if let Some(challenge) = &login.challenge {
-        let mut open = common::view_link("", t!(lang, "Open verification page", "Abrir página de verificación"));
-        open.link = Some(Link::Url { url: challenge.url.clone() });
-        open.style = Style::Primary;
-        row.actions.push(open);
-    }
-    if login.phase != AccountLoginPhase::Publishing { row.actions.extend(login_action(&login.account, login.phase.active().then_some(login.attempt.as_str()), context)); }
-    Some(Item::Row(row))
 }

@@ -61,7 +61,6 @@ pub(crate) struct Client {
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
     pub(crate) live_snapshots: crate::views::live::LiveSnapshots,
-    pub(crate) codex_sign_ins: Arc<crate::codex_sign_in::SignIns>,
     pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
     /// A holder that panics leaves it whole, so it is recovered: assigned only after the file is
     /// saved.
@@ -299,7 +298,6 @@ impl Client {
             }
         };
         let read_work = domain.read_work.clone();
-        let codex_sign_ins = crate::codex_sign_in::SignIns::new(domain.clone());
         let client = Arc::new_cyclic(|shared| Self {
             shared: shared.clone(),
             read_work,
@@ -319,7 +317,6 @@ impl Client {
             live_reads: Default::default(),
             live_snapshots: Default::default(),
             mcp_probes: Default::default(),
-            codex_sign_ins,
             device_languages: std::sync::Mutex::new(device_languages),
             device_languages_path,
             report_cli: std::sync::Mutex::new(crate::plugins::own_cli()),

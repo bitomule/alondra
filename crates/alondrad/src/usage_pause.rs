@@ -764,7 +764,7 @@ mod tests {
             expected_revision: state.revision, command: alondra_core::domain::Command::RecordAccounts {
                 accounts: vec![alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Claude,
                     id: alondra_core::accounts::AccountId::default_account(), name: "Personal".into(), state: alondra_core::accounts::AccountState::SignedIn,
-                    native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 }], reserve: alondra_core::usage::default_reserve(),
+                    native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None }], reserve: alondra_core::usage::default_reserve(),
             },
         }).unwrap();
         (domain, home)

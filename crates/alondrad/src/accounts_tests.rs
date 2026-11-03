@@ -347,7 +347,7 @@ fn the_default_account_can_be_disabled_while_another_stays_on_but_never_the_last
 fn the_orchestrator_waits_for_a_sign_in_only_when_no_account_may_have_a_session() {
     let seen = |states: &[(&str, AccountState)]| none_signed_in(&states.iter().map(|(id, state)| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: (*id).into(), state: *state,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }).collect::<Vec<_>>());
     assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::Disabled)]).as_deref(), Some("default (signed out), work (off)"));
     assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::SignedIn)]), None);
@@ -373,7 +373,7 @@ fn known_native_denials_filter_automatic_codex_before_choosing_a_compatible_clau
     let f = fixture(); let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex); config.connect(Provider::Claude);
     let keys = vec![AccountKey::native(Provider::Codex), AccountKey::native(Provider::Claude)]; config.set_order(keys.clone()).unwrap();
     f.store(&config).unwrap(); let domain = DomainRuntime::open(&f.home).unwrap();
-    let statuses = keys.iter().map(|key| AccountStatus { provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins:0 }).collect();
+    let statuses = keys.iter().map(|key| AccountStatus { provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None }).collect();
     record_account_command(&domain,Command::RecordAccounts {accounts:statuses,reserve:alondra_core::usage::Share::of(config.distribution.reserve)});
     record_account_command(&domain,Command::RecordAccountConfiguration {order:keys.clone(),version:version(&config)});
     for key in keys {
@@ -391,7 +391,7 @@ fn known_native_denials_filter_automatic_codex_before_choosing_a_compatible_clau
 
 fn probe_account(email: &str) -> AccountStatus {
     AccountStatus { provider: Provider::Claude, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-        native_identity: None, email: Some(email.into()), plan: None, billing: AccountBilling::default(), sign_ins: 0 }
+        native_identity: None, email: Some(email.into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
 }
 
 fn record_probe_fixture(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {

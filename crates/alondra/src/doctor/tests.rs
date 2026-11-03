@@ -250,7 +250,6 @@ impl System for Fake {
                 *self.plugins.borrow_mut() = Some(json!([]));
                 self.service.borrow_mut().marketplace_elsewhere = None;
             }
-            Action::SignIn => *self.signed_in.borrow_mut() = Ok(true),
             Action::EnableRelay => *self.relay.borrow_mut() = true,
             Action::SetProjects => {}
         }
@@ -264,6 +263,11 @@ impl System for Fake {
 
 fn env(sys: &Fake) -> Env<'_> {
     Env { sys, deep: false, first_run: false, yes: false, select: Selection::All }
+}
+
+/// A first install where only the relay, a question, is checked.
+fn relay_env(sys: &Fake) -> Env<'_> {
+    Env { first_run: true, select: Selection::Only(vec!["relay".into()]), ..env(sys) }
 }
 
 fn find<'a>(outcomes: &'a [Outcome], id: &str) -> &'a Outcome {
@@ -415,16 +419,12 @@ fn the_plugin_check_repairs_what_setup_would() {
 }
 
 #[test]
-fn claude_sign_in_is_a_question_and_the_profile_is_shown_without_account_data() {
+fn claude_sign_in_is_left_to_the_person_and_the_profile_is_shown_without_account_data() {
     english();
     assert_eq!(signin_check(Ok(true)).status, Status::Pass);
     let c = signin_check(Ok(false));
     assert_eq!(c.status, Status::Fail);
-    let Some(Fix::Ask { question, default, action, instead }) = c.fix else { panic!("{c:?}") };
-    assert_eq!(question, "Sign in to Claude Code now? It opens your browser.");
-    assert!(default);
-    assert_eq!(action, Action::SignIn);
-    assert_eq!(instead, "claude auth login, then alondra doctor --fix");
+    assert_eq!(c.fix, Some(Fix::Person("run claude in Terminal and sign in with /login, then alondra doctor".into())), "Alondra never signs in");
     assert!(matches!(signin_check(Err(anyhow!("timed out"))).fix, Some(Fix::Manual(_))));
     let home = Path::new("/Users/ana");
     assert_eq!(profile_check(Ok(None), home).detail, "Claude profile for nodes: default");
@@ -610,25 +610,34 @@ fn plain_doctor_never_repairs() {
 }
 
 #[test]
-fn a_question_answered_no_changes_nothing_and_waits_for_the_person() {
+fn a_signed_out_claude_asks_nothing_and_waits_for_the_person_to_sign_in_with_claude() {
     english();
     let sys = Fake::healthy();
     *sys.signed_in.borrow_mut() = Ok(false);
-    let mut ui = Recorded { answers: vec![Some(false)], ..Default::default() };
+    let mut ui = Recorded::default();
     let repaired = repair(&env(&sys), &mut ui).unwrap();
     assert!(sys.applied.borrow().is_empty());
-    assert!(ui.lines.contains(&"ask Sign in to Claude Code now? It opens your browser.".to_string()), "{:?}", ui.lines);
+    assert!(!ui.lines.iter().any(|line| line.starts_with("ask ")), "{:?}", ui.lines);
     assert_eq!(exit_code(&repaired.outcomes), 3);
-    assert_eq!(outro(&env(&sys), &repaired), "Not finished.\nNext: claude auth login, then alondra doctor --fix");
+    assert_eq!(outro(&env(&sys), &repaired), "Not finished.\nNext: run claude in Terminal and sign in with /login, then alondra doctor");
+}
+
+#[test]
+fn a_question_answered_no_changes_nothing() {
+    let sys = Fake::healthy();
+    *sys.relay.borrow_mut() = false;
+    let mut ui = Recorded { answers: vec![Some(false)], ..Default::default() };
+    repair(&relay_env(&sys), &mut ui).unwrap();
+    assert!(sys.applied.borrow().is_empty());
 }
 
 #[test]
 fn a_question_answered_yes_applies_its_repair() {
     let sys = Fake::healthy();
-    *sys.signed_in.borrow_mut() = Ok(false);
+    *sys.relay.borrow_mut() = false;
     let mut ui = Recorded { answers: vec![Some(true)], ..Default::default() };
-    let repaired = repair(&env(&sys), &mut ui).unwrap();
-    assert_eq!(*sys.applied.borrow(), vec![Action::SignIn]);
+    let repaired = repair(&relay_env(&sys), &mut ui).unwrap();
+    assert_eq!(*sys.applied.borrow(), vec![Action::EnableRelay]);
     assert_eq!(exit_code(&repaired.outcomes), 0);
 }
 
@@ -652,15 +661,14 @@ fn yes_accepts_every_question_and_the_proposed_folder_without_asking() {
 fn yes_without_a_person_leaves_the_browser_sign_ins_for_one() {
     english();
     let sys = Fake::healthy();
-    *sys.signed_in.borrow_mut() = Ok(false);
-    let yes = Env { yes: true, ..env(&sys) };
-    let repaired = repair(&yes, &mut Plain { out: vec![] }).unwrap();
+    *sys.relay.borrow_mut() = false;
+    let yes = Env { yes: true, ..relay_env(&sys) };
+    repair(&yes, &mut Plain { out: vec![] }).unwrap();
     assert!(sys.applied.borrow().is_empty());
-    assert_eq!(exit_code(&repaired.outcomes), 3);
 
     let mut ui = Recorded::default();
     repair(&yes, &mut ui).unwrap();
-    assert_eq!(*sys.applied.borrow(), vec![Action::SignIn], "with a person at the terminal --yes signs in: {:?}", ui.lines);
+    assert_eq!(*sys.applied.borrow(), vec![Action::EnableRelay], "with a person at the terminal --yes signs in to the relay: {:?}", ui.lines);
 }
 
 #[test]
@@ -691,9 +699,9 @@ fn without_a_terminal_nothing_is_asked_and_json_says_the_next_step() {
     assert!(sys.applied.borrow().is_empty());
     assert_eq!(exit_code(&repaired.outcomes), 3);
     let doc = report(&repaired.outcomes, None);
-    assert_eq!(doc["next_step"], "claude auth login, then alondra doctor --fix");
+    assert_eq!(doc["next_step"], "run claude in Terminal and sign in with /login, then alondra doctor");
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("✗ Claude Code sign-in: not signed in\n  → claude auth login, then alondra doctor --fix"), "{text}");
+    assert!(text.contains("✗ Claude Code sign-in: not signed in\n  → run claude in Terminal and sign in with /login, then alondra doctor"), "{text}");
     assert!(text.contains("✓ Claude Code: 2.1.291"), "{text}");
 }
 
@@ -721,7 +729,7 @@ fn a_service_that_does_not_start_shows_why_and_offers_to_try_again() {
 #[test]
 fn exit_codes_put_a_silent_daemon_first_then_breakage_then_a_person() {
     let o = |id: &'static str, status, fix| Outcome { id, name: id, group: Group::Service, status, detail: String::new(), fix };
-    let ask = || Some(Fix::Ask { question: String::new(), default: true, action: Action::SignIn, instead: String::new() });
+    let ask = || Some(Fix::Ask { question: String::new(), default: true, action: Action::EnableRelay, instead: String::new() });
     let down = o("alondrad", Status::Fail, Some(Fix::Auto(Action::RestartService)));
     let broken = o("tuicr", Status::Fail, Some(Fix::Manual("brew install tuicr".into())));
     let person = o("claude.signin", Status::Fail, ask());
@@ -729,6 +737,7 @@ fn exit_codes_put_a_silent_daemon_first_then_breakage_then_a_person() {
     assert_eq!(exit_code(&[down.clone(), broken.clone(), person.clone()]), 4);
     assert_eq!(exit_code(&[broken.clone(), person.clone()]), 1);
     assert_eq!(exit_code(&[person, warning.clone()]), 3);
+    assert_eq!(exit_code(&[o("claude.signin", Status::Fail, Some(Fix::Person("claude".into())))]), 3, "signing in waits for the person");
     assert_eq!(exit_code(&[warning]), 0);
 }
 

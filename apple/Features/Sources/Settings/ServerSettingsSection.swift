@@ -54,24 +54,6 @@ public struct ServerSettingsSection: View {
         .sheet(item: $store.scope(state: \.signIn, action: \.signIn)) { signIn in
             McpSignInSheet(store: signIn)
         }
-        .sheet(item: $store.claudeSignIn.sending(\.claudeSignInPresented)) { signIn in
-            ClaudeSignInSheet(signIn: signIn) { store.send(.claudeSignInPresented(nil)) }
-        }
-        .alert("Name of the new account", isPresented: newAccountShown) {
-            TextField("Work", text: newAccountName)
-            Button("Add") { store.send(.newAccountAdded) }.disabled(store.newAccount?.canAdd != true)
-            Button("Cancel", role: .cancel) { store.send(.newAccountCancelled) }
-        } message: {
-            Text("Then you sign it in to \(store.newAccount?.provider.displayName ?? "") in Terminal on the Mac.")
-        }
-    }
-
-    private var newAccountShown: Binding<Bool> {
-        Binding(get: { store.newAccount != nil }, set: { if !$0 { store.send(.newAccountCancelled) } })
-    }
-
-    private var newAccountName: Binding<String> {
-        Binding(get: { store.newAccount?.name ?? "" }, set: { store.send(.newAccountNameChanged($0)) })
     }
 
     private var busy: Set<String> {

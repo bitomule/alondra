@@ -1769,7 +1769,7 @@ impl Slice {
 
     fn accounts_seen(&self, id: &str, work: AccountState) {
         let accounts = [("default", AccountState::SignedIn), ("work", work)].map(|(id, state)| AccountStatus {
-            provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
+            provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None,
         }).to_vec();
         self.run(&Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
     }

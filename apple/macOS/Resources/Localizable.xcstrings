@@ -69,11 +69,6 @@
     "Shows the first card that arrived while you were reading": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Muestra la primera tarjeta que llegó mientras leías"}}}},
     "MCP servers": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidores MCP"}}}},
     "Metrics": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Métricas"}}}},
-    "Name of the new account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nombre de la cuenta nueva"}}}},
-    "Work": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo"}}}},
-    "Add": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadir"}}}},
-    "Finish in Terminal": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en Terminal"}}}},
-    "Finish on the Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Termina en el Mac"}}}},
     "Update Alondra to use this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esto"}}}},
     "Update Alondra to see this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para ver esto"}}}},
     "Waiting to send": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esperando para enviar"}}}},
@@ -1982,15 +1977,10 @@
     "Move up": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subir"}}}},
     "Move down": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Bajar"}}}},
     "Move": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mover"}}}},
-    "Run this in Terminal on %@ to sign in to %@:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta esto en Terminal en %@ para iniciar sesión en %@:"}}}},
     "Requested: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Solicitado: %@"}}}},
     "Effective: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Efectivo: %@"}}}},
     "Pending: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pendiente: %@"}}}},
-    "Update Alondra to use this action": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esta acción"}}}},
-    "Then you sign it in to %@ in Terminal on the Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Después inicias sesión en %@ con ella en Terminal en el Mac."}}}},
-    "Run this in Terminal on the Mac to sign in to %@:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta esto en Terminal en el Mac para iniciar sesión en %@:"}}}},
-    "Terminal is open and the command is copied. Paste it with ⌘V and press Return to sign in to %@:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Terminal está abierto y el comando está copiado. Pégalo con ⌘V y pulsa Retorno para iniciar sesión en %@:"}}}},
-    "This account action is unavailable. Update Alondra and try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta acción de cuenta no está disponible. Actualiza Alondra e inténtalo de nuevo."}}}}
+    "Update Alondra to use this action": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Actualiza Alondra para usar esta acción"}}}}
   },
   "version": "1.0"
 }

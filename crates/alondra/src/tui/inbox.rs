@@ -355,18 +355,7 @@ impl App {
                     alondra_core::views::LocalLink::McpSignIn { card, server } => self.mcp_connect(card, server),
                     alondra_core::views::LocalLink::McpReconnect { card } => self.mcp_reconnect(card),
                     alondra_core::views::LocalLink::CrashReport { failure } => self.open_crash_report(failure),
-                    alondra_core::views::LocalLink::AccountAdd { provider, argv, .. } => {
-                        if let Some(arguments) = alondra_core::views::accounts::account_arguments(provider.as_deref(), argv.as_deref(), None, true) {
-                            let provider = provider.as_deref().map(alondra_core::accounts::Provider::parse).transpose().ok().flatten().unwrap_or_default();
-                            self.compose(super::Target::AccountName { provider, argv: arguments }, "");
-                        } else { self.fail(super::view_render::update_to_use()); }
-                    }
-                    alondra_core::views::LocalLink::AccountSignIn { account, provider, argv, .. } => {
-                        if let Some(arguments) = alondra_core::views::accounts::account_arguments(provider.as_deref(), argv.as_deref(), Some(account), false) {
-                            return self.account_sign_in(arguments);
-                        }
-                        self.fail(super::view_render::update_to_use());
-                    }
+                    alondra_core::views::LocalLink::AccountAdd { .. } | alondra_core::views::LocalLink::AccountSignIn { .. } => {}
                     alondra_core::views::LocalLink::OpenPath { path } => {
                         self.flash(trf!(
                             "Local file reference: {path}",

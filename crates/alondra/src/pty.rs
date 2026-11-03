@@ -200,28 +200,6 @@ pub fn run_tool(program: &str, args: &[&str], dir: &std::path::Path) -> Result<S
     Ok(printed)
 }
 
-/// Runs `program` on the screen, as if typed in a terminal, and returns the last line it printed:
-/// what it ended with, whether it succeeded or not.
-pub fn run_in_terminal(program: &std::path::Path, args: &[&str], dir: &std::path::Path) -> Result<String> {
-    let (master, slave, ws) = open_pty()?;
-    let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(dir);
-    in_pty(&mut cmd, slave, unsafe { Stdio::from_raw_fd_owned(libc::dup(slave)) });
-    let name = program.display();
-    let mut child = cmd.spawn().with_context(|| trf!("could not launch {name}", "no pude lanzar {name}"))?;
-    unsafe { libc::close(slave) };
-    let raw = RawMode::enter()?;
-    let tail = relay(&master, ws, &mut child)?;
-    drop(raw);
-    let status = child.wait()?;
-    let words = last_words(&tail);
-    match (status.success(), words) {
-        (true, words) => Ok(words.unwrap_or_default()),
-        (false, Some(words)) => bail!("{}", words.trim_start_matches("Error: ")),
-        (false, None) => bail!(trf!("{name} ended with {status}", "{name} terminó con {status}")),
-    }
-}
-
 /// The last line of visible text a failing tool printed, without escape sequences.
 fn last_words(output: &[u8]) -> Option<String> {
     let mut plain = String::new();

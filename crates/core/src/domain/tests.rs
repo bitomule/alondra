@@ -4740,7 +4740,7 @@ fn guards_refuse_what_the_commands_refuse() {
     use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
     let account = |id: &str, state| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: Some("max".into()),
-        billing: if id == "api" { AccountBilling::PayPerUse } else { AccountBilling::default() }, sign_ins: 0,
+        billing: if id == "api" { AccountBilling::PayPerUse } else { AccountBilling::default() }, sign_ins: 0, profile: None,
     };
     let mut accounts = sdk.clone();
     exec(&mut accounts, Actor::System, Command::RecordAccounts { accounts: vec![
@@ -4776,6 +4776,12 @@ fn guards_refuse_what_the_commands_refuse() {
         change(AccountChange::SetPolicy { policy: Policy::Margin }),
         change(AccountChange::SetMoveWhenExhausted { on: true }),
         change(AccountChange::SetMoveWhenExhausted { on: false }),
+        change(AccountChange::Connect),
+        Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Connect },
+        change(AccountChange::Add { name: "Side".into() }),
+        change(AccountChange::Add { name: "WORK".into() }),
+        change(AccountChange::Add { name: " ".into() }),
+        Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Add { name: "Side".into() } },
     ]).collect();
     let mut proposing = fixture();
     let mut proposal = crate::domain::CardSpec::delivery("Approve the plan", &text(), true);
@@ -4816,6 +4822,26 @@ fn guards_refuse_what_the_commands_refuse() {
         "invalid_input", "invalid_action_for_kind", "acceptance_stale", "stale_head", "task_not_active", "plan_choice_required", "plan_approve_or_change"] {
         assert!(refusals.contains(code), "no button was refused with {code}: {refusals:?}");
     }
+}
+
+/// Connecting a provider and adding an account only change the settings: the buttons offer each
+/// one exactly when its rule allows it, and nothing in them signs in.
+#[test]
+fn connecting_a_provider_and_adding_an_account_follow_their_rules() {
+    use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Provider};
+    let mut state = fixture();
+    let claude = AccountStatus { provider: Provider::Claude, id: AccountId::default_account(), name: "Default".into(), state: AccountState::SignedOut,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
+    exec(&mut state, Actor::System, Command::RecordAccounts { accounts: vec![claude], reserve: crate::usage::default_reserve() }).unwrap();
+    assert!(state.account_action(Provider::Codex, AccountChange::Connect).enabled, "a provider not yet connected can be");
+    assert!(!state.account_action(Provider::Claude, AccountChange::Connect).enabled, "a connected provider is not connected again");
+    assert!(state.account_action(Provider::Claude, AccountChange::Add { name: "Work".into() }).enabled);
+    assert!(!state.account_action(Provider::Claude, AccountChange::Add { name: "default".into() }).enabled, "two accounts never share a name");
+    assert!(!state.account_action(Provider::Codex, AccountChange::Add { name: "Work".into() }).enabled, "a provider is connected before an account is added to it");
+    let before = state.accounts.clone();
+    exec(&mut state, user(), Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Connect }).unwrap();
+    assert_eq!(state.accounts, before, "the settings record the accounts; no sign-in is recorded");
+    assert!(state.account_logins.is_empty());
 }
 
 /// 97 messages to the orchestrator stayed open after their tasks ended: `close_request` waits for
@@ -4869,7 +4895,7 @@ fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
     use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     let account = |id: &str, state| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), state,
-        native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0, profile: None,
     };
     let mut s = DomainState::new("epoch");
     let accounts = vec![account("default", AccountState::SignedIn), account("work", AccountState::SignedOut)];
@@ -4906,7 +4932,7 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
     use crate::usage::{Share, UsageReading, WindowKind, WindowReading};
     let account = |id: &str| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     };
     let (now, day) = (1_790_192_202_000, "2026-09-23");
     let reading = |week: f64| UsageReading {
@@ -4940,7 +4966,7 @@ fn a_settings_change_to_the_accounts_is_recorded_as_the_file_will_hold_it() {
     use crate::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
     let account = |id: &str, state| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: Some(format!("{id}@example.org")),
-        plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0,
+        plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0, profile: None,
     };
     let mut s = DomainState::new("epoch");
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
@@ -4982,7 +5008,7 @@ fn mixed_account_order_conflicts_only_with_configuration_and_qualified_tasks_do_
     let mut s = fixture();
     let keys = [AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex)];
     let accounts = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: key.provider.as_str().into(),
-        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).collect();
+        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }).collect();
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() }).unwrap();
     exec(&mut s, Actor::System, Command::RecordAccountConfiguration { order: keys.to_vec(), version: "settings-one".into() }).unwrap();
     let stale = Command::SetAccountOrder { order: keys.iter().rev().cloned().collect(), expected_config_version: "settings-old".into() };
@@ -5023,7 +5049,7 @@ fn task_selection_is_committed_metadata_and_only_the_system_records_pending_swit
     assert_eq!(exec(&mut s, Actor::System, record(intent.clone(), None)).unwrap_err().code, "invalid_input", "the new model is not effective before its provider is admitted");
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![crate::accounts::AccountStatus {
         provider: Provider::Codex, id: AccountKey::native(Provider::Codex).account, name: "Native".into(), state: crate::accounts::AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None,
     }], reserve: crate::usage::default_reserve() }).unwrap();
     exec(&mut s, Actor::System, Command::RecordModelCatalog { catalog: crate::model_selection::AccountModelCatalog {
         account: AccountKey::native(Provider::Codex), revision: "native-catalog".into(), native_default: None, measured_at: 1,
@@ -5153,7 +5179,7 @@ fn a_user_selection_is_pending_until_admission_and_uses_the_same_action_guard() 
     let account = AccountKey::native(Provider::Codex);
     exec(&mut state, Actor::System, Command::RecordAccounts { accounts: vec![AccountStatus {
         provider: Provider::Codex, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }], reserve: crate::usage::default_reserve() }).unwrap();
     let catalog = AccountModelCatalog { account: account.clone(), revision: "catalog".into(), measured_at: 1, native_default: Some("only-model".into()), models: vec![CatalogModel {
         model: "only-model".into(), display_name: "Only model".into(), reasoning_efforts: vec!["high".into()], default_reasoning_effort: Some("high".into()), context_window: Some(10000), input_modalities: vec!["text".into()], is_default: true, hidden: false,

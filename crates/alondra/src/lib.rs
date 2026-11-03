@@ -181,7 +181,7 @@ enum Cmd {
         command: AccountCmd,
     },
     #[command(about = tr!("The Claude accounts nodes may run on", "Las cuentas de Claude con las que pueden trabajar los nodos"),
-        after_help = examples(&["alondra accounts list", "alondra accounts add Work", "alondra accounts login Work", "alondra accounts remove Work"]))]
+        after_help = examples(&["alondra accounts list", "alondra accounts add Work", "alondra accounts remove Work"]))]
     Accounts {
         #[arg(long, global = true, default_value = "claude", value_parser = ["claude", "codex"])]
         provider: String,
@@ -363,13 +363,8 @@ enum AccountCmd {
 enum AccountsCmd {
     #[command(about = tr!("Every Claude account, with its email, plan and state", "Todas las cuentas de Claude, con su email, plan y estado"))]
     List,
-    #[command(about = tr!("Add a Claude account by name and sign it in", "Añade una cuenta de Claude por su nombre e inicia su sesión"))]
+    #[command(about = tr!("Add an account by name; you sign it in with the provider's own command", "Añade una cuenta por su nombre; inicias su sesión con el comando del propio proveedor"))]
     Add {
-        #[arg(required = true)]
-        name: Vec<String>,
-    },
-    #[command(about = tr!("Sign a Claude account in again", "Vuelve a iniciar la sesión de una cuenta de Claude"))]
-    Login {
         #[arg(required = true)]
         name: Vec<String>,
     },
@@ -548,8 +543,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
         },
         Some(Cmd::Accounts { command, provider }) => match command {
             AccountsCmd::List => provider_accounts::list_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, json),
-            AccountsCmd::Add { name } => provider_accounts::add_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), no_input),
-            AccountsCmd::Login { name } => provider_accounts::login_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), no_input),
+            AccountsCmd::Add { name } => provider_accounts::add(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" ")),
             AccountsCmd::Enable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), true),
             AccountsCmd::Disable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), false),
             AccountsCmd::Remove { name } => provider_accounts::remove_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" ")),
@@ -998,6 +992,14 @@ mod api_tests {
         assert_eq!(refused(&["config", "--get", "port"]), ErrorKind::UnknownArgument);
         assert_eq!(refused(&["config"]), ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand);
         assert_eq!(refused(&["doctor", "--fix", "--force"]), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn alondra_never_signs_in_to_a_provider_from_the_command_line() {
+        for login in [&["accounts", "login", "Work"][..], &["accounts", "login", "--provider", "codex", "default"]] {
+            assert_eq!(refused(login), ErrorKind::InvalidSubcommand, "{login:?}");
+        }
+        assert!(matches!(parsed(&["accounts", "add", "--provider", "codex", "Work"]).command, Some(Cmd::Accounts { command: AccountsCmd::Add { .. }, .. })));
     }
 
     #[test]

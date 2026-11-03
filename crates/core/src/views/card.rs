@@ -1038,9 +1038,13 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         Scope::Task { task_id } => domain.tasks.get(task_id).map(|task| task.provider).unwrap_or_default(),
         _ => crate::accounts::Provider::Claude,
     };
-    let named = account.as_ref().filter(|account| !account.is_default()).map(|account| {
-        domain.accounts.iter().find(|status| status.provider == provider && status.id == *account).map_or_else(|| account.to_string(), |status| status.name.clone())
-    });
+    let status = account.as_ref().filter(|account| !account.is_default())
+        .map(|account| domain.accounts.iter().find(|status| status.provider == provider && status.id == *account).cloned().unwrap_or_else(|| crate::accounts::AccountStatus {
+            provider, id: account.clone(), name: account.to_string(), state: crate::accounts::AccountState::SignedOut, native_identity: None, email: None, plan: None,
+            billing: crate::accounts::AccountBilling::default(), sign_ins: 0, profile: None,
+        }));
+    let named = status.as_ref().map(|status| status.name.clone());
+    let sign_in = status.as_ref().map_or_else(|| super::accounts::sign_in_hint(provider, None, lang), |status| super::accounts::account_sign_in_hint(status, lang));
     if provider == crate::accounts::Provider::Codex {
         let need = match (hold, &named) {
             (ClaudeHold::SignedOut, Some(name)) => tf!(lang, "Sign in to the Codex account {name}", "Inicia sesión en la cuenta de Codex {name}"),
@@ -1049,11 +1053,8 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
             (ClaudeHold::Usage, Some(name)) => tf!(lang, "The Codex account {name} reached a usage limit", "La cuenta de Codex {name} alcanzó un límite de uso"),
             (ClaudeHold::Usage, None) => t!(lang, "Codex reported a usage limit", "Codex ha indicado un límite de uso").into(),
         };
-        let account = account.as_ref().map_or_else(|| "default".to_owned(), ToString::to_string);
         let why = match hold {
-            ClaudeHold::SignedOut => tf!(lang,
-                "On the Mac, run alondra accounts login --provider codex {account}, then press I signed in.",
-                "En el Mac, ejecuta alondra accounts login --provider codex {account} y pulsa Ya he iniciado sesión."),
+            ClaudeHold::SignedOut => tf!(lang, "{sign_in}, then press I signed in.", "{sign_in} y pulsa Ya he iniciado sesión."),
             ClaudeHold::Outage => t!(lang,
                 "The task waits for Codex. Check this account in Accounts and try again when it is available.",
                 "La tarea espera a Codex. Revisa esta cuenta en Cuentas y vuelve a intentarlo cuando esté disponible.").into(),
@@ -1073,12 +1074,7 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         (ClaudeHold::Usage, 1, Some(name)) => tf!(lang, "The Claude account {name} reached its limit: a task waits", "La cuenta de Claude {name} agotó su límite: una tarea espera"),
         (ClaudeHold::Usage, _, Some(name)) => tf!(lang, "The Claude account {name} reached its limit: {waiting} tasks wait", "La cuenta de Claude {name} agotó su límite: esperan {waiting} tareas"),
     };
-    let how = match &named {
-        None => t!(lang, "Open Terminal, run claude and sign in with /login, then press I signed in.",
-            "Abre Terminal, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.").to_owned(),
-        Some(name) => tf!(lang, "Open Terminal on the Mac, run alondra accounts login \"{name}\", then press I signed in.",
-            "Abre Terminal en el Mac, ejecuta alondra accounts login \"{name}\"; luego pulsa Ya he iniciado sesión."),
-    };
+    let how = tf!(lang, "{sign_in}, then press I signed in.", "{sign_in}; luego pulsa Ya he iniciado sesión.");
     let why = match (hold, waiting, &named) {
         (ClaudeHold::SignedOut, 1, None) => format!("{} {how}", t!(lang, "Claude Code's sign-in expired and a task waits.", "La sesión de Claude Code caducó y una tarea espera.")),
         (ClaudeHold::SignedOut, _, None) => format!("{} {how}", tf!(lang, "Claude Code's sign-in expired and {waiting} tasks wait.", "La sesión de Claude Code caducó y esperan {waiting} tareas.")),

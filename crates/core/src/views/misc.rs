@@ -502,7 +502,7 @@ pub(super) fn enrich_model_fields(fields: &mut Vec<Field>, context: &RenderConte
                 .map(|model| json!(format!("{}/{}", account.provider.as_str(), model.model))));
         }
         let reason = match account.state {
-            crate::accounts::AccountState::SignedOut => Some(t!(lang, "Sign in on the Mac first", "Inicia sesión en el Mac primero").into()),
+            crate::accounts::AccountState::SignedOut => Some(super::accounts::account_sign_in_hint(account, lang)),
             crate::accounts::AccountState::Disabled => Some(t!(lang, "This account is turned off", "Esta cuenta está desactivada").into()),
             crate::accounts::AccountState::Unavailable => Some(t!(lang, "This account could not be checked", "No se pudo comprobar esta cuenta").into()),
             _ => None,

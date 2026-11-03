@@ -582,8 +582,6 @@ pub enum Target {
         server: String,
         url: String,
     },
-    /// The name to append to a validated native account command.
-    AccountName { provider: alondra_core::accounts::Provider, argv: Vec<String> },
     AccountPosition,
     /// «What happened?» for a crash report whose issue goes as `failure`; the report is built once
     /// it is sent, empty or not.
@@ -717,8 +715,6 @@ pub enum Flow {
     Go,
     Quit,
     NextMac,
-    /// Claude's sign-in for an account, run on the screen by `alondra accounts`.
-    AccountSignIn(mcp_servers::SignIn),
     /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
     Review {
         key: Key,
@@ -1005,22 +1001,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             crossterm::terminal::enable_raw_mode()?;
                             let _ = execute!(stdout(), EnableBracketedPaste);
                             app.reviewed(key, pr, number, res);
-                            tab_title.forget();
-                            repaint(terminal, app)?;
-                            break;
-                        }
-                        Flow::AccountSignIn(sign_in) => {
-                            draw(terminal, app)?;
-                            let _ = execute!(stdout(), DisableBracketedPaste, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::MoveTo(0, 0));
-                            println!("{}\r", tr!("Signing in to Claude: follow the steps below; the browser may open.",
-                                "Iniciando sesión en Claude: sigue los pasos de abajo; puede abrirse el navegador."));
-                            let args: Vec<&str> = sign_in.args.iter().map(String::as_str).collect();
-                            let home = alondra_core::config::home_dir(&|key| std::env::var(key).ok());
-                            let res = std::env::current_exe().map_err(anyhow::Error::from)
-                                .and_then(|alondra| crate::pty::run_in_terminal(&alondra, &args, &home));
-                            crossterm::terminal::enable_raw_mode()?;
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            app.account_signed_in(res);
                             tab_title.forget();
                             repaint(terminal, app)?;
                             break;
@@ -2962,7 +2942,7 @@ impl App {
             Target::Message { .. } => c.chips.is_empty(),
             Target::Form { .. } => false,
             Target::Comment { .. } | Target::General { .. } => false,
-            Target::McpReturn { .. } | Target::AccountName { .. } | Target::AccountPosition => true,
+            Target::McpReturn { .. } | Target::AccountPosition => true,
             Target::ReportDescription { .. } => false,
         };
         if needs_text && text.is_empty() {
@@ -3036,19 +3016,6 @@ impl App {
             Target::McpReturn { card, server, .. } => self.mcp_give_back(&card, &server, text),
             Target::ReportDescription { failure } => self.build_crash_report(failure, text),
             Target::AccountPosition => self.account_order_positioned(&text),
-            Target::AccountName { provider, mut argv } => {
-                let legacy = provider == alondra_core::accounts::Provider::Claude && argv == ["accounts", "add"];
-                if !legacy && alondra_core::views::accounts::account_arguments(Some(provider.as_str()), Some(&argv), None, true).is_none() {
-                    c.target = Target::AccountName { provider, argv };
-                    self.composer = Some(c);
-                    self.fail(tr!("Reload Accounts before adding this account", "Vuelve a cargar Cuentas antes de añadir esta cuenta"));
-                    return;
-                }
-                if argv.iter().any(|arg| arg == "--provider") || text.starts_with('-') { argv.push("--".into()); }
-                argv.push(text);
-                let flow = self.account_sign_in(argv);
-                self.pending_flow = Some(flow).filter(|flow| !matches!(flow, Flow::Go));
-            }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
                     return;

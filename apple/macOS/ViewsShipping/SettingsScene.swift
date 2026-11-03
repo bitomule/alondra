@@ -95,10 +95,6 @@ struct MacServiceSettingsScene: View {
                 $0.findMac = account.findMacClient
                 $0.connectionMeasurements = .live(account.measurements)
                 $0.crashReports = services.crashReportClient(client: "mac", measurements: account.measurements.file, onThisMac: onThisMac)
-                $0.claudeTerminal.open = { command in
-                    guard await MainActor.run(body: { workspace.thisMac === services }) else { return false }
-                    return await ClaudeTerminal.open(command)
-                }
             }
         if let unopened = pairingRequested {
             pairingRequested = nil

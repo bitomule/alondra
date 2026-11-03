@@ -66,6 +66,8 @@ impl ClientCapabilities {
                 || matches!(id.verb, super::action_id::Verb::AccountEnable | super::action_id::Verb::AccountDisable | super::action_id::Verb::AccountRemove
                     | super::action_id::Verb::AccountUp | super::action_id::Verb::AccountDown | super::action_id::Verb::AccountWeight | super::action_id::Verb::AccountRename | super::action_id::Verb::AccountModels)
                     && id.extra.as_deref() == Some("codex") && !self.contains("provider_accounts")
+                || matches!(id.verb, super::action_id::Verb::ProviderConnect | super::action_id::Verb::AccountAdd)
+                    && id.subject != "claude" && !self.contains("provider_accounts")
         });
         if unsupported_account_action || action.link.as_ref().is_some_and(|link| !self.supports_link(link)) {
             action.enabled = false;

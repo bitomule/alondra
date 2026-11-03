@@ -1,65 +1,11 @@
 use super::*;
-use crate::test_support::Directory;
-use std::os::unix::fs::PermissionsExt as _;
-
-#[test]
-fn codex_login_error_exit_cancels_only_its_own_attempt() {
-    use std::io::{Read, Write};
-    use alondra_core::accounts::AccountKey;
-    use alondra_core::domain::{AccountLogin, AccountLoginPhase};
-    use alondra_core::views::action_id::{ActionId, Verb};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let client = Client::at(format!("http://{}", listener.local_addr().unwrap()));
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut bytes = Vec::new();
-        let body = loop {
-            let mut buffer = [0; 4096];
-            let count = stream.read(&mut buffer).unwrap(); assert!(count > 0);
-            bytes.extend_from_slice(&buffer[..count]);
-            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&bytes[..end]);
-                let size: usize = headers.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|size| size.trim().parse().unwrap())).unwrap();
-                if bytes.len() >= end + 4 + size { break serde_json::from_slice::<Value>(&bytes[end + 4..end + 4 + size]).unwrap(); }
-            }
-        };
-        assert_eq!(body["data_epoch"], "fixture-epoch");
-        let action = ActionId::parse(body["action_id"].as_str().unwrap()).unwrap();
-        assert_eq!(action.verb, Verb::AccountLoginCancel);
-        assert_eq!(action.extra.as_deref(), Some("owned-attempt"));
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
-    });
-    let fail = || -> Result<()> {
-        let _pending = PendingCodexLogin { client: &client, login: AccountLogin {
-            account: AccountKey::native(Provider::Codex), attempt: "owned-attempt".into(), started_at: 1,
-            phase: AccountLoginPhase::Pending, challenge: None, error: None,
-        }, epoch: "fixture-epoch".into(), revision: 3, finished: false };
-        bail!("synthetic transport failure")
-    };
-    assert!(fail().is_err());
-    server.join().unwrap();
-}
 
 fn row(id: &str, email: Option<&str>, state: AccountState) -> Row {
     Row {
         provider: Provider::Claude,
         id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), enabled: true, default: id == "default",
-        billing: AccountBilling::default(), state, email: email.map(str::to_owned), plan: Some("max".into()),
+        billing: AccountBilling::default(), state, email: email.map(str::to_owned), plan: Some("max".into()), profile: None,
     }
-}
-
-#[test]
-fn an_email_another_account_has_is_found_regardless_of_case() {
-    let rows = [
-        row("default", Some("Me@Example.org"), AccountState::SignedIn),
-        row("work", Some("me@EXAMPLE.org"), AccountState::SignedIn),
-        row("team", Some("team@example.org"), AccountState::SignedIn),
-        row("new", None, AccountState::SignedOut),
-    ];
-    assert_eq!(same_email(&rows, &rows[1].id).unwrap().id.as_str(), "default");
-    assert!(same_email(&rows, &rows[2].id).is_none());
-    assert!(same_email(&rows, &rows[3].id).is_none(), "an account without a sign-in repeats nobody");
 }
 
 #[test]
@@ -97,36 +43,60 @@ fn the_daemons_listing_is_read_with_the_file_section_as_it_is() {
     assert_eq!(without.claude.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["default"], "the default keeps its place in the file");
 }
 
+/// Serves `answers` one connection each, in order, and keeps the method and path of every request.
+fn fake_daemon(answers: Vec<Value>) -> (Client, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = Client::at(format!("http://{}", listener.local_addr().unwrap()));
+    let server = std::thread::spawn(move || answers.into_iter().map(|answer| {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut bytes = Vec::new();
+        let request = loop {
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap(); assert!(count > 0);
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]).into_owned();
+                let size: usize = headers.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|size| size.trim().parse().unwrap())).unwrap_or(0);
+                if bytes.len() >= end + 4 + size { break headers.lines().next().unwrap().rsplit_once(' ').unwrap().0.to_owned(); }
+            }
+        };
+        let body = answer.to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        request
+    }).collect());
+    (client, server)
+}
+
 #[test]
-fn claude_runs_for_an_account_with_its_folder_and_for_the_default_with_the_daemons_profile() {
-    let scratch = Directory::new();
-    let bin = scratch.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("claude"), "#!/bin/sh\nprintf '%s' \"${CLAUDE_CONFIG_DIR:-none}\" > \"$HOME/seen\"\n").unwrap();
-    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let home = scratch.join("alondra");
-    let explicit = scratch.join("user/.claude-work");
-    let work = claude_for(&home, &AccountId::parse("work").unwrap(), Some(&explicit));
-    assert_eq!(work.config_dir.as_deref(), Some(home.join("accounts/work").to_str().unwrap()));
-    assert_eq!(claude_for(&home, &AccountId::default_account(), None).config_dir, None, "Claude's default profile names no folder");
-    assert_eq!(claude_for(&home, &AccountId::default_account(), Some(&explicit)).config_dir.as_deref(), explicit.to_str(),
-        "the default account signs in to the profile the daemon's nodes run with");
-    let context = crate::claude_auth::ContextEnv { home: scratch.join("user"), path: bin.display().to_string(), config_dir: work.config_dir.clone() };
-    std::fs::create_dir_all(&context.home).unwrap();
-    context.sign_out().unwrap();
-    assert_eq!(std::fs::read_to_string(context.home.join("seen")).unwrap(), home.join("accounts/work").display().to_string());
+fn adding_an_account_registers_it_and_tells_the_providers_own_command_without_signing_in() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let config = |codex: Value| json!({"connected": ["claude", "codex"], "distribution": {"policy": "chain", "reserve": 0.9, "move_when_exhausted": false, "order": [{"provider": "claude", "account": "default"}, {"provider": "codex", "account": "default"}]}, "claude": [], "codex": codex});
+    let account = |id: &str, name: &str, state: &str, profile: Option<&str>| json!({"provider": "codex", "id": id, "name": name, "enabled": true, "default": id == "default",
+        "billing": {"kind": "subscription"}, "state": state, "email": null, "plan": null, "profile": profile});
+    let before = json!({"version": "v1", "config": config(json!([])), "supported_providers": ["claude", "codex"],
+        "accounts": [account("default", "Default", "signed_in", None)]});
+    let after = json!({"version": "v2", "config": config(json!([{"id": "work", "name": "Work"}])), "supported_providers": ["claude", "codex"],
+        "accounts": [account("default", "Default", "signed_in", None), account("work", "Work", "signed_out", Some("~/.alondra/provider-accounts/codex/work"))]});
+    let (client, server) = fake_daemon(vec![before, after]);
+    let lines = add_with(&client, Provider::Codex, "Work").unwrap();
+    assert_eq!(server.join().unwrap(), ["GET /settings/accounts?capabilities=provider_accounts", "PUT /settings/accounts?capabilities=provider_accounts"],
+        "the account is only written to the settings: no sign-in action reaches the daemon");
+    assert_eq!(lines, ["Added Work: signed out", "On the Mac, run CODEX_HOME=~/.alondra/provider-accounts/codex/work codex login"]);
 }
 
 #[test]
 fn every_accounts_verb_parses_and_only_list_takes_json() {
     use clap::Parser as _;
     let parse = |args: &[&str]| crate::Cli::try_parse_from(std::iter::once("alondra").chain(args.iter().copied()));
-    for verb in ["add", "login", "enable", "disable", "remove"] {
+    for verb in ["add", "enable", "disable", "remove"] {
         assert!(parse(&["accounts", verb, "My", "Work"]).is_ok(), "{verb}");
         assert!(parse(&["accounts", verb]).is_err(), "{verb} needs a name");
     }
     assert!(parse(&["accounts", "list"]).is_ok());
     assert!(parse(&["accounts", "folder"]).is_err());
+    assert!(parse(&["accounts", "login", "Work"]).is_err(), "Alondra never signs in to a provider");
     assert!(crate::takes_json(parse(&["accounts", "list"]).unwrap().command.as_ref()));
     assert!(!crate::takes_json(parse(&["accounts", "add", "Work"]).unwrap().command.as_ref()));
 }

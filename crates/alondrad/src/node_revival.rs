@@ -478,7 +478,7 @@ mod tests {
         use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
         let (_home, domain) = world(true);
         let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-            native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0 };
+            native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
         command(&domain, Actor::System, "mixed-accounts", Command::RecordAccounts {
             accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve(),
         });

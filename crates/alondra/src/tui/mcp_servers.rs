@@ -267,12 +267,6 @@ fn sections(view: Option<&View>) -> Vec<Entry<'_>> {
     entries
 }
 
-/// Claude's sign-in for an account, run on this screen by `alondra accounts`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SignIn {
-    pub args: Vec<String>,
-}
-
 /// The buttons of a row, numbered from 1 in the order the view gives them.
 pub fn actions(row: &Row) -> Vec<&Action> {
     row.actions.iter().filter(|action| action.enabled).take(9).collect()
@@ -309,6 +303,9 @@ pub fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> 
     let mut lines = super::md::wrap(title, text_width, lead.clone(), lead.clone());
     for line in row.subtitle.iter().flat_map(|subtitle| subtitle.lines()).filter(|line| !line.is_empty()) {
         lines.extend(super::md::wrap(vec![Span::styled(line.to_owned(), Style::new().fg(Color::Gray))], text_width, lead.clone(), lead.clone()));
+    }
+    if let Some(reason) = row.account.as_ref().and_then(|account| account.reason.as_ref()) {
+        lines.extend(super::md::wrap(vec![Span::raw(reason.clone())], text_width, lead.clone(), lead.clone()));
     }
     for child in &row.children {
         let indent = vec![bar.clone(), Span::raw("   ")];
@@ -370,29 +367,6 @@ impl App {
         if screen.order.is_none() && screen.account_detail.is_none() && let Some(selected) = selected && let Some(position) = screen.rows().iter().position(|row| row.id == selected) { screen.sel = position; }
         screen.clamp();
         self.sync_open_views();
-    }
-
-    /// Native sign-in runs on the Mac that holds this account's credentials.
-    pub(super) fn account_sign_in(&mut self, args: Vec<String>) -> Flow {
-        if self.remote_mac().is_some() {
-            let command = std::iter::once("alondra").chain(args.iter().map(String::as_str))
-                .map(alondra_core::views::accounts::shell_word).collect::<Vec<_>>().join(" ");
-            let name = self.remote_mac().unwrap_or_else(|| "Mac".into());
-            self.fail(trf!("Finish native sign-in on {name}: run {command} there", "Completa el inicio de sesión nativo en {name}: ejecuta {command} allí"));
-            return Flow::Go;
-        }
-        Flow::AccountSignIn(SignIn { args })
-    }
-
-    pub(super) fn account_signed_in(&mut self, result: anyhow::Result<String>) {
-        match result {
-            Ok(words) if !words.is_empty() => self.flash(words),
-            Ok(_) => self.flash(tr!("Done", "Hecho")),
-            Err(error) => self.fail(format!("{error:#}")),
-        }
-        if self.mcp_servers.is_some() {
-            self.load_accounts();
-        }
     }
 
     fn load_general(&mut self) {
@@ -551,7 +525,6 @@ fn account_detail(source: &Row) -> Row {
     let mut lines = vec![format!("{} · {} · {}", provider, account.key.account, account.availability.text), account.freshness.text.clone()];
     if let Some(email) = &account.email { lines.push(email.clone()); }
     if let Some(plan) = &account.plan { lines.push(plan.clone()); }
-    if let Some(reason) = &account.reason { lines.push(reason.clone()); }
     let count = account.active_nodes;
     lines.push(trf!("{count} active nodes", "{count} nodos activos"));
     if account.windows.is_empty() { lines.push(tr!("Usage not reported", "Uso no comunicado").into()); }

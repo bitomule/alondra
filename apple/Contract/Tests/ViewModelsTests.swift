@@ -3,20 +3,6 @@ import XCTest
 import AlondraContract
 
 final class ViewModelsTests: XCTestCase {
-    func testDeviceCodeUsesRowsLinksAndActionsUnderTheExistingViewsProtocol() throws {
-        let env = ProcessInfo.processInfo.environment
-        let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"])).appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main").appendingPathComponent("fixtures/views/cards")
-        for name in ["accounts-device-code-ios", "accounts-device-code-mac", "accounts-device-code-ios-es"] {
-            let view = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("\(name).json")))
-            let rows = view.sections.flatMap(\.items).compactMap { item -> AlondraContract.Row? in if case let .row(row) = item { row } else { nil } }
-            let row = try XCTUnwrap(rows.first { $0.id == "codex-login-default" })
-            XCTAssertTrue(row.subtitle?.contains("ABCD-1234") == true)
-            XCTAssertTrue(row.subtitle?.contains("https://auth.openai.com/codex/device") == true)
-            XCTAssertTrue(row.actions.contains { $0.link == .url(url: "https://auth.openai.com/codex/device") })
-            XCTAssertTrue(row.actions.allSatisfy { !$0.needsNewerApp })
-        }
-    }
-
     func testATaskDetailNamesTheKindOfItsFactsAndAnOlderDaemonSendsNone() throws {
         let env = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))
@@ -195,6 +181,21 @@ final class ViewModelsTests: XCTestCase {
         for link in [add, signIn] {
             XCTAssertEqual(try JSONDecoder().decode(Link.self, from: JSONEncoder().encode(link)), link)
         }
+    }
+
+    func testRowActionsLinkedToAnOldDaemonsAccountSignInAreNotOffered() throws {
+        let action = { (link: String) in
+            #"{"label":"Sign in","style":"secondary","presentation":"button","options":[],"input":{"kind":"none"},"attachments":false,"enabled":true,"link":\#(link)}"#
+        }
+        let signIn = #"{"kind":"local","local":{"kind":"account_sign_in","account":"Personal","command":"alondra accounts login 'Personal'"}}"#
+        let add = #"{"kind":"local","local":{"kind":"account_add","command":"alondra accounts add"}}"#
+        let reconnect = #"{"kind":"local","local":{"kind":"mcp_reconnect","card":"c"}}"#
+        let row = #"{"id":"claude-personal","icon":"task","title":"Personal","depth":0,"struck":false,"actions":[\#(action(signIn)),\#(action(add)),\#(action(reconnect))]}"#
+        let decoded = try JSONDecoder().decode(Row.self, from: Data(row.utf8))
+        XCTAssertEqual(decoded.actions.map(\.link), [.local(local: .mcpReconnect(card: "c"))])
+        XCTAssertFalse(Link.local(local: .accountSignIn(account: "a", command: "c")).isOffered)
+        XCTAssertFalse(Link.local(local: .accountAdd(command: "c")).isOffered)
+        XCTAssertTrue(Link.url(url: "https://example.com").isOffered)
     }
 
     func testChangeFeedAndResponseEnumsMatchWireNames() throws {

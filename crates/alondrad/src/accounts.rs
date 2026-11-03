@@ -144,7 +144,7 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
             };
             let mut status = AccountStatus {
                 provider: Provider::Claude, id: account.id.clone(), name: account.name.clone(), state: AccountState::Disabled,
-                native_identity: None, email: None, plan: configured_plan.clone(), billing: account.billing.clone(), sign_ins: 0,
+                native_identity: None, email: None, plan: configured_plan.clone(), billing: account.billing.clone(), sign_ins: 0, profile: None,
             };
             if !account.enabled {
                 return status;
@@ -604,7 +604,7 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
             for account in config.accounts(Provider::Codex) {
                 let key = AccountKey::new(Provider::Codex, account.id.clone());
                 let mut status = AccountStatus { provider: Provider::Codex, id: account.id.clone(), name: account.name,
-                    state: AccountState::Disabled, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0 };
+                    state: AccountState::Disabled, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None };
                 if account.enabled {
                     let folder = alondra_core::accounts::provider_folder(home, &key);
                     let result = if folder.as_ref().is_some_and(|folder| !folder.is_dir()) { Ok(None) }
@@ -627,6 +627,8 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
             }
             let order: Vec<_> = config.ordered_accounts().into_iter().map(|(key, _)| key).collect();
             statuses.sort_by_key(|status| order.iter().position(|key| key.provider == status.provider && key.account == status.id));
+            let user_home = Claude::user_home(domain);
+            for status in &mut statuses { status.profile = alondra_core::accounts::shown_profile(home, &user_home, &AccountKey::new(status.provider, status.id.clone())); }
             commands.push(Command::RecordAccounts { accounts: statuses, reserve: Share::of(config.distribution.reserve) });
             commands.push(Command::RecordAccountConfiguration { order, version: version(&config) });
             for report in reports {
@@ -695,7 +697,7 @@ pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Re
     let statuses = file.accounts.ordered_accounts().into_iter().map(|(key, account)| {
         read.state().accounts.iter().find(|old| old.provider == key.provider && old.id == key.account).cloned()
             .unwrap_or(AccountStatus { provider: key.provider, id: key.account, name: account.name, state: if account.enabled { AccountState::Unchecked } else { AccountState::Disabled },
-                native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0 })
+                native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None })
     }).collect();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: format!("provider-settings-migration-{}", crate::auth::random_hex(16)).into(),
         expected_revision: 0, command: Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::Share::of(file.accounts.distribution.reserve) } };
@@ -736,6 +738,14 @@ pub(crate) fn change_for_provider_authorized(domain: &DomainRuntime, home: &Path
     replace_configuration_authorized(domain, home, actor, &version(&current), &next, authorize)?;
     check(domain, home);
     Ok(())
+}
+
+/// Connects `provider` with the session the user signed in to on this Mac with the provider's own
+/// tool: only the settings change, then every account is checked. Alondra never signs in.
+pub(crate) fn connect(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
+    let current = config(home).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+    if domain.read().state().account_config_version != version(&current) { check(domain, home); }
+    change_for_provider_authorized(domain, home, actor, provider, &AccountChange::Connect, authorize)
 }
 
 pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, seen: &str, proposed: &AccountsConfig,
@@ -858,6 +868,33 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
     }
 }
 
+/// Ends what older daemons left of a Codex device sign-in: Alondra no longer signs in, so an
+/// unfinished one is recorded as failed, and a credential it was publishing, or its staging
+/// folder, is removed. The provider's own session stays as it is.
+pub(crate) fn end_abandoned_sign_ins(domain: &DomainRuntime) {
+    let logins = domain.read().state().account_logins.clone();
+    let codex = (!logins.is_empty()).then(|| Codex::of(domain)).flatten();
+    for login in logins {
+        if let Some(codex) = &codex { crate::codex_credentials::recover_pending(&codex.profile(domain.home(), &login.account), &login.attempt); }
+        if !login.phase.active() { continue; }
+        let ended = alondra_core::domain::AccountLogin { phase: alondra_core::domain::AccountLoginPhase::Failed, challenge: None,
+            error: Some("Sign-in was interrupted; the previous session was preserved".into()), ..login };
+        let read = domain.read();
+        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
+            command_id: format!("account-login-{}", crate::auth::random_hex(16)).into(), expected_revision: read.state().revision, command: Command::RecordAccountLogin { login: ended } };
+        drop(read);
+        if let Err(why) = domain.execute_as_system(envelope) { log!("could not close an unfinished Codex sign-in: {why}"); }
+    }
+    let staging = domain.home().join("account-sign-ins");
+    if !staging.symlink_metadata().is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) { return; }
+    for entry in std::fs::read_dir(staging).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(|name| name.len() == 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// What the user is told about moving a node to another account when its own reaches its limit.
 pub(crate) fn move_risk(lang: Lang) -> &'static str {
     match lang {
@@ -872,6 +909,7 @@ pub(crate) fn read(domain: &DomainRuntime, home: &Path, lang: Lang) -> Reply {
         Err(why) => return Reply { status: StatusCode::INTERNAL_SERVER_ERROR, body: json!({"error": "file", "message": why}) },
     };
     let seen = domain.read().state().accounts.clone();
+    let user_home = Claude::user_home(domain);
     let accounts: Vec<_> = config
         .ordered_accounts()
         .into_iter()
@@ -887,12 +925,13 @@ pub(crate) fn read(domain: &DomainRuntime, home: &Path, lang: Lang) -> Reply {
                 "provider": key.provider, "id": account.id, "name": account.name, "enabled": account.enabled,
                 "default": account.id.is_default(), "billing": account.billing, "state": state,
                 "email": status.and_then(|s| s.email.clone()), "plan": status.and_then(|s| s.plan.clone()),
+                "profile": alondra_core::accounts::shown_profile(home, &user_home, &key),
             })
         })
         .collect();
     let moving = json!({"on": config.distribution.move_when_exhausted, "risk": move_risk(lang)});
     let read = domain.read();
-    Reply { status: StatusCode::OK, body: json!({"version": version(&config), "config": config, "accounts": accounts, "move_when_exhausted": moving, "supported_providers": Provider::ALL, "data_epoch": read.state().data_epoch, "revision": read.state().revision, "sign_ins": read.state().account_logins}) }
+    Reply { status: StatusCode::OK, body: json!({"version": version(&config), "config": config, "accounts": accounts, "move_when_exhausted": moving, "supported_providers": Provider::ALL, "data_epoch": read.state().data_epoch, "revision": read.state().revision}) }
 }
 
 pub(crate) fn for_client(mut reply: Reply, provider_accounts: bool) -> Reply {

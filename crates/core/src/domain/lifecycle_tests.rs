@@ -921,6 +921,7 @@ fn accounts_seen(s: &mut DomainState, states: &[(&str, crate::accounts::AccountS
     let accounts = states.iter().map(|(id, state)| crate::accounts::AccountStatus {
         provider: crate::accounts::Provider::Claude, id: crate::accounts::AccountId::parse(id).unwrap(), name: id.to_uppercase(), state: *state,
         native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
+        profile: (*id != "default").then(|| format!("~/.alondra/accounts/{id}")),
     }).collect();
     must(s, Actor::System, Command::RecordAccounts { accounts, reserve: crate::usage::default_reserve() });
 }
@@ -1041,9 +1042,9 @@ fn an_expired_sign_in_leaves_its_account_signed_out_until_claude_answers_on_it()
     assert_eq!(account_state(&s, "default"), (SignedIn, 0), "the other account is not touched");
     let en = turn_end_shown(&s, "t", crate::views::text::Lang::En);
     assert!(en.contains("Sign in to the Claude account WORK on the Mac"), "{en}");
-    assert!(en.contains(r#"Open Terminal on the Mac, run alondra accounts login \"WORK\", then press I signed in."#), "the command to run: {en}");
+    assert!(en.contains("Open Terminal on the Mac, run CLAUDE_CONFIG_DIR=~/.alondra/accounts/work claude and sign in with /login, then press I signed in."), "the command to run: {en}");
     let es = turn_end_shown(&s, "t", crate::views::text::Lang::Es);
-    assert!(es.contains(r#"ejecuta alondra accounts login \"WORK\""#), "{es}");
+    assert!(es.contains("ejecuta CLAUDE_CONFIG_DIR=~/.alondra/accounts/work claude e inicia sesión con /login"), "{es}");
     let other = fail_turn(&mut s, "u", "turn-1", "authentication_failed", Some(401));
     assert_eq!(notices(&other), 1, "another account's sign-in is news of its own");
     assert_eq!(listed_holds(&s).len(), 2, "one card per account");
@@ -2162,7 +2163,7 @@ fn a_pause_keeps_its_owner_in_the_journal() {
 
 fn mixed_default_accounts(s: &mut DomainState, codex_state: crate::accounts::AccountState) {
     use crate::accounts::*;
-    let accounts=[Provider::Claude,Provider::Codex].into_iter().map(|provider|AccountStatus {provider,id:AccountId::default_account(),name:format!("{provider:?} personal"),state:if provider==Provider::Codex {codex_state} else {AccountState::SignedIn},native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins:0}).collect();
+    let accounts=[Provider::Claude,Provider::Codex].into_iter().map(|provider|AccountStatus {provider,id:AccountId::default_account(),name:format!("{provider:?} personal"),state:if provider==Provider::Codex {codex_state} else {AccountState::SignedIn},native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None}).collect();
     must(s,Actor::System,Command::RecordAccounts {accounts,reserve:crate::usage::default_reserve()});
 }
 

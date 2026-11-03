@@ -7,7 +7,7 @@ use crate::model_selection::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn account(provider: Provider, id: &str, state: AccountState) -> AccountStatus {
-    AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: format!("{id} name"), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }
+    AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: format!("{id} name"), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
 }
 fn catalog(provider: Provider, id: &str, model: &str) -> AccountModelCatalog {
     AccountModelCatalog { account: AccountKey::new(provider, AccountId::parse(id).unwrap()), revision: format!("{id}-{model}"), measured_at: 1, native_default: Some(model.into()), models: vec![CatalogModel {

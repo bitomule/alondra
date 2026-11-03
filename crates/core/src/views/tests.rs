@@ -533,7 +533,7 @@ fn golden_fixture() -> DomainState {
     }
     state.accounts = golden_accounts().into_iter().map(|account| crate::accounts::AccountStatus {
         provider: crate::accounts::Provider::Claude, id: account.id, name: account.name, state: crate::accounts::AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0,
+        native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None,
     }).collect();
     if let Some(mut agent) = state.agents.remove(&"a-1".into()) {
         agent.id = agent_id.into();
@@ -3895,7 +3895,7 @@ fn a_task_detail_names_the_claude_account_its_node_runs_on_once_there_are_severa
     state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(AccountId::default_account());
     assert_eq!(account(&state, Lang::En), None, "with the one default account there is nothing to tell apart");
     let status = |id: &str, name: &str, billing| AccountStatus { provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(),
-        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing, sign_ins: 0 };
+        state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None };
     state.accounts = vec![status("default", "Principal", AccountBilling::default()), status("work", "Trabajo", AccountBilling::default()),
         status("api", "API", AccountBilling::PayPerUse)];
     assert_eq!(account(&state, Lang::En), Some(("Claude account".into(), "Principal".into())));
@@ -8021,6 +8021,7 @@ fn accounts_fixture() -> (DomainState, LiveSnapshot) {
     let account = |id: &str, name: &str, state, email: Option<&str>, plan: Option<&str>, weight| AccountStatus {
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: email.map(Into::into),
         plan: plan.map(Into::into), billing: AccountBilling::Subscription { plan: None, weight }, sign_ins: 0,
+        profile: (id != "default").then(|| format!("~/.alondra/accounts/{id}")),
     };
     state.accounts = vec![
         account("default", "Default", AccountState::SignedIn, Some("someone@example.org"), Some("max"), None),
@@ -8068,7 +8069,7 @@ fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow()
     let (state, live) = accounts_fixture();
     let view = render(&state, &live, Client::Tui, Lang::En, "accounts", "");
     assert_eq!(view.title.as_deref(), Some("Accounts"));
-    assert!(!serde_json::to_string(&view).unwrap().contains("/accounts/"), "a screen never shows a folder");
+    assert_eq!(serde_json::to_string(&view).unwrap().matches("/accounts/").count(), 1, "the only folder shown is the one the signed-out account signs in with");
     let rows: Vec<Row> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
         Item::Row(row) => Some(row.clone()),
         _ => None,
@@ -8092,17 +8093,17 @@ fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow()
 
     let personal = row("Personal");
     assert_eq!(personal.badges[0].text, "Signed out");
-    assert_eq!(labels(&personal)[0], "Sign in");
-    assert!(matches!(&personal.actions[0].link, Some(Link::Local { local: LocalLink::AccountSignIn { account, command, .. } })
-        if account == "Personal" && command == "alondra accounts login 'personal'"));
-    assert!(labels(&personal).contains(&"Remove".to_owned()));
+    assert_eq!(labels(&personal), ["Weight", "Move up", "Move down", "Turn off", "Rename", "Refresh models", "Remove"], "nothing signs it in");
+    assert_eq!(personal.account.as_ref().unwrap().reason.as_deref(), Some("Open Terminal on the Mac, run CLAUDE_CONFIG_DIR=~/.alondra/accounts/personal claude and sign in with /login"));
 
     let old = row("Old");
     assert_eq!(old.badges[0].text, "Off");
     assert_eq!(labels(&old), ["Weight", "Move up", "Turn on", "Rename", "Refresh models", "Remove"], "the last can't move down");
 
     let add = row("Add a Claude account");
-    assert!(matches!(&add.actions[0].link, Some(Link::Local { local: LocalLink::AccountAdd { command, .. } }) if command == "alondra accounts add"));
+    assert!(add.actions[0].link.is_none(), "every client sends the name as an action");
+    assert!(add.actions[0].id.starts_with("account_add:claude@"), "{}", add.actions[0].id);
+    assert!(matches!(add.actions[0].input, Input::Text { required: true, .. }));
     let policy = row("Most room first");
     assert_eq!(labels(&policy), ["Change"]);
     assert_eq!(policy.actions[0].options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["chain"], "only the other way is offered");
@@ -8110,7 +8111,6 @@ fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow()
     assert_eq!(moves.badges[0].text, "Off", "off unless the user turns it on");
     assert_eq!(moves.subtitle.as_deref(), Some("Continue with the next eligible account in your order when quota runs out"));
     assert_eq!((labels(&moves), moves.actions[0].option_id.as_deref()), (vec!["Turn on".to_owned()], Some("on")));
-    assert_eq!(crate::views::accounts::shell_word("Bob's"), r"'Bob'\''s'");
 }
 
 #[test]
@@ -8828,7 +8828,8 @@ fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
     state.accounts = [
         (Provider::Claude, "Claude work"), (Provider::Codex, "Codex work"),
     ].map(|(provider, name)| AccountStatus { provider, id: AccountId::parse("work").unwrap(), name: name.into(), state: AccountState::SignedOut,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 }).to_vec();
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
+        profile: Some(if provider == Provider::Codex { "~/.alondra/provider-accounts/codex/work" } else { "~/.alondra/accounts/work" }.into()) }).to_vec();
     let mut interaction = state.interactions[&"i-1".into()].clone();
     state.interactions.clear();
     interaction.id = "claude-signed-out-t-1".into();
@@ -8842,8 +8843,8 @@ fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
             assert!(card.need.as_ref().unwrap().contains("Codex work"), "{card:?}");
             assert!(!card.need.as_ref().unwrap().contains("Claude work"), "{card:?}");
             let why = card.why.as_ref().unwrap();
-            assert!(why.contains("alondra accounts login --provider codex work"), "{why}");
-            assert!(!why.contains("/login"), "{why}");
+            assert!(why.contains("CODEX_HOME=~/.alondra/provider-accounts/codex/work codex login"), "{why}");
+            assert!(!why.contains("alondra accounts"), "{why}");
         }
     }
 }
@@ -9264,30 +9265,51 @@ fn a_delivery_in_its_turn_and_after_it_matches_goldens() {
 }
 
 
+/// Alondra never signs in to a provider: a signed-out account, the provider's own or a named one,
+/// offers nothing that signs it in and says the provider's command to run on the Mac; connecting a
+/// provider only connects it, and adding an account only asks for its name.
 #[test]
-fn codex_login_views_show_device_url_and_code_using_existing_contract_elements() {
-    use crate::accounts::{AccountKey, Provider};
-    use crate::domain::{AccountLogin, AccountLoginPhase};
-    let mut state = DomainState::new("device-code-fixture");
-    state.account_logins.push(AccountLogin { account: AccountKey::native(Provider::Codex), attempt: "fixture-attempt".into(), started_at: 0,
-        phase: AccountLoginPhase::Pending, challenge: Some(crate::codex_login::Challenge { url: "https://auth.openai.com/codex/device".into(), code: "ABCD-1234".into() }), error: None });
-    for (client, client_name, english, spanish) in [
-        (Client::Ios, "ios", include_str!("../../../../fixtures/views/cards/accounts-device-code-ios.json"), include_str!("../../../../fixtures/views/cards/accounts-device-code-ios-es.json")),
-        (Client::Mac, "mac", include_str!("../../../../fixtures/views/cards/accounts-device-code-mac.json"), include_str!("../../../../fixtures/views/cards/accounts-device-code-mac-es.json")),
-        (Client::Tui, "tui", include_str!("../../../../fixtures/views/cards/accounts-device-code-tui.json"), include_str!("../../../../fixtures/views/cards/accounts-device-code-tui-es.json")),
-    ] {
-        for (lang, suffix) in [(Lang::En, ""), (Lang::Es, "-es")] {
-            let mut view = render(&state, &LiveSnapshot::default(), client, lang, "accounts", "");
-            ClientCapabilities::default().adapt_view(&mut view, lang);
-            let rows: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
-            let row = rows.iter().find(|row| row.id == "codex-login-default").expect("pending sign-in row");
-            assert!(row.subtitle.as_ref().unwrap().contains("ABCD-1234"));
-            assert!(row.subtitle.as_ref().unwrap().contains("https://auth.openai.com/codex/device"));
-            assert!(row.actions.iter().any(|action| matches!(&action.link, Some(Link::Url { url }) if url == "https://auth.openai.com/codex/device")));
-            assert!(row.actions.iter().any(|action| action.enabled && action_id::ActionId::parse(&action.id).is_ok_and(|id| id.verb == action_id::Verb::AccountLoginCancel)));
-            assert_golden(&format!("accounts-device-code-{client_name}{suffix}.json"), &view, if lang == Lang::En { english } else { spanish });
+fn a_signed_out_account_names_the_providers_own_command_and_nothing_signs_it_in() {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    let account = |provider, id: &str, name: &str, profile: Option<&str>| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: name.into(),
+        state: AccountState::SignedOut, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: profile.map(Into::into) };
+    let mut state = golden_fixture();
+    state.accounts = vec![
+        account(Provider::Claude, "default", "Default", None),
+        account(Provider::Claude, "work", "Work", Some("~/.alondra/accounts/work")),
+        account(Provider::Codex, "default", "Default", None),
+        account(Provider::Codex, "side", "Side", Some("~/Library/Alondra Home/provider-accounts/codex/side")),
+    ];
+    let signs_in = |action: &Action| matches!(&action.link, Some(Link::Local { local: LocalLink::AccountSignIn { .. } | LocalLink::AccountAdd { .. } }))
+        || action_id::ActionId::parse(&action.id).is_ok_and(|id| matches!(id.verb, action_id::Verb::AccountLogin | action_id::Verb::AccountLoginCancel));
+    let rows = |state: &DomainState, client, lang| -> Vec<Row> {
+        render(state, &golden_live(), client, lang, "accounts", "").sections.iter().flat_map(|section| section.items.clone())
+            .filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect()
+    };
+    let reason = |rows: &[Row], id: &str| rows.iter().find(|row| row.id == id).unwrap_or_else(|| panic!("{id}")).account.as_ref().unwrap().reason.clone().unwrap();
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let english = rows(&state, client, Lang::En);
+        assert!(english.iter().flat_map(|row| &row.actions).all(|action| !signs_in(action)), "{client:?}");
+        assert_eq!(reason(&english, "claude-default"), "Open Terminal on the Mac, run claude and sign in with /login");
+        assert_eq!(reason(&english, "claude-work"), "Open Terminal on the Mac, run CLAUDE_CONFIG_DIR=~/.alondra/accounts/work claude and sign in with /login");
+        assert_eq!(reason(&english, "codex-default"), "On the Mac, run codex login");
+        assert_eq!(reason(&english, "codex-side"), "On the Mac, run CODEX_HOME=~/'Library/Alondra Home/provider-accounts/codex/side' codex login");
+        let spanish = rows(&state, client, Lang::Es);
+        assert_eq!(reason(&spanish, "claude-default"), "Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login");
+        assert_eq!(reason(&spanish, "codex-default"), "En el Mac, ejecuta codex login");
+        for provider in ["claude", "codex"] {
+            let add = english.iter().find(|row| row.id == format!("{provider}-add")).unwrap();
+            assert_eq!(add.actions.len(), 1);
+            assert!(add.actions[0].id.starts_with(&format!("account_add:{provider}@")) && add.actions[0].link.is_none(), "{:?}", add.actions[0]);
+            assert!(matches!(add.actions[0].input, Input::Text { required: true, .. }));
         }
     }
+    state.accounts.retain(|account| account.provider == Provider::Claude);
+    let english = rows(&state, Client::Ios, Lang::En);
+    let connect = english.iter().find(|row| row.id == "codex-connect").unwrap();
+    assert_eq!(connect.actions.len(), 1);
+    assert!(connect.actions[0].id.starts_with("provider_connect:codex@") && !signs_in(&connect.actions[0]), "{:?}", connect.actions[0]);
+    assert_eq!(connect.actions[0].description.as_deref(), Some("On the Mac, run codex login"));
 }
 
 /// Every class of card the fixtures hold, as the terminal and the Mac see it: 1-9 are only the
@@ -9441,7 +9463,7 @@ fn a_task_detail_offers_to_move_it_to_each_account_its_rule_accepts() {
     use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     use crate::model_selection::{AccountModelCatalog, CatalogModel};
     let mut state = fixture();
-    let account = |provider, id: &str, name: &str, state| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 };
+    let account = |provider, id: &str, name: &str, state| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
     state.accounts = vec![account(Provider::Claude, "default", "Personal", AccountState::SignedIn), account(Provider::Codex, "default", "Work", AccountState::SignedIn), account(Provider::Claude, "old", "Old", AccountState::Disabled)];
     state.model_catalogs = state.accounts.iter().map(|account| AccountModelCatalog { account: crate::accounts::AccountKey::new(account.provider, account.id.clone()), revision: "catalog".into(), measured_at: 1, native_default: Some("model".into()),
         models: vec![CatalogModel { model: "model".into(), display_name: "Model".into(), reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec![], is_default: true, hidden: false }] }).collect();

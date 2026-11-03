@@ -127,7 +127,7 @@ mod tests {
             let domain = crate::domain_runtime::DomainRuntime::open(&directory).unwrap();
             let publish = |email: &str| {
                 let account = AccountStatus { provider, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
-                    native_identity: None, email: Some(email.into()), plan: None, billing: Default::default(), sign_ins: 0 };
+                    native_identity: None, email: Some(email.into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None };
                 let state = domain.read();
                 let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.state().data_epoch.clone(),
                     command_id: crate::auth::random_hex(16).into(), expected_revision: 0,

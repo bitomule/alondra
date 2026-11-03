@@ -240,29 +240,23 @@
           "id": "claude-connect",
           "icon": "machine",
           "title": "Connect Claude",
-          "subtitle": "Use this provider's native sign-in on the Mac",
+          "subtitle": "Use the Claude session you signed in to on the Mac",
           "depth": 0,
           "struck": false,
           "actions": [
             {
-              "id": "",
+              "id": "provider_connect:claude@6",
               "label": "Connect",
-              "style": "plain",
-              "role": "neutral",
+              "style": "primary",
+              "role": "advance",
+              "description": "Open Terminal on the Mac, run claude and sign in with /login",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
               "enabled": true,
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "account_sign_in",
-                  "account": "default",
-                  "command": "alondra accounts login 'default'"
-                }
-              },
+              "stamp": "Connected",
               "resolves_card": false
             }
           ]
@@ -272,35 +266,25 @@
           "id": "codex-add",
           "icon": "action",
           "title": "Add a Codex account",
-          "subtitle": "Choose a name, then finish native sign-in on the Mac",
+          "subtitle": "Choose a name; then sign it in to Codex in Terminal on the Mac",
           "depth": 0,
           "struck": false,
           "actions": [
             {
-              "id": "",
+              "id": "account_add:codex@6",
               "label": "Add",
               "style": "primary",
               "role": "advance",
               "presentation": "button",
               "input": {
-                "kind": "none"
+                "kind": "text",
+                "placeholder": "Account name",
+                "required": true,
+                "multiline": false
               },
               "attachments": false,
               "enabled": true,
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "account_add",
-                  "command": "alondra accounts add --provider codex",
-                  "provider": "codex",
-                  "argv": [
-                    "accounts",
-                    "add",
-                    "--provider",
-                    "codex"
-                  ]
-                }
-              },
+              "stamp": "Added",
               "resolves_card": false
             }
           ]
