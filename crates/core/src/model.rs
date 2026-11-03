@@ -253,6 +253,11 @@ pub struct Node {
     pub last_prompt: Option<String>,
     #[serde(default)]
     pub last_prompt_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt_origin: Option<PromptOrigin>,
+    /// When the user last typed a prompt into the node's terminal or through Remote Control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompt_at: Option<Millis>,
     #[serde(default)]
     pub attached: bool,
     #[serde(default)]
@@ -371,6 +376,8 @@ impl Node {
             last_message_at: None,
             last_prompt: None,
             last_prompt_at: None,
+            last_prompt_origin: None,
+            user_prompt_at: None,
             attached: false,
             menu_waiting: None,
             mission: None,
@@ -605,6 +612,24 @@ pub struct Report {
     /// The task it belongs to; cards recorded before tasks named one belong to their session's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+}
+
+/// Claude Code's `prompt.submit` `origin.kind`: `composer` is the user pressing Enter in the
+/// terminal, `bridge` the user through Remote Control. Every other kind (a plugin, a task
+/// notification, another session…) is `Other`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub enum PromptOrigin {
+    Composer,
+    Bridge,
+    #[serde(other)]
+    Other,
+}
+
+impl PromptOrigin {
+    pub fn is_user(self) -> bool {
+        matches!(self, Self::Composer | Self::Bridge)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

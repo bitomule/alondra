@@ -1947,6 +1947,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_origin_the_mod_reports_for_a_prompt_says_whether_the_user_typed_it() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        mod_report(&domain, json!({"event": "prompt.submit", "origin": "plugin"}), 1);
+        let node = domain.live.node("agent-a").unwrap();
+        assert_eq!((node.last_prompt_origin, node.user_prompt_at), (Some(alondra_core::PromptOrigin::Other), None),
+            "Alondra's mod submitting a message is not the user");
+        mod_report(&domain, json!({"event": "prompt.submit", "origin": "composer"}), 2);
+        let node = domain.live.node("agent-a").unwrap();
+        assert_eq!(node.last_prompt_origin, Some(alondra_core::PromptOrigin::Composer));
+        assert!(node.user_prompt_at.is_some(), "the user typed in the terminal");
+    }
+
+    #[tokio::test]
     async fn work_running_in_the_background_or_a_wait_for_the_machine_lets_the_turn_end() {
         let fixture = Fixture::new();
         let domain = fixture.open();

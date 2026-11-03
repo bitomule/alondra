@@ -227,7 +227,7 @@ impl Live {
             view.apply(self.next(), now, &Event::Joined { session_id });
         }
         let limit = event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit");
-        if event.event == "StopFailure" && event.error_type.as_deref() == Some("authentication_failed") {
+        if event.event == "StopFailure" && matches!(event.error_type.as_deref(), Some("authentication_failed" | "billing_error")) {
             self.account_check.notify_one();
         }
         view.apply(self.next(), now, &Event::Hook(event));
@@ -235,6 +235,17 @@ impl Live {
         if limit {
             self.usage_pause.exhaust(self.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now), now);
         }
+        self.changed.publish();
+    }
+
+    pub(crate) fn observe_prompt(&self, session_id: &str, origin: alondra_core::PromptOrigin) {
+        let mut view = self.view.lock_or_exit("the live sessions");
+        let now = now_millis();
+        if !view.nodes.contains_key(session_id) {
+            view.apply(self.next(), now, &Event::Joined { session_id: session_id.to_owned() });
+        }
+        view.apply(self.next(), now, &Event::PromptSubmitted { session_id: session_id.to_owned(), origin });
+        drop(view);
         self.changed.publish();
     }
 
@@ -396,6 +407,17 @@ mod sdk_node_tests {
         }
         assert!(live.node("sdk-seen").is_none(), "{:?}", live.node("sdk-seen"));
         assert!(live.node("bg").is_some(), "a claude --bg node is still deduced from its hooks");
+    }
+
+    #[tokio::test]
+    async fn a_billing_or_sign_in_failure_checks_the_account_and_an_overload_does_not() {
+        for (error, checks) in [("billing_error", true), ("authentication_failed", true), ("overloaded", false)] {
+            let live = Live::default();
+            live.observe(&json!({"session_id": "bg", "hook_event_name": "StopFailure", "error_type": error}));
+            let checked = tokio::time::timeout(std::time::Duration::ZERO, live.account_check.notified()).await.is_ok();
+            assert_eq!(checked, checks, "{error}");
+            assert!(!live.node("bg").unwrap().usage_limited, "{error} is no usage limit");
+        }
     }
 
     /// `/runtime` lists a node of the Agent SDK with the state of its task's lifecycle, whether or

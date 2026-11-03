@@ -163,31 +163,9 @@ pub fn parse_url(url: &str) -> Option<(String, u64)> {
     (kind == "pull" && valid(owner) && valid(name)).then(|| (format!("{owner}/{name}"), number))
 }
 
-/// Every pull request URL mentioned in `text`, canonical and without repeats.
-pub fn urls_in(text: &str) -> Vec<String> {
-    let mut found: Vec<String> = vec![];
-    for (i, _) in text.match_indices("https://github.com/") {
-        let end = text[i..].find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | '>' | '<' | ',' | '`')).map_or(text.len(), |e| i + e);
-        if let Some((repo, number)) = parse_url(&text[i..end]) {
-            let url = canonical(&repo, number);
-            if !found.contains(&url) {
-                found.push(url);
-            }
-        }
-    }
-    found
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pull_request_urls_are_found_wherever_a_node_writes_them() {
-        let text = "Opened https://github.com/bitomule/alondra/pull/12 (see [PR](https://github.com/bitomule/alondra/pull/12#discussion)) and https://github.com/a/b.c/pull/7.\nNot https://github.com/a/b/issues/3 nor https://github.com/a/b/pull/x";
-        assert_eq!(urls_in(text), ["https://github.com/bitomule/alondra/pull/12", "https://github.com/a/b.c/pull/7"]);
-        assert_eq!(urls_in("no links"), Vec::<String>::new());
-    }
 
     #[test]
     fn a_pr_gets_one_card_that_merging_or_dismissing_closes() {

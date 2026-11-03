@@ -122,28 +122,6 @@ fn about_pr(event: &TaskEvent, pr: u64) -> bool {
     }
 }
 
-/// The task ids a text mentions, each with whether it follows “Alondra task:”. An id starts a
-/// word (`at-12` mentions none) and runs to the end of it, so a branch `t-12-fix` mentions
-/// `t-12-fix`, which `View::named_task` shortens to the task it finds.
-fn task_mentions(text: &str) -> Vec<(&str, bool)> {
-    const MARKER: &str = "alondra task:";
-    let mut found = vec![];
-    let mut from = 0;
-    while let Some(i) = text[from..].find("t-").map(|i| from + i) {
-        from = i + 2;
-        let starts_word = text[..i].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'));
-        let len = text[from..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).unwrap_or(text.len() - from);
-        if !starts_word || len == 0 {
-            continue;
-        }
-        let before = text[..i].trim_end_matches([' ', '\t', '`', '*', '"', '\'']);
-        let cut = before.len().saturating_sub(MARKER.len());
-        let marked = before.len() >= MARKER.len() && before.is_char_boundary(cut) && before[cut..].eq_ignore_ascii_case(MARKER);
-        found.push((text[i..from + len].trim_end_matches('-'), marked));
-    }
-    found
-}
-
 fn checks_failed(pr: &PullRequest) -> Option<u64> {
     pr.checks.iter().any(|c| matches!(c.state, CheckState::Failed | CheckState::Running)).then_some(pr.number)
 }
@@ -202,61 +180,14 @@ impl View {
             .max_by_key(|t| (t.created_at, t.id.clone()))
     }
 
-    /// The open task a subagent of the node works on: assigned to it, or the one it bound itself
-    /// to (`activity`).
-    fn agent_task(&self, session_id: &str, agent_id: &str) -> Option<&Task> {
-        let bound = self.nodes.get(session_id).and_then(|n| n.ledger.bound(agent_id));
-        self.tasks_of(session_id)
-            .filter(|t| !t.state.finished())
-            .find(|t| t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == Some(agent_id) || bound == Some(t.id.as_str()))
-    }
-
-    /// The task a PR the node opened is for, in this order: the task its title, body or branch
-    /// names (“Alondra task: t-…”) for the main thread, the task of the subagent that opened it, the node's live
-    /// `focus`, the node's only open task (its only task when none is open). None when the node
-    /// works on several and nothing says which: Alondra asks the node instead of guessing. 25 Sep
-    /// 00:01: the main thread of 7e661a50 opened #98 and #99 for its review, and both went to
-    /// t-44370, its newest task.
-    pub fn pr_task_for(&self, session_id: &str, agent_id: Option<&str>, texts: &[&str], now: Millis) -> Option<String> {
+    /// The task a PR the node opened without naming one is for: the node's live `focus`, else
+    /// its only open task (its only task when none is open). None when the node works on several
+    /// and nothing says which: Alondra asks the node instead of guessing.
+    pub fn pr_task_for(&self, session_id: &str, now: Millis) -> Option<String> {
         if self.nodes.get(session_id).is_some_and(|n| n.is_orchestrator) {
             return None;
         }
-        agent_id.and_then(|a| self.agent_task(session_id, a)).map(|t| t.id.clone())
-            .or_else(|| self.named_task(session_id, texts))
-            .or_else(|| agent_id.is_none().then(|| self.focus(session_id, now)).flatten().map(str::to_string))
-            .or_else(|| self.single_task(session_id).map(str::to_string))
-    }
-
-    /// The node's task a mention names: `t-12-fix` names `t-12` when that one is the node's.
-    pub(crate) fn mentioned_task(&self, session_id: &str, mention: &str) -> Option<&Task> {
-        let mut id = mention;
-        loop {
-            if let Some(t) = self.board.tasks.get(id).filter(|t| t.is_assigned_to(session_id)) {
-                return Some(t);
-            }
-            id = &id[..id.rfind('-').filter(|&i| i > 1)?];
-        }
-    }
-
-    /// The node's task a PR's text names: the one after “Alondra task:”, else the only open task
-    /// it mentions.
-    fn named_task(&self, session_id: &str, texts: &[&str]) -> Option<String> {
-        let named: Vec<(&Task, bool)> =
-            texts.iter().flat_map(|t| task_mentions(t)).filter_map(|(id, marked)| self.mentioned_task(session_id, id).map(|t| (t, marked))).collect();
-        if let Some((t, _)) = named.iter().find(|(_, marked)| *marked) {
-            return Some(t.id.clone());
-        }
-        let open: BTreeSet<&str> = named.iter().filter(|(t, _)| !t.state.finished()).map(|(t, _)| t.id.as_str()).collect();
-        match (open.first(), open.len()) {
-            (Some(id), 1) => Some(id.to_string()),
-            _ => None,
-        }
-    }
-
-    /// The task GitHub's copy of a PR names in its title, body or branch.
-    fn marked_task(&self, pr: u64) -> Option<String> {
-        let p = self.prs.get(&pr)?;
-        self.named_task(&p.session_id, &[&p.title, p.body.as_deref().unwrap_or_default(), p.head.as_deref().unwrap_or_default()])
+        self.focus(session_id, now).map(str::to_string).or_else(|| self.single_task(session_id).map(str::to_string))
     }
 
     fn untasked_pr(&self, url: &str) -> Option<u64> {
@@ -441,7 +372,7 @@ impl View {
             (Event::PrOpened { session_id, task, .. }, Before::Opened { last, orphan }) => {
                 let named = task.clone().filter(|t| self.board.tasks.contains_key(t));
                 let opened: Vec<u64> = self.prs.range(last + 1..).map(|(id, _)| *id).collect();
-                let id = named.clone().or_else(|| self.pr_task_for(session_id, None, &[], at));
+                let id = named.clone().or_else(|| self.pr_task_for(session_id, at));
                 for pr in opened {
                     self.put_pr_in_task(pr, id.clone());
                 }
@@ -451,7 +382,7 @@ impl View {
                 }
             }
             (Event::PrUpdated(p), _) => {
-                let task = self.pr_task(p.id).or_else(|| self.marked_task(p.id));
+                let task = self.pr_task(p.id);
                 self.put_pr_in_task(p.id, task);
             }
             (Event::PrReassigned { pr, task }, Before::Reassigned(from)) => self.reassign_pr(*pr, from.as_deref(), task),
@@ -543,10 +474,8 @@ impl View {
                     moved.extend(self.written_to(&tid, Item::Message(*id), at));
                 }
             }
-            (Event::Hook(h), _) if h.event == "UserPromptSubmit" && h.prompt.is_some() => {
-                let typed = self.nodes.get(&h.session_id).is_some_and(|n| crate::states::talking_with_user(self, n));
-                let task = self.single_task(&h.session_id).map(str::to_string).filter(|_| typed);
-                if let Some(tid) = task {
+            (Event::PromptSubmitted { session_id, origin }, _) if origin.is_user() => {
+                if let Some(tid) = self.single_task(session_id).map(str::to_string) {
                     moved.extend(self.written_to(&tid, Item::Terminal, at));
                 }
             }
@@ -1072,7 +1001,7 @@ impl View {
 mod tests {
     use super::*;
     use crate::event::{DaemonObservation, HookEvent};
-    use crate::model::{Answer, Attachment, Link, Message, MessageAbout, QuestionStatus, Report};
+    use crate::model::{Answer, Attachment, Link, Message, MessageAbout, PromptOrigin, QuestionStatus, Report};
     use crate::pr::MergeMethod;
     use crate::tasks::RequestState;
     use TaskState::*;
@@ -1189,6 +1118,52 @@ mod tests {
         run.message(1, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1, task: None }));
         assert_eq!(run.states(), vec![InReview, InReview, Done], "the merge notice does not reopen it");
         assert_eq!(run.task().prs, vec![1]);
+    }
+
+    #[test]
+    fn only_a_prompt_the_user_typed_sends_a_task_in_review_back_to_work() {
+        let typed = |origin| Event::PromptSubmitted { session_id: "s".into(), origin };
+        let mut by_a_plugin = Run::new();
+        by_a_plugin.on(opened()).on(typed(PromptOrigin::Other));
+        assert_eq!(by_a_plugin.states(), vec![InReview], "what a plugin submits as the user moves nothing");
+        let mut by_the_user = Run::new();
+        by_the_user.on(opened()).on(typed(PromptOrigin::Composer));
+        assert_eq!(by_the_user.states(), vec![InReview, Running], "David typing in the terminal asks for changes");
+    }
+
+    #[test]
+    fn a_pr_belongs_to_the_task_it_was_opened_for_whatever_task_its_title_names() {
+        let task = |id: &str| Event::TaskCreated(crate::tasks::NewTask {
+            id: id.into(), request: "r-1".into(), title: id.into(), brief: None, depends_on: vec![], options: Default::default(),
+            session_id: Some("s".into()), launched: false, launched_as: None, start: None,
+        });
+        let mut run = Run::new();
+        run.on(task("t-a")).on(task("t-b"));
+        run.on(Event::PrOpened { url: PR.into(), session_id: "s".into(), task: Some("t-a".into()) });
+        run.pr(|p| {
+            p.title = "Alondra task: t-b".into();
+            p.body = Some("Part of t-b".into());
+            p.head = Some("t-b-fix".into());
+        });
+        assert_eq!(run.view.pr_task_of(&run.view.prs[&1]).map(|t| t.id.as_str()), Some("t-a"));
+        assert!(!run.view.board.tasks["t-b"].prs.contains(&1), "the title names t-b, the PR stays out of it");
+        let mut untasked = Run::new();
+        untasked.on(task("t-a")).on(task("t-b")).on(opened());
+        untasked.pr(|p| p.title = "Alondra task: t-b".into());
+        assert_eq!(untasked.view.pr_task_of(&untasked.view.prs[&1]).map(|t| t.id.as_str()), None, "a PR nothing assigned waits for the node to say which, whatever its title");
+    }
+
+    #[test]
+    fn a_report_shows_in_the_pr_card_it_links_and_never_by_a_url_in_its_text() {
+        let mut run = Run::new();
+        run.on(opened()).on(Event::PrMerged { id: 1, method: MergeMethod::Merge });
+        let mut only_mentioned = report(1, ReportKind::Notice, &[]);
+        if let Event::ReportPosted(r) = &mut only_mentioned {
+            r.body = Some(format!("Deployed {PR}"));
+        }
+        run.on(only_mentioned).on(report(2, ReportKind::Notice, &[PR]));
+        assert!(!run.view.reports[&1].read, "a merged PR the body only mentions settles nothing");
+        assert!(run.view.reports[&2].read, "a report that links the merged PR is filed read");
     }
 
     #[test]

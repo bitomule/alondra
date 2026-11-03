@@ -32,10 +32,10 @@ pub fn urls_in(text: &str) -> Vec<String> {
     found.into_iter().map(|(_, url)| url).collect()
 }
 
-/// The artifacts a report carries, from its links first and then its body.
+/// The artifacts a report links.
 pub fn in_report(r: &Report) -> Vec<String> {
     let mut out: Vec<String> = vec![];
-    for url in r.links.iter().flat_map(|l| urls_in(&l.url)).chain(urls_in(r.body.as_deref().unwrap_or(""))) {
+    for url in r.links.iter().flat_map(|l| urls_in(&l.url)) {
         if !out.contains(&url) {
             out.push(url);
         }
@@ -67,16 +67,15 @@ mod tests {
     }
 
     #[test]
-    fn a_report_carries_the_artifacts_in_its_links_and_its_body_once() {
+    fn a_report_carries_the_artifacts_it_links_once_and_none_its_body_only_mentions() {
         let mut r: Report = serde_json::from_value(serde_json::json!({
             "id": 1, "session_id": "s", "node_name": null, "title": "Plan", "kind": "document", "created_at": 0,
             "body": "Also https://claude.ai/code/artifact/two and https://claude.ai/artifact/one",
-            "links": [{"url": "https://claude.ai/artifact/one", "title": "The plan"}, {"url": "https://github.com/a/b/pull/1"}]
+            "links": [{"url": "https://claude.ai/artifact/one", "title": "The plan"}, {"url": "https://github.com/a/b/pull/1"}, {"url": "https://claude.ai/artifact/one"}]
         }))
         .unwrap();
-        assert_eq!(in_report(&r), ["https://claude.ai/artifact/one", "https://claude.ai/code/artifact/two"]);
+        assert_eq!(in_report(&r), ["https://claude.ai/artifact/one"]);
         r.links.clear();
-        r.body = None;
-        assert!(in_report(&r).is_empty());
+        assert!(in_report(&r).is_empty(), "an artifact the body only mentions makes no review card");
     }
 }

@@ -6,7 +6,7 @@
 //! `now` the caller passes only reaches the task rows that read GitHub's merge state.
 
 use crate::model::{
-    Evidence, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
+    Evidence, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, PromptOrigin, QuestionStatus, ReportKind, Signal,
     TurnSignal,
 };
 use crate::pr::{PrState, PullRequest};
@@ -133,7 +133,7 @@ fn reopened(view: &View, node: &Node) -> bool {
     }
     let done = node.done_at.unwrap_or(node.state_since);
     let written = view.messages.values().any(|m| m.session_id == node.session_id && m.from != MessageFrom::Alondra && m.handed_at.is_some_and(|at| at > done));
-    let typed = talking_with_user(view, node) && node.last_prompt_at.is_some_and(|at| at > done);
+    let typed = talking_with_user(node) && node.user_prompt_at.is_some_and(|at| at > done);
     written || typed
 }
 
@@ -327,27 +327,11 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
     found
 }
 
-/// What Claude Code itself types into a session: a background task or subagent finishing, a
-/// message from another session, a reminder. Nobody is at the terminal because of them.
-const HARNESS_PROMPTS: &[&str] = &["<task-notification>", "<agent-message", "<cross-session-message", "<system-reminder>"];
-
-/// The user typed the node's last prompt in its own terminal: they are talking with it and
-/// have its answer on screen. Prompts Alondra or Claude Code typed, and the launch mission, do
-/// not count.
-pub fn talking_with_user(v: &View, node: &Node) -> bool {
-    let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
-    let Some(prompt) = node.last_prompt.as_deref().map(squash).filter(|p| !p.is_empty()) else { return false };
-    if prompt.starts_with("[Alondra]")
-        || HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))
-        || node.mission.as_deref().map(squash).is_some_and(|m| m == prompt)
-    {
-        return false;
-    }
-    let typed_by_alondra = v.messages.values().filter(|m| m.session_id == node.session_id).any(|m| {
-        let head: String = squash(&m.text).chars().take(60).collect();
-        !head.is_empty() && prompt.contains(&head)
-    });
-    !typed_by_alondra
+/// The user typed the node's last prompt in its own terminal or through Remote Control: they
+/// are talking with it and have its answer on screen. What Alondra, a plugin or Claude Code
+/// submitted, and a prompt whose origin no mod reported, do not count.
+pub fn talking_with_user(node: &Node) -> bool {
+    node.last_prompt_origin.is_some_and(PromptOrigin::is_user)
 }
 
 /// What the node declared in its episode covers the task: a declaration covers the task it
@@ -669,8 +653,8 @@ mod tests {
         }
     }
 
-    fn typed(text: &str) -> Event {
-        Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(text.into()), ..Default::default() })
+    fn typed(text: &str, origin: PromptOrigin) -> [Event; 2] {
+        [Event::PromptSubmitted { session_id: "s".into(), origin }, harness(text)]
     }
 
     fn attach(on: bool) -> Event {
@@ -894,13 +878,17 @@ mod tests {
             ("done", then(&[]), NodeState::Done),
             ("done, David writes to it", then(&[from_user, user_handed]), NodeState::Working),
             ("done, the orchestrator sends it on", then(&[from_orchestrator, orchestrator_handed]), NodeState::Working),
-            ("done, David types in its terminal", then(&[typed("one more thing")]), NodeState::Working),
+            ("done, David types in its terminal", then(&typed("one more thing", PromptOrigin::Composer)), NodeState::Working),
+            ("done, David pastes an Alondra message into its terminal", then(&typed("[Alondra] go on with the release", PromptOrigin::Composer)), NodeState::Working),
+            ("done, David writes through Remote Control", then(&typed("one more thing", PromptOrigin::Bridge)), NodeState::Working),
+            ("done, a plugin submits a prompt as the user", then(&typed("one more thing", PromptOrigin::Other)), NodeState::Done),
+            ("done, a prompt no mod reported the origin of", then(&[harness("one more thing")]), NodeState::Done),
             ("done, an Alondra message typed in all the same", then(&[from_alondra, alondra_handed]), NodeState::Done),
             ("done, Claude Code reports a finished task", then(&[harness("<task-notification>\n<task-id>a1</task-id>"), tool("PreToolUse", "t")]), NodeState::Done),
             ("done, another session's message arrives", then(&[harness("<agent-message from=\"x\">done</agent-message>"), tool("PreToolUse", "t")]), NodeState::Done),
             ("done, a cross-session message arrives", then(&[harness("<cross-session-message from=\"x\">hi</cross-session-message>")]), NodeState::Done),
             ("done, a reminder is typed in", then(&[harness("<system-reminder>check</system-reminder>")]), NodeState::Done),
-            ("done, David types after a harness prompt", then(&[harness("<task-notification>a1"), hook("Stop"), typed("one more thing")]), NodeState::Working),
+            ("done, David types after a harness prompt", then(&[vec![harness("<task-notification>a1"), hook("Stop")], typed("one more thing", PromptOrigin::Composer).to_vec()].concat()), NodeState::Working),
         ];
         let wrong: Vec<String> = cases
             .into_iter()
@@ -910,6 +898,16 @@ mod tests {
             })
             .collect();
         assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn only_the_terminal_and_remote_control_are_the_user_and_any_other_origin_is_not() {
+        let origin = |kind: &str| serde_json::from_value::<PromptOrigin>(serde_json::json!(kind)).unwrap();
+        assert_eq!(origin("composer"), PromptOrigin::Composer);
+        assert_eq!(origin("bridge"), PromptOrigin::Bridge);
+        for kind in ["plugin", "task-notification", "peer", "channel", "scheduled-trigger", "a-kind-from-a-newer-claude"] {
+            assert_eq!(origin(kind), PromptOrigin::Other, "{kind}");
+        }
     }
 
     #[test]

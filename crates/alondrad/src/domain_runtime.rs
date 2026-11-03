@@ -775,6 +775,9 @@ impl DomainRuntime {
             _ => None,
         };
         let agent = AgentId(envelope.session_id.clone());
+        if let crate::node_reports::Report::PromptSubmit { origin } = envelope.report {
+            self.live.observe_prompt(&envelope.session_id, origin);
+        }
         self.live.mods.apply(envelope, at);
         if let Some(happened) = happened
             && let Err(error) = crate::domain_agent_lifecycle::node_event_at(self, &agent, happened, at)

@@ -9,10 +9,6 @@ apple/Features/Sources/Settings/CrashReport/CrashReportFeature.swift	if !detail.
 apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.outcomeUnknown } ?? (detail == Self.outcomeUnknown)) ? .retry : .final	own-grammar	daemons from before kind send only the code outcome_unknown in error
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
-crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whether the user typed the prompt decided by its text
-crates/core/src/states.rs	|| HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))	finding:C-05	whether the user typed the prompt decided by its text
-crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-05	whether the user typed the prompt decided by its text
-crates/core/src/tasks/derive.rs	while let Some(i) = text[from..].find("t-").map(|i| from + i) {	finding:C-06	old view assigns PRs and reports by t- mentions
 crates/alondra/src/tui.rs	if e.to_string().contains("No such file")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("could not launch")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("no pude lanzar") =>	finding:D-13	tuicr missing decided by error text
@@ -23,7 +19,6 @@ crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_
 crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	format	GitHub release tag of a version
 crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
 crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
-crates/core/src/view.rs	.is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))	finding:G-14	billing_error and overloaded treated as usage limit
 crates/provider-claude/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
 crates/provider-codex/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
 crates/alondrad/src/orchestrator_codex.rs	let detail = bounded_public(&item.to_string(),16384).to_lowercase();	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)

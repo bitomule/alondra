@@ -123,6 +123,8 @@ pub enum Event {
     MenuSeen { session_id: String, waiting_for: Option<String> },
     /// A terminal attached to the node's session, or the last one left.
     AttachChanged { session_id: String, attached: bool },
+    /// Who submitted the node's prompt, as the node mod read it from Claude Code's `prompt.submit`.
+    PromptSubmitted { session_id: String, origin: crate::model::PromptOrigin },
     /// A node opened, or mentioned, a pull request, for the task it names.
     PrOpened {
         url: String,
@@ -260,6 +262,7 @@ impl Event {
             | Event::Classified { session_id, .. }
             | Event::WaitingMachine { session_id, .. }
             | Event::AttachChanged { session_id, .. }
+            | Event::PromptSubmitted { session_id, .. }
             | Event::MenuSeen { session_id, .. }
             | Event::Resumed { session_id, .. }
             | Event::ContextMeasured { session_id, .. }

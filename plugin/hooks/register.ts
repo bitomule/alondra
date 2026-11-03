@@ -333,6 +333,11 @@ export const register: Register = (on) => {
     return next(e)
   })
 
+  on('prompt.submit', async ($, e, next) => {
+    queue($, { event: 'prompt.submit', origin: e.origin.kind })
+    return next(e)
+  })
+
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
     if (started.agentId !== undefined) {

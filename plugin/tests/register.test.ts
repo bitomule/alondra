@@ -301,6 +301,35 @@ function pushed(...lines: Record<string, unknown>[]): AsyncGenerator<{ stream: '
   })()
 }
 
+test('every submitted prompt reports who submitted it, as Claude Code names its origin', async ($, on) => {
+  mock.clock(on)
+  const reports: Record<string, unknown>[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.291' } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    reports.push(JSON.parse(e.init.stdin))
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('process.spawn', async function* () {
+    await new Promise(() => {})
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.prompt.submit({ text: '[Alondra] pasted by David', origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: 'from the phone', origin: { kind: 'bridge' } })
+  await $.prompt.submit({ text: 'one more thing', origin: { kind: 'plugin', name: 'alondra', asUser: true } })
+  await settle()
+
+  expect(reports.filter((report) => report.event === 'prompt.submit')).toEqual([
+    { session_id: 'session-1', event: 'prompt.submit', origin: 'composer' },
+    { session_id: 'session-1', event: 'prompt.submit', origin: 'bridge' },
+    { session_id: 'session-1', event: 'prompt.submit', origin: 'plugin' },
+  ])
+})
+
 test('a pushed message is submitted to the session and then acknowledged by id', async ($, on) => {
   mock.clock(on)
   const submits: Record<string, unknown>[] = []

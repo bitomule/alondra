@@ -82,8 +82,6 @@ pub struct SpawnReservation {
     pub agent_completed: bool,
 }
 
-const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
-
 /// Snapshots before the removal time was kept hold a bare list: those count as removed at 0,
 /// so the next prune forgets them.
 fn removed_nodes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Millis>, D::Error> {
@@ -486,6 +484,14 @@ impl View {
             Event::AttachChanged { session_id, attached } => {
                 self.node_mut(session_id, at).attached = *attached;
                 Some((session_id.clone(), Trigger::Other))
+            }
+            Event::PromptSubmitted { session_id, origin } => {
+                let node = self.node_mut(session_id, at);
+                node.last_prompt_origin = Some(*origin);
+                if origin.is_user() {
+                    node.user_prompt_at = Some(at);
+                }
+                Some((session_id.clone(), Trigger::Hook))
             }
             Event::PrOpened { url, session_id, .. } => {
                 let known = crate::pr::parse_url(url).is_some_and(|(repo, number)| self.prs.values().any(|p| p.repo == repo && p.number == number));
@@ -894,10 +900,7 @@ impl View {
                 node.busy = false;
                 node.tool = None;
                 node.last_stop_at = Some(at);
-                if h.error_type
-                    .as_deref()
-                    .is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))
-                {
+                if h.error_type.as_deref() == Some("rate_limit") {
                     node.usage_limited = true;
                     node.usage_limited_at = Some(at);
                 }
@@ -1011,8 +1014,7 @@ impl View {
         let settled = |repo: &str, number: u64| {
             self.prs.values().any(|p| p.repo == repo && p.number == number && matches!(p.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed))
         };
-        let texts = r.links.iter().map(|l| l.url.as_str()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")]);
-        self.report_pr(r).is_none() && texts.flat_map(crate::pr::urls_in).filter_map(|u| crate::pr::parse_url(&u)).any(|(repo, number)| settled(&repo, number))
+        self.report_pr(r).is_none() && r.links.iter().filter_map(|l| crate::pr::parse_url(&l.url)).any(|(repo, number)| settled(&repo, number))
     }
 
     /// Every artifact the report links was already approved by David: it is filed read, as the
@@ -1038,8 +1040,7 @@ impl View {
         if is_review(r) {
             return None;
         }
-        let links: Vec<String> = r.links.iter().map(|l| l.url.clone()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")].into_iter().flat_map(crate::pr::urls_in)).collect();
-        let links: Vec<&str> = links.iter().map(String::as_str).collect();
+        let links: Vec<&str> = r.links.iter().map(|l| l.url.as_str()).collect();
         self.task_pr_home(self.report_task(r)?, &links, true)
     }
 
@@ -1411,6 +1412,15 @@ mod tests {
             }),
         ]);
         assert_eq!(v.nodes["s"].state, NodeState::WaitingMachine);
+    }
+
+    #[test]
+    fn only_a_rate_limit_is_a_usage_limit_and_billing_or_overload_are_not() {
+        for (error, limited) in [("rate_limit", true), ("billing_error", false), ("overloaded", false), ("authentication_failed", false)] {
+            let failed = Event::Hook(HookEvent { session_id: "s".into(), event: "StopFailure".into(), error_type: Some(error.into()), ..Default::default() });
+            let v = run(&[hook("s", "UserPromptSubmit"), failed]);
+            assert_eq!(v.nodes["s"].usage_limited, limited, "{error}");
+        }
     }
 
     #[test]

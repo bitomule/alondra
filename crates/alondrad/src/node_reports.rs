@@ -28,6 +28,9 @@ pub(crate) enum Report {
     Model { model: String, #[serde(default)] agent_id: Option<String> },
     #[serde(rename = "turn.start")]
     TurnStart,
+    /// Who submitted the prompt, as Claude Code's `prompt.submit` names it (`origin.kind`).
+    #[serde(rename = "prompt.submit")]
+    PromptSubmit { origin: alondra_core::PromptOrigin },
     #[serde(rename = "turn.complete")]
     TurnComplete { answer: String, #[serde(default)] aborted: bool },
     #[serde(rename = "tool.start")]
@@ -250,7 +253,7 @@ impl Reported {
     /// What one report says of the session, but its start, which only `Reports` records.
     pub(crate) fn record(&mut self, report: Report, now: Millis) {
         match report {
-            Report::SessionStart { .. } => {}
+            Report::SessionStart { .. } | Report::PromptSubmit { .. } => {}
             Report::SessionEnd => {
                 self.ended = true;
                 self.connection = None;
