@@ -438,7 +438,7 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(feed.requests.first?.input.text, "Restarted it")
     }
 
-    /// David wrote «Hazlo tú» under the orchestrator's Decide card: it went out as a new message
+    /// The user wrote «Hazlo tú» under the orchestrator's Decide card: it went out as a new message
     /// and the card stayed. The reply field of an open question answers that card.
     @MainActor
     func testWordsUnderAnOrchestratorDecideAnswerThatCard() async throws {

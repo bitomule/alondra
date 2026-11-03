@@ -1794,7 +1794,7 @@ mod tests {
         assert_eq!(parse("one  \ntwo")[0].quote(), "one two");
     }
 
-    const FLOW: &str = "flowchart TD\n  A[Card arrives] --> B{Needs user?}\n  B -->|yes| C[Ask David]\n  B -->|no| D[Run node]\n  C --> E[Deliver result]\n  D --> E";
+    const FLOW: &str = "flowchart TD\n  A[Card arrives] --> B{Needs user?}\n  B -->|yes| C[Ask Alice]\n  B -->|no| D[Run node]\n  C --> E[Deliver result]\n  D --> E";
 
     const FLOW_DRAWN: &[&str] = &[
         "         ┌──────────────┐",
@@ -1818,7 +1818,7 @@ mod tests {
         "      │                    │",
         "      ▼                    ▼",
         "┌───────────┐        ┌──────────┐",
-        "│ Ask David │        │ Run node │",
+        "│ Ask Alice │        │ Run node │",
         "└───────────┘        └──────────┘",
         "        │                │",
         "        └┐              ┌┘",
@@ -2014,7 +2014,7 @@ mod tests {
         assert!(block.commentable());
         assert_eq!(
             block.quote(),
-            "flowchart TD A[Card arrives] --> B{Needs user?} B -->|yes| C[Ask David] B -->|no| D[Run node] C --> E[Deliver result] D --> E"
+            "flowchart TD A[Card arrives] --> B{Needs user?} B -->|yes| C[Ask Alice] B -->|no| D[Run node] C --> E[Deliver result] D --> E"
         );
     }
 

@@ -199,12 +199,12 @@ mod tests {
     #[test]
     fn a_direct_message_waits_for_its_ack_and_is_written_again_on_the_next_connection() {
         let pushes = Pushes::default();
-        assert_eq!(pushes.message("s", "David", "hi", true).unwrap_err(), Unreachable, "nothing is kept for a session that is not connected");
+        assert_eq!(pushes.message("s", "Alice", "hi", true).unwrap_err(), Unreachable, "nothing is kept for a session that is not connected");
         let mut first = pushes.attach("s", 1);
-        let mut acked = pushes.message("s", "David", "hi", true).unwrap();
+        let mut acked = pushes.message("s", "Alice", "hi", true).unwrap();
         let line: serde_json::Value = serde_json::from_str(&first.try_recv().unwrap()).unwrap();
         let text = line["text"].as_str().unwrap();
-        assert!(text.starts_with("[From David · ") && text.ends_with("] hi"), "who sent it and when: {text}");
+        assert!(text.starts_with("[From Alice · ") && text.ends_with("] hi"), "who sent it and when: {text}");
         assert_eq!(line["as_user"].as_bool(), Some(true));
         assert!(acked.try_recv().is_err());
 
@@ -225,7 +225,7 @@ mod tests {
     fn every_message_to_a_node_says_who_sent_it_and_when() {
         let at = alondra_core::now_millis();
         let clock = crate::usage_pause::clock_text(at, at, false);
-        assert_eq!(stamped("Claude, for David", at, "Push your work"), format!("[From Claude, for David · {clock}] Push your work"));
+        assert_eq!(stamped("Claude, for Alice", at, "Push your work"), format!("[From Claude, for Alice · {clock}] Push your work"));
         assert_eq!(author_of("orchestrator"), "the orchestrator");
         assert_eq!(author_of("system"), ALONDRA);
         assert_eq!(author_of("user"), crate::domain_messages::user_name());

@@ -1,4 +1,4 @@
-//! What each provider account has used, measured this way: the nodes' SDK hosts report every
+//! What each provider account has used: the nodes' SDK hosts report every
 //! `rate_limit_event` of their account as it comes, and a probe without a prompt reads the rest.
 //! The probe runs the SDK host with the account's configuration folder; Claude starts, says which
 //! account it signed in with and answers the usage its `/usage` command shows, and no turn runs.

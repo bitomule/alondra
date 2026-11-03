@@ -1,5 +1,4 @@
-//! The CLI's old commands were removed at once, without aliases (docs/onboarding-and-cli-design.md
-//! §3.5). This scans every text the repo ships or tells people to type, so no message, doc, script
+//! The CLI's old commands were removed at once, without aliases. This scans every text the repo ships or tells people to type, so no message, doc, script
 //! or app screen sends anyone to a command that no longer exists. The plans and the design that
 //! record the old API are history and stay as written.
 
@@ -12,8 +11,8 @@ const OLD: &[&str] = &[
 
 const SCANNED: &[&str] = &[
     "crates", "plugin", "plugin-orchestrator", "apple", "web/app", "web/e2e", "tools", "deploy",
-    "Makefile", "README.md", "INSTALL.md", "AGENTS.md", "docs/direct.md",
-    "docs/building-from-source.md",
+    "Makefile", "README.md", "INSTALL.md", "AGENTS.md", "docs/architecture",
+    "docs/iroh-protocol.md", "docs/building-from-source.md",
 ];
 
 const SKIPPED_DIRS: &[&str] = &["node_modules", "target", "build", ".build", "DerivedData", "dist"];

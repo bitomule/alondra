@@ -1838,7 +1838,7 @@ mod tests {
         assert_eq!(f.starts().len(), 2, "then it is the user's question: one fresh run, not a loop");
     }
 
-    /// 21 October: David accepted a design whose plan has six phases and asked for them before the
+    /// 21 October: the user accepted a design whose plan has six phases and asked for them before the
     /// orchestrator's batch, already creating them, had finished.
     #[tokio::test]
     async fn an_accepted_plan_in_phases_reaches_the_orchestrator_at_once_and_one_left_without_tasks_is_flagged() {

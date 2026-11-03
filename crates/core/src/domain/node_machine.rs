@@ -1,7 +1,7 @@
 //! The one state of every node. A node is in exactly one `NodePhase`, and only `next` moves it:
 //! what Claude Code reports, the hooks, the gate, the listing of real sessions and the domain's own
 //! commands are events it accepts or refuses. The gate, Tasks, the header and the TUI read
-//! the phase; none keeps a state of its own. See docs/pacing.md §11.
+//! the phase; none keeps a state of its own.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

@@ -4,7 +4,7 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "mac",
-  "version": "v7eafba47789aafa1",
+  "version": "v3d41bad617d1de2c",
   "cursor": "cursor-1",
   "title": "MCP servers",
   "summary": "9 servers · 3 need sign-in",
@@ -434,7 +434,7 @@
               "resolves_card": false
             },
             {
-              "id": "mcp_remove:mcp-server-6a1eff41a1ccc3b6.mcp-project-85da55e4e72db083@6",
+              "id": "mcp_remove:mcp-server-6a1eff41a1ccc3b6.mcp-project-c5924fae93560d14@6",
               "label": "Delete",
               "style": "destructive",
               "role": "risk",
@@ -469,7 +469,7 @@
         },
         {
           "type": "row",
-          "id": "mcp-project-f8136fccd88b6688",
+          "id": "mcp-project-a827b9ca384b21f5",
           "icon": "project",
           "title": "lumo",
           "subtitle": "Checked at 09:40",
@@ -493,7 +493,7 @@
           ],
           "actions": [
             {
-              "id": "mcp_check:mcp-project-f8136fccd88b6688@6",
+              "id": "mcp_check:mcp-project-a827b9ca384b21f5@6",
               "label": "Check again",
               "style": "secondary",
               "role": "neutral",
@@ -510,14 +510,14 @@
         },
         {
           "type": "row",
-          "id": "mcp-project-cc473e0a88a8efd3",
+          "id": "mcp-project-50cf015439b89e73",
           "icon": "project",
           "title": "blurcamera",
           "depth": 0,
           "struck": false,
           "actions": [
             {
-              "id": "mcp_check:mcp-project-cc473e0a88a8efd3@6",
+              "id": "mcp_check:mcp-project-50cf015439b89e73@6",
               "label": "Check",
               "style": "secondary",
               "role": "neutral",

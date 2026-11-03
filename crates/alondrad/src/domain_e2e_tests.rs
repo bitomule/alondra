@@ -311,7 +311,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     assert!(!session.connection_lost());
 
     let patience = std::time::Duration::from_secs(10);
-    let acked = daemon.domain.live.pushes.message(SESSION, "David", "Use the new API", true).unwrap();
+    let acked = daemon.domain.live.pushes.message(SESSION, "Alice", "Use the new API", true).unwrap();
     let line = next_line(&mut reader, patience).expect("a direct message is written down the connection");
     assert!(line["text"].as_str().unwrap().ends_with("] Use the new API"), "{line}");
     assert_eq!(line["as_user"].as_bool(), Some(true));
@@ -374,7 +374,7 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     let daemon = Daemon::start(&home).await;
     let (mut helper, reader) = connect(&home);
     let mut reader = Some(reader);
-    let first = daemon.domain.live.pushes.message(SESSION, "David", "first", true).unwrap();
+    let first = daemon.domain.live.pushes.message(SESSION, "Alice", "first", true).unwrap();
     let line = next_line(&mut reader, patience).expect("the first message is written");
     let first_id = line["id"].as_str().unwrap().to_owned();
     node_ack(&home, &[&first_id]);
@@ -388,7 +388,7 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     let mut reader = Some(reader);
     let mods = &daemon.domain.live.mods;
     eventually("the helper is connected to the new daemon", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
-    let _again = daemon.domain.live.pushes.message(SESSION, "David", "AGAIN", true).unwrap();
+    let _again = daemon.domain.live.pushes.message(SESSION, "Alice", "AGAIN", true).unwrap();
     let line = next_line(&mut reader, patience).expect("the message after the restart is written");
     assert!(line["text"].as_str().unwrap().ends_with("] AGAIN"), "{line}");
     assert_ne!(line["id"].as_str().unwrap(), first_id, "the mod would take the reused id for a resend and never submit it");
@@ -398,7 +398,7 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// What Claude runs for David: the real CLI, inside a Claude Code session.
+/// What Claude runs for the user: the real CLI, inside a Claude Code session.
 fn alondra_as_claude(home: &Path, port: u16, lang: &str, args: &[&str]) -> std::process::Output {
     Process::new(alondra_binary())
         .args(args)
@@ -446,7 +446,7 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
         let state = daemon.domain.state().unwrap();
         assert!(state.requests[&id].closed);
         assert!(!state.interactions.values().any(|i| i.scope == Scope::Orchestrator { request_id: Some(id.clone()) }),
-            "{name}: the answer to maintenance is no card for David");
+            "{name}: the answer to maintenance is no card for the user");
     }
     let requests = daemon.domain.state().unwrap().requests.len();
     for name in ["orquestador", "Orquestador", "Orchestrator", "orquestadr", "an-earlier-session", SESSION, "0123456789ab"] {
@@ -755,7 +755,7 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
     app.settle("option", "ans:", Some("stable"), None, true).await;
     app.settle("text", "ans:", None, Some("Faster sync and a new settings screen"), true).await;
     app.settle("reply", "reply:", None, Some("Call it Preferences"), true).await;
-    app.settle(&group[2], "reply:", None, Some("David signs it"), true).await;
+    app.settle(&group[2], "reply:", None, Some("Alice signs it"), true).await;
     for (card, option) in [(&group[0], "a"), (&group[1], "b"), (&group[3], "a")] {
         app.settle(card, "ans:", Some(option), None, true).await;
     }

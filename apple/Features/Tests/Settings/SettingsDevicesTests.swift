@@ -5,7 +5,7 @@ import Testing
 
 @MainActor
 struct SettingsDevicesTests {
-    private let phone = TrustedDevice(id: "phone-1", name: "iPhone de David", origin: .direct)
+    private let phone = TrustedDevice(id: "phone-1", name: "iPhone de Alice", origin: .direct)
     private let tui = TrustedDevice(id: "dev-1", name: "Terminal", origin: .mac)
 
     private func client(revoke: @escaping @Sendable (String) async throws -> Void,

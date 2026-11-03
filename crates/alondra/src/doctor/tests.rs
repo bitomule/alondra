@@ -1230,9 +1230,9 @@ fn a_mac_devices_reach_only_through_the_relay_warns_with_the_reason_and_the_rout
     assert_eq!(relay_only.fix,
         Some(Fix::Manual("turn on UPnP or NAT-PMP in your router's settings, or forward UDP port 47811 to 192.168.1.20".into())));
 
-    let refused = direct_check(&health(json!({"verdict": "relay_only", "reasons": ["no_port_mapping"], "port": 47811, "lan_ip": "192.0.2.35"}))).unwrap();
+    let refused = direct_check(&health(json!({"verdict": "relay_only", "reasons": ["no_port_mapping"], "port": 47811, "lan_ip": "192.168.1.20"}))).unwrap();
     assert_eq!(refused.fix, Some(Fix::Manual(
-        "check in your router's settings that UPnP or NAT-PMP is fully on for this Mac, or forward UDP port 47811 to 192.0.2.35".into())));
+        "check in your router's settings that UPnP or NAT-PMP is fully on for this Mac, or forward UDP port 47811 to 192.168.1.20".into())));
 
     let reachable = direct_check(&health(json!({"verdict": "reachable", "confirmed": true, "reasons": []}))).unwrap();
     assert_eq!((reachable.status, reachable.detail.as_str()), (Status::Pass, "devices away from home connect directly"));

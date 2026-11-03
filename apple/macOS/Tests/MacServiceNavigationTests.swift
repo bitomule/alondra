@@ -524,7 +524,7 @@ struct MacAnsweringTests {
         #expect(store.state.selection == .viewKey("card:b"))
     }
 
-    /// David wrote «Hazlo tú» under the orchestrator's Decide card and it stayed: the reply went
+    /// The user wrote «Hazlo tú» under the orchestrator's Decide card and it stayed: the reply went
     /// out as a new message. The reply the daemon renders for it now answers that card.
     @Test
     func wordsUnderAnOrchestratorDecideAnswerItAndTakeItOut() async throws {

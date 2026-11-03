@@ -292,8 +292,7 @@ command that fixes it. It exits with 1 when any check is ✗.
 
 When launchd runs the daemon, it checks every minute whether the file at the path the launcher
 started (for Homebrew, `/opt/homebrew/opt/alondra/bin/alondrad`) was replaced. launchd runs the
-launcher at a fixed path so macOS keeps the Local Network permission across updates
-([direct.md](direct.md#macos-local-network-permission)); it passes the daemon's exit on, so
+launcher at a fixed path so macOS keeps the Local Network permission across updates; it passes the daemon's exit on, so
 launchd restarting the job restarts the daemon. The new binary
 first runs `alondrad --preflight`, which loads the configuration and replays the stored state
 on a private copy of `~/.alondra`, changing nothing. Only if that passes does the daemon release

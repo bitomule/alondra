@@ -559,7 +559,7 @@ fn waiting_for_a_cancelled_task() -> (World, TaskId) {
     (w, waiting)
 }
 
-/// 20 October: the user cancelled «the build queue sirve primero los trabajos de más prioridad» and was
+/// 20 October: the user cancelled a task that another one waited for and was
 /// asked at once whether to start the Alondra task that waited for it without it. That re-plan is
 /// the orchestrator's: no card reaches the user, and no node starts it while it waits for the
 /// cancelled task. Only once the orchestrator leaves it does the user decide, and starting it

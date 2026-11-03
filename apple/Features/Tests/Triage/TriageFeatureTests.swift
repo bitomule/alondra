@@ -80,7 +80,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.iconBadge, 4)
     }
 
-    /// David saw "Waiting for You" badged 1 over an empty queue: the badge read the server's count
+    /// The user saw "Waiting for You" badged 1 over an empty queue: the badge read the server's count
     /// while the queue left out the card he had just answered.
     @MainActor
     func testTheBadgeCountsExactlyTheCardsTheQueueShows() async throws {
@@ -484,7 +484,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertNil(store.state.loadError, "a saved queue is shown, not an error page")
     }
 
-    // MARK: Arrivals (David, 24 Oct: a blocking card arrived while he read a report)
+    // MARK: Arrivals (The user, 24 Oct: a blocking card arrived while they read a report)
 
     /// The report in front, then a question that outranks it arrives: the server puts it first.
     @MainActor
@@ -1018,7 +1018,7 @@ final class TriageFeatureTests: XCTestCase {
         }
     }
 
-    /// David saw «1 pregunta · 1 por leer» over «Nada te espera»: he had replied to the machine
+    /// The user saw «1 pregunta · 1 por leer» over «Nada te espera»: they had replied to the machine
     /// notice, which hid it although a reply answers nothing, then read the orchestrator's answer.
     @MainActor
     func testReplyingFromACardKeepsItWaitingAndTheHeaderNeverCountsWhatIsHidden() async throws {
@@ -1038,7 +1038,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.header?.waiting, 3, "the header drops the card the queue hides")
     }
 
-    /// David wrote his answer to a question in its reply field: the daemon took the text as the
+    /// The user wrote their answer to a question in its reply field: the daemon took the text as the
     /// answer and closed the card, but the phone guessed from the action's name that a reply keeps
     /// it waiting. The server now says so on the action, and the card leaves once its stamp shows,
     /// even while every view the Mac sends still lists it.
@@ -1077,7 +1077,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.optimistic.hides(ids.question))
     }
 
-    /// David wrote «Hazlo tú» in the reply field of the orchestrator's Decide card at the front
+    /// The user wrote «Hazlo tú» in the reply field of the orchestrator's Decide card at the front
     /// of the queue: it answers that card, which leaves at once.
     @MainActor
     func testWordsUnderAnOrchestratorDecideAnswerItAndTakeItOut() async throws {

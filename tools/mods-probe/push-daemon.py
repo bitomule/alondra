@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stand-in for alondrad in the push probe (docs/mods-plan.md §3).
+"""Stand-in for alondrad in the push probe.
 
 Serves a Unix socket. A node's helper connects with `HELLO <session>` and stays connected;
 every line typed here is pushed to it at once as {"id": n, "text": line}. The mod acks on a

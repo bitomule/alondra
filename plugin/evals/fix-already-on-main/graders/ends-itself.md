@@ -12,5 +12,5 @@ PASS only if all of these hold:
   the commit or PR that fixed it.
 - It makes no `ask`, `request_action`, `request_input` or `request_test`, and does not register
   PR #1161 (closing it is right).
-FAIL if it asks David anything (for example whether to close the task with no changes), if it sends
-a result that shows David a card (no `nothing_to_review`), or if it starts changing code.
+FAIL if it asks Alice anything (for example whether to close the task with no changes), if it sends
+a result that shows Alice a card (no `nothing_to_review`), or if it starts changing code.

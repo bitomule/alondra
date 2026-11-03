@@ -579,7 +579,7 @@ for raw in sys.stdin:
             consume(message)
             result(message)
         elif text.startswith('decide:') or (text.startswith('[From ') and text.partition('] ')[2].startswith('decide:')):
-            # What the user tells the node arrives as `[From David · 09:00] decide:…`.
+            # What the user tells the node arrives as `[From Alice · 09:00] decide:…`.
             said = text if text.startswith('decide:') else text.partition('] ')[2]
             scenario, _, argument = said[len('decide:'):].partition(' ')
             decide(message, scenario, argument)

@@ -46,7 +46,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
     }
 
     private var pairingRequest: some View {
-        MacPairingRequestSheet(request: PairingRequest(id: "p-1", name: "iPhone de David", code: "4F2A91"),
+        MacPairingRequestSheet(request: PairingRequest(id: "p-1", name: "iPhone de Alice", code: "4F2A91"),
                                error: nil, decide: { _ in })
     }
 
@@ -96,7 +96,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
     private var thisMacSettings: some View {
         let client = MacSettingsClient(load: { throw CancellationError() }, save: { _ in throw CancellationError() },
                                        folders: { _ in throw CancellationError() })
-        let state = MacSettingsFeature.State(id: UUID(), macName: "MacBook Pro de David", client: client, settings: MacSettings(
+        let state = MacSettingsFeature.State(id: UUID(), macName: "MacBook Pro de Alice", client: client, settings: MacSettings(
             projectsRoot: "/Users/david/Projects",
             candidates: [.init(path: "/Users/david/Projects", repos: 63), .init(path: "/Users/david/Developer", repos: 4)],
             relay: .init(on: false)))

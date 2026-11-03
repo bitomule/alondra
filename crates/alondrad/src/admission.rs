@@ -6,8 +6,7 @@
 //! included, passes the same checks as a start. Memory and the CPU only ever hold starts and
 //! resumes: they never pause a working node. The
 //! limit is the user's number, or in automatic what this Mac's cores and measured nodes take. What does not
-//! fit waits in a queue ordered by priority, then resumed work before new starts, then age. See
-//! docs/pacing.md.
+//! fit waits in a queue ordered by priority, then resumed work before new starts, then age.
 //!
 //! Launches the orchestrator or the user asked for wait in the durable `launch_queue` and this
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep

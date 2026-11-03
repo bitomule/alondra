@@ -67,7 +67,7 @@ final class ScreenFeatureTests: XCTestCase {
         await store.finish()
     }
 
-    /// David's question 2 of 4 stayed on its placeholder. Opening it hid the queue, whose screen
+    /// The user's question 2 of 4 stayed on its placeholder. Opening it hid the queue, whose screen
     /// stopped its own view; with one cancel id for every screen, TCA cancelled the detail's
     /// observation too, since every effect below a screen is also registered under it.
     @MainActor

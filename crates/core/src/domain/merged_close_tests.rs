@@ -130,7 +130,7 @@ fn render(s: &DomainState, key: &str) -> String {
     serde_json::to_string(&view).unwrap()
 }
 
-/// David's rule, 15 October: a task whose delivery merged is never in progress with its node
+/// The user's rule, 15 October: a task whose delivery merged is never in progress with its node
 /// closed, and never says its session closed before it delivered.
 fn merged_task_tells_the_truth(s: &DomainState) {
     let task = &s.tasks[&TASK.into()];

@@ -173,7 +173,7 @@ private struct MermaidSample: View {
     ```mermaid
     flowchart LR
         A[Card arrives] --> B{Needs you?}
-        B -->|yes| C[Ask David]
+        B -->|yes| C[Ask Alice]
         B -->|no| D[Run node]
     ```
 

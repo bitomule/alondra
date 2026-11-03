@@ -1081,7 +1081,7 @@ fn a_refusal_signing_in_cannot_fix_asks_on_the_tasks_own_card_with_its_reason() 
     }
 }
 
-// What David sees with two tasks signed out: one card in Waiting for You, which counts them, and
+// What the user sees with two tasks signed out: one card in Waiting for You, which counts them, and
 // the task it does not show reads what it waits for.
 #[test]
 fn the_screens_show_one_sign_in_card_and_name_the_wait_of_the_other_task() {
@@ -1534,7 +1534,7 @@ fn queued_unasked(s: &DomainState, id: &str) -> (String, String) {
 }
 
 // A host's end is not the user's decision: when a host that resumes the same session takes its
-// place, the cut task goes on by itself, as a session reopens with `resume` on its next turn.
+// place, the cut task goes on by itself, reopening its session with `resume` on the next turn.
 // Before, every such task held on «was interrupted when its session closed» until someone pressed
 // «Carry on».
 #[test]
@@ -1908,7 +1908,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     assert_aggregate_rules(&s);
 }
 
-// A turn whose result is not a success ends as failed, with its code. Here such a turn
+// Every turn whose result is not a success ends as failed, with its code. Such a turn
 // waits for no one: its card names the error, and an interrupt the user asked for still comes first.
 #[test]
 fn a_turn_claude_ended_as_failed_asks_how_to_go_on_and_names_its_error() {

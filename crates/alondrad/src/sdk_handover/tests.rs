@@ -336,7 +336,7 @@ async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_
 async fn a_node_in_a_turn_stays_on_claude_bg_until_it_rests() {
     let world = World::new();
     let connection = crate::node_push::testing::Node::connect(&world.domain, SESSION);
-    assert!(matches!(tell(&world.domain, SESSION, "David", "Use the new endpoint", true), Ok(Told::Pushed(_))), "it is told through its connection, not moved");
+    assert!(matches!(tell(&world.domain, SESSION, "Alice", "Use the new endpoint", true), Ok(Told::Pushed(_))), "it is told through its connection, not moved");
     assert_eq!(world.verdict(), Verdict::Waits(Reason::InTurn));
     while connection.texts().is_empty() {
         tokio::task::yield_now().await;

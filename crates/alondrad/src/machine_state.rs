@@ -8,8 +8,7 @@
 //! with a third or half of memory free, so it only spaces starts out (`WARNING_SPACING`). Percentages
 //! of the Mac's memory, as macOS reports it, so the rule holds on a Mac of any size.
 //!
-//! A daemon that just started judges the samples it has. The CPU load only holds new starts. See
-//! docs/pacing.md §5.
+//! A daemon that just started judges the samples it has. The CPU load only holds new starts.
 use std::collections::VecDeque;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};

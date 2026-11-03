@@ -107,7 +107,7 @@ pub fn listed_files_problem(files: &[String], shown: &[&str]) -> Option<String> 
 }
 
 fn not_a_worktree_file(path: &str) -> String {
-    format!("{path} is not a Markdown file of your worktree: list paths relative to your worktree that end in .md, without .. (like docs/plan.md)")
+    format!("{path} is not a Markdown file of your worktree: list paths relative to your worktree that end in .md, without .. (like docs/design.md)")
 }
 
 fn include(text: &str, paths: Vec<String>, mut read: impl FnMut(&str) -> Option<String>, required: bool) -> Result<String, String> {

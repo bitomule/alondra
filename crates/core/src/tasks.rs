@@ -1,4 +1,4 @@
-//! Requests and tasks: what David asked for, and the pieces of work it became. A task moves only
+//! Requests and tasks: what the user asked for, and the pieces of work it became. A task moves only
 //! through `transition`, one exhaustive `match` over (state, event): a pair nobody decided does
 //! not compile, and a pair that is not allowed is refused with the reason.
 
@@ -15,7 +15,7 @@ mod waits;
 pub use archive::Archive;
 pub use derive::{Before, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
 
-/// What David asked for, in his words. Its state is derived from its tasks, never stored.
+/// What the user asked for, in their words. Its state is derived from its tasks, never stored.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Request {
     pub id: String,
@@ -26,17 +26,17 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<crate::options::Resolved>,
     pub created_at: Millis,
-    /// Made up for a session no request of David's stands behind.
+    /// Made up for a session no request of the user's stands behind.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
-    /// David archived it once it was finished without tasks. One with tasks is archived when
+    /// The user archived it once it was finished without tasks. One with tasks is archived when
     /// all of them are (`Board::request_archived_at`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Millis>,
     /// The short name the orchestrator gave it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The orchestrator closed it without tasks: it answered it, or David withdrew it.
+    /// The orchestrator closed it without tasks: it answered it, or the user withdrew it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<RequestClosure>,
 }
@@ -44,10 +44,10 @@ pub struct Request {
 /// How a request that needed no task ended.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RequestClosure {
-    /// What the orchestrator told David, in one line.
+    /// What the orchestrator told the user, in one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
-    /// David withdrew it.
+    /// The user withdrew it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub withdrawn: bool,
     pub at: Millis,
@@ -131,7 +131,7 @@ impl BlockerKind {
     }
 }
 
-/// The one thing that blocks a task on David: a card of its node.
+/// The one thing that blocks a task on the user: a card of its node.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Blocker {
     pub kind: BlockerKind,
@@ -155,7 +155,7 @@ pub enum Item {
     Pr(u64),
     Report(u64),
     Message(u64),
-    /// David typed into the node's terminal.
+    /// The user typed into the node's terminal.
     Terminal,
 }
 
@@ -168,25 +168,25 @@ pub enum TaskEvent {
     /// The node's turn ended with nothing of the task left to do before a dependency's PR is
     /// merged: the task waits for that merge.
     AwaitsMerge { pr: u64 },
-    /// The node asked a question, hit a permission prompt or requested an action of David's.
+    /// The node asked a question, hit a permission prompt or requested an action of the user's.
     BlockerRaised {
         blocker: Blocker,
         #[serde(default)]
         replaces: bool,
     },
     PrOpened { pr: u64 },
-    /// A document or artifact went to David for review.
+    /// A document or artifact went to the user for review.
     DocumentSent { report: u64 },
-    /// A PR of an auto-merge task was merged without David.
+    /// A PR of an auto-merge task was merged without the user.
     AutoMerged { pr: u64 },
     FinalReport { report: u64 },
     /// The blocker was answered, or withdrawn.
     Answered { question: u64 },
-    /// David requested changes, asked or replied on what is under review.
+    /// The user requested changes, asked or replied on what is under review.
     ChangesRequested { on: Item },
     /// The node pushed new commits or answered while a PR of it is open.
     NodeUpdated { on: Item },
-    /// David merged a PR or approved a document.
+    /// The user merged a PR or approved a document.
     Merged { item: Item },
     /// A PR closed without a merge, a PR card set aside, or a document read without a verdict.
     ReviewClosed { item: Item },
@@ -221,7 +221,7 @@ impl TaskEvent {
 /// What `transition` needs to know about the task besides its state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Guards {
-    /// The task's PRs are merged without David once their checks pass.
+    /// The task's PRs are merged without the user once their checks pass.
     pub auto_merge: bool,
     /// A task this one depends on that has no PR open yet and is not done.
     pub waiting_on: Option<String>,
@@ -234,13 +234,13 @@ pub struct Guards {
     pub started: bool,
     /// The number of the dependency's PR the task waits to see merged, while it is still open.
     pub awaited_merge: Option<u64>,
-    /// What already blocks the task on David.
+    /// What already blocks the task on the user.
     pub blocker: Option<Blocker>,
-    /// The number of a PR of the task still waiting for David's merge.
+    /// The number of a PR of the task still waiting for the user's merge.
     pub unmerged_pr: Option<u64>,
-    /// A document of the task still waiting for David's review.
+    /// A document of the task still waiting for the user's review.
     pub unreviewed_document: Option<u64>,
-    /// The node said it was finished while its work waited for David: nothing follows the merge.
+    /// The node said it was finished while its work waited for the user: nothing follows the merge.
     pub nothing_after_merge: bool,
     /// The PR being auto-merged, when its checks have not passed.
     pub checks_failed: Option<u64>,
@@ -354,7 +354,7 @@ fn reopened(g: &Guards) -> Result<TaskState, Refused> {
     }
 }
 
-/// Where a merge leaves a task that was in `stay`: there while something else waits for David,
+/// Where a merge leaves a task that was in `stay`: there while something else waits for the user,
 /// done when the node already said it was finished, closing otherwise.
 fn after_merge(stay: TaskState, g: &Guards) -> TaskState {
     if g.reviews_left() {
@@ -483,7 +483,7 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
     }
 }
 
-/// The launch options a task carries: today's per-launch options. PRs are reviewed by David
+/// The launch options a task carries: today's per-launch options. PRs are reviewed by the user
 /// unless `auto_merge`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct TaskOptions {
@@ -569,7 +569,7 @@ pub struct Task {
     pub state: TaskState,
     pub state_since: Millis,
     pub created_at: Millis,
-    /// The node's final report while its work still waited for David.
+    /// The node's final report while its work still waited for the user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_report: Option<u64>,
     /// The PR card of a dependency whose merge the task, already started, waits for.
@@ -592,7 +592,7 @@ pub struct Task {
     /// nothing is read into it from other events.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recorded: bool,
-    /// David or the orchestrator named it with `TaskTitled`: its title is no longer a fallback,
+    /// The user or the orchestrator named it with `TaskTitled`: its title is no longer a fallback,
     /// and `follow_node` leaves it alone even if the node it runs on is renamed or bound to a
     /// request later.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -601,7 +601,7 @@ pub struct Task {
     pub history: Vec<Transition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anomalies: Vec<Anomaly>,
-    /// David archived it once it was finished: it leaves the active list, and the board after
+    /// The user archived it once it was finished: it leaves the active list, and the board after
     /// `archived_tasks_days`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Millis>,
@@ -970,7 +970,7 @@ mod tests {
         }
     }
 
-    /// The transitions §2.4 of docs/tasks-plan.md calls impossible, refused with what blocks them.
+    /// The transitions the task state machine calls impossible, refused with what blocks them.
     #[test]
     fn impossible_transitions_are_refused_with_the_reason() {
         let pr = Guards { unmerged_pr: Some(150), ..Guards::default() };

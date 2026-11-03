@@ -144,7 +144,7 @@ fn apply(state: &mut DomainState, actor: Actor, command: Command) {
     state.execute(&actor, &envelope).unwrap();
 }
 
-/// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
+/// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked the user
 /// and ended its turn, and the tasks_in_progress answer the orchestrator and Claude read listed a
 /// stop card as an open question, “…” stopped without del…. The turn waits on the question and
 /// creates no card; once nothing explains the stop and the woken node stops again, its case for
@@ -172,7 +172,7 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its
     apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(!state.interactions.contains_key(&format!("{TURN_ENDED_PREFIX}t3-1-turn-1").as_str().into()), "the turn waits on the question: no card says it stopped");
     let open = |state: &DomainState| -> Vec<String> { open_questions(state).iter().map(|q| q["id"].as_str().unwrap().to_owned()).collect() };
-    assert_eq!(open(&state), ["q-keyboard"], "the node waits on David's answer, not on a stop");
+    assert_eq!(open(&state), ["q-keyboard"], "the node waits on the user's answer, not on a stop");
 
     apply(&mut state, Actor::Agent { agent_id: "agent-b".into() }, Command::Withdraw { interaction_id: "q-keyboard".into() });
     assert!(open(&state).is_empty(), "with nothing to wait for, Alondra wakes the node first: {:?}", open(&state));

@@ -1,7 +1,7 @@
 version: 1
 
 # Brew, `make build/install/test/e2e-sandbox` and the tests all use the Bazel build. Every
-# bazel/test check below joins one `bazel test` command, which waits once in the build queue;
+# bazel/test check below joins one `bazel test` command, which waits once for the build;
 # without --build_tests_only it also builds every non-test target of //crates/..., so no
 # separate `bazel build` check is needed.
 checks:

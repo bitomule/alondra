@@ -1172,7 +1172,7 @@ fn main_checkout(f: &Fixture) {
     git_in(&f.project, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
 }
 
-/// The bug: David stopped the node of a task, so it had no node to replace, and the orchestrator
+/// The bug: The user stopped the node of a task, so it had no node to replace, and the orchestrator
 /// launched it again with the repository's root as the folder while the task's worktree, with the
 /// earlier node's work, was still there. The new node started in the main checkout.
 #[tokio::test]

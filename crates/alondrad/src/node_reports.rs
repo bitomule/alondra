@@ -797,7 +797,7 @@ mod tests {
         assert_eq!((session.activity(), session.halt()), (Activity::Idle, None));
     }
 
-    /// David's rule, 15 October: what a node does (working or idle), what stopped
+    /// The user's rule, 15 October: what a node does (working or idle), what stopped
     /// it, and whether its own work is over follow from what the mod reported, its connection and
     /// what the looks at its processes and its job saw, in their order, never from how long any of
     /// it has run. The same 256 generated histories on a clock that moves a millisecond a fact and

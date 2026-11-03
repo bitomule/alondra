@@ -12,8 +12,8 @@ PASS only if all of these hold:
   CloudKit sync store, the migration of the current settings and the convergence test. Phases,
   extra checklist lines or a line naming the report's file are fine.
 - The plan offers no choice and asks nothing: CloudKit is already decided.
-- Its `need` asks David to approve the plan (to sync settings with CloudKit), not to read the report
+- Its `need` asks Alice to approve the plan (to sync settings with CloudKit), not to read the report
   or to decide whether to build.
 FAIL if there is no `plan` field and the work to build is only described inside the report, if the
-call is `ask`, if the plan or the report asks David to choose anything, or if the report is only
+call is `ask`, if the plan or the report asks Alice to choose anything, or if the report is only
 referred to by its path.

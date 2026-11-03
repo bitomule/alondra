@@ -384,7 +384,7 @@ mod tests {
     fn set_key_changes_one_key_keeps_the_rest_and_refuses_bad_values() {
         let dir = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*dir).unwrap();
-        std::fs::write(path_in(&dir), "name = \"David\"\nauto_update = true\n").unwrap();
+        std::fs::write(path_in(&dir), "name = \"Alice\"\nauto_update = true\n").unwrap();
         set_key(&dir, "port", Some("47900")).unwrap();
         set_key(&dir, "listen", Some("0.0.0.0")).unwrap();
         set_key(&dir, "name", None).unwrap();

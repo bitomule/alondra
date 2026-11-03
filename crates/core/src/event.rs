@@ -100,7 +100,7 @@ pub enum Event {
     DaemonSeen(DaemonObservation),
     ProcessExited { session_id: String, pid: i32 },
     NodeRemoved { session_id: String },
-    /// David marked the node as seen. Only daemons from before tasks record it; it changes nothing.
+    /// The user marked the node as seen. Only daemons from before tasks record it; it changes nothing.
     Acknowledged { session_id: String },
     MarkedOrchestrator { session_id: String },
     QuestionAsked(Question),
@@ -109,7 +109,7 @@ pub enum Event {
     QuestionClosed { id: u64, status: crate::model::QuestionStatus, #[serde(default)] note: Option<String> },
     ReportPosted(Report),
     ReportRead { id: u64 },
-    /// David reviewed the artifact a report sent: he approved it, or sent the node his comments.
+    /// The user reviewed the artifact a report sent: they approved it, or sent the node their comments.
     ArtifactReviewed { report: u64, verdict: ReviewVerdict },
     MessageQueued(Message),
     MessageHanded { id: u64 },
@@ -138,9 +138,9 @@ pub enum Event {
     PrDismissed { id: u64 },
     /// Changes were requested on the PR; its card waits until the node pushes again.
     PrChangesRequested { id: u64 },
-    /// David asked the node about its PR from the card; the card stays where it is.
+    /// The user asked the node about its PR from the card; the card stays where it is.
     PrAsked { id: u64 },
-    /// David or the orchestrator said which task of its node a PR card is for: the task it was
+    /// The user or the orchestrator said which task of its node a PR card is for: the task it was
     /// on goes back to where its own facts leave it, and this one takes the PR as it is.
     PrReassigned { pr: u64, task: String },
     /// The user asked for new work with these options; launches that cite the request get them.
@@ -214,16 +214,16 @@ pub enum Event {
     SplitsReleased,
     /// A task event applied to a recorded task, with the guards the view gives it then.
     TaskMoved { task: String, event: crate::tasks::TaskEvent },
-    /// David archived finished tasks, and requests that finished without tasks.
+    /// The user archived finished tasks, and requests that finished without tasks.
     TasksArchived(crate::tasks::Archive),
     /// Tasks archived before `before` are forgotten: `archived_tasks_days` went by.
     ArchivedPruned { before: Millis },
     /// The orchestrator named a request.
     RequestTitled { request_id: String, title: String },
-    /// David or the orchestrator named a task, replacing whatever it fell back to (most often a
+    /// The user or the orchestrator named a task, replacing whatever it fell back to (most often a
     /// node's own name): it sticks, `follow_node` never overwrites it again.
     TaskTitled { task: String, title: String },
-    /// The orchestrator closed a request that needed no task: it answered it, or David withdrew it.
+    /// The orchestrator closed a request that needed no task: it answered it, or the user withdrew it.
     RequestClosed {
         request_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

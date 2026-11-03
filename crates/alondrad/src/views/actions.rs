@@ -3735,7 +3735,7 @@ mod tests {
         assert!(alondra_core::domain::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
     }
 
-    /// David wrote «Hazlo tú» under the orchestrator's Decide card: it is the answer to that card,
+    /// The user wrote «Hazlo tú» under the orchestrator's Decide card: it is the answer to that card,
     /// never a loose request.
     #[tokio::test]
     async fn words_under_a_decide_card_answer_it_and_reach_whoever_asked_with_its_id() {
@@ -3789,7 +3789,7 @@ mod tests {
         found
     }
 
-    /// David types the Stripe key on the node's card: it lands in the ignored `.env` of the
+    /// The user types the Stripe key on the node's card: it lands in the ignored `.env` of the
     /// worktree and of the main checkout, and the domain, its database and the node only learn
     /// where it went.
     #[tokio::test]

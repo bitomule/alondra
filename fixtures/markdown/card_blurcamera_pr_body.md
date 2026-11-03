@@ -1,6 +1,6 @@
 Close auto-redact phase 1: label text boxes, cover text in the album and in Siri
 
-The four design questions #142 left open, decided by David on the phone:
+The four design questions #142 left open, decided by the user on the phone:
 
 (a) Covered automatically, as today. No change.
 
@@ -10,7 +10,7 @@ small label ("Bank account", "Card number", "Email address", "Phone number")
 above the box. VoiceOver reads the same name, and Siri's face entity uses it
 instead of calling an IBAN "Face 2".
 
-(c) Always on, no switch. Measured on David's iPhone Air (iPhone18,4, iOS 27.0),
+(c) Always on, no switch. Measured on Alice's iPhone Air (iPhone18,4, iOS 27.0),
 4032x3024 photos, median of 7 warm passes: the OCR pass costs 149-242 ms per
 photo against 20-31 ms for face detection, so opening a photo goes from ~0.03 s
 to ~0.18-0.28 s of detection. The first read after launch pays 328 ms for the

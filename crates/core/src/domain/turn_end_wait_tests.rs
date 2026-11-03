@@ -117,8 +117,8 @@ fn resumes(s: &mut DomainState, card: &InteractionId) {
     assert_aggregate_rules(s);
 }
 
-/// 21 October: David approved a seven-phase plan, its node told the
-/// orchestrator, without blocking, to create one task per phase 2-7, and ended its turn. David got
+/// 21 October: the user approved a seven-phase plan, its node told the
+/// orchestrator, without blocking, to create one task per phase 2-7, and ended its turn. The user got
 /// «paró sin entregar ni preguntar» while the node waited for the orchestrator.
 #[test]
 fn the_21_october_turn_that_ended_on_a_message_to_the_orchestrator_waits_for_it() {
@@ -127,15 +127,15 @@ fn the_21_october_turn_that_ended_on_a_message_to_the_orchestrator_waits_for_it(
     approve_plan(&mut s);
     ask_orchestrator(&mut s, "t-rename-queue-1", false);
     let ended = end_turn(&mut s, "turn-1");
-    assert!(!notified(&ended, &card), "David hears of nothing");
+    assert!(!notified(&ended, &card), "the user hears of nothing");
     awaits(&s, &card, alondra_domain::Await::Orchestrator("t-rename-queue-1".into()));
-    assert!(pending(&s).is_empty(), "nothing waits for David: {:?}", pending(&s));
+    assert!(pending(&s).is_empty(), "nothing waits for the user: {:?}", pending(&s));
     shows_waiting(&s, "Trabajando");
     assert_aggregate_rules(&s);
 
     let answered = answer_as_orchestrator(&mut s, "t-rename-queue-1");
     assert!(told(&answered), "the answer goes to the node");
-    assert!(pending(&s).is_empty(), "the answer is on its way: still nothing for David");
+    assert!(pending(&s).is_empty(), "the answer is on its way: still nothing for the user");
     resumes(&mut s, &card);
 }
 
@@ -287,8 +287,8 @@ fn the_24_october_turn_that_ended_with_its_subagents_running_waits_for_them() {
     assert_aggregate_rules(&s);
 }
 
-/// 24 October: “Parcel: el permiso de la app de GitHub” asked David to do something outside
-/// Alondra and ended its turn; David also got a card saying it stopped without asking. A request
+/// 24 October: “Parcel: el permiso de la app de GitHub” asked the user to do something outside
+/// Alondra and ended its turn; the user also got a card saying it stopped without asking. A request
 /// to the user is a question too: the turn waits for it.
 #[test]
 fn the_24_october_turn_that_ended_on_a_request_to_the_user_waits_for_it() {
@@ -301,7 +301,7 @@ fn the_24_october_turn_that_ended_on_a_request_to_the_user_waits_for_it() {
         card: CardSpec { verify: Some("I read the app's permissions".into()), ..CardSpec::new(CardKind::Do, "Remove the pull request permission").why("The app must not open pull requests") },
     });
     let ended = end_turn(&mut s, "turn-1");
-    assert!(!notified(&ended, &card), "David hears of no stop");
+    assert!(!notified(&ended, &card), "the user hears of no stop");
     awaits(&s, &card, alondra_domain::Await::User("t-parcel-pr-perm-remove-1".into()));
     assert_eq!(pending(&s), ["t-parcel-pr-perm-remove-1"], "only the request waits for him");
     assert_eq!(s.live_state(&"t".into()), alondra_domain::Several::new(["t-parcel-pr-perm-remove-1".into()]).map(alondra_domain::LiveState::WaitingUser));
@@ -434,16 +434,16 @@ fn decision(s: &mut DomainState, hold: Hold, tool: &str, body: &str, card: CardS
     decision_card_id(&"t".into(), 1, 3)
 }
 
-/// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked David
+/// 22 October: “simpool: un simulador reutilizado no arrastra el estado del teclado” asked the user
 /// whether to change simpool and ended its turn. The turn end is that question: no card says it
-/// stopped, and David's answer reaching the node ends the card the lifecycle keeps.
+/// stopped, and the user's answer reaching the node ends the card the lifecycle keeps.
 #[test]
 fn the_22_october_turn_that_ended_on_a_question_to_the_user_waits_for_the_answer() {
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     ask_user(&mut s, "t-simpool-slot-keyboard-state-ask-1");
     let ended = end_turn(&mut s, "turn-1");
-    assert!(!notified(&ended, &card), "David hears of no stop");
+    assert!(!notified(&ended, &card), "the user hears of no stop");
     awaits(&s, &card, alondra_domain::Await::User("t-simpool-slot-keyboard-state-ask-1".into()));
     assert_eq!(pending(&s), ["t-simpool-slot-keyboard-state-ask-1"], "only his question waits for him");
     for client in [Client::Ios, Client::Mac, Client::Tui] {
@@ -479,7 +479,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
     ] });
     let card = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
     let ended = end_turn(&mut s, "turn-2");
-    assert!(!notified(&ended, &card), "David hears of no stop");
+    assert!(!notified(&ended, &card), "the user hears of no stop");
     awaits(&s, &card, alondra_domain::Await::Tasks(alondra_domain::Several::new(["d".into()]).unwrap()));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
     shows_waiting(&s, "Task d");
@@ -499,14 +499,14 @@ fn a_turn_that_ends_behind_an_open_plan_or_permission_creates_no_card() {
         let asked = decision(&mut s, hold, tool, body, spec);
         let ended = end_turn(&mut s, "turn-1");
         assert!(!notified(&ended, &card) && !s.interactions.contains_key(&card), "{hold:?}: no card at all");
-        assert!(s.open(&s.interactions[&asked]), "{hold:?}: the decision waits for David");
+        assert!(s.open(&s.interactions[&asked]), "{hold:?}: the decision waits for the user");
         assert!(pending(&s).iter().all(|id| *id == asked.0), "{hold:?}: nothing else does: {:?}", pending(&s));
         assert_aggregate_rules(&s);
     }
 }
 
 /// With nothing open, the node is woken with what happened; when its next turn ends the same
-/// way, the stop is Alondra's to fix: the orchestrator gets the case and David hears of nothing.
+/// way, the stop is Alondra's to fix: the orchestrator gets the case and the user hears of nothing.
 #[test]
 fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_goes_to_the_orchestrator() {
     let mut s = world();

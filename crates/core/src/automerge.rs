@@ -1,4 +1,4 @@
-//! Alondra merges the PRs of an auto-merge task itself, the way David does from the card, once
+//! Alondra merges the PRs of an auto-merge task itself, the way the user does from the card, once
 //! GitHub says the PR can go in: its checks passed, it merges cleanly, it is not a draft and
 //! nothing under it is left to merge. The node waits for the merge notice without spending a turn
 //! on the checks.
@@ -29,7 +29,7 @@ pub enum Obstacle {
 }
 
 impl View {
-    /// Where an open PR Alondra merges on its own stands; none for a PR David merges.
+    /// Where an open PR Alondra merges on its own stands; none for a PR the user merges.
     pub fn auto_merge(&self, pr: &PullRequest, now: Millis) -> Option<AutoMerge> {
         if !pr.auto_merge || pr.state != PrState::Open {
             return None;

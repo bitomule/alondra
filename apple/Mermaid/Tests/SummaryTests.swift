@@ -8,9 +8,9 @@ import Testing
             kind: .flowchart, title: nil, description: nil, nodeCount: 5,
             connections: [
                 .init(from: .node("Card arrives"), to: .node("Needs user?"), label: nil),
-                .init(from: .node("Needs user?"), to: .node("Ask David"), label: "yes"),
+                .init(from: .node("Needs user?"), to: .node("Ask Alice"), label: "yes"),
                 .init(from: .node("Needs user?"), to: .node("Run node"), label: "no"),
-                .init(from: .node("Ask David"), to: .node("Deliver result"), label: nil),
+                .init(from: .node("Ask Alice"), to: .node("Deliver result"), label: nil),
                 .init(from: .node("Run node"), to: .node("Deliver result"), label: nil),
             ]
         ))

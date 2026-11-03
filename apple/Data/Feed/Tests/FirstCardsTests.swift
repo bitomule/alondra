@@ -72,8 +72,8 @@ final class FirstCardsTests: XCTestCase {
         XCTAssertTrue(snapshot.documents.isEmpty)
     }
 
-    /// One trip to the Mac costs what the iPhone measured over the relay on cellular, 63–94 ms
-    /// (docs/fast-connection-plan.md): the time until the front card is ready, before and after.
+    /// One trip to the Mac costs what the iPhone measured over the relay on cellular, 63–94 ms:
+    /// the time until the front card is ready, before and after.
     func testTheFrontCardIsReadyAfterOneTripInsteadOfTwo() async throws {
         let trip = Duration.milliseconds(80)
         var times: [Bool: Duration] = [:]

@@ -207,9 +207,9 @@ class BetaInputTests(unittest.TestCase):
                 prepare_output(outside, root, beta)
 
     def test_default_identity_must_be_unique_for_the_team(self):
-        one = '  1) ' + 'A' * 40 + ' "Apple Distribution: David (' + TEAM + ')"\n'
+        one = '  1) ' + 'A' * 40 + ' "Apple Distribution: Alice (' + TEAM + ')"\n'
         other_team = '  2) ' + 'B' * 40 + ' "Apple Distribution: Someone (XXXXXXXXXX)"\n'
-        installer = '  3) ' + 'C' * 40 + ' "3rd Party Mac Developer Installer: David (' + TEAM + ')"\n'
+        installer = '  3) ' + 'C' * 40 + ' "3rd Party Mac Developer Installer: Alice (' + TEAM + ')"\n'
         self.assertEqual(only_identity(one + other_team + installer), "A" * 40)
         self.assertEqual(only_identity(one + installer, installer=True), "C" * 40)
         with self.assertRaisesRegex(GateError, "exactly one"):

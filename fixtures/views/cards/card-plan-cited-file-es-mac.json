@@ -126,7 +126,7 @@
       "items": [
         {
           "commentable": true,
-          "text": "# Paso 1: relay de iroh de producción\n\n## Contexto\n\nPaso 1 del plan de conexión rápida, en docs/fast-connection-plan.md.\n\n## Checklist\n\n- [ ] 1. Relay de iroh con comprobación de acceso\n- [ ] 2. Registro de los identificadores de dispositivos y Macs\n\n---\n\n## docs/fast-connection-plan.md\n\n### Plan de conexión rápida\n\n#### Decisión\n\niroh con relay propio: una ida y vuelta por petición, y conexión directa cuando la red lo permite.\n\n#### Pasos\n\n- ☐ 0. Medir el estado actual en la app\n- ☐ 1. Relay de iroh de producción con control de acceso\n- ☐ 2. Daemon con conexión iroh\n\n#### Medidas\n\n| Ruta | Tiempo |\n| --- | --- |\n| Buzón actual | 375 ms |\n| Relay propio | 63–94 ms |\n| Directa | 55 ms |",
+          "text": "# Paso 1: relay de iroh de producción\n\n## Contexto\n\nPaso 1 del plan de conexión rápida, en docs/relay-plan.md.\n\n## Checklist\n\n- [ ] 1. Relay de iroh con comprobación de acceso\n- [ ] 2. Registro de los identificadores de dispositivos y Macs\n\n---\n\n## docs/relay-plan.md\n\n### Plan de conexión rápida\n\n#### Decisión\n\niroh con relay propio: una ida y vuelta por petición, y conexión directa cuando la red lo permite.\n\n#### Pasos\n\n- ☐ 0. Medir el estado actual en la app\n- ☐ 1. Relay de iroh de producción con control de acceso\n- ☐ 2. Daemon con conexión iroh\n\n#### Medidas\n\n| Ruta | Tiempo |\n| --- | --- |\n| Buzón actual | 375 ms |\n| Relay propio | 63–94 ms |\n| Directa | 55 ms |",
           "truncated": false,
           "type": "markdown"
         }

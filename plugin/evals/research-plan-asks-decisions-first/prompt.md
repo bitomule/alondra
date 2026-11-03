@@ -23,7 +23,7 @@ CloudKit records (no size limit, needs a schema, seconds of delay) and the app's
 control, the most work).
 
 Conclusion: syncing settings is worth building. Two ways fit our app equally well and the choice
-is David's: key-value storage (ships in a day, but per-device overrides are lost) or CloudKit
+is Alice's: key-value storage (ships in a day, but per-device overrides are lost) or CloudKit
 (three days, keeps per-device overrides). The plan you would propose: add a sync store to the
 settings screen with the chosen backend, migrate the current settings into it, and a test that two
-devices converge. Nobody has asked David about the backend yet.
+devices converge. Nobody has asked Alice about the backend yet.

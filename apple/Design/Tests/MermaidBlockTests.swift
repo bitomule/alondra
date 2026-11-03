@@ -7,7 +7,7 @@ import Testing
     private static let routing = """
         flowchart TD
             A[Card arrives] --> B{Needs user?}
-            B -->|yes| C[Ask David]
+            B -->|yes| C[Ask Alice]
             B -->|no| D[Run node]
             C --> E[Deliver result]
             D --> E
@@ -62,8 +62,8 @@ import Testing
 
     @Test func voiceOverReadsAFlowchartInEnglishAndSpanish() throws {
         let summary = try Self.summary(Self.routing)
-        let connections = "Card arrives → Needs user?; Needs user? → Ask David, yes; Needs user? → Run node, no; "
-            + "Ask David → Deliver result; Run node → Deliver result"
+        let connections = "Card arrives → Needs user?; Needs user? → Ask Alice, yes; Needs user? → Run node, no; "
+            + "Ask Alice → Deliver result; Run node → Deliver result"
         #expect(MermaidSpeech(summary, words: try Catalog.words("en")) == MermaidSpeech(label: "Flowchart, 5 steps", value: connections))
         #expect(MermaidSpeech(summary, words: try Catalog.words("es")) == MermaidSpeech(label: "Diagrama de flujo, 5 pasos", value: connections))
     }

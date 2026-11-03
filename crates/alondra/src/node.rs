@@ -254,11 +254,11 @@ mod tests {
 
     #[test]
     fn the_answer_becomes_claude_codes_permission_decision() {
-        assert_eq!(permission_decision(&json!({"held": true, "allowed": true, "reason": "David allowed this call"})),
+        assert_eq!(permission_decision(&json!({"held": true, "allowed": true, "reason": "Alice allowed this call"})),
             Some(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}})));
-        assert_eq!(permission_decision(&json!({"held": true, "allowed": false, "reason": "David denied it: not now"})),
+        assert_eq!(permission_decision(&json!({"held": true, "allowed": false, "reason": "Alice denied it: not now"})),
             Some(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-                "decision": {"behavior": "deny", "message": "David denied it: not now"}}})));
+                "decision": {"behavior": "deny", "message": "Alice denied it: not now"}}})));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // UI contract for the admin waitlist, with explicit API doubles. The Rust
 // handlers, PostgreSQL and authorization are covered by the relay tests.
 import { test, expect, type Page } from '@playwright/test';
-const owner = { id: 'owner', display_name: 'David de prueba', status: 'active', is_admin: true };
+const owner = { id: 'owner', display_name: 'Alice de prueba', status: 'active', is_admin: true };
 async function admin(page: Page) {
  await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: owner } }));
  await page.route('**/v1/admin/accounts', route => route.fulfill({ json: { accounts: [owner], next_cursor: null } }));

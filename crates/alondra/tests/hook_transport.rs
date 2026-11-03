@@ -412,7 +412,7 @@ fn a_permission_prompt_is_held_as_a_card_and_answered_with_claude_codes_decision
         stream.read_exact(&mut bytes).unwrap();
         let sent: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         stream.write_all(&200u16.to_be_bytes()).unwrap();
-        stream.write_all(br#"{"held":true,"allowed":false,"reason":"David denies it"}"#).unwrap();
+        stream.write_all(br#"{"held":true,"allowed":false,"reason":"Alice denies it"}"#).unwrap();
         sent
     });
     let answered = hook();
@@ -423,6 +423,6 @@ fn a_permission_prompt_is_held_as_a_card_and_answered_with_claude_codes_decision
     assert_eq!(card["withdraw_when_gone"], true);
     let decision: serde_json::Value = serde_json::from_slice(&answered.stdout).unwrap();
     assert_eq!(decision, serde_json::json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-        "decision": {"behavior": "deny", "message": "David denies it"}}}));
+        "decision": {"behavior": "deny", "message": "Alice denies it"}}}));
     std::fs::remove_dir_all(home).unwrap();
 }

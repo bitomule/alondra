@@ -5,7 +5,7 @@
 //! Heavy, bursty work is not a node's cost: a build or a test run inside one node is a few of its
 //! samples, which the percentile leaves out, and work that leaves the group (a build server, a
 //! simulator) is the machine's. Both are seen as they happen, in macOS's pressure and the margin
-//! to its warning. See docs/pacing.md §5.
+//! to its warning.
 use std::collections::VecDeque;
 
 use alondra_core::Millis;
@@ -62,7 +62,7 @@ mod tests {
     const MIN: Millis = 60_000;
     const GB: f64 = 1e9;
 
-    /// The process groups of the eight nodes at work on David's 18 GB Mac, 22 Oct 2026 11:30.
+    /// The process groups of the eight nodes at work on the user's 18 GB Mac, 22 Oct 2026 11:30.
     const MEASURED: [f64; 8] = [0.41, 0.30, 0.27, 0.26, 0.23, 0.21, 0.19, 0.13];
 
     fn bytes(gb: f64) -> u64 {

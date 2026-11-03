@@ -1823,7 +1823,7 @@ fn an_answer_unconfirmed_for_thirty_seconds_brings_its_card_back_saying_which_an
     assert!(!app.inbox_keys().contains(&Key(origin)), "and the card leaves again");
 }
 
-/// 14 October: David wrote his changes in the reply of the Redraft PR's delivery from the TUI and
+/// 14 October: the user wrote their changes in the reply of the Redraft PR's delivery from the TUI and
 /// the card stayed on screen. A reply the daemon says takes the card away leaves the queue and the
 /// detail the moment it is sent, with nothing saying it is on its way.
 #[test]
@@ -2183,20 +2183,20 @@ fn the_pairing_prompt_never_shows_over_a_question_that_holds_the_keys() {
     }));
     app.pairing.push(PendingDevice {
         id: "d-1".into(),
-        name: "David's iPhone".into(),
+        name: "Alice's iPhone".into(),
         code: "4821".into(),
         expires_at_ms: now_millis() + 600_000,
     });
-    assert!(screen(&mut app, 120, 30).contains("Allow “David's iPhone” to use Alondra?"));
+    assert!(screen(&mut app, 120, 30).contains("Allow “Alice's iPhone” to use Alondra?"));
 
     press(&mut app, KeyCode::Char('1'));
     let drawn = screen(&mut app, 120, 30);
     assert!(drawn.contains("Close PR #12 without merging?"), "{drawn}");
-    assert!(!drawn.contains("Allow “David's iPhone”"), "the prompt that does not get the keys is not shown: {drawn}");
+    assert!(!drawn.contains("Allow “Alice's iPhone”"), "the prompt that does not get the keys is not shown: {drawn}");
 
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.pairing.len(), 1, "Esc answered the close question, not the device");
-    assert!(screen(&mut app, 120, 30).contains("Allow “David's iPhone” to use Alondra?"));
+    assert!(screen(&mut app, 120, 30).contains("Allow “Alice's iPhone” to use Alondra?"));
 }
 
 #[test]
@@ -2480,7 +2480,7 @@ fn a_card_leaves_the_list_only_when_its_action_says_it_takes_it_out() {
     }
 }
 
-/// David wrote «Hazlo tú» under the orchestrator's Decide card and the card stayed: its reply went
+/// The user wrote «Hazlo tú» under the orchestrator's Decide card and the card stayed: its reply went
 /// out as a new message to the orchestrator. The reply field of an open question answers it, so
 /// the card leaves the list the moment it is sent.
 #[test]

@@ -4,7 +4,7 @@
   "view": "metrics",
   "key": "metrics?period=7d&compare=previous",
   "client": "ios",
-  "version": "v2e7f362467b68b69",
+  "version": "vfcab46408a1e3f93",
   "cursor": "metrics-cursor",
   "title": "Metrics",
   "status": {

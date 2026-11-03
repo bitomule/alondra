@@ -125,7 +125,7 @@ macro_rules! forbid {
     )*};
 }
 
-/// David's rule, 15 October: closing a node whose session is already over is the outcome sought,
+/// The user's rule, 15 October: closing a node whose session is already over is the outcome sought,
 /// not an error, whoever saw it first.
 #[test]
 fn closing_a_closed_node_again_keeps_it_closed() {
@@ -351,7 +351,7 @@ fn a_node_that_delivers_keeps_its_slot_until_its_turn_ends() {
         "an idle listing frees the slot when the turn end was missed");
 }
 
-/// 14 October: t-holepunch-iroh-prototype ended its turn writing to David in its terminal, with no
+/// 14 October: t-holepunch-iroh-prototype ended its turn writing to the user in its terminal, with no
 /// card, and showed «Sin actividad» everywhere. A turn that ends on an open task with nothing for
 /// the user is never a phase of its own: its last words go to the user in a card and it waits on
 /// that card, holding no slot.
@@ -541,7 +541,7 @@ fn a_node_behind_its_own_work_that_claude_code_lists_blocked_keeps_waiting_for_i
         "with a card of its own it waits on that one");
 }
 
-/// David's rule, 15 October: a node waiting for work of its own never rests on the card with its
+/// The user's rule, 15 October: a node waiting for work of its own never rests on the card with its
 /// last words. Only a turn of its own that ends (`TurnEnded`, `TurnFailed`), or that work seen gone
 /// (`BackgroundEnded`) and then a later listing that finds the node without work, may put it there;
 /// no listing, pause, loss, revival or change of its task's facts does, at any time.
@@ -588,7 +588,7 @@ fn an_answered_node_works_until_its_answer_starts_a_turn_or_two_listings_find_it
     assert_eq!(settle(resuming, &TaskFacts { awaits: true, ..OPEN }), NodePhase::WaitingDependency);
 }
 
-/// David's rule, 17 October: a node whose task stops waiting for another task has said nothing new
+/// The user's rule, 17 October: a node whose task stops waiting for another task has said nothing new
 /// until a turn of its own starts. Alondra's word that the wait ended is on its way, so no listing,
 /// however many and in whatever order, ends a turn it never began; a turn, a lost session or a fact
 /// of the domain moves it.
@@ -622,7 +622,7 @@ fn a_node_whose_wait_ended_waits_for_its_turn_and_no_listing_puts_its_words_on_a
 /// 16 October, «Vistas rápidas 5/7», replayed: its node asked the orchestrator to make it wait for
 /// phase 4, wrote "Until then, nothing to do" and ended its turn. Phase 4 merged at 04:48 while the
 /// node's session waited for memory to come back, so Alondra's word reached it only at 05:00; two
-/// listings at 04:48 and 04:49 put those old words on a card for David, with «Que siga» alone.
+/// listings at 04:48 and 04:49 put those old words on a card for the user, with «Que siga» alone.
 #[test]
 fn the_16_october_wait_ends_with_no_card_for_the_user() {
     let mut w = World::new();
@@ -660,7 +660,7 @@ fn the_16_october_wait_ends_with_no_card_for_the_user() {
         assert!(w.unheard_cards().is_empty(), "the word that the wait ended has not reached it yet");
     }
     assert_eq!(w.s.node_phase(&node), Some(&NodePhase::Resuming { idle_since: None, after_wait: true }));
-    assert!(w.s.open_user_card(&task).is_none(), "nothing waits on David");
+    assert!(w.s.open_user_card(&task).is_none(), "nothing waits on the user");
     w.check();
     w.now += 60_000;
     assert!(w.event(&node, NodeEvent::TurnStarted, w.now), "Alondra's word reached it");
@@ -1035,7 +1035,7 @@ impl World {
             .collect()
     }
 
-    /// David's rule, 15 October: a node waiting for work of its own is at work. No step opens the
+    /// The user's rule, 15 October: a node waiting for work of its own is at work. No step opens the
     /// card with its last words while that work is not seen gone, unless a turn of its own ended.
     fn no_card_while_behind_own_work(&self, step: &Step, behind: &[AgentId], before: &BTreeSet<(AgentId, InteractionId)>) {
         for (agent, card) in self.unheard_cards().difference(before) {
@@ -1045,7 +1045,7 @@ impl World {
         }
     }
 
-    /// David's rule, 14 October: a node whose task is open is at work, or waits on a card in front
+    /// The user's rule, 14 October: a node whose task is open is at work, or waits on a card in front
     /// of the user. Waiting for the machine, for its session to come back or for another task are
     /// facts of their own; resting with nothing for anyone is no state at all.
     fn no_node_rests_unheard(&self) {
@@ -1184,8 +1184,8 @@ fn badged(view: &View, states: &[&str]) -> BTreeSet<String> {
 }
 
 /// 14 October, t-holepunch-iroh-prototype, replayed: the node starts a listener of its own in the
-/// background, ends its turn writing to David with no card, its mod says a turn started, and
-/// Claude Code lists it blocked. Its words end in a card for David, in his language, and the
+/// background, ends its turn writing to the user with no card, its mod says a turn started, and
+/// Claude Code lists it blocked. Its words end in a card for the user, in their language, and the
 /// node waits on it; no screen says «Sin actividad».
 #[test]
 fn the_14_october_incident_ends_with_the_node_s_words_on_a_card_for_the_user() {
@@ -1269,7 +1269,7 @@ fn long_last_words_keep_their_start_on_the_card_and_the_whole_in_its_detail() {
     assert_eq!(card.card.content.map(|content| content.body), Some(said.trim().to_owned()));
 }
 
-/// David's rule, 15 October: a node's state moves only on facts, never on how long it has been.
+/// The user's rule, 15 October: a node's state moves only on facts, never on how long it has been.
 /// The same history of facts on a clock that moves a millisecond a step and on one that moves up
 /// to two days leaves every node in the same state, step by step, with the same cards.
 #[test]

@@ -92,7 +92,7 @@ fn the_reason_is_in_the_device_language_unless_the_body_names_one() {
 #[test]
 fn a_body_with_anything_else_is_a_bad_request() {
     let mac = Mac::new();
-    for body in [json!({"projects_root": "~/x", "name": "David"}), json!({}), json!({"projects_root": "~/x", "lang": "fr"})] {
+    for body in [json!({"projects_root": "~/x", "name": "Alice"}), json!({}), json!({"projects_root": "~/x", "lang": "fr"})] {
         assert_eq!(mac.put(body.clone(), Lang::En).status, StatusCode::BAD_REQUEST, "{body}");
     }
     assert_eq!(mac.options(), "");

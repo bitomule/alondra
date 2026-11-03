@@ -125,8 +125,8 @@ pub fn facts(view: &View, node: &Node) -> Facts {
     f
 }
 
-/// Only David or the orchestrator reopen a done node: a message of theirs typed in after it was
-/// done, or David typing in its terminal. What Alondra or Claude Code type into it moves nothing.
+/// Only the user or the orchestrator reopen a done node: a message of theirs typed in after it was
+/// done, or the user typing in its terminal. What Alondra or Claude Code type into it moves nothing.
 fn reopened(view: &View, node: &Node) -> bool {
     if node.state != NodeState::Done {
         return true;
@@ -345,7 +345,7 @@ pub fn declared_for(node: &Node, task: &Task) -> bool {
 }
 
 /// The node's turn ended and nothing moves it: no work in sight, nothing on screen waiting for
-/// anyone, nothing from David, the orchestrator or a merge on its way to it.
+/// anyone, nothing from the user, the orchestrator or a merge on its way to it.
 fn quiet(view: &View, node: &Node) -> bool {
     let turn_ended = node.last_stop_at.is_some_and(|stop| stop >= node.episode_since && stop >= node.turn_since);
     node.watched()
@@ -563,7 +563,7 @@ mod tests {
         }
     }
 
-    /// David's rule: a state changes only on facts, never for how long it has lasted. Every case
+    /// The user's rule: a state changes only on facts, never for how long it has lasted. Every case
     /// of the table, its events a second or two days apart, and read again an hour or two days
     /// after its last event, ends in the same state on the same row.
     #[test]
@@ -811,7 +811,7 @@ mod tests {
             id: message,
             session_id: "s".into(),
             from: MessageFrom::User,
-            text: "David left comments".into(),
+            text: "the user left comments".into(),
             answers_question: None,
             created_at: T0,
             handed_at: None,
@@ -841,7 +841,7 @@ mod tests {
                 reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop"), approved.clone(), approved_queued.clone(), approved_handed.clone(), hook("UserPromptSubmit"), sent_for_review(3, ReportKind::Final), hook("Stop")]),
                 NodeState::Done,
             ),
-            ("David sets it aside", [sent(ReportKind::Final), vec![Event::ReportRead { id: 1 }]].concat(), NodeState::Done),
+            ("the user sets it aside", [sent(ReportKind::Final), vec![Event::ReportRead { id: 1 }]].concat(), NodeState::Done),
             ("inside an open PR card the PR decides", background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some(format!("{PAGE} and https://github.com/a/b/pull/7")), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]), NodeState::WaitingMerge),
         ];
         for (what, events, state) in cases {
@@ -850,7 +850,7 @@ mod tests {
             assert!(limbo(&v, T0 + events.len() as Millis * 1000).is_empty(), "{what}: {:?}", limbo(&v, T0 + events.len() as Millis * 1000));
         }
         let v = run(&reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop"), approved, approved_queued, approved_handed, hook("UserPromptSubmit"), sent_for_review(3, ReportKind::Final), hook("Stop")]));
-        assert!(v.reports[&3].read, "a report about an approved artifact asks nothing of David");
+        assert!(v.reports[&3].read, "a report about an approved artifact asks nothing of the user");
         let pr = run(&background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some("https://github.com/a/b/pull/7".into()), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]));
         assert_eq!(pr.nodes["s"].evidence.as_ref().map(|e| e.signal), Some(Signal::PrAwaitingUser), "the PR card, not a review card");
     }
@@ -876,11 +876,11 @@ mod tests {
             ("merged with work left after it, stopped without a word", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Idle),
             ("merged on GitHub, nobody to tell", with_pr(&[merged()]), NodeState::Done),
             ("done", then(&[]), NodeState::Done),
-            ("done, David writes to it", then(&[from_user, user_handed]), NodeState::Working),
+            ("done, the user writes to it", then(&[from_user, user_handed]), NodeState::Working),
             ("done, the orchestrator sends it on", then(&[from_orchestrator, orchestrator_handed]), NodeState::Working),
-            ("done, David types in its terminal", then(&typed("one more thing", PromptOrigin::Composer)), NodeState::Working),
-            ("done, David pastes an Alondra message into its terminal", then(&typed("[Alondra] go on with the release", PromptOrigin::Composer)), NodeState::Working),
-            ("done, David writes through Remote Control", then(&typed("one more thing", PromptOrigin::Bridge)), NodeState::Working),
+            ("done, the user types in its terminal", then(&typed("one more thing", PromptOrigin::Composer)), NodeState::Working),
+            ("done, the user pastes an Alondra message into its terminal", then(&typed("[Alondra] go on with the release", PromptOrigin::Composer)), NodeState::Working),
+            ("done, the user writes through Remote Control", then(&typed("one more thing", PromptOrigin::Bridge)), NodeState::Working),
             ("done, a plugin submits a prompt as the user", then(&typed("one more thing", PromptOrigin::Other)), NodeState::Done),
             ("done, a prompt no mod reported the origin of", then(&[harness("one more thing")]), NodeState::Done),
             ("done, an Alondra message typed in all the same", then(&[from_alondra, alondra_handed]), NodeState::Done),
@@ -888,7 +888,7 @@ mod tests {
             ("done, another session's message arrives", then(&[harness("<agent-message from=\"x\">done</agent-message>"), tool("PreToolUse", "t")]), NodeState::Done),
             ("done, a cross-session message arrives", then(&[harness("<cross-session-message from=\"x\">hi</cross-session-message>")]), NodeState::Done),
             ("done, a reminder is typed in", then(&[harness("<system-reminder>check</system-reminder>")]), NodeState::Done),
-            ("done, David types after a harness prompt", then(&[vec![harness("<task-notification>a1"), hook("Stop")], typed("one more thing", PromptOrigin::Composer).to_vec()].concat()), NodeState::Working),
+            ("done, the user types after a harness prompt", then(&[vec![harness("<task-notification>a1"), hook("Stop")], typed("one more thing", PromptOrigin::Composer).to_vec()].concat()), NodeState::Working),
         ];
         let wrong: Vec<String> = cases
             .into_iter()

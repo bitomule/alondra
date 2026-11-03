@@ -1,6 +1,6 @@
 {
   "name": "alondra-mods-probe",
   "version": "0.1.0",
-  "description": "Records which Claude Code mod events fire in a session, for Alondra's mods plan (docs/mods-plan.md)",
+  "description": "Records which Claude Code mod events fire in a session",
   "author": { "name": "Alondra" }
 }

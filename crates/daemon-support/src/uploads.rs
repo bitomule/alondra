@@ -197,9 +197,9 @@ mod tests {
     #[test]
     fn the_node_receives_plain_paths_for_attached_files() {
         let a = |name: &str, bytes| Attachment { name: name.into(), source_path: String::new(), stored_path: Some(format!("/h/files/uploads/x/{name}")), bytes: Some(bytes) };
-        assert_eq!(delivery_note("David", &[]), "");
+        assert_eq!(delivery_note("Alice", &[]), "");
         assert_eq!(
-            delivery_note("David", &[a("foto.jpg", 1_300_000), a("notas.txt", 900)]),
+            delivery_note("Alice", &[a("foto.jpg", 1_300_000), a("notas.txt", 900)]),
             "\n\nAttached files: `/h/files/uploads/x/foto.jpg` (image, 1.2 MB); `/h/files/uploads/x/notas.txt` (file, 900 B)"
         );
     }

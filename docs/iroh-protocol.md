@@ -1,7 +1,6 @@
 # iroh protocol between devices and a Mac
 
-What a client (the CLI in step 3, the apps in step 4 of `docs/fast-connection-plan.md`) speaks
-to `alondrad`'s iroh endpoint. The daemon side is `crates/alondrad/src/iroh_endpoint.rs`.
+What a client (the CLI and the apps) speaks to `alondrad`'s iroh endpoint. The daemon side is `crates/alondrad/src/iroh_endpoint.rs`.
 
 ## Finding the Mac
 
@@ -92,7 +91,7 @@ portmapper = true  # ask the router for a port mapping (UPnP, NAT-PMP, PCP)
 The key is `iroh.key` beside the service signing key (`~/.alondra/service-keys/`), created by
 the daemon on its first start. `/daemon` reports the endpoint, its relay, and whether macOS lets
 the daemon send to the local network (`local_network`), checked again on each read older than two
-seconds (see [direct.md](direct.md#macos-local-network-permission)).
+seconds.
 
 ## Reachability
 
@@ -107,7 +106,7 @@ It serves the result as `iroh.reachability` on `/daemon` and `direct_connection`
 {"verdict": "relay_only", "confirmed": false, "reasons": ["no_port_mapping", "no_ipv6"],
  "port_mapping": {"upnp": true, "nat_pmp": true, "pcp": true, "mapped": null},
  "public_ipv4": "203.0.113.7", "public_ipv6": null, "nat": "unknown",
- "port": 47811, "port_fixed": true, "lan_ip": "192.0.2.35",
+ "port": 47811, "port_fixed": true, "lan_ip": "192.168.1.20",
  "sessions": {"lan": 0, "internet": 0, "relay": 0}}
 ```
 

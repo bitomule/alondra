@@ -1077,8 +1077,8 @@ mod tests {
         assert_eq!(fold(&result, &session(), &mut state, input).unwrap(), vec![Observation::TurnEnded { turn: own, outcome: TurnOutcome::Completed }]);
         assert!(state.turn.is_none());
     }
-    // init marks the start of each turn: a turn still open when it comes ended without a
-    // result to read.
+    // An init is the start of a turn: a turn still open when it comes ended without a result to
+    // read.
     #[test]
     fn an_init_inside_an_open_turn_ends_that_turn_and_goes_on() {
         let mut state = state();
@@ -1768,8 +1768,8 @@ mod tests {
             outcome: TurnOutcome::ApiFailed(ApiFailure { error: "billing_error".into(), status: None, resets_at: None }),
         }], "the API's failure comes first");
     }
-    // The turn of a prompt Claude completes without starting fails: Claude never reads it. Here
-    // the input of ours leaves what the task waits on.
+    // A prompt Claude completes without starting fails its turn: Claude never reads it, and the
+    // input leaves what the task waits on.
     #[test]
     fn an_input_claude_finishes_or_cancels_without_taking_it_in_is_dropped() {
         let lifecycle = |command: &str, state: &str| event(json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":REPLY}));

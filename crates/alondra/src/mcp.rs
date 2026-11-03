@@ -64,7 +64,7 @@ fn tools(role: Role, user: &str) -> Value {
     list.push(json!({"name": "open_cards", "description": format!("The cards {whose} still has open in front of {user} or the orchestrator: id, kind, need, the slot it holds, whether it blocks and whether a Claude Code hook holds it. Read them before sending a card about something you already asked: send the new one with replaces set to the old card's id, or withdraw it. A new plan, final result or problem with the same cause replaces the open one in its slot by itself."),
         "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string", "description": task_help}}, "required": if role == Role::Node { json!(["task_id"]) } else { json!([]) }, "additionalProperties": false}}));
     if role == Role::Node {
-        list.push(json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for the Mac's resources (memory, a full disk, the CPU), also when something you ran died for lack of memory. Not for your turn in a build queue such as the build queue: waiting there is normal; build_queue is for a queue that is stuck. Never for the subscription's usage (weekly or 5-hour limits, tokens): there is no resource for it, because Alondra paces usage itself, so keep working. When a turn ends on a usage limit, never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again. End your turn after it: Alondra tells you to carry on when the Mac has room for you.", "inputSchema": {"type": "object", "properties": {"resource": {"type": "string", "enum": ["memory", "disk", "cpu", "build_queue"], "description": "The resource of the Mac you wait for."}, "reason": {"type": "string", "description": "What you wait for, in a few words in the user's language; the user reads it on your row."}}, "required": ["resource", "reason"]}}));
+        list.push(json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for the Mac's resources (memory, a full disk, the CPU), also when something you ran died for lack of memory. Not for your turn in a build queue: waiting there is normal; build_queue is for a queue that is stuck. Never for the subscription's usage (weekly or 5-hour limits, tokens): there is no resource for it, because Alondra paces usage itself, so keep working. When a turn ends on a usage limit, never wait for it with sleep, cron or a background loop either: end your turn, and Alondra wakes you when Claude answers again. End your turn after it: Alondra tells you to carry on when the Mac has room for you.", "inputSchema": {"type": "object", "properties": {"resource": {"type": "string", "enum": ["memory", "disk", "cpu", "build_queue"], "description": "The resource of the Mac you wait for."}, "reason": {"type": "string", "description": "What you wait for, in a few words in the user's language; the user reads it on your row."}}, "required": ["resource", "reason"]}}));
     } else {
         list.push(
         json!({"name": "schedule_create", "description": format!("Create a durable scheduled Alondra task for {user}. Use this instead of CronCreate for work that should continue beyond this Claude session. Times use the Mac's local timezone. Ask only if the mission, project or time cannot be inferred from the conversation."), "inputSchema": {"type": "object", "properties": {
@@ -151,7 +151,7 @@ fn questions_schema(options: &Value) -> Value {
 }
 
 fn files_schema() -> Value {
-    json!({"type":"array","items":{"type":"string"},"description":"Markdown files of your worktree the user reads beside the card, each a path relative to your worktree ending in .md (like docs/plan.md). Alondra reads each one and shows it as a document of the card; a listed file that cannot be read refuses the card. Only these files are shown: a path you mention in need, why, content or plan is never read"})
+    json!({"type":"array","items":{"type":"string"},"description":"Markdown files of your worktree the user reads beside the card, each a path relative to your worktree ending in .md (like docs/design.md). Alondra reads each one and shows it as a document of the card; a listed file that cannot be read refuses the card. Only these files are shown: a path you mention in need, why, content or plan is never read"})
 }
 
 fn content_schema() -> Value {
@@ -1172,7 +1172,7 @@ fn with_files(text: &str, files: &[String], cwd: Option<&std::path::Path>) -> Re
 fn take_files(command: &mut serde_json::Map<String, Value>) -> Result<Vec<String>> {
     match command.remove("files").filter(|v| !v.is_null()) {
         None => Ok(vec![]),
-        Some(files) => serde_json::from_value(files).map_err(|_| anyhow::anyhow!("invalid_input: files must be a list of paths relative to your worktree, like [\"docs/plan.md\"]")),
+        Some(files) => serde_json::from_value(files).map_err(|_| anyhow::anyhow!("invalid_input: files must be a list of paths relative to your worktree, like [\"docs/design.md\"]")),
     }
 }
 
@@ -2211,10 +2211,10 @@ mod tests {
 
     #[test]
     fn nodes_are_told_to_ask_choices_before_delivering_never_inside_the_result() {
-        let node = tools(Role::Node, "David");
+        let node = tools(Role::Node, "Alice");
         let present = node.as_array().unwrap().iter().find(|tool| tool["name"] == "present_result").unwrap();
         assert!(present["description"].as_str().unwrap()
-            .contains("When the result needs David to choose anything, ask it with ask before delivering; never leave choices only in the content"));
+            .contains("When the result needs Alice to choose anything, ask it with ask before delivering; never leave choices only in the content"));
         assert!(skill_text(Role::Node).contains("ask it with `ask` before you deliver: each choice a question with the option you recommend"));
     }
 
@@ -2295,7 +2295,7 @@ mod tests {
     fn the_configured_name_reaches_every_text_a_node_reads() {
         for role in [Role::Node, Role::Orchestrator] {
             let text = format!("{} {}", instructions(role, "Mostafa"), tools(role, "Mostafa"));
-            assert!(text.contains("Mostafa") && !text.contains("David"), "{text}");
+            assert!(text.contains("Mostafa") && !text.contains("Alice"), "{text}");
         }
     }
 
@@ -2916,23 +2916,23 @@ mod card_tool_tests {
 
     #[test]
     fn a_card_carries_the_markdown_files_it_lists_and_never_reads_a_mention() {
-        let pointer = "Plan completo: docs/fast-connection-plan.md (PR #975, sin fusionar).\n\nPASOS:\n0. Medir.";
+        let pointer = "Plan completo: docs/relay-plan.md (PR #975, sin fusionar).\n\nPASOS:\n0. Medir.";
         let mentioned = built("ask", with(json!({"need":"Aprueba el plan de conexión rápida","why":"Son 8 tareas","options":options(),"blocking":false,
             "content":{"kind":"document","body":pointer}})));
         assert_eq!(mentioned["card"]["content"]["body"], pointer, "a mention is never read nor refused");
         assert!(mentioned["card"].get("files").is_none());
         let refused = domain_envelope("ask", &with(json!({"need":"Aprueba el plan","why":"Son 8 tareas","options":options(),"blocking":false,
-            "files":["docs/fast-connection-plan.md"]})), "epoch", "id").unwrap_err().to_string();
-        assert!(refused.starts_with("invalid_input: files: docs/fast-connection-plan.md cannot be read"), "{refused}");
+            "files":["docs/relay-plan.md"]})), "epoch", "id").unwrap_err().to_string();
+        assert!(refused.starts_with("invalid_input: files: docs/relay-plan.md cannot be read"), "{refused}");
         let outside = domain_envelope("ask", &with(json!({"need":"Aprueba","why":"x","options":options(),"blocking":false,"files":["/etc/a.md"]})), "epoch", "id").unwrap_err().to_string();
         assert!(outside.contains("not a Markdown file of your worktree"), "{outside}");
         let worktree = tempfile::tempdir().unwrap();
         std::fs::create_dir(worktree.path().join("docs")).unwrap();
-        std::fs::write(worktree.path().join("docs/fast-connection-plan.md"), "# Plan\n\n- [ ] Medir").unwrap();
+        std::fs::write(worktree.path().join("docs/relay-plan.md"), "# Plan\n\n- [ ] Medir").unwrap();
         std::fs::write(worktree.path().join("notes.md"), "Notas").unwrap();
-        let files = vec!["notes.md".to_owned(), "docs/fast-connection-plan.md".to_owned()];
+        let files = vec!["notes.md".to_owned(), "docs/relay-plan.md".to_owned()];
         assert_eq!(with_files(pointer, &files, Some(worktree.path())).unwrap(),
-            format!("{pointer}\n\n---\n\n## notes.md\n\nNotas\n\n---\n\n## docs/fast-connection-plan.md\n\n### Plan\n\n- ☐ Medir"));
+            format!("{pointer}\n\n---\n\n## notes.md\n\nNotas\n\n---\n\n## docs/relay-plan.md\n\n### Plan\n\n- ☐ Medir"));
         assert_eq!(with_files("", &files[..1], Some(worktree.path())).unwrap(), "---\n\n## notes.md\n\nNotas");
         assert_eq!(with_files("Nada que incluir", &[], Some(worktree.path())).unwrap(), "Nada que incluir");
         for name in ["ask", "request_action", "request_input", "request_test", "present_result"] {

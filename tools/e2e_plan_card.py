@@ -3,7 +3,7 @@
 
 A node without a model posts two plans through the same `alondra node hold` its mod runs: one that
 only points at a file its worktree does not have, which goes back to the node at once, and one that
-cites `docs/fast-connection-plan.md` from its worktree, which the daemon holds with the file's
+cites `docs/relay-plan.md` from its worktree, which the daemon holds with the file's
 content at its end. Then each client shows that card: `--client tui` in the real TUI inside tmux,
 `--client ios` in the iOS app in a pooled simulator (E2E_IOS_IPA, as make e2e-ios-cards), and
 `--client mac` saves the Mac view the daemon serves for it, which the Mac snapshot tests draw.
@@ -46,7 +46,7 @@ PLAN = """# Paso 1: relay de iroh de producción
 
 ## Contexto
 
-Paso 1 del plan de conexión rápida, en docs/fast-connection-plan.md.
+Paso 1 del plan de conexión rápida, en docs/relay-plan.md.
 
 ## Checklist
 
@@ -76,7 +76,7 @@ def plan_card(phone, client):
         queue, _ = phone.queue()
         for card in queue:
             view = phone.request("GET", f"/views/card:{card}?protocol=1&client={client}&lang=es")
-            if "docs/fast-connection-plan.md" in json.dumps(view, ensure_ascii=False) and "Relay propio" in json.dumps(view, ensure_ascii=False):
+            if "docs/relay-plan.md" in json.dumps(view, ensure_ascii=False) and "Relay propio" in json.dumps(view, ensure_ascii=False):
                 return card, view
         time.sleep(0.5)
     raise AssertionError("the plan with its cited file never reached the queue")
@@ -97,7 +97,7 @@ def check_tui(sandbox, captures):
             if "Relay propio" in tui.screen():
                 break
             tui.keys("PageDown")
-        tui.until(lambda s: "docs/fast-connection-plan.md" in s and "Relay propio" in s, "the included file never showed")
+        tui.until(lambda s: "docs/relay-plan.md" in s and "Relay propio" in s, "the included file never showed")
         tui.capture("plan-included-file")
         print("ok (tui): the plan shows the cited file's content", file=sys.stderr, flush=True)
     except BaseException:
@@ -167,7 +167,7 @@ def main():
     try:
         node = e2e_cards.Node(sandbox)
         os.makedirs(os.path.join(node.workdir, "docs"))
-        with open(os.path.join(node.workdir, "docs/fast-connection-plan.md"), "w") as file:
+        with open(os.path.join(node.workdir, "docs/relay-plan.md"), "w") as file:
             file.write(FILE)
         pointer = hold(node, "toolu-pointer", POINTER)
         reply = json.loads(pointer.communicate(timeout=e2e_cards.TIMEOUT)[0])

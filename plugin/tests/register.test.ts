@@ -318,7 +318,7 @@ test('every submitted prompt reports who submitted it, as Claude Code names its 
   on('prompt.submit', ($, e) => ({ text: e.text }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.prompt.submit({ text: '[Alondra] pasted by David', origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: '[Alondra] pasted by Alice', origin: { kind: 'composer' } })
   await $.prompt.submit({ text: 'from the phone', origin: { kind: 'bridge' } })
   await $.prompt.submit({ text: 'one more thing', origin: { kind: 'plugin', name: 'alondra', asUser: true } })
   await settle()
@@ -344,7 +344,7 @@ test('a pushed message is submitted to the session and then acknowledged by id',
   })
   on('process.spawn', async function* () {
     yield* pushed(
-      { id: 'o-1', text: 'David says hi', as_user: true },
+      { id: 'o-1', text: 'Alice says hi', as_user: true },
       { id: 'd-2', text: 'A notice', as_user: false },
     )
   })
@@ -357,7 +357,7 @@ test('a pushed message is submitted to the session and then acknowledged by id',
   await settle()
 
   expect(submits).toEqual([
-    { text: 'David says hi', asUser: true },
+    { text: 'Alice says hi', asUser: true },
     { text: 'A notice', asUser: false },
   ])
   expect(acks.map((ack) => ack.argv.slice(-3))).toEqual([
@@ -479,7 +479,7 @@ async function startDelivering(
   return delivery
 }
 
-const ANSWER = '[From David · 11:37] funciona, aunque hay que quitar el onboarding forzado'
+const ANSWER = '[From Alice · 11:37] funciona, aunque hay que quitar el onboarding forzado'
 
 test('an answer that arrives while a long build runs reaches the model with that build result and only then counts as read', async ($, on) => {
   let finishBuild: () => void = () => {}

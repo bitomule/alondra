@@ -1,4 +1,4 @@
-//! David's rule, 19 October: a task owns every worktree it made or took, its node's and those of
+//! The user's rule, 19 October: a task owns every worktree it made or took, its node's and those of
 //! the subagents the node launched, and no task that ended leaves one of them behind. Whatever
 //! order worktrees appear, end, get discarded or stay dirty in, and whether the task is delivered
 //! or cancelled, the task only reaches Done or Cancelled once each of its worktrees has ended.

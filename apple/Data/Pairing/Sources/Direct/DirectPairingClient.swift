@@ -10,7 +10,7 @@ public struct DirectPairingAttempt: Sendable, Equatable {
     public let expiresAtMs: UInt64
 }
 
-/// The device half of pairing on the local network (`docs/direct.md`): fresh keys per Mac,
+/// The device half of pairing on the local network: fresh keys per Mac,
 /// commit, reveal, show the code, then wait for the Mac's signed approval and keep it.
 public actor DirectPairingClient {
     private struct Attempt {

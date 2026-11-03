@@ -1,9 +1,7 @@
 # Official Claude native loopback test (opt-in)
 
 This target runs official Agent SDK **0.3.300** and the unmodified Darwin arm64
-Claude Code **2.1.300** against one owned HTTP/SSE model fixture. Its first green
-run (phase 2b of the Agent SDK migration) is recorded in
-`docs/agent-sdk-migration/native-roundtrip.md`.
+Claude Code **2.1.300** against one owned HTTP/SSE model fixture.
 
 After source review and reservation of the shared heavy slot:
 
@@ -15,7 +13,7 @@ bazelisk test //tests/native/claude:text_roundtrip_test --test_output=all --noca
 `CLAUDE_CONFIG_DIR` folders that link one fixture `~/.claude`, as Alondra prepares a provider
 account's folder: it checks that the linked skills, agents, commands, rules, instructions and
 settings load, that a session created with one folder resumes with the other under the same id,
-and that every link survives a turn. Its result is in `docs/agent-sdk-migration/accounts.md`.
+and that every link survives a turn.
 
 ```sh
 bazelisk test //tests/native/claude:accounts_test --test_output=all --nocache_test_results

@@ -5,7 +5,7 @@
 //! running; a turn the node starts by itself while held is cut again. Paused nodes wait in the
 //! gate's queue ahead of new starts of their priority and come back as starts do, one a minute,
 //! when there is a slot and room. A pause an older daemon made for memory returns at once and
-//! comes back the same way. See docs/pacing.md §7.
+//! comes back the same way.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{ApiRetry, DomainState, TaskId, TaskState};
 use alondra_core::Millis;

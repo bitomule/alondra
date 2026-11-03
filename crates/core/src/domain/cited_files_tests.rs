@@ -72,7 +72,7 @@ fn owned(paths: &[&str]) -> Vec<String> {
 }
 
 /// The orchestrator's card of 14 October, word for word where it pointed at the plan.
-const POINTER: &str = "Plan completo: docs/fast-connection-plan.md (PR #975, sin fusionar). Resultados de la prueba: docs/hole-punching-research.md §9.\n\nPASOS (una tarea y una PR cada uno):\n0. Medir el estado actual.\n1. Relay de iroh de producción.";
+const POINTER: &str = "Plan completo: docs/relay-plan.md (PR #975, sin fusionar). Resultados de la prueba: docs/relay-research.md §9.\n\nPASOS (una tarea y una PR cada uno):\n0. Medir el estado actual.\n1. Relay de iroh de producción.";
 
 #[test]
 fn a_mentioned_markdown_path_is_never_read_and_never_refuses_a_card_or_a_plan() {
@@ -96,11 +96,11 @@ fn only_explicit_links_to_worktree_markdown_files_are_linked() {
 
 #[test]
 fn a_linked_file_is_included_under_its_heading_and_never_adds_points_to_the_plan() {
-    let body = "# Paso 1\n\nContexto en [el plan](docs/plan.md).\n\n- [ ] Montar el relay\n- [ ] Escribir [los resultados](docs/results.md)";
+    let body = "# Paso 1\n\nContexto en [el plan](docs/design.md).\n\n- [ ] Montar el relay\n- [ ] Escribir [los resultados](docs/results.md)";
     let file = "# Plan de conexión rápida\n\n## Pasos\n\n- [ ] Medir\n- [x] Relay\n\n```\n- [ ] in code\n";
-    let included = include_linked_files(body, files(&[("docs/plan.md", file)])).unwrap();
+    let included = include_linked_files(body, files(&[("docs/design.md", file)])).unwrap();
     assert!(included.starts_with(body));
-    assert!(included.ends_with("\n\n---\n\n## docs/plan.md\n\n### Plan de conexión rápida\n\n#### Pasos\n\n- ☐ Medir\n- ☑ Relay\n\n```\n- [ ] in code\n```"), "{included}");
+    assert!(included.ends_with("\n\n---\n\n## docs/design.md\n\n### Plan de conexión rápida\n\n#### Pasos\n\n- ☐ Medir\n- ☑ Relay\n\n```\n- [ ] in code\n```"), "{included}");
     assert_eq!(checklist_items(&included), checklist_items(body));
     assert_eq!(include_linked_files(&included, files(&[])).unwrap(), included, "an included file is not included twice");
     assert_eq!(without_included_files(&included), body);
@@ -146,14 +146,14 @@ fn a_listed_file_that_is_outside_the_worktree_unreadable_or_too_long_refuses_the
 #[test]
 fn the_domain_refuses_a_card_that_lists_a_file_it_does_not_include() {
     let mut s = fixture();
-    let error = refused(&mut s, orchestrator(), listing(ask_user(POINTER), &["docs/fast-connection-plan.md"]));
+    let error = refused(&mut s, orchestrator(), listing(ask_user(POINTER), &["docs/relay-plan.md"]));
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("invalid_input", Some("card.files")));
-    assert!(error.message.contains("docs/fast-connection-plan.md"), "{}", error.message);
+    assert!(error.message.contains("docs/relay-plan.md"), "{}", error.message);
     let error = refused(&mut s, orchestrator(), listing(ask_user("Elige"), &["/etc/plan.md"]));
     assert_eq!(error.subject.as_deref(), Some("card.files"));
-    let whole = include_files(POINTER, &owned(&["docs/fast-connection-plan.md"]), files(&[("docs/fast-connection-plan.md", "# Plan\n\nLos 8 pasos.")])).unwrap();
-    ok(&mut s, orchestrator(), listing(ask_user(&whole), &["docs/fast-connection-plan.md"]));
-    let linked = include_linked_files("- [ ] Hacerlo según [el plan](docs/plan.md)", files(&[("docs/plan.md", "# Plan")])).unwrap();
+    let whole = include_files(POINTER, &owned(&["docs/relay-plan.md"]), files(&[("docs/relay-plan.md", "# Plan\n\nLos 8 pasos.")])).unwrap();
+    ok(&mut s, orchestrator(), listing(ask_user(&whole), &["docs/relay-plan.md"]));
+    let linked = include_linked_files("- [ ] Hacerlo según [el plan](docs/design.md)", files(&[("docs/design.md", "# Plan")])).unwrap();
     ok(&mut s, Actor::System, plan("p2", &linked));
     assert_eq!(s.interactions[&InteractionId::from("p2")].body, linked);
 }

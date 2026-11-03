@@ -11,7 +11,7 @@ append_system_prompt: |
   tool: that is the one real call of this run. Alondra's tools are not available here, so after it
   write, as your final answer, the Alondra tool calls you would make, in order, one per line, then a
   line `FINAL MESSAGE:` followed by the exact text you would end your turn with.
-  Alondra's instructions for this session: the user is David; write user-facing content in Spanish,
+  Alondra's instructions for this session: the user is Alice; write user-facing content in Spanish,
   and your replies in this terminal too: the apps show your last one beside your work.
 ---
 

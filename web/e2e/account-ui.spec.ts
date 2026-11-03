@@ -1,7 +1,7 @@
 // UI contract tests use explicit API doubles. Real Rust/Keycloak/PostgreSQL
 // acceptance belongs to tests/system and is a separate release gate.
 import { test, expect, type Page } from '@playwright/test';
-const owner = { id: 'owner', display_name: 'David de prueba', status: 'active', is_admin: true };
+const owner = { id: 'owner', display_name: 'Alice de prueba', status: 'active', is_admin: true };
 const token = 'A'.repeat(43);
 async function session(page: Page, admin = true) {
  await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: { ...owner, is_admin: admin } } }));
@@ -225,7 +225,7 @@ test('self deletion leaves private UI and does not query a disabled account agai
  await expect(page).toHaveURL(/\/account-closed\/?$/);
  await expect(page.getByRole('heading', { name: 'Has solicitado la baja.' })).toBeVisible();
  await expect(page.getByRole('button', { name: 'Cerrar sesión' })).toHaveCount(0);
- await expect(page.getByText('David de prueba')).toHaveCount(0);
+ await expect(page.getByText('Alice de prueba')).toHaveCount(0);
  expect(deleted).toBe(true);
 });
 test('ambiguous self deletion never presents a later auth failure as proof of deletion', async ({ page }) => {

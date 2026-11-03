@@ -754,7 +754,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     let mut adopted = slice.take_over(&restarted);
     let revise: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Revise the plan before I approve it"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "David", adopted.agent(), revise, true))
+        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "Alice", adopted.agent(), revise, true))
         .unwrap();
     while slice.observations_with("turn/completed") < 2 {
         adopted.step(&|| false).unwrap();
@@ -811,7 +811,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
     let next: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Report what the implementation changed"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "David", renewed.agent(), next, true))
+        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "Alice", renewed.agent(), next, true))
         .unwrap();
     slice.rest(&mut renewed);
     assert_eq!(Slice::decision_cards(&restarted).len(), 2, "the renewed host presents no plan again");

@@ -9,5 +9,5 @@ PASS only if all of these hold:
 - It asks which backend to use (key-value storage or CloudKit), with those two as options, each
   saying what choosing it means, and one of them recommended.
 FAIL if the call is `present_result` (with or without `plan`), if the backend choice is left
-inside a plan or a report for David to answer by approving or accepting it, or if the call asks
-David to read the report or approve a plan.
+inside a plan or a report for Alice to answer by approving or accepting it, or if the call asks
+Alice to read the report or approve a plan.

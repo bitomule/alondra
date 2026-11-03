@@ -241,7 +241,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
     assert_eq!(rig.sessions.removals(), 1, "the removed session is never removed again");
 }
 
-// 3 November: David chose «Leave it open» on tasks that could not close. Recording that choice
+// 3 November: the user chose «Leave it open» on tasks that could not close. Recording that choice
 // failed, the closer dropped his answer and asked him again at once, and again after the daemon
 // restarted. An answered «Leave it open» stays the answer: its receipt is tried again quietly on the
 // usual wait, across restarts, until it is recorded.
@@ -855,7 +855,7 @@ fn git(dir: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
-// David's rule, 19 October: a task owns every worktree its node's subagents make. One with work
+// The user's rule, 19 October: a task owns every worktree its node's subagents make. One with work
 // not committed and one with a commit no remote has hold the close, and the node is told which
 // and what to do; a clean one goes. The one the node gives up goes as it is, the one it pushes
 // goes once pushed, and only then is the task done.

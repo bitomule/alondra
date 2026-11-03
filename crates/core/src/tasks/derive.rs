@@ -72,11 +72,11 @@ fn is_document(r: &Report) -> bool {
 }
 
 /// A task's own name lets it run over 80 characters before it is cut on a word: long enough for
-/// a whole line David typed, short enough for a card's title.
+/// a whole line the user typed, short enough for a card's title.
 const TASK_TITLE_MAX: usize = 80;
 
 /// A line of free text, cut to its first sentence and capped on a word, for a task title made
-/// from David's own words rather than chosen for him.
+/// from the user's own words rather than chosen for them.
 fn title_from_text(line: &str) -> String {
     let first = line.split(". ").next().unwrap_or(line).trim();
     if first.chars().count() <= TASK_TITLE_MAX {
@@ -88,7 +88,7 @@ fn title_from_text(line: &str) -> String {
 }
 
 /// The title a task falls back to until something has named it: the orchestrator's short name
-/// for its request if it gave one, else — when David wrote that request himself, not one made up
+/// for its request if it gave one, else — when the user wrote that request themselves, not one made up
 /// to hold a bare session — the first line of what he asked, else the node's own name, which is
 /// the dead end t-47118 got stuck with (a task titled after its node, indistinguishable from it
 /// in the list of nodes).
@@ -404,7 +404,7 @@ impl View {
         }
     }
 
-    /// The node answered while its PR waited for a push: the card is David's to review again.
+    /// The node answered while its PR waited for a push: the card is the user's to review again.
     fn bring_back_parked_prs(&mut self, task: &str) {
         let Some(prs) = self.board.tasks.get(task).map(|t| t.prs.clone()) else { return };
         for id in prs {
@@ -518,7 +518,7 @@ impl View {
         moved
     }
 
-    /// A PR that joins its task late (a report named the task, GitHub's copy names it, or David
+    /// A PR that joins its task late (a report named the task, GitHub's copy names it, or the user
     /// moved it there) brings what already happened to it: it was opened, and merged or closed if
     /// it was. A finished task that gets a merged or closed PR only lists it.
     fn pr_joined(&mut self, pr: u64, at: Millis) -> Option<String> {
@@ -538,7 +538,7 @@ impl View {
         moved.then_some(id)
     }
 
-    /// David or the orchestrator said which task a PR is for. It leaves the task it was given,
+    /// The user or the orchestrator said which task a PR is for. It leaves the task it was given,
     /// which goes back to where its own facts leave it; the task it joins takes it in `moved_by`.
     fn reassign_pr(&mut self, pr: u64, from: Option<&str>, to: &str) {
         if from == Some(to) || !self.may_take_pr(to, pr) {
@@ -629,7 +629,7 @@ impl View {
     }
 
     /// A session's own task goes by its node's name until something gives it a real title (the
-    /// orchestrator's name for its request, David's own words, or an explicit `TaskTitled`), and
+    /// orchestrator's name for its request, the user's own words, or an explicit `TaskTitled`), and
     /// always carries what the daemon says the node does.
     fn follow_node(&mut self, session_id: &str) {
         let Some(node) = self.nodes.get(session_id).filter(|n| !n.is_orchestrator) else { return };
@@ -669,8 +669,8 @@ impl View {
     }
 
     /// A node closed before it finished: what it was doing is dropped, unless a PR of it still
-    /// waits for David's merge. Then the question it left open no longer holds the task, which
-    /// waits for David on that PR.
+    /// waits for the user's merge. Then the question it left open no longer holds the task, which
+    /// waits for the user on that PR.
     fn node_closed(&mut self, session_id: &str, at: Millis) -> Vec<String> {
         let open: Vec<(String, TaskState, Option<u64>, Option<u64>)> = self
             .tasks_of(session_id)
@@ -763,7 +763,7 @@ impl View {
         if changed { vec![id] } else { vec![] }
     }
 
-    /// David or the orchestrator wrote to the node: that reopens a done task, and sends one in
+    /// The user or the orchestrator wrote to the node: that reopens a done task, and sends one in
     /// review, or one that waited for a dependency's merge, back to work.
     fn written_to(&mut self, id: &str, by: Item, at: Millis) -> Option<String> {
         let started = self.board.tasks.get(id).is_some_and(|t| t.awaiting.is_some());
@@ -792,7 +792,7 @@ impl View {
         moved.then_some(id)
     }
 
-    /// Documents that stopped waiting for David's review: the one he gave his verdict on, and
+    /// Documents that stopped waiting for the user's review: the one they gave their verdict on, and
     /// the others reading it settled.
     fn reviews_closed(&mut self, pending: Vec<u64>, verdict: Option<(u64, ReviewVerdict)>, at: Millis) -> Vec<String> {
         let mut moved = vec![];
@@ -980,7 +980,7 @@ impl View {
     }
 
     /// Tasks worth keeping whatever their age: their node is still here, or something of theirs
-    /// still waits for David.
+    /// still waits for the user.
     pub(crate) fn tasks_to_keep(&self) -> std::collections::HashSet<String> {
         self.board
             .tasks
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(by_a_plugin.states(), vec![InReview], "what a plugin submits as the user moves nothing");
         let mut by_the_user = Run::new();
         by_the_user.on(opened()).on(typed(PromptOrigin::Composer));
-        assert_eq!(by_the_user.states(), vec![InReview, Running], "David typing in the terminal asks for changes");
+        assert_eq!(by_the_user.states(), vec![InReview, Running], "the user typing in the terminal asks for changes");
     }
 
     #[test]
@@ -1226,7 +1226,7 @@ mod tests {
         assert_eq!(read.states(), vec![InReview, Running], "read without a verdict");
     }
 
-    /// David's decision on t-47118 (a document that never moved its task): the answer goes as
+    /// The user's decision on t-47118 (a document that never moved its task): the answer goes as
     /// final with the file attached, and it both finishes the task and keeps the attachment.
     #[test]
     fn a_final_report_with_an_attachment_finishes_its_task_and_keeps_the_attachment() {
@@ -1252,7 +1252,7 @@ mod tests {
         assert_eq!(run.view.reports[&1].attachments, vec![attachment]);
     }
 
-    /// Same decision: when David has to decide instead, the file goes on the `ask`, not a
+    /// Same decision: when the user has to decide instead, the file goes on the `ask`, not a
     /// standalone document, and the task waits for him.
     #[test]
     fn an_ask_with_an_attachment_puts_the_task_in_needs_you() {
@@ -1308,7 +1308,7 @@ mod tests {
         assert_eq!(fallback_title(Some(&synthetic), node), node, "a made-up request tells us nothing");
         let mut real = Request::new("r-1", 0, false);
         real.text = Some("Fix the timeout on checkout. It happens on slow networks.".into());
-        assert_eq!(fallback_title(Some(&real), node), "Fix the timeout on checkout", "David's own words, cut to a sentence");
+        assert_eq!(fallback_title(Some(&real), node), "Fix the timeout on checkout", "the user's own words, cut to a sentence");
         real.title = Some("Checkout timeout".into());
         assert_eq!(fallback_title(Some(&real), node), "Checkout timeout", "the orchestrator's own name wins");
     }

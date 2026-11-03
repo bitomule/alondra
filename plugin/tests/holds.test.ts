@@ -62,11 +62,11 @@ test('a question the daemon does not hold, or a subagent asks, goes to Claude Co
 test('a plan the user sends back is denied with their words, an approved one is allowed for that call', async ($, on) => {
   const held = await startWithHolds($, on, (card) =>
     card.id === 'toolu-back'
-      ? { held: true, approved: false, feedback: 'David requested changes to the plan: use v2' }
+      ? { held: true, approved: false, feedback: 'Alice requested changes to the plan: use v2' }
       : { held: true, approved: true })
 
   const back = await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'toolu-back', plan: 'p' } as never)
-  expect(back).toEqual({ deny: 'David requested changes to the plan: use v2' })
+  expect(back).toEqual({ deny: 'Alice requested changes to the plan: use v2' })
 
   const approved = await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'toolu-ok', plan: 'p' } as never)
   expect(approved).toEqual({ result: 'claude code ran the tool' })

@@ -173,7 +173,7 @@ const PLAN_REVIEWS: &str = "CREATE TABLE IF NOT EXISTS plan_reviews(\
  interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),\
  review TEXT NOT NULL CHECK(json_valid(review)));";
 /// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
-/// since when. See docs/pacing.md.
+/// since when.
 const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
  task_id TEXT PRIMARY KEY,\
  body TEXT NOT NULL CHECK(json_valid(body)),\

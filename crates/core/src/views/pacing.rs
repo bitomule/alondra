@@ -1,5 +1,5 @@
 //! The user's hands on the pace of the nodes: the working-node limit, Pause, Resume and a task's
-//! priority. The daemon's gate does the rest (`docs/pacing.md`).
+//! priority. The daemon's gate does the rest.
 
 use super::{
     ActionOption, Confirm, Input, LivePacing, LivePaused, Presentation, RenderContext, Style, action_id::Verb, common,

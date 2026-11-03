@@ -960,7 +960,7 @@ on = "Run /review-loop before the merge."
 
     #[test]
     fn the_effort_note_sends_the_cases_sonnet_takes_and_the_cases_that_stay_with_opus() {
-        let note = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap().effort_note("David");
+        let note = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap().effort_note("Alice");
         for sonnet in ["approved plan names the files and the test", "mechanical rename", "checked against the code", "documentation drawn from the code", "a release"] {
             assert!(note.contains(sonnet), "{sonnet}: {note}");
         }

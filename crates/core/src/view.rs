@@ -43,7 +43,7 @@ pub struct View {
     /// The merge method last used in each repo, preselected on its next PR card.
     #[serde(default)]
     pub merge_methods: BTreeMap<String, crate::pr::MergeMethod>,
-    /// Artifacts David approved, with when: a later report about one of them asks nothing of him.
+    /// Artifacts the user approved, with when: a later report about one of them asks nothing of them.
     #[serde(default)]
     pub approved_artifacts: BTreeMap<String, Millis>,
     /// The options of each request for new work, by request id.
@@ -102,7 +102,7 @@ fn request_sent_at(id: &str) -> Option<Millis> {
     id.strip_prefix("r-")?.parse().ok()
 }
 
-/// A report that sends an artifact for David to review: a review card of its own.
+/// A report that sends an artifact for the user to review: a review card of its own.
 fn is_review(r: &Report) -> bool {
     !crate::artifact::in_report(r).is_empty()
 }
@@ -1009,7 +1009,7 @@ impl View {
 
     /// The report links a PR the user already merged or closed on its card, and no open one: it
     /// is filed read, as merging reads the reports inside the card. PR #61, 24 Sep: the node's
-    /// "deployed" report after the merge stayed as a card of its own asking for David.
+    /// "deployed" report after the merge stayed as a card of its own asking for the user.
     fn about_settled_pr(&self, r: &Report) -> bool {
         let settled = |repo: &str, number: u64| {
             self.prs.values().any(|p| p.repo == repo && p.number == number && matches!(p.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed))
@@ -1017,7 +1017,7 @@ impl View {
         self.report_pr(r).is_none() && r.links.iter().filter_map(|l| crate::pr::parse_url(&l.url)).any(|(repo, number)| settled(&repo, number))
     }
 
-    /// Every artifact the report links was already approved by David: it is filed read, as the
+    /// Every artifact the report links was already approved by the user: it is filed read, as the
     /// approval already answered it.
     fn about_approved_artifact(&self, r: &Report) -> bool {
         let artifacts = crate::artifact::in_report(r);
@@ -1028,7 +1028,7 @@ impl View {
         !r.read && r.kind != ReportKind::Progress && is_review(r)
     }
 
-    /// David's verdict on an artifact, still on its way to the node: it waits for the review until
+    /// The user's verdict on an artifact, still on its way to the node: it waits for the review until
     /// the verdict lands.
     pub fn review_reply_due(&self, session_id: &str) -> Option<Millis> {
         self.pending_messages(session_id).filter(|m| matches!(m.about, Some(crate::model::MessageAbout::ArtifactReview { .. }))).map(|m| m.created_at).max()
@@ -1105,13 +1105,13 @@ impl View {
             .filter(move |m| m.session_id == session_id && m.handed_at.is_none())
     }
 
-    /// Done is final for Alondra: only David or the orchestrator, writing on purpose, reopen a
+    /// Done is final for Alondra: only the user or the orchestrator, writing on purpose, reopen a
     /// done node. Alondra itself never types into one.
     pub fn may_alondra_write(&self, node: &Node) -> bool {
         node.is_orchestrator || node.state != NodeState::Done
     }
 
-    /// What may be typed into the session now: everything from David or the orchestrator, and
+    /// What may be typed into the session now: everything from the user or the orchestrator, and
     /// what Alondra queued only while the node may take it and was not done since.
     pub fn delivery_blocked(&self, session_id: &str) -> bool {
         self.delivery_attempts.values().any(|a| a.session_id == session_id && a.blocks())
@@ -1523,7 +1523,7 @@ mod tests {
     }
 
     /// The 27-sep migration recorded uncertain handoffs for nodes closed days before; nobody
-    /// could reach or re-check those terminals, yet the TUI asked David to resolve them.
+    /// could reach or re-check those terminals, yet the TUI asked the user to resolve them.
     #[test]
     fn a_handoff_to_a_node_that_is_gone_leaves_nothing_to_resolve() {
         use crate::delivery::{Channel, State};
@@ -1533,7 +1533,7 @@ mod tests {
         v.apply(5, 5_000, &Event::DeliveryAttemptRecorded(attempt(5, "live", Channel::HookStop, State::Uncertain)));
         assert_eq!(v.delivery_attempts[&4].state, State::Discarded);
         assert!(!v.delivery_blocked("gone"));
-        assert_eq!(v.delivery_attempts[&5].state, State::Uncertain, "a live node still needs David");
+        assert_eq!(v.delivery_attempts[&5].state, State::Uncertain, "a live node still needs the user");
         v.apply(6, 6_000, &Event::NodeRemoved { session_id: "live".into() });
         assert_eq!(v.delivery_attempts[&5].state, State::Discarded, "closing the node closes its pending handoff");
         v.apply(7, 7_000, &Event::DeliveryAttemptRecorded(attempt(7, "gone", Channel::NodeDiscard, State::Uncertain)));

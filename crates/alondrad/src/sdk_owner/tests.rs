@@ -657,14 +657,14 @@ fn the_orchestrators_instruction_on_a_stopped_node_commits_and_reaches_the_sdk()
     assert_eq!(slice.prompts().last().map(String::as_str), Some("Write the changelog too"), "it reaches the host's Claude as written");
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Also update the changelog"})).unwrap();
     let told = tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     assert_eq!((told["delivery_state"].as_str(), told["reaches"].as_str()), (Some("dispatching"), Some("now")), "the resting node starts on it: {told}");
     assert_eq!(driver.pending_permits(), 1, "what the user told the resting node left for its host");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let last = slice.prompts().last().cloned().unwrap();
-    assert!(last.starts_with("[From David · ") && last.ends_with("Also update the changelog"), "it reaches the host's Claude as a turn of its own, saying who sent it: {last}");
+    assert!(last.starts_with("[From Alice · ") && last.ends_with("Also update the changelog"), "it reaches the host's Claude as a turn of its own, saying who sent it: {last}");
     driver.stop().unwrap();
 }
 
@@ -686,8 +686,8 @@ fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
     driver.stop().unwrap();
 }
 
-// A message goes into the running turn when the provider can, and starts a turn when the
-// turn just closed. Here what someone tells the node while its turn runs reaches the same native
+// A message goes into the running turn when the provider can take it, and starts a turn when the
+// turn just closed. What someone tells the node while its turn runs reaches the same native
 // turn: the host takes it into its streaming input and Claude consumes it in that turn, which then
 // ends with one card.
 #[test]
@@ -706,7 +706,7 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     assert_eq!(turns(&slice.domain), 1);
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     assert_eq!(driver.pending_permits(), 1, "it leaves while the turn runs, without waiting for the turn to end");
     driver.step(&|| false).unwrap();
@@ -733,7 +733,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Keep it short"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
@@ -752,7 +752,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     driver.stop().unwrap();
 }
 
-// 3 November: David answered a node's card in words only, and the node read
+// 3 November: the user answered a node's card in words only, and the node read
 // «[From Alondra · 19:55] <text>» with nothing saying it answered its card.
 #[test]
 fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
@@ -1435,7 +1435,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
     let told = tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     assert_eq!(told["reaches"], "turn", "Claude reads it inside the turn that runs: {told}");
     driver.step(&|| false).unwrap();
@@ -1562,7 +1562,7 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
     slice.settle(&mut driver);
     assert_eq!(slice.observations_with(&"x".repeat(900_000)), 24, "every large answer was committed");
     for turn in 1..=260 {
-        crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), "David", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
+        crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), "Alice", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
         driver.step(&|| false).unwrap();
         slice.settle(&mut driver);
     }
@@ -1877,8 +1877,8 @@ fn a_node_may_edit_only_inside_its_own_worktree_without_asking() {
     assert!(super::own_worktree_edits(std::path::Path::new("relative/worktree")).is_empty());
 }
 
-// Replacing a session interrupts the old turn, detaches the old session and starts the
-// new one, and interrupts the old runtime only for the exact committed replacement. Here
+// A session is replaced by interrupting the old turn, detaching the old session and starting the
+// new one, and the old runtime is interrupted only for the exact committed replacement.
 // «Replace» stops the node's host through its owner and starts the task on a new execution: its
 // first generation's open request is withdrawn with it, and an answer to that card is refused.
 #[test]
@@ -2189,8 +2189,8 @@ fn assert_goes_on_by_itself(slice: &Slice, domain: &DomainRuntime, resumed: &mut
     assert!(slice.prompts().last().unwrap().starts_with("Your session was cut off when its host stopped"), "{:?}", slice.prompts());
 }
 
-// A session whose event stream fails ends as `runtime_error`, and a new one opens on the
-// next command. Here the host dies while this daemon runs (its Node crashed mid-turn): its owner
+// A session whose event stream fails is released, and a new one opens on the next command. Here
+// the host dies while this daemon runs (its Node crashed mid-turn): its owner
 // puts a host that resumes the same Claude session in its place, and the task goes on in it by
 // itself instead of staying «working». A replacement that ends before it was handed anything is not
 // replaced again: it would only end again.
@@ -2542,7 +2542,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     slice.settle(&mut driver);
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Submit your plan"})).unwrap();
-    crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true).await.unwrap();
+    crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true).await.unwrap();
     driver.step(&|| false).unwrap();
     while !driver.worker.poll().unwrap().is_some_and(|batch| String::from_utf8_lossy(&batch.evidence).contains("decision_requested")) {
         driver.observe().unwrap();
@@ -2684,7 +2684,7 @@ fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
 
 // The daemon dies and the host's state folder goes with it, as when a sandbox or a test fixture is
 // removed: no owner can adopt that host any more, so it ends its whole group, Claude included.
-// A turn whose result is not a success ends as failed, with its code. Claude ended this one
+// Every turn whose result is not a success ends as failed, with its code. Claude ended this one
 // at its turn limit: the task waits for no one, neither the API nor the host, and its card names
 // the error.
 #[test]
@@ -2724,8 +2724,8 @@ fn a_prompt_claude_never_delivers_asks_whether_to_send_it_again_and_goes_again_o
     driver.stop().unwrap();
 }
 
-// The turn of a prompt Claude completes without starting fails, as Claude does with one its
-// transcript already holds. Here the message leaves the queue and «Discard» lets it go: the
+// A prompt Claude completes without starting fails its turn, as Claude does with one its
+// transcript already holds. The message leaves the queue and «Discard» lets it go: the
 // orchestrator gets the case of how the task goes on and Claude gets nothing more.
 #[test]
 fn a_message_claude_completes_without_starting_it_can_be_discarded() {
@@ -3364,7 +3364,7 @@ fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
 fn asks_again(slice: &Slice, driver: &mut Driver, cwd: &str, command: &str) -> Option<String> {
     let answered = slice.decisions().len();
     slice.run(&Actor::System, &format!("tell-{answered}"), Command::TellNode {
-        task_id: TASK.into(), text: format!("[From David · 09:00] decide:bash@{cwd} {command}"),
+        task_id: TASK.into(), text: format!("[From Alice · 09:00] decide:bash@{cwd} {command}"),
         from_user: false, answers: None,
     });
     driver.step(&|| false).unwrap();
@@ -3508,7 +3508,7 @@ fn a_plan_claude_never_wrote_sends_it_back_to_write_one_without_a_card() {
 fn tell(slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
 }
 
@@ -4228,7 +4228,7 @@ fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {
 
 async fn tell_as_user(domain: &DomainRuntime, home: &Path, agent: &AgentId, text: &str) -> serde_json::Value {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
-    crate::domain_messages::deliver(domain, home, &user(), "David", agent, message, true).await.unwrap()
+    crate::domain_messages::deliver(domain, home, &user(), "Alice", agent, message, true).await.unwrap()
 }
 
 /// Waits until the last prompt Claude got ends with `text`, or fails once a minute passed: a
@@ -4323,7 +4323,7 @@ fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "David", driver.agent(), message, true)).unwrap();
+        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true)).unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
@@ -4542,7 +4542,7 @@ fn hold_prompts(slice: &Slice) -> PathBuf {
 fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
 }
 
@@ -4557,7 +4557,7 @@ fn mission_then_message(slice: &Slice, domain: &DomainRuntime) {
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(prompts[0].ends_with("Write the release notes") && prompts[0].matches("Your session was cut off").count() == 1, "{prompts:?}");
-    assert!(prompts[1].starts_with("[From David · ") && prompts[1].ends_with("Also update the changelog"), "{prompts:?}");
+    assert!(prompts[1].starts_with("[From Alice · ") && prompts[1].ends_with("Also update the changelog"), "{prompts:?}");
     assert_eq!(lifecycle(domain).resource(), Some(alondra_domain::ResourceEvidence::Available));
     assert!(domain.state().unwrap().tasks[&TaskId::from(TASK)].started);
     for prefix in [HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX, SESSION_ENDED_PREFIX] {

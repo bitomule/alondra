@@ -58,7 +58,7 @@ final class AccountSnapshotTests: XCTestCase {
 
     // MARK: Find your Mac
 
-    private let studio = FoundMac(id: "Studio", name: "Studio de David", paired: false)
+    private let studio = FoundMac(id: "Studio", name: "Studio de Alice", paired: false)
     private let mini = FoundMac(id: "Mini", name: "Mac mini", paired: true)
 
 
@@ -123,12 +123,12 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_findMac_comparingTheCode() {
-        let store = signIn { $0.findMac.step = .comparing(DirectPairingCode(code: "4F2A91", macName: "Studio de David")) }
+        let store = signIn { $0.findMac.step = .comparing(DirectPairingCode(code: "4F2A91", macName: "Studio de Alice")) }
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
     func test_findMac_comparingTheCode_spanish() {
-        let store = signIn { $0.findMac.step = .comparing(DirectPairingCode(code: "4F2A91", macName: "Studio de David")) }
+        let store = signIn { $0.findMac.step = .comparing(DirectPairingCode(code: "4F2A91", macName: "Studio de Alice")) }
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
@@ -282,7 +282,7 @@ final class AccountSnapshotTests: XCTestCase {
                                           usesAccount: false)
         let ids = (1...3).map { UUID(uuidString: "00000000-0000-0000-0000-00000000000\($0)")! }
         state.macs = [
-            MacChoice(id: ids[0], macID: "mac-9c1e44aa", name: "Studio de David", local: true),
+            MacChoice(id: ids[0], macID: "mac-9c1e44aa", name: "Studio de Alice", local: true),
             MacChoice(id: ids[1], macID: "mac-b27f03d9", name: "Mac mini", local: true),
             MacChoice(id: ids[2], macID: "mac-c55e10aa", name: "MacBook Pro", local: true),
         ]
@@ -305,7 +305,7 @@ final class AccountSnapshotTests: XCTestCase {
     private func liveSettings() -> StoreOf<SettingsFeature> {
         settings {
             $0.macs = [
-                MacChoice(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, macID: "mac-9c1e44aa", name: "Studio de David"),
+                MacChoice(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, macID: "mac-9c1e44aa", name: "Studio de Alice"),
                 MacChoice(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, macID: "mac-b27f03d9", name: "MacBook Pro"),
             ]
             $0.selectedMacID = $0.macs.first?.id

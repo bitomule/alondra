@@ -5,7 +5,7 @@ Every card goes through this flow:
 ```mermaid
 flowchart TD
   A[Card arrives] --> B{Needs user?}
-  B -->|yes| C[Ask David]
+  B -->|yes| C[Ask Alice]
   B -->|no| D[Run node]
   C --> E[Deliver result]
   D --> E

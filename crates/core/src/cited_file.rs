@@ -25,12 +25,12 @@ mod tests {
     fn a_cited_file_is_read_only_from_the_worktree_where_its_author_works() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("docs")).unwrap();
-        std::fs::write(dir.path().join("docs/plan.md"), "# Plan").unwrap();
-        assert_eq!(read_cited_file(Some(dir.path()), "docs/plan.md").as_deref(), Some("# Plan"));
-        let absolute = dir.path().join("docs/plan.md");
+        std::fs::write(dir.path().join("docs/design.md"), "# Plan").unwrap();
+        assert_eq!(read_cited_file(Some(dir.path()), "docs/design.md").as_deref(), Some("# Plan"));
+        let absolute = dir.path().join("docs/design.md");
         assert_eq!(read_cited_file(Some(dir.path()), absolute.to_str().unwrap()), None, "an absolute path is outside the worktree");
-        assert_eq!(read_cited_file(Some(&dir.path().join("docs")), "../docs/plan.md"), None, "a path never climbs out of the worktree");
-        assert_eq!(read_cited_file(None, "docs/plan.md"), None, "a relative path needs the author's folder");
+        assert_eq!(read_cited_file(Some(&dir.path().join("docs")), "../docs/design.md"), None, "a path never climbs out of the worktree");
+        assert_eq!(read_cited_file(None, "docs/design.md"), None, "a relative path needs the author's folder");
         assert_eq!(read_cited_file(Some(dir.path()), "docs/missing.md"), None);
         assert_eq!(read_cited_file(Some(dir.path()), "docs"), None, "a folder is not a file");
         std::fs::write(dir.path().join("big.md"), "x".repeat(5 * CITED_FILE_MAX_BYTES)).unwrap();

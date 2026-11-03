@@ -15,7 +15,7 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
                                            folders: { _ in throw CancellationError() })
 
     private func settings(relay: Bool = true, error: String? = nil) -> StoreOf<MacSettingsFeature> {
-        var state = MacSettingsFeature.State(id: UUID(), macName: "MacBook Pro de David", client: client, settings: MacSettings(
+        var state = MacSettingsFeature.State(id: UUID(), macName: "MacBook Pro de Alice", client: client, settings: MacSettings(
             projectsRoot: "/Users/david/Projects",
             candidates: [.init(path: "/Users/david/Projects", repos: 63), .init(path: "/Users/david/Developer", repos: 4),
                          .init(path: "/Users/david/Backups", repos: 1)],
@@ -58,7 +58,7 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
             Form { DirectConnectionSection(direct: direct) }
                 .scrollContentBackground(.hidden)
                 .background(DawnBackground())
-                .navigationTitle(Text(verbatim: "MacBook Pro de David"))
+                .navigationTitle(Text(verbatim: "MacBook Pro de Alice"))
                 .navigationBarTitleDisplayMode(.inline)
         }
     }

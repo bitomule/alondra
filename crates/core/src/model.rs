@@ -10,7 +10,7 @@ pub const OTHERS_PROJECT: &str = "others";
 pub enum NodeState {
     WaitingAnswer,
     YourTurn,
-    /// A PR or an artifact of the node waits for David's review. Still `waiting_merge` on the wire,
+    /// A PR or an artifact of the node waits for the user's review. Still `waiting_merge` on the wire,
     /// so the apps already installed keep reading it.
     WaitingMerge,
     /// Nothing runs and nothing waits on anyone.
@@ -670,7 +670,7 @@ pub enum MessageAbout {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         task: Option<String>,
     },
-    /// David's verdict on an artifact the node sent for review: its comments to read, or approval.
+    /// The user's verdict on an artifact the node sent for review: its comments to read, or approval.
     ArtifactReview { report_id: u64 },
     /// The orchestrator wrote to the node about one of its tasks, or handed it a new one.
     Task { task: String },

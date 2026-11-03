@@ -44,7 +44,7 @@ impl Attempt {
         matches!(self.state, State::Dispatching | State::Uncertain)
     }
 
-    /// Nothing can reach or re-check a terminal that is gone, so this leaves David nothing to
+    /// Nothing can reach or re-check a terminal that is gone, so this leaves the user nothing to
     /// resolve. A node discard is about the node itself and keeps its own recovery.
     pub fn close_for_gone_node(&mut self) {
         if self.blocks() && self.channel != Channel::NodeDiscard {

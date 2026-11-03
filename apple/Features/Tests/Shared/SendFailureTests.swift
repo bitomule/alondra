@@ -6,7 +6,7 @@ import Testing
     private static let cloudflare = """
     <!DOCTYPE html>
     <!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
-    <head><title>davidcollado.dev | 502: Bad gateway</title></head>
+    <head><title>example.com | 502: Bad gateway</title></head>
     """
 
     /// alondra/retry-queue, 24 Sep: gh refusing to merge the conflicting PR #54 came back as

@@ -1810,7 +1810,7 @@ impl DomainState {
     /// and questions it had open, ended with it. The questions that ended with the host no longer
     /// wait for an answer. When that leaves nothing to explain the task's next step and a host that
     /// resumes the same Claude session takes its place (`resumes`), Alondra tells that session to
-    /// go on, as a session reopens with `resume` on its next turn: a host's end is not the user's
+    /// go on with `resume` on its next turn: a host's end is not the user's
     /// decision. Only when it cannot (the launch never confirmed, or the session already ended
     /// again before a turn of it ended) does a card ask the user, saying why; a turn the user
     /// forced to stop ends as the interrupt they asked for. A delivery the user still reviews is

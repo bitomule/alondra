@@ -12,7 +12,7 @@ public struct TriageCardFeature: Sendable {
 
     @Dependency(\.continuousClock) var clock
     private enum CancelID { case loadDeadline }
-    private static let log = Logger(subsystem: "dev.davidcollado.alondra", category: "Triage")
+    private static let log = Logger(subsystem: "com.bitomule.alondra", category: "Triage")
 
     @ObservableState
     public struct State: Equatable, Identifiable {

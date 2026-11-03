@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(summary_of(ContentKind::Plan, "just words", Lang::En).as_deref(), Some("Plan"));
         assert_eq!(summary_of(ContentKind::Steps, "1. Open\n2. Press\n3. Wait\n4. Done", Lang::En).as_deref(), Some("4 steps"));
         assert_eq!(summary_of(ContentKind::Steps, "Open it", Lang::En).as_deref(), Some("1 step"));
-        let cited = crate::domain::include_linked_files("# Ship it\n\nSee [the plan](docs/plan.md)\n\n- [ ] Split the lexer",
+        let cited = crate::domain::include_linked_files("# Ship it\n\nSee [the plan](docs/design.md)\n\n- [ ] Split the lexer",
             |_| Some("- [ ] Measure\n- [ ] Relay\n- [ ] Daemon".into())).unwrap();
         assert_eq!(summary_of(ContentKind::Plan, &cited, Lang::En).as_deref(), Some("1 step"), "a file the plan links to adds no steps");
     }

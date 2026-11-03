@@ -149,11 +149,11 @@ const WIDTHS: [usize; 3] = [40, 80, 120];
 
 /// Table fixtures and the mode their first table takes at 40, 80 and 120 columns.
 const TABLE_MODES: &[(&str, [Mode; 3])] = &[
-    ("card_tabla", [Mode::Records, Mode::Wrapped, Mode::Wrapped]),
     (
         "card_redraft_links_table",
         [Mode::Wrapped, Mode::Wrapped, Mode::Wrapped],
     ),
+    ("card_tabla", [Mode::Records, Mode::Wrapped, Mode::Wrapped]),
     ("table_after_para", [Mode::Grid, Mode::Grid, Mode::Grid]),
     ("table_align_code", [Mode::Grid, Mode::Grid, Mode::Grid]),
     ("table_no_outer_pipes", [Mode::Grid, Mode::Grid, Mode::Grid]),

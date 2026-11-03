@@ -1,6 +1,6 @@
 //! A node that asked the user after presenting its delivery owes the step the answer asks for.
-//! 3 November, beta-go: the node presented, declared its work after the merge, asked David
-//! whether to publish the beta and ended its turn on that card. David answered, the answer
+//! 3 November, beta-go: the node presented, declared its work after the merge, asked the user
+//! whether to publish the beta and ended its turn on that card. The user answered, the answer
 //! reached the node, and its turn ended with nothing new: in a delivery a wake was refused, so
 //! nothing woke it and no case reached the orchestrator, and it sat idle for 2 h 10 min.
 //! Resting on such an answer wakes the node with it once; resting again is a case for the

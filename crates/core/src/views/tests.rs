@@ -709,7 +709,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(11), tight: true, paused: vec![],
         queued: vec![LiveQueued { pausable: true, task_id: "t-copy-screens".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(11) } }] });
     add_request(&mut state, "r-new", None, "Import lists from Notes. Keep the order and the checked items.");
-    add_request(&mut state, "r-message", None, "[From Claude, for David · 09:58] Launch two more from the queue.");
+    add_request(&mut state, "r-message", None, "[From Claude, for Alice · 09:58] Launch two more from the queue.");
     state.requests.get_mut(&"r-message".into()).unwrap().message = true;
     add_request(&mut state, "r-answer", Some("Is main green?"), "Is main green right now?");
     let answered = state.requests.get_mut(&"r-answer".into()).unwrap();
@@ -2595,7 +2595,7 @@ fn card_variants_match_goldens() {
     }
 }
 
-/// The orchestrator's Decide card David answered in words on 13 October: its reply field is the
+/// The orchestrator's Decide card the user answered in words on 13 October: its reply field is the
 /// answer to it, so every client takes it out on send.
 fn orchestrator_decide_fixture() -> DomainState {
     use crate::domain::{CardKind, ContentKind as Content, QuestionOption};
@@ -7236,7 +7236,7 @@ fn proposed_plan_fixture() -> DomainState {
     state
 }
 
-/// The report on Ultimate came as one card holding a report and a plan: David pressed its first
+/// The report on Ultimate came as one card holding a report and a plan: The user pressed its first
 /// button to accept the report and approved a plan that created seven tasks. The fixture is
 /// stored as such a result was, so results kept from before read the same way.
 #[test]
@@ -8624,7 +8624,7 @@ fn a_finished_task_shows_how_long_it_took_frozen() {
     }
 }
 
-/// 24 October, in the sandbox: David wrote to a task whose PR waited for his review, the node of
+/// 24 October, in the sandbox: the user wrote to a task whose PR waited for their review, the node of
 /// the Agent SDK took the message up in a turn, and the task still read «Ready for review» with
 /// nothing that said it worked. While its turn runs it reads «Working» on every client, the list
 /// and the task's screen, and once the turn ends it is back to «Ready for review».

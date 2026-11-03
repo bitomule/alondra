@@ -152,14 +152,14 @@ private actor FakeRelay: HTTPTransport {
         now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
     let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
     let pending = try await client.begin(qrPayload: invitation(), authorization: auth,
-        displayName: "David’s iPhone")
+        displayName: "Alice’s iPhone")
     #expect(try store.load() == nil)
     let candidate = try #require(await relay.candidate)
     let publicKey = PairingWire.decode(candidate.signingKey)!
     #expect(pending.comparisonCode == PairingWire.encode(Data(SHA256.hash(data: publicKey).prefix(6))))
     #expect(candidate.envelope.kind == "pairing")
     #expect(candidate.envelope.expiresAtMilliseconds <= pending.expiresAtMs)
-    #expect(!String(decoding: requestsBody(await relay.requests), as: UTF8.self).contains("David’s iPhone"))
+    #expect(!String(decoding: requestsBody(await relay.requests), as: UTF8.self).contains("the user’s iPhone"))
     let approved = try await client.waitForApproval(pending.attemptID)
     #expect(approved.macID == "mac-1")
     #expect(approved.ownerSub == "owner-1")

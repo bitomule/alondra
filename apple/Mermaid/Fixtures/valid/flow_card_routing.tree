@@ -1,7 +1,7 @@
 flowchart TB
 node A rectangle "Card arrives"
 node B diamond "Needs user?"
-node C rectangle "Ask David"
+node C rectangle "Ask Alice"
 node D rectangle "Run node"
 node E rectangle "Deliver result"
 edge A -> B solid none/arrow

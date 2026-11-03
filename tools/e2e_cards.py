@@ -276,7 +276,7 @@ ANSWERS = {
     "action-note": ("ans:", "cannot", "No tengo acceso a Apple Developer"),
     "group-q1": ("ans:", "a", None),
     "group-q2": ("ans:", "b", None),
-    "group-q3": ("reply:", None, "David signs it"),
+    "group-q3": ("reply:", None, "Alice signs it"),
     "group-q4": ("ans:", "a", None),
     "permission": ("ans:", "allow", None),
     "delivery": ("accept:", None, None),

@@ -30,7 +30,7 @@ command ──▶ DomainState::execute ──▶ SQLite commit ──▶ ReadSna
 - `ReadSnapshot::pair` refuses an index built from another revision or epoch (`stale_revision`):
   a screen never mixes data from two revisions.
 - The index is a client read model, never authority: commands, guards and the SQL transaction
-  decide; the Agent SDK host does not read it (`docs/agent-sdk-migration/read-model-boundary.md`).
+  decide; the Agent SDK host does not read it.
 
 ## What the index holds
 

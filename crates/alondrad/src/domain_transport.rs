@@ -967,7 +967,7 @@ mod tests {
             .map(|m| (m.id, m.state)).collect()
     }
 
-    /// 13 October: David answered 1d6d53c5's card while Claude Code listed it blocked; the answer is
+    /// 13 October: the user answered 1d6d53c5's card while Claude Code listed it blocked; the answer is
     /// what unblocks it. Whatever its listing, the answer goes down the node's connection the
     /// moment one is open, and the node no longer counts as working while it waited.
     #[tokio::test]
@@ -1221,7 +1221,7 @@ mod tests {
         assert_eq!(rendered_for(&domain, "q", "agent"), "Answer to your card q (Answer the question): Call it Atlas");
     }
 
-    /// 3 November: a node asked its card after presenting its result; David answered in words
+    /// 3 November: a node asked its card after presenting its result; the user answered in words
     /// only, and the node read the bare text with nothing saying it answered its card.
     #[test]
     fn a_text_answer_names_the_card_it_answers_like_an_option() {
@@ -2873,7 +2873,7 @@ mod tests {
         working_agent(&domain, "agent-a");
         let worktree = tempfile::tempdir().unwrap();
         std::fs::create_dir(worktree.path().join("docs")).unwrap();
-        std::fs::write(worktree.path().join("docs/plan.md"), "# Fast connection\n\n- [ ] Measure\n- [ ] Relay").unwrap();
+        std::fs::write(worktree.path().join("docs/design.md"), "# Fast connection\n\n- [ ] Measure\n- [ ] Relay").unwrap();
         let cwd = worktree.path().to_str().unwrap();
         let post = |id: &str, plan: &str| crate::domain_holds::post(&domain, &serde_json::from_value(json!({"session_id": "agent-a", "id": id,
             "kind": "plan", "cwd": cwd, "input": {"plan": plan}})).unwrap(), true).unwrap();
@@ -2883,13 +2883,13 @@ mod tests {
             _ => panic!("a plan that only mentions a Markdown file is put to the user as written"),
         };
         assert_eq!(domain.state().unwrap().interactions[&id].body, mention);
-        let id = match post("toolu-plan", "# Step 1\n\nContext in [the plan](docs/plan.md).\n\n- [ ] Ship the relay") {
+        let id = match post("toolu-plan", "# Step 1\n\nContext in [the plan](docs/design.md).\n\n- [ ] Ship the relay") {
             crate::domain_holds::Posted::Held(id) => id,
             _ => panic!("a plan whose cited file can be read is put to the user"),
         };
         let state = domain.state().unwrap();
         let body = &state.interactions[&id].body;
-        assert!(body.ends_with("## docs/plan.md\n\n### Fast connection\n\n- ☐ Measure\n- ☐ Relay"), "{body}");
+        assert!(body.ends_with("## docs/design.md\n\n### Fast connection\n\n- ☐ Measure\n- ☐ Relay"), "{body}");
         assert_eq!(alondra_core::domain::checklist_items(body).len(), 1, "the file's checkboxes are not points of the plan");
     }
 
