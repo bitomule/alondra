@@ -136,8 +136,13 @@ pub enum DecisionRecord {
     /// Claude's questions answered, one answer for each, in the order it asked them.
     Answers { answers: Vec<String> },
     Deny { message: String },
-    /// An MCP server's request for input accepted with what the user wrote.
-    Accept { text: String },
+    /// An MCP server's request for input accepted with what the user wrote and the values they
+    /// filled in its form.
+    Accept {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<serde_json::Map<String, serde_json::Value>>,
+    },
     Decline,
 }
 impl From<&DecisionRecord> for Decision {
@@ -146,7 +151,7 @@ impl From<&DecisionRecord> for Decision {
             DecisionRecord::Allow => Self::Allow,
             DecisionRecord::Answers { answers } => Self::Answers { answers: answers.clone() },
             DecisionRecord::Deny { message } => Self::Deny { message: message.clone() },
-            DecisionRecord::Accept { text } => Self::Accept { text: text.clone() },
+            DecisionRecord::Accept { text, content } => Self::Accept { text: text.clone(), content: content.clone() },
             DecisionRecord::Decline => Self::Decline,
         }
     }
@@ -157,7 +162,7 @@ impl From<&Decision> for DecisionRecord {
             Decision::Allow => Self::Allow,
             Decision::Answers { answers } => Self::Answers { answers: answers.clone() },
             Decision::Deny { message } => Self::Deny { message: message.clone() },
-            Decision::Accept { text } => Self::Accept { text: text.clone() },
+            Decision::Accept { text, content } => Self::Accept { text: text.clone(), content: content.clone() },
             Decision::Decline => Self::Decline,
         }
     }

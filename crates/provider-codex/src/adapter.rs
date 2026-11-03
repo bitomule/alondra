@@ -150,8 +150,8 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
             WireDecision::Allow { updated_input }
         }
         (Decision::Deny { message }, DecisionKind::Permission | DecisionKind::Question | DecisionKind::Plan) => WireDecision::Deny { message: message.clone() },
-        (Decision::Accept { text }, DecisionKind::Elicitation) => WireDecision::Accept {
-            content: Some(crate::elicitation::elicitation_content(payload.pointer("/native/requestedSchema").unwrap_or(&serde_json::Value::Null), text)),
+        (Decision::Accept { text, content }, DecisionKind::Elicitation) => WireDecision::Accept {
+            content: Some(crate::elicitation::elicitation_content(payload.pointer("/native/requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
         _ => return Err(AdapterError::InvalidObservation),
@@ -1164,5 +1164,17 @@ mod respond_tests {
         assert_eq!(decision, WireDecision::Allow { updated_input: serde_json::Map::new() });
         assert_eq!(asked["native"]["approvalId"], "approval-2");
         assert!(respond_action(7, &request, &Decision::Decline).is_err());
+    }
+    #[test]
+    fn an_accepted_form_answers_with_the_values_the_user_filled_never_their_words() {
+        let request = DecisionRequest::new("number:78".into(), None, DecisionKind::Elicitation, serde_json::to_vec(&json!({"provider":"codex",
+            "method":"mcpServer/elicitation/request","native":{"requestedSchema":{"type":"object","properties":{"remember":{"type":"boolean"}}}}})).unwrap()).unwrap();
+        let answered = |decision: Decision| match respond_action(3, &request, &decision).unwrap() {
+            Action::Respond { decision, .. } => decision,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(answered(Decision::Accept { text: "vale".into(), content: None }), WireDecision::Accept { content: Some(serde_json::Map::new()) });
+        let filled = json!({"remember": true}).as_object().cloned();
+        assert_eq!(answered(Decision::Accept { text: String::new(), content: filled.clone() }), WireDecision::Accept { content: filled });
     }
 }

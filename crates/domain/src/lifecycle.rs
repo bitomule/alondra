@@ -431,8 +431,9 @@ pub enum Decision {
     /// Claude's questions answered, one answer for each, in the order it asked them.
     Answers { answers: Vec<String> },
     Deny { message: String },
-    /// An MCP server's request for input accepted with what the user wrote.
-    Accept { text: String },
+    /// An MCP server's request for input accepted: the values the user filled in its form, each
+    /// of its field's type, or only the words they wrote when the form had no values.
+    Accept { text: String, content: Option<serde_json::Map<String, serde_json::Value>> },
     Decline,
 }
 

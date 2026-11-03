@@ -106,16 +106,11 @@ pub fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOptio
     let server = str_field(p, "mcp_server_name").unwrap_or_else(|| "An MCP server".into());
     let message = str_field(p, "message").unwrap_or_default();
     let title = message.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{server} requests your input"), |l| l.chars().take(120).collect());
-    let fields = alondra_provider_claude::elicitation_fields(p.get("requested_schema").unwrap_or(&Value::Null));
     let mut detail = vec![format!("MCP server “{server}” requests your input."), message];
     if let Some(url) = str_field(p, "url") {
         detail.push(url);
     }
-    let accept_hint = match fields.as_slice() {
-        [] => None,
-        [(_, title, _)] => Some(format!("Write the {title}")),
-        many => Some(format!("Write one per line: {}", many.iter().map(|(name, _, _)| format!("{name}: …")).collect::<Vec<_>>().join(", "))),
-    };
+    let accept_hint = alondra_provider_claude::only_text_field(p.get("requested_schema").unwrap_or(&Value::Null)).map(|(_, title)| format!("Write the {title}"));
     (
         title,
         Some(detail.into_iter().filter(|d| !d.is_empty()).collect::<Vec<_>>().join("\n\n")),
@@ -126,8 +121,8 @@ pub fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOptio
     )
 }
 
-pub fn elicitation_content(schema: &Value, said: &str) -> Value {
-    Value::Object(alondra_provider_claude::elicitation_content(schema, said))
+pub fn elicitation_content(schema: &Value, said: &str, filled: Option<&serde_json::Map<String, Value>>) -> Value {
+    Value::Object(alondra_provider_claude::elicitation_content(schema, said, filled))
 }
 
 #[cfg(test)]
@@ -148,7 +143,7 @@ mod tests {
         let cases = [
             ("context7's anonymous notice", &context7, "You're using Context7 anonymously. Get a free API key for higher rate limits.", None),
             ("a one-field form", &token, "Paste the token", Some("Write the Token")),
-            ("a form with several fields", &login, "Log in", Some("Write one per line: port: …, remember: …, username: …")),
+            ("a form with several fields", &login, "Log in", None),
             ("a browser link", &browser, "Please authenticate", None),
         ];
         for (what, payload, title, accept_hint) in cases {
@@ -160,9 +155,11 @@ mod tests {
         }
         assert!(elicitation_card(&browser).1.is_some_and(|d| d.contains("https://auth.example.com/login")));
         let schema = &login["requested_schema"];
-        assert_eq!(elicitation_content(schema, "Username: ana\nport: 5432\nremember: yes"), json!({"username": "ana", "port": 5432, "remember": true}));
-        assert_eq!(elicitation_content(schema, r#"{"username": "ana"}"#), json!({"username": "ana"}));
-        assert_eq!(elicitation_content(&token["requested_schema"], "ghp_123"), json!({"token": "ghp_123"}));
+        let filled = json!({"username": "ana", "port": 5432, "remember": true});
+        assert_eq!(elicitation_content(schema, "", filled.as_object()), filled);
+        assert_eq!(elicitation_content(schema, "Username: ana\nport: 5432\nremember: yes", None), json!({}), "words never fill a form of several fields");
+        assert_eq!(elicitation_content(schema, r#"{"username": "ana"}"#, None), json!({}));
+        assert_eq!(elicitation_content(&token["requested_schema"], "ghp_123", None), json!({"token": "ghp_123"}));
     }
 
     #[test]

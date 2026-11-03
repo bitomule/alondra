@@ -2660,7 +2660,7 @@ fn replies_to_cards_follow_one_table() {
         ("no answers", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Answers { answers: vec![] } })),
         ("deny", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Deny { message: "No".into() } })),
         ("blank deny", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Deny { message: " ".into() } })),
-        ("accept", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Accept { text: String::new() } })),
+        ("accept", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Accept { text: String::new(), content: None } })),
         ("decline", Box::new(|card: &str| Event::Decide { card: card.into(), decision: Decision::Decline })),
     ];
     let expected = |held: Held, reply: &str| -> Result<(), Refusal> {

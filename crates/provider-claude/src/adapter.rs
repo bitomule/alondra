@@ -158,8 +158,8 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
             WireDecision::Allow { updated_input }
         }
         (Decision::Deny { message }, DecisionKind::Permission | DecisionKind::Question | DecisionKind::Plan) => WireDecision::Deny { message: message.clone() },
-        (Decision::Accept { text }, DecisionKind::Elicitation) => WireDecision::Accept {
-            content: Some(crate::elicitation::elicitation_content(payload.get("requestedSchema").unwrap_or(&serde_json::Value::Null), text)),
+        (Decision::Accept { text, content }, DecisionKind::Elicitation) => WireDecision::Accept {
+            content: Some(crate::elicitation::elicitation_content(payload.get("requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
         _ => return Err(AdapterError::InvalidObservation),
@@ -1134,14 +1134,47 @@ mod respond_tests {
         assert!(matches!(respond_action(4, &asked, &short), Err(AdapterError::InvalidObservation)), "every question needs its answer");
     }
 
+    fn accept(text: &str, content: Option<serde_json::Value>) -> Decision {
+        Decision::Accept { text: text.into(), content: content.map(|content| content.as_object().unwrap().clone()) }
+    }
+
     #[test]
-    fn an_accepted_form_carries_the_values_its_schema_types_and_a_declined_one_nothing() {
+    fn an_accepted_form_carries_the_values_the_user_filled_and_a_declined_one_nothing() {
         let schema = json!({"type": "object", "properties": {"name": {"type": "string", "title": "Name"}, "count": {"type": "integer"}}});
         let asked = request(DecisionKind::Elicitation, json!({"serverName": "fixture", "message": "Which?", "requestedSchema": schema}));
-        let (_, kind, tool_use, decision) = decided(respond_action(2, &asked, &Decision::Accept { text: "name: Ada\ncount: 3".into() }).unwrap());
+        let filled = json!({"name": "Ada", "count": 3});
+        let (_, kind, tool_use, decision) = decided(respond_action(2, &asked, &accept("", Some(filled.clone()))).unwrap());
         assert_eq!((kind, tool_use), (WireKind::Elicitation, None));
-        assert_eq!(decision, WireDecision::Accept { content: Some(json!({"name": "Ada", "count": 3}).as_object().unwrap().clone()) });
+        assert_eq!(decision, WireDecision::Accept { content: filled.as_object().cloned() });
+        assert_eq!(decided(respond_action(2, &asked, &accept("name: Ada\ncount: 3", None)).unwrap()).3,
+            WireDecision::Accept { content: Some(serde_json::Map::new()) }, "words never fill a form of several fields");
         assert_eq!(decided(respond_action(2, &asked, &Decision::Decline).unwrap()).3, WireDecision::Decline {});
         assert!(matches!(respond_action(2, &asked, &Decision::Allow), Err(AdapterError::InvalidObservation)));
+    }
+
+    #[test]
+    fn a_yes_or_no_field_takes_only_the_value_the_user_set_never_their_words() {
+        let asked = request(DecisionKind::Elicitation, json!({"serverName": "fixture", "message": "Remember this device?",
+            "requestedSchema": {"type": "object", "properties": {"remember": {"type": "boolean"}}}}));
+        for words in ["vale", "ok", "Sí, claro", "yes", "1"] {
+            assert_eq!(decided(respond_action(2, &asked, &accept(words, None)).unwrap()).3, WireDecision::Accept { content: Some(serde_json::Map::new()) }, "{words}");
+        }
+        assert_eq!(decided(respond_action(2, &asked, &accept("vale", Some(json!({"remember": true})))).unwrap()).3,
+            WireDecision::Accept { content: json!({"remember": true}).as_object().cloned() });
+    }
+
+    #[test]
+    fn words_fill_only_a_form_of_one_text_field() {
+        let form = |field: serde_json::Value| request(DecisionKind::Elicitation, json!({"serverName": "fixture", "message": "?",
+            "requestedSchema": {"type": "object", "properties": {"value": field}}}));
+        let content = |asked: &DecisionRequest, words: &str| match decided(respond_action(2, asked, &accept(words, None)).unwrap()).3 {
+            WireDecision::Accept { content } => content.unwrap(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(content(&form(json!({"type": "string", "title": "Token"})), "ghp_123"), *json!({"value": "ghp_123"}).as_object().unwrap());
+        assert_eq!(content(&form(json!({"type": "string"})), ""), serde_json::Map::new(), "no words, no value");
+        for field in [json!({"type": "integer"}), json!({"type": "number"}), json!({"type": "string", "enum": ["a", "b"]})] {
+            assert_eq!(content(&form(field.clone()), "5 min"), serde_json::Map::new(), "{field}");
+        }
     }
 }

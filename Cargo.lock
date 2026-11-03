@@ -199,6 +199,7 @@ dependencies = [
  "alondra-foundation",
  "proptest",
  "rpds",
+ "serde_json",
 ]
 
 [[package]]

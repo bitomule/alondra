@@ -18,7 +18,7 @@ pub use adapter::{
 };
 pub use context::{ContextEvent, context_event, sdk_message};
 pub use mcp::{mcp_traits, remove_arguments, settings_file, still_configured};
-pub use elicitation::{elicitation_content, elicitation_fields};
+pub use elicitation::{elicitation_content, only_text_field};
 pub use ended::{EndedJournal, Retained};
 pub use batch::{BatchHost, PendingHostEvent, HostEvent, McpServer, OrchestratorProfile};
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};

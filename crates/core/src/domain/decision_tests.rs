@@ -130,8 +130,8 @@ fn every_answer_becomes_the_decision_claude_receives() {
         (Hold::Plan, card_prompt(Hold::Plan, &plan(true)), Hold::REQUEST_CHANGES, None, DecisionRecord::Deny { message: "The user requests changes to the plan".into() }),
         (Hold::Plan, card_prompt(Hold::Plan, &plan(true)), Hold::REQUEST_CHANGES, Some("Split it"), DecisionRecord::Deny { message: "The user requests changes to the plan: Split it".into() }),
         (Hold::Question, question_prompt("Which database?", &["SQLite", "Postgres"]), "o1", None, DecisionRecord::Answers { answers: vec!["Postgres".into()] }),
-        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::ACCEPT, Some("abc"), DecisionRecord::Accept { text: "abc".into() }),
-        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::ACCEPT, None, DecisionRecord::Accept { text: String::new() }),
+        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::ACCEPT, Some("abc"), DecisionRecord::Accept { text: "abc".into(), content: None }),
+        (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::ACCEPT, None, DecisionRecord::Accept { text: String::new(), content: None }),
         (Hold::Elicitation, card_prompt(Hold::Elicitation, "The server asks for a token"), Hold::DECLINE, None, DecisionRecord::Decline),
     ];
     for (hold, prompt, option, note, expected) in cases {
@@ -166,6 +166,9 @@ fn a_forms_typed_values_answer_only_its_own_form() {
     must(&mut s, user(), typed(&card_of(3), Hold::ACCEPT, json!({"remember": true})));
     let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&InteractionId(card_of(3))].payload else { panic!("unanswered") };
     assert_eq!(answer.inputs.get(ANSWER_CONTENT), Some(&InputValue::Form(json!({"remember": true}).as_object().unwrap().clone())));
+    assert_eq!(last(&s, "t"), LifecycleRecord::Decided { card: card_of(3).as_str().into(), epoch: 3,
+        decision: DecisionRecord::Accept { text: String::new(), content: json!({"remember": true}).as_object().cloned() } },
+        "the decision Claude receives carries the values as they were sent");
 
     must(&mut s, Actor::System, request(4, Hold::Elicitation, None, json!({}), None, card_prompt(Hold::Elicitation, "Which repository?")));
     assert_eq!(refused_unchanged(&mut s, user(), typed(&card_of(4), Hold::ACCEPT, json!({"repository": "alondra"}))), "invalid_input",

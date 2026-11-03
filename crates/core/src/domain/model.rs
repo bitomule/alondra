@@ -628,6 +628,15 @@ pub struct Answer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<SuggestionDecision>,
 }
+impl Answer {
+    /// The values the user filled in the card's form.
+    pub fn form_values(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        match self.inputs.get(ANSWER_CONTENT) {
+            Some(InputValue::Form(content)) => Some(content),
+            _ => None,
+        }
+    }
+}
 /// The only ways the orchestrator settles a node's suggestion. There is no answer outside them:
 /// a new task is created by the same command that records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

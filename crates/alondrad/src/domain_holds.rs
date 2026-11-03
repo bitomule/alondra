@@ -571,7 +571,7 @@ pub(crate) fn elicitation_decision(held: &Held, answer: &Answer) -> Value {
     }
     let mut out = json!({"hookEventName": "Elicitation", "action": "accept"});
     if held.input.is_object() {
-        out["content"] = elicitation_content(&held.input, note(answer).as_deref().unwrap_or_default());
+        out["content"] = elicitation_content(&held.input, note(answer).as_deref().unwrap_or_default(), answer.form_values());
     }
     json!({"hookSpecificOutput": out})
 }

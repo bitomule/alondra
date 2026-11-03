@@ -13,8 +13,6 @@ crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_
 crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	format	GitHub release tag of a version
 crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
 crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
-crates/provider-claude/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
-crates/provider-codex/src/elicitation.rs	"boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),	finding:P-04	free answer turned into form values by a word list
 crates/alondrad/src/orchestrator_codex.rs	let detail = bounded_public(&item.to_string(),16384).to_lowercase();	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
 crates/alondrad/src/orchestrator_codex.rs	if detail.contains("forbidden") || detail.contains("permission_denied") || detail.contains("permission denied") || detail.contains("user denied") {	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
 crates/alondra/src/client.rs	&& serde_json::from_slice::<Value>(&answer).is_ok_and(|value| value["error"] == "wrong signature")	finding:G-15	signed retry decided by a code in a field that also carries verify's phrases

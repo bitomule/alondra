@@ -225,7 +225,11 @@ pub(super) enum DecisionRecord {
     Allow,
     Answers { answers: Vec<String> },
     Deny { message: String },
-    Accept { text: String },
+    Accept {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<serde_json::Map<String, serde_json::Value>>,
+    },
     Decline,
 }
 impl From<&Decision> for DecisionRecord {
@@ -238,7 +242,10 @@ impl From<&Decision> for DecisionRecord {
             Decision::Deny { message } => Self::Deny {
                 message: message.clone(),
             },
-            Decision::Accept { text } => Self::Accept { text: text.clone() },
+            Decision::Accept { text, content } => Self::Accept {
+                text: text.clone(),
+                content: content.clone(),
+            },
             Decision::Decline => Self::Decline,
         }
     }
@@ -249,7 +256,7 @@ impl From<DecisionRecord> for Decision {
             DecisionRecord::Allow => Self::Allow,
             DecisionRecord::Answers { answers } => Self::Answers { answers },
             DecisionRecord::Deny { message } => Self::Deny { message },
-            DecisionRecord::Accept { text } => Self::Accept { text },
+            DecisionRecord::Accept { text, content } => Self::Accept { text, content },
             DecisionRecord::Decline => Self::Decline,
         }
     }
@@ -1288,6 +1295,17 @@ mod tests {
         assert_eq!(decode("claude-usage-limit-t-1"), pause("claude-usage-limit-t-1", Owner::Capacity(Capacity::Usage)));
         assert_eq!(decode("claude-outage-t-1"), pause("claude-outage-t-1", Owner::Capacity(Capacity::ClaudeApi)));
         assert_eq!(decode("host-lost-t-1"), pause("host-lost-t-1", Owner::User));
+    }
+    #[test]
+    fn an_accepted_form_journaled_before_its_values_were_kept_reads_without_them() {
+        let old: DecisionRecord = serde_json::from_str(r#"{"kind":"accept","data":{"text":"ghp_123"}}"#).unwrap();
+        assert_eq!(Decision::from(old), Decision::Accept { text: "ghp_123".into(), content: None });
+        let filled = Decision::Accept {
+            text: String::new(),
+            content: serde_json::json!({"remember": true}).as_object().cloned(),
+        };
+        let encoded = serde_json::to_string(&DecisionRecord::from(&filled)).unwrap();
+        assert_eq!(Decision::from(serde_json::from_str::<DecisionRecord>(&encoded).unwrap()), filled);
     }
     fn roundtrip(current: &TaskLifecycle, event: Event) {
         let encoded = serde_json::to_vec(&EventRecord::from(&event)).unwrap();

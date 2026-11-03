@@ -2621,7 +2621,10 @@ mod tests {
     }
 
     fn answer(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, note: Option<&str>) {
-        let inputs = note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default();
+        answer_with(domain, id, option, note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default());
+    }
+
+    fn answer_with(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, inputs: BTreeMap<String, InputValue>) {
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{id}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: id.clone(), option_id: option.into(), inputs,
         });
@@ -2629,6 +2632,10 @@ mod tests {
 
     /// A frame as Claude Code's hook or the node mod's helper sends it, answered by the user from a card while it waits.
     async fn held(domain: &Arc<DomainRuntime>, frame: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
+        held_with(domain, frame, option, note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default()).await
+    }
+
+    async fn held_with(domain: &Arc<DomainRuntime>, frame: Value, option: &str, inputs: BTreeMap<String, InputValue>) -> (Value, InteractionId) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &frame).await;
         let handler = handle(server, domain);
@@ -2637,7 +2644,7 @@ mod tests {
             id = open_hold(domain) => id,
             result = &mut handler => panic!("answered without waiting: {result:?}"),
         };
-        answer(domain, &id, option, note);
+        answer_with(domain, &id, option, inputs);
         let (result, body) = tokio::join!(handler, reply(&mut client));
         result.unwrap();
         (body, id)
@@ -3190,6 +3197,23 @@ mod tests {
             assert!(state.interactions[&id].body.starts_with("Which repository?\n\nMCP server “github” requests your input."));
             let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
             assert_eq!(options[0].description.as_deref(), Some("Write the Repository"));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_mcp_form_of_a_yes_or_no_field_takes_only_the_value_the_user_set() {
+        let remember = |agent: &str| json!({"session_id": agent, "hook_event_name": "Elicitation", "mcp_server_name": "db", "message": "Remember this device?",
+            "requested_schema": {"type": "object", "properties": {"remember": {"type": "boolean", "title": "Remember"}}, "required": ["remember"]}});
+        let filled = || BTreeMap::from([(alondra_core::domain::ANSWER_CONTENT.to_owned(), InputValue::Form(json!({"remember": true}).as_object().unwrap().clone()))]);
+        let said = || BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text("vale".into()))]);
+        for (inputs, content) in [(filled(), json!({"remember": true})), (said(), json!({}))] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let (reply, id) = held_with(&domain, json!({"launched": true, "payload": remember("agent-a")}), Hold::ACCEPT, inputs).await;
+            assert_eq!(reply["hookSpecificOutput"], json!({"hookEventName": "Elicitation", "action": "accept", "content": content}));
+            let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[&id].payload else { panic!("question") };
+            assert_eq!(options[0].description, None, "a form with a control per field asks for no words");
         }
     }
 

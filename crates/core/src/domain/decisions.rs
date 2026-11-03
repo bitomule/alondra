@@ -253,7 +253,7 @@ impl DomainState {
             (Hold::Plan, Hold::REQUEST_CHANGES) => DecisionRecord::Deny {
                 message: note.map_or_else(|| USER_REQUESTED_CHANGES.to_owned(), |note| format!("{USER_REQUESTED_CHANGES}: {note}")),
             },
-            (Hold::Elicitation, Hold::ACCEPT) => DecisionRecord::Accept { text: note.unwrap_or_default() },
+            (Hold::Elicitation, Hold::ACCEPT) => DecisionRecord::Accept { text: note.unwrap_or_default(), content: answer.form_values().cloned() },
             (Hold::Elicitation, Hold::DECLINE) => DecisionRecord::Decline,
             (Hold::Question, _) => DecisionRecord::Answers { answers: members.iter().map(|member| said(member).unwrap_or_default()).collect() },
             (_, option) => return refuse("invalid_input", "option_id", &format!("{option} does not decide this card")),
