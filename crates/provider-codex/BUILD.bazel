@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 _DEPS = [
     "//crates/codex-protocol:codex_protocol",
@@ -20,7 +21,7 @@ rust_library(
     visibility = ["//crates:__subpackages__"],
     deps = _DEPS,
 )
-rust_test(
+low_opt_rust_test(
     name = "provider_codex_test",
     crate_root = "src/lib.rs",
     srcs = glob(["src/*.rs"]),

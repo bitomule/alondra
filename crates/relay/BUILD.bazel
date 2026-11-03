@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 rust_binary(
     name = "alondra-relay",
@@ -12,7 +13,7 @@ rust_binary(
     deps = all_crate_deps(normal = True) + ["//crates/e2e:alondra_e2e"],
 )
 
-rust_test(
+low_opt_rust_test(
     name = "alondra_relay_test",
     visibility = ["//apple/Data/Feed:__pkg__"],
     compile_data = glob(["tests/fixtures/**"]) + ["//fixtures/push"],

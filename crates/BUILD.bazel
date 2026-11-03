@@ -1,9 +1,9 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 
 exports_files(["test_support.rs"], visibility = ["//visibility:public"])
 
-rust_test(
+low_opt_rust_test(
     name = "test_directory_test",
     srcs = ["test_support_tests.rs", "test_support.rs"],
     crate_root = "test_support_tests.rs",

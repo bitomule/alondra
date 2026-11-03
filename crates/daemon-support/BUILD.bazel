@@ -1,6 +1,7 @@
 load("//crates/alondrad:build_inputs_test.bzl", "rust_inputs_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 
 WORKSPACE_DEPS = [
@@ -36,7 +37,7 @@ rust_library(
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
 
-rust_test(
+low_opt_rust_test(
     name = "daemon_support_test",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//fixtures/workflow"],

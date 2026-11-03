@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
     name = "process_group",
@@ -11,7 +12,7 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
-rust_test(
+low_opt_rust_test(
     name = "process_group_test",
     crate = ":process_group",
     edition = "2024",

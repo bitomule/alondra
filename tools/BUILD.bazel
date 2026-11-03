@@ -75,6 +75,15 @@ sh_test(
     size = "small",
 )
 
+# Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
+sh_test(
+    name = "low_opt_rust_tests_test",
+    srcs = ["tests/test_low_opt_rust_tests.py"],
+    data = ["//:Makefile"],
+    size = "small",
+    tags = ["external", "local"],
+)
+
 sh_test(
     name = "rustc_peaks_test",
     srcs = ["tests/test_rustc_peaks.py"],

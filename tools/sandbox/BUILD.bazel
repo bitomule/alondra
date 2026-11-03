@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 
 rust_binary(
     name = "alondra-sandbox",
@@ -23,7 +24,7 @@ rust_binary(
     ],
 )
 
-rust_test(
+low_opt_rust_test(
     name = "alondra-sandbox_test",
     crate = ":alondra-sandbox",
     edition = "2024",

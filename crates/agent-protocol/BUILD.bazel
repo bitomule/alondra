@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
     name = "agent_protocol",
@@ -11,7 +12,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
 )
 
-rust_test(
+low_opt_rust_test(
     name = "agent_protocol_test",
     crate_root = "tests/contract.rs",
     srcs = ["tests/contract.rs"],

@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
 
 rust_library(
     name = "store",
@@ -12,7 +13,7 @@ rust_library(
     deps = ["//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract"] + all_crate_deps(normal = True),
 )
 
-rust_test(
+low_opt_rust_test(
     name = "store_test",
     crate_root = "tests/lifecycle.rs",
     srcs = ["tests/lifecycle.rs", "//crates:test_support.rs"],
@@ -22,7 +23,7 @@ rust_test(
     deps = [":store", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract"] + all_crate_deps(normal = True, normal_dev = True),
 )
 
-rust_test(
+low_opt_rust_test(
     name = "codec_test",
     crate = ":store",
     edition = "2024",
@@ -35,7 +36,7 @@ rust_doc_test(
 )
 
 
-rust_test(
+low_opt_rust_test(
     name = "journal_format_test",
     crate_root = "tests/journal_format.rs",
     srcs = ["tests/journal_format.rs", "//crates:test_support.rs"],

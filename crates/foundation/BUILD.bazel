@@ -1,5 +1,6 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
     name = "foundation",
@@ -11,7 +12,7 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
-rust_test(
+low_opt_rust_test(
     name = "foundation_test",
     crate_root = "tests/wire.rs",
     srcs = ["tests/wire.rs"],
@@ -20,7 +21,7 @@ rust_test(
     deps = [":foundation"] + all_crate_deps(normal_dev = True),
 )
 
-rust_test(
+low_opt_rust_test(
     name = "execution_identity_test",
     crate_root = "tests/execution.rs",
     srcs = ["tests/execution.rs"],
@@ -28,7 +29,7 @@ rust_test(
     deps = [":foundation"],
 )
 
-rust_test(
+low_opt_rust_test(
     name = "message_uuid_test",
     crate_root = "tests/message_uuid.rs",
     srcs = ["tests/message_uuid.rs"],

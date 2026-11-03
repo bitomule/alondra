@@ -37,6 +37,8 @@ checks:
       - "tools/prose_decisions_allowlist.tsv"
       - "tools/testdata/prose_decisions_corpus.tsv"
       - "tools/tests/test_prose_decisions.py"
+      - "tools/rust_test.bzl"
+      - "tools/tests/test_low_opt_rust_tests.py"
       - "tools/rustc_peaks.py"
       - "tools/tests/test_rustc_peaks.py"
       - "web/app/**"
@@ -45,6 +47,7 @@ checks:
         - //crates/...
         - //tools:prose_decisions_test
         - //tools:sandbox_accounts_test
+        - //tools:low_opt_rust_tests_test
         - //tools:rustc_peaks_test
         - //tools/sandbox:alondra-sandbox_test
         - //tests/system/macos:local_daemon_test

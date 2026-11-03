@@ -1,4 +1,5 @@
 load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library", "rust_test")
 
 rust_library(
@@ -21,7 +22,7 @@ rust_doc_test(
     deps = ["//crates/domain:domain", "@crates//:serde_json"],
 )
 
-rust_test(
+low_opt_rust_test(
     name = "alondra_core_test",
     compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics"],
     crate = ":alondra_core",
@@ -39,7 +40,7 @@ rust_binary(
 )
 
 
-rust_test(
+low_opt_rust_test(
     name = "read_index_cost_test",
     crate_root = "benches/read_index_cost.rs",
     srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
@@ -47,7 +48,7 @@ rust_test(
     deps = [":alondra_core"] + all_crate_deps(normal = True),
 )
 
-rust_test(
+low_opt_rust_test(
     name = "foundation_contract_test",
     crate_root = "tests/foundation.rs",
     srcs = ["tests/foundation.rs"],
@@ -62,7 +63,7 @@ rust_test(
 
 # The domain and the screens never read what hooks deduced of a node: that deduction is kept only
 # for the `claude --bg` nodes still handed over to the Agent SDK.
-rust_test(
+low_opt_rust_test(
     name = "hook_deduction_boundary_test",
     crate_root = "tests/hook_deduction_boundary.rs",
     srcs = ["tests/hook_deduction_boundary.rs"],
@@ -73,6 +74,7 @@ rust_test(
 
 # Every family of views renders a real-size domain within its budget, with alondra_core built as
 # the daemon links it: without the checks only its own unit tests compile in.
+# It stays at the build's opt-level: the budget is a speed measurement.
 rust_test(
     name = "views_budget_test",
     crate_root = "tests/views_budget.rs",
