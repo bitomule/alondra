@@ -104,6 +104,10 @@ pub struct CatalogModel {
     pub hidden: bool,
 }
 
+/// Claude Code's alias for the model it recommends to the account, listed in its catalog beside
+/// the others. Catalogs measured before the probe marked it carry it unmarked.
+const CLAUDE_RECOMMENDED: &str = "default";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AccountModelCatalog {
@@ -134,6 +138,8 @@ impl AccountModelCatalog {
             RoleModelPolicy::NativeDefault => {
                 let model = self.native_default.as_deref()
                     .or_else(|| self.models.iter().find(|entry| entry.is_default && !entry.hidden).map(|entry| entry.model.as_str()))
+                    .or_else(|| (self.account.provider == Provider::Claude).then(|| self.models.iter()
+                        .find(|entry| entry.model == CLAUDE_RECOMMENDED && !entry.hidden).map(|entry| entry.model.as_str())).flatten())
                     .ok_or_else(|| "Choose a model for this account in Settings: its native default is not known".to_owned())?;
                 self.resolve(&ModelCandidate { model: model.into(), reasoning_effort: None })
             }
@@ -325,6 +331,23 @@ mod tests {
         assert_eq!(key.model, "vendor/model");
         assert_eq!(key.wire_id(), "codex/vendor/model");
         assert!(ModelKey::parse_wire("codex/").is_err());
+    }
+
+    #[test]
+    fn a_task_without_model_starts_on_claudes_recommended_model_when_its_catalog_marks_no_default() {
+        let measured = AccountModelCatalog { account: AccountKey::native(Provider::Claude), revision: "measured".into(), native_default: None, measured_at: 1,
+            models: ["default", "opus", "sonnet"].into_iter().map(|model| CatalogModel { model: model.into(), display_name: model.into(), reasoning_efforts: vec!["high".into()],
+                default_reasoning_effort: None, context_window: None, input_modalities: vec![], is_default: false, hidden: false }).collect() };
+        let intent = TaskSelection::automatic(ModelProfile::Implementation);
+        let decision = resolve_selection(&intent, &ModelProfiles::new(), std::slice::from_ref(&measured), std::slice::from_ref(&measured.account)).unwrap();
+        assert_eq!(decision.selection.model, ModelKey { provider: Provider::Claude, model: "default".into() });
+        let profiles = ModelProfiles::from([(Provider::Claude, BTreeMap::from([(ModelProfile::Implementation,
+            RoleModelPolicy::OrderedCandidates { candidates: vec![ModelCandidate { model: "sonnet".into(), reasoning_effort: None }] })]))]);
+        let decision = resolve_selection(&intent, &profiles, std::slice::from_ref(&measured), std::slice::from_ref(&measured.account)).unwrap();
+        assert_eq!(decision.selection.model.model, "sonnet", "the task kind's profile still comes before the native default");
+        let mut codex = measured.clone();
+        codex.account = AccountKey::native(Provider::Codex);
+        assert!(codex.select(&RoleModelPolicy::NativeDefault).is_err(), "only Claude names its recommended model `default`");
     }
 
     #[test]

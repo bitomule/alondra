@@ -16,8 +16,8 @@ try {
     return child;
   });
   await Promise.all(closed);
-  assert.equal(report.native_default, null);
-  assert.equal(report.models[0].is_default, false);
+  assert.equal(report.native_default, 'default');
+  assert.deepEqual(report.models.map((model) => [model.model, model.is_default]), [['native-first', false], ['default', true], ['native-second', false]]);
   assert.deepEqual(report.models[0].reasoning_efforts, ['low', 'high']);
   assert.equal(report.models[0].context_window, null);
   const requests = readFileSync(capture, 'utf8').trim().split('\n').map(JSON.parse);

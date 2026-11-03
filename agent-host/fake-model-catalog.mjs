@@ -10,6 +10,7 @@ lines.on('line', (raw) => {
   process.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: {
     commands: [], output_style: 'default', account: {}, models: [
       { value: 'native-first', displayName: 'First native model', description: 'First does not mean default', supportsEffort: true, supportedEffortLevels: ['low', 'high'] },
+      { value: 'default', resolvedModel: 'native-second', displayName: 'Default (recommended)', description: 'Second native model' },
       { value: 'native-second', displayName: 'Second native model', description: 'Another available model' },
     ],
   } } }) + '\n');

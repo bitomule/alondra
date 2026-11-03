@@ -7,9 +7,12 @@ export const MODEL_PROBE_FLAG = '--model-probe';
 const absolute = z.string().refine((value) => isAbsolute(value) && !value.includes('\0'));
 const request = z.strictObject({ executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()), timeout_ms: z.number().int().min(1_000).max(120_000) });
 
+/** Claude Code's alias for the model it recommends to the account: it lists the alias as a model. */
+const RECOMMENDED = 'default';
+
 export type ModelProbeReport = {
-  native_default: null;
-  models: { model: string; display_name: string; reasoning_efforts: string[]; default_reasoning_effort: null; context_window: null; input_modalities: string[]; is_default: false; hidden: false }[];
+  native_default: typeof RECOMMENDED | null;
+  models: { model: string; display_name: string; reasoning_efforts: string[]; default_reasoning_effort: null; context_window: null; input_modalities: string[]; is_default: boolean; hidden: false }[];
 };
 
 async function* silence(stopped: Promise<void>): AsyncGenerator<SDKUserMessage> { await stopped; }
@@ -35,9 +38,9 @@ export async function probeModels(input: unknown, spawn?: (options: SpawnOptions
     await session.initializationResult();
     const models = await session.supportedModels();
     if (models.length > 1024) throw new Error('The model catalog exceeds its limit');
-    return { native_default: null, models: models.map((model) => ({
+    return { native_default: models.some((model) => model.value === RECOMMENDED) ? RECOMMENDED : null, models: models.map((model) => ({
       model: model.value, display_name: model.displayName, reasoning_efforts: model.supportedEffortLevels ?? [],
-      default_reasoning_effort: null, context_window: null, input_modalities: [], is_default: false, hidden: false,
+      default_reasoning_effort: null, context_window: null, input_modalities: [], is_default: model.value === RECOMMENDED, hidden: false,
     })) };
   } finally {
     clearTimeout(timeout); stop(); session.close(); child?.kill('SIGKILL'); await closed;
