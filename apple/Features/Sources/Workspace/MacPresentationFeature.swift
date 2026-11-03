@@ -83,6 +83,8 @@ public struct MacPresentationFeature: Sendable {
         public var diff: MacDiff?
         public var diffFailed: String?
         public var diffRequested: String?
+        public var diffReference: AlondraContract.ContentRef?
+        public var viewed = ViewedFilesFeature.State()
         public var contentShown: MacContent {
             switch contentKind {
             case .diff: return .diff(diff?.files ?? [], truncated: diff?.truncated ?? false)
@@ -142,6 +144,7 @@ public struct MacPresentationFeature: Sendable {
         case diffNeeded(AlondraContract.ContentRef)
         case diffLoaded(String, FetchedDiff)
         case diffLoadFailed(String)
+        case viewed(ViewedFilesFeature.Action)
         case contentPresented(Bool)
         case actionPresented(Bool)
         case action(ActionFeature.Action)
@@ -163,8 +166,15 @@ public struct MacPresentationFeature: Sendable {
     @Dependency(\.viewsClient) var viewsClient
     private enum CancelID: Hashable { case search, picker, undelivered, diff, confirmation(String) }
     public var body: some ReducerOf<Self> {
+        Scope(state: \.viewed, action: \.viewed) { ViewedFilesFeature() }
         Reduce { state, action in
             switch action {
+            case .viewed(.delegate(.reload)):
+                guard let content = state.diffReference else { return .none }
+                state.diffRequested = nil
+                return fetchDiff(content, state: &state)
+            case .viewed:
+                return .none
             case let .beginViewAction(action, target):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
@@ -296,6 +306,7 @@ public struct MacPresentationFeature: Sendable {
             case let .diffLoaded(identity, fetched):
                 guard identity == state.diffRequested else { return .none }
                 state.diff = MacDiff(digest: identity, files: UnifiedDiff.parse(fetched.text), truncated: fetched.truncated)
+                state.viewed = ViewedFilesFeature.State(saved: fetched.marks)
                 state.diffFailed = nil
                 if state.contentIsDiff, state.contentDigest == identity { state.contentLoading = false }
             case .diffLoadFailed(let identity):
@@ -588,6 +599,7 @@ public struct MacPresentationFeature: Sendable {
         let identity = content.digest ?? content.fetch
         guard state.diffRequested != identity || state.diffFailed == identity else { return .none }
         state.diffRequested = identity
+        state.diffReference = content
         state.diffFailed = nil
         return .run { [viewsClient] send in
             do { await send(.diffLoaded(identity, try await viewsClient.fetchDiff(content))) }

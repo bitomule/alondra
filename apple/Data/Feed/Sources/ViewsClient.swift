@@ -42,6 +42,8 @@ public struct ViewsClient: Sendable {
     public var fetchContent: @Sendable (ContentRef) async throws -> String
     /// A pull request's unified diff, and whether the Mac cut it to fit.
     public var fetchDiff: @Sendable (ContentRef) async throws -> FetchedDiff = { _ in throw ViewsClientError.notInstalled }
+    /// Ticks or clears GitHub's «Viewed» box of one file and answers the box as GitHub keeps it.
+    public var setFileViewed: @Sendable (Bool, String, FileMarks) async throws -> FileViewed = { _, _, _ in throw ViewsClientError.notInstalled }
     public var fetchAttachment: @Sendable (Attachment) async throws -> Data
 
     /// Install one instance at the authenticated scene boundary. Its session and sender are
@@ -70,6 +72,7 @@ public struct ViewsClient: Sendable {
             dismissSetAsideAnswers: { sender.setAside.dismiss() },
             fetchContent: { content in try await session.fetchContent(content) },
             fetchDiff: { content in try await session.fetchDiff(content) },
+            setFileViewed: { viewed, path, marks in try await session.setFileViewed(viewed, path: path, marks: marks) },
             fetchAttachment: { attachment in try await session.fetchAttachment(attachment) }
         )
     }
@@ -142,6 +145,7 @@ private enum ViewsClientKey: DependencyKey {
         dismissSetAsideAnswers: {},
         fetchContent: { _ in throw ViewsClientError.notInstalled },
         fetchDiff: { _ in throw ViewsClientError.notInstalled },
+        setFileViewed: { _, _, _ in throw ViewsClientError.notInstalled },
         fetchAttachment: { _ in throw ViewsClientError.notInstalled }
     )
     static let testValue = liveValue

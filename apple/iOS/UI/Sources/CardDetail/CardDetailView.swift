@@ -41,7 +41,9 @@ public struct CardDetailView: View {
         .navigationDestination(isPresented: Binding(get: { store.showsChanges }, set: { store.send(.changesShown($0)) })) {
             PRChangesView(files: store.diff, failed: store.diffFailed, truncated: store.diffTruncated,
                           collapsed: store.collapsedFiles, comments: nil,
-                          toggle: { store.send(.toggleFile($0)) }, toggleAll: { store.send(.toggleAllFiles) },
+                          marks: store.viewed.marks, failedMark: store.viewed.failed,
+                          toggle: { store.send(.toggleFile($0)) }, toggleViewed: { store.send(.viewed(.toggle($0))) },
+                          dismissFailure: { store.send(.viewed(.dismissFailure)) }, toggleAll: { store.send(.toggleAllFiles) },
                           comment: { _, _ in }, retry: { store.send(.retryDiff) })
         }
     }
@@ -209,7 +211,8 @@ public struct CardDetailView: View {
     }
 
     private func diffBody(_ reference: ContentRef) -> some View {
-        DiffSummaryCard(summary: store.diff.map(DiffSummary.init), pending: store.subject?.card?.contentRow?.summary,
+        DiffSummaryCard(summary: store.diff.map(DiffSummary.init),
+                        viewed: store.diff.flatMap { DiffSummary.viewedCount($0, marks: store.viewed.marks) }, pending: store.subject?.card?.contentRow?.summary,
                         failed: store.diffFailed, open: { store.send(.changesShown(true)) }, retry: { store.send(.retryDiff) })
     }
 

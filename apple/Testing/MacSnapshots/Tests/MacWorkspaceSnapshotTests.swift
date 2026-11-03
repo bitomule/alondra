@@ -713,6 +713,48 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    private func marks(_ files: [DiffFile]) -> [String: FileViewed] {
+        var marks = Dictionary(uniqueKeysWithValues: files.map { ($0.id, FileViewed.unviewed) })
+        marks["Sources/CompactRow.swift"] = .viewed
+        marks["Sources/Launch/Launch.swift"] = .viewed
+        marks["Sources/ScheduleEditor.swift"] = .changed
+        return marks
+    }
+
+    func test_pullRequest_changesWithViewedBoxes() throws {
+        let files = try diff()
+        assertWindow(size: CGSize(width: 1100, height: 760)) {
+            MacChangesView(files: files, truncated: false, highlights: false, marks: marks(files), comments: .constant([:]))
+        }
+    }
+
+    func test_pullRequest_changesWithViewedBoxes_spanish() throws {
+        let files = try diff()
+        assertWindow(size: CGSize(width: 1100, height: 760), spanish: true) {
+            MacChangesView(files: files, truncated: false, highlights: false, marks: marks(files),
+                           failedMark: "Sources/LongForm.swift", comments: .constant([:]))
+        }
+    }
+
+    private func summaryWithViewedBoxes(spanish: Bool) throws -> StoreOf<MacPresentationFeature> {
+        let files = try diff()
+        let marks = marks(files)
+        return try presentation(detail: "pull-request-mac", spanish: spanish) {
+            $0.diff = MacDiff(digest: "abcdef12", files: files, truncated: false)
+            $0.viewed = ViewedFilesFeature.State(saved: FileMarks(prID: "github.com/example/repo#12", head: "abcdef12", files: marks))
+        }
+    }
+
+    func test_pullRequest_summaryCountsViewedFiles() throws {
+        let store = try summaryWithViewedBoxes(spanish: false)
+        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_pullRequest_summaryCountsViewedFiles_spanish() throws {
+        let store = try summaryWithViewedBoxes(spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_tasks_board() throws {
         let store = try presentation(detail: "tasks-mac")
         assertWindow(size: CGSize(width: 900, height: 1150)) { MacServiceDetail(presentation: store) }

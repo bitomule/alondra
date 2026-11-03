@@ -21,6 +21,8 @@ public protocol ViewTransport: Sendable {
     func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
     func fetchContent(_ content: ContentRef) async throws -> String
     func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff
+    /// Ticks or clears GitHub's «Viewed» box of one file, for the head the reader saw.
+    func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data
     /// Writes a card attachment to `file` block by block, verified against its digest before it returns.
     func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
@@ -44,6 +46,7 @@ public extension ViewTransport {
     func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
     func fetchContent(_ content: ContentRef) async throws -> String { throw FeedError.unsupportedContent }
     func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff { throw FeedError.unsupportedContent }
+    func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed { throw FeedError.unsupportedContent }
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data { throw FeedError.unsupportedContent }
     func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
                             progress: @escaping @Sendable (UInt64, UInt64) -> Void) async throws { throw FeedError.unsupportedContent }
@@ -215,8 +218,15 @@ extension AlondraAPIClient: ViewTransport {
         enum CodingKeys: String, CodingKey { case contentDigest = "content_digest", version, data, offset, total, nextOffset = "next_offset", eof }
     }
     private struct DiffResponse: Decodable {
-        let prID: String; let head: String; let diff: String; let truncated: Bool?
-        enum CodingKeys: String, CodingKey { case prID = "pr_id", head, diff, truncated }
+        let prID: String; let head: String; let diff: String; let truncated: Bool?; let files: [Mark]?
+        enum CodingKeys: String, CodingKey { case prID = "pr_id", head, diff, truncated, files }
+    }
+    private struct Mark: Decodable {
+        let path: String; let viewed: String
+    }
+    private struct MarkResponse: Decodable {
+        let prID: String; let head: String; let path: String; let viewed: FileViewed
+        enum CodingKeys: String, CodingKey { case prID = "pr_id", head, path, viewed }
     }
 
     public func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff {
@@ -230,7 +240,26 @@ extension AlondraAPIClient: ViewTransport {
             try JSONDecoder().decode(DiffResponse.self, from: $0)
         })
         guard diff.prID == rawID, diff.head == expectedHead else { throw FeedError.invalidContent }
-        return FetchedDiff(text: diff.diff, truncated: diff.truncated ?? false)
+        let marks = diff.files.map { files in
+            FileMarks(prID: rawID, head: diff.head, files: Dictionary(files.compactMap { mark in
+                FileViewed(rawValue: mark.viewed).map { (mark.path, $0) }
+            }, uniquingKeysWith: { first, _ in first }))
+        }
+        return FetchedDiff(text: diff.diff, truncated: diff.truncated ?? false, marks: marks)
+    }
+
+    public func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed {
+        let body = try JSONSerialization.data(withJSONObject: ["path": path, "viewed": viewed, "head": marks.head], options: [.sortedKeys])
+        let endpoint = Endpoint<MarkResponse>(.post, path: ["pull-requests", marks.prID, "viewed-files"], body: body,
+                                              requiresJSONObjectResponse: true) {
+            try JSONDecoder().decode(MarkResponse.self, from: $0)
+        }
+        let response: MarkResponse
+        do { response = try await send(endpoint, operationID: UUID().uuidString) }
+        catch APIError.conflict { throw FileMarkError.stale }
+        catch APIError.server(let status, _, _, _) where status == 404 || status == 422 { throw FileMarkError.refused }
+        guard response.prID == marks.prID, response.head == marks.head, response.path == path else { throw FeedError.invalidContent }
+        return response.viewed
     }
 
     private func readChunks(path: [String], expectedDigest: String, expectedID: String) async throws -> String {

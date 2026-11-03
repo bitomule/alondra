@@ -111,6 +111,9 @@ public struct APIRequest: Sendable, Equatable {
         }
         if path.first == "reports" { return validReportRoute(method: method, path: path) }
         if path.first == "interactions" { return validAttachmentContentRoute(method: method, path: path) }
+        if method == .post, path.count == 3, path[0] == "pull-requests", path[2] == "viewed-files" {
+            return validViewID(path[1])
+        }
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),

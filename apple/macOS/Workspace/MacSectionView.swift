@@ -16,6 +16,7 @@ struct MacSectionView: View {
     var onContentRow: () -> Void
     var onFilledForm: (AlondraContract.Action, RequestedForm, [String: JSONValue]) -> Void = { _, _, _ in }
     var diff: MacDiff?
+    var marks: [String: FileViewed]?
     var diffFailed: String?
     var onDiffNeeded: (ContentRef) -> Void = { _ in }
     var opened = false
@@ -92,7 +93,9 @@ struct MacSectionView: View {
 
     private func diffSummary(_ reference: ContentRef) -> some View {
         let identity = reference.digest ?? reference.fetch
-        return DiffSummaryCard(summary: diff.flatMap { $0.digest == identity ? DiffSummary($0.files) : nil },
+        let current = diff.flatMap { $0.digest == identity ? $0.files : nil }
+        return DiffSummaryCard(summary: current.map(DiffSummary.init),
+                               viewed: current.flatMap { DiffSummary.viewedCount($0, marks: marks) },
                                failed: diffFailed == identity, shortcut: KeyboardShortcut("d", modifiers: .command),
                                open: { onContent(reference) }, retry: { onDiffNeeded(reference) })
             .frame(maxWidth: 560, alignment: .leading)

@@ -298,6 +298,7 @@ public struct MacServiceDetail: View {
                                                onContentRow: { showContent(of: document, scrollTo: proxy) },
                                                onFilledForm: { presentation.send(.sendForm($0, $1, content: $2)) },
                                                diff: presentation.diff,
+                                               marks: presentation.viewed.marks,
                                                diffFailed: presentation.diffFailed,
                                                onDiffNeeded: { presentation.send(.diffNeeded($0)) },
                                                opened: presentation.openSections.contains(section.id),
@@ -336,6 +337,7 @@ public struct MacServiceDetail: View {
                     MacContentViewer(title: presentation.contentTitle, content: presentation.contentShown,
                                      loading: presentation.contentLoading,
                                      error: presentation.contentError,
+                                     viewed: presentation.scope(state: \.viewed, action: \.viewed),
                                      comments: Binding(get: { presentation.diffComments },
                                                        set: { presentation.send(.diffCommentsChanged($0)) }))
                         .id(presentation.contentDigest)
@@ -415,10 +417,12 @@ public struct MacContentViewer: View {
     let content: MacContent
     let loading: Bool
     let error: String?
+    let viewed: StoreOf<ViewedFilesFeature>?
     @Binding var comments: [String: ActionComment]
 
-    public init(title: String, content: MacContent, loading: Bool, error: String?, comments: Binding<[String: ActionComment]>) {
-        self.title = title; self.content = content; self.loading = loading; self.error = error; _comments = comments
+    public init(title: String, content: MacContent, loading: Bool, error: String?, viewed: StoreOf<ViewedFilesFeature>? = nil,
+                comments: Binding<[String: ActionComment]>) {
+        self.title = title; self.content = content; self.loading = loading; self.error = error; self.viewed = viewed; _comments = comments
     }
 
     public var body: some View {
@@ -429,7 +433,9 @@ public struct MacContentViewer: View {
             else {
                 switch content {
                 case let .diff(files, truncated):
-                    MacChangesView(files: files, truncated: truncated, comments: $comments)
+                    MacChangesView(files: files, truncated: truncated, marks: viewed?.marks, failedMark: viewed?.failed,
+                                   toggleViewed: { viewed?.send(.toggle($0)) }, dismissFailure: { viewed?.send(.dismissFailure) },
+                                   comments: $comments)
                 case let .markdown(segments):
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {

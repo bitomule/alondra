@@ -4,15 +4,17 @@ import SwiftUI
 /// arrives it shows the counts the Mac already sent; when it cannot arrive, a way to try again.
 public struct DiffSummaryCard: View {
     let summary: DiffSummary?
+    let viewed: Text?
     let pending: String?
     let failed: Bool
     let shortcut: KeyboardShortcut?
     let open: () -> Void
     let retry: () -> Void
 
-    public init(summary: DiffSummary?, pending: String? = nil, failed: Bool = false, shortcut: KeyboardShortcut? = nil,
+    public init(summary: DiffSummary?, viewed: Text? = nil, pending: String? = nil, failed: Bool = false, shortcut: KeyboardShortcut? = nil,
                 open: @escaping () -> Void, retry: @escaping () -> Void = {}) {
         self.summary = summary
+        self.viewed = viewed
         self.pending = pending
         self.failed = failed
         self.shortcut = shortcut
@@ -41,6 +43,14 @@ public struct DiffSummaryCard: View {
                     }
                     .font(.footnote).foregroundStyle(.secondary)
                     .accessibilityElement(children: .combine)
+                }
+                if let viewed {
+                    Label {
+                        viewed
+                    } icon: {
+                        Image(systemName: "checkmark.square")
+                    }
+                    .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
                 }
             } else if failed {
                 Label {

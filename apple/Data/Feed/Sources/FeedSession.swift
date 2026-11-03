@@ -479,6 +479,11 @@ public actor FeedSession {
         return try await transport.fetchDiff(content)
     }
 
+    public func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed {
+        guard active else { throw CancellationError() }
+        return try await transport.setFileViewed(viewed, path: path, marks: marks)
+    }
+
     public func fetchAttachment(_ attachment: Attachment) async throws -> Data {
         guard active else { throw CancellationError() }
         return try await transport.fetchAttachment(attachment)

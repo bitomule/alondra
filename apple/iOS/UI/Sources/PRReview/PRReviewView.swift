@@ -29,7 +29,9 @@ public struct PRReviewView: View {
         .navigationDestination(isPresented: Binding(get: { store.showsChanges }, set: { store.send(.changesShown($0)) })) {
             PRChangesView(files: store.diff.files, failed: store.diff.failed, truncated: store.diffTruncated,
                           collapsed: store.collapsed, comments: store.comments,
-                          toggle: { store.send(.toggleFile($0)) }, toggleAll: { store.send(.toggleAllFiles) },
+                          marks: store.viewed.marks, failedMark: store.viewed.failed,
+                          toggle: { store.send(.toggleFile($0)) }, toggleViewed: { store.send(.viewed(.toggle($0))) },
+                          dismissFailure: { store.send(.viewed(.dismissFailure)) }, toggleAll: { store.send(.toggleAllFiles) },
                           comment: { store.send(.comment(anchor: $0, $1)) }, retry: { store.send(.retryDiff) })
         }
         .sheet(isPresented: Binding(get: { store.isComposing }, set: { if !$0 { store.send(.dismissSheet) } })) { sheet }
@@ -73,7 +75,8 @@ public struct PRReviewView: View {
 
     @ViewBuilder private var diff: some View {
         if store.diff != .unavailable {
-            DiffSummaryCard(summary: store.diff.files.map(DiffSummary.init), pending: nil,
+            DiffSummaryCard(summary: store.diff.files.map(DiffSummary.init),
+                            viewed: store.diff.files.flatMap { DiffSummary.viewedCount($0, marks: store.viewed.marks) }, pending: nil,
                             failed: store.diff.failed, open: { store.send(.changesShown(true)) }, retry: { store.send(.retryDiff) })
         }
     }

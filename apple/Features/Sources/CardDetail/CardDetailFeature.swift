@@ -26,6 +26,7 @@ public struct CardDetailFeature: Sendable {
         public var diffFailed = false
         public var diffTruncated = false
         public var collapsedFiles: Set<String> = []
+        public var viewed = ViewedFilesFeature.State()
         public var showsChanges = false
         public var comments: [String: ActionComment] = [:]
         public var reply = ""
@@ -126,10 +127,11 @@ public struct CardDetailFeature: Sendable {
         case attachments(AttachmentFeature.Action)
         case contentLoaded(digest: String?, String)
         case contentFailed
-        case diffLoaded(digest: String?, [DiffFile], truncated: Bool = false)
+        case diffLoaded(digest: String?, [DiffFile], truncated: Bool = false, marks: FileMarks? = nil)
         case diffFailed(digest: String?)
         case retryDiff
         case toggleFile(String)
+        case viewed(ViewedFilesFeature.Action)
         case changesShown(Bool)
         case toggleAllFiles
         case blockTapped(anchor: String, quote: String)
@@ -168,6 +170,7 @@ public struct CardDetailFeature: Sendable {
         Scope(state: \.screen, action: \.screen) { ScreenFeature() }
         Scope(state: \.actions, action: \.actions) { ActionFeature() }
         Scope(state: \.attachments, action: \.attachments) { AttachmentFeature() }
+        Scope(state: \.viewed, action: \.viewed) { ViewedFilesFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -197,12 +200,22 @@ public struct CardDetailFeature: Sendable {
                     return .cancel(id: CancelID.loadDeadline)
                 }
                 return .merge(.cancel(id: CancelID.loadDeadline), fetchContent(of: document, state: &state), fetchDiff(of: document, state: &state))
-            case .diffLoaded(let digest, let files, let truncated):
+            case .diffLoaded(let digest, let files, let truncated, let marks):
                 guard digest == state.diffDigest else { return .none }
                 state.diff = files
                 state.diffTruncated = truncated
                 state.diffFailed = false
-                state.collapsedFiles = Set(files.filter(\.startsCollapsed).map(\.id))
+                state.collapsedFiles = Set(files.filter { $0.startsCollapsed || marks?.files[$0.id] == .viewed }.map(\.id))
+                state.viewed = ViewedFilesFeature.State(saved: marks)
+                return .none
+            case .viewed(.toggle(let path)):
+                if state.viewed.isViewed(path) { state.collapsedFiles.insert(path) } else { state.collapsedFiles.remove(path) }
+                return .none
+            case .viewed(.delegate(.reload)):
+                guard let document = state.screen.document else { return .none }
+                state.diffDigest = nil
+                return fetchDiff(of: document, state: &state)
+            case .viewed:
                 return .none
             case .diffFailed(let digest):
                 guard digest == state.diffDigest else { return .none }
@@ -374,7 +387,7 @@ public struct CardDetailFeature: Sendable {
         return .run { [viewsClient] send in
             do {
                 let fetched = try await viewsClient.fetchDiff(reference)
-                await send(.diffLoaded(digest: reference.digest, UnifiedDiff.parse(fetched.text), truncated: fetched.truncated))
+                await send(.diffLoaded(digest: reference.digest, UnifiedDiff.parse(fetched.text), truncated: fetched.truncated, marks: fetched.marks))
             }
             catch is CancellationError { return }
             catch { await send(.diffFailed(digest: reference.digest)) }

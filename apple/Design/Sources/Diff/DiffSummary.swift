@@ -1,3 +1,4 @@
+import AlondraContract
 import SwiftUI
 
 /// How many files a diff changes, its lines in and out, and its files by what happened to them.
@@ -30,6 +31,13 @@ public struct DiffSummary: Equatable, Sendable {
             deleted > 0 ? Text("\(deleted) deleted", tableName: "AlondraDesign", bundle: #bundle) : nil,
             renamed > 0 ? Text("\(renamed) renamed", tableName: "AlondraDesign", bundle: #bundle) : nil,
         ].compactMap(\.self)
+    }
+
+    /// «9 of 12 viewed», counting the files GitHub has ticked as viewed among these.
+    public static func viewedCount(_ files: [DiffFile], marks: [String: FileViewed]?) -> Text? {
+        guard let marks else { return nil }
+        let viewed = files.filter { marks[$0.id] == .viewed }.count
+        return Text("\(viewed) of \(files.count) viewed", tableName: "AlondraDesign", bundle: #bundle)
     }
 
     /// «4 files · +120 −30».

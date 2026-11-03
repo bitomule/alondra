@@ -42,6 +42,7 @@ enum DemoWorkspace {
                 return "# Sample document\n\nThis document exists only in the demo."
             },
             fetchDiff: { _ in FetchedDiff(text: demoDiff) },
+            setFileViewed: { viewed, _, _ in viewed ? .viewed : .unviewed },
             fetchAttachment: { _ in Data("Demo attachment".utf8) }
         )
     }

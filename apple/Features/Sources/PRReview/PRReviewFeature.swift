@@ -29,6 +29,7 @@ public struct PRReviewFeature: Sendable {
         public var diffDigest: String?
         public var comments: [String: ActionComment] = [:]
         public var collapsed: Set<String> = []
+        public var viewed = ViewedFilesFeature.State()
         public var diffTruncated = false
         public var showsChanges = false
 
@@ -51,9 +52,10 @@ public struct PRReviewFeature: Sendable {
         case task
         case screen(ScreenFeature.Action)
         case actions(ActionFeature.Action)
-        case diffLoaded(digest: String?, [DiffFile], truncated: Bool = false)
+        case diffLoaded(digest: String?, [DiffFile], truncated: Bool = false, marks: FileMarks? = nil)
         case changesShown(Bool)
         case toggleFile(String)
+        case viewed(ViewedFilesFeature.Action)
         case toggleAllFiles
         case diffFailed(digest: String?, String)
         case retryDiff
@@ -71,6 +73,7 @@ public struct PRReviewFeature: Sendable {
     public var body: some ReducerOf<Self> {
         Scope(state: \.screen, action: \.screen) { ScreenFeature() }
         Scope(state: \.actions, action: \.actions) { ActionFeature() }
+        Scope(state: \.viewed, action: \.viewed) { ViewedFilesFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -93,11 +96,20 @@ public struct PRReviewFeature: Sendable {
                 return fetchDiff(ref)
             case .screen:
                 return .none
-            case .diffLoaded(let digest, let files, let truncated):
+            case .diffLoaded(let digest, let files, let truncated, let marks):
                 guard digest == state.diffDigest else { return .none }
                 state.diff = .loaded(files)
                 state.diffTruncated = truncated
-                state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
+                state.collapsed = Set(files.filter { $0.startsCollapsed || marks?.files[$0.id] == .viewed }.map(\.id))
+                state.viewed = ViewedFilesFeature.State(saved: marks)
+                return .none
+            case .viewed(.toggle(let path)):
+                if state.viewed.isViewed(path) { state.collapsed.insert(path) } else { state.collapsed.remove(path) }
+                return .none
+            case .viewed(.delegate(.reload)):
+                guard let ref = state.review?.diff else { return .none }
+                return fetchDiff(ref)
+            case .viewed:
                 return .none
             case .changesShown(let shown):
                 state.showsChanges = shown
@@ -146,7 +158,7 @@ public struct PRReviewFeature: Sendable {
         .run { [viewsClient] send in
             do {
                 let fetched = try await viewsClient.fetchDiff(ref)
-                await send(.diffLoaded(digest: ref.digest, UnifiedDiff.parse(fetched.text), truncated: fetched.truncated))
+                await send(.diffLoaded(digest: ref.digest, UnifiedDiff.parse(fetched.text), truncated: fetched.truncated, marks: fetched.marks))
             }
             catch is CancellationError { return }
             catch { await send(.diffFailed(digest: ref.digest, String(localized: "Couldn’t load the diff. Try again."))) }

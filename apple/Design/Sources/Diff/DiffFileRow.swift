@@ -1,10 +1,16 @@
+import AlondraContract
 import SwiftUI
 
-/// One changed file in the list of files: what happened to it, its name over its folder, and its lines in and out.
+/// One changed file in the list of files: what happened to it, its name over its folder, its lines
+/// in and out, and whether the person already viewed it.
 public struct DiffFileRow: View {
     let file: DiffFile
+    let viewed: FileViewed?
 
-    public init(file: DiffFile) { self.file = file }
+    public init(file: DiffFile, viewed: FileViewed? = nil) {
+        self.file = file
+        self.viewed = viewed
+    }
 
     public var body: some View {
         HStack(spacing: 10) {
@@ -23,6 +29,22 @@ public struct DiffFileRow: View {
             }
             Spacer(minLength: 8)
             DiffCounts(file: file)
+            switch viewed {
+            case .viewed:
+                Image(systemName: "checkmark.square.fill")
+                    .foregroundStyle(Palette.sage)
+                    .accessibilityLabel(Text("Viewed", tableName: "AlondraDesign", bundle: #bundle))
+            case .changed:
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(Palette.dawn)
+                    .accessibilityLabel(Text("Changed since you viewed it", tableName: "AlondraDesign", bundle: #bundle))
+            case .unviewed:
+                Image(systemName: "square")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            case nil:
+                EmptyView()
+            }
         }
         .accessibilityElement(children: .combine)
     }

@@ -12,7 +12,11 @@ public struct PRChangesView: View {
     let truncated: Bool
     let collapsed: Set<String>
     let comments: [String: ActionComment]?
+    let marks: [String: FileViewed]?
+    let failedMark: String?
     let toggle: (String) -> Void
+    let toggleViewed: (String) -> Void
+    let dismissFailure: () -> Void
     let toggleAll: () -> Void
     let comment: (String, ActionComment?) -> Void
     let retry: () -> Void
@@ -25,14 +29,20 @@ public struct PRChangesView: View {
     @State private var editingText = ""
 
     public init(files: [DiffFile]?, failed: Bool = false, truncated: Bool = false, collapsed: Set<String>,
-                comments: [String: ActionComment]?, toggle: @escaping (String) -> Void, toggleAll: @escaping () -> Void,
+                comments: [String: ActionComment]?, marks: [String: FileViewed]? = nil, failedMark: String? = nil,
+                toggle: @escaping (String) -> Void, toggleViewed: @escaping (String) -> Void = { _ in },
+                dismissFailure: @escaping () -> Void = {}, toggleAll: @escaping () -> Void,
                 comment: @escaping (String, ActionComment?) -> Void, retry: @escaping () -> Void) {
         self.files = files
         self.failed = failed
         self.truncated = truncated
         self.collapsed = collapsed
         self.comments = comments
+        self.marks = marks
+        self.failedMark = failedMark
         self.toggle = toggle
+        self.toggleViewed = toggleViewed
+        self.dismissFailure = dismissFailure
         self.toggleAll = toggleAll
         self.comment = comment
         self.retry = retry
@@ -45,7 +55,14 @@ public struct PRChangesView: View {
             .navigationSubtitle(subtitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
-            .safeAreaInset(edge: .bottom) { commentHint }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 8) {
+                    if let failedMark {
+                        ViewedFailureNotice(path: failedMark, dismiss: dismissFailure)
+                    }
+                    commentHint
+                }
+            }
             .sheet(isPresented: $showsFiles) { fileList }
             .sheet(item: $editing, content: commentSheet)
             .sensoryFeedback(.success, trigger: commentCount) { old, new in new > old }
@@ -54,8 +71,8 @@ public struct PRChangesView: View {
     @ViewBuilder private var content: some View {
         if let files {
             DiffViewer(files: files, collapsed: collapsed, wrapsLines: wrapsLines, truncated: truncated,
-                       highlights: highlightsDiffs, comments: commentTexts, target: $target,
-                       toggle: toggle, onLine: lineAction)
+                       highlights: highlightsDiffs, comments: commentTexts, marks: marks, target: $target,
+                       toggle: toggle, toggleViewed: toggleViewed, onLine: lineAction)
         } else if failed {
             ContentUnavailableView {
                 Label("Couldn’t load the changes", systemImage: "exclamationmark.triangle")
@@ -129,15 +146,21 @@ public struct PRChangesView: View {
 
     private var fileList: some View {
         NavigationStack {
-            List(files ?? []) { file in
-                Button {
-                    showsFiles = false
-                    if collapsed.contains(file.id), file.hasCode, !file.isBinary { toggle(file.id) }
-                    target = file.id
-                } label: {
-                    DiffFileRow(file: file)
+            List {
+                Section {
+                    ForEach(files ?? []) { file in
+                        Button {
+                            showsFiles = false
+                            if collapsed.contains(file.id), file.hasCode, !file.isBinary { toggle(file.id) }
+                            target = file.id
+                        } label: {
+                            DiffFileRow(file: file, viewed: marks?[file.id])
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    if let viewed = DiffSummary.viewedCount(files ?? [], marks: marks) { viewed }
                 }
-                .buttonStyle(.plain)
             }
             .navigationTitle("Files")
             .navigationBarTitleDisplayMode(.inline)

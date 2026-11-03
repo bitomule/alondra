@@ -1,9 +1,11 @@
+import AlondraContract
 import SwiftUI
 
 /// A pull request's changes file by file, the way GitHub shows them: a sticky bar per file that
 /// folds it, hunks with old and new numbers, added and removed lines in green and red with what
 /// changed inside them marked, and long lines wrapped or scrolled sideways. Binary, generated and
-/// very large files come folded and say why. Setting `target` scrolls to that file.
+/// very large files come folded and say why. With `marks`, each bar carries GitHub's «Viewed» box.
+/// Setting `target` scrolls to that file.
 public struct DiffViewer: View {
     let files: [DiffFile]
     let collapsed: Set<String>
@@ -11,8 +13,10 @@ public struct DiffViewer: View {
     let truncated: Bool
     let highlights: Bool
     let comments: [String: String]
+    let marks: [String: FileViewed]?
     @Binding var target: String?
     let toggle: (String) -> Void
+    let toggleViewed: (String) -> Void
     let onLine: ((DiffLine) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
@@ -20,16 +24,19 @@ public struct DiffViewer: View {
     @State private var width: CGFloat = 0
 
     public init(files: [DiffFile], collapsed: Set<String>, wrapsLines: Bool, truncated: Bool = false, highlights: Bool = true,
-                comments: [String: String] = [:], target: Binding<String?> = .constant(nil),
-                toggle: @escaping (String) -> Void, onLine: ((DiffLine) -> Void)? = nil) {
+                comments: [String: String] = [:], marks: [String: FileViewed]? = nil, target: Binding<String?> = .constant(nil),
+                toggle: @escaping (String) -> Void, toggleViewed: @escaping (String) -> Void = { _ in },
+                onLine: ((DiffLine) -> Void)? = nil) {
         self.files = files
         self.collapsed = collapsed
         self.wrapsLines = wrapsLines
         self.truncated = truncated
         self.highlights = highlights
         self.comments = comments
+        self.marks = marks
         _target = target
         self.toggle = toggle
+        self.toggleViewed = toggleViewed
         self.onLine = onLine
     }
 
@@ -41,8 +48,11 @@ public struct DiffViewer: View {
                         Section {
                             fileBody(file)
                         } header: {
-                            DiffFileHeader(file: file, comments: file.commentCount(in: comments), collapsed: collapsed.contains(file.id)) {
+                            DiffFileHeader(file: file, comments: file.commentCount(in: comments), collapsed: collapsed.contains(file.id),
+                                           viewed: marks?[file.id]) {
                                 withAnimation(.snappy) { toggle(file.id) }
+                            } toggleViewed: {
+                                withAnimation(.snappy) { toggleViewed(file.id) }
                             }
                             .clipShape(.rect(topLeadingRadius: 10, bottomLeadingRadius: closed(file) ? 10 : 0,
                                              bottomTrailingRadius: closed(file) ? 10 : 0, topTrailingRadius: 10))

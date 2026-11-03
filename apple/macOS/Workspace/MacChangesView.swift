@@ -3,11 +3,16 @@ import AlondraDesign
 import SwiftUI
 
 /// A pull request's changes on the Mac: the files on the left, a click jumps to one, and the diff
-/// GitHub-style on the right, where clicking a line comments on it.
+/// GitHub-style on the right, where clicking a line comments on it. With `marks`, each file has
+/// GitHub's «Viewed» box, and ticking it folds the file.
 public struct MacChangesView: View {
     let files: [DiffFile]
     let truncated: Bool
     let highlights: Bool
+    let marks: [String: FileViewed]?
+    let failedMark: String?
+    let toggleViewed: (String) -> Void
+    let dismissFailure: () -> Void
     @Binding var comments: [String: ActionComment]
 
     @AppStorage("mac.diff.wrapsLines") private var wrapsLines = false
@@ -18,12 +23,18 @@ public struct MacChangesView: View {
     @State private var editing: DiffLine?
     @State private var editingText = ""
 
-    public init(files: [DiffFile], truncated: Bool, highlights: Bool = true, comments: Binding<[String: ActionComment]>) {
+    public init(files: [DiffFile], truncated: Bool, highlights: Bool = true, marks: [String: FileViewed]? = nil,
+                failedMark: String? = nil, toggleViewed: @escaping (String) -> Void = { _ in },
+                dismissFailure: @escaping () -> Void = {}, comments: Binding<[String: ActionComment]>) {
         self.files = files
         self.truncated = truncated
         self.highlights = highlights
+        self.marks = marks
+        self.failedMark = failedMark
+        self.toggleViewed = toggleViewed
+        self.dismissFailure = dismissFailure
         _comments = comments
-        _collapsed = State(initialValue: Set(files.filter(\.startsCollapsed).map(\.id)))
+        _collapsed = State(initialValue: Set(files.filter { $0.startsCollapsed || marks?[$0.id] == .viewed }.map(\.id)))
     }
 
     public var body: some View {
@@ -32,14 +43,19 @@ public struct MacChangesView: View {
             Divider()
             HStack(spacing: 0) {
                 List(files, selection: $selection) { file in
-                    DiffFileRow(file: file).tag(file.id)
+                    DiffFileRow(file: file, viewed: marks?[file.id]).tag(file.id)
                 }
                 .listStyle(.sidebar)
                 .frame(width: 280)
                 Divider()
                 DiffViewer(files: files, collapsed: collapsed, wrapsLines: wrapsLines, truncated: truncated, highlights: highlights,
-                           comments: comments.mapValues(\.text), target: $target,
-                           toggle: { collapsed.formSymmetricDifference([$0]) }, onLine: edit)
+                           comments: comments.mapValues(\.text), marks: marks, target: $target,
+                           toggle: { collapsed.formSymmetricDifference([$0]) }, toggleViewed: markViewed, onLine: edit)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let failedMark {
+                ViewedFailureNotice(path: failedMark, dismiss: dismissFailure).padding(.bottom, 12)
             }
         }
         .onChange(of: selection) { _, id in
@@ -69,6 +85,10 @@ public struct MacChangesView: View {
             }
             .font(.callout.monospacedDigit())
             .foregroundStyle(.secondary)
+            if let viewed = DiffSummary.viewedCount(files, marks: marks) {
+                Label { viewed } icon: { Image(systemName: "checkmark.square") }
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             Spacer()
             if !comments.isEmpty {
                 Label("\(comments.count) comments", systemImage: "text.bubble.fill")
@@ -84,6 +104,11 @@ public struct MacChangesView: View {
                 .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    private func markViewed(_ id: String) {
+        if marks?[id] == .viewed { collapsed.remove(id) } else { collapsed.insert(id) }
+        toggleViewed(id)
     }
 
     private func edit(_ line: DiffLine) {
