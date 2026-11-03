@@ -80,6 +80,33 @@ class PublicPayloadTests(unittest.TestCase):
                 r.validate_archive(path)
             r.validate_archive(path, r.PUBLISHED_FILES)
 
+    def test_the_package_carries_the_license_the_notices_and_node_license_for_both_hosts(self):
+        self.assertEqual(r.LICENSE_FILES, {'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE'})
+        self.assertLessEqual(r.LICENSE_FILES, r.PUBLIC_FILES)
+        with tempfile.TemporaryDirectory() as temp:
+            stage = pathlib.Path(temp)
+            r.stage_assets(r.ROOT, stage)
+            self.assertEqual((stage / 'LICENSE.md').read_bytes(), (r.ROOT / 'LICENSE.md').read_bytes())
+            for host in ('sdk', 'codex'):
+                self.assertEqual((stage / host / 'NODE_LICENSE').read_bytes(), (r.ROOT / 'deploy/brew/node/LICENSE').read_bytes())
+
+    def test_the_published_release_before_the_licenses_passes_only_as_an_older_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / 'test.tar.gz'
+            with tarfile.open(path, 'w:gz') as output:
+                for name in sorted(r.PRE_LICENSE_FILES):
+                    item = tarfile.TarInfo(name)
+                    item.size = len(name)
+                    output.addfile(item, io.BytesIO(name.encode()))
+            with self.assertRaisesRegex(ValueError, 'LICENSE.md'):
+                r.validate_archive(path)
+            r.validate_archive(path, r.PUBLISHED_FILES)
+
+    def test_the_formula_declares_the_license_and_installs_it(self):
+        formula = (r.ROOT / 'deploy/brew/alondra.rb.in').read_text()
+        self.assertIn('license "FSL-1.1-MIT"', formula)
+        self.assertIn('prefix.install "LICENSE.md", "THIRD_PARTY_NOTICES.md"', formula)
+
     def test_bazel_stamps_the_version_cargo_ships(self):
         cargo = tomllib.loads((r.ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
         stamped = re.search(r'^VERSION = "([^"]+)"$', (r.ROOT / 'version.bzl').read_text(), re.M)[1]

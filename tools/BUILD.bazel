@@ -104,3 +104,15 @@ sh_test(
     data = ["rustc_peaks.py"],
     size = "small",
 )
+
+sh_test(
+    name = "licenses_test",
+    srcs = ["tests/test_licenses.py"],
+    data = [
+        "third_party_notices.py",
+        "//:license_inputs",
+        "//agent-host:license_inputs",
+        "//deploy/brew:license_inputs",
+    ],
+    size = "small",
+)

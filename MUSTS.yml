@@ -46,10 +46,20 @@ checks:
       - "tools/rustc_peaks.py"
       - "tools/tests/test_rustc_peaks.py"
       - "web/app/**"
+      - "LICENSE.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "Package.resolved"
+      - "web/package.json"
+      - "web/package-lock.json"
+      - "agent-host/package.json"
+      - "agent-host/pnpm-lock.yaml"
+      - "tools/third_party_notices.py"
+      - "tools/tests/test_licenses.py"
     with:
       targets:
         - //crates/...
         - //tools:prose_decisions_test
+        - //tools:licenses_test
         - //tools:sandbox_accounts_test
         - //tools:low_opt_rust_tests_test
         - //tools:rustc_peaks_test

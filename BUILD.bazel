@@ -1,5 +1,24 @@
 exports_files(["Cargo.toml", "Cargo.lock", "clippy.toml"])
 
+# What `//tools:licenses_test` reads: the license, its notices and the lockfiles they come from.
+filegroup(
+    name = "license_inputs",
+    srcs = [
+        "LICENSE.md",
+        "THIRD_PARTY_NOTICES.md",
+        "Cargo.toml",
+        "Cargo.lock",
+        "MODULE.bazel",
+        "Package.resolved",
+        "web/package.json",
+        "web/package-lock.json",
+        "web/app/public/fonts/OFL-archivo.txt",
+        "web/app/public/fonts/OFL-martian-mono.txt",
+        "web/app/public/fonts/OFL-newsreader.txt",
+    ],
+    visibility = ["//tools:__pkg__"],
+)
+
 exports_files(
     [
         "plugin/skills/alondra/SKILL.md",

@@ -281,3 +281,12 @@ js_test(
     tags = ["manual", "native"],
     timeout = "short",
 )
+
+filegroup(
+    name = "license_inputs",
+    srcs = [
+        "package.json",
+        "pnpm-lock.yaml",
+    ],
+    visibility = ["//tools:__pkg__"],
+)

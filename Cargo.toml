@@ -5,7 +5,7 @@ members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation"
 [workspace.package]
 version = "0.3.16"
 edition = "2024"
-license = "UNLICENSED"
+license = "FSL-1.1-MIT"
 publish = false
 
 [workspace.dependencies]

@@ -34,7 +34,7 @@ for path in "$cli" "$daemon" "$launcher" "$host" "$codex_host"; do
     exit 2
   }
 done
-for path in "$repo_root/.claude-plugin/marketplace.json" "$repo_root/plugin" "$repo_root/plugin-orchestrator"; do
+for path in "$repo_root/.claude-plugin/marketplace.json" "$repo_root/plugin" "$repo_root/plugin-orchestrator" "$repo_root/LICENSE.md" "$repo_root/THIRD_PARTY_NOTICES.md" "$repo_root/deploy/brew/node/LICENSE"; do
   [[ -e $path ]] || { echo "missing asset: $path" >&2; exit 2; }
 done
 mkdir -p "$output_dir"
@@ -49,6 +49,6 @@ ditto "$launcher" "$stage/alondrad-launcher"
 python3 "$repo_root/deploy/brew/release.py" stage-assets "$version" "$stage"
 python3 "$repo_root/deploy/brew/release.py" stage-host "$version" "$stage" --host "$host" --host-manifest "$host_manifest"
 python3 "$repo_root/deploy/brew/release.py" stage-codex-host "$version" "$stage" --host "$codex_host" --host-manifest "$codex_manifest"
-COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher sdk codex .claude-plugin plugin plugin-orchestrator
+COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher sdk codex .claude-plugin plugin plugin-orchestrator LICENSE.md THIRD_PARTY_NOTICES.md
 shasum -a 256 "$archive"
 python3 "$repo_root/deploy/brew/release.py" validate "$version" "$archive"

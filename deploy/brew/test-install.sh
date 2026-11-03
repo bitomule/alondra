@@ -31,6 +31,9 @@ for binary in alondra alondrad alondrad-launcher; do
   [[ $details == *'Authority=Developer ID Application:'* && $details == *'TeamIdentifier=658YBSK6MG'* ]]
 done
 test -f "$prefix/libexec/alondra/.claude-plugin/marketplace.json"
+for license in LICENSE.md THIRD_PARTY_NOTICES.md libexec/alondra/sdk/NODE_LICENSE libexec/alondra/codex/NODE_LICENSE; do
+  test -s "$prefix/$license"
+done
 test -f "$prefix/libexec/alondra/plugin-orchestrator/skills/alondra-orchestrator/SKILL.md"
 # Run the installed executable outside any checkout, without --repo/--bin.
 # Its dependencies expose only read-only observations; setup must stay dry.

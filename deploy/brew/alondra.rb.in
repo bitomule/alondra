@@ -2,6 +2,7 @@ class Alondra < Formula
   desc "Task and notification bridge for Claude and Codex"
   homepage "https://davidcollado.dev"
   version "@VERSION@"
+  license "FSL-1.1-MIT"
 
   depends_on macos: :tahoe
   depends_on arch: :arm64
@@ -15,6 +16,7 @@ class Alondra < Formula
 
   def install
     bin.install "alondra", "alondrad", "alondrad-launcher"
+    prefix.install "LICENSE.md", "THIRD_PARTY_NOTICES.md"
     (libexec/"alondra").install ".claude-plugin", "plugin", "plugin-orchestrator", "sdk", "codex"
   end
 

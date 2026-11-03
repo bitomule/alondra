@@ -30,11 +30,20 @@ PUBLIC_FILES = {
     'plugin-orchestrator/.mcp.json', 'plugin-orchestrator/.claude-plugin/plugin.json',
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',
     'plugin-orchestrator/bin/alondra',
+    'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE',
 }
-PRE_CODEX_FILES = PUBLIC_FILES - {CODEX_HOST, CODEX_MANIFEST}
+LICENSE_FILES = {'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE'}
+# Where each runtime file is copied from when it is not at the same path in the checkout.
+ASSET_SOURCES = {
+    'plugin-orchestrator/bin/alondra': 'plugin/bin/alondra',
+    'sdk/NODE_LICENSE': 'deploy/brew/node/LICENSE',
+    'codex/NODE_LICENSE': 'deploy/brew/node/LICENSE',
+}
+PRE_LICENSE_FILES = PUBLIC_FILES - LICENSE_FILES
+PRE_CODEX_FILES = PRE_LICENSE_FILES - {CODEX_HOST, CODEX_MANIFEST}
 PRE_SDK_FILES = PRE_CODEX_FILES - {HOST, HOST_MANIFEST}
 PRE_LAUNCHER_FILES = PRE_SDK_FILES - {'alondrad-launcher'}
-PUBLISHED_FILES = (PUBLIC_FILES, PRE_CODEX_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
+PUBLISHED_FILES = (PUBLIC_FILES, PRE_LICENSE_FILES, PRE_CODEX_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
 
 
 def version(value):
@@ -54,7 +63,7 @@ def stage_assets(root, destination):
     if not alias.is_symlink() or alias.readlink() != pathlib.Path('../plugin/bin'):
         raise ValueError('Unexpected orchestrator bin alias; review the packaging mapping')
     for name in sorted(PUBLIC_FILES - BINARIES - HOST_MANIFESTS):
-        source_name = 'plugin/bin/alondra' if name == 'plugin-orchestrator/bin/alondra' else name
+        source_name = ASSET_SOURCES.get(name, name)
         source = root / source_name
         if not source.is_file() or source.resolve() != source:
             raise ValueError(f'Runtime source missing or contains an unexpected symlink: {source_name}')
