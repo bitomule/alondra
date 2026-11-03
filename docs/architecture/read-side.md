@@ -203,8 +203,30 @@ from:
   `lifecycle_delivery`, `lifecycle_current_execution`). Each journal is replayed once
   (`alondra_store::read_journal`): the domain's records are read from each event as it is
   applied (`record_for`), and the lifecycle the replay leaves gives the endings and both journal
-  validations (`DomainState::load_journal`, `validate_loaded`);
-- `PRAGMA integrity_check` and `foreign_key_check`, which walk every page (66 ms on 64 MB).
+  validations (`DomainState::load_journal`, `validate_loaded`).
+
+The journal is read in the order SQLite stores it, not task by task: one pass over
+`lifecycle_inputs` gives every task's texts and known inputs, and one pass over `lifecycle_events`
+feeds each event to its task's replay (`read::in_stored_order`). Tasks that run side by side
+interleave their events on the same pages, so walking each task's index fetched every page once
+per task. A task whose rows are not stored in revision order, or that fails in that pass, is
+replayed again through its index, which reports its failure as before. `store_test`
+`the_journal_of_interleaved_tasks_is_read_in_one_pass_over_its_pages` counts SQLite page-cache
+misses with a cache far smaller than the journal.
+
+An ordinary open checks the schema and performs restart recovery, but does not run SQLite's
+exhaustive `integrity_check` or `foreign_key_check`. Those audits remain on creation, migrations
+between stored schema versions, and changes or removal of previously existing tables. Adding
+schema objects without changing existing table formats uses SQLite's DDL and foreign-key
+validation; it does not audit unrelated historical pages. Full audits can also be requested with
+`alondrad --check-database <path>` on a stopped HOME or a
+private HOME copy including its `service-home.lock`. The diagnostic takes that existing lock
+exclusively, copies the database and its WAL or journal into private scratch storage, then checks
+physical integrity and foreign keys read-only in one transaction. A hot journal is recovered only
+on that private copy. SQLite never opens the source, so even its coordination files stay unchanged.
+It exits before configuration, domain recovery,
+listeners or workers. It does not validate the domain's journal;
+ordinary startup and preflight still do that.
 
 Beyond those checks it reads no row of `provider_observations`, `provider_commands`,
 `command_audit` or `semantic_receipts`: the SDK owners read their own rows when they adopt an
@@ -215,6 +237,32 @@ costs grows with the journal's events and inputs, and only linearly; `store_test
 logarithm of the inputs its task holds pending, not their number: the aggregate keeps them in a
 persistent queue (`Inputs`, `rpds`), so `apply` copies the state for nothing, and after each event
 the replay only looks at the inputs that event names (`Event::inputs`).
+
+The regression `opening_the_domain_does_not_read_historical_observation_pages` adds 500,000
+released observation rows to the same synthetic domain and counts SQLite page-cache misses
+through open and load. It requires the read work to stay bounded, including when two additive
+tables and a view need creating. An explicit audit, restoring a column of an existing table,
+and removing a retired table still read the added pages. This checks work rather than elapsed
+time or the OS cache.
+
+On a later 343 MB live-HOME snapshot (243,986 observations and 104,870 lifecycle events), an
+instrumented startup spent 793 ms in the physical audit and answered in 2,482 ms. The live
+preflight spent 3,133 ms copying SQLite and 1,651 ms auditing it; journal replay took 893 ms.
+The observation bodies had already been released by normalization: the remaining cold-open
+scan came from auditing every stored page, rather than normalizing those observations again.
+
+On 2026-11-03 the live HOME held 393 MB and 180,786 lifecycle events, 110,894 of them from one
+task that recorded the end of its host in a loop. Sampled on that HOME, 0.3.15's preflight took
+7.2 s, 2.1 s of it opening the domain (0.84 s auditing, 0.91 s replaying the journal, a fifth of
+that in scattered page reads); without the audit and with the journal read in stored order it
+took 3.3 s, 0.54 s of it opening the domain (0.40 s replaying). On fresh copies of that HOME, with
+the Mac's load between 27 and 40, 0.3.15 answered `/daemon` in 6.7–12.3 s and the new start in
+0.9–2.9 s. What is left grows with the journal's events: replaying them costs about 3 µs each.
+
+SDK host adoption and the initial legacy-session reconciliation finish before delivery,
+scheduling, admission and other producers start. Admission tuning and the configuration of watched volumes finish
+before activation too. Recording the release's first start runs on a blocking worker alongside
+supervised HTTP; waiting for the database writer does not delay polling the listener.
 
 ### How long raw SDK observations keep their bytes
 

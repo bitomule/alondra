@@ -97,7 +97,7 @@ pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, sessions: std::sy
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::domain_runtime::DomainRuntime;
     use crate::node_close::Answer;
@@ -152,7 +152,7 @@ mod tests {
     }
 
     /// A node Alondra launched on its own task, in a turn.
-    fn launch(domain: &DomainRuntime, id: &str) {
+    pub(crate) fn launch(domain: &DomainRuntime, id: &str) {
         let now = alondra_core::now_millis();
         run(domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { plan_items: None, continues: None,
             task_id: format!("t-{id}").into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
@@ -164,7 +164,7 @@ mod tests {
         run(domain, Actor::System, &format!("turn-{id}"), Command::MoveNode { agent_id: id.into(), event: NodeEvent::TurnStarted, at: now });
     }
 
-    fn open(home: &std::path::Path) -> DomainRuntime {
+    pub(crate) fn open(home: &std::path::Path) -> DomainRuntime {
         let domain = DomainRuntime::open(home).unwrap();
         if domain.state().unwrap().requests.is_empty() {
             run(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {

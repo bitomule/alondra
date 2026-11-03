@@ -2834,6 +2834,49 @@ fn read_events(connection: &Connection) -> BTreeMap<TaskId, alondra_store::Journ
     alondra_store::read_journal(connection, &scope(), |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap()
 }
 
+fn pages_missed(connection: &Connection) -> i32 {
+    let (mut current, mut peak) = (0, 0);
+    let status = unsafe {
+        rusqlite::ffi::sqlite3_db_status(connection.handle(), rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS, &mut current, &mut peak, 1)
+    };
+    assert_eq!(status, rusqlite::ffi::SQLITE_OK);
+    current
+}
+
+/// Tasks that run side by side store their events on the same pages. Rebuilding the domain reads
+/// those pages once, in the order they are stored, rather than once per task through its index.
+#[test]
+fn the_journal_of_interleaved_tasks_is_read_in_one_pass_over_its_pages() {
+    const TASKS: usize = 24;
+    const ROUNDS: usize = 400;
+    let mut fixture = Fixture::new();
+    let tasks: Vec<TaskId> = (0..TASKS).map(|n| TaskId::from(format!("task-{n}").as_str())).collect();
+    for (n, task) in tasks.iter().enumerate() {
+        fixture.create(&task.0);
+        let path = fixture.directory.join(&task.0);
+        let mut tx = fixture.transaction();
+        tx.apply(task, 0, "admit", admit("node", &format!("instance-{n}"))).unwrap();
+        tx.stage_launch(task, &local(&path), &test_binding()).unwrap();
+        tx.commit().unwrap();
+    }
+    for round in 0..ROUNDS {
+        let mut tx = fixture.transaction();
+        for task in &tasks {
+            tell(&mut tx, task, &format!("{}-told-{round}", task.0));
+        }
+        tx.commit().unwrap();
+    }
+    let pages: i32 = fixture.connection.query_row("PRAGMA page_count", [], |row| row.get(0)).unwrap();
+    fixture.connection.execute_batch("PRAGMA cache_size=32").unwrap();
+    pages_missed(&fixture.connection);
+    let journal = read_events(&fixture.connection);
+    let missed = pages_missed(&fixture.connection);
+    assert_eq!(journal.len(), TASKS);
+    assert!(journal.values().all(|task| task.entries.len() == ROUNDS + 1 && task.texts.len() == ROUNDS + 1));
+    eprintln!("reading {TASKS} interleaved journals of {ROUNDS} tells missed {missed} pages of a {pages}-page database");
+    assert!(missed < pages, "reading the journal missed {missed} pages of a {pages}-page database: each task walked the whole table");
+}
+
 /// What the daemon reads: every task's journal, with its events in order.
 #[test]
 fn the_journal_reads_every_task_with_its_events() {

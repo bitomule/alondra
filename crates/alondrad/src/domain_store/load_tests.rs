@@ -123,3 +123,69 @@ fn a_journal_whose_told_texts_the_store_let_go_still_opens() {
     assert_eq!(told, [None, None, None]);
     assert_eq!(after.lifecycle_journal[&task].len(), before.lifecycle_journal[&task].len());
 }
+
+fn pages_read(connection: &Connection) -> i32 {
+    let (mut current, mut peak) = (0, 0);
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_db_status(
+            connection.handle(), rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS,
+            &mut current, &mut peak, 0,
+        )
+    };
+    assert_eq!(result, rusqlite::ffi::SQLITE_OK);
+    current
+}
+
+#[test]
+fn opening_the_domain_does_not_read_historical_observation_pages() {
+    use sha2::Digest as _;
+    let (fixture, store, execution) = running();
+    let expected = repository::load(&store.conn).unwrap();
+    drop(store);
+    let mut small = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(*small.load().unwrap(), expected);
+    let small_reads = pages_read(&small.conn);
+    let digest: [u8; 32] = sha2::Sha256::digest([1u8]).into();
+    small.conn.execute(
+        "WITH RECURSIVE cursors(cursor) AS (VALUES(1) UNION ALL SELECT cursor+1 FROM cursors WHERE cursor<500000)
+         INSERT INTO provider_observations(task_id,generation,binding_id,cursor,digest,bytes)
+         SELECT task_id,generation,binding_id,cursor,?1,CASE WHEN cursor=500000 THEN X'01' ELSE X'00' END
+         FROM lifecycle_execution_bindings CROSS JOIN cursors;",
+        [digest.as_slice()],
+    ).unwrap();
+    small.conn.execute_batch("INSERT INTO provider_observation_heads(task_id,generation,cursor)
+        SELECT task_id,generation,500000 FROM lifecycle_execution_bindings;").unwrap();
+    small.own(scope_of(&expected), |owner| {
+        owner.journal().put_normalization_checkpoint(&execution, 500_000, None, b"normalized".to_vec())?;
+        Ok(())
+    }).unwrap();
+    let rows: i64 = small.conn.query_row("SELECT count(*) FROM provider_observations", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 500_000);
+    drop(small);
+
+    let mut large = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(*large.load().unwrap(), expected);
+    let large_reads = pages_read(&large.conn);
+    eprintln!("opening the same domain: {small_reads} pages without observation history, {large_reads} with {rows} observations");
+    assert!(large_reads <= small_reads + 64,
+        "opening the domain read historical evidence: {small_reads} → {large_reads} pages");
+    large.integrity_check().unwrap();
+    assert!(pages_read(&large.conn) > large_reads + 1_000, "the explicit audit must still examine the historical pages");
+    large.conn.execute_batch("DROP VIEW events; DROP TABLE branch_update; DROP TABLE orchestrator_batch_decisions;").unwrap();
+    drop(large);
+    let mut extended = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(*extended.load().unwrap(), expected);
+    let extended_reads = pages_read(&extended.conn);
+    assert!(extended_reads <= small_reads + 64,
+        "adding tables and a view read historical evidence: {small_reads} → {extended_reads} pages");
+    extended.conn.execute_batch("ALTER TABLE model_decisions DROP COLUMN provider").unwrap();
+    drop(extended);
+    let migrated = DomainStore::open(&fixture.path()).unwrap();
+    assert!(pages_read(&migrated.conn) > extended_reads + 1_000,
+        "changing an existing table must retain its exhaustive validation");
+    migrated.conn.execute_batch("CREATE TABLE node_costs(obsolete TEXT)").unwrap();
+    drop(migrated);
+    let cleaned = DomainStore::open(&fixture.path()).unwrap();
+    assert!(pages_read(&cleaned.conn) > extended_reads + 1_000,
+        "removing an existing table must retain its exhaustive validation");
+}

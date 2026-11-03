@@ -143,6 +143,9 @@ mod usage_pause;
 mod usage_probe;
 mod client_routes;
 mod views;
+mod database_check;
+#[cfg(test)]
+mod startup_tests;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -156,12 +159,17 @@ pub fn main() -> Result<()> {
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n\nWithout options, starts the local domain daemon and configured service connector."
+                "Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --check-database <path>       Audit a stopped HOME database without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n\nWithout options, starts the local domain daemon and configured service connector."
             );
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
             println!("alondrad {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        [flag, path] if flag == "--check-database" && !path.is_empty() && !path.starts_with('-') => {
+            database_check::run(Path::new(path))?;
+            println!("database check ok: {path}");
             return Ok(());
         }
         [flag] if flag == "--preflight" => {
@@ -540,8 +548,6 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         log!("the previous daemon stopped in the middle of {actions} local action(s); they are marked interrupted");
     }
     let domain = state.domain();
-    accounts::begin_initial_check(&domain);
-    domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     // Before any SDK execution is taken over: a host that replaces one that ended loads this plugin.
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
         Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
@@ -560,18 +566,59 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     }
     let environment: std::collections::BTreeMap<String, String> = std::env::vars().collect();
     let daemon = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("alondrad"));
-    match sdk_owner::backend::resolve(&config.home, config.sandbox, &options::user_home(), &daemon, &environment) {
+    let backend = match sdk_owner::backend::resolve(&config.home, config.sandbox, &options::user_home(), &daemon, &environment) {
         Ok(mut backend) => {
             backend.native_environment.insert("ALONDRA_PORT".into(), config.port.to_string());
             log!("the Agent SDK host is {} (configuration {})", backend.host.display(), backend.configuration_digest());
-            domain.enable_sdk(backend.clone());
-            // Adopt the live host of every task a previous daemon left running, so a restart keeps
-            // the same Claude and its session instead of starting over.
-            let adopting = domain.clone();
-            tokio::task::spawn_blocking(move || sdk_owner::adopt_all(&adopting, &backend)).await.ok();
+            Some(backend)
         }
-        Err(error) => log!("no task or orchestrator batch starts: {error:#}"),
+        Err(error) => {
+            log!("no task or orchestrator batch starts: {error:#}");
+            None
+        }
+    };
+    let prepared = prepare_workers(config, domain, backend, &node_close::Machine).await;
+    serve_domain(config, state, prepared, service).await
+}
+
+/// Only a recovered domain may activate the workers that claim deliveries, launch or resume nodes.
+struct PreparedWorkers(Arc<domain_runtime::DomainRuntime>);
+
+async fn prepare_workers(
+    config: &Config,
+    domain: Arc<domain_runtime::DomainRuntime>,
+    backend: Option<sdk_owner::backend::SdkBackend>,
+    sessions: &dyn node_close::Sessions,
+) -> PreparedWorkers {
+    accounts::begin_initial_check(&domain);
+    domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
+    if let Some(backend) = backend {
+        domain.enable_sdk(backend.clone());
+        let adopting = domain.clone();
+        tokio::task::spawn_blocking(move || sdk_owner::adopt_all(&adopting, &backend)).await.ok();
     }
+    node_reconcile::once(&domain, sessions).await;
+    if config.fast_timing {
+        domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
+        domain.live.gate.ignore_mac();
+        domain.live.machine_watch.ignore_peaks();
+    } else {
+        domain.live.machine_watch.discover_volumes();
+    }
+    if config.ignore_mac_load {
+        domain.live.gate.ignore_mac();
+    }
+    PreparedWorkers(domain)
+}
+
+async fn serve_domain(
+    config: &Config,
+    state: Arc<domain_bootstrap::DomainDaemon>,
+    prepared: PreparedWorkers,
+    service: Option<Arc<service::Service>>,
+) -> Result<()> {
+    let PreparedWorkers(domain) = prepared;
+    let auth = state.auth();
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();
@@ -644,28 +691,14 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     if config.wake {
         tokio::spawn(auto_launch::run(domain.clone(), config.home.clone()));
     }
-    node_reconcile::once(&domain, &node_close::Machine).await;
     let handed = domain.clone();
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
-    if let Err(error) = domain.record_release(env!("CARGO_PKG_VERSION"), alondra_core::now_millis()) {
-        log!("could not record this release's first start: {error:#}");
-    }
     tokio::spawn(retention::run(domain.clone()));
     let gate = tokio::spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     if accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
         tokio::spawn(claude_check::run(plugins::node()));
-    }
-    if config.fast_timing {
-        domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
-        domain.live.gate.ignore_mac();
-        domain.live.machine_watch.ignore_peaks();
-    } else {
-        domain.live.machine_watch.discover_volumes();
-    }
-    if config.ignore_mac_load {
-        domain.live.gate.ignore_mac();
     }
     let revival = if config.fast_timing { &node_revival::Timing::SANDBOX } else { &node_revival::Timing::LIVE };
     tokio::spawn(node_revival::run(state_domain.clone(), revival));
@@ -704,8 +737,13 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     tokio::spawn(updates::updater(config).run());
     tokio::spawn(reports::retry_pending(config.home.clone(), plugins::own_cli(), config.fast_timing));
     start_guard::served();
+    let maintenance = owners.clone();
     let stopped = tokio::select! {
-        stopped = supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
+        stopped = supervise_with_maintenance(server, move || {
+            if let Err(error) = maintenance.record_release(env!("CARGO_PKG_VERSION"), alondra_core::now_millis()) {
+                log!("could not record this release's first start: {error:#}");
+            }
+        }, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
         () = replaced(config) => relaunch_now(),
         signal = terminated() => {
             log!("{signal} received: stopping the SDK hosts, then exiting");
@@ -714,6 +752,27 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         }
     };
     stopped
+}
+
+/// Maintenance may wait for the SQL writer; the supervised listener must keep being polled.
+#[allow(clippy::too_many_arguments)]
+async fn supervise_with_maintenance<S, G>(
+    server: S,
+    maintenance: impl FnOnce() + Send + 'static,
+    outbox: tokio::task::JoinHandle<Result<()>>,
+    scheduler: tokio::task::JoinHandle<Result<()>>,
+    transport: tokio::task::JoinHandle<Result<()>>,
+    github: tokio::task::JoinHandle<Result<()>>,
+    orchestrator: Option<tokio::task::JoinHandle<Result<()>>>,
+    connector: Option<tokio::task::JoinHandle<()>>,
+    gates: G,
+) -> Result<()>
+where
+    S: std::future::Future<Output = std::io::Result<()>>,
+    G: std::future::Future<Output = (&'static str, std::result::Result<(), tokio::task::JoinError>)>,
+{
+    tokio::task::spawn_blocking(maintenance);
+    supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector, gates).await
 }
 
 /// Resolves on the first SIGTERM or SIGINT, naming it.
@@ -875,7 +934,7 @@ fn diagnostic_device(args: Vec<String>) -> Result<Option<String>> {
             Ok(Some(device.clone()))
         }
         _ => {
-            anyhow::bail!("usage: alondrad [--help | --version | --test-service-push <device-id>]")
+            anyhow::bail!("usage: alondrad [--help | --version | --preflight | --check-database <path> | --test-service-push <device-id>]")
         }
     }
 }

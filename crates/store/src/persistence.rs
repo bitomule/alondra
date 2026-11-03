@@ -28,45 +28,80 @@ pub(super) fn replay<T, E: From<Error>>(
     known: &mut KnownInputs,
     mut read: impl FnMut(&TaskLifecycle, &Event) -> std::result::Result<T, E>,
 ) -> std::result::Result<(TaskLifecycle, Vec<T>), E> {
-    let mut aggregate = TaskLifecycle::planned(task.clone(), initial).map_err(Error::from)?;
-    known.require(connection, &aggregate)?;
+    let mut replay = Replay::start(connection, task.clone(), initial, std::mem::take(known))?;
     let mut statement = connection
         .prepare_cached("SELECT revision,event FROM lifecycle_events WHERE task_id=?1 ORDER BY revision")
         .map_err(Error::from)?;
     let rows = statement
         .query_map(params![task.0], |row| Ok((crate::read_number(row, 0)?, row.get::<_, String>(1)?)))
         .map_err(Error::from)?;
-    let mut entries = vec![];
     for row in rows {
         let (next, encoded) = row.map_err(Error::from)?;
+        replay.step(connection, next, &encoded, &mut read)?;
+    }
+    let (aggregate, entries, inputs) = replay.finish(connection, revision)?;
+    *known = inputs;
+    Ok((aggregate, entries))
+}
+
+/// One task's replay, fed its events in revision order by whoever reads them.
+pub(super) struct Replay<T> {
+    aggregate: TaskLifecycle,
+    entries: Vec<T>,
+    known: KnownInputs,
+}
+
+impl<T> Replay<T> {
+    pub(super) fn start(connection: &Connection, task: TaskId, initial: InputId, mut known: KnownInputs) -> Result<Self> {
+        let aggregate = TaskLifecycle::planned(task, initial)?;
+        known.require(connection, &aggregate)?;
+        Ok(Self { aggregate, entries: vec![], known })
+    }
+
+    pub(super) fn step<E: From<Error>>(
+        &mut self,
+        connection: &Connection,
+        next: Revision,
+        encoded: &str,
+        read: &mut impl FnMut(&TaskLifecycle, &Event) -> std::result::Result<T, E>,
+    ) -> std::result::Result<(), E> {
+        let task = self.aggregate.task();
         if encoded.len() > crate::MAX_PAYLOAD {
             return Err(Error::journal(task, next, None, "EventCapacity", None).into());
         }
-        let event: codec::EventRecord = serde_json::from_str(&encoded)
+        let event: codec::EventRecord = serde_json::from_str(encoded)
             .map_err(|_| Error::journal(task, next, None, "EventEncoding", None))?;
         let event_name = Some(event.event_name());
-        if next != aggregate.revision() + 1 {
+        if next != self.aggregate.revision() + 1 {
             return Err(Error::journal(task, next, event_name, "RevisionSequence", None).into());
         }
         crate::measure::event_decoded();
-        let event = event.decode(&aggregate).map_err(|error| {
+        let event = event.decode(&self.aggregate).map_err(|error| {
             let refusal = match error { Error::Domain(refusal) => Some(refusal), _ => None };
             Error::journal(task, next, event_name, "EventDecode", refusal)
         })?;
         let named: Vec<InputId> = event.inputs().into_iter().cloned().collect();
-        let advanced = aggregate
-            .advanced(aggregate.revision(), event.clone())
+        let advanced = self.aggregate
+            .advanced(self.aggregate.revision(), event.clone())
             .map_err(|refusal| Error::journal(task, next, event_name, "Apply", Some(refusal)))?;
-        entries.push(read(&aggregate, &event)
+        self.entries.push(read(&self.aggregate, &event)
             .map_err(|_| Error::journal(task, next, event_name, "EventProjection", None))?);
-        aggregate = advanced;
-        known.require_named(connection, &aggregate, &named)?;
+        self.aggregate = advanced;
+        self.known.require_named(connection, &self.aggregate, &named)?;
+        Ok(())
     }
-    if aggregate.revision() != revision {
-        return Err(Error::journal(task, revision, None, "JournalHead", None).into());
+
+    pub(super) fn revision(&self) -> Revision {
+        self.aggregate.revision()
     }
-    verify_relations(connection, &aggregate)?;
-    Ok((aggregate, entries))
+
+    pub(super) fn finish(self, connection: &Connection, revision: Revision) -> Result<(TaskLifecycle, Vec<T>, KnownInputs)> {
+        if self.aggregate.revision() != revision {
+            return Err(Error::journal(self.aggregate.task(), revision, None, "JournalHead", None));
+        }
+        verify_relations(connection, &self.aggregate)?;
+        Ok((self.aggregate, self.entries, self.known))
+    }
 }
 
 /// The checks a replay ends with, for an aggregate already replayed from `initial`.

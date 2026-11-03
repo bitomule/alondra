@@ -298,8 +298,7 @@ const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
  dir TEXT NOT NULL CHECK(length(dir)>0),\
  at INTEGER NOT NULL);";
 
-const EVENTS_VIEW: &str = "DROP VIEW IF EXISTS events;\
- CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain' AS kind,NULL AS session,command AS body FROM command_audit;";
+const EVENTS_VIEW: &str = "CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain' AS kind,NULL AS session,command AS body FROM command_audit;";
 
 /// What a command carries into the transaction that commits it.
 pub(crate) enum Attached<'a> {
@@ -629,11 +628,13 @@ impl DomainStore {
         }
         let mut tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let schema_before: i64 = tx.pragma_query_value(None, "schema_version", |r| r.get(0))?;
         ensure!(version == 0 || version == SCHEMA_VERSION || version == PREVIOUS_SCHEMA_VERSION,
             "unsupported domain database schema {version}; this build requires {SCHEMA_VERSION}; database preserved at {}",
             path.display());
         ensure!(version == found, "the domain database changed while it was being opened");
         let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let tables_before = table_definitions(&tx)?;
         if version == 0 {
             let existing: i64 = tx.query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
@@ -714,11 +715,10 @@ impl DomainStore {
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
         tx.execute_batch(account_move::ACCOUNT_MOVE_STEPS)?;
         tx.execute_batch(provider_transition::SCHEMA)?;
-        tx.execute_batch(EVENTS_VIEW)?;
+        refresh_schema_object(&tx, "view", "events", EVENTS_VIEW)?;
         retention::upgrade(&tx)?;
         if version != 0 {
-            tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
-            tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
+            refresh_schema_object(&tx, "trigger", "schedule_launch_transition", SCHEDULE_LAUNCH_TRANSITION)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         // A process can die after terminal write and before recording its outcome.
@@ -734,6 +734,13 @@ impl DomainStore {
         tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
         alondra_store::LifecycleTransaction::upgrade(&mut tx)?;
         if version == SCHEMA_VERSION { alondra_store::LifecycleTransaction::verify(&tx)?; }
+        let schema_after: i64 = tx.pragma_query_value(None, "schema_version", |r| r.get(0))?;
+        let table_migration = if schema_before != schema_after {
+            let tables_after = table_definitions(&tx)?;
+            tables_before.iter().any(|(name, sql)| tables_after.get(name) != Some(sql))
+        } else {
+            false
+        };
         if version == PREVIOUS_SCHEMA_VERSION {
             lifecycle_migration::migrate(&conn, tx)
                 .with_context(|| format!("the domain database at {} keeps schema {version}: moving its tasks into the lifecycle journal failed", path.display()))?;
@@ -741,7 +748,9 @@ impl DomainStore {
             tx.commit()?;
         }
         let store = Self::from_connection(conn);
-        store.integrity_check()?;
+        if version != SCHEMA_VERSION || table_migration {
+            store.integrity_check()?;
+        }
         store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         Ok(store)
     }
@@ -821,19 +830,7 @@ impl DomainStore {
         repository::was_schedule_launch_failed(&self.conn, request_id)
     }
     pub(crate) fn integrity_check(&self) -> Result<()> {
-        ensure!(
-            self.conn
-                .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))?
-                == "ok",
-            "domain integrity check failed"
-        );
-        let violations: i64 =
-            self.conn
-                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
-                    r.get(0)
-                })?;
-        ensure!(violations == 0, "domain foreign key check failed");
-        Ok(())
+        crate::database_check::audit(&self.conn)
     }
     pub(crate) fn execute_authenticated(
         &mut self,
@@ -982,6 +979,24 @@ fn claim_in(tx: &rusqlite::Transaction<'_>, id: i64, expire_orchestrator: bool, 
         version: 1,
         message,
     }))
+}
+fn table_definitions(conn: &Connection) -> rusqlite::Result<std::collections::BTreeMap<String, String>> {
+    let mut statement = conn.prepare(
+        "SELECT name,sql FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL",
+    )?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
+fn refresh_schema_object(conn: &Connection, kind: &str, name: &str, definition: &str) -> Result<()> {
+    let installed: Option<String> = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type=?1 AND name=?2", [kind, name], |r| r.get(0),
+    ).optional()?;
+    fn sql(text: &str) -> &str { text.trim().trim_end_matches(';') }
+    if installed.as_deref().map(sql) != Some(sql(definition)) {
+        conn.execute_batch(&format!("DROP {kind} IF EXISTS {name}; {definition}"))?;
+    }
+    Ok(())
 }
 fn check_schema(conn: &Connection) -> Result<()> {
     ensure!(
