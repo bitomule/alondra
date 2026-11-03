@@ -2430,7 +2430,7 @@ impl DomainState {
         let interaction =
             |id: &InteractionId| Some(self.interactions.get(id).map_or(0, |i| i.revision));
         match c {
-            Command::RequestTaskSelection { .. } => Some(0),
+            Command::RequestTaskSelection { .. } | Command::MoveTask { .. } => Some(0),
             Command::AssignTask { task_id, .. }
             | Command::RetitleTask { task_id, .. }
             | Command::SetDependencies { task_id, .. }
@@ -2992,6 +2992,12 @@ impl DomainState {
                 let task = self.tasks.get_mut(task_id).expect("checked above");
                 task.selection = Some(selection.clone());
                 task.pending_selection = Some(pending.clone());
+            }
+            Command::MoveTask { task_id, expected_selection, account } => {
+                let (selection, pending) = self.move_task_guard(actor, task_id, expected_selection, account)?;
+                let task = self.tasks.get_mut(task_id).expect("checked above");
+                task.selection = Some(selection);
+                task.pending_selection = pending;
             }
             Command::RecordTaskSelection { task_id, selection, pending } => {
                 system(actor)?;
@@ -4795,7 +4801,7 @@ impl DomainState {
                 let previously_admitted=self.lifecycle_journal.get(task_id).is_some_and(|records|records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{execution:Some(_),..}|LifecycleRecord::ResourceAvailable)));
                 if (previously_admitted || task.started) && self.pending_reopening(task_id).is_none() {
                     let target=crate::accounts::AccountKey::new(*provider,account.clone().unwrap_or_else(crate::accounts::AccountId::default_account));
-                    if target!=task.account_key(){return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
+                    if target!=task.account_key() && self.moving_to(task_id)!=Some(&target){return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
                 }
                 self.invalidate(task_id);
                 if let Some(card) = leaves_limit {

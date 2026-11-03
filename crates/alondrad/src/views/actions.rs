@@ -291,7 +291,7 @@ impl LocalActionResource {
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
             Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
             | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile => add(Self::AccountSettings, true),
-            Verb::TaskSelection => add(Self::Task(action.subject.clone()), true),
+            Verb::TaskSelection | Verb::MoveTask => add(Self::Task(action.subject.clone()), true),
             Verb::RemoveRule => add(Self::AllowedRules, true),
             Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(Self::Mcp(action.subject.clone()), true),
             _ => {},
@@ -370,7 +370,7 @@ fn is_external(verb: Verb) -> bool {
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
-        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile | Verb::TaskSelection)
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask)
 }
 
 pub(crate) async fn execute_action(
@@ -498,6 +498,7 @@ async fn execute_external(
         Verb::AccountOrder => "Order saved",
         Verb::ModelProfile => "Model profile saved",
         Verb::TaskSelection => "Selection change requested",
+        Verb::MoveTask => "Moving",
         Verb::AccountLogin => "Checking sign-in",
         Verb::AccountLoginCancel => "Sign-in cancelled",
         Verb::AccountCheck => "Accounts checked",
@@ -518,7 +519,7 @@ async fn execute_external(
         Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", Verb::McpRemove => "Borrado",
         Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
         Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado",
-        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::AccountLogin => "Comprobando sesión", Verb::AccountLoginCancel => "Inicio de sesión cancelado", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", _ => stamp,
+        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::AccountLogin => "Comprobando sesión", Verb::AccountLoginCancel => "Inicio de sesión cancelado", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", Verb::MoveTask => "Moviéndola", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -779,6 +780,19 @@ async fn execute_external(
                 || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked"))) {
                 Ok(value) => Ok(to_applied(202, value)),
                 Err(error) => Ok(error_value(&error.code, &error.message)),
+            }
+        }
+        Verb::MoveTask => {
+            let task_id = TaskId(action.subject.clone());
+            let Some(expected) = action.extra.as_deref() else { return Ok(rejected_field(lang, "account", "Reload this task and try again")); };
+            let Some(account) = request.option_id.as_deref().and_then(|option| alondra_core::accounts::AccountKey::parse_wire(option).ok()) else {
+                return Ok(rejected_field(lang, "account", "Choose the account to move the task to"));
+            };
+            let actor = Actor::User { user_id: user_id.clone() };
+            match crate::provider_transition::request_move(domain, &actor, &task_id, account, expected,
+                || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked"))) {
+                Ok(value) => Ok(to_applied(202, value)),
+                Err(error) => Ok(domain_refusal_value(&error, lang)),
             }
         }
         Verb::AccountModels => {

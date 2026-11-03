@@ -448,6 +448,9 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    if crate::provider_transition::moving(domain, &task.id) {
+        return Err(DomainError::new("task_moving", format!("{} is moving to another account: Alondra starts its next node there itself", task.id)));
+    }
     let reopening = current.pending_reopening(&task.id).map(str::to_owned);
     let prior_native = reopening.is_none() && (task.started || current.lifecycle_journal.get(&task.id).is_some_and(|records|records.iter()
         .any(|record|matches!(record,alondra_core::domain::LifecycleRecord::Admitted{execution:Some(_),..}|alondra_core::domain::LifecycleRecord::ResourceAvailable))));

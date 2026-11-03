@@ -1202,6 +1202,9 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         66 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("instruction")) }),
         67 => Some(Event::Unfinished { unheard_card: "stalled-owed".into(), wake: Some(input("owed")) }),
         68 => Some(Event::Unfinished { unheard_card: "stalled-owed".into(), wake: None }),
+        69 => runtime(RuntimeFact::Ask { card: "asked".into(), callback: CallbackId::new("asked").unwrap(), reason: WaitReason::Question }),
+        70 => Some(Event::KeepQuestion { card: "asked".into() }),
+        71 => Some(Event::Answer { card: "asked".into(), input: input("kept-answer") }),
         22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
         23 => runtime(RuntimeFact::Notification),
         24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
@@ -1231,7 +1234,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..69, 1..160)) {
+    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..72, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
@@ -1308,7 +1311,7 @@ proptest! {
     #[test]
     fn a_stop_never_waits_on_the_user(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         4 => prop::sample::select(vec![2u8, 3, 4, 17, 23, 26, 44, 45, 47, 53, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]),
-        1 => 0u8..69,
+        1 => 0u8..72,
     ], 1..200)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         let mut stops = std::collections::BTreeSet::new();
@@ -1335,7 +1338,7 @@ proptest! {
     #[test]
     fn no_task_in_progress_is_left_without_a_turn_work_a_delivery_or_an_owned_wait(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         3 => prop::sample::select(vec![2u8, 3, 4, 5, 6, 7, 17, 36, 37, 38, 46, 47, 49, 56, 57, 58, 60, 65]),
-        1 => 0u8..69,
+        1 => 0u8..72,
     ], 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         let (mut fresh, mut callback_waits) = (false, false);
@@ -1364,7 +1367,7 @@ proptest! {
     }
 
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..69, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..72, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let event = arbitrary_event(&task, action);

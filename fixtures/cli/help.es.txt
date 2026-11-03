@@ -12,6 +12,7 @@ Día a día
   answer       Contesta una pregunta
   send         Manda un mensaje a una tarea o al orquestador
   cancel       Cancela tareas
+  move         Mueve una tarea a otra cuenta
 
 Dispositivos y Macs
   device       Dispositivos que usan un Mac  (list · approve · deny · remove · invite)

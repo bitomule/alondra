@@ -88,6 +88,8 @@ mod answered_card_tests;
 mod system_card_tests;
 #[cfg(test)]
 mod transition_cost_tests;
+#[cfg(test)]
+mod move_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;

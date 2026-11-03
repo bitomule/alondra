@@ -9435,3 +9435,34 @@ fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_on
     assert_eq!(seen, BTreeSet::from(["close without merging", "local clone", "open on GitHub", "pace", "permission", "provide", "request changes"]),
         "every class of card was reached");
 }
+
+#[test]
+fn a_task_detail_offers_to_move_it_to_each_account_its_rule_accepts() {
+    use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    use crate::model_selection::{AccountModelCatalog, CatalogModel};
+    let mut state = fixture();
+    let account = |provider, id: &str, name: &str, state| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0 };
+    state.accounts = vec![account(Provider::Claude, "default", "Personal", AccountState::SignedIn), account(Provider::Codex, "default", "Work", AccountState::SignedIn), account(Provider::Claude, "old", "Old", AccountState::Disabled)];
+    state.model_catalogs = state.accounts.iter().map(|account| AccountModelCatalog { account: crate::accounts::AccountKey::new(account.provider, account.id.clone()), revision: "catalog".into(), measured_at: 1, native_default: Some("model".into()),
+        models: vec![CatalogModel { model: "model".into(), display_name: "Model".into(), reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec![], is_default: true, hidden: false }] }).collect();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    task.selection = Some({ let mut pinned = crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation); pinned.account = Some(crate::accounts::AccountKey::native(Provider::Claude)); pinned.native_tool_denials = Some(vec![]); pinned });
+    let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
+    let moving = find_action(&detail, "move_task:t-1").expect("the task's detail offers to move it");
+    assert_eq!(moving.label, "Mover a Codex · Work", "a single destination is named on the button");
+    assert!(moving.confirm.as_ref().unwrap().message.contains("Un nodo nuevo en Codex · Work sigue"));
+    assert_eq!(moving.presentation, super::Presentation::Menu);
+    let options: Vec<(&str, &str)> = moving.options.iter().map(|option| (option.id.as_str(), option.label.as_str())).collect();
+    assert_eq!(options, [("codex/default", "Codex · Work")], "neither the account it is on nor one turned off");
+    assert_eq!(moving.confirm.as_ref().unwrap().title, "¿Mover esta tarea?");
+    let tui = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:t-1", "");
+    assert_eq!(find_action(&tui, "move_task:t-1").and_then(|action| action.key.as_deref()), Some("V"), "the TUI shows only the actions it has a key for");
+    state.accounts.push(account(Provider::Claude, "work", "Trabajo", AccountState::SignedIn));
+    state.model_catalogs.push(AccountModelCatalog { account: crate::accounts::AccountKey::new(Provider::Claude, AccountId::parse("work").unwrap()), ..state.model_catalogs[0].clone() });
+    let several = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
+    let moving = find_action(&several, "move_task:t-1").unwrap();
+    assert_eq!((moving.label.as_str(), moving.options.len()), ("Mover a…", 2), "several destinations are a menu");
+    state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().state = TaskState::Done;
+    let done = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
+    assert!(find_action(&done, "move_task:").is_none(), "a finished task does not move");
+}

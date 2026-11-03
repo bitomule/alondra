@@ -3234,9 +3234,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ResurfaceDueCards { .. } => 121,
         Command::AnnounceRequestTasks => 122,
         Command::AcknowledgeRequestTasks => 123,
+        Command::MoveTask { .. } => 124,
     }
 }
-const COMMAND_KINDS: usize = 124;
+const COMMAND_KINDS: usize = 125;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3429,6 +3430,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex),
             model: crate::model_selection::ModelSelection { model: crate::model_selection::ModelKey { provider: crate::accounts::Provider::Codex, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "A user choice".into(),
         } }, false),
+        (Command::MoveTask { task_id: ids.task.into(), expected_selection: "fixture".into(), account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex) }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {

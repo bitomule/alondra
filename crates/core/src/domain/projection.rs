@@ -78,6 +78,10 @@ impl DomainState {
     pub fn task_selection_action(&self, task_id: &TaskId, selection: crate::model_selection::TaskSelection, pending: crate::model_selection::PendingTaskSelection) -> AvailableAction {
         self.action("task_selection", Command::RequestTaskSelection { task_id: task_id.clone(), expected_selection: self.task_selection_stamp(task_id).unwrap_or_default(), selection, pending }, None, None, self)
     }
+    /// The button that moves the task to `account`, judged by the rule the move runs.
+    pub fn move_task_action(&self, task_id: &TaskId, account: crate::accounts::AccountKey) -> AvailableAction {
+        self.action("move_task", Command::MoveTask { task_id: task_id.clone(), expected_selection: self.task_selection_stamp(task_id).unwrap_or_default(), account }, None, None, self)
+    }
 
     pub fn model_profile_action(&self, provider: crate::accounts::Provider, profile: crate::model_selection::ModelProfile,
         policy: crate::model_selection::RoleModelPolicy, expected_config_version: String) -> AvailableAction

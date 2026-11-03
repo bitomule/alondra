@@ -14,7 +14,7 @@ pub fn localized(cmd: Command) -> Command {
 fn groups() -> [(&'static str, &'static [&'static str]); 3] {
     [
         (tr!("Set up", "Instalar"), &["doctor", "update", "config"]),
-        (tr!("Daily", "Día a día"), &["status", "answer", "send", "cancel"]),
+        (tr!("Daily", "Día a día"), &["status", "answer", "send", "cancel", "move"]),
         (tr!("Devices and Macs", "Dispositivos y Macs"), &["device", "mac", "account", "accounts", "relay"]),
     ]
 }

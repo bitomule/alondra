@@ -255,6 +255,9 @@ impl DomainState {
         let Some((asked, epoch)) = self.asked_decision(&task_id, answered) else { return Ok(false) };
         let members: Vec<Interaction> = self.group_members(answered).into_iter().cloned().collect();
         let lifecycle = self.lifecycle(lifecycles, &task_id)?;
+        if lifecycle.cards().iter().any(|(held, _)| **held == *card) && lifecycle.card_callback(card).is_none() {
+            return Ok(false);
+        }
         let callback = alondra_domain::decision_callback(lifecycle.generation(), epoch);
         let held = lifecycle.cards().into_iter()
             .map(|(card, _)| card.clone())

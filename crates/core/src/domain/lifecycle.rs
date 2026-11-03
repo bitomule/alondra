@@ -462,6 +462,9 @@ pub enum LifecycleRecord {
     /// The user answered `from`, one of the questions asked together, while others are open: the
     /// request waits on `to`, one of them.
     CardMoved { from: InteractionId, to: InteractionId },
+    /// The question `card` outlives the execution that asked it, because the task moved to
+    /// another account: its answer goes to the next execution as what the task is told.
+    QuestionKept { card: InteractionId },
     /// The user decided `card`, the card of the request at `epoch`.
     Decided { card: InteractionId, epoch: u64, decision: DecisionRecord },
     /// The decision of the request at `epoch` reached Claude.
@@ -731,6 +734,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             Event::Decide { card: card.clone(), decision: decision.into() }
         }
         LifecycleRecord::CardMoved { from, to } => Event::MoveCard { from: from.clone(), to: to.clone() },
+        LifecycleRecord::QuestionKept { card } => Event::KeepQuestion { card: card.clone() },
         LifecycleRecord::DecisionSettled { epoch } => runtime(RuntimeFact::CallbackSettled {
             callback: decision_callback(lifecycle.generation(), *epoch),
             continuation: decision_continuation(lifecycle.generation(), *epoch),
@@ -1012,6 +1016,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             decision: decision.into(),
         },
         Event::MoveCard { from, to } => LifecycleRecord::CardMoved { from: from.clone(), to: to.clone() },
+        Event::KeepQuestion { card } => LifecycleRecord::QuestionKept { card: card.clone() },
         Event::Runtime { fact: RuntimeFact::CallbackSettled { callback, .. }, .. } => {
             LifecycleRecord::DecisionSettled { epoch: epoch_of(task, lifecycle, callback.as_str())? }
         }
@@ -1780,7 +1785,9 @@ impl DomainState {
             self.settle_dropped(&task_id, card, option, written, effects, lifecycles)?;
             return Ok(true);
         }
+        let kept = self.lifecycle_journal[&task_id].iter().any(|record| matches!(record, LifecycleRecord::QuestionKept { card: kept } if kept == card));
         let mut text = match (option, after_merge.as_deref()) {
+            _ if kept => self.kept_answer(card, option),
             (CARRY_ON, Some(reason)) => post_merge_carry_on_instruction(reason),
             (CARRY_ON, None) => CARRY_ON_INSTRUCTION.to_owned(),
             _ => String::new(),
@@ -1814,14 +1821,25 @@ impl DomainState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, by_alondra: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
+        let moving = self.moving_to(task).cloned();
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let card = session_ended_card_id(task, generation, lifecycle.cursor().unwrap_or(0) + 1);
         let forced = lifecycle.turn_stop() == Some(alondra_domain::TurnStop::ForceRequested);
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
+        let kept: Vec<InteractionId> = if moving.is_some() { self.questions_to_keep(lifecycle) } else { vec![] };
+        let resumes = (resumes || moving.is_some()) && kept.is_empty();
         let available = lifecycle.resource() == Some(ResourceEvidence::Available);
-        let looped = resumes && keeps_closing(self.lifecycle_journal[task].iter(), by_alondra);
+        let looped = resumes && moving.is_none() && keeps_closing(self.lifecycle_journal[task].iter(), by_alondra);
         let after_merge = self.work_after_merge(task, lifecycle);
-        let resumed_text = after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction) + &ended_work_note(ended_work);
+        let resumed_text = match &moving {
+            Some(account) => moved_instruction(account),
+            None => after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction),
+        } + &ended_work_note(ended_work);
+        for question in &kept {
+            self.decide(lifecycles, task, LifecycleRecord::QuestionKept { card: question.clone() })?;
+            self.holds.remove(question);
+        }
+        let lifecycle = self.lifecycle(lifecycles, task)?;
         let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
             unheard_card: card.clone(),
             text: resume.as_ref().map(|_| resumed_text.clone()),
@@ -1877,6 +1895,7 @@ impl DomainState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, by_alondra: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
+        let moving = self.moving_to(task).is_some();
         let card = handoff_doubt_card_id(task, generation, input);
         if self.interactions.contains_key(&card) {
             return Err(DomainError::new("conflict", format!("The doubtful input {input} of task {task} is already recorded")));
@@ -1884,6 +1903,10 @@ impl DomainState {
         let launch = self.lifecycle(lifecycles, task)?.resource() == Some(ResourceEvidence::Reserved);
         let journal = &self.lifecycle_journal[task];
         let before_end = journal.iter().rposition(|record| matches!(record, LifecycleRecord::HostEnded { .. })).unwrap_or(journal.len());
+        if moving {
+            let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text.into()) };
+            return self.decide(lifecycles, task, record);
+        }
         if resumes && (launch || !keeps_closing(journal.iter().take(before_end), by_alondra)) {
             let noted = journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { resent, .. } if resent == input));
             let text = if noted { text.to_owned() } else { format!("{RESENT_NOTE}\n\n{text}") };
@@ -2615,6 +2638,32 @@ fn asks_how_it_goes_on(id: InteractionId, task: &TaskId, need: String, why: &str
 pub const SESSION_ENDED_PREFIX: &str = "session-ended-";
 /// The cards that ask the user about an input handed to a host that ended before reading it.
 pub const HANDOFF_DOUBT_PREFIX: &str = "handoff-doubt-";
+/// What the first node on the account a task moved to is told, after the task's record.
+fn moved_instruction(account: &crate::accounts::AccountKey) -> String {
+    format!("The user moved this task to {}: you are its new node and carry on with it from its record above. Its worktree and branch are the same as before, with whatever was left uncommitted: check them and go on where the work stopped. Answers to questions still open reach you as messages: do not ask them again.", account.wire_id())
+}
+
+impl DomainState {
+    /// What the node a task moved to is told when the user answers `card`, a question its
+    /// previous node asked: the question and the option chosen.
+    fn kept_answer(&self, card: &InteractionId, option: &str) -> String {
+        let Some(asked) = self.interactions.get(card) else { return String::new() };
+        let InteractionPayload::Question { options, .. } = &asked.payload else { return String::new() };
+        let chosen = options.iter().find(|choice| choice.id == option).map_or(option, |choice| choice.label.as_str());
+        format!("The user answered the question the previous node of this task asked, «{}»: {chosen}", asked.card.need)
+    }
+
+    /// The questions the ending execution waits on that the task keeps when it moves: single
+    /// questions the user can still answer. A permission belongs to the session that asked it.
+    fn questions_to_keep(&self, lifecycle: &alondra_domain::TaskLifecycle) -> Vec<InteractionId> {
+        lifecycle.cards().into_iter()
+            .filter(|(card, reason)| *reason == alondra_domain::WaitReason::Question && lifecycle.card_callback(card).is_some())
+            .filter(|(card, _)| self.interactions.get(*card).is_some_and(|asked| asked.card.group.is_none() && !asked.withdrawn && !Self::answered_question(asked)))
+            .map(|(card, _)| card.clone())
+            .collect()
+    }
+}
+
 /// The cards of a task whose SDK execution could not be taken over: no host runs it.
 pub const HOST_LOST_PREFIX: &str = "host-lost-";
 pub const RETAKE: &str = "retake";

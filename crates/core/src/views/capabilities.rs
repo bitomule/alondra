@@ -62,7 +62,7 @@ impl ClientCapabilities {
     fn adapt_action(self, action: &mut Action, lang: Lang) {
         let unsupported_account_action = super::action_id::ActionId::parse(&action.id).ok().is_some_and(|id| {
             matches!(id.verb, super::action_id::Verb::AccountOrder) && !self.contains("account_presentation")
-                || matches!(id.verb, super::action_id::Verb::ModelProfile | super::action_id::Verb::TaskSelection) && !self.contains("model_selection")
+                || matches!(id.verb, super::action_id::Verb::ModelProfile | super::action_id::Verb::TaskSelection | super::action_id::Verb::MoveTask) && !self.contains("model_selection")
                 || matches!(id.verb, super::action_id::Verb::AccountEnable | super::action_id::Verb::AccountDisable | super::action_id::Verb::AccountRemove
                     | super::action_id::Verb::AccountUp | super::action_id::Verb::AccountDown | super::action_id::Verb::AccountWeight | super::action_id::Verb::AccountRename | super::action_id::Verb::AccountModels)
                     && id.extra.as_deref() == Some("codex") && !self.contains("provider_accounts")

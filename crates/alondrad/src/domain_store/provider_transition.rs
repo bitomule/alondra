@@ -35,9 +35,17 @@ pub(crate) struct Source {
     pub selection: Option<TaskSelection>,
     pub disallowed_tools: Vec<String>,
 }
+/// What a selection change does: change the model of the running session, or move the task to
+/// another account, where a new node takes it over from its record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="snake_case")]
+pub(crate) enum Kind { #[default] Model, Move }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Plan {
     pub id: String,
+    #[serde(default)]
+    pub kind: Kind,
     pub task: TaskId,
     pub expected_selection: String,
     pub source: Source,
@@ -111,7 +119,9 @@ impl OwnerTransaction<'_> {
     pub(crate) fn validate_selection_binding(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{
         let lifecycle=self.lifecycle(&plan.task)?;
         let stamp=lifecycle.execution().ok_or_else(||DomainError::new("native_session_required","The source native session is unavailable"))?;
-        if stamp.instance().as_str()!=plan.source.instance || stamp.conversation().as_str()!=plan.source.conversation || stamp.generation()!=plan.source.generation || self.state().tasks[&plan.task].account_key()!=plan.source.account || plan.target_account!=plan.source.account{return Err(DomainError::new("immutable_session","The active native session changed; refresh instead of transferring it").into())}
+        let same_account=plan.kind==Kind::Move || plan.target_account==plan.source.account;
+        if stamp.instance().as_str()!=plan.source.instance || stamp.conversation().as_str()!=plan.source.conversation || stamp.generation()!=plan.source.generation || self.state().tasks[&plan.task].account_key()!=plan.source.account || !same_account{return Err(DomainError::new("immutable_session","The active native session changed; refresh instead of transferring it").into())}
+        if plan.kind==Kind::Move{return Ok(())}
         let binding=self.execution_binding(stamp)?;
         if binding.id()!=plan.source.binding || binding.driver()!=plan.source.driver || binding.configuration()!=plan.source.configuration{return Err(DomainError::new("stale_native_binding","The native credential or runtime binding changed; this session cannot be transferred").into())}
         let identity=crate::sdk_owner::NativeAccountIdentity::load(&plan.source.host_directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
@@ -123,6 +133,7 @@ impl OwnerTransaction<'_> {
         let catalog=self.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).ok_or_else(||DomainError::new("model_catalog_unavailable","Refresh this account's model catalog"))?;
         let candidate=alondra_core::model_selection::ModelCandidate{model:plan.target_model.model.model.clone(),reasoning_effort:plan.target_model.reasoning_effort.clone()};
         if catalog.resolve(&candidate).as_ref()!=Ok(&plan.target_model){return Err(DomainError::new("stale_model_catalog","The native model catalog changed; refresh the requested model").into())}
+        if plan.kind==Kind::Move{return Ok(())}
         let effective=plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).ok_or_else(||DomainError::new("native_session_required","The source model identity is unavailable"))?;
         if effective.reasoning_effort!=plan.target_model.reasoning_effort{return Err(DomainError::new("unsupported_live_effort","The verified model control cannot change reasoning effort").into())}
         Ok(())

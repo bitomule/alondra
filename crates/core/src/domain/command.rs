@@ -687,6 +687,13 @@ pub enum Command {
         selection: crate::model_selection::TaskSelection,
         pending: crate::model_selection::PendingTaskSelection,
     },
+    /// The task goes on on `account`: its execution ends and a new node there takes it over, with
+    /// the same task, plan, worktree and branch. A task that never ran just starts there.
+    MoveTask {
+        task_id: TaskId,
+        expected_selection: String,
+        account: crate::accounts::AccountKey,
+    },
     /// What `account` said of its usage at `at`, on the Mac's local `day`, from a provider event
     /// or a probe.
     RecordAccountUsage {

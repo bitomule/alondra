@@ -153,6 +153,15 @@ enum Cmd {
         #[arg(long, help = tr!("Why, shown with each task", "Por qué, se muestra en cada tarea"))]
         reason: Option<String>,
     },
+    #[command(about = tr!("Move a task to another account", "Mueve una tarea a otra cuenta"),
+        long_about = tr!("Move a task to another provider account: its node stops and a new node there carries on with the same plan, worktree and branch",
+            "Mueve una tarea a otra cuenta de proveedor: su nodo se detiene y un nodo nuevo allí sigue con el mismo plan, worktree y rama"),
+        after_help = examples(&["alondra move t-login-fix claude/default", "alondra move t-login-fix codex/work"]))]
+    Move {
+        task: String,
+        #[arg(help = tr!("The account, as provider/account", "La cuenta, como proveedor/cuenta"))]
+        account: String,
+    },
     #[command(about = tr!("Devices that use a Mac", "Dispositivos que usan un Mac"),
         after_help = examples(&["alondra device list", "alondra device approve <id>", "alondra device invite"]))]
     Device {
@@ -444,7 +453,7 @@ pub fn main() -> Result<()> {
         Some(_) => !cli.json,
     };
     let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. }
-        | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
+        | Cmd::Cancel { .. } | Cmd::Move { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
     let result = run(cli.command, cli.json, cli.no_input);
     if warns && let Some(warning) = version::older_warning() {
         eprintln!("{warning}");
@@ -517,6 +526,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
         Some(Cmd::Send { to, reply, text }) => cli::send(&to, &text.join(" "), reply),
         Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
+        Some(Cmd::Move { task, account }) => cli::move_task(&task, &account),
         Some(Cmd::Device { command }) => match command {
             DeviceCmd::List => commands::device_list(json),
             DeviceCmd::Approve { id } => commands::device_decide(&id, true),
@@ -877,6 +887,14 @@ mod mcp_entrypoint_tests {
         assert_eq!((tasks, reason.as_deref()), (vec!["t-1".to_string(), "t-2".to_string()], Some("done elsewhere")));
         assert!(Cli::try_parse_from(["alondra", "cancel"]).is_err());
         assert!(Cli::try_parse_from(["alondra", "close", "node"]).is_err(), "cancelling a task closes its node");
+    }
+
+    #[test]
+    fn move_takes_a_task_and_an_account() {
+        let Some(Cmd::Move { task, account }) = Cli::try_parse_from(["alondra", "move", "t-1", "claude/work"]).unwrap().command
+            else { panic!("move did not parse") };
+        assert_eq!((task.as_str(), account.as_str()), ("t-1", "claude/work"));
+        assert!(Cli::try_parse_from(["alondra", "move", "t-1"]).is_err());
     }
 }
 

@@ -134,6 +134,26 @@ pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The move of `task` to `account`, as the task's «Move to…» menu offers it: the account by its
+/// `provider/account` id, or by its name when only one account has it.
+pub fn move_task(task: &str, account: &str) -> Result<()> {
+    let client = user();
+    let view = client.views(&format!("task:{task}"), None).with_context(|| trf!("No task {task}", "No hay ninguna tarea {task}"))?;
+    let action = view_action(&view, |action| action.id.starts_with("move_task:"))
+        .with_context(|| trf!("{task} cannot move to another account now", "{task} no puede moverse a otra cuenta ahora"))?;
+    let wanted = account.trim();
+    let key = alondra_core::accounts::AccountKey::parse_wire(wanted).map_err(|why| anyhow!(why))?;
+    let option = action.options.iter().find(|option| alondra_core::accounts::AccountKey::parse_wire(&option.id).as_ref() == Ok(&key))
+        .with_context(|| {
+            let offered = action.options.iter().map(|option| format!("  {} ({})", option.id, option.label)).collect::<Vec<_>>().join("\n");
+            trf!("{task} cannot move to {wanted}. It can move to:\n{offered}", "{task} no puede moverse a {wanted}. Puede moverse a:\n{offered}")
+        })?;
+    submit(&client, &view, &action, Some(&option.id), serde_json::json!({}))?;
+    let label = &option.label;
+    println!("{}", trf!("Moving {task} to {label}", "Moviendo {task} a {label}"));
+    Ok(())
+}
+
 /// The view a message goes through: the orchestrator's, or the Task's, whose node it reaches.
 fn send_view_key(name: &str) -> String {
     if name == "orchestrator" { name.to_owned() } else { format!("task:{name}") }

@@ -1177,6 +1177,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             actions.push(action);
         }
     }
+    actions.extend(move_action(task, context));
     if !task.state.terminal() && (!context.index.model_catalogs().is_empty() || task.selection.is_some())
     {
         actions.push(common::view_link(&format!("task_selection:{id}"), t!(context.lang, "Change model", "Cambiar modelo")));
@@ -1188,6 +1189,46 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         vec![Item::Actions(super::ActionBar { actions })],
     ));
     Ok(view)
+}
+
+/// «Move to…»: the accounts the task can go on on, each offered only when the rule the move runs
+/// accepts it there.
+fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
+    let lang = context.lang;
+    let options: Vec<super::ActionOption> = context.domain.accounts.iter().filter_map(|account| {
+        let key = crate::accounts::AccountKey::new(account.provider, account.id.clone());
+        context.domain.move_task_action(&task.id, key.clone()).enabled.then(|| super::ActionOption {
+            id: key.wire_id(),
+            label: format!("{} · {}", crate::views::accounts::provider_name(account.provider), crate::views::accounts::name(account, lang)),
+            description: Some(t!(lang, "A new node there carries on with the same plan, worktree and branch", "Un nodo nuevo allí sigue con el mismo plan, worktree y rama").into()),
+            style: Style::Secondary, input: super::Input::None, key: None,
+        })
+    }).collect();
+    if options.is_empty() {
+        return None;
+    }
+    let stamp = context.domain.task_selection_stamp(&task.id)?;
+    let only = (options.len() == 1).then(|| options[0].label.clone());
+    let label = match &only {
+        Some(account) => tf!(lang, "Move to {account}", "Mover a {account}"),
+        None => t!(lang, "Move to…", "Mover a…").to_owned(),
+    };
+    let mut action = common::action(Verb::MoveTask, &task.id.0, 0, &label, Style::Secondary)?;
+    action.id = super::action_id::ActionId::new(Verb::MoveTask, &task.id.0, 0, Some(stamp)).ok()?.to_string();
+    action.presentation = super::Presentation::Menu;
+    action.key = (context.client == super::Client::Tui).then(|| "V".into());
+    action.options = options;
+    action.confirm = Some(Confirm {
+        title: t!(lang, "Move this task?", "¿Mover esta tarea?").into(),
+        message: match &only {
+            Some(account) => tf!(lang, "Its current node stops now. A new node on {account} carries on from the task's record, in the same worktree and branch.",
+                "Su nodo actual se detiene ya. Un nodo nuevo en {account} sigue desde el registro de la tarea, en el mismo worktree y rama."),
+            None => t!(lang, "Its current node stops now. A new node on the account you chose carries on from the task's record, in the same worktree and branch.",
+                "Su nodo actual se detiene ya. Un nodo nuevo en la cuenta elegida sigue desde el registro de la tarea, en el mismo worktree y rama.").into(),
+        },
+        button: t!(lang, "Move", "Mover").into(),
+    });
+    Some(action)
 }
 
 pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {

@@ -19,6 +19,9 @@ pub(super) fn decided(events: Vec<String>, callback: &CallbackId) -> Result<Opti
             EventRecord::MoveCard { from, to } if cards.contains(&from) => {
                 cards.insert(to);
             }
+            EventRecord::KeepQuestion { card } => {
+                cards.remove(&card);
+            }
             EventRecord::Decide { card, decision } if cards.contains(&card) => found = Some(decision.into()),
             _ => {}
         }
@@ -799,6 +802,9 @@ pub(super) enum EventRecord {
         from: String,
         to: String,
     },
+    KeepQuestion {
+        card: String,
+    },
     PlanApproved,
     BlockDelivery {
         delivery: String,
@@ -958,6 +964,7 @@ impl From<&Event> for EventRecord {
                 from: from.0.clone(),
                 to: to.0.clone(),
             },
+            Event::KeepQuestion { card } => Self::KeepQuestion { card: card.0.clone() },
             Event::PlanApproved => Self::PlanApproved,
             Event::BlockDelivery {
                 delivery,
@@ -1100,6 +1107,7 @@ impl EventRecord {
             Self::Answer { .. } => "Answer",
             Self::Decide { .. } => "Decide",
             Self::MoveCard { .. } => "MoveCard",
+            Self::KeepQuestion { .. } => "KeepQuestion",
             Self::PlanApproved => "PlanApproved",
             Self::BlockDelivery { .. } => "BlockDelivery",
             Self::DeliveryUnblocked { .. } => "DeliveryUnblocked",
@@ -1171,6 +1179,7 @@ impl EventRecord {
                 from: InteractionId(from),
                 to: InteractionId(to),
             },
+            EventRecord::KeepQuestion { card } => Event::KeepQuestion { card: InteractionId(card) },
             EventRecord::PlanApproved => Event::PlanApproved,
             EventRecord::BlockDelivery {
                 delivery,

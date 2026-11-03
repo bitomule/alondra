@@ -64,3 +64,72 @@ impl DomainState {
     }
 }
 
+
+/// Why a task moves to another account, as its pending selection and the move's journal keep it.
+pub const MOVE_REASON: &str = "Moved to another account";
+
+impl DomainState {
+    /// The account a task is moving to: its pending selection names another account than the
+    /// one its execution runs on.
+    pub fn moving_to(&self, task_id: &TaskId) -> Option<&AccountKey> {
+        let task = self.tasks.get(task_id)?;
+        task.pending_selection.as_ref().map(|pending| &pending.account).filter(|account| **account != task.account_key())
+    }
+
+    /// The account the task runs on, or will start on: its execution's, or the one its selection
+    /// pins while it has never run.
+    fn current_account(&self, task: &Task) -> Option<AccountKey> {
+        if task.started || task.agent_id.is_some() { Some(task.account_key()) } else { task.selection.as_ref().and_then(|selection| selection.account.clone()) }
+    }
+
+    /// The selection a task keeps once it moves to `account`, and what its next execution runs
+    /// there: the account becomes its own, and a model of another provider gives way to the one
+    /// the destination picks for the task's profile. Pending only for a task that already ran:
+    /// one that never ran simply starts on `account`.
+    pub fn moved_selection(&self, actor: &Actor, task_id: &TaskId, account: &AccountKey) -> Result<(TaskSelection, Option<PendingTaskSelection>)> {
+        let task = self.task(task_id)?;
+        let mut intent = task.selection.clone().unwrap_or_else(|| TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation));
+        if intent.requested.as_ref().is_some_and(|model| model.provider != account.provider) {
+            intent.requested = None;
+            intent.requested_reasoning_effort = None;
+        }
+        if account.provider != task.account_key().provider || intent.requested.is_none() { intent.allow_model_substitution = true; }
+        intent.account = Some(account.clone());
+        if intent.effective.as_ref().is_some_and(|effective| effective.model.provider != account.provider) { intent.effective = None; }
+        let status = self.accounts.iter().find(|status| AccountKey::new(status.provider, status.id.clone()) == *account);
+        intent.paid_account_grant = (matches!(actor, Actor::User { .. }) && status.is_some_and(|status| matches!(status.billing, AccountBilling::PayPerUse))).then(|| account.clone());
+        let mut resolving = intent.clone();
+        if resolving.requested.is_none() && resolving.allow_model_substitution { resolving.requested = intent.effective.as_ref().map(|effective| effective.model.clone()); }
+        let decision = crate::model_selection::resolve_selection(&resolving, &self.model_profiles, &self.model_catalogs, std::slice::from_ref(account))
+            .map_err(|reasons| DomainError::new("model_unavailable", format!("No model of {} can run this task: {}", account.wire_id(), reasons.join("; "))))?;
+        let ran = self.lifecycle_of(task_id).is_ok_and(|lifecycle| lifecycle.execution().is_some());
+        let pending = ran.then(|| PendingTaskSelection { account: account.clone(), model: decision.selection, reason: MOVE_REASON.into() });
+        Ok((intent, pending))
+    }
+
+    pub(super) fn move_task_guard(&self, actor: &Actor, task_id: &TaskId, expected_selection: &str, account: &AccountKey) -> Result<(TaskSelection, Option<PendingTaskSelection>)> {
+        if !matches!(actor, Actor::System) { user(actor)?; }
+        self.not_ending(task_id)?;
+        let task = self.active(task_id)?;
+        if task.pending_selection.is_some() { return fail("selection_pending", "This task is already changing its model or account"); }
+        if self.current_account(task).as_ref() == Some(account) { return fail("same_account", "The task already runs on this account"); }
+        let status = self.accounts.iter().find(|status| AccountKey::new(status.provider, status.id.clone()) == *account)
+            .ok_or_else(|| DomainError::new("not_found", "The destination account is not connected"))?;
+        if status.state != AccountState::SignedIn { return fail("account_unavailable", "The destination account is off or signed out"); }
+        if matches!(status.billing, AccountBilling::PayPerUse) && !matches!(actor, Actor::User { .. }) {
+            return fail("paid_authorization_required", "Only the user moves a task to an account paid per use");
+        }
+        if account.provider == crate::accounts::Provider::Codex {
+            let ran = task.started || task.agent_id.is_some();
+            match task.selection.as_ref().and_then(|selection| selection.native_tool_denials.as_deref()) {
+                Some([]) => {}
+                Some(_) => return fail("unsupported_tool_policy", "Codex cannot enforce this task's tool restrictions"),
+                None if ran => return fail("unsupported_tool_policy", "The task's tool policy must be verified before moving it to Codex"),
+                None => {}
+            }
+        }
+        let moved = self.moved_selection(actor, task_id, account)?;
+        if self.task_selection_stamp(task_id).as_deref() != Some(expected_selection) { return fail("stale_selection", "The task's selection or execution changed; refresh before moving it"); }
+        Ok(moved)
+    }
+}

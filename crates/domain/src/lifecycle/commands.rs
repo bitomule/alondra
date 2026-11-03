@@ -184,6 +184,7 @@ impl TaskLifecycle {
                 valid_id(&to.0)?;
                 self.move_card(from, to)?;
             }
+            Event::KeepQuestion { card } => self.keep_question(card)?,
             Event::BlockDelivery {
                 delivery,
                 dependencies,
@@ -678,6 +679,30 @@ impl TaskLifecycle {
             return Err(Refusal::InvalidState);
         }
         cards.insert(to.clone(), Card { id: to, ..card });
+        match &mut self.state {
+            State::InProgress(Progress::Waiting { cards: held, .. }) => *held = Decisions::new(cards)?,
+            State::InProgress(Progress::Dependency { decisions, .. }) => *decisions = cards,
+            State::Delivered(delivered) => delivered.decisions = cards,
+            _ => return Err(Refusal::InvalidState),
+        }
+        Ok(())
+    }
+
+    fn keep_question(&mut self, id: InteractionId) -> Result<(), Refusal> {
+        let (mut cards, session) = match &self.state {
+            State::InProgress(Progress::Waiting { cards, session, .. }) => (cards.map(), session),
+            State::InProgress(Progress::Dependency { decisions, session, .. }) => (decisions.clone(), session),
+            State::Delivered(delivered) => (delivered.decisions.clone(), &delivered.session),
+            _ => return Err(Refusal::InvalidState),
+        };
+        let card = cards.get_mut(&id).ok_or(Refusal::CorrelationMismatch)?;
+        if card.reason != WaitReason::Question {
+            return Err(Refusal::InvalidState);
+        }
+        let callback = card.callback.take().ok_or(Refusal::InvalidState)?;
+        if !session.execution().is_some_and(|execution| execution.callbacks.contains(&CallbackState::AwaitingAnswer(callback))) {
+            return Err(Refusal::InvalidState);
+        }
         match &mut self.state {
             State::InProgress(Progress::Waiting { cards: held, .. }) => *held = Decisions::new(cards)?,
             State::InProgress(Progress::Dependency { decisions, .. }) => *decisions = cards,

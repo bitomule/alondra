@@ -529,6 +529,11 @@ pub enum Event {
         from: InteractionId,
         to: InteractionId,
     },
+    /// The question `card`, which a callback of the execution waits on, stays with the task when
+    /// that execution ends: answering it then tells the task's next execution, as `Answer` does.
+    KeepQuestion {
+        card: InteractionId,
+    },
     PlanApproved,
     BlockDelivery {
         delivery: InteractionId,
@@ -712,6 +717,7 @@ impl Event {
             | Self::Ask { .. }
             | Self::Decide { .. }
             | Self::MoveCard { .. }
+            | Self::KeepQuestion { .. }
             | Self::PlanApproved
             | Self::BlockDelivery { .. }
             | Self::DeliveryUnblocked { .. }

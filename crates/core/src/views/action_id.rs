@@ -80,9 +80,10 @@ pub enum Verb {
     AccountModels,
     ModelProfile,
     TaskSelection,
+    MoveTask,
 }
 impl Verb {
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 59] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -141,6 +142,7 @@ impl Verb {
         Self::AccountModels,
         Self::ModelProfile,
         Self::TaskSelection,
+        Self::MoveTask,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -202,6 +204,7 @@ impl Verb {
             Self::AccountModels => "account_models",
             Self::ModelProfile => "model_profile",
             Self::TaskSelection => "task_selection",
+            Self::MoveTask => "move_task",
         }
     }
     fn parse(value: &str) -> Option<Self> {

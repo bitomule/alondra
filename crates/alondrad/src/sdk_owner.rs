@@ -1271,12 +1271,14 @@ impl Driver {
         let binding=self.worker.binding().clone();
         match self.domain.own(self.scope.clone(), |owner| {
             owner.require_native_identity(&binding,identity.as_ref())?;
-            if owner.provider_transition_blocks(retained.as_ref().unwrap().execution())? { return Ok(false); }
-            owner.claim(retained.take().unwrap())?; Ok(true)
+            let execution=retained.as_ref().unwrap().execution().clone();
+            if owner.provider_transition_blocks(&execution)? { return Ok(Some(owner.lifecycle(execution.task())?.execution()==Some(&execution))); }
+            owner.claim(retained.take().unwrap())?; Ok(None)
         }) {
-            Ok((true, _)) => {}
-            Ok((false, _)) => { self.permits.push_front(retained.unwrap()); return Ok(()); }
-            Err(StoreError::Storage(error)) if stale(&error) || out_of_turn(&error) => return Ok(()),
+            Ok((None, _)) => {}
+            Ok((Some(true), _)) => { self.permits.push_front(retained.unwrap()); return Ok(()); }
+            Ok((Some(false), _)) => { log!("input {} of {} belongs to an execution that ended: it goes to the next one", input.as_str(), self.task); return Ok(()); }
+            Err(StoreError::Storage(error)) if stale(&error) || out_of_turn(&error) => { log!("input {} of {} was not handed to its SDK host ({}): {error}", input.as_str(), self.task, self.agent); return Ok(()) }
             Err(error) => return Err(failed("claiming the dispatch")(error)),
         }
         let attempt = self.sealed().attempts.pop().ok_or_else(|| Failed::new("the claim issued no attempt".into()))?;

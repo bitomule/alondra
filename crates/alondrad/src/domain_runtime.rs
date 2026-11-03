@@ -1126,6 +1126,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RaiseStartProblem { task_id, .. }
         | Command::RecordTaskSelection { task_id, .. }
         | Command::RequestTaskSelection { task_id, .. }
+        | Command::MoveTask { task_id, .. }
         | Command::SettlePlanReview { task_id, .. }
         | Command::SettleStall { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }

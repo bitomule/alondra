@@ -2,7 +2,7 @@
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Attached,StoreError};
-use crate::domain_store::provider_transition::{Plan,Phase,Transition};
+use crate::domain_store::provider_transition::{Kind,Plan,Phase,Transition};
 use alondra_agent_runtime::owned_host::{EndedHost,Retained};
 use alondra_core::accounts::AccountKey;
 use alondra_core::domain::*;
@@ -19,6 +19,13 @@ pub(crate) struct Transitions {
     advancing:tokio::sync::Mutex<()>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove each.
     fences:Mutex<BTreeMap<String,EndedHost>>,
+    #[cfg(test)]
+    pub(crate) crash_at:Mutex<Option<Phase>>,
+}
+#[cfg(test)]
+impl Transitions {
+    /// What a daemon that dies lets go of: the ended hosts it held as proof.
+    pub(crate) fn die(&self){*self.crash_at.lock().unwrap()=None;self.fences.lock().unwrap().clear();}
 }
 fn failure(error:impl std::fmt::Display)->DomainError{DomainError::new("selection_transition",error.to_string())}
 fn store_failure(error:StoreError)->DomainError{match error{StoreError::Domain(error)=>error,StoreError::Storage(error)=>failure(error)}}
@@ -55,9 +62,40 @@ pub(crate) fn request(domain:&DomainRuntime,actor:&Actor,task:&TaskId,target_acc
         if effective.model!=target_model.model && !source.turn_model{return Err(DomainError::new("unsupported_live_model","This native session cannot change its model in place; create a new node").into())}
         if target_account.provider==alondra_core::accounts::Provider::Codex && !source.disallowed_tools.is_empty(){return Err(DomainError::new("unsupported_tool_policy","Codex cannot enforce this task's tool deny list; keep the current provider or explicitly revise the task policy").into())}
         owner.stage_command(actor,&command,Attached::None)?;
-        owner.request_provider_transition(&Plan{id:id.clone(),task:task.clone(),expected_selection:expected_selection.into(),source,target_account,target_model,intent,reason:reason.into()})
+        owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Model,task:task.clone(),expected_selection:expected_selection.into(),source,target_account,target_model,intent,reason:reason.into()})
     }).map_err(store_failure)?;
     Ok(json!({"task_id":task,"transition":id,"status":"pending"}))
+}
+
+/// Moves the task to `account`. A task that already ran keeps the move open while its execution
+/// ends, and a new node on `account` takes it over from its record; one that never ran just starts
+/// there. The command and the move's first step commit together, or neither does.
+pub(crate) fn request_move(domain:&DomainRuntime,actor:&Actor,task:&TaskId,account:AccountKey,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
+    let initial=domain.state().map_err(failure)?;
+    let (intent,pending)=initial.moved_selection(actor,task,&account)?;
+    let id=format!("move-{}",crate::auth::random_hex(16));
+    let command=envelope(domain,&id,Command::MoveTask{task_id:task.clone(),expected_selection:expected_selection.into(),account:account.clone()});
+    let Some(pending)=pending else{
+        domain.own(scope(domain)?,|owner|{authorize()?;owner.stage_command(actor,&command,Attached::None).map(drop)}).map_err(store_failure)?;
+        return Ok(json!({"task_id":task,"status":"moved"}))
+    };
+    let execution=initial.lifecycle_of(task)?.execution().cloned().ok_or_else(||failure("The task has no execution to move"))?;
+    let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
+    let selected=backend.for_provider(initial.tasks[task].provider,domain.home()).map_err(failure)?;
+    let host_directory=selected.state_root.join(execution.instance().as_str());
+    domain.own(scope(domain)?,|owner|{
+        authorize()?;
+        if owner.state().lifecycle_of(task)?.execution()!=Some(&execution){return Err(DomainError::new("stale_execution","The task's execution changed; refresh before moving it").into())}
+        let source=owner.selection_source(task,host_directory)?;
+        owner.stage_command(actor,&command,Attached::None)?;
+        owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Move,task:task.clone(),expected_selection:expected_selection.into(),source,target_account:account,target_model:pending.model,intent,reason:pending.reason})
+    }).map_err(store_failure)?;
+    Ok(json!({"task_id":task,"transition":id,"status":"pending"}))
+}
+
+/// Whether a move holds the task: no node but the one it moves to may start for it.
+pub(crate) fn moving(domain:&DomainRuntime,task:&TaskId)->bool{
+    domain.read().state().moving_to(task).is_some() && matches!(current(domain,task),Ok(Some(change)) if change.plan.kind==Kind::Move)
 }
 
 pub(crate) fn holds_source_inputs(domain:&DomainRuntime,task:&TaskId,instance:&str)->bool{
@@ -104,6 +142,7 @@ fn abort_unapplied_model_change(domain: &DomainRuntime, change: &Transition) -> 
     }).map_err(store_failure).map(|(aborted, _)| aborted)
 }
 fn classify(plan:&Plan)->SelectionTransition{
+    if plan.kind==Kind::Move{return SelectionTransition::CreateWithHandoff}
     if plan.target_account!=plan.source.account{return SelectionTransition::Reject("An active node keeps its account and provider".into())}
     let Some(model)=plan.source.selection.as_ref().and_then(|selection|selection.effective.clone()) else{return SelectionTransition::CreateWithHandoff};
     let current=ActiveSelection{account:plan.source.account.clone(),model,configuration:plan.source.configuration.clone()};
@@ -135,7 +174,7 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
         let canonical=critical_context(owner.state(),task)?;
         let mut entries:Vec<ContextEntry>=vec![];let mut after=None;let mut coverage;
         loop{
-            let page=owner.retained_context(&plan.task,after.as_ref(),256)?;coverage=page.coverage;
+            let page=owner.retained_context(&plan.task,after.as_ref(),128)?;coverage=page.coverage;
             let next=page.next;let last=page.entries.last().map(|entry|entry.reference.clone());entries.extend(page.entries);
             if entries.len()>8192{return Err(failure("Public context exceeds the supported transfer page bound").into())}
             if next.is_none(){break}
@@ -150,6 +189,34 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
         Ok(prepared)
     }).map_err(store_failure).map(|(value,_)|value)
 }
+/// Ends the execution a task moves from and seals it: its host stops, what it did is committed
+/// with its end, and the ended host is the proof that nothing of it writes any more.
+fn end_source(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
+    domain.own(scope(domain)?,|owner|owner.validate_selection_binding(plan)).map_err(store_failure)?;
+    let alive=!matches!(EndedHost::claim(&plan.source.host_directory),Ok(Retained::Ended(_)));
+    if alive || !host_ended(domain,&plan.task)?{
+        let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
+        domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
+        crate::sdk_owner::end_unowned_host(Arc::clone(domain),backend,plan.task.clone()).map_err(failure)?;
+    }
+    ensure_fence(domain,plan)?;
+    let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
+    domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure).map(drop)
+}
+/// Whether the end of the task's current execution is already committed. A host that resumed the
+/// same execution after it may still run: only the host's lock says whether one does.
+fn host_ended(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
+    let read=domain.read();
+    let journal=read.state().lifecycle_journal.get(task).ok_or_else(||failure("The task has no lifecycle"))?;
+    let admitted=journal.iter().rposition(|record|matches!(record,LifecycleRecord::Admitted{..})).unwrap_or(0);
+    Ok(journal.iter().skip(admitted).any(|record|matches!(record,LifecycleRecord::HostEnded{..}|LifecycleRecord::ExecutionReleased{..})))
+}
+/// Whether the task has something to go on with and nobody else to wait for: the moment its next
+/// node starts, as the node it moved from would have resumed then.
+fn ready_to_start(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
+    let read=domain.read();let lifecycle=read.state().lifecycle_of(task)?;
+    Ok(!lifecycle.pending_inputs().is_empty() && matches!(lifecycle.live(),Some(alondra_domain::LiveState::Working(_)|alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Gate))))
+}
 fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
     if domain.selection_changes.fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
     let retained=EndedHost::claim(&plan.source.host_directory).map_err(failure)?;
@@ -162,9 +229,11 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
     let _advance=domain.selection_changes.advancing.lock().await;
     loop{
         let change=current(domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
+        #[cfg(test)]
+        if *domain.selection_changes.crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
         let plan=&change.plan;
-        if plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}
-        if matches!(change.phase,Phase::SourceFenced|Phase::ContextReady|Phase::TargetAdmitted|Phase::Consumed){return Err(failure("Session transfer is disabled; the node keeps its original account and native history"))}
+        if plan.kind==Kind::Model && plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}
+        if plan.kind==Kind::Model && matches!(change.phase,Phase::SourceFenced|Phase::ContextReady|Phase::TargetAdmitted|Phase::Consumed){return Err(failure("Session transfer is disabled; the node keeps its original account and native history"))}
 
         if matches!(change.phase,Phase::Requested|Phase::Draining) && matches!(domain.read().state().lifecycle_of(task)?.phase(),alondra_domain::TaskPhase::Finishing|alondra_domain::TaskPhase::Completed|alondra_domain::TaskPhase::Cancelled){
             phase(domain,&change,Phase::Aborted,json!({"task_ended":true}))?;
@@ -175,8 +244,10 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                 SelectionTransition::Reject(reason)=>return Err(failure(reason)),
                 SelectionTransition::Keep=>{apply_selection(domain,plan,Phase::Requested,Phase::Done,json!({"unchanged_execution":true}))?;return Ok(Phase::Done)},
                 SelectionTransition::ApplyNextTurn=>phase(domain,&change,Phase::Draining,json!({}))?,
+                SelectionTransition::CreateWithHandoff if plan.kind==Kind::Move=>phase(domain,&change,Phase::Draining,json!({}))?,
                 _=>return Err(failure("This change requires a new native session; create a new node instead")),
             },
+            Phase::Draining if plan.kind==Kind::Move=>end_source(domain,plan)?,
             Phase::Draining=>{
                 if matches!(classify(plan), SelectionTransition::ApplyNextTurn) && abort_unapplied_model_change(domain, &change)? { return Ok(Phase::Aborted) }
                 domain.own(scope(domain)?,|owner|owner.validate_selection_source(plan)).map_err(store_failure)?;
@@ -222,6 +293,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
             Phase::SourceFenced=>{ensure_fence(domain,plan)?;prepare_context(domain,plan)?;}
             Phase::ContextReady=>{
                 ensure_fence(domain,plan)?;
+                if plan.kind==Kind::Move && !ready_to_start(domain,task)?{return Ok(Phase::ContextReady)}
                 let prepared:PreparedHandoff=serde_json::from_value(change.facts.clone()).map_err(failure)?;
                 let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
                 let plugin=crate::plugins::node_in(domain.home()).filter(|plugin|plugin.is_dir()).or_else(||Some(domain.home().join(crate::plugins::NODE)).filter(|plugin|plugin.is_dir())).ok_or_else(||failure("Alondra's task plugin is unavailable; run alondra doctor --fix"))?;

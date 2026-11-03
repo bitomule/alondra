@@ -1554,3 +1554,127 @@ fn stop_codex_host(pid: libc::pid_t) {
     assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) }, pid);
     assert!(libc::WIFSTOPPED(status));
 }
+
+/// Claude signed in on its own account, with a model the moved task can run.
+fn claude_ready(slice:&Slice){
+    use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
+    let state=slice.domain.state().unwrap();
+    let mut accounts=state.accounts.clone();
+    accounts.retain(|account|!(account.provider==Provider::Claude && account.id.is_default()));
+    accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0});
+    slice.run(&system(),"claude-fixture-account",Command::RecordAccounts{accounts,reserve:state.account_reserve});
+    slice.run(&system(),"claude-fixture-catalog",Command::RecordModelCatalog{catalog:AccountModelCatalog{
+        account:AccountKey::native(Provider::Claude),revision:"claude-catalog".into(),measured_at:1,native_default:Some("claude-fixture".into()),
+        models:vec![CatalogModel{model:"claude-fixture".into(),display_name:"Claude fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:Some(200_000),input_modalities:vec!["text".into()],is_default:true,hidden:false}],
+    }});
+}
+fn git(worktree:&Path,arguments:&[&str])->String{
+    let output=std::process::Command::new("/usr/bin/git").arg("-C").arg(worktree).args(arguments).output().unwrap();
+    assert!(output.status.success(),"git {arguments:?}: {}",String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+/// What makes the task itself, which a move leaves as it was.
+fn identity(slice:&Slice)->(String,alondra_core::domain::RequestId,alondra_core::domain::TaskPriority,BTreeSet<TaskId>,Option<String>){
+    let state=slice.domain.state().unwrap();let task=&state.tasks[&TaskId::from(TASK)];
+    (task.title.clone(),task.request_id.clone(),task.priority,task.dependencies.clone(),slice.domain.task_worktree(&task.id).unwrap())
+}
+/// The steps the move's journal recorded, in order.
+fn move_steps(slice:&Slice)->Vec<String>{
+    let observer=slice.observer();let mut statement=observer.prepare("SELECT phase FROM provider_transition_steps WHERE task_id=?1 ORDER BY sequence").unwrap();
+    statement.query_map([TASK],|row|row.get(0)).unwrap().map(Result::unwrap).collect()
+}
+/// A Codex node in the middle of its turn, with uncommitted work on its branch.
+fn working_on_codex(slice:&Slice)->AgentId{
+    configured(slice,"hold");claude_ready(slice);
+    git(&slice.worktree,&["init","-q","-b","release-notes"]);
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver=launch(slice);
+    while Slice::lifecycle(&slice.domain).activity()!=ActivityView::Working{driver.observe().unwrap();}
+    std::fs::write(slice.worktree.join("draft.md"),"unfinished notes").unwrap();
+    let source=driver.agent.clone();slice.domain.add_sdk_owner(Owner::spawn(driver));
+    source
+}
+fn request_move(slice:&Slice)->serde_json::Value{
+    let stamp=slice.domain.state().unwrap().task_selection_stamp(&TASK.into()).unwrap();
+    crate::provider_transition::request_move(&slice.domain,&user(),&TASK.into(),AccountKey::native(Provider::Claude),&stamp,||Ok(())).unwrap()
+}
+async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
+    while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
+}
+
+#[tokio::test]
+async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_at_a_time(){
+    use crate::domain_store::provider_transition::Phase;
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let source=working_on_codex(&slice);
+    let before=identity(&slice);
+    request_move(&slice);
+    let state=slice.domain.state().unwrap();
+    assert!(crate::provider_transition::moving(&slice.domain,&task));
+    assert!(crate::provider_transition::holds_execution(&slice.domain,&task),"nothing more reaches the node it leaves");
+    assert!(!to_take(&slice.domain,&state,&task),"no takeover starts a second writer while the source drains");
+    let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
+    assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
+    until_moved(&slice,&mut changed).await;
+    assert_eq!(move_steps(&slice),["requested","draining","source_fenced","context_ready","target_admitted","target_ready","consumed","done"]);
+    let state=slice.domain.state().unwrap();let moved=&state.tasks[&task];
+    assert_eq!(identity(&slice),before,"id, title, request, priority, dependencies and worktree stay the task's own");
+    assert_eq!(state.tasks.len(),1,"a move creates no task and cancels none");
+    assert_eq!(moved.account_key(),AccountKey::native(Provider::Claude));
+    assert_ne!(moved.agent_id.as_ref(),Some(&source));
+    assert!(moved.pending_selection.is_none());
+    assert_eq!(moved.selection.as_ref().unwrap().effective.as_ref().unwrap().model.provider,Provider::Claude);
+    let journal=&state.lifecycle_journal[&task];
+    let ended=journal.iter().position(|record|matches!(record,LifecycleRecord::HostEnded{..})).expect("the source's end is recorded");
+    let admitted:Vec<usize>=journal.iter().enumerate().filter(|(_,record)|matches!(record,LifecycleRecord::Admitted{..})).map(|(at,_)|at).collect();
+    assert_eq!(admitted.len(),2,"one node before the move and one after it");
+    assert!(admitted[1]>ended,"the new node is admitted only once the source ended");
+    assert!(!state.interactions.keys().any(|card|card.0.starts_with("session-ended-")),"the move asks nobody how the task goes on");
+    assert_eq!(git(&slice.worktree,&["symbolic-ref","--short","HEAD"]),"release-notes");
+    assert_eq!(std::fs::read_to_string(slice.worktree.join("draft.md")).unwrap(),"unfinished notes");
+    let prompt=slice.prompts().into_iter().find(|prompt|prompt.contains("The user moved this task to claude/default")).expect("Claude is told about the move");
+    assert!(prompt.contains("Alondra task context (public records)") && prompt.contains("Write the release notes"),"the new node starts from the task's record: {prompt}");
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node(){
+    use crate::domain_store::provider_transition::Phase;
+    for died in [Phase::Draining,Phase::SourceFenced,Phase::ContextReady]{
+        let slice=Slice::new();let task:TaskId=TASK.into();
+        working_on_codex(&slice);
+        request_move(&slice);
+        *slice.domain.selection_changes.crash_at.lock().unwrap()=Some(died);
+        let _=crate::provider_transition::advance(&slice.domain,&task).await;
+        assert_eq!(move_steps(&slice).last().map(String::as_str),Some(died.key()),"the daemon died right after {died:?}");
+        slice.domain.stop_sdk_owners();slice.domain.selection_changes.die();
+        let domain=slice.restart();domain.enable_sdk(slice.backend.clone());
+        let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
+        crate::provider_transition::advance(&domain,&task).await.unwrap();
+        while !move_steps(&slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
+        let state=domain.state().unwrap();
+        let admitted=state.lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count();
+        assert_eq!(admitted,2,"a restart after {died:?} starts no second node for the move");
+        assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+        domain.stop_sdk_owners();
+    }
+}
+
+#[tokio::test]
+async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
+    use crate::domain_store::provider_transition::Phase;
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    slice.domain.stop_sdk_owners();
+    let resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+    slice.domain.add_sdk_owner(Owner::spawn(resumed));
+    assert!(slice.domain.state().unwrap().lifecycle_journal[&task].iter().any(|record|matches!(record,LifecycleRecord::HostEnded{..})),"the first host's end is recorded and a host that resumes the same execution runs");
+    request_move(&slice);
+    let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
+    assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
+    until_moved(&slice,&mut changed).await;
+    let state=slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    assert_eq!(state.lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count(),2);
+    slice.domain.stop_sdk_owners();
+}

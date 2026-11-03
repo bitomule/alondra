@@ -12,6 +12,7 @@ Daily
   answer       Answer a question
   send         Send a message to a task or the orchestrator
   cancel       Cancel tasks
+  move         Move a task to another account
 
 Devices and Macs
   device       Devices that use a Mac  (list · approve · deny · remove · invite)
