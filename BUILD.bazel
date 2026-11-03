@@ -6,6 +6,7 @@ filegroup(
     srcs = [
         "LICENSE.md",
         "THIRD_PARTY_NOTICES.md",
+        "//apple/Features:Sources/Settings/Licenses/AppLicenses.swift",
         "Cargo.toml",
         "Cargo.lock",
         "MODULE.bazel",

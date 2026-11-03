@@ -31,6 +31,9 @@ class LicenseTests(unittest.TestCase):
     def test_notices_were_generated_from_the_current_lockfiles(self):
         self.assertEqual(notices.stale(ROOT), [])
 
+    def test_app_licenses_screen_data_matches_the_license_and_the_notices(self):
+        self.assertEqual((ROOT / notices.APP_LICENSES).read_text(), notices.app_licenses_source(ROOT))
+
     def test_notices_say_the_agent_sdk_is_not_under_fsl(self):
         text = (ROOT / "THIRD_PARTY_NOTICES.md").read_text()
         section = text.split("## Anthropic Agent SDK: not under FSL", 1)[1].split("\n## ", 1)[0]

@@ -22,6 +22,7 @@ public struct SettingsView: View {
             if store.supportsNotifications { notifications } else if store.alertsNeedAccount { alertsNeedAccount }
             ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
             CrashReportRow(store: store.scope(state: \.crashReport, action: \.crashReport))
+            LicensesRow()
             about
         }
         .scrollContentBackground(.hidden)

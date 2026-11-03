@@ -49,6 +49,7 @@ public struct MacSettingsView<PairingContent: View>: View {
             }
             ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
             CrashReportRow(store: store.scope(state: \.crashReport, action: \.crashReport))
+            LicensesRow()
         }
         .sheet(item: $store.scope(state: \.pairing, action: \.pairing)) { pairing in
             NavigationStack {

@@ -49,3 +49,8 @@ filegroup(
     srcs = glob(["Sources/**/*.swift"]),
     visibility = ["//apple:__pkg__"],
 )
+
+exports_files(
+    ["Sources/Settings/Licenses/AppLicenses.swift"],
+    visibility = ["//:__pkg__"],
+)

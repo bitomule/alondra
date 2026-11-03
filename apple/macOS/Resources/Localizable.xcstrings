@@ -1,6 +1,12 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Licenses": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencias"}}}},
+    "Functional Source License 1.1, MIT Future License": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Functional Source License 1.1, con licencia MIT futura"}}}},
+    "The Alondra name and logo are not licensed.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El nombre y el logotipo de Alondra no tienen licencia."}}}},
+    "Third-party software": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Software de terceros"}}}},
+    "License": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencia"}}}},
+    "Open-source packages linked into the apps, each under its own license.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Paquetes de código abierto incluidos en las apps, cada uno con su propia licencia."}}}},
     "Share": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Compartir"}}}},
     "Couldn’t download it from your Mac · Retry": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo descargar desde tu Mac · Reintentar"}}}},
     "This file is no longer on your Mac as the card names it": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este archivo ya no está en tu Mac tal como lo nombra la tarjeta"}}}},
