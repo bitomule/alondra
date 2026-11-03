@@ -760,10 +760,15 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
+    let stopped_by_alondra = worker.state_directory().join(STOPPED_BY_ALONDRA);
     let journal = match worker.find_host(&grant, &adapter_state).map_err(adapter("finding the SDK host"))? {
         Found::Live => None,
         Found::Ended(journal) => Some(journal),
     };
+    let by_alondra = stopped_by_alondra.exists();
+    if journal.is_none() {
+        remove_stop_mark(&stopped_by_alondra);
+    }
     let Some(journal) = journal else {
         if !relaunch {
             if !end_refused {
@@ -771,6 +776,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             }
             log!("the SDK host of {task} still runs with no owner: it is stopped without resuming its Claude session");
             drop(worker);
+            mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host did not stop: {error}")))?;
             return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
@@ -782,6 +788,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             }
             log!("the live SDK host of {task} refused its adoption ({error:?}): it is stopped and a host that resumes the same Claude session takes its place");
             drop(worker);
+            mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
             return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
@@ -864,14 +871,14 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             expected_revision: 0,
             command,
         };
-        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch, ended_work: ended_work.clone() }), Attached::None)?;
+        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch, ended_work: ended_work.clone(), by_alondra }), Attached::None)?;
         let doubted: Vec<InputId> = owner.lifecycle(&task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
         for (input, status) in owner.pending_handoffs(&task)? {
             let (id, text) = (input.id().as_str().to_owned(), input.text().to_owned());
             let command = match status.as_str() {
                 "rejected" => Command::ResendUntakenInput { task_id: task.clone(), generation, input: id.clone(), text },
                 _ if doubted.contains(input.id()) => continue,
-                _ => Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: id.clone(), text, resumes: relaunch },
+                _ => Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: id.clone(), text, resumes: relaunch, by_alondra },
             };
             owner.stage_command(&Actor::System, &envelope(id, command), Attached::None)?;
         }
@@ -1553,6 +1560,9 @@ impl Driver {
     /// its place, as a daemon that comes back does (`adopt`). The ended host's journal says what it
     /// took; the task asks the user how to go on, and what it is told next reaches that session.
     pub(crate) fn replace_ended_host(mut self, backend: &SdkBackend, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
+        if self.owner_failed && !self.host_closed || self.moves_to_this_release {
+            mark_stopped_by_alondra(self.worker.state_directory());
+        }
         self.stop()?;
         let (domain, task) = (Arc::clone(&self.domain), self.task.clone());
         drop(self);
@@ -1579,6 +1589,25 @@ impl Drop for Driver {
 
 fn feed(provider: Provider, domain: &DomainRuntime, agent: &AgentId, batch: &OrderedObservation) {
     match provider { Provider::Claude => crate::sdk_live::feed(domain, agent, batch), Provider::Codex => crate::codex_live::feed(domain, agent, batch) }
+}
+
+/// Marks, in the host's folder, that Alondra itself ends the host: the daemon stops it, or its
+/// owner failed. The daemon that takes the ended host over reads it, so the end does not count as
+/// one of a session that keeps closing; the folder, and the mark with it, is archived when a new
+/// host takes its place. A mark that cannot be written leaves the end counted as the session's.
+const STOPPED_BY_ALONDRA: &str = "stopped-by-alondra";
+fn mark_stopped_by_alondra(state_directory: &std::path::Path) {
+    if let Err(error) = std::fs::write(state_directory.join(STOPPED_BY_ALONDRA), b"") {
+        log!("could not mark the stop of the SDK host in {} as Alondra's own: {error}", state_directory.display());
+    }
+}
+/// A live host goes on: a mark left by a stop that did not end it no longer applies.
+fn remove_stop_mark(mark: &std::path::Path) {
+    if let Err(error) = std::fs::remove_file(mark)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        log!("could not remove the mark of an SDK host stop that did not end it ({}): {error}", mark.display());
+    }
 }
 
 /// Commits what the host observed. What the domain refuses never stops the node: the observation
@@ -1651,6 +1680,8 @@ pub(crate) struct Owner {
     /// A holder that panics leaves it whole, so it is recovered: one assignment or a read.
     host: Arc<Mutex<Option<alondra_agent_runtime::owned_host::HostStop>>>,
     agent: AgentId,
+    /// The host's folder, where its stop is marked as Alondra's own.
+    state_directory: std::path::PathBuf,
     thread: Option<std::thread::JoinHandle<Result<(), Failed>>>,
 }
 
@@ -1663,6 +1694,7 @@ impl Owner {
         let host = Arc::new(Mutex::new(driver.worker.stopper()));
         let current = Arc::clone(&host);
         let agent = driver.agent.clone();
+        let state_directory = driver.worker.state_directory().to_path_buf();
         let flag = Arc::clone(&stopped);
         let domain_of_owner = Arc::clone(&domain);
         let ended = Arc::new(AtomicBool::new(false));
@@ -1743,7 +1775,7 @@ impl Owner {
                 stopped
             })
             .expect("spawning the SDK owner");
-        Self { stopped, ended, interrupt, domain, host, agent, thread: Some(thread) }
+        Self { stopped, ended, interrupt, domain, host, agent, state_directory, thread: Some(thread) }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -1779,6 +1811,7 @@ impl Owner {
 
     fn end(&mut self) -> Result<(), Failed> {
         self.stopped.store(true, Ordering::SeqCst);
+        mark_stopped_by_alondra(&self.state_directory);
         self.domain.seals.wake();
         let interrupt = self.interrupt.load(Ordering::SeqCst);
         if let Some(host) = self.host.lock_or_recover("the SDK host stop").as_ref()

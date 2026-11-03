@@ -124,7 +124,7 @@ fn unit(shape: Shape) -> DomainState {
             RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
         ] });
         if shape == Shape::SessionEnded {
-            seed.run(Actor::System, Command::RecordHostEnded { task_id: task.as_str().into(), generation: 1, resumes: false, ended_work: vec![] });
+            seed.run(Actor::System, Command::RecordHostEnded { task_id: task.as_str().into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
             return seed.0;
         }
         seed.run(Actor::System, Command::RecordMcpServers { task_id: task.as_str().into(), generation: 1, servers: vec![McpServerState {

@@ -1661,14 +1661,15 @@ impl DomainState {
     /// when it cannot, the delivery comes back to the user.
     /// The resumed session is told which background work (`ended_work`) ended with the host, so
     /// it never waits for a notification no process will send.
-    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, by_alondra: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let card = session_ended_card_id(task, generation, lifecycle.cursor().unwrap_or(0) + 1);
         let forced = lifecycle.turn_stop() == Some(alondra_domain::TurnStop::ForceRequested);
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
         let available = lifecycle.resource() == Some(ResourceEvidence::Available);
-        let looped = resumes && resumed_without_progress(self.lifecycle_journal[task].iter());
+        let looped = resumes && keeps_closing(self.lifecycle_journal[task].iter(), by_alondra);
         let after_merge = self.work_after_merge(task, lifecycle);
         let resumed_text = after_merge.as_deref().map_or_else(|| HOST_RESUMED_INSTRUCTION.to_owned(), post_merge_resumed_instruction) + &ended_work_note(ended_work);
         let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
@@ -1719,10 +1720,11 @@ impl DomainState {
     /// `input`, told `text`, was handed to a host that ended before it showed the input was read.
     /// When a host that resumes the same Claude session takes its place (`resumes`), the same text
     /// goes to it with a note that its conversation may already have it: Claude reads its own
-    /// transcript, so it sees whether it did. Otherwise, or when the session already ended again
-    /// before a turn of it ended, the task holds on a card that asks the user to send it again or
-    /// take it as received.
-    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// transcript, so it sees whether it did. Otherwise, or when the session keeps closing
+    /// (`keeps_closing`), the task holds on a card that asks the user to send it again or take it
+    /// as received.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, by_alondra: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let card = handoff_doubt_card_id(task, generation, input);
         if self.interactions.contains_key(&card) {
@@ -1730,7 +1732,7 @@ impl DomainState {
         }
         let journal = &self.lifecycle_journal[task];
         let before_end = journal.iter().rposition(|record| matches!(record, LifecycleRecord::HostEnded { .. })).unwrap_or(journal.len());
-        if resumes && !resumed_without_progress(journal.iter().take(before_end)) {
+        if resumes && !keeps_closing(journal.iter().take(before_end), by_alondra) {
             let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(format!("{RESENT_NOTE}\n\n{text}")) };
             return self.decide(lifecycles, task, record);
         }
@@ -2467,6 +2469,24 @@ fn session_ended_card_id(task: &TaskId, generation: u64, cursor: u64) -> Interac
 fn handoff_doubt_card_id(task: &TaskId, generation: u64, input: &str) -> InteractionId {
     let input: String = input.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).collect();
     InteractionId(format!("{HANDOFF_DOUBT_PREFIX}{task}-{generation}-{input}"))
+}
+
+/// How many ends of a host in a row, with no turn finished between them, Alondra's own ends may
+/// reach before the session is taken for one that keeps closing.
+const ALONDRA_ENDS_IN_A_ROW: usize = 3;
+
+/// Whether a session whose host just ended, after `journal`, would only end the same way if
+/// resumed. An end the session caused itself counts when it already ended once since its last
+/// finished turn; an end Alondra caused (`by_alondra`) says nothing about the session, and counts
+/// only once `ALONDRA_ENDS_IN_A_ROW` ends came with no finished turn, so an error of Alondra's own
+/// that repeats does not resume it for ever.
+fn keeps_closing<'a>(journal: impl DoubleEndedIterator<Item = &'a LifecycleRecord>, by_alondra: bool) -> bool {
+    if !by_alondra {
+        return resumed_without_progress(journal);
+    }
+    let ended = journal.rev().take_while(|record| !matches!(record, LifecycleRecord::TurnEnded { .. }))
+        .filter(|record| matches!(record, LifecycleRecord::HostEnded { .. })).count();
+    ended + 1 >= ALONDRA_ENDS_IN_A_ROW
 }
 
 /// Whether Alondra already resumed the task's session by itself after its host ended, and no turn

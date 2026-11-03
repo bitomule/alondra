@@ -2230,6 +2230,69 @@ fn an_owner_whose_step_fails_stops_its_host_and_resumes_the_session_in_a_new_one
     resumed.stop().unwrap();
 }
 
+/// A node cut by a restart whose resumed session works on in a long turn, with a message handed to
+/// it that it has not read yet: the state of t-corrupt-journal-detail-codex on 2026-10-27 at 17:42.
+fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver) {
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    kill_host_and_daemon(driver);
+    std::fs::write(format!("{}.hold", slice.capture.display()), "").unwrap();
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    resumed.step(&|| false).unwrap();
+    while lifecycle(&restarted).activity() != ActivityView::Working {
+        resumed.observe().unwrap();
+    }
+    let state = restarted.state().unwrap();
+    let tell = Command::TellNode { task_id: TASK.into(), text: "[From the orchestrator · 17:42] Keep the journal's old rows".into(), from_user: false };
+    restarted.execute_fixture(&Actor::System, envelope(&state, "orchestrator-message", tell)).unwrap();
+    assert_eq!(resumed.pending_permits(), 1, "the message goes to the host while the turn runs");
+    resumed.step(&|| false).unwrap();
+    assert!(slice.prompts().last().unwrap().ends_with("Keep the journal's old rows"), "{:?}", slice.prompts());
+    assert_eq!(lifecycle(&restarted).pending_inputs().len(), 1, "it is not read yet");
+    (restarted, resumed)
+}
+
+/// Nobody is asked about the message: it goes again, flagged, to the session the new host resumes.
+fn assert_message_goes_again_by_itself(domain: &DomainRuntime) {
+    assert!(open_card(domain, HANDOFF_DOUBT_PREFIX).is_none(), "no card asks whether to send the message again");
+    assert!(open_card(domain, SESSION_ENDED_PREFIX).is_none(), "no card asks how the task goes on");
+    let read = domain.read();
+    let journal = &read.state().lifecycle_journal[&TaskId::from(TASK)];
+    assert!(journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { text: Some(text), .. }
+        if text.starts_with("Your session was cut off when its host stopped") && text.ends_with("Keep the journal's old rows"))), "the message is sent again");
+}
+
+// 2026-10-27, t-corrupt-journal-detail-codex: after a restart its session worked on for 8 minutes,
+// then its owner stopped on an error of Alondra's own. The resumed session had not finished a turn,
+// so its end was taken for a session that keeps closing, and the user got «closed before confirming
+// it read your message: send it again?». An end Alondra caused is no such sign: it resumes again.
+#[test]
+fn a_message_cut_when_the_owner_of_a_resumed_session_fails_goes_again_without_asking() {
+    let slice = Slice::new();
+    let (restarted, mut resumed) = resumed_with_an_unread_message(&slice);
+    resumed.fail_next_step = true;
+    assert!(resumed.step(&|| false).is_err(), "the step failed");
+    assert!(resumed.host_to_replace());
+    let mut next = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert_message_goes_again_by_itself(&restarted);
+    next.stop().unwrap();
+}
+
+// The same message when the daemon stops (a restart, an update) while the resumed session works.
+#[test]
+fn a_message_cut_when_the_daemon_stops_a_resumed_session_goes_again_without_asking() {
+    let slice = Slice::new();
+    let (restarted, resumed) = resumed_with_an_unread_message(&slice);
+    let mut owner = Owner::spawn(resumed);
+    owner.stop().unwrap();
+    drop(restarted);
+    let again = slice.restart();
+    let mut next = slice.take_over(&again);
+    assert_message_goes_again_by_itself(&again);
+    next.stop().unwrap();
+}
+
 // A replacement whose owner fails before it was handed anything is not replaced again: it would only
 // end again. Its owner still stops it, and the task gets a card that says what happened and offers
 // to try again or cancel; it is never left as it is.
@@ -2312,10 +2375,11 @@ fn a_turn_end_alondra_cannot_record_fails_only_that_turn_and_a_new_host_resumes_
     resumed.stop().unwrap();
 }
 
-// The same happens again in the session Alondra resumed, before any of its turns ended: resuming
-// once more would only end the same way, so one card asks the user how it goes on.
+// The same keeps happening in the sessions Alondra resumed, before any of their turns ended. An end
+// Alondra caused says nothing about the session, so the second one resumes it too; by the third in
+// a row, resuming once more would only end the same way, so one card asks the user how it goes on.
 #[test]
-fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
+fn a_turn_end_alondra_keeps_failing_to_record_asks_the_user_once_on_its_third_end() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     let unrecorded = |driver: &mut Driver| loop {
@@ -2326,11 +2390,15 @@ fn a_turn_end_alondra_cannot_record_again_after_resuming_asks_the_user_once() {
     crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
     unrecorded(&mut driver);
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    resumed.step(&|| false).unwrap();
-    crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
-    unrecorded(&mut resumed);
-    assert!(resumed.host_to_replace());
-    let mut again = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    for _ in 0..2 {
+        resumed.step(&|| false).unwrap();
+        assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "an end Alondra caused resumes the session again");
+        crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
+        unrecorded(&mut resumed);
+        assert!(resumed.host_to_replace());
+        resumed = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    }
+    let mut again = resumed;
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card to try again");
     let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("one card asks how it goes on");
     let InteractionPayload::Question { options, .. } = &card.payload else { unreachable!() };

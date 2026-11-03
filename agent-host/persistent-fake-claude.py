@@ -490,6 +490,11 @@ for raw in sys.stdin:
             result(message, subtype='error_max_turns')
         elif text == 'consume-and-hold':
             consume(message)
+        elif os.path.exists(capture + '.hold'):
+            # Like the native Codex of 2026-10-27, resumed into a long turn: it takes the first prompt
+            # and keeps working, and a message that arrives meanwhile waits unread in that turn.
+            if len(pending) == 1:
+                consume(message)
         elif text.endswith('rate-limited-twice'):
             # Like the native Claude whose subagent hands its report back after the usage limit
             # ended the turn: it opens a turn of its own, which the limit ends too.

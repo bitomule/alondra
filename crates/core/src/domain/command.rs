@@ -583,11 +583,16 @@ pub enum Command {
         resumes: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         ended_work: Vec<String>,
+        /// Alondra ended the host itself (the daemon stopped it, or the host's owner failed): its
+        /// end says nothing about whether the session can go on.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_alondra: bool,
     },
     /// `input`, told `text`, was handed to the Task's SDK host of `generation`, which ended before
     /// it showed the input was read. When a host that resumes the same Claude session takes its
     /// place (`resumes`), the same text goes to it, flagged as possibly received already; otherwise
-    /// a card asks the user to send it again or take it as received.
+    /// a card asks the user to send it again or take it as received. `by_alondra` as in
+    /// `RecordHostEnded`.
     RecordDoubtfulHandoff {
         task_id: TaskId,
         generation: u64,
@@ -595,6 +600,8 @@ pub enum Command {
         text: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         resumes: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_alondra: bool,
     },
     /// The Task's SDK execution could not be taken over and has no host to run on: `reason` says
     /// why. Its card offers to try again or to cancel the Task.

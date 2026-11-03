@@ -1035,6 +1035,29 @@ fn kill_native(native: &alondra_process_group::Member) {
     exits.wait().unwrap();
 }
 
+// 2026-10-27, 0.3.9, t-corrupt-journal-detail-codex: the app-server of a working Codex node went
+// away and its host said so with alondra/transportFailed. The adapter normalizes that notice to a
+// lost transport, which the domain does not record, and the owner stopped on «provider observation
+// refused: RequiresDomainCommand». The owner takes the notice as the end of the Codex before it
+// commits anything, and a host that resumes the same thread takes its place.
+#[test]
+fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_one() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    kill_native(&native_process(&mut driver));
+    let error = loop {
+        if let Err(error) = driver.observe() { break error; }
+    };
+    assert!(driver.host_closed, "the transport failure ends the host instead of stopping its owner: {error}");
+    assert!(driver.host_to_replace());
+    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    while turns_started(&slice.domain) < 2 { resumed.step(&|| true).unwrap(); }
+    assert_eq!(resumed_threads(&trace).len(), 1, "the same thread goes on");
+    resumed.stop().unwrap();
+}
+
 #[test]
 fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken_for_an_unopened_host() {
     let slice = Slice::new();

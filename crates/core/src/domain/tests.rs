@@ -3331,8 +3331,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordAccounts { accounts: vec![], reserve: crate::usage::default_reserve() }, true),
         (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
-        (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![] }, false),
-        (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false }, false),
+        (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
+        (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::RecordDroppedInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
@@ -4637,7 +4637,7 @@ fn guards_refuse_what_the_commands_refuse() {
         RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input: input.clone() },
     ] }).unwrap();
     let mut ended = sdk.clone();
-    exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![] }).unwrap();
+    exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }).unwrap();
     let mut lost = sdk.clone();
     exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
     let mut resting = sdk.clone();
@@ -5221,7 +5221,7 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
     exec(&mut finished, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None, failed: None }).unwrap();
     assert_eq!(offered(&finished), None, "a turn that ended is no failure");
     let mut ended = sdk.clone();
-    exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![] }).unwrap();
+    exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }).unwrap();
     assert_eq!(offered(&ended), Some(ReportedFailure::SessionEnded));
     let mut lost = sdk.clone();
     exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();

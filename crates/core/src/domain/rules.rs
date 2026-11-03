@@ -4750,17 +4750,17 @@ impl DomainState {
                 nonempty(text)?;
                 self.record_dropped_input(task_id, *generation, input, text, effects, lifecycles)?;
             }
-            Command::RecordHostEnded { task_id, generation, resumes, ended_work } => {
+            Command::RecordHostEnded { task_id, generation, resumes, ended_work, by_alondra } => {
                 system(actor)?;
                 self.task(task_id)?;
-                self.record_host_ended(task_id, *generation, *resumes, ended_work, effects, lifecycles)?;
+                self.record_host_ended(task_id, *generation, *resumes, *by_alondra, ended_work, effects, lifecycles)?;
             }
-            Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes } => {
+            Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes, by_alondra } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(input)?;
                 nonempty(text)?;
-                self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, effects, lifecycles)?;
+                self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, *by_alondra, effects, lifecycles)?;
             }
             Command::RecordHostLost { task_id, reason } => {
                 system(actor)?;

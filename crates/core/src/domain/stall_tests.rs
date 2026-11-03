@@ -228,7 +228,7 @@ fn run(s: &mut DomainState, step: &Step, turns: &mut u32) {
         Step::Unsettled if open_case(s).is_some() => { let _ = settle(s, Actor::System, StallOutcome::Unsettled); }
         Step::HostEnded { resumes } if lifecycle(s).execution().is_some() => {
             let generation = lifecycle(s).execution().unwrap().generation();
-            let _ = exec(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation, resumes: *resumes, ended_work: vec![] });
+            let _ = exec(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation, resumes: *resumes, ended_work: vec![], by_alondra: false });
         }
         Step::SetModel => { let _ = exec(s, user(), Command::SetModel { task_id: "t".into(), model: "claude-sonnet".into() }); }
         Step::Restart => *s = serde_json::from_str(&serde_json::to_string(s).unwrap()).unwrap(),
