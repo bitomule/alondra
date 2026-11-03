@@ -19,6 +19,7 @@ private final class FixtureProcess: Sendable {
     private let input: FileHandle
     private let output: FileHandle
     private let errorOutput: FileHandle
+    private let errors: URL
     private let reader = DispatchQueue(label: "alondra.process-fixture-reader")
     private let watchdog = DispatchQueue(label: "alondra.process-fixture-watchdog")
     private let prefix: String
@@ -27,7 +28,7 @@ private final class FixtureProcess: Sendable {
         let stdin = Pipe(), stdout = Pipe()
         input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
         self.prefix = prefix
-        let errors = home.appending(path: "process-errors.log")
+        errors = home.appending(path: "process-errors.log")
         guard FileManager.default.createFile(atPath: errors.path, contents: nil) else { throw ProcessFixtureError.childFailed }
         errorOutput = try FileHandle(forWritingTo: errors)
         var environment = ProcessInfo.processInfo.environment
@@ -94,6 +95,8 @@ private final class FixtureProcess: Sendable {
                             }
                             guard sawByte else {
                                 if state.withLock({ $0.expired }) { throw ProcessFixtureError.deadline(phase) }
+                                let stderr = (try? String(contentsOf: self.errors, encoding: .utf8)) ?? ""
+                                print("fixture pid=\(self.pid) closed its output; its stderr ends:\n\(stderr.suffix(4096))")
                                 throw ProcessFixtureError.endOfOutput(phase)
                             }
                             if bytes.isEmpty { continue }

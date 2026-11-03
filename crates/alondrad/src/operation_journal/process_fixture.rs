@@ -593,6 +593,31 @@ fn timing(stage: &str, request: &Value, at: std::time::SystemTime) {
         "us":us,"method":request["method"],"path":request["path"]}));
 }
 
+/// One life of the fixture's iroh endpoint, on a runtime of its own. iroh frees the UDP port only
+/// after every task holding the endpoint is gone, and netwatch then closes the socket on a blocking
+/// thread. Dropping the runtime drops those tasks and joins its blocking threads, so once `close`
+/// returns the port can be bound again.
+struct IrohLife {
+    runtime: tokio::runtime::Runtime,
+    endpoint: iroh::Endpoint,
+}
+
+impl IrohLife {
+    async fn open(service: &Arc<crate::service::Service>, harness: &Arc<Harness>, port: u16) -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let bound = service.clone();
+        let endpoint = runtime.spawn(async move { bind_iroh(&bound, port).await }).await.unwrap();
+        runtime.spawn(serve_iroh(endpoint.clone(), service.clone(), harness.clone()));
+        Self { runtime, endpoint }
+    }
+
+    async fn close(self) {
+        let Self { runtime, endpoint } = self;
+        runtime.spawn(async move { endpoint.close().await }).await.unwrap();
+        tokio::task::spawn_blocking(move || drop(runtime)).await.unwrap();
+    }
+}
+
 fn fixture_iroh_address(endpoint: &iroh::Endpoint) -> std::net::SocketAddr {
     endpoint.bound_sockets().first().copied().unwrap_or_else(|| ([127, 0, 0, 1], 0).into())
 }
@@ -630,11 +655,13 @@ async fn iroh_daemon(
         results: AtomicU64::new(0),
         acknowledgments: AtomicU64::new(0),
     });
-    let bound = bind_iroh(&service, port).await;
-    let address = fixture_iroh_address(&bound);
+    let first = IrohLife::open(&service, &harness, port).await;
+    let address = fixture_iroh_address(&first.endpoint);
+    let mut endpoint = Some(first);
+    // While the endpoint is closed the fixture holds its port, so no other process takes it before
+    // the endpoint opens there again.
+    let mut held = None;
     let relay = std::env::var("ALONDRA_FIXTURE_IROH_RELAY").ok();
-    let mut serving = tokio::spawn(serve_iroh(bound.clone(), service.clone(), harness.clone()));
-    let mut endpoint = Some(bound);
     emit(json!({"event":"ready","data_epoch":epoch,"action_id":action,"option_id":"yes",
         "fixture_home":home.to_str().unwrap(),"mac_id":"mac-1","device_id":"phone-1",
         "signing_seed_base64":STANDARD.encode(PHONE_SIGNING),"agreement_seed_base64":STANDARD.encode(PHONE_AGREEMENT),
@@ -655,15 +682,14 @@ async fn iroh_daemon(
                 if let Some(closed) = endpoint.take() {
                     closed.close().await;
                 }
-                serving.abort();
-                let _ = (&mut serving).await;
                 harness.release.notify_waiters();
+                held = Some(std::net::UdpSocket::bind(address).expect("the closed endpoint left its port free"));
                 emit(json!({"event":"endpoint_closed"}));
             }
             "open_endpoint" => {
-                let opened = bind_iroh(&service, address.port()).await;
-                serving = tokio::spawn(serve_iroh(opened.clone(), service.clone(), harness.clone()));
-                emit(json!({"event":"endpoint_open","iroh_address":fixture_iroh_address(&opened).to_string(),"iroh_relay":relay}));
+                drop(held.take());
+                let opened = IrohLife::open(&service, &harness, address.port()).await;
+                emit(json!({"event":"endpoint_open","iroh_address":fixture_iroh_address(&opened.endpoint).to_string(),"iroh_relay":relay}));
                 endpoint = Some(opened);
             }
             "stats" => {
@@ -681,8 +707,6 @@ async fn iroh_daemon(
     if let Some(endpoint) = endpoint.take() {
         endpoint.close().await;
     }
-    serving.abort();
-    let _ = serving.await;
     reader.join().unwrap();
     drop(service);
     drop(domain);
