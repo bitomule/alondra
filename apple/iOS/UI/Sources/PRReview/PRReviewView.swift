@@ -33,18 +33,7 @@ public struct PRReviewView: View {
                           comment: { store.send(.comment(anchor: $0, $1)) }, retry: { store.send(.retryDiff) })
         }
         .sheet(isPresented: Binding(get: { store.isComposing }, set: { if !$0 { store.send(.dismissSheet) } })) { sheet }
-        .sheet(item: Binding(get: { store.attachment }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
-            AttachmentPreviewView(preview: preview)
-        }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
-        .alert("Could not open attachment", isPresented: Binding(
-            get: { store.failure != nil },
-            set: { if !$0 { store.send(.dismissFailure) } }
-        )) {
-            Button("OK") { store.send(.dismissFailure) }
-        } message: {
-            Text(store.failure ?? "")
-        }
     }
 
     @ViewBuilder private var placeholder: some View {

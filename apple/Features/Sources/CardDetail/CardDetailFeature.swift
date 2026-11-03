@@ -31,7 +31,6 @@ public struct CardDetailFeature: Sendable {
         public var reply = ""
         public var composing: Composing?
         public var composition: TriageCardFeature.Composition?
-        public var preview: AttachmentPreview?
         public var awaitingAttachments = false
         /// What the person filled in the MCP form the card carries, starting from its defaults.
         public var formValues: [String: JSONValue] = [:]
@@ -146,9 +145,6 @@ public struct CardDetailFeature: Sendable {
         case noteChanged(String)
         case compositionConfirmed
         case compositionCancelled
-        case attachmentTapped(Attachment)
-        case attachmentLoaded(Attachment, Data)
-        case previewClosed
         case opened(ViewKey)
         case submit
         case loadTimedOut
@@ -302,20 +298,6 @@ public struct CardDetailFeature: Sendable {
                     composition.note.isEmpty ? .none : .send(.actions(.textChanged(composition.note))),
                     .send(.submit)
                 )
-            case .attachmentTapped(let attachment):
-                return .run { [viewsClient] send in
-                    guard let data = try? await viewsClient.fetchAttachment(attachment) else {
-                        await send(.actions(.failed(String(localized: "Couldn’t load this from your Mac. Try again."))))
-                        return
-                    }
-                    await send(.attachmentLoaded(attachment, data))
-                }
-            case .attachmentLoaded(let attachment, let data):
-                state.preview = AttachmentPreview(attachment: attachment, data: data)
-                return .none
-            case .previewClosed:
-                state.preview = nil
-                return .none
             case .submit:
                 guard state.actions.action != nil else { return .none }
                 guard state.attachments.canPrepareSubmission else {

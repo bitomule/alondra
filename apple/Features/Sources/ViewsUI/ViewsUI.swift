@@ -139,14 +139,13 @@ public struct ViewItemRenderer: View {
     public var onLink: (Link) -> Void
     public var onForm: (WireForm) -> Void
     public var onContent: ((ContentRef) -> Void)?
-    public var onAttachment: ((Attachment) -> Void)?
     public var excludedActionIDs: Set<String> = []
-    public init(item: ViewItem, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, onAttachment: ((Attachment) -> Void)? = nil, excludingActionIDs: Set<String> = []) {
-        self.item = item; self.onAction = onAction; self.onLink = onLink; self.onForm = onForm; self.onContent = onContent; self.onAttachment = onAttachment; self.excludedActionIDs = excludingActionIDs
+    public init(item: ViewItem, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, excludingActionIDs: Set<String> = []) {
+        self.item = item; self.onAction = onAction; self.onLink = onLink; self.onForm = onForm; self.onContent = onContent; self.excludedActionIDs = excludingActionIDs
     }
     @ViewBuilder public var body: some View {
         switch item {
-        case let .card(value): CardView(card: value, onAction: onAction, onLink: onLink, onAttachment: onAttachment, excludingActionIDs: excludedActionIDs)
+        case let .card(value): CardView(card: value, onAction: onAction, onLink: onLink, excludingActionIDs: excludedActionIDs)
         case let .row(value): RowView(row: value, onAction: onAction, onLink: onLink)
         case let .markdown(value): MarkdownView(markdown: value)
         case let .contentRef(value): ContentRefView(content: value, onOpen: onLink, onLoad: onContent)
@@ -168,10 +167,9 @@ public struct SectionView: View {
     public var onMore: (String) -> Void
     public var onForm: (WireForm) -> Void
     public var onContent: ((ContentRef) -> Void)?
-    public var onAttachment: ((Attachment) -> Void)?
     public var excludedActionIDs: Set<String> = []
-    public init(section: ViewSection, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onMore: @escaping (String) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, onAttachment: ((Attachment) -> Void)? = nil, excludingActionIDs: Set<String> = []) {
-        self.section = section; self.onAction = onAction; self.onLink = onLink; self.onMore = onMore; self.onForm = onForm; self.onContent = onContent; self.onAttachment = onAttachment; self.excludedActionIDs = excludingActionIDs
+    public init(section: ViewSection, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onMore: @escaping (String) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, excludingActionIDs: Set<String> = []) {
+        self.section = section; self.onAction = onAction; self.onLink = onLink; self.onMore = onMore; self.onForm = onForm; self.onContent = onContent; self.excludedActionIDs = excludingActionIDs
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -184,7 +182,7 @@ public struct SectionView: View {
             }
             if !section.collapsed {
                 ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
-                    ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent, onAttachment: onAttachment, excludingActionIDs: excludedActionIDs)
+                    ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent, excludingActionIDs: excludedActionIDs)
                 }
                 if let more = section.more {
                     Button("Show \(more.remaining) more") { onMore(more.key) }
@@ -199,9 +197,8 @@ public struct CardView: View {
     public let card: Card
     public var onAction: (Action) -> Void
     public var onLink: (Link) -> Void
-    public var onAttachment: ((Attachment) -> Void)?
     public var excludedActionIDs: Set<String> = []
-    public init(card: Card, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onAttachment: ((Attachment) -> Void)? = nil, excludingActionIDs: Set<String> = []) { self.card = card; self.onAction = onAction; self.onLink = onLink; self.onAttachment = onAttachment; self.excludedActionIDs = excludingActionIDs }
+    public init(card: Card, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, excludingActionIDs: Set<String> = []) { self.card = card; self.onAction = onAction; self.onLink = onLink; self.excludedActionIDs = excludingActionIDs }
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
@@ -219,21 +216,7 @@ public struct CardView: View {
             }
             ForEach(Array(card.timestamps.enumerated()), id: \.offset) { _, stamp in Label(ViewsDate.display(stamp.at, format: stamp.format), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
             if let body = card.body { MarkdownView(markdown: body) }
-            if !card.attachments.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(card.attachments, id: \.id) { attachment in
-                        if let onAttachment {
-                            Button { onAttachment(attachment) } label: {
-                                Label("\(attachment.name) · \(ByteCountFormatter.string(fromByteCount: Int64(clamping: attachment.size), countStyle: .file))", systemImage: attachment.kind == .image ? "photo" : "paperclip")
-                                    .font(.footnote.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
-                            }.buttonStyle(.plain).help("Open attachment")
-                        } else {
-                            Label("\(attachment.name) · \(ByteCountFormatter.string(fromByteCount: Int64(clamping: attachment.size), countStyle: .file))", systemImage: attachment.kind == .image ? "photo" : "paperclip")
-                                .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
+            CardAttachmentGallery(attachments: card.attachments)
             let actions = card.actions.filter { $0.id.map(excludedActionIDs.contains) != true }
             if !actions.isEmpty { ActionButtons(actions: actions, onAction: onAction, onLink: onLink) }
         }

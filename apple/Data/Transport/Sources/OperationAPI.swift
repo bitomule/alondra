@@ -110,6 +110,7 @@ public struct APIRequest: Sendable, Equatable {
             if path[1].hasPrefix("mcp-server-"), ["connect", "return", "reconnect"].contains(path[2]) { return true }
         }
         if path.first == "reports" { return validReportRoute(method: method, path: path) }
+        if path.first == "interactions" { return validAttachmentContentRoute(method: method, path: path) }
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),
@@ -121,6 +122,26 @@ public struct APIRequest: Sendable, Equatable {
         default:
             return false
         }
+    }
+
+    /// `GET /interactions/{interaction}/attachments/{attachment}/content`: one card attachment, in blocks.
+    private static func validAttachmentContentRoute(method: HTTPMethod, path: [String]) -> Bool {
+        let id = { (value: String) in
+            !value.trimmingCharacters(in: .whitespaces).isEmpty && value.utf8.count <= 256 && value != "." && value != ".."
+                && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        }
+        return method == .get && path.count == 5 && path[2] == "attachments" && path[4] == "content" && id(path[1]) && id(path[3])
+    }
+
+    public static let attachmentContentLimit = 64 * 1024 * 1024
+
+    private static func validAttachmentContentQuery(_ query: [(String, String)]) -> Bool {
+        let names = query.map(\.0)
+        guard Set(names).count == names.count, Set(names).isSubset(of: ["offset", "version"]),
+              let offset = query.first(where: { $0.0 == "offset" })?.1, (1...9).contains(offset.utf8.count),
+              offset.utf8.allSatisfy({ (48...57).contains($0) }), let value = Int(offset), value <= attachmentContentLimit
+        else { return false }
+        return query.first(where: { $0.0 == "version" }).map { !$0.1.isEmpty && $0.1.utf8.count <= 128 } ?? true
     }
 
     /// A crash report: built, one of its files read whole, and sent.
@@ -206,6 +227,7 @@ public struct APIRequest: Sendable, Equatable {
             return true
         }
         if path.first == "settings" { return validSettingsQuery(path: path, query: query) }
+        if path.first == "interactions" { return validAttachmentContentQuery(query) }
         if path.first == "reports" {
             return query.isEmpty || (method == .get && path.count == 4 && query.count == 1 && query[0].0 == "offset"
                 && (1...12).contains(query[0].1.utf8.count) && query[0].1.utf8.allSatisfy { (48...57).contains($0) })

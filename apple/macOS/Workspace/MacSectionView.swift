@@ -13,7 +13,6 @@ struct MacSectionView: View {
     var onMore: (String) -> Void
     var onForm: (AlondraContract.Form) -> Void
     var onContent: (ContentRef) -> Void
-    var onAttachment: (Attachment) -> Void
     var onContentRow: () -> Void
     var onFilledForm: (AlondraContract.Action, RequestedForm, [String: JSONValue]) -> Void = { _, _, _ in }
     var diff: MacDiff?
@@ -77,7 +76,7 @@ struct MacSectionView: View {
                     } else if case let .contentRef(reference) = item, reference.kind == .diff {
                         diffSummary(reference)
                     } else {
-                        ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent, onAttachment: onAttachment)
+                        ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent)
                     }
                 }
                 if fetched && page == nil {

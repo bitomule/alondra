@@ -52,7 +52,7 @@ public enum Icon: String, Codable, Equatable, Sendable, FallbackDecodable {
 public enum Detail: String, Codable, Equatable, Sendable, FallbackDecodable { case included, reference; public static let fallback = Detail.reference }
 public enum TimeFormat: String, Codable, Equatable, Sendable, FallbackDecodable { case relative, absolute, time; public static let fallback = TimeFormat.relative }
 public enum ContentKind: String, Codable, Equatable, Sendable, FallbackDecodable { case document, diff, file; public static let fallback = ContentKind.file }
-public enum AttachmentKind: String, Codable, Equatable, Sendable, FallbackDecodable { case image, text, binary; public static let fallback = AttachmentKind.binary }
+public enum AttachmentKind: String, Codable, Equatable, Sendable, FallbackDecodable { case image, video, text, binary; public static let fallback = AttachmentKind.binary }
 public enum CheckState: String, Codable, Equatable, Sendable, FallbackDecodable { case pass, fail, pending; public static let fallback = CheckState.pending }
 public enum Style: String, Codable, Equatable, Sendable, FallbackDecodable { case primary, secondary, destructive, plain; public static let fallback = Style.secondary }
 public enum Presentation: String, Codable, Equatable, Sendable, KnownValueDecodable { case button, options, menu }

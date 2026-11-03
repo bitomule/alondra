@@ -117,6 +117,7 @@ private struct DemoAccountView: View {
 private final class MacServiceWindowContext {
     let settings = MacSettingsContext()
     private(set) var storedFiles: StoredFiles?
+    private(set) var attachmentFiles: CardAttachmentFiles?
     private(set) var store: StoreOf<MacAppFeature>?
     func connect(_ services: Connection) async {
         guard store == nil else { return }
@@ -124,6 +125,9 @@ private final class MacServiceWindowContext {
         let viewActionSender = await services.viewActionSender
         guard !Task.isCancelled else { return }
         storedFiles = StoredFiles { try await viewsFeed.fetchAttachment($0) }
+        attachmentFiles = CardAttachmentFiles(directory: CardAttachmentFiles.defaultDirectory, download: { attachment, file, progress in
+            try await viewsFeed.downloadAttachment(attachment, to: file, progress: progress)
+        }, isGone: FeedError.attachmentIsGone)
         store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender, monitor: services.monitor)
             $0.mcpSignIn = services.mcpSignInClient(browser: McpSignInBrowser())
@@ -157,6 +161,7 @@ private struct MacServiceWindow: View {
                                            },
                                            localNetworkSettings: account.map { account in { account.openLocalNetworkSettings() } })
                     .environment(\.storedFiles, context.storedFiles)
+                    .environment(\.cardAttachmentFiles, context.attachmentFiles)
                     .environment(\.connectionState, store.connection)
                     .environment(\.connectionRecovery, ConnectionRecovery(retry: retry,
                         localNetworkSettings: account.map { account in { account.openLocalNetworkSettings() } }))

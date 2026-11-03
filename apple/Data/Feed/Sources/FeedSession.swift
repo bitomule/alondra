@@ -484,6 +484,12 @@ public actor FeedSession {
         return try await transport.fetchAttachment(attachment)
     }
 
+    public func downloadAttachment(_ attachment: Attachment, to file: URL,
+                                   progress: @escaping @Sendable (UInt64, UInt64) -> Void) async throws {
+        guard active else { throw CancellationError() }
+        try await transport.downloadAttachment(attachment, to: file, progress: progress)
+    }
+
     @discardableResult
     public func open(_ key: String) async throws -> (lease: ViewLease, document: ViewDocument?) {
         guard active else { throw CancellationError() }

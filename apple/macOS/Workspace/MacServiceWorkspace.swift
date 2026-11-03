@@ -295,7 +295,6 @@ public struct MacServiceDetail: View {
                                                },
                                                onForm: { presentation.send(.beginViewForm($0)) },
                                                onContent: { presentation.send(.contentRequested($0)) },
-                                               onAttachment: { presentation.send(.attachmentRequested($0)) },
                                                onContentRow: { showContent(of: document, scrollTo: proxy) },
                                                onFilledForm: { presentation.send(.sendForm($0, $1, content: $2)) },
                                                diff: presentation.diff,
@@ -429,10 +428,6 @@ public struct MacContentViewer: View {
             else if let error { ContentUnavailableView("Couldn’t load content", systemImage: "exclamationmark.triangle", description: Text(error)) }
             else {
                 switch content {
-                case let .image(data):
-                    if let image = NSImage(data: data) {
-                        Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
                 case let .diff(files, truncated):
                     MacChangesView(files: files, truncated: truncated, comments: $comments)
                 case let .markdown(segments):

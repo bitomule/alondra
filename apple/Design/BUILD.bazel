@@ -6,6 +6,7 @@ swift_library(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraDesign",
+    features = ["swift.enable_testing"],
     data = glob(["Resources/*.xcstrings"]),
     visibility = ["//visibility:public"],
     deps = [
@@ -28,6 +29,7 @@ swift_test(
     ],
     deps = [
         ":AlondraDesign",
+        "//apple/Testing:AlondraTestSupport",
         "//apple/Contract:AlondraContract",
         "//apple/Mermaid:AlondraMermaid",
     ],

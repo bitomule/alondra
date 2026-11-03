@@ -31,8 +31,6 @@ public struct PRReviewFeature: Sendable {
         public var collapsed: Set<String> = []
         public var diffTruncated = false
         public var showsChanges = false
-        public var attachment: AttachmentPreview?
-        public var failure: String?
 
         public init(key: ViewKey) {
             screen = ScreenFeature.State(key: key)
@@ -63,11 +61,6 @@ public struct PRReviewFeature: Sendable {
         case comment(anchor: String, ActionComment?)
         case dismissSheet
         case follow(AlondraContract.Link)
-        case showAttachment(AlondraContract.Attachment)
-        case attachmentLoaded(AlondraContract.Attachment, Data)
-        case attachmentFailed(String)
-        case closeAttachment
-        case dismissFailure
         case delegate(ScreenDelegate)
     }
 
@@ -143,23 +136,6 @@ public struct PRReviewFeature: Sendable {
             case .follow(let link):
                 guard let open = ScreenDelegate.opening(link) else { return .none }
                 return .send(.delegate(open))
-            case .showAttachment(let attachment):
-                return .run { [viewsClient] send in
-                    do { await send(.attachmentLoaded(attachment, try await viewsClient.fetchAttachment(attachment))) }
-                    catch { await send(.attachmentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
-                }
-            case .attachmentLoaded(let attachment, let data):
-                state.attachment = AttachmentPreview(attachment: attachment, data: data)
-                return .none
-            case .attachmentFailed(let message):
-                state.failure = message
-                return .none
-            case .closeAttachment:
-                state.attachment = nil
-                return .none
-            case .dismissFailure:
-                state.failure = nil
-                return .none
             case .delegate:
                 return .none
             }

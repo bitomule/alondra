@@ -6,7 +6,6 @@ import AlondraFeed
 
 /// What the content sheet draws: a fetched document is Markdown, so its links open and its images show.
 public enum MacContent: Equatable, Sendable {
-    case image(Data)
     case diff([DiffFile], truncated: Bool)
     case markdown([MarkdownSegment])
     case text(String)
@@ -78,7 +77,6 @@ public struct MacPresentationFeature: Sendable {
         public var contentLoading = false
         public var contentError: String?
         public var contentPresented = false
-        public var contentImageData: Data?
         public var contentDigest: String?
         public var diffComments: [String: ActionComment] = [:]
         /// The selected pull request's diff, fetched once per head and kept for its summary and its viewer.
@@ -86,7 +84,6 @@ public struct MacPresentationFeature: Sendable {
         public var diffFailed: String?
         public var diffRequested: String?
         public var contentShown: MacContent {
-            if let contentImageData { return .image(contentImageData) }
             switch contentKind {
             case .diff: return .diff(diff?.files ?? [], truncated: diff?.truncated ?? false)
             case .document: return .markdown(MarkdownParser.segments(from: contentBody))
@@ -140,9 +137,7 @@ public struct MacPresentationFeature: Sendable {
         case pickerSelected(String), pickerClosed
         case diffCommentsChanged([String: ActionComment])
         case contentRequested(AlondraContract.ContentRef)
-        case attachmentRequested(AlondraContract.Attachment)
         case contentLoaded(AlondraContract.ContentRef, String)
-        case attachmentLoaded(AlondraContract.Attachment, Data)
         case contentFailed(String)
         case diffNeeded(AlondraContract.ContentRef)
         case diffLoaded(String, FetchedDiff)
@@ -277,7 +272,6 @@ public struct MacPresentationFeature: Sendable {
                 state.contentError = nil
                 state.contentLoading = true
                 state.contentPresented = true
-                state.contentImageData = nil
                 if content.kind == .diff {
                     state.contentLoading = state.diff?.digest != identity
                     return state.contentLoading ? fetchDiff(content, state: &state) : .none
@@ -286,38 +280,12 @@ public struct MacPresentationFeature: Sendable {
                     do { await send(.contentLoaded(content, try await viewsClient.fetchContent(content))) }
                     catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
                 }
-            case .attachmentRequested(let attachment):
-                state.contentTitle = attachment.name
-                state.contentKind = nil
-                state.contentBody = ""
-                state.contentError = nil
-                state.contentLoading = true
-                state.contentPresented = true
-                state.contentImageData = nil
-                return .run { [viewsClient] send in
-                    do { await send(.attachmentLoaded(attachment, try await viewsClient.fetchAttachment(attachment))) }
-                    catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
-                }
             case let .contentLoaded(content, body):
                 state.contentTitle = content.title
                 state.contentKind = content.kind
                 state.contentBody = body
                 state.contentLoading = false
                 state.contentError = nil
-                state.contentImageData = nil
-            case let .attachmentLoaded(attachment, data):
-                state.contentTitle = attachment.name
-                state.contentLoading = false
-                state.contentError = nil
-                if attachment.kind == .image {
-                    state.contentImageData = data
-                } else if let text = String(data: data, encoding: .utf8) {
-                    state.contentBody = text
-                    state.contentImageData = nil
-                } else {
-                    state.contentError = String(localized: "This attachment can’t be previewed as text.")
-                    state.contentImageData = nil
-                }
             case .contentFailed(let message):
                 state.contentLoading = false
                 state.contentError = message

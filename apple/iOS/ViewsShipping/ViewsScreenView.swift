@@ -44,15 +44,8 @@ struct ViewsScreenView: View {
         .onDisappear { store.send(.disappeared) }
     }
 
-    private var attachmentContent: some View {
-        lifecycleContent
-        .sheet(item: Binding(get: { store.attachmentPreview }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
-            AttachmentPreviewView(preview: preview)
-        }
-    }
-
     private var actionSheetContent: some View {
-        attachmentContent
+        lifecycleContent
         .sheet(isPresented: Binding(get: { store.actionSheetPresented && !isInlineForm }, set: { if !$0 && store.actionSheetPresented && !isInlineForm { store.send(.action(.dismiss)) } })) {
             let action = store.scope(state: \.action, action: \.action)
             ActionComposerSheet(store: action, title: action.action?.label ?? "", submit: composerSubmit,
@@ -266,7 +259,6 @@ struct ViewsScreenView: View {
             SectionView(section: section, onAction: present,
                         onLink: follow, onMore: { open(ViewKey(rawValue: $0)) },
                         onForm: presentForm, onContent: { store.send(.fetchContent($0)) },
-                        onAttachment: { store.send(.fetchAttachment($0)) },
                         excludingActionIDs: excludedActionIDs(for: section))
         }
     }

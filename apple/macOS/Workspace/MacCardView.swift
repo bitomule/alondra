@@ -40,7 +40,8 @@ struct MacCardView: View {
                 }
                 if let meta = card.meta { Text(meta).font(.caption).foregroundStyle(.tertiary) }
             }
-            if let row = card.contentRow { MacContentRow(row: row, open: onContent) }
+            if let row = card.contentRow, row.kind != "attachments" || card.attachments.isEmpty { MacContentRow(row: row, open: onContent) }
+            if !card.attachments.isEmpty { CardAttachmentGallery(attachments: card.attachments) }
             if !card.blocks.isEmpty || !card.blockedBy.isEmpty { MacBlockChips(card: card, open: onLink) }
             if let form = card.form {
                 RequestedFormView(form: form, values: Binding(get: { formValues ?? form.initialValues }, set: { formValues = $0; formProblem = nil }))

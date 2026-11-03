@@ -97,6 +97,7 @@ private struct DemoAccountView: View {
 @MainActor @Observable private final class SceneContext {
     let settings = SettingsContext()
     private(set) var storedFiles: StoredFiles?
+    private(set) var attachmentFiles: CardAttachmentFiles?
     private(set) var store: StoreOf<AppFeature>?
 
     private var pendingLink: AlondraLink?
@@ -123,6 +124,9 @@ private struct DemoAccountView: View {
         let sender = await services.viewActionSender
         guard !Task.isCancelled else { return }
         storedFiles = StoredFiles { try await viewsFeed.fetchAttachment($0) }
+        attachmentFiles = CardAttachmentFiles(directory: CardAttachmentFiles.defaultDirectory, download: { attachment, file, progress in
+            try await viewsFeed.downloadAttachment(attachment, to: file, progress: progress)
+        }, isGone: FeedError.attachmentIsGone)
         store = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
             $0.mcpSignIn = services.mcpSignInClient(browser: McpSignInBrowser())
@@ -160,6 +164,7 @@ private struct ApprovedServiceScene: View {
                     .environment(\.connectionRecovery, ConnectionRecovery(retry: retry,
                                                                           localNetworkSettings: { owner.openLocalNetworkSettings() }))
                     .environment(\.storedFiles, context.storedFiles)
+                    .environment(\.cardAttachmentFiles, context.attachmentFiles)
                     .environment(\.connectionState, store.connection)
             } else { ProgressView("Opening workspace…") }
         }

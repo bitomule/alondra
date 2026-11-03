@@ -24,7 +24,6 @@ public struct ViewsScreenFeature: Sendable {
         public var pickerQuery = ""
         public var pickerLoading = false
         public var pickerError: String?
-        public var attachmentPreview: AttachmentPreview?
         public var action: ActionFeature.State
 
         public var hasInlineForm: Bool {
@@ -52,7 +51,7 @@ public struct ViewsScreenFeature: Sendable {
         case stale([String]), reset
         case loaded(ViewFetch), failed(String), missing
         case fetchContent(ContentRef), contentLoaded(String), contentFailed(String)
-        case fetchAttachment(AlondraContract.Attachment), attachmentLoaded(AlondraContract.Attachment, Data), closeAttachment, dismissError
+        case dismissError
         case reloadForm(String, JSONValue)
         case presentForm(WireForm)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
@@ -216,17 +215,6 @@ public struct ViewsScreenFeature: Sendable {
             case .contentFailed(let message):
                 state.error = message
                 return .none
-            case .fetchAttachment(let attachment):
-                return .run { [viewsClient] send in
-                    do { await send(.attachmentLoaded(attachment, try await viewsClient.fetchAttachment(attachment))) }
-                    catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
-                }
-            case .attachmentLoaded(let attachment, let data):
-                state.attachmentPreview = AttachmentPreview(attachment: attachment, data: data)
-                return .none
-            case .closeAttachment:
-                state.attachmentPreview = nil
-                return .none
             case .dismissError:
                 state.error = nil
                 return .none
@@ -268,10 +256,4 @@ public struct ViewsScreenFeature: Sendable {
             catch { await send(.pickerFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }.cancellable(id: CancelID.picker, cancelInFlight: true)
     }
-}
-
-public struct AttachmentPreview: Equatable, Identifiable {
-    public let attachment: AlondraContract.Attachment
-    public let data: Data
-    public var id: String { attachment.id }
 }

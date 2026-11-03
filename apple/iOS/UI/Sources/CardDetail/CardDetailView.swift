@@ -64,9 +64,6 @@ public struct CardDetailView: View {
             .sheet(item: Binding(get: { store.composing }, set: { if $0 == nil { store.send(.commentCancelled) } })) { composing in
                 CommentSheet(store: store, composing: composing)
             }
-            .sheet(item: Binding(get: { store.preview }, set: { if $0 == nil { store.send(.previewClosed) } })) { preview in
-                AttachmentPreviewView(preview: preview)
-            }
             .sheet(item: Binding(get: { store.composition }, set: { if $0 == nil { store.send(.compositionCancelled) } })) { composition in
                 CompositionSheet(
                     composition: composition, tint: kind.tint,
@@ -116,6 +113,9 @@ public struct CardDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 header(subject)
+                if let attachments = subject.card?.attachments, !attachments.isEmpty {
+                    CardAttachmentGallery(attachments: attachments)
+                }
                 if let form = subject.card?.form {
                     RequestedFormView(form: form, values: Binding(get: { store.formValues }, set: { store.send(.formChanged($0)) }))
                 }

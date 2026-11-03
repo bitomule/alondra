@@ -22,6 +22,9 @@ public protocol ViewTransport: Sendable {
     func fetchContent(_ content: ContentRef) async throws -> String
     func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data
+    /// Writes a card attachment to `file` block by block, verified against its digest before it returns.
+    func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
+                            progress: @escaping @Sendable (UInt64, UInt64) -> Void) async throws
 }
 
 public extension ViewTransport {
@@ -42,6 +45,8 @@ public extension ViewTransport {
     func fetchContent(_ content: ContentRef) async throws -> String { throw FeedError.unsupportedContent }
     func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff { throw FeedError.unsupportedContent }
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data { throw FeedError.unsupportedContent }
+    func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
+                            progress: @escaping @Sendable (UInt64, UInt64) -> Void) async throws { throw FeedError.unsupportedContent }
 }
 
 extension AlondraAPIClient: ViewTransport {
@@ -131,11 +136,70 @@ extension AlondraAPIClient: ViewTransport {
     }
 
     public func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data {
+        if let route = AttachmentRoute(attachment) {
+            var collected = Data()
+            try await readAttachment(route, consume: { collected.append($0) }, progress: { _, _ in })
+            return collected
+        }
         guard let digest = attachment.digest, attachment.fetch.hasPrefix("files/"),
               !attachment.fetch.split(separator: "/").contains("..") else {
             throw FeedError.unsupportedContent
         }
         return try await readFileChunks(reference: attachment.fetch, digest: digest)
+    }
+
+    public func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
+                                   progress: @escaping @Sendable (UInt64, UInt64) -> Void) async throws {
+        guard let route = AttachmentRoute(attachment) else {
+            let data = try await fetchAttachment(attachment)
+            try data.write(to: file, options: .atomic)
+            progress(UInt64(data.count), UInt64(data.count))
+            return
+        }
+        guard FileManager.default.createFile(atPath: file.path, contents: nil) else { throw FeedError.invalidContent }
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try await readAttachment(route, consume: { try handle.write(contentsOf: $0) }, progress: progress)
+    }
+
+    private struct AttachmentChunk: Decodable {
+        let interactionID: String; let attachmentID: String; let contentDigest: String; let version: String; let data: String
+        let offset: UInt64; let total: UInt64; let nextOffset: UInt64; let eof: Bool
+        enum CodingKeys: String, CodingKey {
+            case interactionID = "interaction_id", attachmentID = "attachment_id", contentDigest = "content_digest", version, data
+            case offset, total, nextOffset = "next_offset", eof
+        }
+    }
+
+    private func readAttachment(_ route: AttachmentRoute, consume: (Data) throws -> Void,
+                                progress: @Sendable (UInt64, UInt64) -> Void) async throws {
+        let maximum = UInt64(APIRequest.attachmentContentLimit)
+        var hasher = SHA256(); var offset: UInt64 = 0; var version: String?; var total: UInt64?
+        while true {
+            try Task.checkCancellation()
+            let endpoint = Endpoint<AttachmentChunk>(.get, path: ["interactions", route.interaction, "attachments", route.attachment, "content"],
+                query: [("offset", String(offset))] + (version.map { [("version", $0)] } ?? [])) {
+                    try JSONDecoder().decode(AttachmentChunk.self, from: $0)
+                }
+            let chunk = try await send(endpoint)
+            guard chunk.interactionID == route.interaction, chunk.attachmentID == route.attachment,
+                  chunk.contentDigest == route.digest, !chunk.version.isEmpty, chunk.version.utf8.count <= 128,
+                  version == nil || chunk.version == version, total == nil || chunk.total == total,
+                  chunk.total <= maximum, chunk.offset == offset, chunk.nextOffset <= chunk.total,
+                  chunk.nextOffset > chunk.offset || chunk.eof,
+                  let decoded = Self.decodeBase64URL(chunk.data), UInt64(decoded.count) == chunk.nextOffset - chunk.offset else {
+                throw FeedError.invalidContent
+            }
+            hasher.update(data: decoded)
+            try consume(decoded)
+            offset = chunk.nextOffset; version = chunk.version; total = chunk.total
+            progress(offset, chunk.total)
+            if chunk.eof {
+                let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                guard chunk.nextOffset == chunk.total, digest == route.digest else { throw FeedError.invalidContent }
+                return
+            }
+        }
     }
 
     private struct ContentChunk: Decodable {
@@ -255,6 +319,49 @@ extension AlondraAPIClient: ViewTransport {
 
 public enum FeedError: Error, Equatable, Sendable {
     case invalidKey, invalidLanguage, missingView, unexpectedUnchanged, commandIdentityConflict, unknownCommand, unsupportedContent, invalidContent
+}
+
+public extension FeedError {
+    /// A download that can never succeed by trying again: the Mac no longer holds that file as the card
+    /// names it, or what it sent does not match the card. Anything else is the connection.
+    static func attachmentIsGone(_ error: Error) -> Bool {
+        switch error {
+        case FeedError.invalidContent, FeedError.unsupportedContent: true
+        case APIError.conflict, APIError.forbidden: true
+        case let APIError.server(status, _, _, _): status == 404 || status == 409 || status == 422
+        case let APIError.unexpected(status): status == 404 || status == 409
+        default: false
+        }
+    }
+}
+
+/// A card attachment as the daemon serves it: `/interactions/{interaction}/attachments/{attachment}/content`,
+/// each id percent-encoded once with the daemon's own alphabet.
+struct AttachmentRoute: Equatable {
+    let interaction: String
+    let attachment: String
+    let digest: String
+
+    init?(_ attachment: AlondraContract.Attachment) {
+        guard let digest = attachment.digest, digest.utf8.count == 64,
+              digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              !attachment.fetch.contains("?"), !attachment.fetch.contains("#") else { return nil }
+        let parts = attachment.fetch.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 6, parts[0].isEmpty, parts[1] == "interactions", parts[3] == "attachments", parts[5] == "content",
+              let interaction = Self.decoded(parts[2]), let id = Self.decoded(parts[4]), id == attachment.id,
+              APIRequest.validClientContractRoute(method: .get, path: ["interactions", interaction, "attachments", id, "content"])
+        else { return nil }
+        self.interaction = interaction
+        self.attachment = id
+        self.digest = digest
+    }
+
+    private static func decoded(_ raw: String) -> String? {
+        guard let value = raw.removingPercentEncoding, !value.contains("~") else { return nil }
+        let plain = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._")
+        guard value.addingPercentEncoding(withAllowedCharacters: plain) == raw else { return nil }
+        return value
+    }
 }
 
 struct ViewRoute {

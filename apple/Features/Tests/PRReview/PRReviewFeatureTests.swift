@@ -316,19 +316,4 @@ final class PRReviewFeatureTests: XCTestCase {
         await store.receive(\.delegate.open, ViewKey(rawValue: "task:t-1"))
         await store.send(.follow(.url(url: "https://github.com/o/r/pull/1")))
     }
-
-    func testAnAttachmentOpensAPreviewAndClosesIt() async throws {
-        let attachment = try ContractCodec.decode(AlondraContract.Attachment.self, from: Data(
-            #"{"id":"a1","name":"shot.png","kind":"image","size":4,"fetch":"/attachments/a1"}"#.utf8))
-        let store = TestStore(initialState: PRReviewFeature.State(key: key)) { PRReviewFeature() } withDependencies: {
-            $0.viewsClient.fetchAttachment = { _ in Data([1, 2, 3, 4]) }
-        }
-        store.exhaustivity = .off
-
-        await store.send(.showAttachment(attachment))
-        await store.receive(\.attachmentLoaded)
-        XCTAssertEqual(store.state.attachment?.data, Data([1, 2, 3, 4]))
-        await store.send(.closeAttachment)
-        XCTAssertNil(store.state.attachment)
-    }
 }
