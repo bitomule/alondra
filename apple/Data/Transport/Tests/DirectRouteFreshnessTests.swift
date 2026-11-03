@@ -3,6 +3,7 @@ import AlondraContract
 import CryptoKit
 import Darwin
 import Foundation
+import Network
 import Synchronization
 import Testing
 
@@ -565,4 +566,33 @@ private func freshnessResources() -> (cpu: Double, rss: Int) {
     precondition(getrusage(RUSAGE_SELF, &usage) == 0)
     let millis = { (time: timeval) in Double(time.tv_sec) * 1_000 + Double(time.tv_usec) / 1_000 }
     return (millis(usage.ru_utime) + millis(usage.ru_stime), Int(usage.ru_maxrss))
+}
+
+/// A Mac whose every address fails the way iOS fails a local address.
+private struct NoPath: HTTPTransport {
+    let error: URLError
+    func send(_ request: URLRequest) async throws -> HTTPReply { throw error }
+}
+
+@Suite struct DirectLocalNetworkTests {
+    private func failure(_ error: URLError, path reason: NWPath.UnsatisfiedReason) async throws -> DirectRouteError? {
+        let http = DirectHTTP(transport: NoPath(error: error), localNetwork: LocalNetworkProbe { _ in reason })
+        let router = DirectRouter(pinned: try FreshnessKeys().identity, saved: [freshnessLAN], http: http, network: { "home" })
+        do { _ = try await router.endpoint() } catch let error as DirectRouteError { return error }
+        return nil
+    }
+
+    @Test func aPathRefusedForLocalNetworkNamesThePermissionWhateverTheErrorSays() async throws {
+        #expect(try await failure(URLError(.notConnectedToInternet), path: .localNetworkDenied) == .localNetworkDenied)
+    }
+
+    @Test func theOldPrivateDescriptionNoLongerDecidesThePermission() async throws {
+        let described = URLError(.notConnectedToInternet,
+            userInfo: ["_NSURLErrorNWPathKey": "unsatisfied (Local network prohibited), interface: en0[802.11]"])
+        #expect(try await failure(described, path: .notAvailable) == .unreachable)
+    }
+
+    @Test func anotherFailureIsNeverAskedAboutThePermission() async throws {
+        #expect(try await failure(URLError(.cannotConnectToHost), path: .localNetworkDenied) == .unreachable)
+    }
 }

@@ -7,8 +7,18 @@ public struct DirectHTTP: Sendable {
     static let maxResponse = 1024 * 1024
 
     private let transport: any HTTPTransport
+    private let localNetwork: LocalNetworkProbe
 
-    public init(transport: any HTTPTransport) { self.transport = transport }
+    public init(transport: any HTTPTransport, localNetwork: LocalNetworkProbe = .network) {
+        self.transport = transport
+        self.localNetwork = localNetwork
+    }
+
+    /// The request to this address failed because Local Network access is off for this app.
+    func localNetworkDenied(_ error: URLError, at endpoint: DirectEndpoint) async -> Bool {
+        guard error.code == .notConnectedToInternet else { return false }
+        return await localNetwork.denies(endpoint)
+    }
 
     public func hello(at endpoint: DirectEndpoint, timeout: Duration = .seconds(3)) async throws -> DirectMacIdentity {
         try await greeting(at: endpoint, timeout: timeout).identity

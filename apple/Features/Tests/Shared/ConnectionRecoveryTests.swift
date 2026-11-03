@@ -4,6 +4,7 @@ import AlondraFeatures
 import AlondraFeed
 import ComposableArchitecture
 import CryptoKit
+import Network
 import Synchronization
 import XCTest
 
@@ -163,7 +164,9 @@ private struct World {
     static func make() async throws -> World {
         let tasks = try Fixtures.document("tasks-ios")
         let mac = try SyntheticMac(tasks: tasks)
-        let http = DirectHTTP(transport: SyntheticDirectPort(mac: mac))
+        let http = DirectHTTP(transport: SyntheticDirectPort(mac: mac), localNetwork: LocalNetworkProbe { _ in
+            await mac.direct == .localNetworkDenied ? .localNetworkDenied : .notAvailable
+        })
         let router = DirectRouter(pinned: mac.identity, saved: [mac.lan], http: http, network: { "home" })
         let direct = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device,
             agreement: mac.deviceAgreement, macSigning: mac.macSigning.publicKey,
@@ -299,9 +302,6 @@ private actor SyntheticMac {
     }
 }
 
-/// iOS refuses a local address this way when Local Network access is off for the app.
-private let localNetworkProhibited = URLError(.notConnectedToInternet,
-    userInfo: ["_NSURLErrorNWPathKey": "unsatisfied (Local network prohibited), interface: en0[802.11]"])
 
 /// The Mac's direct port on the LAN.
 private struct SyntheticDirectPort: HTTPTransport {
@@ -311,7 +311,7 @@ private struct SyntheticDirectPort: HTTPTransport {
         let carrier = await mac.direct
         switch carrier {
         case .down: throw URLError(.cannotConnectToHost)
-        case .localNetworkDenied: throw localNetworkProhibited
+        case .localNetworkDenied: throw URLError(.notConnectedToInternet)
         case .answers, .slow: break
         }
         if request.url?.path == "/direct/hello" {

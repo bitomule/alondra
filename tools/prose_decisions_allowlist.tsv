@@ -3,11 +3,10 @@
 # Categories: display, log, user-search, format, own-grammar, security-parse, or finding:<id> for a
 # case of docs/architecture/typed-control-decisions.md still to fix. The list only shrinks: the
 # phase that fixes a finding removes its lines, and a line that no longer matches fails the test.
-apple/Data/Transport/Sources/Direct/DirectRouter.swift	&& userInfo["_NSURLErrorNWPathKey"].map { String(describing: $0).localizedCaseInsensitiveContains("local network prohibited") } == true	finding:A-01	local network permission read from a private key's description
 apple/iOS/UI/Sources/Tasks/TaskDetailView.swift	if let priority = detail.priority, fact.label == priority.label {	finding:A-02	priority menu only when two translated labels match
 apple/Features/Sources/TaskDetail/TaskDetail.swift	folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,	finding:A-03	folder fact picked by position and a leading slash
 apple/Features/Sources/Settings/CrashReport/CrashReportFeature.swift	if !detail.isEmpty { return .refused(detail) }	finding:A-04	report refused when the server's text is not empty
-apple/Data/Feed/Sources/ActionDeliveryError.swift	case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final	finding:A-06	retry decided by a code in a field that also carries prose
+apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.outcomeUnknown } ?? (detail == Self.outcomeUnknown)) ? .retry : .final	own-grammar	daemons from before kind send only the code outcome_unknown in error
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whether the user typed the prompt decided by its text

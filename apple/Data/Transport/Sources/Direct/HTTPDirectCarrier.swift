@@ -30,7 +30,7 @@ struct HTTPDirectCarrier: EnvelopeCarrier {
             do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
             catch let error as URLError where error.code == .cancelled { throw CancellationError() }
             catch let error as URLError {
-                if error.isLocalNetworkDenied { routeError = .localNetworkDenied }
+                if await http.localNetworkDenied(error, at: endpoint) { routeError = .localNetworkDenied }
                 mayHaveArrived = true
                 await router.invalidate()
                 continue

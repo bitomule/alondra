@@ -2,6 +2,7 @@
 import AlondraContract
 import AlondraTestSupport
 import CryptoKit
+import Network
 import Foundation
 import Synchronization
 import Testing
@@ -835,12 +836,15 @@ private actor ImpairedDirectPort: HTTPTransport {
 
     func impair(_ value: Impairment) { impairment = value }
 
+    nonisolated var localNetwork: LocalNetworkProbe {
+        LocalNetworkProbe { _ in await self.impairment == .localNetworkDenied ? .localNetworkDenied : .notAvailable }
+    }
+
     func send(_ request: URLRequest) async throws -> HTTPReply {
         switch impairment {
         case .none: return try await mac.send(request)
         case .localNetworkDenied:
-            throw URLError(.notConnectedToInternet,
-                           userInfo: ["_NSURLErrorNWPathKey": "unsatisfied (Local network prohibited), interface: en0[802.11]"])
+            throw URLError(.notConnectedToInternet)
         }
     }
 }
@@ -848,7 +852,7 @@ private actor ImpairedDirectPort: HTTPTransport {
 extension RoutedSessionTests {
     private func impaired(_ f: Fixture) async -> (ImpairedDirectPort, DirectRouter, DirectSession) {
         let port = ImpairedDirectPort(mac: f.mac)
-        let http = DirectHTTP(transport: port)
+        let http = DirectHTTP(transport: port, localNetwork: port.localNetwork)
         let router = DirectRouter(pinned: await f.mac.identity, saved: [lan], http: http, network: { "home" })
         return (port, router, DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
             agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,

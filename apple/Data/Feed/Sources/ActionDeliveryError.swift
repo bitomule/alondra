@@ -30,7 +30,8 @@ enum ActionDeliveryDisposition: Equatable {
         case let error as APIError:
             switch error {
             case .unauthorized, .forbidden: self = .final
-            case let .conflict(_, detail, _): self = detail == "outcome_unknown" ? .retry : .final
+            case let .conflict(kind, detail, _):
+                self = (kind.map { $0 == Self.outcomeUnknown } ?? (detail == Self.outcomeUnknown)) ? .retry : .final
             case let .server(status, _, _, _): self = Self.retries(status) ? .retry : .final
             case let .unexpected(status): self = Self.retries(status) ? .retry : .final
             case .unavailable: self = .retry
@@ -47,6 +48,10 @@ enum ActionDeliveryDisposition: Equatable {
             self = .retry
         }
     }
+
+    /// The `kind` of a 409 whose outcome the Mac could not tell. Daemons from before `kind` send
+    /// the same code alone in `error`.
+    private static let outcomeUnknown = "outcome_unknown"
 
     private static func retries(_ status: Int) -> Bool {
         status >= 500 || status == 408 || status == 429

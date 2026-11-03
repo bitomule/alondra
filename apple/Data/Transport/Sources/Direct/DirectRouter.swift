@@ -13,15 +13,6 @@ public enum DirectRouteError: Error, Equatable, Sendable {
     case localNetworkDenied
 }
 
-extension URLError {
-    /// iOS refuses a local address with -1009 and a path that says why when Local Network access
-    /// is off; the code alone reads as "no internet".
-    var isLocalNetworkDenied: Bool {
-        code == .notConnectedToInternet
-            && userInfo["_NSURLErrorNWPathKey"].map { String(describing: $0).localizedCaseInsensitiveContains("local network prohibited") } == true
-    }
-}
-
 public enum DirectSessionError: Error, Equatable, Sendable {
     /// The Mac itself, in an answer sealed with the pinned keys, said it revoked this device.
     case deviceRevoked
@@ -267,7 +258,8 @@ public actor DirectRouter {
                 group.addTask {
                     let identity: DirectMacIdentity
                     do { identity = try await http.hello(at: endpoint) }
-                    catch { return (index, nil, (error as? URLError)?.isLocalNetworkDenied == true) }
+                    catch let error as URLError { return (index, nil, await http.localNetworkDenied(error, at: endpoint)) }
+                    catch { return (index, nil, false) }
                     return (index, identity, false)
                 }
             }

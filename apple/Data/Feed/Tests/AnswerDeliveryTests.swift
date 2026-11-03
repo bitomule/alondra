@@ -192,6 +192,16 @@ private actor UnreliableMac: ViewTransport {
         await settle(sender)
     }
 
+    @Test func aConflictIsRetriedByItsKindNeverByTheWordsBesideIt() {
+        func disposition(_ body: String) -> ActionDeliveryDisposition {
+            ActionDeliveryDisposition(APIError.from(status: 409, body: Data(body.utf8)))
+        }
+        #expect(disposition(#"{"error":"The Mac could not tell","kind":"outcome_unknown"}"#) == .retry)
+        #expect(disposition(#"{"error":"outcome_unknown"}"#) == .retry, "a daemon from before kind sends the code alone")
+        #expect(disposition(#"{"error":"outcome_unknown","kind":"operation_conflict"}"#) == .final)
+        #expect(disposition(#"{"error":"The command conflicts with another"}"#) == .final)
+    }
+
     @Test func aRefusalFromTheMacEndsTheDeliveryAndLeavesNothingQueued() async throws {
         let mac = UnreliableMac(refusal: APIError.forbidden(kind: "device_revoked", detail: nil, reasons: []))
         let sender = ViewActionSender(transport: mac, intents: try await store(TestFiles.directory()), retryPolicy: Self.instant)
