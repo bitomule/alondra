@@ -8,6 +8,7 @@
 //! restarting it would undo what the user chose. Such a node closes and its task goes back
 //! to not started, waiting for a relaunch.
 use crate::locks::Poisonable as _;
+use crate::client_routes::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainState, NodeEvent, NodePhase, TaskId, TaskState, PROTOCOL_VERSION};
 use std::sync::Arc;
@@ -359,36 +360,31 @@ async fn until_usage_clear(domain: &DomainRuntime, session: &str) -> bool {
 }
 
 /// The user closed the session: the node closes, is not brought back, and the tasks it had
-/// open go back to not started with no node, to be relaunched. What a relaunch needs of the node
-/// is kept.
+/// open go back to not started with no node, for the user to relaunch. What a relaunch needs of
+/// the node is kept.
 /// A session whose replacement stopped short because it could not be stopped ends for that
-/// reason, and the orchestrator hears that its tasks are free again.
+/// reason, and Alondra starts its tasks' next node by itself.
 pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
     let cwd = domain.live.mods.session(session).and_then(|reported| reported.cwd);
     let Some(why) = domain.live.take_aborted_replace(session) else {
-        take_out(domain, session, "node closed by the user", cwd)?;
+        take_out(domain, session, "node closed by the user", cwd, Relaunch::AskUser)?;
         return Ok(());
     };
-    let freed = take_out(domain, session, REPLACE_ABORTED, cwd)?;
-    let Ok(state) = domain.state() else { return Ok(()) };
-    for task_id in freed {
-        let title = state.tasks.get(&task_id).map_or_else(|| task_id.0.clone(), |task| task.title.clone());
-        let _ = domain.tell_orchestrator(&format!("replace-aborted-{task_id}-{}", crate::auth::random_hex(4)), None, format!(
-            "“{title}” ({task_id}) has no node now: its node ended after your replacement of it stopped short, because Alondra could \
-             not stop it then ({why}). No new node was started. Start one with launch (task {task_id}), without replace."));
+    for task_id in take_out(domain, session, REPLACE_ABORTED, cwd, Relaunch::ByItself)? {
+        log!("{task_id} has no node: its node ended after a replacement that could not stop it ({why}); Alondra starts a new one");
     }
     Ok(())
 }
 
 pub(crate) const REPLACE_ABORTED: &str = "node ended after the orchestrator's replacement could not stop it";
 
-/// `user_closed` for a session that ends for `reason`; a relaunch of its tasks starts in `cwd`.
-/// The tasks it frees.
-pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>) -> anyhow::Result<Vec<TaskId>> {
+/// `user_closed` for a session that ends for `reason`; a relaunch of its tasks starts in `cwd`,
+/// by whoever `relaunch` names. The tasks it frees.
+pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>, relaunch: Relaunch) -> anyhow::Result<Vec<TaskId>> {
     let agent = AgentId(session.to_owned());
     let state = domain.state()?;
     let name = state.agents.get(&agent).map_or_else(|| format!("node/{}", &session[..session.len().min(8)]), |known| known.name.clone());
-    let node = crate::client_routes::ClosedNode { name, cwd };
+    let node = crate::client_routes::ClosedNode { name, cwd, relaunch };
     let released: Vec<_> = state.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone())

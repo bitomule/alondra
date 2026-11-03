@@ -29,7 +29,7 @@ use std::time::Duration;
 
 pub(crate) use crate::node_close::Sessions;
 pub(crate) use new_work::Github;
-pub(crate) use live::{ClosedNode, Live};
+pub(crate) use live::{ClosedNode, Live, Relaunch};
 pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView, Viewed};
 #[cfg(test)]
 pub(crate) use pr_details::FakePrView;

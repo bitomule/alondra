@@ -316,7 +316,7 @@ impl Stored {
 fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a DomainState) -> Vec<&'a alondra_core::domain::Task> {
     state.tasks.values()
         .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
-        .filter(|task| client.domain.live.closed_task(&task.id.0).is_none())
+        .filter(|task| client.domain.live.closed_task(&task.id.0).is_none_or(|node| node.relaunch == crate::client_routes::Relaunch::ByItself))
         .collect()
 }
 
@@ -625,7 +625,7 @@ async fn gather_inner(
                 usage.provider == account.provider && usage.account == account.id && usage.measured_at().is_some())))
             .then_some(now.div_euclid(60_000) * 60_000),
         closed_nodes: client.domain.live.closed_sessions(),
-        closed_tasks: client.domain.live.closed_task_ids(),
+        closed_tasks: client.domain.live.user_closed_task_ids(),
         nodes,
         pull_requests,
         orchestrator,
@@ -1049,7 +1049,7 @@ mod cache_tests {
             ("a store write outside commands", Box::new(|| domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap())),
             ("a hook", Box::new(|| domain.live.observe(&serde_json::json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Done"})))),
             ("a node report", Box::new(|| report(&domain, serde_json::json!({"session_id": "node", "event": "turn.complete", "answer": "Done"}), 1_000))),
-            ("a closed node's task", Box::new(|| domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed".into(), cwd: None }))),
+            ("a closed node's task", Box::new(|| domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser }))),
             ("pull request details", Box::new(|| client.details.record("pr", Default::default()))),
             ("the live sampler", Box::new(|| client.feeds.wake())),
         ];
@@ -1182,7 +1182,7 @@ mod cache_tests {
                 at: now, kind, model: None, effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
                 reason: None, title: id.into(), provider: None, tags: None }).unwrap();
         }
-        domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None });
+        domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
         domain.reads.lock().unwrap().begin_live_read_trace();
         let changed = gather_at(&client, &state, Lang::En, &[], false, false, now).await;

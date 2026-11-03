@@ -309,8 +309,8 @@ where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
     }
     Ok(json!({"task": task, "replacing": true, "message": format!(
         "Replacing the node of “{}”: Alondra waits for its turn to end (interrupting it if it takes too long), stops it and \
-         starts the new node in its folder. This can take a few minutes; tasks_in_progress shows the new node once it works on the task, and you \
-         are told only if it did not start.", task_title(&domain, &task))}))
+         starts the new node in its folder. This can take a few minutes; tasks_in_progress shows the new node once it works on the task. If \
+         the new node does not start, Alondra starts it again by itself; you are told only if the old node keeps the task.", task_title(&domain, &task))}))
 }
 
 /// The account paid per use the user chose for the request, while it is still registered, on and
@@ -427,8 +427,13 @@ fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
     domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
 }
 
-/// Only a replacement that did not finish is told: one that did shows in tasks_in_progress and the task.
+/// Only a replacement that did not finish is told: one that did shows in tasks_in_progress and the
+/// task, and one that left the task without a node is followed by the node Alondra starts by itself.
 fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainError) {
+    if domain.live.closed_task(&task.0).is_some_and(|node| node.relaunch == crate::client_routes::Relaunch::ByItself) {
+        log!("the replacement of {task}'s node did not finish ({}); Alondra starts a new node by itself", error.message);
+        return;
+    }
     let title = task_title(domain, task);
     let text = format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message);
     if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", crate::auth::random_hex(4)), None, text) {
@@ -630,14 +635,14 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
                     crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())
                 })
                 .map_err(|crate::sdk_owner::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
-                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
+                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::client_routes::Relaunch::ByItself)
                     .map_err(|error| DomainError::new("storage_unavailable", format!(
                         "the Agent SDK node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
             }
             Some(old) => {
                 stop_replaced(domain, old).await.map_err(|reason| DomainError::new("replace_failed", format!(
                     "Alondra could not stop the claude --bg node of {}, so no node was started through the Agent SDK: {reason}. It is still assigned to that node.", task.id)))?;
-                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
+                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::client_routes::Relaunch::ByItself)
                     .map_err(|error| DomainError::new("storage_unavailable", format!(
                         "the claude --bg node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
             }
@@ -656,8 +661,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             model: resolved.launch_model(), account }, reopening)
             .await
             .map_err(|error| match &replaced {
-                Some(_) => DomainError { message: format!("{} The node it replaced was stopped, so “{}” ({}) has no node now: start one with launch (task {}), without replace.",
-                    error.message, task.title, task.id, task.id), ..error },
+                Some(_) => DomainError { message: format!("{} The node it replaced was stopped, so Alondra starts a new node for “{}” ({}) by itself.",
+                    error.message, task.title, task.id), ..error },
                 None => error,
             })?;
         record_worktree(domain, launched["agent_id"].as_str(), &workplace, replaced.as_ref().zip(inherited.as_ref()));
@@ -789,6 +794,11 @@ fn node_folder(domain: &DomainRuntime, session: &str) -> Option<String> {
 /// A new node for a task whose node the user closed, launched with the task's mission in the
 /// folder the closed node worked in, else the project its request was asked for.
 pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &TaskId) -> Result<Value, DomainError> {
+    relaunch_from(domain, home, task_id, Origin::Orchestrator).await
+}
+
+/// `relaunch`, for either origin. An automatic relaunch holds the task's launch guard already.
+pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: &TaskId, origin: Origin) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
         .filter(|task| task.state == alondra_core::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
@@ -808,7 +818,7 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &Task
     let mut body: LaunchBody = serde_json::from_value(json!({"name": closed.name, "cwd": cwd, "task": task_id}))
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
     body.relaunch_model = Some(task.model.as_ref().map_or(DEFAULT_MODEL, |m| m.model.as_str()).to_owned());
-    launch(domain, home, body, |request| request_choices(domain, request).ok().flatten()).await
+    launch_from(domain, home, body, |request| request_choices(domain, request).ok().flatten(), origin).await
 }
 
 const FOLLOW_UP_LIMIT: usize = 12_000;

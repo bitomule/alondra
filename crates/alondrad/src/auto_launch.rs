@@ -3,9 +3,12 @@
 //! by how long it has had its plan; the mission of a task that waited on others carries what they
 //! delivered. One automatic launch per task, ever: the claim is a durable row written before
 //! `claude` runs, so a restart or a second pass never starts it twice. A start that fails is tried
-//! again by itself and then put in front of the user (`start_failures`).
+//! again by itself and then put in front of the user (`start_failures`). A task whose node Alondra
+//! closed for a reason of its own (a replacement that stopped short, a node closed while the user
+//! asked for changes) is relaunched the same way, in the folder that node worked in.
 use crate::locks::Poisonable as _;
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
+use crate::client_routes::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{DomainError, DomainState, Task, TaskId, TaskState};
@@ -111,7 +114,12 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        if domain.live.closed_task(&task.id.0).is_some() || crate::admission::held_by_user(domain, &task.id) || domain.store.lock_or_exit("the domain store").task_was_launched(&task.id)? {
+        let relaunching = match domain.live.closed_task(&task.id.0).map(|node| node.relaunch) {
+            Some(Relaunch::AskUser) => continue,
+            Some(Relaunch::ByItself) => true,
+            None => false,
+        };
+        if crate::admission::held_by_user(domain, &task.id) || (!relaunching && domain.store.lock_or_exit("the domain store").task_was_launched(&task.id)?) {
             continue;
         }
         let (row, plan) = {
@@ -127,6 +135,10 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let usage_out = domain.live.usage_pause.current().is_some();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
+            Some((AutoLaunchState::Launched, _)) if relaunching => {
+                domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
+                false
+            }
             Some((AutoLaunchState::Launched | AutoLaunchState::Launching, _)) => continue,
             Some((AutoLaunchState::Blocked, Some(AutoLaunchReason::UsageExhausted))) if !usage_out => true,
             Some((AutoLaunchState::Blocked, _)) => continue,
@@ -134,7 +146,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let block = |reason: AutoLaunchReason, detail: Option<&str>| -> Result<()> {
             domain.store.lock_or_exit("the domain store").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
         };
-        if plan.is_none() { continue; }
+        if plan.is_none() && !relaunching { continue; }
         if usage_out {
             block(AutoLaunchReason::UsageExhausted, None)?;
             continue;
@@ -151,20 +163,26 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
             continue;
         };
-        let Some(plan) = domain.launch_plan(&task.id)? else {
-            domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
-            continue;
+        let plan = domain.launch_plan(&task.id)?;
+        let launched = match &plan {
+            _ if relaunching => crate::domain_orchestrator_tools::relaunch_from(domain, home, &task.id, Origin::Auto).await,
+            Some(plan) => {
+                let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
+                launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), plan), choices, Origin::Auto).await
+            }
+            None => {
+                domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
+                continue;
+            }
         };
-        let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
-        let launched = launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), &plan), choices, Origin::Auto).await;
-        settle(domain, &task.id, &plan.cwd, launched, now)?;
+        settle(domain, &task.id, plan.as_ref().map(|plan| plan.cwd.as_str()), launched, now)?;
     }
     Ok(())
 }
 
 /// What an automatic launch leaves behind: a refusal that clears by itself waits for a later pass,
 /// a task that ended while it started just leaves, and any other refusal is a failed start.
-fn settle(domain: &DomainRuntime, task: &TaskId, cwd: &str, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
+fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
     let block = |reason: AutoLaunchReason| -> Result<()> {
         domain.store.lock_or_exit("the domain store").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
     };
@@ -184,7 +202,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: &str, launched: Result<ser
                 }
             }
             code => {
-                if let Some(problem) = crate::start_failures::problem_of(code, &error.message, Some(cwd)) {
+                if let Some(problem) = crate::start_failures::problem_of(code, &error.message, cwd) {
                     crate::start_failures::failed(domain, task, problem, now)?;
                 }
                 log!("could not start {task} by itself: {}", error.message);

@@ -206,8 +206,8 @@ fn card(state: &DomainState, id: &str) -> Card {
 }
 
 /// Records what became of the node. A task that went back to work while its node was removed is
-/// released like one whose node the user closed: what a relaunch needs is kept, the orchestrator
-/// is told, and the changes asked for reach the node that replaces it.
+/// released like one whose node the user closed, but Alondra starts its next node by itself: what
+/// a relaunch needs is kept, and the changes asked for reach the node that replaces it.
 fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) -> Result<()> {
     let before = domain.state().ok();
     let back_to_work = matches!(end, NodeEnd::Closed | NodeEnd::Gone)
@@ -223,12 +223,11 @@ fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Opt
         return Err(anyhow::anyhow!("recording the node end: {error:?}"));
     }
     let (Some(state), true) = (before, back_to_work) else { return Ok(()) };
-    let (Some(task), Some(agent)) = (state.tasks.get(task_id), agent) else { return Ok(()) };
+    let (Some(_), Some(agent)) = (state.tasks.get(task_id), agent) else { return Ok(()) };
     let name = state.agents.get(agent).map_or_else(|| agent.0.clone(), |known| known.name.clone());
-    domain.live.remember_closed_task(&task_id.0, crate::client_routes::ClosedNode { name, cwd: domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd) });
-    let _ = domain.tell_orchestrator(&format!("node-closed-while-working-{task_id}-{}", crate::auth::random_hex(4)), None, format!(
-        "The node of “{}” ({task_id}) was closed while the user asked for changes on it. The task waits for a new node: start it with launch (task {task_id}); its mission carries the changes asked for.",
-        task.title));
+    domain.live.remember_closed_task(&task_id.0, crate::client_routes::ClosedNode { name,
+        cwd: domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd), relaunch: crate::client_routes::Relaunch::ByItself });
+    log!("the node of {task_id} was closed while the user asked for changes on it; Alondra starts a new one");
     Ok(())
 }
 

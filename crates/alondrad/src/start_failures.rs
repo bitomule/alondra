@@ -3,6 +3,7 @@
 //! asks whether to relaunch. The decisions are the domain's (`after_failure`, `DomainState::react`);
 //! this carries them out.
 use crate::locks::Poisonable as _;
+use crate::client_routes::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_core::domain::{NodePhase, 
@@ -101,14 +102,17 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
     for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
         let scheduled = state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id));
         let auto = autos.iter().find(|row| row.task_id == task.id);
+        let closed = domain.live.closed_task(&task.id.0).map(|node| node.relaunch);
+        let relaunching = closed == Some(Relaunch::ByItself);
         let start = match (retries.get(&task.id), auto.map(|row| (row.state, row.reason))) {
             (Some((attempt, at)), _) => Start::Retry { attempt: *attempt, at: *at },
             (None, Some((AutoLaunchState::Blocked, Some(AutoLaunchReason::UsageExhausted)))) => Start::Ready,
             (None, Some((AutoLaunchState::Blocked, _))) => Start::Blocked,
             (None, Some((AutoLaunchState::Launching, _))) => Start::Launching,
+            (None, Some((AutoLaunchState::Launched, _))) if relaunching => Start::Ready,
             (None, Some((AutoLaunchState::Launched, _))) => Start::Launched,
             (None, None) if domain.live.is_launching(&task.id.0) || queued.contains(&task.id) => Start::Launching,
-            (None, None) if store.task_was_launched(&task.id)? => Start::Launched,
+            (None, None) if !relaunching && store.task_was_launched(&task.id)? => Start::Launched,
             (None, None) => Start::Ready,
         };
         let node = match task.agent_id.as_ref().and_then(|id| state.agents.get(id)) {
@@ -125,7 +129,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
             start,
             node,
             held: held.contains_key(&task.id),
-            closed: domain.live.closed_task(&task.id.0).is_some(),
+            closed: closed == Some(Relaunch::AskUser),
         });
     }
     Ok(out)
@@ -148,7 +152,8 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
 }
 
 /// The user asked to try again: a task whose node they closed gets a new node in that node's
-/// folder; any other goes back to the gate, which starts it with its plan. A relaunch refused
+/// folder; any other goes back to the gate, which starts it with its plan, or relaunches it when
+/// Alondra closed its node. A relaunch refused
 /// for a reason of its own is a failed start like any other. Trying again a folder Claude Code
 /// did not trust is the user trusting it, so Alondra records that first, or says why it could not.
 async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {

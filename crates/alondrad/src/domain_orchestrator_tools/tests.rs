@@ -845,7 +845,7 @@ async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_ne
     f.domain.stop_sdk_host(&old).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
-    crate::node_revival::take_out(&f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into())).unwrap();
+    crate::node_revival::take_out(&f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into()), crate::client_routes::Relaunch::AskUser).unwrap();
     assert!(f.task_node().is_none(), "the confirmed exit releases the old assignment before recovery");
     answer_ended_cards(&f);
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
@@ -1083,7 +1083,7 @@ async fn a_replacement_whose_stop_errs_but_whose_node_ended_finishes() {
     f.domain.live.mods.set_job("agent-b", None, Some(f.root.join("jobs/gone")));
     *f.sessions.stop_fails.lock().unwrap() = Some("claude stop timed out".into());
     stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
-    crate::node_revival::take_out(&f.domain, "agent-b", "node replaced by the orchestrator", Some(f.project.display().to_string())).unwrap();
+    crate::node_revival::take_out(&f.domain, "agent-b", "node replaced by the orchestrator", Some(f.project.display().to_string()), crate::client_routes::Relaunch::ByItself).unwrap();
     assert!(f.domain.live.is_closed("agent-b"));
     assert_eq!(f.task_node(), None, "positive end evidence lets the caller release the task");
     assert_eq!(release_reasons(&f), ["node replaced by the orchestrator"]);
@@ -1091,9 +1091,10 @@ async fn a_replacement_whose_stop_errs_but_whose_node_ended_finishes() {
 }
 
 /// The node a replacement could not stop ends later: the task is freed for that reason, never as
-/// closed by the user, and the orchestrator hears it.
+/// closed by the user, and Alondra starts its next node by itself instead of asking the
+/// orchestrator to.
 #[tokio::test]
-async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_with_the_real_reason() {
+async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_to_be_relaunched_by_itself() {
     let f = world();
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
@@ -1101,10 +1102,9 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_wit
     crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
     assert_eq!(f.task_node(), None, "the task is free");
     assert_eq!(release_reasons(&f), [crate::node_revival::REPLACE_ABORTED]);
-    let told = told_orchestrator(&f, "replace-aborted-");
-    assert_eq!(told.len(), 1, "{told:?}");
-    assert!(told[0].contains("“Editor colours” (t) has no node now") && told[0].contains("still shows agent-b running")
-        && told[0].contains("launch (task t), without replace"), "{}", told[0]);
+    assert_eq!(f.domain.live.closed_task("t").map(|node| node.relaunch), Some(crate::client_routes::Relaunch::ByItself));
+    assert!(f.domain.live.user_closed_task_ids().is_empty(), "nobody is asked to relaunch it");
+    assert!(told_orchestrator(&f, "replace-aborted-").is_empty(), "the orchestrator is not asked to launch it");
     assert!(f.sdk().starts().is_empty());
 }
 
@@ -1381,7 +1381,7 @@ async fn a_replacement_answers_before_the_old_node_stops_and_finishes_without_a_
         Ok(json!({"stopped": "agent-b"}))
     }).await.unwrap();
     assert_eq!(answer["replacing"], true, "{answer}");
-    assert!(answer["message"].as_str().unwrap().contains("you are told only if it did not start"), "{answer}");
+    assert!(answer["message"].as_str().unwrap().contains("Alondra starts it again by itself; you are told only if the old node keeps the task"), "{answer}");
     assert!(f.sessions.stopped.lock().unwrap().is_empty(), "the shared supervisor answers before its checked stop work is released");
     let again = launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap_err();
     assert_eq!(again.code, "conflict", "a second launch waits for the replacement under way: {}", again.message);
@@ -1424,22 +1424,31 @@ async fn a_replacement_refused_before_stopping_anything_answers_with_the_refusal
     assert!(f.domain.live.begin_launch("t"), "the launch guard is released");
 }
 
-/// Once the old node is stopped the task has no node: a launch that fails after that says so.
+/// Once the old node is stopped the task has no node: when the new one does not start, the
+/// automatic launch starts it again by itself, resuming the same session, and the orchestrator is
+/// not asked to launch it.
 #[tokio::test]
-async fn a_replacement_whose_new_node_does_not_start_says_the_task_has_no_node() {
+async fn a_replacement_whose_new_node_does_not_start_is_relaunched_by_itself() {
     let f = world();
     let old = sdk_node_on_the_task(&f, &f.project).await;
+    let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     struct RestoreStarts<'a>(&'a SdkLaunches);
     impl Drop for RestoreStarts<'_> { fn drop(&mut self) { self.0.refuse_starts(false); } }
     let _restore = RestoreStarts(f.sdk());
     f.sdk().refuse_starts(true);
     launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap();
-    let told = until_told(&f, "replaced-").await;
-    assert!(told[0].contains("did not start through the Agent SDK")
-        && told[0].contains("The node it replaced was stopped, so “Editor colours” (t) has no node now: start one with launch (task t), without replace."), "{}", told[0]);
+    until_launchable(&f).await;
+    f.domain.live.end_launch("t");
     assert_eq!(f.task_node(), None);
     assert!(!f.domain.owns_sdk_host(&old));
     assert_eq!(f.sdk().starts().len(), 1, "only the original verified native session was started");
+
+    f.sdk().refuse_starts(false);
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    assert!(f.task_node().is_some_and(|agent| agent != old), "Alondra started a new node by itself");
+    f.launched(2).await;
+    assert_resumed(&f, &original);
+    assert!(told_orchestrator(&f, "replaced-").is_empty(), "the orchestrator is not asked to launch it");
 }
 
 /// The call can be dropped as soon as the replacement starts: the replacement still finishes.
@@ -1507,7 +1516,7 @@ async fn an_ended_session_leaves_no_inherited_worktree_or_aborted_replace_behind
     connected_node_on_the_task(&f);
     f.domain.set_inherited_worktree("agent-b", f.project.to_str().unwrap(), "agent-a").unwrap();
     f.domain.live.note_aborted_replace("agent-b", "stop failed");
-    crate::node_revival::take_out(&f.domain, "agent-b", "node closed by the user", None).unwrap();
+    crate::node_revival::take_out(&f.domain, "agent-b", "node closed by the user", None, crate::client_routes::Relaunch::AskUser).unwrap();
     assert_eq!(f.domain.inherited_worktree("agent-b").unwrap(), None);
     assert_eq!(f.domain.live.take_aborted_replace("agent-b"), None);
 }

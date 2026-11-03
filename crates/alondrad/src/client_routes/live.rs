@@ -11,11 +11,25 @@ const CLOSED_FILE: &str = "closed-sessions.json";
 const CLOSED_TASKS_FILE: &str = "closed-task-nodes.json";
 const ABORTED_REPLACES_FILE: &str = "aborted-replaces.json";
 
-/// What a relaunch needs of the node the user closed while it worked on a task.
+/// What a relaunch needs of the node that closed while it worked on a task.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ClosedNode {
     pub name: String,
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub relaunch: Relaunch,
+}
+
+/// Who starts the task's next node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Relaunch {
+    /// The user closed it: a card asks them to relaunch the task or cancel it.
+    #[default]
+    AskUser,
+    /// Alondra closed it for a reason of its own: the automatic launch starts the next node, with
+    /// its retries and, past them, the card that says the task does not start.
+    ByItself,
 }
 
 fn save<T: serde::Serialize>(file: &std::path::Path, value: &T) {
@@ -158,6 +172,12 @@ impl Live {
 
     pub(crate) fn closed_task_ids(&self) -> Vec<String> {
         self.closed_tasks.lock_or_recover("the closed sessions").keys().cloned().collect()
+    }
+
+    /// The tasks whose closed node waits for the user to relaunch them.
+    pub(crate) fn user_closed_task_ids(&self) -> Vec<String> {
+        self.closed_tasks.lock_or_recover("the closed sessions").iter()
+            .filter(|(_, node)| node.relaunch == Relaunch::AskUser).map(|(task, _)| task.clone()).collect()
     }
 
     pub(crate) fn closed_sessions(&self) -> Vec<String> {

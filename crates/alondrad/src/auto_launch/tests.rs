@@ -263,7 +263,7 @@ async fn a_task_whose_node_the_user_closed_is_not_started_again_by_itself() {
     let f = world();
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    f.domain.live.remember_closed_task("f1", crate::client_routes::ClosedNode { name: "app/f1".into(), cwd: None });
+    f.domain.live.remember_closed_task("f1", crate::client_routes::ClosedNode { name: "app/f1".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0);
     assert_eq!(auto(&f, "f1"), None);
@@ -366,7 +366,7 @@ async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_t
         Origin::Auto, Some(cancel)).await;
     f.domain.live.end_launch("a");
     assert!(launched.as_ref().is_err_and(|error| error.message.contains("Task is terminal")), "cancelled before its admission: {launched:?}");
-    settle(&f.domain, &"a".into(), f.project.to_str().unwrap(), launched, now).unwrap();
+    settle(&f.domain, &"a".into(), f.project.to_str(), launched, now).unwrap();
     assert!(!f.domain.store.lock().unwrap().start_retries().unwrap().contains_key(&TaskId::from("a")), "no retry");
     assert!(problem(&f, "a").is_none(), "no card");
     assert!(auto(&f, "a").is_none());
@@ -409,7 +409,7 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
         Origin::Auto, Some(cancel)).await;
     f.domain.live.end_launch("a");
     assert!(launched.is_err(), "cancelled before its admission: {launched:?}");
-    settle(&f.domain, &"a".into(), f.project.to_str().unwrap(), launched, now).unwrap();
+    settle(&f.domain, &"a".into(), f.project.to_str(), launched, now).unwrap();
     let worktree = f.project.join(".claude/worktrees/a");
     assert!(worktree.join(".git").is_file(), "the start made the task's worktree");
     crate::task_closer::pass(&f.domain, &NoSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
@@ -727,7 +727,7 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     f.domain.stop_sdk_host(&node).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "f1".into()).unwrap();
-    crate::node_revival::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into())).unwrap();
+    crate::node_revival::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into()), crate::client_routes::Relaunch::AskUser).unwrap();
     assert!(agent_of(&f, "f1").is_none());
     let state = f.domain.state().unwrap();
     let cases: Vec<_> = state.interactions.values()
@@ -962,4 +962,52 @@ async fn pausing_a_task_that_waits_for_nothing_says_it_is_not_queued() {
     open_task(&f, "n1");
     assert_eq!(crate::admission::hold_queued(&f.domain, &"n1".into(), alondra_core::now_millis()), Err("This task is not queued"));
     assert_eq!(crate::admission::hold_queued(&f.domain, &"n0".into(), alondra_core::now_millis()), Err("This task is not queued"));
+}
+
+/// A node Alondra closed for a reason of its own (a replacement that could not stop it, a node
+/// closed while the user asked for changes) is followed by a new node the automatic launch starts,
+/// resuming its session, with no card; a relaunch that fails is tried again by itself.
+#[tokio::test]
+async fn a_node_alondra_closed_is_relaunched_by_itself_and_a_failed_relaunch_is_tried_again() {
+    let f = world_using_sdk(SdkLaunches::enable);
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    pass(&f.domain, &f.home).await.unwrap();
+    f.sdk.until_answered("f1").await;
+    let node = agent_of(&f, "f1").expect("its original SDK node");
+    let original = f.sdk.starts()[0]["session"].as_str().unwrap().to_owned();
+    f.domain.stop_sdk_host(&node).unwrap();
+    let (backend, runtime) = f.domain.sdk().unwrap();
+    crate::sdk_owner::end_unowned_host(runtime, backend, "f1".into()).unwrap();
+    crate::node_revival::take_out(&f.domain, &node.0, crate::node_revival::REPLACE_ABORTED, Some(f.project.to_str().unwrap().into()),
+        crate::client_routes::Relaunch::ByItself).unwrap();
+    let state = f.domain.state().unwrap();
+    let cases: Vec<_> = state.interactions.values()
+        .filter(|card| card.scope == (alondra_core::domain::Scope::Task { task_id: "f1".into() }) && alondra_core::domain::is_stall_case(card) && state.open(card))
+        .map(|card| card.id.clone()).collect();
+    for case in cases {
+        command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettleStall {
+            case_id: case, task_id: "f1".into(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Go on with your task".into() },
+        });
+    }
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);
+
+    f.sdk.refuse_starts(true);
+    pass(&f.domain, &f.home).await.unwrap();
+    assert!(agent_of(&f, "f1").is_none());
+    assert_eq!(f.domain.store.lock().unwrap().start_retries().unwrap().get(&TaskId::from("f1")).map(|(attempt, _)| *attempt), Some(1),
+        "a relaunch that fails is tried again by itself");
+    assert!(problem(&f, "f1").is_none(), "nobody is asked to relaunch it");
+
+    f.sdk.refuse_starts(false);
+    retry_now(&f, "f1");
+    pass(&f.domain, &f.home).await.unwrap();
+    let relaunched = agent_of(&f, "f1").expect("the retry relaunches it");
+    assert_ne!(relaunched, node);
+    let mut changed = f.domain.subscribe();
+    while f.domain.state().unwrap().lifecycle_of(&TaskId::from("f1")).unwrap().resource() != Some(alondra_domain::ResourceEvidence::Available) {
+        changed.changed().await.unwrap();
+    }
+    assert!(f.sdk.starts().iter().any(|start| start["resume"].as_str() == Some(original.as_str())), "it resumes the same session: {:?}", f.sdk.starts());
+    assert!(f.domain.live.closed_task("f1").is_none(), "the task no longer waits for a relaunch");
+    assert!(problem(&f, "f1").is_none());
 }
