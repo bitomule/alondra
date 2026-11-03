@@ -163,6 +163,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-daemon-support"
+version = "0.3.14"
+dependencies = [
+ "alondra-core",
+ "alondra-e2e",
+ "alondra-process-group",
+ "alondra-provider-claude",
+ "alondra-store",
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "block2",
+ "dispatch2",
+ "libc",
+ "netwatch",
+ "objc2",
+ "objc2-foundation",
+ "p256 0.14.0",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "alondra-domain"
 version = "0.3.14"
 dependencies = [
@@ -294,6 +324,7 @@ dependencies = [
  "alondra-agent-runtime",
  "alondra-codex-protocol",
  "alondra-core",
+ "alondra-daemon-support",
  "alondra-domain",
  "alondra-e2e",
  "alondra-foundation",
@@ -305,23 +336,18 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.23.1",
- "block2",
- "dispatch2",
  "h2",
  "iroh",
  "libc",
  "n0-future",
  "netwatch",
  "notify",
- "objc2",
- "objc2-foundation",
  "p256 0.14.0",
  "portmapper",
  "proptest",
  "reqwest",
  "ring",
  "rusqlite",
- "security-framework",
  "serde",
  "serde_json",
  "sha2 0.11.0",

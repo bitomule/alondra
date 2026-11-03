@@ -61,6 +61,7 @@ crate.from_cargo(
         "//crates/agent-runtime:Cargo.toml",
         "//crates/provider-claude:Cargo.toml",
         "//crates/provider-codex:Cargo.toml",
+        "//crates/daemon-support:Cargo.toml",
         "//crates/alondrad:Cargo.toml",
         "//crates/e2e:Cargo.toml",
         "//crates/alondra:Cargo.toml",

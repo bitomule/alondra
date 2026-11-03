@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 alondra-process-group.workspace = true
 alondra-core.workspace = true
+alondra-daemon-support.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-agent-application.workspace = true
 alondra-agent-runtime.workspace = true
@@ -38,14 +39,8 @@ sysinfo.workspace = true
 tokio.workspace = true
 toml.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3.7.0"
-block2 = "0.6.2"
-dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
-objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSError", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "NSURL", "NSValue", "block2"] }
-
 [dev-dependencies]
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-codex-protocol.workspace = true
 h2 = "0.4.19"
 proptest.workspace = true

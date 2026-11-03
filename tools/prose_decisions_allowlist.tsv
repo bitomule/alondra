@@ -86,15 +86,15 @@ crates/alondra/src/tui/unified_diff.rs	if let Some(to) = raw.strip_prefix("renam
 crates/alondra/src/tui/unified_diff.rs	if raw.starts_with("Binary files ") || raw == "GIT binary patch" {	format	git diff headers
 crates/alondrad/src/domain_api.rs	for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {	format	git diff headers
 crates/alondrad/src/domain_messages.rs	hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest	format	digest hex
-crates/alondrad/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
-crates/alondrad/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
-crates/alondrad/src/launch_worktree.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
+crates/daemon-support/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
+crates/daemon-support/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
+crates/daemon-support/src/launch_worktree.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
 crates/alondrad/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
 crates/alondrad/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
 crates/alondrad/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
 crates/alondrad/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
 crates/alondrad/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
-crates/alondrad/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
+crates/daemon-support/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
 crates/core/src/accounts.rs	if !names.insert(name.to_lowercase()) {	format	emails and account names compare without case
 crates/core/src/artifact.rs	if kind == "claude.ai/artifact/" && text[..i].ends_with("claude.ai/code/") {	format	artifact URL
 crates/core/src/config.rs	let flag = |v: String| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");	format	flag or setting value
@@ -144,7 +144,7 @@ crates/alondra/src/tui/inbox.rs	match hint.to_ascii_lowercase().as_str() {	own-g
 crates/alondra/src/tui/view_render.rs	key.strip_prefix(SECTION_HEADER)	own-grammar	view key grammar
 crates/alondrad/src/claude_access.rs	command_id: format!("probe-{provider:?}-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),	own-grammar	id built by Alondra
 crates/alondrad/src/domain_store.rs	ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");	own-grammar	policy revision Alondra composes
-crates/alondrad/src/hook_text.rs	tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;	own-grammar	MCP tool name token mcp__<server>__<tool>
+crates/daemon-support/src/hook_text.rs	tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;	own-grammar	MCP tool name token mcp__<server>__<tool>
 crates/alondrad/src/orchestrator_provider.rs	if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {	own-grammar	policy revision Alondra composes
 crates/alondrad/src/views/actions.rs	value.as_bytes()[19].to_ascii_lowercase(),	own-grammar	operation id grammar
 crates/core/src/activity.rs	let alondra_call = h.event == "PostToolUse" && h.tool_name.as_deref().is_some_and(|t| t.starts_with(ALONDRA_TOOLS));	own-grammar	MCP tool name token mcp__<server>__<tool>
@@ -203,8 +203,8 @@ crates/alondra/src/tui.rs	self.input.text().trim().to_lowercase()	user-search	th
 crates/alondra/src/tui.rs	self.blocks[i].selectable() && self.blocks[i].plain().to_lowercase().contains(&q)	user-search	the TUI's search box
 crates/alondra/src/tui/work.rs	let query = query.trim().to_lowercase();	user-search	search or sort over text the user filters
 crates/alondra/src/tui/work.rs	.filter(|item| query.is_empty() || [item.label.as_str(), item.group.as_deref().unwrap_or_default(), item.description.as_deref().unwrap_or_default()].join(" ").to_lowercase().contains(&query))	user-search	search or sort over text the user filters
-crates/alondrad/src/classify.rs	text.to_lowercase()	user-search	search or sort over text the user filters
-crates/alondrad/src/scoped_reads.rs	if text.contains(&query.query) {	user-search	search or sort over text the user filters
+crates/daemon-support/src/classify.rs	text.to_lowercase()	user-search	search or sort over text the user filters
+crates/daemon-support/src/scoped_reads.rs	if text.contains(&query.query) {	user-search	search or sort over text the user filters
 crates/core/src/issues.rs	let hay = format!("{} {} {}", self.reference(), self.title, self.labels.join(" ")).to_lowercase();	user-search	search or sort over text the user filters
 crates/core/src/issues.rs	query.to_lowercase().split_whitespace().all(|w| hay.contains(w))	user-search	search or sort over text the user filters
 crates/core/src/issues.rs	format!("{login} ({})", association.unwrap_or_default().to_lowercase())	user-search	search or sort over text the user filters

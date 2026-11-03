@@ -74,3 +74,10 @@ sh_test(
     data = ["bazel_speed.py"],
     size = "small",
 )
+
+sh_test(
+    name = "rustc_peaks_test",
+    srcs = ["tests/test_rustc_peaks.py"],
+    data = ["rustc_peaks.py"],
+    size = "small",
+)

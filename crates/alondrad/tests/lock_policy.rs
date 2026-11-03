@@ -3,7 +3,14 @@
 //! fail, as the machine watch's lock did on 25 October.
 use std::path::{Path, PathBuf};
 
-const SOURCES: &str = "crates/alondrad/src";
+const SOURCES: [&str; 2] = ["crates/alondrad/src", "crates/daemon-support/src"];
+/// What marks an item that only tests compile: alondrad's tests also build the support crate with
+/// its `test-hooks` feature.
+const TEST_ONLY: [&str; 2] = ["#[cfg(test)]", "#[cfg(any(test, feature = \"test-hooks\"))]"];
+
+fn next_test_only(text: &str) -> Option<(usize, usize)> {
+    TEST_ONLY.iter().filter_map(|marker| text.find(marker).map(|at| (at, marker.len()))).min()
+}
 
 fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -25,8 +32,8 @@ fn test_modules(files: &[PathBuf]) -> Vec<PathBuf> {
         let stem = file.file_stem().unwrap().to_str().unwrap();
         let base = if ["lib", "main", "mod"].contains(&stem) { dir.to_path_buf() } else { dir.join(stem) };
         let mut rest = text.as_str();
-        while let Some(at) = rest.find("#[cfg(test)]") {
-            rest = &rest[at + "#[cfg(test)]".len()..];
+        while let Some((at, len)) = next_test_only(rest) {
+            rest = &rest[at + len..];
             let mut item = rest.trim_start();
             let mut path = None;
             if let Some(attribute) = item.strip_prefix("#[path = \"") {
@@ -57,10 +64,10 @@ fn without_test_items(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut kept = String::with_capacity(text.len());
     let mut from = 0;
-    while let Some(found) = text[from..].find("#[cfg(test)]") {
+    while let Some((found, len)) = next_test_only(&text[from..]) {
         let start = from + found;
         kept.push_str(&text[from..start]);
-        let (mut at, mut braces, mut nesting, mut opened) = (start + "#[cfg(test)]".len(), 0i32, 0i32, false);
+        let (mut at, mut braces, mut nesting, mut opened) = (start + len, 0i32, 0i32, false);
         while at < bytes.len() {
             match bytes[at] {
                 b'{' => { braces += 1; opened = true; }
@@ -123,7 +130,11 @@ fn is_test_file(path: &Path) -> bool {
 #[test]
 fn no_lock_of_the_daemon_panics_every_later_reader() {
     let mut files = Vec::new();
-    rust_files(Path::new(SOURCES), &mut files);
+    for sources in SOURCES {
+        let before = files.len();
+        rust_files(Path::new(sources), &mut files);
+        assert!(files.len() > before, "{sources} is not in this test's runfiles");
+    }
     assert!(files.len() > 100, "the daemon's sources are not in this test's runfiles: {}", files.len());
     let tests = test_modules(&files);
     let mut found = Vec::new();
@@ -139,6 +150,7 @@ fn no_lock_of_the_daemon_panics_every_later_reader() {
 fn the_panic_check_sees_a_lock_unwrapped_over_lines_and_ignores_test_items() {
     let text = "fn a() {\n    x.lock()\n        .unwrap();\n}\n#[cfg(test)]\nfn b() { y.lock().unwrap(); }\n\
         struct S {\n    #[cfg(test)]\n    hook: Mutex<Option<Box<dyn Fn(u8, u8)>>>,\n}\nfn c() { z.read().expect(\"poisoned\"); \
-        w.wait_timeout(g, d).map_err(|_| e)?; child.wait().map_err(|_| e)?; }\n";
+        w.wait_timeout(g, d).map_err(|_| e)?; child.wait().map_err(|_| e)?; }\n\
+        #[cfg(any(test, feature = \"test-hooks\"))]\nfn d() { v.lock().unwrap(); }\n";
     assert_eq!(poison_panics(&without_test_items(text)), [2, 11, 11]);
 }

@@ -1,0 +1,40 @@
+[package]
+name = "alondra-daemon-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-hooks = ["dep:tempfile"]
+
+[dependencies]
+alondra-core.workspace = true
+alondra-e2e = { path = "../e2e" }
+alondra-process-group.workspace = true
+alondra-provider-claude.workspace = true
+alondra-store.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64 = "0.23.1"
+libc.workspace = true
+netwatch = "0.19.3"
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "json"] }
+ring = "0.17.14"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.0"
+tempfile = { workspace = true, optional = true }
+tokio.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7.0"
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSError", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "NSURL", "NSValue", "block2"] }
+
+[dev-dependencies]
+tempfile.workspace = true

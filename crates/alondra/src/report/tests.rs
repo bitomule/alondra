@@ -358,7 +358,7 @@ fn every_log_call_of_the_daemon_is_in_the_catalog() {
     let root = workspace_file("");
     let mut naive = 0;
     let mut extracted = 0;
-    for dir in ["crates/alondrad/src", "crates/alondrad/launcher"] {
+    for dir in ["crates/alondrad/src", "crates/alondrad/launcher", "crates/daemon-support/src"] {
         for file in extract::rust_files(&root.join(dir)) {
             let source = std::fs::read_to_string(&file).unwrap();
             naive += source.match_indices("log!(").filter(|(at, _)| !source[..*at].ends_with(|c: char| c.is_alphanumeric() || c == '_')).count();

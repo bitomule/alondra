@@ -7,8 +7,7 @@ use alondra_core::{Machine, MemoryCompressor, MemoryPressure, now_millis};
 use sysinfo::System;
 
 const UNRELIABLE_LOAD: f64 = 50.0;
-/// Where a Mac keeps its writable data; `/` on any other system.
-pub(crate) const BOOT_DATA: &str = "/System/Volumes/Data";
+pub(crate) use crate::disk::BOOT_DATA;
 
 /// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header. A sample is
 /// only ever replaced whole, so a lock whose holder panicked still holds a whole one.

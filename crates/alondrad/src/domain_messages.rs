@@ -4,6 +4,7 @@
 //! domain command.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
+pub(crate) use crate::worktree::user_name;
 use alondra_core::delivery::State;
 use alondra_core::domain::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, InteractionId, PrId, TaskId};
 use serde::Deserialize;
@@ -256,10 +257,6 @@ pub(crate) async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, a
         Ok(answer) => json!({"status": 200, "body": answer}),
         Err(error) => json!({"status": crate::domain_api::status_for(&error).as_u16(), "body": error}),
     }
-}
-
-pub(crate) fn user_name() -> String {
-    alondra_core::config::Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into())
 }
 
 fn read_after(domain: &DomainRuntime, user: &Actor, body: &MessageBody, mut answer: Value) -> Value {

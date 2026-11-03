@@ -1,0 +1,52 @@
+#[cfg(any(test, feature = "test-hooks"))]
+#[path = "../../test_support.rs"]
+mod test_support;
+
+#[macro_use]
+pub mod log;
+pub mod approval_lease;
+pub mod auth;
+pub mod blocking_work;
+pub mod classify;
+pub mod claude_check;
+pub mod codex_credentials;
+pub mod device_usage;
+pub mod disk;
+pub mod disk_peaks;
+pub mod domain_authority;
+pub mod domain_content;
+pub mod domain_cutover;
+pub mod exit;
+pub mod hook_socket;
+pub mod hook_text;
+pub mod iroh_terminals;
+pub mod job_state;
+pub mod launch_worktree;
+pub mod local_network;
+pub mod locks;
+pub mod node_cost;
+pub mod open_files;
+pub mod plugins;
+pub mod pr_heads;
+pub mod pr_ids;
+pub mod process_watch;
+pub mod prs;
+pub mod push;
+pub mod relaunch;
+pub mod reports;
+pub mod result_files;
+pub mod revoked_devices;
+pub mod runtime_mutex;
+pub mod save;
+#[cfg(target_os = "macos")]
+pub mod schedule_clock;
+pub mod schedules;
+pub mod scoped_reads;
+pub mod secret_files;
+pub mod service_files;
+pub mod start_guard;
+pub mod updates;
+pub mod uploads;
+pub mod watcher;
+pub mod workflow_state;
+pub mod worktree;

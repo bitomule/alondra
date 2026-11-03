@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/agent-runtime", "crates/provider-claude", "crates/provider-codex", "crates/core", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay"]
+members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation", "crates/daemon-support", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/agent-runtime", "crates/provider-claude", "crates/provider-codex", "crates/core", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay"]
 
 [workspace.package]
 version = "0.3.14"
@@ -21,6 +21,7 @@ alondra-agent-runtime = { path = "crates/agent-runtime" }
 alondra-provider-claude = { path = "crates/provider-claude" }
 alondra-provider-codex = { path = "crates/provider-codex" }
 alondra-core = { path = "crates/core" }
+alondra-daemon-support = { path = "crates/daemon-support" }
 anyhow = "1.0.104"
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }

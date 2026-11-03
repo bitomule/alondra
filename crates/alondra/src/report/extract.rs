@@ -281,7 +281,8 @@ fn unescape(text: &str) -> String {
 
 /// Where the catalog's calls are, relative to the workspace root: the daemon, its launcher, and the
 /// crates it runs whose `eprintln!` also land in `alondrad.log`.
-pub const LOG_SOURCES: &[&str] = &["crates/alondrad/src", "crates/alondrad/launcher", "crates/core/src", "crates/provider-claude/src"];
+pub const LOG_SOURCES: &[&str] =
+    &["crates/alondrad/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/core/src", "crates/provider-claude/src"];
 
 /// Functions that word a whole log line, which the daemon then logs as `log!("{line}")`: each of
 /// their `format!` texts is a template too.
@@ -304,6 +305,7 @@ pub const BUILT_IN: &[(&str, &str)] = &[("std:main", "Error: {}")];
 /// The crates whose enum variants are words of the code a log value may be made of.
 pub const VOCABULARY_SOURCES: &[&str] = &[
     "crates/alondrad/src",
+    "crates/daemon-support/src",
     "crates/core/src",
     "crates/domain/src",
     "crates/foundation/src",

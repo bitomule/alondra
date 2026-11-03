@@ -102,16 +102,20 @@ def normalized(text):
     return " ".join(text.split())
 
 
+# alondrad's tests also build the support crate with its `test-hooks` feature.
+TEST_ONLY = ("#[cfg(test)]", '#[cfg(any(test, feature = "test-hooks"))]')
+
+
 def without_cfg_test(text):
-    """Blanks every `#[cfg(test)]` item, keeping line breaks so line numbers still count."""
+    """Blanks every item only tests compile, keeping line breaks so line numbers still count."""
     out = list(text)
-    marker = "#[cfg(test)]"
     i = 0
     while True:
-        i = text.find(marker, i)
-        if i < 0:
+        found = [(at, len(marker)) for marker in TEST_ONLY if (at := text.find(marker, i)) >= 0]
+        if not found:
             return "".join(out)
-        j = i + len(marker)
+        i, length = min(found)
+        j = i + length
         depth, in_string, escaped = 0, False, False
         while j < len(text):
             c = text[j]

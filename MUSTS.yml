@@ -37,12 +37,15 @@ checks:
       - "tools/prose_decisions_allowlist.tsv"
       - "tools/testdata/prose_decisions_corpus.tsv"
       - "tools/tests/test_prose_decisions.py"
+      - "tools/rustc_peaks.py"
+      - "tools/tests/test_rustc_peaks.py"
       - "web/app/**"
     with:
       targets:
         - //crates/...
         - //tools:prose_decisions_test
         - //tools:sandbox_accounts_test
+        - //tools:rustc_peaks_test
         - //tools/sandbox:alondra-sandbox_test
         - //tests/system/macos:local_daemon_test
         - //apple:no_sleep_wording_test

@@ -8,16 +8,16 @@ def _rust_inputs_test_impl(ctx):
     asserts.true(env, len(actions) > 0, "The target must register an actual Rust compile action")
     for action in actions:
         inputs = {source.short_path: True for source in action.inputs.to_list()}
-        for source in ["crates/alondrad/src/lib.rs", "crates/alondrad/src/domain_store/owner.rs"]:
+        for source in ctx.attr.required_sources:
             asserts.true(env, source in inputs, "{} must compile {}".format(action.mnemonic, source))
         test_inputs = [
             source
             for source in inputs
-            if source == "crates/test_support.rs" or (source.startswith("crates/alondrad/src/") and (
+            if source == "crates/test_support.rs" or (source.startswith(ctx.attr.source_dir) and (
                 source.endswith("_tests.rs") or source.endswith("/tests.rs") or "/tests/" in source
             ))
         ]
-        for source in ["crates/alondrad/src/domain_store/owner_tests.rs", "crates/alondrad/src/service/tests/iroh_tests.rs", "crates/test_support.rs"]:
+        for source in ctx.attr.test_only_sources:
             asserts.equals(
                 env,
                 ctx.attr.test_sources,
@@ -30,5 +30,14 @@ def _rust_inputs_test_impl(ctx):
 
 rust_inputs_test = analysistest.make(
     _rust_inputs_test_impl,
-    attrs = {"test_sources": attr.bool(mandatory = True)},
+    attrs = {
+        "test_sources": attr.bool(mandatory = True),
+        "source_dir": attr.string(default = "crates/alondrad/src/"),
+        "required_sources": attr.string_list(default = ["crates/alondrad/src/lib.rs", "crates/alondrad/src/domain_store/owner.rs"]),
+        "test_only_sources": attr.string_list(default = [
+            "crates/alondrad/src/domain_store/owner_tests.rs",
+            "crates/alondrad/src/service/tests/iroh_tests.rs",
+            "crates/test_support.rs",
+        ]),
+    },
 )

@@ -27,6 +27,7 @@ rust_library(
         "//crates/agent-application:agent_application",
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
+        "//crates/daemon-support:daemon_support",
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
         "//crates/foundation:foundation",
@@ -84,9 +85,9 @@ rust_test(
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",
         "//crates/core:src/domain/tests.rs",
+        "//crates/daemon-support:report_sources",
         "//fixtures/client-v2",
         "//fixtures/push",
-        "//fixtures/workflow",
         "//fixtures/views:all",
         "//fixtures/views:cards",
         "//fixtures/domain-v2:acceptance.json",
@@ -119,6 +120,7 @@ rust_test(
         "//crates/agent-runtime:agent_runtime",
         "//crates/codex-protocol:codex_protocol",
         "//crates/core:alondra_core",
+        "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
         "//crates/foundation:foundation",
@@ -163,7 +165,7 @@ rust_inputs_test(
 rust_test(
     name = "lock_policy_test",
     srcs = ["tests/lock_policy.rs"],
-    data = [":report_sources"],
+    data = [":report_sources", "//crates/daemon-support:report_sources"],
     edition = "2024",
 )
 

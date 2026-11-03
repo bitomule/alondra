@@ -6,6 +6,7 @@ load("//:version.bzl", "VERSION")
 REPORT_SOURCES = [
     "//crates/alondrad:report_sources",
     "//crates/core:report_sources",
+    "//crates/daemon-support:report_sources",
     "//crates/domain:report_sources",
     "//crates/foundation:report_sources",
     "//crates/store:report_sources",

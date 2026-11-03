@@ -1,0 +1,78 @@
+load("//crates/alondrad:build_inputs_test.bzl", "rust_inputs_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/core:alondra_core",
+    "//crates/e2e:alondra_e2e",
+    "//crates/process-group:process_group",
+    "//crates/provider-claude:provider_claude",
+    "//crates/store:store",
+]
+
+rust_library(
+    name = "daemon_support",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "alondra_daemon_support",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates:__subpackages__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+# alondrad's unit tests build against the hooks its tests drive: a poisoned lock, a full disk, a
+# Claude home of the test's own.
+rust_library(
+    name = "daemon_support_test_hooks",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_features = ["test-hooks"],
+    crate_name = "alondra_daemon_support",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates/alondrad:__pkg__"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+rust_test(
+    name = "daemon_support_test",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = ["//fixtures/workflow"],
+    crate_name = "alondra_daemon_support",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+rust_inputs_test(
+    name = "production_inputs_test",
+    required_sources = ["crates/daemon-support/src/lib.rs"],
+    source_dir = "crates/daemon-support/src/",
+    target_under_test = ":daemon_support",
+    test_only_sources = ["crates/test_support.rs"],
+    test_sources = False,
+)
+
+rust_inputs_test(
+    name = "test_hooks_inputs_test",
+    required_sources = ["crates/daemon-support/src/lib.rs"],
+    source_dir = "crates/daemon-support/src/",
+    target_under_test = ":daemon_support_test_hooks",
+    test_only_sources = ["crates/test_support.rs"],
+    test_sources = True,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# Read by the crash report's build script for its log catalog and the words of the code, and by
+# alondrad's lock policy test.
+filegroup(
+    name = "report_sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+)
