@@ -63,7 +63,7 @@ fn node(agent: &str) -> Actor {
 
 fn started(runtime: &DomainRuntime, task: &str, agent: &str, dependencies: &[&str]) {
     must(runtime, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
-    must(runtime, orchestrator(), Command::CreateTask { plan_items: None,
+    must(runtime, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: task.into(), request_id: "r".into(), title: task.into(), agent_id: Some(agent.into()), review_prs: false,
         dependencies: dependencies.iter().map(|dep| TaskId::from(*dep)).collect::<BTreeSet<_>>(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp")),

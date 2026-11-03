@@ -40,7 +40,7 @@ fn merged() -> DomainState {
     let mut s = DomainState::new("epoch");
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: TASK.into(), request_id: "r".into(), title: "Release".into(), agent_id: Some(AGENT.into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
@@ -165,7 +165,7 @@ fn cancelling_a_task_owes_its_work_after_the_merge_until_its_node_ends() {
     let mut s = DomainState::new("epoch");
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: TASK.into(), request_id: "r".into(), title: "Release".into(), agent_id: Some(AGENT.into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
@@ -213,7 +213,7 @@ fn turns_before_the_merge_leave_the_declared_work_owed() {
     let mut s = DomainState::new("epoch");
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: TASK.into(), request_id: "r".into(), title: "Release".into(), agent_id: Some(AGENT.into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

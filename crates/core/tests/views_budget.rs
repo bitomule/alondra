@@ -111,7 +111,7 @@ fn unit(shape: Shape) -> DomainState {
     seed.run(user(), Command::TitleRequest { request_id: request.as_str().into(), title: format!("Synthetic {} {TOKEN}", shape.name()) });
     seed.run(Actor::System, Command::RegisterAgent { agent_id: agent.as_str().into(), name: format!("{} node {TOKEN}", shape.name()), at: 0 });
     let through_sdk = matches!(shape, Shape::WaitingMcp | Shape::SessionEnded);
-    seed.run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    seed.run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: task.as_str().into(), request_id: request.as_str().into(), title: format!("Synthetic {} task {TOKEN}", shape.name()),
         agent_id: (!through_sdk).then(|| agent.as_str().into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic/project")),

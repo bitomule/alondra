@@ -67,7 +67,7 @@ mod tests {
         run(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         run(Actor::System, "agent", Command::RegisterAgent { agent_id: "node".into(), name: "Node".into(), at: 0 });
         run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
-            plan_items: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("node".into()), review_prs: false,
+            plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("node".into()), review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", home.join("work").to_str().unwrap())),
         });
         let query = || Query { task_id: "task".into(), after: None, limit: 10 };

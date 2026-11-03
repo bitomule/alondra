@@ -78,7 +78,7 @@ impl Bench {
         let mut nodes = vec![];
         for (index, (id, priority)) in tasks.iter().enumerate() {
             let agent = format!("agent-{id}");
-            run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+            run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
                 task_id: (*id).into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -183,7 +183,7 @@ fn building(now: Millis, margin_gib: f64, pressure: MemoryPressure) -> Machine {
 /// Asks the gate to start a task without a node yet, created on the first ask.
 fn ask_new(bench: &Bench, now: Millis) -> Result<(), Hold> {
     if !bench.domain.state().unwrap().tasks.contains_key(&TaskId::from("t-new")) {
-        run(&bench.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+        run(&bench.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: "t-new".into(), request_id: "r".into(), title: "Task t-new".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
@@ -651,7 +651,7 @@ impl SdkNode {
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
             request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() });
-        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())) });
         let driver = crate::sdk_owner::start(Arc::clone(&domain), &backend, crate::sdk_owner::Launch {
@@ -901,7 +901,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: "t-light".into(), request_id: "r".into(), title: "Fix a typo".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-light".into()), name: "agent-light".into(), at: 0 });

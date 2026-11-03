@@ -305,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "stalls", "stall_closing", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "stalls", "stall_closing", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -807,6 +807,9 @@ pub(super) fn save_changes(
         }
         if let Some(project) = x.project.as_ref().filter(|_| prior.is_none_or(|p| p.project != x.project)) {
             exec(c, "INSERT INTO task_projects(task_id,project) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET project=excluded.project", params![x.id.0, project])?;
+        }
+        if let Some(continues) = x.continues.as_ref().filter(|_| prior.is_none_or(|p| p.continues != x.continues)) {
+            exec(c, "INSERT INTO task_continuations(task_id,continues) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET continues=excluded.continues", params![x.id.0, continues.0])?;
         }
         if prior.map_or(x.account.is_some(), |p| p.account != x.account) {
             match &x.account {
@@ -1326,6 +1329,13 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         state.tasks.get_mut(&TaskId::from(id)).context("project task missing")?.project = Some(row.get(1)?);
     }
     drop(stored);
+    let mut continuations = c.prepare("SELECT task_id, continues FROM task_continuations")?;
+    let mut stored = continuations.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("continuing task missing")?.continues = Some(TaskId::from(row.get::<_, String>(1)?));
+    }
+    drop(stored);
     let mut accounts = c.prepare("SELECT task_id, account FROM task_accounts")?;
     let mut stored = accounts.query([])?;
     while let Some(row) = stored.next()? {
@@ -1478,6 +1488,17 @@ fn policy_name(policy: alondra_core::accounts::Policy) -> &'static str {
 
 /// Adds `interactions.shortened` and, that once, marks the final results an earlier compaction
 /// cut: their body is the excerpt it wrote, `RESULT_LIMIT` characters and its closing marker.
+/// Worktree records made before a worktree could end handed over to another task take that end.
+pub(super) fn allow_handed_over_worktrees(tx: &rusqlite::Transaction<'_>, schema: &str) -> rusqlite::Result<()> {
+    let sql: String = tx.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_worktree_records'", [], |row| row.get(0))?;
+    if sql.contains("'handed_over'") {
+        return Ok(());
+    }
+    tx.execute_batch("ALTER TABLE task_worktree_records RENAME TO task_worktree_records_old;")?;
+    tx.execute_batch(schema)?;
+    tx.execute_batch("INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) \
+        SELECT task_id,path,origin,branch,discard,end FROM task_worktree_records_old; DROP TABLE task_worktree_records_old;")
+}
 pub(super) fn add_shortened_column(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     let present = tx.query_row("SELECT count(*) FROM pragma_table_info('interactions') WHERE name='shortened'", [], |row| row.get::<_, i64>(0))? == 1;
     if present {

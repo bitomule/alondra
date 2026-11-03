@@ -85,7 +85,7 @@ mod tests {
         must(domain, orchestrator(), &format!("create-{id}"), Command::CreateTask {
             task_id: id.into(), request_id: "r".into(), title: format!("Redraft index · Phase {}", id.to_uppercase()), agent_id: agent.map(Into::into),
             review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None, launch: Some(plan(id, mission)),
-            plan_items: None,
+            plan_items: None, continues: None,
         });
     }
 

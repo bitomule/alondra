@@ -35,7 +35,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, dependencies: &[&str], pla
     Command::CreateTask {
         task_id: id.into(), request_id: request.into(), title: format!("Phase {id}"), agent_id: agent.map(Into::into),
         review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None,
-        launch: Some(LaunchPlan::new("node", "/tmp/project")), plan_items,
+        launch: Some(LaunchPlan::new("node", "/tmp/project")), plan_items, continues: None,
     }
 }
 fn take(from: &str, items: &[&str]) -> Option<PlanItems> {

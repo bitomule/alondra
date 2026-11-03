@@ -921,7 +921,7 @@ fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
     run(&mut store, &orchestrator(), "request", Command::CreateRequest { request_id: request.clone(), body: "Try the turn-end card".into(), auto_merge: false, maintenance: false, message: false });
     run(&mut store, &orchestrator(), "title", Command::TitleRequest { request_id: request.clone(), title: "Turn-end card".into() });
     run(&mut store, &orchestrator(), "task", Command::CreateTask {
-        plan_items: None, task_id: task.clone(), request_id: request, title: "Write the release notes".into(), agent_id: None,
+        plan_items: None, continues: None, task_id: task.clone(), request_id: request, title: "Write the release notes".into(), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     let state = store.load().unwrap();

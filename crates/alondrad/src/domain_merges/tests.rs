@@ -48,7 +48,7 @@ fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGit
     let domain = Arc::new(DomainRuntime::open(&home.0).unwrap());
     command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
     command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false, message: false });
-    command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+    command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
         task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -173,7 +173,7 @@ async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
 async fn a_task_that_waited_on_another_to_start_has_its_accepted_pr_merged() {
     let (_home, domain, github) = presented("waited", false);
     command(&domain, user(), "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { plan_items: None,
+    command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { plan_items: None, continues: None,
         task_id: "fix".into(), request_id: "r".into(), title: "Fix main".into(), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -194,7 +194,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
     let reviewer = || Actor::Agent { agent_id: "rev".into() };
     command(&domain, Actor::System, "reviewer-agent", Command::RegisterAgent { agent_id: "rev".into(), name: "Reviewer".into(), at: 0 });
     command(&domain, user(), "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    command(&domain, Actor::Orchestrator { generation: 0 }, "reviewer", Command::CreateTask { plan_items: None,
+    command(&domain, Actor::Orchestrator { generation: 0 }, "reviewer", Command::CreateTask { plan_items: None, continues: None,
         task_id: "review".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("rev".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -948,7 +948,7 @@ async fn work_after_the_merge_that_waits_on_another_tasks_pr_wakes_when_alondra_
 
     command(&domain, user(), "title", Command::TitleRequest { request_id: "r".into(), title: "Beta 59".into() });
     command(&domain, Actor::System, "agent-b", Command::RegisterAgent { agent_id: "b".into(), name: "B".into(), at: 0 });
-    command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { plan_items: None,
+    command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { plan_items: None, continues: None,
         task_id: "fix".into(), request_id: "r".into(), title: "Fix the Mac package".into(), agent_id: Some("b".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

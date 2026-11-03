@@ -84,7 +84,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "checklist_unknown_item", "checklist_without_evidence", "evidence_unknown_attachment", "evidence_unknown_pr",
     "checklist_incomplete", "usage_is_not_a_stop", "plan_choice_required", "approved_plan_has_task",
     "plan_review_pending", "plan_review_not_found", "not_in_plan_review", "plan_review_settled",
-    "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable", "task_waiting",
+    "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable", "task_waiting", "continuation_request",
     "model_catalog_changed", "model_catalog_unavailable", "stall_needs_outcome", "stall_settled", "stall_limit",
 ];
 

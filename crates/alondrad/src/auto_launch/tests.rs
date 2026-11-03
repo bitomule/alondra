@@ -67,7 +67,7 @@ fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) {
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("create-{id}").into(), expected_revision: 0,
-        command: Command::CreateTask { plan_items: None,
+        command: Command::CreateTask { plan_items: None, continues: None,
             task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: after.iter().map(|dep| TaskId::from(*dep)).collect(), stack: None,
             launch: plan.cloned(),
@@ -107,7 +107,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
 /// A task an earlier node works on, which was never launched by Alondra.
 fn open_task(f: &Fixture, id: &str) {
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into(), at: 0 });
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
         agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
 }
@@ -453,7 +453,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
         revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: Default::default(), stack: None,
         documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
     };
     command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
         launch: alondra_core::domain::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
@@ -466,7 +466,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         let state = f.domain.state().unwrap();
         f.domain.execute_bearer(&bearer, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("create-{id}").into(), expected_revision: 0,
-            command: Command::CreateTask { plan_items: None, task_id: id.into(), request_id: "weekly".into(), title: "Register blurcamera.app".into(), agent_id: None,
+            command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "weekly".into(), title: "Register blurcamera.app".into(), agent_id: None,
                 review_prs: true, dependencies: Default::default(), stack: None, launch },
         })
     };

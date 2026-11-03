@@ -127,7 +127,7 @@ mod tests {
     }
 
     fn create(deps: &[&str], launch: Option<LaunchPlan>) -> Command {
-        Command::CreateTask { plan_items: None,
+        Command::CreateTask { plan_items: None, continues: None,
             task_id: "next".into(), request_id: "r".into(), title: "Next".into(), agent_id: None, review_prs: false,
             dependencies: deps.iter().map(|dep| (*dep).into()).collect(), stack: None, launch,
         }

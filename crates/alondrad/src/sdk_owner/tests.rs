@@ -363,7 +363,7 @@ impl Slice {
         });
         slice.run(&Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "sdk-slice-request".into(), title: "Release notes".into() });
         slice.run(&Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
-            plan_items: None,
+            plan_items: None, continues: None,
             task_id: TASK.into(),
             request_id: "sdk-slice-request".into(),
             title: "Write the release notes".into(),
@@ -1676,7 +1676,7 @@ fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
 fn a_second_task_starts_through_the_same_sdk_host() {
     let slice = Slice::new();
     slice.run(&Actor::Orchestrator { generation: 0 }, "second-task", Command::CreateTask {
-        plan_items: None,
+        plan_items: None, continues: None,
         task_id: "sdk-slice-second".into(),
         request_id: "sdk-slice-request".into(),
         title: "Write the upgrade guide".into(),
@@ -1709,7 +1709,7 @@ impl Slice {
     /// A second task of the request, ready to launch in the slice's worktree.
     fn task(&self, task: &str) {
         self.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask {
-            plan_items: None,
+            plan_items: None, continues: None,
             task_id: task.into(),
             request_id: "sdk-slice-request".into(),
             title: format!("Work on {task}"),

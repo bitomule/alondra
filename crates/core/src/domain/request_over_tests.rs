@@ -30,7 +30,7 @@ fn told(outcome: &CommandOutcome) -> Vec<&RequestId> {
 }
 fn task(id: &str, request: &str) -> Command {
     Command::CreateTask {
-        plan_items: None, task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
+        plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
     }
 }

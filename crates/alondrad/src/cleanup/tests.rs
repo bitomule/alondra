@@ -112,7 +112,7 @@ impl Rig {
         self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
         self.sessions.listed.lock().unwrap().push(short);
         let id = format!("t{n}");
-        command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
+        command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
             agent_id: Some(session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         if launched {
@@ -318,7 +318,7 @@ impl Rig {
         self.sessions.listed.lock().unwrap().push(short);
         let id = format!("t{n}");
         let given = assign_as.is_some();
-        command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
+        command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
             agent_id: (!given).then(|| session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         if let Some(actor) = assign_as {

@@ -72,11 +72,42 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
     crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// What each worktree of the task that the node did not give up still holds that no remote has:
-/// the work that keeps the task from closing, by path.
-pub(crate) async fn leftovers(task: &Task) -> Vec<(String, String)> {
+/// The open task that goes on working in the worktree at `path` once `task` lets it go: one that
+/// holds it, or one whose launch plan starts it there, which then takes it.
+pub(crate) fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<TaskId>> {
+    let state = domain.state()?;
+    if let Some(heir) = state.worktree_held_by_other(path, &task.id) {
+        return Ok(Some(heir.clone()));
+    }
+    let mut launched_there = None;
+    for other in state.tasks.values().filter(|other| other.id != task.id && !other.over()) {
+        if domain.launch_plan(&other.id)?.is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)) {
+            launched_there = Some(other.id.clone());
+            break;
+        }
+    }
+    let Some(heir) = launched_there else {
+        return Ok(None);
+    };
+    let branch = task.worktrees.get(path).and_then(|worktree| worktree.branch.clone());
+    let command = Command::RecordTaskWorktree { task_id: heir.clone(), path: path.to_owned(), origin: WorktreeOrigin::Inherited, branch };
+    crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(Some(heir))
+}
+
+/// What each worktree of the task that the node did not give up, and no other open task goes on
+/// in, still holds that no remote has: the work that keeps the task from closing, by path.
+pub(crate) async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, String)> {
     let mut left = vec![];
     for (path, _) in task.open_worktrees().filter(|(path, worktree)| !worktree.discard && Path::new(path).exists()) {
+        match heir(domain, task, path) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(why) => {
+                left.push((path.clone(), why.to_string()));
+                continue;
+            }
+        }
         match crate::worktree::unsaved(Path::new(path)).await {
             Ok(None) => {}
             Ok(Some(what)) => left.push((path.clone(), what)),
@@ -91,20 +122,25 @@ pub(crate) async fn leftovers(task: &Task) -> Vec<(String, String)> {
 pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
     let mut left = vec![];
     for (path, worktree) in task.open_worktrees() {
-        let end = match crate::worktree::release_recorded_worktree(Path::new(path), worktree.discard).await {
-            Ok(TaskWorktree::Removed { freed }) => {
-                log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
-                WorktreeEnd::Removed
-            }
-            Ok(TaskWorktree::Absent) => WorktreeEnd::Removed,
-            Ok(TaskWorktree::NotAlondras) => WorktreeEnd::UsersOwn,
-            Ok(TaskWorktree::Unsaved(what)) => {
-                left.push((path.clone(), what));
-                continue;
-            }
-            Err(why) => {
-                left.push((path.clone(), why));
-                continue;
+        let end = if let Some(heir) = heir(domain, task, path)? {
+            log!("leaving the worktree {path} of {} to {heir}, which goes on working in it", task.id);
+            WorktreeEnd::HandedOver
+        } else {
+            match crate::worktree::release_recorded_worktree(Path::new(path), worktree.discard).await {
+                Ok(TaskWorktree::Removed { freed }) => {
+                    log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
+                    WorktreeEnd::Removed
+                }
+                Ok(TaskWorktree::Absent) => WorktreeEnd::Removed,
+                Ok(TaskWorktree::NotAlondras) => WorktreeEnd::UsersOwn,
+                Ok(TaskWorktree::Unsaved(what)) => {
+                    left.push((path.clone(), what));
+                    continue;
+                }
+                Err(why) => {
+                    left.push((path.clone(), why));
+                    continue;
+                }
             }
         };
         let command = Command::ReleaseTaskWorktree { task_id: task.id.clone(), path: path.clone(), end };

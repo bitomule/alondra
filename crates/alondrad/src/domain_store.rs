@@ -54,6 +54,8 @@ const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT P
 /// sign-in; created on every open like task_models.
 const TASK_ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS task_accounts(task_id TEXT PRIMARY KEY REFERENCES tasks(id), account TEXT NOT NULL CHECK(length(account)>0));";
 /// The project each Task belongs to, set when it was created; created on every open like task_models.
+/// The task each task carries on, in the same request.
+const TASK_CONTINUATIONS: &str = "CREATE TABLE IF NOT EXISTS task_continuations(task_id TEXT PRIMARY KEY REFERENCES tasks(id), continues TEXT NOT NULL REFERENCES tasks(id));";
 const TASK_PROJECTS: &str = "CREATE TABLE IF NOT EXISTS task_projects(task_id TEXT PRIMARY KEY REFERENCES tasks(id), project TEXT NOT NULL CHECK(length(trim(project))>0));";
 const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
@@ -282,7 +284,7 @@ const TASK_WORKTREE_RECORDS: &str = "CREATE TABLE IF NOT EXISTS task_worktree_re
  origin TEXT NOT NULL CHECK(origin IN('task','inherited','subagent','entered')),\
  branch TEXT,\
  discard INTEGER NOT NULL CHECK(discard IN(0,1)),\
- end TEXT CHECK(end IS NULL OR end IN('removed','kept_by_user','users_own')),\
+ end TEXT CHECK(end IS NULL OR end IN('removed','kept_by_user','users_own','handed_over')),\
  PRIMARY KEY(task_id,path));";
 /// What the user allowed for the rest of each open task, by the permission card it was allowed on.
 const TASK_GRANTS: &str = "CREATE TABLE IF NOT EXISTS task_permission_grants(\
@@ -662,6 +664,7 @@ impl DomainStore {
         tx.execute_batch(provider_settings::SCHEMA)?;
         tx.execute_batch(batch_effects::SCHEMA)?;
         tx.execute_batch(TASK_PROJECTS)?;
+        tx.execute_batch(TASK_CONTINUATIONS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;
@@ -706,6 +709,7 @@ impl DomainStore {
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
+        repository::allow_handed_over_worktrees(&tx, TASK_WORKTREE_RECORDS)?;
         tx.execute_batch(TASK_GRANTS)?;
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;
         tx.execute_batch(account_move::ACCOUNT_MOVE_STEPS)?;

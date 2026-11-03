@@ -479,7 +479,7 @@ mod tests {
             ],
             card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Pick the app"),
         });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t-1".into(), request_id: "split".into(), title: "Task".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
@@ -502,7 +502,7 @@ mod tests {
         let domain = DomainRuntime::open(&home).unwrap();
         request(&domain, "solo", false);
         request(&domain, "pair", false);
-        let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None,
+        let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None, continues: None,
             task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -529,7 +529,7 @@ mod tests {
     fn node_with_task(domain: &DomainRuntime) {
         run(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Node".into(), at: 0 });
         request(domain, "r", false);
-        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Resume the migration".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

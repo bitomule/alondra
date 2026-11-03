@@ -120,7 +120,7 @@ fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
 }
 
 fn create(domain: &DomainRuntime, id: &str) {
-    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -866,7 +866,7 @@ const GB: u64 = 1_000_000_000;
 fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
     let mut launch = alondra_core::domain::LaunchPlan::new("node", "/tmp");
     launch.project = Some(project.into());
-    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(launch),
     });

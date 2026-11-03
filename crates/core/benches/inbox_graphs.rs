@@ -22,7 +22,7 @@ pub(super) fn templates() -> DomainState {
         request_id: "request".into(), body: "Synthetic graph".into(), auto_merge: false, maintenance: false, message: false,
     });
     super::commit(&mut state, super::user(), Command::TitleRequest { request_id: "request".into(), title: "Synthetic graph".into() });
-    super::commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    super::commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: "delivery-task".into(), request_id: "request".into(), title: "Synthetic delivery".into(),
         agent_id: Some("delivery-agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic")),
@@ -38,7 +38,7 @@ pub(super) fn templates() -> DomainState {
         attachments: vec![], task_id: "delivery-task".into(), interaction_id: "template-delivery".into(), body: "Synthetic result".into(),
         targets, is_final: true, nothing_to_review: false, card,
     });
-    super::commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+    super::commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: "question-task".into(), request_id: "request".into(), title: "Synthetic question".into(),
         agent_id: Some("question-agent".into()), review_prs: true, dependencies: BTreeSet::from(["delivery-task".into()]), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic")),

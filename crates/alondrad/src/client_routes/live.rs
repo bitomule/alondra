@@ -390,7 +390,7 @@ mod sdk_node_tests {
         for agent in ["sdk-seen", "sdk-unseen"] {
             let (request, task) = (format!("r-{agent}"), format!("t-{agent}"));
             apply(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: request.clone().into(), body: "Notes".into(), auto_merge: false, maintenance: false, message: false });
-            apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: task.clone().into(), request_id: request.into(), title: "Notes".into(),
+            apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: task.clone().into(), request_id: request.into(), title: "Notes".into(),
                 agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
             apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: task.clone().into(), agent_id: agent.into(),
                 conversation: format!("conversation-{task}"), instance: format!("instance-{task}"), host: crate::sdk_owner::HOST.into(), model: None, account: None, leaves_limit: None });

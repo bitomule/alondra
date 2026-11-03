@@ -155,6 +155,9 @@ pub enum Command {
         launch: Option<LaunchPlan>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plan_items: Option<PlanItems>,
+        /// The task of the same request this one carries on, taking its worktrees and its plan.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<TaskId>,
     },
     AssignTask {
         task_id: TaskId,

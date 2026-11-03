@@ -849,7 +849,7 @@ impl World {
             Step::Launch => {
                 self.nodes += 1;
                 let (agent, task): (AgentId, TaskId) = (format!("node-{}", self.nodes).into(), format!("t-{}", self.nodes).into());
-                self.must(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
+                self.must(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
                     task_id: task.clone(), request_id: "r".into(), title: format!("Task {}", self.nodes), agent_id: None, review_prs: false,
                     dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
                 });

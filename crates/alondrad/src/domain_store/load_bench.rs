@@ -53,7 +53,7 @@ pub(crate) fn seed(store: &mut DomainStore, nodes: usize) {
         });
     }
     for t in 0..TASKS {
-        run(store, &Actor::Orchestrator { generation: 0 }, format!("task-{t}"), Command::CreateTask { plan_items: None,
+        run(store, &Actor::Orchestrator { generation: 0 }, format!("task-{t}"), Command::CreateTask { plan_items: None, continues: None,
             task_id: format!("task-{t}").into(),
             request_id: format!("request-{}", t % REQUESTS).into(),
             title: format!("Bench task {t}"),

@@ -1462,7 +1462,7 @@ mod producer_revision_tests {
                     &runtime,
                     "task",
                     None,
-                    Command::CreateTask { plan_items: None,
+                    Command::CreateTask { plan_items: None, continues: None,
                         task_id: "task-a".into(),
                         request_id: "request-a".into(),
                         title: "Task".into(),

@@ -40,7 +40,7 @@ fn world() -> Fixture {
     }
     run(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     run(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    let task = |id: &str, agent: Option<&str>, deps: &[&str]| Command::CreateTask { plan_items: None, task_id: id.into(), request_id: "r".into(),
+    let task = |id: &str, agent: Option<&str>, deps: &[&str]| Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(),
         title: format!("Title {id}"), agent_id: agent.map(Into::into), review_prs: false,
         dependencies: deps.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), };
@@ -83,7 +83,7 @@ fn tasks_in_progress_lists_live_agents_what_waits_on_someone_and_the_requests() 
 #[test]
 fn tasks_in_progress_shows_the_orchestrator_the_relations_the_verdict_and_the_rounds_of_each_task() {
     let f = world();
-    run(&f.1, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
+    run(&f.1, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     run(&f.1, user(), Command::SetRelations {
@@ -156,7 +156,7 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its
     apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
     apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Keyboard".into(), auto_merge: false, maintenance: false, message: false });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Keyboard".into() });
-    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Keyboard".into(),
+    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t3".into(), request_id: "r".into(), title: "Keyboard".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t3".into(), agent_id: "agent-b".into(), conversation: "conversation-t3".into(),
         instance: "instance-t3".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
@@ -195,7 +195,7 @@ fn the_orchestrator_reads_a_node_of_the_agent_sdk_from_its_task_s_lifecycle() {
     apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-s".into(), name: "Instance S".into(), at: 0 });
     apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Notes".into(), auto_merge: false, maintenance: false, message: false });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Notes".into() });
-    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t4".into(), request_id: "r".into(), title: "Notes".into(),
+    apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t4".into(), request_id: "r".into(), title: "Notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t4".into(), agent_id: "agent-s".into(), conversation: "conversation-t4".into(),
         instance: "instance-t4".into(), host: crate::sdk_owner::HOST.into(), model: None, account: None, leaves_limit: None });

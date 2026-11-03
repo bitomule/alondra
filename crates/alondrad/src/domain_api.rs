@@ -1037,7 +1037,7 @@ async fn execute_command<H: DomainHost>(
             && let Ok(state) = host.domain().state()
             && let Some(task) = state.tasks.get(task_id)
         {
-            let left: Vec<(String, String)> = crate::task_worktrees::leftovers(task).await.into_iter()
+            let left: Vec<(String, String)> = crate::task_worktrees::leftovers(host.domain(), task).await.into_iter()
                 .filter(|(path, _)| !discard.contains(path))
                 .collect();
             if !left.is_empty() {
@@ -1277,7 +1277,7 @@ mod tests {
         let state = domain.state().unwrap();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "task".into(), expected_revision: state.revision,
-            command: Command::CreateTask { plan_items: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
+            command: Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
                 review_prs: false, dependencies: Default::default(), stack: None, launch: Some(serde_json::from_value(json!({"name":"node", "cwd":directory.to_string_lossy(), "model":"sonnet", "reason":"fixture"})).unwrap()) },
         };
         let driver = std::thread::current().id();
@@ -1564,7 +1564,7 @@ mod tests {
         create_task["dependencies"] = json!([]);
         create_task["stack"] = Value::Null;
         let adapted = resource_envelope_from_path("POST", "/requests/r-1/tasks", create_task).unwrap();
-        assert_eq!(adapted.command, Command::CreateTask { plan_items: None,
+        assert_eq!(adapted.command, Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-1".into(), request_id: "r-1".into(), title: "Build".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: None,
         });
@@ -1614,7 +1614,7 @@ mod tests {
             (
                 Actor::Orchestrator { generation: 0 },
                 "task",
-                Command::CreateTask { plan_items: None,
+                Command::CreateTask { plan_items: None, continues: None,
                     task_id: "task-a".into(),
                     request_id: "request-a".into(),
                     title: "Synthetic task".into(),

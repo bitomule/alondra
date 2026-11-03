@@ -133,7 +133,11 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
         let list: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
         anyhow::bail!("the worktrees of {} hold work that is not saved: {}", task.id, list.join("; "));
     }
-    if let Some(dir) = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)) {
+    if !task.worktrees.is_empty() && !domain.state()?.tasks.get(&task.id).is_some_and(Task::ending) {
+        return Ok(());
+    }
+    let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
+    if let Some(dir) = dir.filter(|dir| crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En)),
@@ -302,7 +306,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if !ready || (now < row.next_attempt && !confirmed) {
         return Ok(());
     }
-    let left = crate::task_worktrees::leftovers(task).await;
+    let left = crate::task_worktrees::leftovers(domain, task).await;
     if !left.is_empty() {
         return hold_for_worktrees(domain, timing, now, task, &agent, row, &left, matches!(kind, Due::Cleanup));
     }
@@ -419,7 +423,7 @@ async fn close_sdk_node(
     if now < row.next_attempt && !confirmed {
         return Ok(());
     }
-    let left = crate::task_worktrees::leftovers(task).await;
+    let left = crate::task_worktrees::leftovers(domain, task).await;
     if !left.is_empty() {
         if !owned && let Err(why) = take_over(domain, task) {
             log!("no host could resume the session of {} to settle its worktrees: {why}", task.id);
@@ -502,7 +506,8 @@ async fn finish_with_worktree(
         let reason = format!("its session is closed, but worktrees of the task hold work that is not saved: {}", detail.join("; "));
         return failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &detail.join("\n")), cleanup);
     }
-    let Some(dir) = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)) else {
+    let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
+    let Some(dir) = dir.filter(|dir| crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) else {
         return finish(domain, &row, Some(agent), end);
     };
     match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {

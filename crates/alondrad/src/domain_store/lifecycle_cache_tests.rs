@@ -23,7 +23,7 @@ fn opened() -> Home {
     }).unwrap();
     home.run(&Actor::System, Command::RegisterAgent { agent_id: NODE.into(), name: "Node".into(), at: 0 }).unwrap();
     home.run(&Actor::Orchestrator { generation: 0 }, Command::CreateTask {
-        plan_items: None, task_id: TASK.into(), request_id: "r-cache".into(), title: "Task".into(), agent_id: Some(NODE.into()),
+        plan_items: None, continues: None, task_id: TASK.into(), request_id: "r-cache".into(), title: "Task".into(), agent_id: Some(NODE.into()),
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     }).unwrap();
     home.run(&node(), Command::StartTask { task_id: TASK.into() }).unwrap();

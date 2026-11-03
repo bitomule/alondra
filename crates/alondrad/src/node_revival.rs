@@ -441,7 +441,7 @@ mod tests {
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into(), at: 0 });
         if with_task {
             command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-            command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
+            command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
                 agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         }
@@ -779,7 +779,7 @@ mod tests {
     /// open, and the node's turn ended: «mapa del backend», 16 October 14:40.
     fn waiting(domain: &DomainRuntime) {
         command(domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Backend map".into() });
-        command(domain, Actor::Orchestrator { generation: 0 }, "dependency", Command::CreateTask { plan_items: None, task_id: "d".into(), request_id: "r".into(),
+        command(domain, Actor::Orchestrator { generation: 0 }, "dependency", Command::CreateTask { plan_items: None, continues: None, task_id: "d".into(), request_id: "r".into(),
             title: "Remove the legacy code".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         working(domain);

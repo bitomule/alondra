@@ -41,7 +41,7 @@ fn task_on_next_spawn(f: &Fixture, requests: &[&str]) -> (faults::SpawnHook, Arc
                 command_id: format!("task-for-{id}").into(),
                 expected_revision: 0,
                 command: Command::CreateTask {
-                    plan_items: None,
+                    plan_items: None, continues: None,
                     task_id: format!("task-{id}").into(),
                     request_id: id.as_str().into(),
                     title: format!("Task for {id}"),

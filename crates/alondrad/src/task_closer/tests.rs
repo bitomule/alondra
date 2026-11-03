@@ -131,7 +131,7 @@ impl Rig {
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into(), at: 0 });
         command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Result".into(), agent_id: Some(SESSION.into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -201,7 +201,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
     command(&rig.domain, Actor::System, "other-agent", Command::RegisterAgent { agent_id: "other".into(), name: "Other".into(), at: 0 });
     command(&rig.domain, user(), "other-request", Command::CreateRequest { request_id: "other".into(), body: "Other work".into(), auto_merge: false, maintenance: false, message: false });
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other-task", Command::CreateTask {
-        plan_items: None, task_id: "z".into(), request_id: "other".into(), title: "Other task".into(), agent_id: Some("other".into()),
+        plan_items: None, continues: None, task_id: "z".into(), request_id: "other".into(), title: "Other task".into(), agent_id: Some("other".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("other", "/tmp")),
     });
@@ -969,7 +969,7 @@ async fn a_node_whose_session_ends_during_its_work_after_the_merge_is_closed_and
 async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receipt() {
     let rig = Rig::undelivered(thirty_minutes());
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "task-u", Command::CreateTask { plan_items: None,
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "task-u", Command::CreateTask { plan_items: None, continues: None,
         task_id: "u".into(), request_id: "r".into(), title: "Later".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -983,4 +983,86 @@ async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receip
     let journal: i64 = rig.domain.store.lock().unwrap().conn_for_test()
         .query_row("SELECT count(*) FROM lifecycle_events WHERE task_id='u'", [], |row| row.get(0)).unwrap();
     assert_eq!(journal, 2, "finished and drained after the plan: the receipt came with the commit that cancelled it");
+}
+
+/// The task moved to another provider: a task of the same request goes on in the worktree of
+/// task `t`, which has work not committed yet, and `t` is cancelled.
+fn moved(continues: Option<&str>) -> (Rig, crate::test_support::Directory, std::path::PathBuf) {
+    let rig = Rig::undelivered(thirty_minutes());
+    rig.domain.record_model_decision(&Decision {
+        task_id: "t".into(), request_id: "r".into(), agent_id: Some(SESSION.into()), at: T0, kind: DecisionKind::Launch,
+        model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(), provider: None, tags: None,
+    }).unwrap();
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "continuation", Command::CreateTask {
+        task_id: "t-claude".into(), request_id: "r".into(), title: "Result on Claude".into(), agent_id: None, review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", dir.to_str().unwrap())),
+        plan_items: None, continues: continues.map(TaskId::from),
+    });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    (rig, root, dir)
+}
+
+fn worktree_end(rig: &Rig, task: &str, dir: &std::path::Path) -> Option<Option<alondra_core::domain::WorktreeEnd>> {
+    rig.domain.state().unwrap().tasks[&TaskId::from(task)].worktrees.get(dir.to_str().unwrap()).map(|worktree| worktree.end)
+}
+
+#[tokio::test]
+async fn a_cancelled_task_whose_worktree_its_continuation_works_in_closes_without_a_card_and_leaves_it() {
+    let (rig, _root, dir) = moved(Some("t"));
+    for minutes in [0, 5, 10, 20] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert!(dir.join("a.txt").exists(), "the continuation's work is still there");
+    assert_eq!(rig.task().state, TaskState::Cancelled);
+    assert!(rig.cards().is_empty(), "no card about a session Alondra cannot close");
+    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_core::domain::WorktreeEnd::HandedOver)));
+    assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(None), "the continuation holds it now");
+}
+
+#[tokio::test]
+async fn a_task_launched_in_the_worktree_without_naming_the_task_it_carries_on_takes_it_over() {
+    let (rig, _root, dir) = moved(None);
+    assert_eq!(worktree_end(&rig, "t-claude", &dir), None, "nothing recorded it yet");
+    rig.pass(T0).await;
+    assert!(dir.join("a.txt").exists());
+    assert_eq!(rig.task().state, TaskState::Cancelled);
+    assert!(rig.cards().is_empty());
+    assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(None), "it takes the worktree it starts in");
+}
+
+#[tokio::test]
+async fn a_cancelled_task_whose_continuation_is_already_over_keeps_its_unsaved_worktree_as_before() {
+    let (rig, _root, dir) = moved(Some("t"));
+    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into() });
+    for minutes in [0, 5, 10, 20] {
+        let _ = pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + minutes * MINUTE).await;
+    }
+    assert!(dir.join("a.txt").exists(), "work no remote has is never deleted");
+    assert_eq!(rig.task().state, TaskState::Closing);
+    assert_eq!(worktree_end(&rig, "t", &dir), Some(None), "nobody else goes on in it, so it is not handed over");
+    assert!(rig.closing().unwrap().last_error.unwrap().contains("1 uncommitted file(s)"));
+}
+
+#[tokio::test]
+async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_ends() {
+    let (rig, _root, dir) = moved(Some("t"));
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "second", Command::CreateTask {
+        task_id: "t-sonnet".into(), request_id: "r".into(), title: "Result on Sonnet".into(), agent_id: None, review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", dir.to_str().unwrap())),
+        plan_items: None, continues: Some("t".into()),
+    });
+    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into() });
+    for minutes in [0, 5, 10, 20] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert!(dir.join("a.txt").exists());
+    assert_eq!(rig.task().state, TaskState::Cancelled);
+    assert!(rig.cards().is_empty());
+    assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(Some(alondra_core::domain::WorktreeEnd::HandedOver)));
+    assert_eq!(worktree_end(&rig, "t-sonnet", &dir), Some(None), "the continuation still working keeps it");
 }

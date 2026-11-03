@@ -2087,7 +2087,7 @@ mod tests {
             model: Some("sonnet".into()), reason: Some("Implementation".into()), ..LaunchPlan::new("stored-node", home.to_str().unwrap()) };
         execute(Actor::Orchestrator { generation: domain.state().unwrap().orchestrator_generation }, Command::CreateTask {
             task_id: "plan-read".into(), request_id: "plan-read".into(), title: "Stored work".into(), agent_id: None, review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(plan.clone()), plan_items: None });
+            dependencies: Default::default(), stack: None, launch: Some(plan.clone()), plan_items: None, continues: None });
         let stored = orchestrator_get("/orchestrator/launch-plan?task_id=plan-read").await.unwrap();
         assert_eq!(stored.status(), StatusCode::OK);
         assert_eq!(stored.json::<Value>().await.unwrap()["launch"], json!(plan));

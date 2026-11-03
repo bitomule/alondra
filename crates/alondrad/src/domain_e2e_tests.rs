@@ -158,7 +158,7 @@ fn bg_node_with_a_task(daemon: &Daemon, home: &Path, title: &str) -> (String, Ta
         request_id: "r-1".into(), body: title.into(), auto_merge: false, maintenance: false, message: false,
     });
     daemon.execute(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
-        plan_items: None, task_id: "t-1".into(), request_id: "r-1".into(), title: title.into(), agent_id: None,
+        plan_items: None, continues: None, task_id: "t-1".into(), request_id: "r-1".into(), title: title.into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/work")),
     });
     node_event(home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work"}));

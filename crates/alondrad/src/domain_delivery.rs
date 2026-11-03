@@ -420,7 +420,7 @@ mod tests {
             &domain,
             Actor::Orchestrator { generation: 0 },
             "task",
-            Command::CreateTask { plan_items: None,
+            Command::CreateTask { plan_items: None, continues: None,
                 task_id: "task-a".into(),
                 request_id: "request-a".into(),
                 title: "Task".into(),
@@ -606,7 +606,7 @@ mod tests {
             &domain,
             Actor::Orchestrator { generation: 0 },
             "task",
-            Command::CreateTask { plan_items: None,
+            Command::CreateTask { plan_items: None, continues: None,
                 task_id: "task-a".into(),
                 request_id: "request-a".into(),
                 title: "Task".into(),
@@ -819,7 +819,7 @@ mod tests {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
             started: true, review_prs: false, final_presentation: None, pr_id: None,
-            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
+            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
         });
         let options = vec![
             QuestionOption {
@@ -1038,7 +1038,7 @@ mod tests {
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
@@ -1074,7 +1074,7 @@ mod tests {
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });

@@ -452,6 +452,12 @@ impl DomainState {
             None => Ok(()),
         }
     }
+    /// The task, other than `except`, that has not ended and works in the worktree at `path`.
+    pub fn worktree_held_by_other(&self, path: &str, except: &TaskId) -> Option<&TaskId> {
+        self.tasks.values()
+            .find(|t| &t.id != except && !t.over() && t.open_worktrees().any(|(open, _)| open == path))
+            .map(|t| &t.id)
+    }
     /// An Agent works on one Task at a time: the other non-terminal Task it holds, if any.
     pub fn busy_with(&self, agent: &AgentId, except: &TaskId) -> Option<&Task> {
         self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent) && !t.over())
@@ -815,7 +821,7 @@ impl DomainState {
                     request.origin = RequestOrigin::Node { agent_id: agent_id.clone() };
                 }
                 self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created, lifecycles)?;
-                self.apply(actor, &Command::CreateTask { plan_items: None,
+                self.apply(actor, &Command::CreateTask { plan_items: None, continues: None,
                     task_id: new_task.clone(), request_id: request_id.clone(), title: title.clone(), agent_id: None,
                     review_prs: false, dependencies: dependencies.clone(), stack: None, launch: Some(launch.clone()),
                 }, effects, created, lifecycles)?;
@@ -1195,6 +1201,8 @@ impl DomainState {
             return Ok(());
         }
         let mut tasks: Vec<&Task> = self.tasks.values().filter(|t| &t.request_id == request).collect();
+        let carried_on: BTreeSet<&TaskId> = tasks.iter().filter_map(|t| t.continues.as_ref()).collect();
+        tasks.retain(|t| !carried_on.contains(&t.id));
         tasks.sort_by_key(|t| t.revision);
         let done = crate::request_outcome::DoneCard {
             request_id: request.0.clone(),
@@ -3081,6 +3089,7 @@ impl DomainState {
                 stack,
                 launch,
                 plan_items,
+                continues,
             } => {
                 self.fence(actor)?;
                 if !matches!(actor, Actor::Orchestrator { .. }) {
@@ -3106,6 +3115,17 @@ impl DomainState {
                         "request.title",
                         "Name the Request with title_request (a few words, in the user's language, never the prompt) before adding a second Task",
                     );
+                }
+                if let Some(original) = continues {
+                    let carried = self.task(original)?;
+                    if carried.request_id != *request_id {
+                        return refuse("continuation_request", "request_id", &format!(
+                            "a task that carries on another goes in that task's request, so the request still counts its work: create it under request {}",
+                            carried.request_id.0));
+                    }
+                    if plan_items.is_some() {
+                        return refuse("invalid_input", "plan_items", "a task that carries on another takes that task's whole plan: leave plan_items out");
+                    }
                 }
                 if agent_id
                     .as_ref()
@@ -3137,11 +3157,19 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
-                if let Some(taken) = plan_items {
+                if let Some(original) = continues {
+                    let inherited: BTreeMap<String, TaskWorktree> = self.tasks[original].open_worktrees()
+                        .map(|(path, worktree)| (path.clone(), TaskWorktree { origin: WorktreeOrigin::Inherited, branch: worktree.branch.clone(), discard: false, end: None }))
+                        .collect();
+                    self.tasks.get_mut(task_id).unwrap().worktrees = inherited;
+                    if let Some(checklist) = self.checklists.remove(original) {
+                        self.checklists.insert(task_id.clone(), checklist);
+                    }
+                } else if let Some(taken) = plan_items {
                     self.take_plan_items(task_id, request_id, taken)?;
                 } else if let Some(approved) = self.request_plans.get(request_id) {
                     if self.checklists.values().any(|c| c.plan == approved.presentation_id) {
@@ -4900,6 +4928,9 @@ impl DomainState {
                     Some(known) if known.end == Some(*end) => return Ok(()),
                     Some(known) if known.end.is_some() => return fail("conflict", "The worktree already ended"),
                     Some(_) => {}
+                }
+                if *end == WorktreeEnd::HandedOver && self.worktree_held_by_other(path, task_id).is_none() {
+                    return fail("conflict", &format!("No other open task works in {path}, so it cannot be handed over"));
                 }
                 self.tasks.get_mut(task_id).unwrap().worktrees.get_mut(path).unwrap().end = Some(*end);
             }

@@ -152,7 +152,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         &domain,
         Actor::Orchestrator { generation: 0 },
         "task",
-        Command::CreateTask { plan_items: None,
+        Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-parity".into(),
             request_id: "request-parity".into(),
             title: "Synthetic task".into(),

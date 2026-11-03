@@ -997,7 +997,7 @@ mod cache_tests {
         });
         execute(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
         for id in ["room", "launch", "relaunch", "send", "closed", "retry"] {
-            execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { plan_items: None,
+            execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: id.into(), agent_id: None,
                 review_prs: true, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", home.to_str().unwrap())),
@@ -1236,7 +1236,7 @@ mod cache_tests {
         execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("assigned".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", home.to_str().unwrap())),
@@ -1388,7 +1388,7 @@ mod cache_tests {
         let now = alondra_core::now_millis();
         for id in ["build", "docs", "harness"] {
             let agent = format!("agent-{id}");
-            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { plan_items: None,
+            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
@@ -1498,7 +1498,7 @@ mod cache_tests {
             task_id: "t-b".into(), request_id: "r".into(), title: "Phase B".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(crate::launch_plans::LaunchPlan { mission: Some("Phase B".into()), ..crate::launch_plans::LaunchPlan::new("t-b", "/tmp") }),
-            plan_items: None,
+            plan_items: None, continues: None,
         });
         let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
         let mut state = (*domain.state().unwrap()).clone();

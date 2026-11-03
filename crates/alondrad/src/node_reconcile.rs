@@ -154,7 +154,7 @@ mod tests {
     /// A node Alondra launched on its own task, in a turn.
     fn launch(domain: &DomainRuntime, id: &str) {
         let now = alondra_core::now_millis();
-        run(domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { plan_items: None,
+        run(domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { plan_items: None, continues: None,
             task_id: format!("t-{id}").into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         });

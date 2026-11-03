@@ -105,7 +105,7 @@ impl World {
             id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
             revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
             documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
         };
         let options = crate::options::OptionsFile::default().resolve(Some("BlurCamera"), &BTreeMap::new()).unwrap();
         w.must(Actor::System, Command::RecordScheduleRunSent {
@@ -169,7 +169,7 @@ impl World {
                 let dependencies: BTreeSet<TaskId> = deps.iter().filter(|_| !open.is_empty()).map(|d| open[d % open.len()].clone())
                     .filter(|d| d.0 != "run").collect();
                 let launch = plan.then(|| LaunchPlan::new(format!("blurcamera/{id}"), "/synthetic/Projects/BlurCamera"));
-                let created = self.exec(orchestrator(), Command::CreateTask { plan_items: None,
+                let created = self.exec(orchestrator(), Command::CreateTask { plan_items: None, continues: None,
                     task_id: id.clone(), request_id: if scheduled { "weekly".into() } else { "r".into() }, title: format!("Task {id}"),
                     agent_id: None, review_prs: false, dependencies, stack: None, launch,
                 });
@@ -440,13 +440,13 @@ fn every_open_task_is_always_in_someones_hands() {
 #[test]
 fn a_task_a_scheduled_run_asks_for_without_a_plan_is_refused_and_with_one_reaches_the_gate() {
     let mut w = World::new();
-    let planless = w.exec(orchestrator(), Command::CreateTask { plan_items: None,
+    let planless = w.exec(orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: "t-hf-web-registry-skills".into(), request_id: "weekly".into(), title: "Register blurcamera.app in web-properties.json".into(),
         agent_id: None, review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: None,
     }).unwrap_err();
     assert_eq!(planless.code, "launch_plan_required");
     assert!(!w.s.tasks.contains_key(&"t-hf-web-registry-skills".into()));
-    w.must(orchestrator(), Command::CreateTask { plan_items: None,
+    w.must(orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: "t-hf-web-registry-skills".into(), request_id: "weekly".into(), title: "Register blurcamera.app in web-properties.json".into(),
         agent_id: None, review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("agent-skills/hf-web-registry-skills", "/synthetic/Projects/agent-skills")),

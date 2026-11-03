@@ -47,7 +47,7 @@ fn targets(pr: &str) -> Vec<DeliveryTarget> {
 /// A started task of its own node with PR `number` registered.
 fn task_with_pr(s: &mut DomainState, task: &str, agent: &str, title: &str, number: u64) {
     must(s, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
-    must(s, orchestrator(), Command::CreateTask { plan_items: None,
+    must(s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: task.into(), request_id: "r".into(), title: title.into(), agent_id: Some(agent.into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
@@ -161,7 +161,7 @@ fn a_cancelled_task_ends_the_wait_and_the_node_is_told_nothing_landed() {
 fn a_task_waiting_to_go_on_goes_on_when_the_pr_it_waits_for_merges() {
     let mut s = release_and_fix();
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "c".into(), name: "c".into(), at: 0 });
-    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
+    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: "next".into(), request_id: "r".into(), title: "Next".into(), agent_id: Some("c".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
@@ -230,13 +230,13 @@ fn a_turn_ending_while_the_work_waits_for_another_task_leaves_it_owed() {
 fn waiting_on_the_fix() -> DomainState {
     let mut s = release_and_fix();
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "c".into(), name: "c".into(), at: 0 });
-    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
+    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: "next".into(), request_id: "r".into(), title: "Next".into(), agent_id: Some("c".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     must(&mut s, node("c"), Command::StartTask { task_id: "next".into() });
     must(&mut s, orchestrator(), Command::SetDependencies { task_id: "next".into(), dependencies: BTreeSet::from([FIX.into()]), stack: None });
-    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
+    must(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: "unowned".into(), request_id: "r".into(), title: "Unowned".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::from([FIX.into()]), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

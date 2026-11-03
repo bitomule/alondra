@@ -197,6 +197,10 @@ pub struct Task {
     /// The project it belongs to, set when it was created; absent when Alondra could not tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The task this one carries on, in the same request: its worktree, branch and plan are this
+    /// one's, and the request's outcome is this one's instead of that task's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<TaskId>,
 }
 /// A command the user allowed for the rest of a task, and how many prompts it answered since.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +255,8 @@ pub enum WorktreeEnd {
     KeptByUser,
     /// It is a folder of the user's that the node was launched in, which Alondra never deletes.
     UsersOwn,
+    /// Another task that has not ended works in it now, and it ends with that task.
+    HandedOver,
 }
 impl Task {
     pub fn account_key(&self) -> crate::accounts::AccountKey {

@@ -1144,7 +1144,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             if self.domain().state().unwrap().tasks.is_empty() {
                 self.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
                 self.run(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-                self.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+                self.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
                     task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                     review_prs: false, dependencies: BTreeSet::new(), stack: None,
                     launch: Some(LaunchPlan::new("node", "/tmp")),
@@ -1625,7 +1625,7 @@ mod tests {
         let orchestrator = Actor::Orchestrator { generation: 0 };
         f.run(orchestrator.clone(), "title-sync", Command::TitleRequest { request_id: "sync".into(), title: "Sync notes".into() });
         for (task, after) in [("model", vec![]), ("mac", vec!["model"]), ("ios", vec!["model"])] {
-            f.run(orchestrator.clone(), &format!("create-{task}"), Command::CreateTask { plan_items: None,
+            f.run(orchestrator.clone(), &format!("create-{task}"), Command::CreateTask { plan_items: None, continues: None,
                 task_id: task.into(), request_id: "sync".into(), title: format!("Sync {task}"), agent_id: None,
                 review_prs: false, dependencies: after.into_iter().map(TaskId::from).collect(), stack: None,
                 launch: Some(LaunchPlan::new("node", "/tmp")),
@@ -1849,7 +1849,7 @@ mod tests {
         command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "r".into(), body: "Design several Claude accounts".into(), auto_merge: false, maintenance: false, message: false,
         });
-        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "design".into(), request_id: "r".into(), title: "Design several Claude accounts".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         });

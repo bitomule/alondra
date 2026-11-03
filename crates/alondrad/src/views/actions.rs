@@ -2256,7 +2256,7 @@ mod tests {
         apply_seed_command(&domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", directory.to_string_lossy().into_owned())),
         });
@@ -2343,7 +2343,7 @@ mod tests {
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None,
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -2404,7 +2404,7 @@ mod tests {
             apply_seed_command(&domain, Actor::System, &format!("register-{task_id}"), Command::RegisterAgent {
                 agent_id: agent.clone().into(), name: agent.clone(), at: 0
             });
-            apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{task_id}"), Command::CreateTask { plan_items: None,
+            apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{task_id}"), Command::CreateTask { plan_items: None, continues: None,
                 task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),
                 agent_id: Some(agent.clone().into()), review_prs: false,
                 dependencies: Default::default(), stack: None,
@@ -3003,7 +3003,7 @@ mod tests {
         apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "request", Command::CreateRequest {
             request_id:"request".into(), body:"Work".into(), message:false, auto_merge:false, maintenance:false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id:"task".into(), request_id:"request".into(), title:"Work".into(), agent_id:Some("agent-a".into()),
             review_prs:false, dependencies:Default::default(), stack:None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -3295,7 +3295,7 @@ mod tests {
         apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None,
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -3328,7 +3328,7 @@ mod tests {
         apply_seed_command(domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None,
+        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -3527,7 +3527,7 @@ mod tests {
         apply_seed_command(domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "How do others index the library?".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None,
+        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Library index research".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

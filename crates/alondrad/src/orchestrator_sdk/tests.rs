@@ -204,7 +204,7 @@ async fn every_request_of_a_handled_batch_ends_with_a_task_an_answer_or_a_questi
         f.run(user(), id, Command::CreateRequest { request_id: id.into(), body: format!("Do {id}"), auto_merge: false, maintenance: false, message: false });
     }
     f.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
-    f.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+    f.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
         task_id: "t-2".into(), request_id: "r-2".into(), title: "Task".into(), agent_id: Some("a".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

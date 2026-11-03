@@ -152,7 +152,7 @@ impl World {
         run(&world.domain, &orchestrator, "request", Command::CreateRequest { request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
         run(&world.domain, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() }).unwrap();
         run(&world.domain, &orchestrator, "task", Command::CreateTask {
-            plan_items: None, task_id: TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
+            plan_items: None, continues: None, task_id: TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
             dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", world.worktree.to_str().unwrap())),
         }).unwrap();
         run(&world.domain, &Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "release-notes".into(), at: 0 }).unwrap();

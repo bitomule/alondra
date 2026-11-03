@@ -80,7 +80,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
         store,
         &Actor::Orchestrator { generation: 0 },
         "task",
-        Command::CreateTask { plan_items: None,
+        Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-1".into(),
             request_id: "request-1".into(),
             title: "Goal".into(),
@@ -1708,7 +1708,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     seeded(&mut store);
     execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None,
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -1820,7 +1820,7 @@ fn plan() -> crate::launch_plans::LaunchPlan {
 fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch, plan: crate::launch_plans::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
-        command: Command::CreateTask { plan_items: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
+        command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(plan) },
     }
 }
@@ -2014,12 +2014,12 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
     assert!(message.contains("approved the plan") && message.contains("implement-report") && message.contains("dependencies on task-1"), "{message}");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
-    execute(&mut store, &orchestrator, "build", Command::CreateTask { plan_items: None,
+    execute(&mut store, &orchestrator, "build", Command::CreateTask { plan_items: None, continues: None,
         task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("build", "/tmp/repo")),
     });
     execute(&mut store, &orchestrator, "follow", Command::CreateTask {
-        plan_items: Some(PlanItems { from_task: "build".into(), items: vec!["2".into()] }),
+        plan_items: Some(PlanItems { from_task: "build".into(), items: vec!["2".into()] }), continues: None,
         task_id: "follow".into(), request_id: "implement-report".into(), title: "Follow changes".into(), agent_id: None,
         review_prs: false, dependencies: ["build".into()].into(), stack: None, launch: Some(LaunchPlan::new("follow", "/tmp/repo")),
     });
@@ -2281,4 +2281,56 @@ fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap().interactions[&"pace-resume-2026-11-02".into()].system_card, None, "the upgrade runs once");
+}
+
+#[test]
+fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    let worktree = "/synthetic/app/.claude/worktrees/t";
+    execute(&mut store, &user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+    execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    let create = |id: &str, continues: Option<&str>| Command::CreateTask {
+        task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false, dependencies: Default::default(),
+        stack: None, launch: Some(LaunchPlan::new("node", worktree)), plan_items: None, continues: continues.map(TaskId::from),
+    };
+    execute(&mut store, &orchestrator, "t", create("t", None));
+    execute(&mut store, &Actor::System, "worktree", Command::RecordTaskWorktree {
+        task_id: "t".into(), path: worktree.into(), origin: WorktreeOrigin::Task, branch: Some("worktree-t".into()),
+    });
+    execute(&mut store, &orchestrator, "t-claude", create("t-claude", Some("t")));
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    execute(&mut store, &Actor::System, "handed", Command::ReleaseTaskWorktree { task_id: "t".into(), path: worktree.into(), end: WorktreeEnd::HandedOver });
+    drop(store);
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let state = restarted.load().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t-claude")].continues, Some("t".into()));
+    assert_eq!(state.tasks[&TaskId::from("t")].worktrees[worktree].end, Some(WorktreeEnd::HandedOver));
+    assert_eq!(state.tasks[&TaskId::from("t-claude")].worktrees[worktree].origin, WorktreeOrigin::Inherited);
+}
+
+#[test]
+fn worktree_records_kept_before_a_worktree_could_be_handed_over_keep_their_rows_and_take_that_end() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    store.conn.execute_batch("DROP TABLE task_worktree_records; CREATE TABLE task_worktree_records(\
+ task_id TEXT NOT NULL REFERENCES tasks(id),\
+ path TEXT NOT NULL CHECK(substr(path,1,1)='/'),\
+ origin TEXT NOT NULL CHECK(origin IN('task','inherited','subagent','entered')),\
+ branch TEXT,\
+ discard INTEGER NOT NULL CHECK(discard IN(0,1)),\
+ end TEXT CHECK(end IS NULL OR end IN('removed','kept_by_user','users_own')),\
+ PRIMARY KEY(task_id,path));\
+ INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES('task-1','/synthetic/app/.claude/worktrees/one','task','worktree-one',0,'removed');").unwrap();
+    assert!(store.conn.execute("UPDATE task_worktree_records SET end='handed_over'", []).is_err(), "the old table refuses the new end");
+    drop(store);
+    let store = DomainStore::open(&fixture.path()).unwrap();
+    let row: (String, String, Option<String>, i64, Option<String>) = store.conn.query_row(
+        "SELECT task_id,path,branch,discard,end FROM task_worktree_records", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+    assert_eq!(row, ("task-1".into(), "/synthetic/app/.claude/worktrees/one".into(), Some("worktree-one".into()), 0, Some("removed".into())));
+    store.conn.execute("UPDATE task_worktree_records SET end='handed_over'", []).unwrap();
+    drop(store);
+    DomainStore::open(&fixture.path()).unwrap();
 }

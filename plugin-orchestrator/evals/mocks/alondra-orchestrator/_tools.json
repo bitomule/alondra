@@ -22,11 +22,17 @@
    "name": "title_request"
   },
   {
-   "description": "Create a cohesive Task under an open Request, with its launch plan (required), so Alondra starts it by itself when there is room and what it depends on is done. Dependencies are waits: the Task starts, or its node goes on, once they are done, and they never hold back the merge of a PR it presented; a PR built on another Task's open PR uses stack, which merges after it. A phase of an approved plan takes its points with plan_items: their numbers in the plan and the Task of this Request that holds them now; they leave that Task, which keeps the rest.",
+   "description": "Create a cohesive Task under an open Request, with its launch plan (required), so Alondra starts it by itself when there is room and what it depends on is done. Dependencies are waits: the Task starts, or its node goes on, once they are done, and they never hold back the merge of a PR it presented; a PR built on another Task's open PR uses stack, which merges after it. A phase of an approved plan takes its points with plan_items: their numbers in the plan and the Task of this Request that holds them now; they leave that Task, which keeps the rest. A Task that carries on another (to move its work to another provider or account) names it in continues and goes under that Task's Request, never the Request that asked for the move, with launch.cwd that Task's worktree: it takes the Task's worktrees and its whole plan, and the Request's outcome is its own. Cancel the Task it carries on after creating it.",
    "inputSchema": {
     "additionalProperties": false,
     "properties": {
      "agent_id": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "continues": {
       "type": [
        "string",
        "null"

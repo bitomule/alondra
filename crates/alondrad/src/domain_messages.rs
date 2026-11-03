@@ -319,7 +319,7 @@ mod tests {
         run(Actor::System, "a", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         run(Actor::System, "b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into(), at: 0 });
         run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false, maintenance: false, message: false });
-        run(Actor::Orchestrator { generation: 0 }, "t", Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(), title: "Build it".into(),
+        run(Actor::Orchestrator { generation: 0 }, "t", Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build it".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         (Fixture(home), domain)

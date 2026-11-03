@@ -361,7 +361,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
         (user(), "request", Command::CreateRequest {
             request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false,
         }),
-        (Actor::Orchestrator { generation: state.orchestrator_generation }, "task", Command::CreateTask { plan_items: None,
+        (Actor::Orchestrator { generation: state.orchestrator_generation }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: format!("sandbox-probe-{session}").into(), request_id: format!("sandbox-probe-{session}").into(),
             title: format!("Probe {short}"), agent_id: Some(session.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None,
@@ -973,7 +973,7 @@ mod tests {
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("request-{agent}"),
             Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { plan_items: None,
+        command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { plan_items: None, continues: None,
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None,
@@ -1043,7 +1043,7 @@ mod tests {
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false, message: false,
         });
-        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Widget".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -1117,7 +1117,7 @@ mod tests {
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -1211,7 +1211,7 @@ mod tests {
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -1677,7 +1677,7 @@ mod tests {
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
         command(&domain, Actor::User { user_id: "u".into() }, "request",
             Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("session-a".into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
@@ -2560,7 +2560,7 @@ mod tests {
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
         command(domain, user(), &format!("request-{agent}"),
             Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { plan_items: None,
+        command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { plan_items: None, continues: None,
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

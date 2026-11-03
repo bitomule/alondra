@@ -180,7 +180,7 @@ async fn full_stack_fixture_server() {
             &domain,
             Actor::Orchestrator { generation: 0 },
             "fixture-task",
-            Command::CreateTask { plan_items: None,
+            Command::CreateTask { plan_items: None, continues: None,
                 task_id: "fixture-task".into(),
                 request_id: "fixture-request".into(),
                 title: "Fixture task".into(),

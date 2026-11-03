@@ -21,7 +21,7 @@ fn create(store: &mut DomainStore, task: &str, node: Option<&str>, dependencies:
         run(store, &Actor::System, &format!("register-{node}"), Command::RegisterAgent { agent_id: node.into(), name: node.into(), at: 0 });
     }
     run(store, &Actor::Orchestrator { generation: 0 }, &format!("create-{task}"), Command::CreateTask {
-        plan_items: None,
+        plan_items: None, continues: None,
         task_id: task.into(),
         request_id: "request-1".into(),
         title: task.into(),
