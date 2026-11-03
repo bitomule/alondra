@@ -6,9 +6,6 @@
 apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.outcomeUnknown } ?? (detail == Self.outcomeUnknown)) ? .retry : .final	own-grammar	daemons from before kind send only the code outcome_unknown in error
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
-crates/alondra/src/tui.rs	if e.to_string().contains("No such file")	finding:D-13	tuicr missing decided by error text
-crates/alondra/src/tui.rs	|| e.to_string().contains("could not launch")	finding:D-13	tuicr missing decided by error text
-crates/alondra/src/tui.rs	|| e.to_string().contains("no pude lanzar") =>	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:G-16	crash report issues found by their GitHub title, which anyone can edit
 crates/alondrad/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
 crates/alondrad/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns

@@ -114,6 +114,9 @@ pub enum Step {
     /// Claude Code says something of its own on the stream as is, with the session's id: a
     /// `task_started`, `background_tasks_changed` or `task_notification` about background work.
     Emit { message: serde_json::Value },
+    /// An MCP server asks the user to fill a form (`requested_schema`), and the step waits for the
+    /// answer, kept in `elicitations.jsonl`.
+    Elicit { server: String, message: String, requested_schema: serde_json::Value },
     /// The session ends as when the user exits it: `session.end`, then the process goes.
     End,
     /// The process dies without a word, as a crashed session does.

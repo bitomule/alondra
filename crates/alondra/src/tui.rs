@@ -3,6 +3,7 @@ mod bindings;
 mod crash_report;
 mod draw;
 mod dropped;
+mod elicitation_form;
 mod files;
 mod identity;
 mod inbox;
@@ -732,6 +733,8 @@ pub struct App {
     pub card_view: Option<ViewDocument>,
     /// The numbered list a card's `m` or a menu button opened over its buttons.
     pub card_menu: Option<view_render::Menu>,
+    /// The form of the card being accepted, drawn over its buttons.
+    pub elicitation: Option<elicitation_form::ElicitationForm>,
     pub view_status: Option<ViewStatus>,
     pub view_data_epoch: Option<String>,
     pub connected: bool,
@@ -1227,6 +1230,11 @@ fn clone_of(agent_cwd: Option<&str>, repository: &str) -> Option<std::path::Path
     Some(std::path::Path::new(&home).join("Projects").join(name)).filter(|p| is_repo(p))
 }
 
+/// The tool was not found where it was launched; any other launch failure is shown as it is.
+fn not_installed(error: &anyhow::Error) -> bool {
+    error.chain().find_map(|cause| cause.downcast_ref::<std::io::Error>()).map(std::io::Error::kind) == Some(std::io::ErrorKind::NotFound)
+}
+
 /// A tuicr export carries numbered comments anchored to files (`1. \`src/a.rs:42\` - …`).
 fn has_comments(export: &str) -> bool {
     export.lines().any(|l| {
@@ -1246,6 +1254,7 @@ impl App {
             home_view: None,
             card_view: None,
             card_menu: None,
+            elicitation: None,
             view_status: None,
             view_data_epoch: None,
             connected: false,
@@ -1490,6 +1499,13 @@ impl App {
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::ViewCard { key, result });
         });
+    }
+
+    /// The card the detail shows, when it is the selected one.
+    fn typed_card_id(&self) -> Option<String> {
+        let selected = self.selected_view_key()?;
+        let view = self.card_view.as_ref().filter(|view| view.key == selected)?;
+        view_render::typed_card(view).map(|card| card.id.clone())
     }
 
     fn selected_view_key(&self) -> Option<String> {
@@ -1932,11 +1948,7 @@ impl App {
                 "PR #{number} reviewed without comments",
                 "PR #{number} revisado sin comentarios"
             )),
-            Err(e)
-                if e.to_string().contains("No such file")
-                    || e.to_string().contains("could not launch")
-                    || e.to_string().contains("no pude lanzar") =>
-            {
+            Err(e) if not_installed(&e) => {
                 self.fail(tr!(
                     "tuicr is not installed: brew install tuicr",
                     "tuicr no está instalado: brew install tuicr"
@@ -2572,6 +2584,10 @@ impl App {
     }
 
     fn on_paste(&mut self, s: &str) {
+        if let Some(form) = self.elicitation.as_mut().filter(|form| form.editing()) {
+            form.paste(s);
+            return;
+        }
         if let Some(form) = self.composer.as_mut().and_then(|composer| composer.form.as_mut()).filter(|form| form.loaded && form.primary().is_none()) {
             if form.popup.is_some() {
                 for character in md::one_line(s).chars() { let _ = form.key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)); }
@@ -2655,6 +2671,12 @@ impl App {
             self.composer_key(k);
             return Flow::Go;
         }
+        if let Some(form) = &self.elicitation {
+            if self.typed_card_id().as_deref() == Some(form.card.as_str()) {
+                return self.elicitation_key(k);
+            }
+            self.elicitation = None;
+        }
         if self.cmdline.is_some() {
             return self.cmdline_key(k);
         }
@@ -2692,6 +2714,7 @@ impl App {
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
         self.card_menu = None;
+        self.elicitation = None;
         self.view_navigation.clear();
         self.settings_after_view = None;
         self.reader_after_view = None;

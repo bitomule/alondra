@@ -1015,3 +1015,118 @@ fn settings_open_a_crash_report_as_other() {
     press(&mut app, KeyCode::Enter);
     assert!(matches!(&app.composer, Some(c) if matches!(&c.target, Target::ReportDescription { failure } if failure == "other")));
 }
+
+#[test]
+fn tuicr_is_not_installed_only_when_it_is_not_found_and_another_launch_failure_shows_as_it_is() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let root = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&*root).unwrap();
+    let blocked = root.join("tuicr");
+    std::fs::write(&blocked, "#!/bin/sh\n").unwrap();
+    let launch = |program: &std::path::Path| {
+        crate::pty::run_tool(program.to_str().unwrap(), &["--stdout"], &root).unwrap_err()
+    };
+    let shown = |error: anyhow::Error| {
+        let mut app = app();
+        app.reviewed(Key("i-1".into()), PrId("pr-1".into()), 7, Err(error));
+        app.flash.map(|flash| flash.text).unwrap_or_default()
+    };
+    let without_permission = shown(launch(&blocked));
+    assert!(!without_permission.contains("not installed"), "{without_permission}");
+    assert!(without_permission.starts_with("tuicr: could not launch"), "{without_permission}");
+    assert_eq!(shown(launch(&root.join("missing/tuicr"))), "tuicr is not installed: brew install tuicr");
+}
+
+const FORM_CARD: &str = "a98d034b-249e-4487-a89b-57de38c26372";
+
+fn app_on_a_form_card() -> App {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    let mut card = super::parity::view_fixture("card-elicitation-form-ios.json");
+    card["key"] = json!(format!("card:{FORM_CARD}"));
+    card["sections"][0]["items"][0]["id"] = json!(FORM_CARD);
+    card["sections"][0]["items"][0]["form"]["fields"].as_array_mut().unwrap().push(json!(
+        {"name": "calendar", "title": "Calendar", "required": true, "kind": {"kind": "choice", "options": [
+            {"value": "work", "title": "Work"}, {"value": "home", "title": "Home"}]}}
+    ));
+    app.sel = Some(Key(FORM_CARD.into()));
+    app.on_msg(Msg::ViewCard { key: format!("card:{FORM_CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    app
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for character in text.chars() {
+        press(app, KeyCode::Char(character));
+    }
+}
+
+#[test]
+fn accepting_a_card_with_a_form_fills_it_by_field_and_sends_typed_values() {
+    let mut app = app_on_a_form_card();
+    let posted = |app: &App| app.posted.borrow().iter().filter(|(path, _)| path == "/actions").count();
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(posted(&app), 0, "Accept opens the form instead of answering");
+    let screen = drawn(&mut app, 140, 50);
+    assert!(screen.contains("The server asks you to fill in:"), "{screen}");
+    assert!(screen.contains("whole number · at least 1"), "{screen}");
+    assert!(screen.contains("Remember me *"), "{screen}");
+
+    press(&mut app, KeyCode::Enter);
+    type_text(&mut app, "5 min");
+    press(&mut app, KeyCode::Enter);
+    assert!(drawn(&mut app, 140, 50).contains("minutes takes a whole number"));
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(posted(&app), 0);
+    assert!(drawn(&mut app, 140, 50).contains("Fill in Calendar"), "a required field left empty is named");
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert!(drawn(&mut app, 140, 50).contains("Home"));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+
+    let (_, request) = app.posted.borrow().last().cloned().unwrap();
+    assert_eq!(request["action_id"], "ans:i-1@1");
+    assert_eq!(request["option_id"], "accept");
+    assert_eq!(request["input"], json!({"content": {"minutes": 5, "remember": true, "calendar": "home"}}));
+    assert!(app.elicitation.is_none());
+}
+
+#[test]
+fn a_form_value_outside_its_limits_is_not_sent_and_esc_goes_back_to_the_buttons() {
+    let mut app = app_on_a_form_card();
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    type_text(&mut app, "0");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(drawn(&mut app, 140, 50).contains("minutes is outside its limits"));
+    assert!(app.posted.borrow().iter().all(|(path, _)| path != "/actions"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.elicitation.is_none());
+    assert!(drawn(&mut app, 140, 50).contains(" 2  Decline"));
+}
+
+#[test]
+fn declining_a_card_with_a_form_answers_at_once_without_values() {
+    let mut app = app_on_a_form_card();
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.elicitation.is_none());
+    let (_, request) = app.posted.borrow().last().cloned().unwrap();
+    assert_eq!(request["option_id"], "decline");
+    assert!(request["input"].get("content").is_none());
+}

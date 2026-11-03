@@ -254,6 +254,17 @@ impl App {
             t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("cancel", "cancelar"), Act::ModalCancel);
             return t;
         }
+        if let Some(form) = &self.elicitation {
+            if form.editing() {
+                t.add(vec![plain(KeyCode::Enter)], "⏎", tr!("keep the value", "guardar el valor"), Act::Pick);
+                t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("undo the typing", "deshacer lo escrito"), Act::CloseMenu);
+            } else {
+                t.add(vec![plain(KeyCode::Up), plain(KeyCode::Down), char('k'), char('j')], "↑↓", tr!("move", "mover"), Act::Pick);
+                t.add(vec![plain(KeyCode::Enter), char(' ')], "⏎", tr!("change or send", "cambiar o enviar"), Act::Pick);
+                t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back to the card", "volver a la tarjeta"), Act::CloseMenu);
+            }
+            return t;
+        }
         if self.pairing_answers_keys() && self.target.is_local() && self.pairing_prompt().is_some() {
             t.add(vec![char('p')], "p", tr!("allow the device", "permitir el dispositivo"), Act::Pairing(true));
             t.add(vec![char('d')], "d", tr!("deny it", "denegarlo"), Act::Pairing(false));

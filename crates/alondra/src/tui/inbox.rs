@@ -214,6 +214,9 @@ impl App {
         let selected = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
         if let Some(index) = card_button_index(key) {
             let action = alondra_core::views::Action::from(card.actions.get(index)?.clone());
+            if self.open_elicitation_form(card, &action, &selected, &epoch) {
+                return Some(Flow::Go);
+            }
             return Some(self.press_card_action(action, None, &selected, epoch));
         }
         match character {

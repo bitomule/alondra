@@ -767,6 +767,18 @@ impl Native<'_> {
         self.send(message)
     }
 
+    fn elicit(&mut self, server: &str, message: &str, schema: &Value) -> Result<()> {
+        let request = format!("elicitation-{}", hex(&random::<6>()?));
+        let (answer, answered) = mpsc::channel();
+        self.asked.lock().map_err(|_| anyhow!("asked poisoned"))?.insert(request.clone(), answer);
+        self.send(json!({
+            "type": "control_request", "request_id": request,
+            "request": {"subtype": "elicitation", "mcp_server_name": server, "message": message, "mode": "form", "requested_schema": schema},
+        }))?;
+        let reply = answered.recv().unwrap_or_else(|_| json!({"cancelled": true}));
+        append(&self.dir.join("elicitations.jsonl"), &json!({"at": now_ms(), "server": server, "answer": reply}))
+    }
+
     fn rate_limit(&self, info: Value) -> Result<()> {
         self.send(json!({"type": "rate_limit_event", "rate_limit_info": info, "session_id": self.session.session_id, "uuid": uuid()?}))
     }
@@ -840,6 +852,7 @@ impl Native<'_> {
             Step::BackgroundEndsUnheard => (self.background_ends_unheard(), Leave::Stay),
             Step::RateLimit { info } => (self.rate_limit(info.clone()).map(|()| work::done("reported")), Leave::Stay),
             Step::Emit { message } => (self.emit(message.clone()).map(|()| work::done("emitted")), Leave::Stay),
+            Step::Elicit { server, message, requested_schema } => (self.elicit(server, message, requested_schema).map(|()| work::done("answered")), Leave::Stay),
             Step::End => (Ok(work::done("ended")), Leave::Exit),
             Step::Die => (Ok(work::done("killed")), Leave::Die),
             _ => {

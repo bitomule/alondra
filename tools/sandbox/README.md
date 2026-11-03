@@ -106,6 +106,8 @@ or a list). `die` kills a native session's Claude, as a crash does; its host goe
 `{"do": "emit", "message": {…}}` has a native Claude say one message of its own as is (a
 `task_started`, `background_tasks_changed` or `task_notification`), to put background work in a
 task's detail.
+`{"do": "elicit", "server": …, "message": …, "requested_schema": {…}}` has a native Claude ask for
+an MCP server's form and wait for the answer, which it keeps in `elicitations.jsonl`.
 
 ## Journeys
 

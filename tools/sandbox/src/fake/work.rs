@@ -40,7 +40,7 @@ pub fn tool_of(step: &Step) -> Option<(String, Value)> {
         Step::PostMergeWork { .. } => mcp("post_merge_work"),
         Step::Call { tool, arguments } => Some((format!("mcp__plugin_alondra_alondra__{tool}"), arguments.clone())),
         Step::Bash { command } => bash(command),
-        Step::Speak { .. } | Step::End | Step::Die | Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::BackgroundEndsUnheard | Step::RateLimit { .. } | Step::Emit { .. } => None,
+        Step::Speak { .. } | Step::End | Step::Die | Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::BackgroundEndsUnheard | Step::RateLimit { .. } | Step::Emit { .. } | Step::Elicit { .. } => None,
     }
 }
 
@@ -112,7 +112,7 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
         Step::PostMergeWork { reason } => task().and_then(|task| worker.tool(fakes, "post_merge_work", json!({"task_id": task, "reason": reason}))),
         Step::Call { tool, arguments } => worker.tool(fakes, tool, arguments.clone()),
         Step::Bash { command } => shell(dir, command),
-        Step::Speak { .. } | Step::End | Step::Die | Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::BackgroundEndsUnheard | Step::RateLimit { .. } | Step::Emit { .. } => return None,
+        Step::Speak { .. } | Step::End | Step::Die | Step::OwnTurn { .. } | Step::LeavePlanMode { .. } | Step::EndOwnTurn | Step::BackgroundEndsUnheard | Step::RateLimit { .. } | Step::Emit { .. } | Step::Elicit { .. } => return None,
     };
     Some(result)
 }

@@ -16,8 +16,8 @@ use crate::i18n::{self, Occupancy};
 use crate::runtime::RuntimeNode;
 use alondra_core::NodeState;
 
-const ACCENT: Color = Color::LightYellow;
-const DIM: Color = Color::DarkGray;
+pub(super) const ACCENT: Color = Color::LightYellow;
+pub(super) const DIM: Color = Color::DarkGray;
 const SOFT: Color = Color::Gray;
 const SEL_BG: Color = Color::Indexed(236);
 const COMMENT: Color = Color::LightMagenta;
@@ -841,9 +841,10 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         app.open_checks.contains(&document.key), app.open_folds.contains(&document.key), &changes);
     let mut keys = Vec::new();
     if let Some(card) = super::view_render::typed_card(document) {
-        keys = match &app.card_menu {
-            Some(menu) => super::view_render::menu_lines(menu, inner.height.saturating_sub(4) as usize),
-            None => super::view_render::button_lines(card, inner.width as usize),
+        keys = match (&app.card_menu, app.elicitation.as_ref().filter(|form| form.card == card.id)) {
+            (Some(menu), _) => super::view_render::menu_lines(menu, inner.height.saturating_sub(4) as usize),
+            (None, Some(form)) => form.lines(),
+            (None, None) => super::view_render::button_lines(card, inner.width as usize),
         };
     } else {
         let mut actions = action_menu(&app.bindings());
