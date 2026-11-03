@@ -653,6 +653,30 @@ impl From<&RuntimeFact> for FactRecord {
     }
 }
 impl FactRecord {
+    pub(super) fn event_name(&self) -> &'static str {
+        match self {
+            Self::Ask { .. } => "Runtime::Ask",
+            Self::ResourceAvailable => "Runtime::ResourceAvailable",
+            Self::TurnStarted { .. } => "Runtime::TurnStarted",
+            Self::InputConsumed { .. } => "Runtime::InputConsumed",
+            Self::InputDropped { .. } => "Runtime::InputDropped",
+            Self::WorkStarted { .. } => "Runtime::WorkStarted",
+            Self::WorkEnded { .. } => "Runtime::WorkEnded",
+            Self::ContinuationConsumed { .. } => "Runtime::ContinuationConsumed",
+            Self::TurnEnded { .. } => "Runtime::TurnEnded",
+            Self::ConnectionLost { .. } => "Runtime::ConnectionLost",
+            Self::ResourceReleased { .. } => "Runtime::ResourceReleased",
+            Self::CallbackSettled { .. } => "Runtime::CallbackSettled",
+            Self::CallbackAborted { .. } => "Runtime::CallbackAborted",
+            Self::AnsweredByPolicy { .. } => "Runtime::AnsweredByPolicy",
+            Self::EffectAccepted { .. } => "Runtime::EffectAccepted",
+            Self::EffectObserved { .. } => "Runtime::EffectObserved",
+            Self::InterruptAccepted { .. } => "Runtime::InterruptAccepted",
+            Self::Notification => "Runtime::Notification",
+            Self::HostEnded { .. } => "Runtime::HostEnded",
+        }
+    }
+
     fn decode(self) -> Result<RuntimeFact> {
         Ok(match self {
             FactRecord::Ask {
@@ -1053,6 +1077,47 @@ impl From<&Event> for EventRecord {
     }
 }
 impl EventRecord {
+    pub(super) fn event_name(&self) -> &'static str {
+        match self {
+            Self::Admit { .. } => "Admit",
+            Self::Runtime { fact, .. } => fact.event_name(),
+            Self::Ask { .. } => "Ask",
+            Self::Answer { .. } => "Answer",
+            Self::Decide { .. } => "Decide",
+            Self::MoveCard { .. } => "MoveCard",
+            Self::PlanApproved => "PlanApproved",
+            Self::BlockDelivery { .. } => "BlockDelivery",
+            Self::DeliveryUnblocked { .. } => "DeliveryUnblocked",
+            Self::Present { .. } => "Present",
+            Self::Accept { .. } => "Accept",
+            Self::MergeObserved { .. } => "MergeObserved",
+            Self::HandBack { .. } => "HandBack",
+            Self::WaitForDependencies { .. } => "WaitForDependencies",
+            Self::DependenciesResolved { .. } => "DependenciesResolved",
+            Self::Tell { .. } => "Tell",
+            Self::Pause { .. } => "Pause",
+            Self::Resume { .. } => "Resume",
+            Self::EndPause { .. } => "EndPause",
+            Self::Finish { .. } => "Finish",
+            Self::DrainObserved { .. } => "DrainObserved",
+            Self::PostMergeDeclared { .. } => "PostMergeDeclared",
+            Self::PostMergeEnded { .. } => "PostMergeEnded",
+            Self::RetireReleasedExecution { .. } => "RetireReleasedExecution",
+            Self::ExecutionReleased { .. } => "ExecutionReleased",
+            Self::Reopen { .. } => "Reopen",
+            Self::HoldForPlanReview { .. } => "HoldForPlanReview",
+            Self::PlanReviewSettled { .. } => "PlanReviewSettled",
+            Self::DoubtHandoff { .. } => "DoubtHandoff",
+            Self::SettleHandoff { .. } => "SettleHandoff",
+            Self::ResendUntaken { .. } => "ResendUntaken",
+            Self::ResendDoubtful { .. } => "ResendDoubtful",
+            Self::Discard { .. } => "Discard",
+            Self::AwaitEnded { .. } => "AwaitEnded",
+            Self::RequestControl { .. } => "RequestControl",
+            Self::Compact { .. } => "Compact",
+        }
+    }
+
     pub(super) fn decode(self, current: &TaskLifecycle) -> Result<Event> {
         Ok(match self {
             EventRecord::Admit {

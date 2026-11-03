@@ -309,7 +309,10 @@ class Rehearsal:
         except subprocess.TimeoutExpired:
             raise Failed(f'preflight did not finish within {PREFLIGHT_TIMEOUT} s') from None
         if result.returncode:
-            raise Failed(f'preflight rejected the HOME: {last_line(result.stdout + result.stderr)}')
+            lines = (result.stdout + result.stderr).splitlines()
+            diagnostic = next((line.strip() for line in reversed(lines)
+                               if line.strip().startswith('preflight failed:')), None)
+            raise Failed(f'preflight rejected the HOME: {diagnostic or last_line(result.stdout + result.stderr)}')
         return round((time.monotonic() - started) * 1000)
 
     def copy(self, source, target):

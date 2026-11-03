@@ -514,6 +514,14 @@ class SandboxTests(Fixture):
 
 
 class GuardTests(Fixture):
+    def test_preflight_preserves_the_failure_details_even_with_later_output(self):
+        diagnostic = 'preflight failed: CorruptJournal: task=task revision=60 event=Runtime::HostEnded refusal=InvalidState'
+        output = subprocess.CompletedProcess([], 1, 'startup information\n', diagnostic + '\nshutdown information\n')
+        with patch.object(self.rehearsal, 'run', return_value=output):
+            with self.assertRaises(u.Failed) as failure:
+                self.rehearsal.preflight(self.work / 'alondrad', self.live)
+        self.assertEqual(str(failure.exception), f'preflight rejected the HOME: {diagnostic}')
+
     def test_a_daemon_never_runs_on_the_live_home_or_the_real_ports(self):
         with self.assertRaisesRegex(u.Failed, 'Refusing to start a daemon'):
             self.rehearsal.env(self.live, port=50000)

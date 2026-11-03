@@ -67,6 +67,13 @@ pub enum Error {
     WrongScope,
     MissingTask,
     CorruptJournal,
+    CorruptJournalAt {
+        task: TaskId,
+        revision: Revision,
+        event: Option<&'static str>,
+        check: &'static str,
+        refusal: Option<Refusal>,
+    },
     UnsupportedJournalFormat,
     MissingBinding,
     BindingConflict,
@@ -95,7 +102,20 @@ pub enum Error {
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        if let Self::CorruptJournalAt { task, revision, event, check, refusal } = self {
+            write!(f, "CorruptJournal: task={} revision={revision} event={} check={check} refusal=", task.0, event.unwrap_or("unavailable"))?;
+            match refusal {
+                Some(refusal) => write!(f, "{refusal:?}"),
+                None => write!(f, "not-applicable"),
+            }
+        } else {
+            write!(f, "{self:?}")
+        }
+    }
+}
+impl Error {
+    fn journal(task: &TaskId, revision: Revision, event: Option<&'static str>, check: &'static str, refusal: Option<Refusal>) -> Self {
+        Self::CorruptJournalAt { task: task.clone(), revision, event, check, refusal }
     }
 }
 impl std::error::Error for Error {

@@ -39,21 +39,31 @@ pub(super) fn replay<T, E: From<Error>>(
     let mut entries = vec![];
     for row in rows {
         let (next, encoded) = row.map_err(Error::from)?;
-        if next != aggregate.revision() + 1 || encoded.len() > crate::MAX_PAYLOAD {
-            return Err(Error::CorruptJournal.into());
+        if encoded.len() > crate::MAX_PAYLOAD {
+            return Err(Error::journal(task, next, None, "EventCapacity", None).into());
         }
-        let event: codec::EventRecord = serde_json::from_str(&encoded).map_err(Error::from)?;
+        let event: codec::EventRecord = serde_json::from_str(&encoded)
+            .map_err(|_| Error::journal(task, next, None, "EventEncoding", None))?;
+        let event_name = Some(event.event_name());
+        if next != aggregate.revision() + 1 {
+            return Err(Error::journal(task, next, event_name, "RevisionSequence", None).into());
+        }
         crate::measure::event_decoded();
-        let event = event.decode(&aggregate)?;
-        entries.push(read(&aggregate, &event)?);
+        let event = event.decode(&aggregate).map_err(|error| {
+            let refusal = match error { Error::Domain(refusal) => Some(refusal), _ => None };
+            Error::journal(task, next, event_name, "EventDecode", refusal)
+        })?;
         let named: Vec<InputId> = event.inputs().into_iter().cloned().collect();
-        aggregate
-            .apply(aggregate.revision(), event)
-            .map_err(|_| Error::CorruptJournal)?;
+        let advanced = aggregate
+            .advanced(aggregate.revision(), event.clone())
+            .map_err(|refusal| Error::journal(task, next, event_name, "Apply", Some(refusal)))?;
+        entries.push(read(&aggregate, &event)
+            .map_err(|_| Error::journal(task, next, event_name, "EventProjection", None))?);
+        aggregate = advanced;
         known.require_named(connection, &aggregate, &named)?;
     }
     if aggregate.revision() != revision {
-        return Err(Error::CorruptJournal.into());
+        return Err(Error::journal(task, revision, None, "JournalHead", None).into());
     }
     verify_relations(connection, &aggregate)?;
     Ok((aggregate, entries))
@@ -69,7 +79,7 @@ pub(super) fn revalidate(
 ) -> Result<()> {
     let (stored, revision) = head(connection, scope, aggregate.task())?;
     if stored != initial.as_str() {
-        return Err(Error::CorruptJournal);
+        return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "InitialInput", None));
     }
     let (events, last): (Revision, Revision) = connection.query_row(
         "SELECT count(*),coalesce(max(revision),0) FROM lifecycle_events WHERE task_id=?1",
@@ -77,7 +87,7 @@ pub(super) fn revalidate(
         |row| Ok((crate::read_number(row, 0)?, crate::read_number(row, 1)?)),
     )?;
     if aggregate.revision() != revision || (events, last) != (revision, revision) {
-        return Err(Error::CorruptJournal);
+        return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "JournalHead", None));
     }
     known.require(connection, aggregate)?;
     verify_relations(connection, aggregate)
@@ -194,7 +204,7 @@ pub(super) fn save_relations(connection: &Connection, aggregate: &TaskLifecycle)
         let exact: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM lifecycle_executions WHERE task_id=?1 AND generation=?2 AND node_id=?3 AND instance_id=?4 AND conversation_id=?5 AND host_id=?6)",
             params![task, crate::sql_number(stamp.generation())?, stamp.node().0, stamp.instance().as_str(), stamp.conversation().as_str(), stamp.host().as_str()], |row| row.get(0))?;
         if !exact {
-            return Err(Error::CorruptJournal);
+            return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "ExecutionIdentity", None));
         }
         connection.execute(
             "INSERT INTO lifecycle_current_execution(task_id,generation,node_id) VALUES(?1,?2,?3)",
@@ -248,7 +258,7 @@ pub(super) fn verify_relations(connection: &Connection, aggregate: &TaskLifecycl
             .map(|(card, _)| card.0.clone())
             .collect()
     {
-        return Err(Error::CorruptJournal);
+        return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "Cards", None));
     }
     for card in cards {
         let id = InteractionId(card);
@@ -264,7 +274,7 @@ pub(super) fn verify_relations(connection: &Connection, aggregate: &TaskLifecycl
         .map(|task| task.0.clone())
         .collect()
     {
-        return Err(Error::CorruptJournal);
+        return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "Dependencies", None));
     }
     let delivery: Option<String> = connection
         .query_row(
@@ -274,7 +284,7 @@ pub(super) fn verify_relations(connection: &Connection, aggregate: &TaskLifecycl
         )
         .optional()?;
     if delivery.as_deref() != aggregate.delivery().map(|card| card.0.as_str()) {
-        return Err(Error::CorruptJournal);
+        return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "Delivery", None));
     }
     if let Some(delivery) = delivery {
         require_delivery(connection, task, &delivery)?;
@@ -290,7 +300,7 @@ pub(super) fn verify_relations(connection: &Connection, aggregate: &TaskLifecycl
                 && instance == stamp.instance().as_str()
                 && conversation == stamp.conversation().as_str()
                 && host == stamp.host().as_str() => {}
-        _ => return Err(Error::CorruptJournal),
+        _ => return Err(Error::journal(aggregate.task(), aggregate.revision(), None, "CurrentExecution", None)),
     }
     Ok(())
 }

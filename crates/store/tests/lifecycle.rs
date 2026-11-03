@@ -705,6 +705,82 @@ fn input_payload_conflict_and_missing_payload_cannot_accept_a_continuation() {
 }
 
 #[test]
+fn corrupt_journal_reports_the_stored_revision_event_and_refusal_without_payloads() {
+    for (mutation, event, refusal) in [
+        ("UPDATE lifecycle_events SET event=(SELECT event FROM lifecycle_events WHERE task_id='task' AND revision=1) WHERE task_id='task' AND revision=2", "Admit", "InvalidState"),
+        ("UPDATE lifecycle_events SET event=json_set(event,'$.data.cursor',2,'$.data.fact',json('{\"kind\":\"host_ended\",\"data\":{\"unheard_card\":\"PRIVATE_EVENT_CONTENT\",\"resume\":null}}')) WHERE task_id='task' AND revision=2", "Runtime::HostEnded", "CursorGap"),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.create("task");
+        drop(fixture.launch("task"));
+        fixture.runtime("task", RuntimeFact::Notification);
+        corrupt_while_guard_removed(&fixture.connection, "lifecycle_event_immutable", || {
+            fixture.connection.execute_batch(mutation).unwrap();
+        });
+        let error = fixture.transaction().load(&"task".into()).unwrap_err();
+        let diagnostic = error.to_string();
+        for expected in ["task=task", "revision=2", event, refusal] {
+            assert!(diagnostic.contains(expected), "missing {expected}: {diagnostic}");
+        }
+        for private in ["PRIVATE_EVENT_CONTENT", "Full prompt for initial", fixture.directory.to_str().unwrap()] {
+            assert!(!diagnostic.contains(private), "{diagnostic}");
+            assert!(!format!("{error:?}").contains(private));
+        }
+        let error = read_journal(&fixture.connection, &scope(), |aggregate, _, _| {
+            assert_ne!(aggregate.revision(), 1, "a rejected event must not reach the reader");
+            Ok::<_, Error>(())
+        }).unwrap_err();
+        assert_eq!(error.to_string(), diagnostic, "startup and transaction replay agree");
+    }
+}
+
+#[test]
+fn corrupt_journal_reader_failure_does_not_expose_its_error_text() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    drop(fixture.launch("task"));
+    let error = read_journal(&fixture.connection, &scope(), |aggregate, event, _| {
+        assert_eq!(aggregate.revision(), 0, "the reader still receives the preceding aggregate");
+        assert!(matches!(event, Event::Admit { .. }));
+        Err::<(), Box<dyn std::error::Error>>(std::io::Error::other("PRIVATE_EVENT_CONTENT").into())
+    }).unwrap_err();
+    assert_eq!(error.to_string(), "CorruptJournal: task=task revision=1 event=Admit check=EventProjection refusal=not-applicable");
+    assert!(!format!("{error:?}").contains("PRIVATE_EVENT_CONTENT"));
+}
+
+#[test]
+fn corrupt_journal_integrity_checks_report_location_without_decoding_private_text() {
+    for (mutation, revision, event, check) in [
+        ("UPDATE lifecycle_tasks SET revision=3 WHERE task_id='task'", "3", "unavailable", "JournalHead"),
+        ("UPDATE lifecycle_events SET revision=4 WHERE task_id='task' AND revision=2", "4", "Runtime::Notification", "RevisionSequence"),
+        ("UPDATE lifecycle_events SET event='{}' WHERE task_id='task' AND revision=2", "2", "unavailable", "EventEncoding"),
+        ("UPDATE lifecycle_events SET event='{\"kind\":\"PRIVATE_EVENT_CONTENT\"}' WHERE task_id='task' AND revision=2", "2", "unavailable", "EventEncoding"),
+        ("UPDATE lifecycle_events SET event=json_set(event,'$.data.stamp.host','PRIVATE_EVENT_CONTENT') WHERE task_id='task' AND revision=2", "2", "Runtime::Notification", "EventDecode"),
+        ("INSERT INTO lifecycle_cards VALUES('task','card')", "2", "unavailable", "Cards"),
+        ("INSERT INTO lifecycle_dependencies VALUES('task','other')", "2", "unavailable", "Dependencies"),
+        ("INSERT INTO lifecycle_delivery VALUES('task','card')", "2", "unavailable", "Delivery"),
+        ("DELETE FROM lifecycle_current_execution WHERE task_id='task'", "2", "unavailable", "CurrentExecution"),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.create("task");
+        drop(fixture.launch("task"));
+        fixture.runtime("task", RuntimeFact::Notification);
+        fixture.add_task("other");
+        fixture.card("task", "card");
+        corrupt_while_guard_removed(&fixture.connection, "lifecycle_event_immutable", || {
+            fixture.connection.execute_batch(mutation).unwrap();
+        });
+        let error = read_journal(&fixture.connection, &scope(), |_, _, _| Ok::<_, Error>(())).unwrap_err();
+        let diagnostic = error.to_string();
+        for expected in ["task=task", &format!("revision={revision}"), &format!("event={event}"), &format!("check={check}"), "refusal=not-applicable"] {
+            assert!(diagnostic.contains(expected), "missing {expected}: {diagnostic}");
+        }
+        assert!(!diagnostic.contains("PRIVATE_EVENT_CONTENT"), "{diagnostic}");
+        assert!(!format!("{error:?}").contains("PRIVATE_EVENT_CONTENT"));
+    }
+}
+
+#[test]
 fn corrupt_journal_cursor_and_execution_projection_fail_closed() {
     for (guard, mutation) in [
         (
@@ -728,7 +804,7 @@ fn corrupt_journal_cursor_and_execution_projection_fail_closed() {
         }
         assert!(matches!(
             fixture.transaction().load(&"task".into()),
-            Err(Error::CorruptJournal)
+            Err(Error::CorruptJournalAt { .. })
         ));
     }
     let mut fixture = Fixture::new();

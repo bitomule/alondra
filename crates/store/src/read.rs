@@ -20,6 +20,7 @@ pub struct JournalTask<T> {
 /// Every task's journal under `scope`, replayed once: `read` sees each event with the aggregate it
 /// applies to and the task's input texts. A journal that does not replay, or whose relations
 /// disagree with its replay, fails the whole read: nothing repairs it.
+/// Reader failures report the event's location without their potentially private error text.
 pub fn read_journal<T, E: From<Error>>(
     connection: &Connection,
     scope: &AuthorityScope,
