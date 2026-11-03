@@ -238,14 +238,20 @@ async fn serve_connection(service: &Arc<Service>, connection: Connection) {
         Err(_) => return connection.close(VarInt::from_u32(close::HELLO_TIMEOUT), b"no hello"),
     };
     let opened = std::time::Instant::now();
-    let path = tokio::spawn(crate::reachability::best_path(connection.clone()));
+    let followed = tokio::spawn(crate::reachability::follow(connection.clone()));
     while let Ok((send, recv)) = connection.accept_bi().await {
         let (service, device_id) = (service.clone(), device_id.clone());
         tokio::spawn(async move { serve_stream(&service, &device_id, send, recv).await });
     }
-    if let Ok(Some(kind)) = path.await {
-        crate::reachability::record_session(kind);
-        log!("iroh connection from {device_id} closed after {:?}, path {kind:?}", opened.elapsed());
+    if let Ok(crate::reachability::Followed { best: Some(kind), bytes }) = followed.await {
+        crate::reachability::record_session(kind, bytes);
+        log!(
+            "iroh connection from {device_id} closed after {:?}, path {kind:?}, bytes lan={} internet={} relay={}",
+            opened.elapsed(),
+            bytes.lan,
+            bytes.internet,
+            bytes.relay
+        );
     }
 }
 

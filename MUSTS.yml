@@ -64,6 +64,7 @@ checks:
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test
         - //deploy/pi/iroh-relay:relay_access_test
+        - //deploy/pi/iroh-relay:traffic_test
         - //deploy/pi:pi_ssh_test
 
   sdk-host:

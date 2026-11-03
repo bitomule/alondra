@@ -5,11 +5,11 @@
 //! is forwarded by hand, a public IPv6 address, or no NAT at all. The daemon reports codes; the
 //! apps and the CLI word them.
 use crate::locks::Poisonable as _;
-use iroh::endpoint::{Connection, PortmapperConfig};
+use iroh::endpoint::{Connection, PathList, PortmapperConfig};
 use iroh::unstable_net_report::NetReport;
 use iroh::{Endpoint, TransportAddr, Watcher};
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -66,11 +66,38 @@ pub(crate) enum PathKind {
     Relay,
 }
 
+/// Bytes sent and received over each kind of path, as iroh counted them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct Bytes {
+    pub(crate) lan: u64,
+    pub(crate) internet: u64,
+    pub(crate) relay: u64,
+}
+
+impl Bytes {
+    fn add(&mut self, kind: PathKind, bytes: u64) {
+        match kind {
+            PathKind::Lan => self.lan += bytes,
+            PathKind::Internet => self.internet += bytes,
+            PathKind::Relay => self.relay += bytes,
+        }
+    }
+
+    fn plus(mut self, other: Bytes) -> Bytes {
+        self.lan += other.lan;
+        self.internet += other.internet;
+        self.relay += other.relay;
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct Sessions {
     pub(crate) lan: usize,
     pub(crate) internet: usize,
     pub(crate) relay: usize,
+    /// What those sessions carried over each kind of path.
+    pub(crate) bytes: Bytes,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -271,36 +298,89 @@ fn rank(kind: PathKind) -> u8 {
     }
 }
 
-/// Follows a connection until it closes and returns the best path it used.
-pub(crate) async fn best_path(connection: Connection) -> Option<PathKind> {
+/// What a connection did until it closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Followed {
+    /// The best path it had selected; `None` when it never selected one.
+    pub(crate) best: Option<PathKind>,
+    pub(crate) bytes: Bytes,
+}
+
+/// Each path's latest byte count. iroh's counts only grow, so a path's latest count is its total.
+pub(crate) struct Tally<Id>(BTreeMap<Id, (PathKind, u64)>);
+
+impl<Id: Ord> Tally<Id> {
+    pub(crate) fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub(crate) fn count(&mut self, id: Id, kind: PathKind, bytes: u64) {
+        self.0.insert(id, (kind, bytes));
+    }
+
+    pub(crate) fn total(&self) -> Bytes {
+        let mut total = Bytes::default();
+        for (kind, bytes) in self.0.values() {
+            total.add(*kind, *bytes);
+        }
+        total
+    }
+}
+
+fn count_paths(tally: &mut Tally<iroh::endpoint::PathId>, list: &PathList<'_>) {
+    for path in list.iter() {
+        let stats = path.stats();
+        tally.count(path.id(), path_kind(path.remote_addr()), stats.udp_tx.bytes + stats.udp_rx.bytes);
+    }
+}
+
+/// Follows a connection until it closes: the best path it used and the bytes each path carried. A
+/// path of an earlier list reports its final count once it has closed, so every list is counted
+/// again when the next one arrives and when the connection ends.
+pub(crate) async fn follow(connection: Connection) -> Followed {
     use n0_future::StreamExt as _;
     let mut best: Option<PathKind> = None;
+    let mut tally = Tally::new();
+    let mut last: Option<PathList<'_>> = None;
     let mut paths = connection.paths_stream();
     while let Some(list) = paths.next().await {
+        if let Some(previous) = &last {
+            count_paths(&mut tally, previous);
+        }
         for path in list.iter().filter(|path| path.is_selected()) {
             let kind = path_kind(path.remote_addr());
             if best.is_none_or(|best| rank(kind) > rank(best)) {
                 best = Some(kind);
             }
         }
+        count_paths(&mut tally, &list);
+        last = Some(list);
     }
-    best
+    if let Some(list) = &last {
+        count_paths(&mut tally, list);
+    }
+    Followed { best, bytes: tally.total() }
 }
 
 #[derive(Default)]
-pub(crate) struct Ledger(VecDeque<PathKind>);
+pub(crate) struct Ledger(VecDeque<(PathKind, Bytes)>);
 
 impl Ledger {
-    pub(crate) fn record(&mut self, kind: PathKind) {
+    pub(crate) fn record(&mut self, kind: PathKind, bytes: Bytes) {
         if self.0.len() == KEPT_SESSIONS {
             self.0.pop_front();
         }
-        self.0.push_back(kind);
+        self.0.push_back((kind, bytes));
     }
 
     pub(crate) fn sessions(&self) -> Sessions {
-        let count = |kind| self.0.iter().filter(|seen| **seen == kind).count();
-        Sessions { lan: count(PathKind::Lan), internet: count(PathKind::Internet), relay: count(PathKind::Relay) }
+        let count = |kind| self.0.iter().filter(|(seen, _)| *seen == kind).count();
+        Sessions {
+            lan: count(PathKind::Lan),
+            internet: count(PathKind::Internet),
+            relay: count(PathKind::Relay),
+            bytes: self.0.iter().fold(Bytes::default(), |total, (_, bytes)| total.plus(*bytes)),
+        }
     }
 }
 
@@ -320,10 +400,10 @@ fn change(update: impl FnOnce(&mut Live)) {
     live.inputs.sessions = live.ledger.sessions();
 }
 
-pub(crate) fn record_session(kind: PathKind) {
+pub(crate) fn record_session(kind: PathKind, bytes: Bytes) {
     #[cfg(test)]
     RECORDED[rank(kind) as usize].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    change(|live| live.ledger.record(kind));
+    change(|live| live.ledger.record(kind, bytes));
 }
 
 #[cfg(test)]

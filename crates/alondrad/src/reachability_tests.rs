@@ -145,7 +145,7 @@ fn a_tailscale_address_is_not_taken_for_a_mapping() {
 #[test]
 fn a_device_that_already_connected_directly_from_outside_confirms_the_mac_is_reachable() {
     let mut inputs = home();
-    inputs.sessions = Sessions { lan: 2, internet: 1, relay: 3 };
+    inputs.sessions = Sessions { lan: 2, internet: 1, relay: 3, ..Sessions::default() };
     let found = diagnose(&inputs);
     assert_eq!(found.verdict, Verdict::Reachable);
     assert!(found.confirmed);
@@ -210,11 +210,30 @@ fn paths_are_classified_as_lan_internet_or_relay() {
 fn the_ledger_counts_only_the_latest_sessions() {
     let mut ledger = Ledger::default();
     for _ in 0..KEPT_SESSIONS {
-        ledger.record(PathKind::Relay);
+        ledger.record(PathKind::Relay, Bytes { relay: 1_000, ..Bytes::default() });
     }
-    ledger.record(PathKind::Internet);
-    ledger.record(PathKind::Lan);
-    assert_eq!(ledger.sessions(), Sessions { lan: 1, internet: 1, relay: KEPT_SESSIONS - 2 });
+    ledger.record(PathKind::Internet, Bytes { internet: 30, relay: 5, ..Bytes::default() });
+    ledger.record(PathKind::Lan, Bytes { lan: 7, ..Bytes::default() });
+    assert_eq!(
+        ledger.sessions(),
+        Sessions {
+            lan: 1,
+            internet: 1,
+            relay: KEPT_SESSIONS - 2,
+            bytes: Bytes { lan: 7, internet: 30, relay: 5 + 1_000 * (KEPT_SESSIONS as u64 - 2) },
+        }
+    );
+}
+
+#[test]
+fn a_path_counts_its_latest_total_once_and_each_kind_adds_up_its_paths() {
+    let mut tally = Tally::new();
+    tally.count(0, PathKind::Relay, 1_200);
+    tally.count(0, PathKind::Relay, 4_800);
+    tally.count(1, PathKind::Lan, 300);
+    tally.count(2, PathKind::Lan, 50);
+    tally.count(1, PathKind::Lan, 900);
+    assert_eq!(tally.total(), Bytes { lan: 950, internet: 0, relay: 4_800 });
 }
 
 #[test]
@@ -229,7 +248,7 @@ fn the_apps_read_this_exact_shape() {
             "port_mapping": {"upnp": true, "nat_pmp": false, "pcp": false, "mapped": "81.40.12.7:61022"},
             "public_ipv4": "81.40.12.7", "public_ipv6": null, "nat": "easy",
             "port": 47811, "port_fixed": true, "lan_ip": "192.168.1.20",
-            "sessions": {"lan": 0, "internet": 0, "relay": 0},
+            "sessions": {"lan": 0, "internet": 0, "relay": 0, "bytes": {"lan": 0, "internet": 0, "relay": 0}},
         })
     );
     let mut checking = home();

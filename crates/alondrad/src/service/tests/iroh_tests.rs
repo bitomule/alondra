@@ -406,16 +406,19 @@ async fn iroh_process_fixture_server() {
 }
 
 #[tokio::test]
-async fn a_connection_is_counted_by_the_path_it_used_once_it_closes() {
+async fn a_connection_is_counted_by_the_path_and_bytes_it_used_once_it_closes() {
     let f = Fixture::new().await;
     let before = crate::reachability::recorded(crate::reachability::PathKind::Lan);
     let (_client, connection) = f.paired(&f.phone, 51).await;
-    let followed = tokio::spawn(crate::reachability::best_path(connection.clone()));
+    let followed = tokio::spawn(crate::reachability::follow(connection.clone()));
     let envelope = f.phone.work(&f.service, "op-path", "GET", crate::direct::routes::PATH, None);
     exchange(&connection, &envelope).await;
     connection.close(VarInt::from_u32(0), b"done");
-    let kind = tokio::time::timeout(Duration::from_secs(5), followed).await.expect("ends with the connection").unwrap();
-    assert_eq!(kind, Some(crate::reachability::PathKind::Lan), "loopback is this Mac's own network");
+    let followed = tokio::time::timeout(Duration::from_secs(5), followed).await.expect("ends with the connection").unwrap();
+    assert_eq!(followed.best, Some(crate::reachability::PathKind::Lan), "loopback is this Mac's own network");
+    let sent = serde_json::to_vec(&envelope).unwrap().len() as u64;
+    assert!(followed.bytes.lan > sent, "the exchange went over the loopback path: {followed:?}");
+    assert_eq!((followed.bytes.internet, followed.bytes.relay), (0, 0), "nothing went elsewhere: {followed:?}");
     let counted = async {
         while crate::reachability::recorded(crate::reachability::PathKind::Lan) == before {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -426,7 +429,7 @@ async fn a_connection_is_counted_by_the_path_it_used_once_it_closes() {
 
 #[test]
 fn the_daemon_status_carries_the_direct_connection_diagnosis() {
-    crate::reachability::record_session(crate::reachability::PathKind::Internet);
+    crate::reachability::record_session(crate::reachability::PathKind::Internet, crate::reachability::Bytes::default());
     let status = iroh_endpoint::status();
     assert_eq!(status["reachability"]["verdict"], "reachable", "a direct session from outside confirms it: {status}");
     assert_eq!(status["reachability"]["confirmed"], true);

@@ -6680,7 +6680,7 @@ agreement_key = "{}"
 
         let read = service.dispatch("phone-a", &request("GET", "/settings", None), Transport::Relay).await.unwrap();
         assert_eq!((read["status"].as_i64(), read["body"]["relay"]["on"].as_bool()), (Some(200), Some(true)), "{read}");
-        crate::reachability::record_session(crate::reachability::PathKind::Relay);
+        crate::reachability::record_session(crate::reachability::PathKind::Relay, crate::reachability::Bytes::default());
         let read = service.dispatch("phone-a", &request("GET", "/settings", None), Transport::Relay).await.unwrap();
         assert!(read["body"]["direct_connection"]["verdict"].is_string(), "phones see this Mac's direct connection: {read}");
         let chosen = home.join("Chosen");
