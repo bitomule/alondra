@@ -241,9 +241,13 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
     assert_eq!(rig.sessions.removals(), 1, "the removed session is never removed again");
 }
 
+// 3 November: David chose «Leave it open» on tasks that could not close. Recording that choice
+// failed, the closer dropped his answer and asked him again at once, and again after the daemon
+// restarted. An answered «Leave it open» stays the answer: its receipt is tried again quietly on the
+// usual wait, across restarts, until it is recorded.
 #[tokio::test]
-async fn a_failed_leave_receipt_asks_again_instead_of_replaying_the_answer() {
-    let rig = Rig::new(thirty_minutes());
+async fn an_answered_leave_survives_a_failed_receipt_and_a_restart_without_asking_again() {
+    let mut rig = Rig::new(thirty_minutes());
     failed_three_times(&rig).await;
     let database = crate::domain_database_migration::active_path(&rig._home.0);
     let connection = rusqlite::Connection::open(database).unwrap();
@@ -251,15 +255,23 @@ async fn a_failed_leave_receipt_asks_again_instead_of_replaying_the_answer() {
         WHEN json_extract(NEW.command, '$.kind') = 'record_node_end'
         BEGIN SELECT RAISE(ABORT, 'node end storage unavailable'); END;"#).unwrap();
     answer(&rig, "leave");
-    assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + 11 * MINUTE).await.is_err());
+    let card = rig.closing().unwrap().problem_id;
+    assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + 11 * MINUTE).await.is_err(), "the failed receipt is propagated");
     let row = rig.closing().unwrap();
-    assert_eq!(row.failures, 4);
-    let replacement = rig.cards().into_iter().find(|card| Some(&card.id.0) == row.problem_id.as_ref()).unwrap();
-    assert!(matches!(replacement.payload, InteractionPayload::Question { answer: None, .. }));
-    for at in [T0 + 11 * MINUTE + 1, T0 + 600 * MINUTE] {
-        rig.pass(at).await;
-        assert_eq!(rig.closing().unwrap(), row, "an answered leave never causes repeated receipt attempts");
+    assert_eq!(row.problem_id, card, "the answered card stays the task's answer");
+    rig.pass(T0 + 11 * MINUTE + 1).await;
+    assert_eq!(rig.closing().unwrap(), row, "the receipt waits for the usual retry");
+    rig.domain = Arc::new(DomainRuntime::open(&rig._home.0).unwrap());
+    for at in [T0 + 17 * MINUTE, T0 + 600 * MINUTE] {
+        assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, at).await.is_err());
+        assert_eq!(rig.closing().unwrap().problem_id, card);
+        assert_eq!(rig.cards().len(), 1, "nobody is asked again");
     }
+    connection.execute_batch("DROP TRIGGER refuse_node_end").unwrap();
+    rig.pass(T0 + 700 * MINUTE).await;
+    rig.assert_done(NodeEnd::KeptByUser);
+    assert!(rig.closing().is_none());
+    assert_eq!(rig.sessions.removals(), 0, "the node the user kept is never removed");
 }
 
 #[tokio::test]

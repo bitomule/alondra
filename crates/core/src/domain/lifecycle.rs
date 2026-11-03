@@ -1720,8 +1720,13 @@ impl DomainState {
             let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(format!("{RESENT_NOTE}\n\n{text}")) };
             return self.decide(lifecycles, task, record);
         }
-        let launch = self.lifecycle(lifecycles, task)?.resource() == Some(ResourceEvidence::Reserved);
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        let launch = lifecycle.resource() == Some(ResourceEvidence::Reserved);
+        let closing = lifecycle.phase() == TaskPhase::Finishing;
         self.decide(lifecycles, task, LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.into() })?;
+        if closing {
+            return Ok(());
+        }
         let title = self.tasks[task].title.clone();
         self.interactions.insert(card.clone(), handoff_doubt_card(card.clone(), task, &title, text, launch, self.revision + 1));
         effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });

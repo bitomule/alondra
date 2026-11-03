@@ -27,6 +27,7 @@ pub(crate) struct Adoption {
     pub(crate) commands: Vec<UnresolvedCommand>,
     pub(crate) controls: Vec<UnresolvedControl>,
     pub(crate) unrecorded_controls: Vec<i64>,
+    pub(crate) unrecorded_commands: Vec<i64>,
 }
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
@@ -652,12 +653,13 @@ impl<'connection> OwnerTransaction<'connection> {
         let commands = self.journal.unresolved_commands(task)?;
         let controls = self.journal.unresolved_controls(task)?;
         let unrecorded_controls = self.journal.unrecorded_controls(task)?;
+        let unrecorded_commands = self.journal.unrecorded_commands(task)?;
         let conn = self.conn;
         let directory = self.journal.inspect(|| {
             conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task.0], |row| row.get::<_, String>(0))
                 .map_err(|error| StoreError::Storage(error.into()))
         })?;
-        Ok(Adoption { stamp, directory, commands, controls, unrecorded_controls })
+        Ok(Adoption { stamp, directory, commands, controls, unrecorded_controls, unrecorded_commands })
     }
 
     /// The commit issues again the permit of the task's next unclaimed dispatch.

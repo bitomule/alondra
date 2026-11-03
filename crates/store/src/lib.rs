@@ -1302,6 +1302,17 @@ impl<'connection> LifecycleTransaction<'connection> {
             .collect()
         })
     }
+    /// The claimed dispatches of the task's current execution whose command was never recorded:
+    /// their preparation failed, so no host can have received them.
+    pub fn unrecorded_commands(&self, task: &TaskId) -> Result<Vec<i64>> {
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let mut statement = self.transaction.prepare("SELECT d.id FROM lifecycle_dispatches d WHERE d.task_id=?1 AND d.generation=?2 AND d.status='claimed' AND NOT EXISTS(SELECT 1 FROM provider_commands c WHERE c.intent_id=d.id AND c.task_id=d.task_id AND c.generation=d.generation) ORDER BY d.id")?;
+            let rows = statement.query_map(params![task.0, sql_number(stamp.generation())?], |row| row.get(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
     /// Resolves a claimed dispatch of the task's current execution with the host's answer, fenced
     /// by the owner generation it was reconciled under. `claimed` → `handed`/`rejected`/`uncertain`;
     /// nothing else transitions. It never invents consumption: a handed input stays pending.

@@ -122,6 +122,13 @@ impl TaskLifecycle {
                 if self.session().is_none() || !self.is_pending(&input) {
                     return Err(Refusal::UnknownObligation);
                 }
+                // A closing task asks nobody: the input is taken as received, as cancelling does.
+                if let State::Finishing(finishing) = &mut self.state {
+                    let execution = finishing.session.execution_mut().ok_or(Refusal::InvalidState)?;
+                    replace_handoff(execution, &input, None)?;
+                    self.settled.insert(input);
+                    return Ok(());
+                }
                 self.wait_on_card(card.clone(), WaitReason::Doubt, Owner::User)?;
                 self.doubts.insert(card, input);
             }
@@ -805,6 +812,7 @@ impl TaskLifecycle {
                 session.execution_mut().ok_or(Refusal::InvalidState)?
             }
             State::Delivered(delivered) => delivered.session.execution_mut().ok_or(Refusal::InvalidState)?,
+            State::Finishing(finishing) => finishing.session.execution_mut().ok_or(Refusal::InvalidState)?,
             _ => return Err(Refusal::InvalidState),
         };
         replace_handoff(execution, input, Some(resend))

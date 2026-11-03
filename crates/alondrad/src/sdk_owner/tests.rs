@@ -2984,6 +2984,37 @@ fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {
     assert!(slice.controls().is_empty(), "the ended host never received either control");
 }
 
+// 3 November: «Live Activity 3» was cancelled after its host ended. Its owner had claimed an input
+// and lost the host before it recorded the command, and the node was told how to settle its
+// worktrees after the cancel. Every close failed: the lifecycle refused the host's end, and the
+// claimed input with no command held every change of the execution. The user got a card that
+// neither «Try again» nor «Leave it open» could settle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_and_asks_nobody() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    slice.run(&Actor::System, "told-before", Command::TellNode { task_id: TASK.into(), text: "Add the changelog".into(), from_user: false });
+    driver.sealed();
+    let permit = driver.permits.pop_front().expect("the input waits for the host");
+    driver.domain.own(driver.scope.clone(), |owner| owner.claim(permit)).unwrap();
+    // The host can disappear here, before record_command records the bytes it would get.
+    let _abandoned = driver.sealed().attempts.pop().unwrap();
+    driver.stop().unwrap();
+    drop(driver);
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&Actor::System, "told-after", Command::TellNode { task_id: TASK.into(), text: "Settle your worktrees".into(), from_user: false });
+    slice.domain.enable_sdk(slice.backend.clone());
+    close_pass(&slice).await;
+    let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
+    assert_eq!(task.state, TaskState::Cancelled);
+    let statuses: Vec<String> = slice.observer().prepare("SELECT status FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' ORDER BY id").unwrap()
+        .query_map([TASK], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(statuses[0], "rejected", "the ended host never received the claimed input: {statuses:?}");
+    for prefix in [alondra_core::close_problem::CLOSE_PROBLEM_PREFIX, SESSION_ENDED_PREFIX, HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX] {
+        assert!(open_card(&slice.domain, prefix).is_none(), "no card about {prefix}");
+    }
+}
+
 // C6: the daemon dies after recording a read of the MCP status and before the host gets it. A
 // fresh daemon adopts the host and reconciles the control once: Claude answers it a single time
 // and its status is kept.

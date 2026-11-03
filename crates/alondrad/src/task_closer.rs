@@ -175,10 +175,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing
             let reason = format!("{error:#}");
             let state = domain.state()?;
             if let Some(task) = state.tasks.get(&task_id) {
-                let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(&task_id, now)?;
-                if row.problem_id.as_ref().is_some_and(|id| matches!(card(&state, id), Card::Leave)) {
-                    row.problem_id = None;
-                }
+                let row = domain.store.lock_or_exit("the domain store").begin_task_closing(&task_id, now)?;
                 let row = retry_later(timing, now, task, row, &reason);
                 count_failure(domain, task, row, CloseStop::Error, &reason, state.in_cleanup(task))?;
             }
@@ -254,6 +251,9 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     if let Some(card_id) = row.problem_id.clone() {
         match card(&state, &card_id) {
+            // The user's answer stays the answer. It is recorded at once; a receipt that failed after
+            // the card counted its failures is tried again on the wait.
+            Card::Leave if row.failures > MAX_FAILURES && now < row.next_attempt => return Ok(()),
             Card::Leave => return finish(domain, &row, task.agent_id.as_ref(), NodeEnd::KeptByUser),
             Card::Retry | Card::Withdrawn => {
                 if let Some(agent) = &task.agent_id {

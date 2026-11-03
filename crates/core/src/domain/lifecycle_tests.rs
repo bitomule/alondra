@@ -1188,6 +1188,52 @@ fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
     assert_aggregate_rules(&s);
 }
 
+/// A cancelled SDK task whose node was told how to settle its worktrees after the cancel: the
+/// input that message became.
+fn cancelled_mid_turn(s: &mut DomainState) -> String {
+    sdk_turn(s, "t", "a");
+    must(s, user(), Command::CancelTask { task_id: "t".into() });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Settle your worktrees".into(), from_user: false });
+    let LifecycleRecord::Told { input, .. } = last(s, "t") else { panic!("told: {:?}", last(s, "t")) };
+    input
+}
+
+fn open_cards(s: &DomainState) -> Vec<String> {
+    s.interactions.values().filter(|i| s.open(i)).map(|i| i.id.0.clone()).collect()
+}
+
+// 3 November: the cancelled «Live Activity 3» could never close. Its host had ended, and the
+// lifecycle of a cancelled task refused every fact of its host, so recording that end failed on each
+// attempt and the user got a card that nothing they pressed could settle.
+#[test]
+fn a_cancelled_task_whose_host_ends_records_the_end_asks_nobody_and_is_cancelled_with_its_node() {
+    let mut s = world();
+    let told = cancelled_mid_turn(&mut s);
+    let before = open_cards(&s);
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![] });
+    assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("host_ended"));
+    must(&mut s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: told, text: "Settle your worktrees".into(), resumes: false });
+    assert_eq!(open_cards(&s), before, "a task that is closing has nobody to ask how it goes on");
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Cancelled);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_cancelled_task_resends_what_its_ended_host_never_took_to_the_host_that_resumes_it() {
+    let mut s = world();
+    let told = cancelled_mid_turn(&mut s);
+    let before = open_cards(&s);
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![] });
+    must(&mut s, Actor::System, Command::ResendUntakenInput { task_id: "t".into(), generation: 1, input: told.clone(), text: "Settle your worktrees".into() });
+    let pending = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().pending_inputs().into_iter().map(|input| input.as_str().to_owned()).collect::<Vec<_>>();
+    assert!(!pending.contains(&told) && pending.len() == 1, "the message waits as a new input for the resumed host: {pending:?}");
+    assert_eq!(open_cards(&s), before);
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Cancelled);
+    assert_aggregate_rules(&s);
+}
+
 /// A task whose host ended while the user's answer to its turn card was handed and not yet read.
 fn doubtful(s: &mut DomainState, written: &str) -> (InteractionId, String) {
     let turn = interrupted_turn(s, "t", "a");

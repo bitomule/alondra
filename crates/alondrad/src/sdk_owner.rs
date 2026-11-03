@@ -731,6 +731,9 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         for id in adoption.unrecorded_controls {
             owner.resolve_control(&stamp, id, owner_generation, DispatchReceipt::Rejected)?;
         }
+        for id in adoption.unrecorded_commands {
+            owner.resolve(&stamp, id, owner_generation, DispatchReceipt::Rejected)?;
+        }
         let envelope = |name: String, command: Command| CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

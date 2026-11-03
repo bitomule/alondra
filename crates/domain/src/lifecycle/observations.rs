@@ -655,6 +655,11 @@ impl TaskLifecycle {
                 }
                 delivered.session = Session::Present(execution);
             }
+            // A task that is closing has nobody to ask how it goes on: the end of its host is kept
+            // for the drain, which still owes everything the task owed when it began to close.
+            State::Finishing(finishing) if host_end.is_some() => {
+                finishing.session = Session::Present(execution);
+            }
             State::Finishing(_)
             | State::Unstarted(_)
             | State::InProgress(Progress::Queued { .. })
