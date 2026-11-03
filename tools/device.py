@@ -11,7 +11,7 @@ import zipfile
 
 def main():
     os.chdir(Path(__file__).resolve().parents[1])
-    device = os.environ.get("DEVICE", "David iPhone")
+    device = os.environ.get("DEVICE", "")
     if not device.strip():
         raise ValueError("Set DEVICE to a device name or UDID")
     # Let CoreDevice resolve the name and reject ambiguous/unreachable devices

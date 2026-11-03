@@ -60,6 +60,23 @@ produce PASS. A transport failure retains the stopped owned clone and produces
 `recovery.json`; use the scripted recovery command below without rerunning the
 scenario or changing the original verdict.
 
+## Building from a clean clone
+
+`build_from_source.sh [--fresh-home] <repository> <commit>` clones, then runs `make build` and
+`make test` on a Mac with Xcode 27, no `~/.bazelrc`, no `~/.alondra` and no signing profiles. It
+refuses a Mac that has them, and also less than 40 GB free. `--fresh-home` runs the build under a
+new empty HOME instead, so it also works on a Mac with its own setup. On exit, however it ends,
+it stops Bazel and removes the checkout and that HOME. `build_from_source_test` runs it against
+a tiny fake repository and checks both are gone, on success and on failure.
+
+This run is required before the repository is published (phase 14), against the final commit,
+once and in series with any other heavy job, inside a disposable guest cloned from a base image
+that has Xcode 27 (the `alondra-clean-install-*` base below carries Xcode 26 and is not enough):
+
+```sh
+tests/system/macos/build_from_source.sh --fresh-home <repository> <final commit sha>
+```
+
 ## Commands
 
 From the repository root, inspect the plan without starting anything:

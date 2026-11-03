@@ -55,6 +55,7 @@ checks:
         - //tools:rustc_peaks_test
         - //tools/sandbox:alondra-sandbox_test
         - //tests/system/macos:local_daemon_test
+        - //tests/system/macos:build_from_source_test
         - //apple:no_sleep_wording_test
         - //apple:release_bonjour_test
         - //apple:spanish_catalog_test
@@ -178,6 +179,17 @@ checks:
     with:
       targets:
         - //tools:buildbuddy_credential_helper_test
+
+  public-build-inputs:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - "Makefile"
+      - "signing/**"
+      - "tools/tests/test_public_build_inputs.py"
+    with:
+      targets:
+        - //tools:public_build_inputs_test
 
   bazel-test-tmpdir:
     uses: bazel/test

@@ -1,13 +1,14 @@
 BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 LABEL = $(shell $(BIN)/alondra config get service_label 2>/dev/null)
-DEVICE ?= David iPhone
+DEVICE ?=
 # A Rust target's executable: cquery also lists the clippy report it builds beside it.
 exe = $$(bazelisk cquery --output=files $(1) 2>/dev/null | grep -v '\.ok$$')
 in_execroot = $$(bazelisk info execution_root 2>/dev/null)/$(call exe,$(1))
 export DEVICE
 
-# TestFlight betas go out with the /beta skill, which reads these variables.
+# TestFlight betas go out with the /beta skill, which reads these variables. They are the published app's
+# App Store Connect id and its TestFlight groups, only used to release; building and testing ignore them.
 APP_ID     := 6816262826
 IPA_PATH   := .beta-build/ios/Alondra.ipa
 PKG_PATH   := .beta-build/macos/Alondra.pkg
@@ -15,7 +16,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench bazel-speed rustc-peaks tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench bazel-speed rustc-peaks tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -127,9 +128,6 @@ connection-measurements:
 
 mac-snapshots-verify:
 	bazelisk test $(MAC_SNAPSHOT_TARGET) --test_output=errors
-
-cargo-test:
-	cargo test
 
 brew-guard:
 	@if [ -z "$(FORCE_DEV_INSTALL)" ] && { [ -e /opt/homebrew/opt/alondra ] || [ -e /usr/local/opt/alondra ]; }; then \

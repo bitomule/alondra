@@ -19,7 +19,7 @@ take several comma-separated groups.
 
 iOS and Mac share the bundle ID `com.bitomule.alondra` and the record `6816262826`
 (universal purchase). macOS was added to it as a platform; the bundle ID is a
-universal App ID, so the Mac App Store profile in `signing/` is issued for it too.
+universal App ID, so the Mac App Store profile in the signing folder (`ALONDRA_SIGNING_DIR`, default `~/.alondra/signing`) is issued for it too.
 That profile carries push because the App ID has it; the Mac app does not use push.
 
 Until October 2026 the Mac app was `com.bitomule.alondra.mac`, record `6816263014`.
@@ -76,7 +76,7 @@ writing it to `.beta-build/` (ignored by git, replaced on every run):
 
 - the checkout is clean and committed (only `.beta_notes` may be untracked) and does
   not change during the build;
-- the profiles in `signing/` belong to team `658YBSK6MG`, are unexpired App Store
+- the profiles in the signing folder belong to team `658YBSK6MG`, are unexpired App Store
   profiles and contain the signing certificate;
 - the signing identity is the only valid Apple Distribution identity of the team in
   the keychain (Mac: also the only valid Mac Installer identity), unless
@@ -93,7 +93,7 @@ Each output folder gets a `manifest.json` with source commit, version, build,
 artifact SHA-256, identities and profile hashes. Failed commands leave a private
 diagnostic log at the path the error names.
 
-| Destination | Profile in `signing/` | Bundle identifier |
+| Destination | Profile in the signing folder | Bundle identifier |
 | --- | --- | --- |
 | iOS app | `Alondra_AppStore.mobileprovision` | `com.bitomule.alondra` |
 | iOS extension | `Alondra_NotificationService_AppStore.mobileprovision` | `com.bitomule.alondra.NotificationService` |

@@ -21,16 +21,20 @@ and its `bin/alondra` wrapper point to them.
 
 Run every command from the root of the repo unless a step says otherwise.
 
+To only compile and test, without installing anything or signing an app, steps 1 and 2's
+`make build` and `make test` are enough: they need no Apple account, no profiles and no
+account on any build cache.
+
 ## 1. Requirements
 
 - macOS 26 or later on Apple Silicon.
-- Xcode 26 or later, opened once (licence accepted), with its command line tools selected.
+- Xcode 27 or later (it ships Swift 6.4, which `Package.swift`'s `swift-tools-version:6.4` requires),
+  opened once (licence accepted), with its command line tools selected.
 - [Homebrew](https://brew.sh) only to get the generic tools below.
 - `bazelisk` (it downloads the Bazel version pinned in `.bazelversion`). You do **not** need
   Rust for Alondra: Bazel's `rules_rust` downloads its own toolchain.
 - Claude Code with background sessions (`claude --bg`), logged in.
-- `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in, with access to
-  `bitomule/alondra`), `jq`, and `tuicr` 0.26 or later (the TUI opens a
+- `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in), `jq`, and `tuicr` 0.26 or later (the TUI opens a
   PR's diff in it; `alondra doctor` says if it is missing).
 
 ```bash
@@ -46,7 +50,7 @@ bazelisk --version; tmux -V; gh auth status 2>&1 | head -3; jq --version; tuicr 
 claude --version; claude --help | grep -c -- '--bg'
 ```
 
-**Success:** `arm64`; macOS `26.x` or later; `Xcode 26.x` or later; a path inside
+**Success:** `arm64`; macOS `26.x` or later; `Xcode 27.x` or later; a path inside
 `Xcode*.app/Contents/Developer` (not `/Library/Developer/CommandLineTools`: if so, run
 `sudo xcode-select -s /Applications/Xcode.app`); `bazel 8.4.2` (run it from the repo, it reads
 `.bazelversion`); `tmux 3.x`; gh logged in (if not: `gh auth login`); `jq-1.x`; a Claude Code
@@ -54,7 +58,8 @@ version and a number ≥ 1.
 
 ## 2. Build and install alondra and alondrad
 
-The first build downloads Bazel, the Rust toolchain and the crates: several minutes.
+The first build downloads Bazel, the Rust toolchain and the crates: several minutes. The
+repository does not read any remote build cache unless you pass `--config=buildbuddy`.
 
 ```bash
 make install
@@ -146,8 +151,8 @@ asc profiles create --name "Alondra Development" --profile-type IOS_APP_DEVELOPM
   --bundle <app bundle resource id> --certificate <cert id> --device <device id>
 asc profiles create --name "Alondra NotificationService Development" --profile-type IOS_APP_DEVELOPMENT \
   --bundle <extension bundle resource id> --certificate <cert id> --device <device id>
-asc profiles download --id <app profile id> --output signing/Alondra_Development.mobileprovision
-asc profiles download --id <extension profile id> --output signing/Alondra_NotificationService_Development.mobileprovision
+asc profiles download --id <app profile id> --output ~/.alondra/signing/Alondra_Development.mobileprovision
+asc profiles download --id <extension profile id> --output ~/.alondra/signing/Alondra_NotificationService_Development.mobileprovision
 ```
 
 (`asc bundle-ids list` gives the resource IDs. If the `asc-signing-setup` skill is available
@@ -156,10 +161,11 @@ it covers these commands in detail.)
 Without `asc`, on https://developer.apple.com/account/resources: Identifiers → + → App IDs →
 the two IDs above, with **Push Notifications** checked on the app one; Devices → + → the
 iPhone's UDID; Profiles → + → iOS App Development, once per ID, with your Apple Development
-certificate and the iPhone; download both into `signing/` with the file names above.
+certificate and the iPhone; download both into `~/.alondra/signing/` with the file names above.
 
-The profiles already in `signing/` are the maintainers' team profiles. Yours replace them
-in your checkout; don't commit that change.
+The repository holds no profiles. Bazel reads them from your signing folder, `~/.alondra/signing`
+(set `ALONDRA_SIGNING_DIR` to use another one), so `mkdir -p ~/.alondra/signing` and download
+the profiles there instead of into the checkout.
 
 A signing certificate with its private key must be in the login keychain. If there is none:
 Xcode → Settings → Accounts → your team → Manage Certificates → + → Apple Development.
@@ -168,7 +174,7 @@ Xcode → Settings → Accounts → your team → Manage Certificates → + → 
 
 ```bash
 security find-identity -v -p codesigning | grep "Apple Development"
-for p in signing/*.mobileprovision; do security cms -D -i "$p" | plutil -extract Entitlements.application-identifier raw -; security cms -D -i "$p" | plutil -extract Entitlements.aps-environment raw -; done
+for p in ~/.alondra/signing/*.mobileprovision; do security cms -D -i "$p" | plutil -extract Entitlements.application-identifier raw -; security cms -D -i "$p" | plutil -extract Entitlements.aps-environment raw -; done
 ```
 
 **Success:** at least one `Apple Development` identity; for each profile `<TEAMID>.<bundle id>`
@@ -190,10 +196,10 @@ It signs in in the browser, registers this Mac and restarts the daemon.
 ### 4c. Signing file and the apps
 
 ```bash
-cp signing/signing.example.bzl signing/signing.bzl
+cp signing/signing.example.bzl ~/.alondra/signing/signing.bzl
 ```
 
-Edit `signing/signing.bzl` (git-ignored): `IOS_BUNDLE_ID = "com.<you>.alondra"`; keep the
+Edit `~/.alondra/signing/signing.bzl`: `IOS_BUNDLE_ID = "com.<you>.alondra"`; keep the
 other lines, which derive `.mac` and `.NotificationService` from it and name the two profiles
 downloaded in 4a. The team comes from the profiles.
 
@@ -325,8 +331,8 @@ Other problems:
 
 - **`alondra doctor --fix` says it is not touching something:** another launchd plist already
   runs `alondrad`. Read the line it prints and remove the other service.
-- **The build fails on signing** (`signing/signing.bzl not found` is only a warning):
-  `signing/signing.bzl` names a profile file that is not in `signing/`, or the profile does
+- **The build fails on signing** (a missing `signing.bzl` makes Bazel use `signing/signing.example.bzl`):
+  `signing.bzl` names a profile file that is not in your signing folder, or the profile does
   not include this iPhone or your certificate. Redo 4a.
 - **The iPhone cannot reach the Mac on Wi-Fi:** `curl http://<LocalHostName>.local:47800/v1/health`
   from the Mac must answer; allow incoming connections to `alondrad` if the macOS firewall

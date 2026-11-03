@@ -13,6 +13,8 @@ exports_files(
     visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__", "//tools:__pkg__"],
 )
 
+exports_files([".bazelrc"], visibility = ["//tools:__pkg__"])
+
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
 MOD_TYPES = [
     "plugin/.gitignore",

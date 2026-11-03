@@ -19,6 +19,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
+SIGNING_DIR = Path(os.environ.get("ALONDRA_SIGNING_DIR") or Path.home() / ".alondra" / "signing")
 TEAM = "658YBSK6MG"
 IOS = "com.bitomule.alondra"
 MAC = IOS
@@ -377,8 +378,8 @@ def main():
     profiles = {}
     profile_hashes = {}
     for bundle_id, filename in PROFILES[args.destination]:
-        path = ROOT / "signing" / filename
-        require(path.is_file(), "Missing ignored profile: signing/" + filename)
+        path = SIGNING_DIR / filename
+        require(path.is_file(), "Missing profile: " + str(path))
         profile = plistlib.loads(run("security", "cms", "-D", "-i", path))
         validate_profile(profile, bundle_id, args.destination, args.identity)
         profiles[bundle_id] = path

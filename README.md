@@ -11,7 +11,7 @@ tools for the orchestrator to act.
 | `crates/alondra` | CLI, TUI, the nodes' MCP server and inbox hook |
 | `plugin/` | Claude Code plugin: hooks, `ask`/`report` tools and skill |
 | `launchd/` | macOS service template for `alondrad` (installed by `alondra doctor --fix`) |
-| `signing/` | App signing: `signing.example.bzl` → local copy `signing.bzl` and profiles |
+| `signing/` | App signing: `signing.example.bzl`, and the rule that reads your own `signing.bzl` and profiles from `~/.alondra/signing` |
 | `docs/plan.md` | Design and phased plan |
 | `docs/tasks-plan.md` | Requests, tasks and their state machine, as built |
 
@@ -123,17 +123,17 @@ not support that cadence. The hook does not affect Claude sessions outside Alond
 
 ## Development
 
-`make build` / `make test` with Bazel. `cargo build` / `cargo test` also work, for fast
-iteration and for rust-analyzer.
+`make build` / `make test` with Bazel; tests run only through Bazel. See
+[`docs/building-from-source.md`](docs/building-from-source.md).
 
 ### Install on an iPhone
 
-`make device` builds the arm64 iOS app, installs it on **David iPhone**, and opens it.
-Use `make device DEVICE="name or UDID"` to select another paired device. The device
+`make device DEVICE="name or UDID"` builds the arm64 iOS app, installs it on that paired device,
+and opens it. The device
 must have Developer Mode enabled and be reachable from this Mac. Existing app data
 is retained; the running app is restarted.
 
-Keep the development profiles for the app and notification extension in `signing/`
-as configured by `signing.example.bzl` (or an ignored `signing.bzl` override).
+Keep the development profiles for the app and notification extension in `~/.alondra/signing`
+(`ALONDRA_SIGNING_DIR`), configured by a `signing.bzl` there copied from `signing/signing.example.bzl`.
 Both profiles must include the selected device and have a matching local signing
 identity. Profiles and private keys are never committed.

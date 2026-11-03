@@ -65,6 +65,17 @@ sh_test(
 )
 
 sh_test(
+    name = "public_build_inputs_test",
+    srcs = ["tests/test_public_build_inputs.py"],
+    data = [
+        "//:.bazelrc",
+        "//:Makefile",
+        "//signing:checked_in",
+    ],
+    size = "small",
+)
+
+sh_test(
     name = "bazel_test_tmpdir_test",
     srcs = ["tests/test_bazel_test_tmpdir.py"],
     data = ["test-tmpdir.sh"],

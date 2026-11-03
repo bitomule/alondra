@@ -12,14 +12,15 @@ build --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallow
 build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build --output_groups=+clippy_checks
 
-# BuildBuddy remote cache: read-only by default; `--config=upload` (used by `ci` and `warming`)
-# writes. On David's Mac, ~/.bazelrc is read after this file and turns uploads on for every
-# build, so main never needs a separate warming run. The API key never lives here: locally it
-# comes from ~/.bazelrc (try-import of a key file), in CI from
+# BuildBuddy remote cache, opt-in: `--config=buildbuddy` reads it, `--config=upload` also writes.
+# A fresh clone builds without sending anything to a third party. On the maintainer's Mac,
+# ~/.bazelrc is read after this file and turns the cache and uploads on for every build. The API
+# key never lives here: locally it comes from ~/.bazelrc (a credential helper), in CI from
 # `--remote_header=x-buildbuddy-api-key=<secret>` on the command line.
-common --remote_cache=grpcs://remote.buildbuddy.io
-common --remote_cache_compression
-common --noremote_upload_local_results
+common:buildbuddy --remote_cache=grpcs://remote.buildbuddy.io
+common:buildbuddy --remote_cache_compression
+common:buildbuddy --noremote_upload_local_results
+common:upload --config=buildbuddy
 common:upload --remote_upload_local_results
 
 # Signing, linking and bundling outputs are machine-specific or cheap to redo; never cache them.
