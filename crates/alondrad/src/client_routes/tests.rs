@@ -384,7 +384,7 @@ struct DroppingSessions {
 const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing { grace: std::time::Duration::from_millis(10) };
 
 impl Sessions for DroppingSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<crate::node_close::Ran, String>> {
         Box::pin(async move {
             if args[0] == "rm" {
                 self.domain.live.mods.disconnect(&self.session, self.connection);
@@ -412,15 +412,15 @@ impl FakeSessions {
 }
 
 impl Sessions for FakeSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<crate::node_close::Ran, String>> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(args.clone());
             match args[0].as_str() {
-                "agents" => Ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string()),
-                "rm" if self.stuck => Ok(format!("removed {}", args[1])),
+                "agents" => Ok(crate::node_close::Ran::ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string())),
+                "rm" if self.stuck => Ok(crate::node_close::Ran::ok(format!("removed {}", args[1]))),
                 "rm" => {
                     self.listed.lock().unwrap().retain(|id| id != &args[1]);
-                    Ok(format!("removed {}", args[1]))
+                    Ok(crate::node_close::Ran::ok(format!("removed {}", args[1])))
                 }
                 _ => Err("unexpected".into()),
             }

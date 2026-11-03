@@ -55,7 +55,7 @@ impl BgSessions for ClaudeSessions {
     fn listed<'a>(&'a self, session: &'a str) -> Answer<'a, Result<Option<HandoverProcess>, String>> {
         Box::pin(async move {
             use crate::node_close::Sessions;
-            let listing = crate::node_close::Machine.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await?;
+            let listing = crate::node_close::Machine.agents().await?;
             let list: Vec<serde_json::Value> = listing.find('[').and_then(|at| serde_json::from_str(&listing[at..]).ok())
                 .ok_or_else(|| "claude agents did not answer with its list of sessions".to_owned())?;
             let pid = list.iter().find(|row| row["sessionId"].as_str() == Some(session)).and_then(|row| row["pid"].as_i64());

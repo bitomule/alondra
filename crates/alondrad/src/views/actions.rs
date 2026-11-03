@@ -3040,16 +3040,16 @@ mod tests {
         release: tokio::sync::Semaphore,
     }
     impl crate::node_close::Sessions for HeldClose {
-        fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<String, String>> {
+        fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<crate::node_close::Ran, String>> {
             Box::pin(async move {
                 use std::sync::atomic::Ordering;
                 match args[0].as_str() {
-                    "agents" => Ok(if self.listed.load(Ordering::Relaxed) { json!([{"id":"agent-a"}]).to_string() } else { "[]".into() }),
+                    "agents" => Ok(crate::node_close::Ran::ok(if self.listed.load(Ordering::Relaxed) { json!([{"id":"agent-a"}]).to_string() } else { "[]".into() })),
                     "rm" => {
                         self.removes.fetch_add(1, Ordering::Relaxed);
                         self.release.acquire().await.unwrap().forget();
                         self.listed.store(false, Ordering::Relaxed);
-                        Ok("removed agent-a".into())
+                        Ok(crate::node_close::Ran::ok("removed agent-a"))
                     },
                     _ => panic!("unexpected synthetic session operation"),
                 }

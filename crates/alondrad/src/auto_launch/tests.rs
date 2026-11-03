@@ -378,7 +378,7 @@ async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_t
 
 struct NoSessions;
 impl crate::node_close::Sessions for NoSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<crate::node_close::Ran, String>> {
         panic!("the closer ran claude {args:?} for a task without a node")
     }
     fn leftovers<'a>(&'a self, session_id: &'a str) -> crate::node_close::Answer<'a, Option<String>> {

@@ -55,7 +55,7 @@ pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> boo
     if !state.agents.values().any(|agent| needs_claude_listing(&state, agent)) { return true; }
     drop(state);
     let asked = alondra_core::now_millis();
-    let listing = match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
+    let listing = match sessions.agents().await {
         Ok(listing) => listing,
         Err(error) => {
             log!("could not list Claude's sessions to check the nodes: {error}");
@@ -106,7 +106,7 @@ mod tests {
 
     struct NoClaude;
     impl Sessions for NoClaude {
-        fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<String,String>> { panic!("this daemon has no legacy Claude node to list") }
+        fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> { panic!("this daemon has no legacy Claude node to list") }
         fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> { Box::pin(async { None }) }
     }
 
@@ -132,10 +132,10 @@ mod tests {
     struct Claude(Mutex<String>);
 
     impl Sessions for Claude {
-        fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<String, String>> {
+        fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
             Box::pin(async move {
                 assert_eq!(args, ["agents", "--json", "--all"]);
-                Ok(self.0.lock().unwrap().clone())
+                Ok(crate::node_close::Ran::ok(self.0.lock().unwrap().clone()))
             })
         }
         fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {

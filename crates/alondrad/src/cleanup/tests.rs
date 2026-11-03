@@ -27,14 +27,14 @@ impl FakeSessions {
 }
 
 impl Sessions for FakeSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(args.clone());
             match args[0].as_str() {
-                "agents" => Ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string()),
+                "agents" => Ok(crate::node_close::Ran::ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string())),
                 "rm" => {
                     self.listed.lock().unwrap().retain(|id| id != &args[1]);
-                    Ok(format!("removed {}", args[1]))
+                    Ok(crate::node_close::Ran::ok(format!("removed {}", args[1])))
                 }
                 _ => Err("unexpected".into()),
             }
@@ -282,7 +282,7 @@ async fn a_replaced_node_is_not_closed_while_the_node_that_took_its_worktree_wor
 async fn when_claude_agents_cannot_run_nothing_is_closed() {
     struct Broken;
     impl Sessions for Broken {
-        fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<String, String>> {
+        fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
             Box::pin(async { Err("claude is not installed".into()) })
         }
         fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {

@@ -1383,9 +1383,9 @@ mod tests {
         use crate::node_close::{Answer, Sessions};
         struct Untouchable(std::sync::atomic::AtomicUsize);
         impl Sessions for Untouchable {
-            fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<String, String>> {
+            fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Box::pin(async { Ok("[]".into()) })
+                Box::pin(async { Ok(crate::node_close::Ran::ok("[]")) })
             }
             fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {
                 Box::pin(async { None })

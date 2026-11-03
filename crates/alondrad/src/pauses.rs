@@ -227,10 +227,10 @@ fn clean_up(domain: &DomainRuntime, pauses: &mut Pauses, now: Millis) {
     let table = crate::process_watch::snapshot();
     for (session, stage) in due {
         let left = domain.live.mods.session(&session).and_then(|reported| reported.peer_pid)
-            .map(|pid| crate::process_watch::shell_descendants(&table, pid)).unwrap_or_default();
+            .map(|pid| crate::process_watch::work_descendants(&table, pid)).unwrap_or_default();
         let signal = if stage == Cleanup::Pending { libc::SIGTERM } else { libc::SIGKILL };
         if !left.is_empty() {
-            log!("{session} was paused but {} process(es) of its shells still run: sending signal {signal}", left.len());
+            log!("{session} was paused but {} process(es) of its calls still run: sending signal {signal}", left.len());
             crate::process_watch::signal(&left, signal);
         }
         if let Some(paused) = pauses.paused.get_mut(&session) {

@@ -8,26 +8,64 @@ use axum::http::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 
 pub(crate) type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// What a `claude` command answered: whether it exited with 0, and what it printed.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Ran {
+    pub(crate) success: bool,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
+impl Ran {
+    #[cfg(test)]
+    pub(crate) fn ok(stdout: impl Into<String>) -> Self {
+        Self { success: true, stdout: stdout.into(), stderr: String::new() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failed(stderr: impl Into<String>) -> Self {
+        Self { success: false, stdout: String::new(), stderr: stderr.into() }
+    }
+
+    /// What it printed, to show.
+    pub(crate) fn text(&self) -> String {
+        format!("{}{}", self.stdout, self.stderr).trim().to_string()
+    }
+}
+
 /// What closing a session asks of the machine, so a test can stand in for Claude Code and git.
 pub(crate) trait Sessions: Send + Sync + 'static {
-    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<String, String>>;
+    /// Err when `claude` could not run or did not answer in time.
+    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>>;
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Answer<'a, Option<String>>;
+
+    /// The JSON of `claude agents --json --all`, only when it exited with 0.
+    fn agents<'a>(&'a self) -> Answer<'a, Result<String, String>> {
+        Box::pin(async move {
+            let ran = self.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await?;
+            if ran.success { Ok(ran.stdout) } else { Err(format!("claude agents failed: {}", ran.text())) }
+        })
+    }
 }
 
 pub(crate) struct Machine;
 
 impl Sessions for Machine {
-    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>> {
         Box::pin(async move {
             let run = tokio::process::Command::new("claude").args(&args).kill_on_drop(true).output();
             match tokio::time::timeout(Duration::from_secs(60), run).await {
-                Ok(Ok(out)) => Ok(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string()),
+                Ok(Ok(out)) => Ok(Ran {
+                    success: out.status.success(),
+                    stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                }),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(_) => Err(format!("claude {} did not answer in 60 s", args.join(" "))),
             }
@@ -98,7 +136,7 @@ pub(crate) async fn close_node(
     let node = domain.live.node(agent_id);
     let short: String = node.as_ref().map_or_else(|| agent_id.chars().take(8).collect(), |node| node.short_id.clone());
     let (busy, waiting_permission) = node.as_ref().map_or((false, false), |node| (node.busy, node.waiting_permission));
-    let listing = match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
+    let listing = match sessions.agents().await {
         Ok(listing) => listing,
         Err(e) => return Ok(failed(StatusCode::BAD_GATEWAY, e)),
     };
@@ -137,22 +175,28 @@ async fn remove(domain: &DomainRuntime, sessions: &dyn Sessions, agent_id: &str,
     let mut cleared_broken = false;
     let mut said = String::new();
     for _ in 0..3 {
-        match sessions.claude(vec!["rm".into(), short.clone()]).await {
-            Ok(text) if text.contains(&format!("removed {short}")) => said = text,
-            Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {
-                let (Some(dir), Some(branch)) = (worktree.as_ref(), branch.as_deref()) else {
-                    return Ok(failed(StatusCode::CONFLICT, text));
-                };
-                if let Err(why) = discard_if_identical(dir, branch).await {
-                    return Ok(failed(StatusCode::CONFLICT, format!("{text}\n\nAlondra did not delete it: {why}")));
-                }
-                cleared_broken = true;
-                continue;
-            }
-            Ok(text) => return Ok(failed(StatusCode::CONFLICT, text)),
+        let ran = match sessions.claude(vec!["rm".into(), short.clone()]).await {
+            Ok(ran) => ran,
             Err(e) => return Ok(failed(StatusCode::BAD_GATEWAY, e)),
+        };
+        if !ran.success {
+            let text = ran.text();
+            let (Some(dir), Some(branch)) = (worktree.as_ref().filter(|dir| !cleared_broken && dir.exists()), branch.as_deref()) else {
+                return Ok(failed(StatusCode::CONFLICT, text));
+            };
+            match registered(dir).await {
+                Ok(false) => {}
+                Ok(true) => return Ok(failed(StatusCode::CONFLICT, text)),
+                Err(why) => return Ok(failed(StatusCode::CONFLICT, format!("{text}\n\nAlondra did not delete it: {why}"))),
+            }
+            if let Err(why) = discard_if_identical(dir, branch).await {
+                return Ok(failed(StatusCode::CONFLICT, format!("{text}\n\nAlondra did not delete it: {why}")));
+            }
+            cleared_broken = true;
+            continue;
         }
-        match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
+        said = ran.text();
+        match sessions.agents().await {
             Ok(list) if !listed(&list, &short) => {
                 if let Some(dir) = worktree.as_ref().filter(|d| d.exists()) {
                     return Ok(failed(StatusCode::CONFLICT, format!("{short} is gone from claude agents but its worktree is still at {}", dir.display())));
@@ -167,12 +211,39 @@ async fn remove(domain: &DomainRuntime, sessions: &dyn Sessions, agent_id: &str,
     Ok(failed(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents")))
 }
 
-/// A worktree whose git link is broken can only be deleted by hand. It is deleted only when
-/// its files are exactly its branch, it has no new files and the branch is fully pushed.
-async fn discard_if_identical(dir: &std::path::Path, branch: &str) -> Result<(), String> {
+/// The git folder of the repository a worktree belongs to, from its `.git` link.
+fn repository_of(dir: &Path) -> Result<PathBuf, String> {
     let link = std::fs::read_to_string(dir.join(".git")).map_err(|e| format!("no .git link: {e}"))?;
     let gitdir = link.trim().strip_prefix("gitdir: ").ok_or("unexpected .git link")?;
-    let repo_git = PathBuf::from(gitdir).parent().and_then(|p| p.parent()).map(PathBuf::from).ok_or("unexpected gitdir")?;
+    PathBuf::from(gitdir).parent().and_then(|p| p.parent()).map(PathBuf::from).ok_or_else(|| "unexpected gitdir".to_owned())
+}
+
+/// Whether the repository of `dir` still lists it in `git worktree list --porcelain -z`.
+async fn registered(dir: &Path) -> Result<bool, String> {
+    let repo_git = repository_of(dir)?;
+    let out = tokio::process::Command::new("git")
+        .arg(format!("--git-dir={}", repo_git.display()))
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let wanted = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    Ok(worktrees(&out.stdout).any(|path| std::fs::canonicalize(&path).is_ok_and(|path| path == wanted)))
+}
+
+/// The paths of `git worktree list --porcelain -z`: NUL-terminated attributes, one `worktree` each.
+fn worktrees(porcelain: &[u8]) -> impl Iterator<Item = PathBuf> + '_ {
+    use std::os::unix::ffi::OsStrExt;
+    porcelain.split(|byte| *byte == 0).filter_map(|field| field.strip_prefix(b"worktree ")).map(|path| PathBuf::from(std::ffi::OsStr::from_bytes(path)))
+}
+
+/// A worktree whose git link is broken can only be deleted by hand. It is deleted only when
+/// its files are exactly its branch, it has no new files and the branch is fully pushed.
+async fn discard_if_identical(dir: &Path, branch: &str) -> Result<(), String> {
+    let repo_git = repository_of(dir)?;
     let index = scratch_index();
     let git = |args: Vec<String>| {
         let repo_git = repo_git.clone();

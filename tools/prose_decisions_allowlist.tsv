@@ -14,12 +14,9 @@ crates/core/src/states.rs	if prompt.starts_with("[Alondra]")	finding:C-05	whethe
 crates/core/src/states.rs	|| HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/states.rs	!head.is_empty() && prompt.contains(&head)	finding:C-05	whether the user typed the prompt decided by its text
 crates/core/src/tasks/derive.rs	while let Some(i) = text[from..].find("t-").map(|i| from + i) {	finding:C-06	old view assigns PRs and reports by t- mentions
-crates/alondrad/src/node_close.rs	Ok(text) if text.contains(&format!("removed {short}")) => said = text,	finding:D-03	node close decided by the wording of claude rm
-crates/alondrad/src/node_close.rs	Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {	finding:D-03	node close decided by the wording of claude rm
 crates/alondra/src/tui.rs	if e.to_string().contains("No such file")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("could not launch")	finding:D-13	tuicr missing decided by error text
 crates/alondra/src/tui.rs	|| e.to_string().contains("no pude lanzar") =>	finding:D-13	tuicr missing decided by error text
-crates/alondrad/src/process_watch.rs	Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output().ok()	finding:D-15	processes found and killed from ps text
 crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:G-16	crash report issues found by their GitHub title, which anyone can edit
 crates/alondrad/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
 crates/alondrad/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns

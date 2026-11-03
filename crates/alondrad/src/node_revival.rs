@@ -127,7 +127,7 @@ fn look_at_shells(domain: &DomainRuntime) {
     for agent in state.agents.keys() {
         look_at_job(domain, &agent.0);
         let Some(pid) = domain.live.mods.session(&agent.0).and_then(|reported| reported.peer_pid) else { continue };
-        domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::shell_running(&table, pid), alondra_core::now_millis());
+        domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::work_running(&table, pid), alondra_core::now_millis());
         domain.live.mods.set_session_alive(&agent.0, crate::process_watch::session_running(&table, pid));
     }
 }

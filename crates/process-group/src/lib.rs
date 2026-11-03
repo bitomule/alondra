@@ -143,6 +143,78 @@ pub fn group(pid: i32) -> io::Result<Option<i32>> {
     Ok(inspect(pid)?.map(|(_, group)| group))
 }
 
+/// One row of the process table: who started it, its group and its arguments as the kernel holds them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub pid: i32,
+    pub parent: i32,
+    pub group: i32,
+    /// Empty when the kernel does not show them to this user.
+    pub argv: Vec<String>,
+}
+
+/// Every process this user may inspect right now, from `proc_listallpids`, `PROC_PIDTBSDINFO` and
+/// `KERN_PROCARGS2`.
+pub fn table() -> io::Result<Vec<Entry>> {
+    let mut entries = Vec::new();
+    for pid in all_pids()? {
+        if let Some((parent, group)) = lineage(pid)? {
+            entries.push(Entry { pid, parent, group, argv: arguments(pid).unwrap_or_default() });
+        }
+    }
+    Ok(entries)
+}
+
+fn lineage(pid: i32) -> io::Result<Option<(i32, i32)>> {
+    let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = c_int::try_from(size_of::<libc::proc_bsdinfo>()).expect("proc_bsdinfo fits in c_int");
+    clear_errno();
+    // SAFETY: the buffer is a zeroed proc_bsdinfo of `size` bytes, the flavor's exact layout.
+    let written = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast::<c_void>(), size) };
+    if written != size {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ESRCH) | Some(libc::EPERM) | Some(0) | None => Ok(None),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: the kernel filled all `size` bytes.
+    let info = unsafe { info.assume_init() };
+    let parent = i32::try_from(info.pbi_ppid).map_err(|_| io::ErrorKind::InvalidData)?;
+    let group = i32::try_from(info.pbi_pgid).map_err(|_| io::ErrorKind::InvalidData)?;
+    Ok(Some((parent, group)))
+}
+
+/// The arguments of `pid`: `KERN_PROCARGS2` is `argc`, the executable path and its padding of
+/// NULs, then `argc` NUL-terminated arguments and the environment.
+fn arguments(pid: i32) -> io::Result<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut maximum: c_int = 0;
+    let mut maximum_size = size_of::<c_int>();
+    let mut argmax = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    // SAFETY: `maximum` is a c_int and `maximum_size` its size.
+    if unsafe { libc::sysctl(argmax.as_mut_ptr(), 2, (&raw mut maximum).cast::<c_void>(), &mut maximum_size, std::ptr::null_mut(), 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buffer = vec![0u8; usize::try_from(maximum).map_err(|_| io::ErrorKind::InvalidData)?];
+    let mut size = buffer.len();
+    // SAFETY: the buffer holds `size` bytes and the kernel writes at most that many.
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buffer.as_mut_ptr().cast::<c_void>(), &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    buffer.truncate(size);
+    parse_arguments(&buffer).ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+fn parse_arguments(buffer: &[u8]) -> Option<Vec<String>> {
+    let count = usize::try_from(i32::from_ne_bytes(buffer.get(..size_of::<c_int>())?.try_into().ok()?)).ok()?;
+    let rest = &buffer[size_of::<c_int>()..];
+    let path_end = rest.iter().position(|byte| *byte == 0)?;
+    let start = path_end + rest[path_end..].iter().position(|byte| *byte != 0)?;
+    let argv: Vec<String> = rest[start..].split(|byte| *byte == 0).take(count).map(|arg| String::from_utf8_lossy(arg).into_owned()).collect();
+    (argv.len() == count).then_some(argv)
+}
+
 /// `struct proc_fileinfo` of `<sys/proc_info.h>`, which `libc` does not define.
 #[repr(C)]
 struct FileInfo {
@@ -357,6 +429,25 @@ mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn the_table_holds_a_child_with_its_parent_its_own_group_and_its_arguments_as_a_list() {
+        let mut child = Command::new("/bin/sleep").arg("600").process_group(0).stdin(Stdio::null()).spawn().unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        let row = table().unwrap().into_iter().find(|entry| entry.pid == pid);
+        kill_child(pid);
+        child.wait().unwrap();
+        let me = i32::try_from(std::process::id()).unwrap();
+        assert_eq!(row, Some(Entry { pid, parent: me, group: pid, argv: vec!["/bin/sleep".into(), "600".into()] }));
+    }
+
+    #[test]
+    fn arguments_skip_the_executable_path_and_its_padding_and_stop_before_the_environment() {
+        let mut buffer = 2i32.to_ne_bytes().to_vec();
+        buffer.extend_from_slice(b"/bin/sh\0\0\0sh -c\0-c\0HOME=/x\0");
+        assert_eq!(parse_arguments(&buffer), Some(vec!["sh -c".into(), "-c".into()]));
+        assert_eq!(parse_arguments(&buffer[..10]), None, "cut short");
+    }
 
     #[test]
     fn a_bounded_exit_wait_preserves_watches_after_a_timeout() {

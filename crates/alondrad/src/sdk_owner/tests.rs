@@ -910,7 +910,7 @@ fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_h
 /// never asked about one.
 struct NoClaudeSessions;
 impl crate::node_close::Sessions for NoClaudeSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<crate::node_close::Ran, String>> {
         panic!("the closer ran claude {args:?} for an SDK node")
     }
     fn leftovers<'a>(&'a self, session_id: &'a str) -> crate::node_close::Answer<'a, Option<String>> {

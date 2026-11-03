@@ -136,7 +136,7 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
 pub(crate) async fn run(
     domain: &DomainRuntime, sessions: &dyn Sessions, claude_home: &Path, dry_run: bool, now: i64, stop_wait: Duration,
 ) -> Result<Value, (StatusCode, String)> {
-    let listing = sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await
+    let listing = sessions.agents().await
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     let state = domain.state().map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "the domain could not be read".to_owned()))?;
     let freed = free_stopped(domain, &state, claude_home, dry_run);

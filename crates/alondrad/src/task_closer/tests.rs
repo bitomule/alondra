@@ -21,6 +21,7 @@ struct FakeSessions {
     calls: Mutex<Vec<Vec<String>>>,
     watch_while_removing: Mutex<Option<(Arc<DomainRuntime>, Option<bool>)>>,
     during_rm: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    rm_answers: Mutex<std::collections::VecDeque<crate::node_close::Ran>>,
 }
 
 impl FakeSessions {
@@ -31,6 +32,7 @@ impl FakeSessions {
             calls: Default::default(),
             watch_while_removing: Mutex::new(None),
             during_rm: Mutex::new(None),
+            rm_answers: Default::default(),
         })
     }
     fn removals(&self) -> usize {
@@ -39,11 +41,11 @@ impl FakeSessions {
 }
 
 impl Sessions for FakeSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<String, String>> {
+    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(args.clone());
             match args[0].as_str() {
-                "agents" => Ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string()),
+                "agents" => Ok(crate::node_close::Ran::ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string())),
                 "rm" => {
                     if let Some(hook) = self.during_rm.lock().unwrap().take() {
                         hook();
@@ -51,8 +53,11 @@ impl Sessions for FakeSessions {
                     if let Some((domain, seen)) = self.watch_while_removing.lock().unwrap().as_mut() {
                         *seen = Some(domain.live.begin_watch(SESSION));
                     }
-                    self.listed.lock().unwrap().retain(|id| id != &args[1]);
-                    Ok(format!("removed {}", args[1]))
+                    let ran = self.rm_answers.lock().unwrap().pop_front().unwrap_or_else(|| crate::node_close::Ran::ok(format!("removed {}", args[1])));
+                    if ran.success {
+                        self.listed.lock().unwrap().retain(|id| id != &args[1]);
+                    }
+                    Ok(ran)
                 }
                 _ => Err("unexpected".into()),
             }
@@ -776,6 +781,60 @@ async fn a_worktree_with_work_not_saved_keeps_the_task_closing_until_it_can_go()
     rig.pass(T0 + 5 * MINUTE).await;
     assert!(!dir.exists(), "the next attempt deletes it although the session is already gone");
     assert_eq!(rig.task().state, TaskState::Done);
+}
+
+/// The job Claude Code keeps for the session, naming the worktree `claude rm` deletes with it.
+fn job_with_worktree(dir: &std::path::Path) -> crate::test_support::Directory {
+    let claude_home = crate::test_support::Directory::new();
+    let job = claude_home.join("jobs").join(SHORT);
+    std::fs::create_dir_all(&job).unwrap();
+    let branch = format!("worktree-{}", dir.file_name().unwrap().to_str().unwrap());
+    std::fs::write(job.join("state.json"), json!({"worktreePath": dir, "worktreeBranch": branch}).to_string()).unwrap();
+    crate::watcher::use_claude_home_for_test(&claude_home);
+    claude_home
+}
+
+// D-03: the close decides on the exit status of `claude rm`, the listing of `claude agents --json`
+// and `git worktree list --porcelain -z`, never on what `claude rm` printed.
+#[tokio::test]
+async fn claude_rm_exiting_with_zero_closes_the_node_whatever_it_prints() {
+    let rig = Rig::new(thirty_minutes());
+    rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::ok(format!("Deleted session {SHORT}")));
+    rig.confirm();
+    rig.pass(T0).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    rig.assert_done(NodeEnd::Closed);
+}
+
+#[tokio::test]
+async fn a_failed_claude_rm_whose_worktree_git_no_longer_knows_deletes_it_if_identical_and_closes() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "job");
+    let _claude_home = job_with_worktree(&dir);
+    std::fs::remove_dir_all(root.join("repo/.git/worktrees/job")).unwrap();
+    rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::failed("something went wrong"));
+    rig.confirm();
+    rig.pass(T0).await;
+    assert!(!dir.exists(), "its files were its pushed branch, so Alondra deleted the worktree");
+    assert_eq!(rig.sessions.removals(), 2, "and ran claude rm again");
+    rig.assert_done(NodeEnd::Closed);
+}
+
+#[tokio::test]
+async fn a_failed_claude_rm_whose_worktree_git_still_lists_fails_and_deletes_nothing() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "job");
+    let _claude_home = job_with_worktree(&dir);
+    rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::failed("Git couldn't remove it"));
+    rig.confirm();
+    rig.pass(T0).await;
+    assert!(dir.exists(), "a worktree git still lists is never deleted by hand");
+    assert_eq!(rig.sessions.removals(), 1);
+    assert_eq!(rig.task().state, TaskState::Closing);
+    let closing = rig.closing().unwrap();
+    assert_eq!((closing.failures, closing.last_error.as_deref()), (1, Some("Git couldn't remove it")));
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) {

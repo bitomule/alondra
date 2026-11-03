@@ -1629,8 +1629,8 @@ async fn an_unverified_legacy_native_session_is_kept_until_it_can_be_recovered()
 struct NoBgSessions;
 
 impl crate::node_close::Sessions for NoBgSessions {
-    fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<String, String>> {
-        Box::pin(async { Ok("[]".into()) })
+    fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
+        Box::pin(async { Ok(crate::node_close::Ran::ok("[]")) })
     }
     fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {
         Box::pin(async { None })
