@@ -22,6 +22,9 @@ resumed = flag('--resume')
 session_id = resumed or flag('--session-id')
 # Like the native Claude, a session keeps its transcript on disk: a resumed one starts with it.
 transcript = capture + '.transcript-' + (session_id or 'unsaved')
+profile = next((os.environ[key] for key in ['CLAUDE_CONFIG_DIR', 'CLAUDE_HOME'] if os.environ.get(key, '').strip()), os.path.join(os.environ['HOME'], '.claude'))
+project = ''.join(character if character.isascii() and character.isalnum() else '-' for character in os.getcwd())
+native_transcript = os.path.join(profile, 'projects', project, (session_id or 'unsaved') + '.jsonl')
 history = sum(1 for _ in open(transcript)) if os.path.exists(transcript) else 0
 if resumed and not history:
     raise RuntimeError('No conversation found with session ID: ' + resumed)
@@ -416,6 +419,11 @@ for raw in sys.stdin:
             stream.write(json.dumps(message['message']['content']) + '\n')
         with open(transcript, 'a') as stream:
             stream.write(json.dumps(message['message']['content']) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.makedirs(os.path.dirname(native_transcript), mode=0o700, exist_ok=True)
+        with open(native_transcript, 'a') as stream:
+            stream.write(json.dumps(dict(type='user', sessionId=session_id, cwd=os.getcwd(), uuid=message.get('uuid'), message=message['message'])) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
         text = message['message']['content']

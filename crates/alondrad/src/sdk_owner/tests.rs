@@ -408,7 +408,7 @@ impl Slice {
             options: LaunchOptions::default(),
             model: None,
             account: AccountId::default_account(),
-        }, capabilities, None)
+        }, capabilities, None, None)
         .unwrap()
     }
 
@@ -1806,7 +1806,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
         model: None, account: AccountId::default_account(),
-    }, capabilities(), None).unwrap();
+    }, capabilities(), None, None).unwrap();
     slice.settle(&mut driver);
     let launched = |slice: &Slice| -> Vec<String> {
         let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
@@ -3699,7 +3699,7 @@ impl Slice {
         let mut driver = start_bound(Arc::clone(&self.domain), &self.backend, Launch {
             task: task.into(), name: format!("Work on {task}"), directory: self.worktree.to_str().unwrap().into(), prompt: prompt.into(),
             plugin: self.plugin.clone(), options: LaunchOptions::default(), model: None, account: AccountId::default_account(),
-        }, capabilities(), None).unwrap();
+        }, capabilities(), None, None).unwrap();
         while !done(&self.domain.state().unwrap(), driver.agent()) {
             assert!(driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host(),
                 "{task} has nothing left to run: {:?}", self.domain.state().unwrap().node_phase(driver.agent()));
@@ -4236,4 +4236,187 @@ fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
     assert!(english.contains("Waiting for Claude to start") && !english.contains("Answering you"), "{english}");
     assert!(spanish.contains("Esperando a que Claude empiece") && !spanish.contains("Respondiéndote"), "{spanish}");
     driver.stop().unwrap();
+}
+
+/// The previous host admitted a conversation but never supplied positive native-session evidence.
+fn reopen_without_native_witness(slice: &Slice) -> (AgentId, String) {
+    let mut original = slice.launch();
+    let old_node = original.agent().clone();
+    let refusal = require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap_err();
+    assert!(refusal.to_string().contains("The original native session cannot be proven"), "{refusal}");
+    slice.run(&user(), "cancel-original", Command::CancelTask { task_id: TASK.into() });
+    original.stop().unwrap();
+    drop(original);
+    slice.run(&Actor::System, "close-original", Command::RecordNodeEnd {
+        task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
+    });
+    slice.run(&user(), "reopen-original", Command::ReopenTask { task_id: TASK.into() });
+    let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
+    (old_node, input)
+}
+
+fn prepared_reopened_launch(slice: &Slice, prompt: &str) -> Launch {
+    Launch {
+        task: TASK.into(), name: "Reopened release notes".into(), directory: slice.worktree.display().to_string(),
+        prompt: prompt.into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(), model: None,
+        account: AccountId::default_account(),
+    }
+}
+
+#[test]
+fn reopening_unproven_claude_history_starts_a_new_node_and_clean_session_with_the_mission() {
+    let slice = Slice::new();
+    let (old_node, input) = reopen_without_native_witness(&slice);
+    let before = slice.starts().len();
+    let old_execution = slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().rev()
+        .find_map(|record| match record { LifecycleRecord::Admitted { execution: Some(execution), .. } => Some(execution.clone()), _ => None }).unwrap();
+    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), &slice.worktree, input, true).unwrap();
+    let mission = "Write the complete release notes, keeping the approved release scope and requested corrections.";
+    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend,
+        prepared_reopened_launch(&slice, mission), capabilities(), None, Some(reopening)).unwrap();
+    slice.settle(&mut replacement);
+    let state = slice.domain.state().unwrap();
+    let execution = lifecycle(&slice.domain).execution().unwrap().clone();
+    assert_ne!(replacement.agent(), &old_node);
+    assert_eq!(state.tasks[&TaskId::from(TASK)].agent_id.as_ref(), Some(replacement.agent()));
+    assert_ne!(execution.conversation().as_str(), old_execution.conversation);
+    assert_eq!(execution.generation(), 2, "the reopened task admits its second execution");
+    assert!(state.pending_reopening(&TASK.into()).is_none(), "the first admission consumes the reopening");
+    let starts = slice.starts();
+    assert_eq!(starts.len(), before + 1, "the same admission starts exactly one new native process: {starts:?}");
+    let fresh = starts.last().unwrap();
+    assert!(fresh["resume"].is_null(), "unproven history cannot be resumed: {fresh}");
+    assert_eq!(fresh["history"].as_u64(), Some(0), "the new native session starts clean");
+    assert_eq!(slice.prompts().iter().filter(|prompt| prompt.as_str() == mission).count(), 1, "the new node receives its mission exactly once");
+    replacement.stop().unwrap();
+}
+
+#[test]
+fn a_cancellation_after_reopening_preparation_prevents_any_new_execution_admission() {
+    stale_reopening_does_not_admit(false);
+}
+
+#[test]
+fn another_reopening_after_preparation_cannot_admit_a_node_for_the_previous_reopening() {
+    stale_reopening_does_not_admit(true);
+}
+
+fn stale_reopening_does_not_admit(reopen_again: bool) {
+    let slice = Slice::new();
+    let (_, input) = reopen_without_native_witness(&slice);
+    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), &slice.worktree, input.clone(), true).unwrap();
+    if reopen_again {
+        slice.run(&Actor::Orchestrator { generation: 0 }, "keep-request-open", Command::CreateTask {
+            plan_items: None, continues: None, task_id: "remaining-release-work".into(), request_id: "sdk-slice-request".into(),
+            title: "Check the release checklist".into(), agent_id: None, review_prs: false,
+            dependencies: BTreeSet::new(), stack: None,
+            launch: Some(LaunchPlan::new("remaining-release-work", slice.worktree.to_str().unwrap())),
+        });
+    }
+    slice.run(&user(), "cancel-after-preparation", Command::CancelTask { task_id: TASK.into() });
+    if reopen_again {
+        slice.run(&Actor::System, "cleanup-after-preparation", Command::RecordTaskCleanup { task_id: TASK.into() });
+        assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
+        assert!(!slice.domain.state().unwrap().requests[&alondra_core::domain::RequestId::from("sdk-slice-request")].closed);
+        slice.run(&user(), "reopen-after-preparation", Command::ReopenTask { task_id: TASK.into() });
+        assert_ne!(slice.domain.state().unwrap().pending_reopening(&TASK.into()), Some(input.as_str()));
+    }
+    let before_records = slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
+    let before_starts = slice.starts();
+    let result = start_bound(Arc::clone(&slice.domain), &slice.backend,
+        prepared_reopened_launch(&slice, "This stale reopening must not reach Claude"), capabilities(), None, Some(reopening));
+    let failure = match result {
+        Ok(mut unexpected) => {
+            unexpected.stop().unwrap();
+            panic!("the stale reopening admitted a new execution");
+        }
+        Err(failure) => failure,
+    };
+    assert!(failure.to_string().contains("reopening changed before admission"), "{failure}");
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.lifecycle_journal[&TaskId::from(TASK)], before_records, "revalidation must happen before staging an admission or input");
+    assert!(state.tasks[&TaskId::from(TASK)].agent_id.is_none());
+    assert_eq!(slice.starts(), before_starts, "no native process starts for the stale reopening");
+}
+
+#[test]
+fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_resume_retry() {
+    let slice = Slice::new();
+    let mut original = slice.launch();
+    slice.settle(&mut original);
+    let old_node = original.agent().clone();
+    let native = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap();
+    slice.run(&user(), "cancel-history-original", Command::CancelTask { task_id: TASK.into() });
+    original.stop().unwrap();
+    drop(original);
+    slice.run(&system(), "close-history-original", Command::RecordNodeEnd {
+        task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
+    });
+    let project: String = slice.worktree.to_string_lossy().chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
+    let witness = slice._home.join(".claude/projects").join(project).join(format!("{native}.jsonl"));
+    assert!(witness.is_file(), "the native fixture supplied its real-shaped history witness");
+    std::fs::remove_file(witness).unwrap();
+    std::fs::remove_file(format!("{}.transcript-{native}", slice.capture.display())).unwrap();
+    slice.run(&user(), "reopen-missing-history", Command::ReopenTask { task_id: TASK.into() });
+    let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
+    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), &slice.worktree, input, true).unwrap();
+    assert!(reopening.recovery.is_none(), "a retained session UUID cannot prove a missing native transcript");
+    let mission = "Publish the retained release scope after the previous native history disappeared.";
+    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend,
+        prepared_reopened_launch(&slice, mission), capabilities(), None, Some(reopening)).unwrap();
+    slice.settle(&mut replacement);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2, "the reopened task starts exactly one new native process");
+    assert_ne!(replacement.agent(), &old_node);
+    assert_ne!(starts[1]["session"].as_str(), Some(native.as_str()));
+    assert!(starts[1]["resume"].is_null(), "missing history is never offered to a failing resume");
+    assert_eq!(starts[1]["history"].as_u64(), Some(0));
+    assert_eq!(slice.prompts().iter().filter(|prompt| prompt.as_str() == mission).count(), 1);
+    assert!(slice.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
+    replacement.stop().unwrap();
+}
+
+#[test]
+fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_directory() {
+    let slice = Slice::new();
+    let mut original = slice.launch();
+    slice.settle(&mut original);
+    let old_node = original.agent().clone();
+    let native = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    slice.run(&user(), "cancel-directory-original", Command::CancelTask { task_id: TASK.into() });
+    original.stop().unwrap();
+    drop(original);
+    slice.run(&system(), "close-directory-original", Command::RecordNodeEnd {
+        task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
+    });
+    slice.run(&user(), "reopen-directory-original", Command::ReopenTask { task_id: TASK.into() });
+    let failed_workspace = slice._home.join("failed-reopening-workspace");
+    std::fs::create_dir(&failed_workspace).unwrap();
+    slice.domain.set_task_worktree(&TASK.into(), failed_workspace.to_str().unwrap()).unwrap();
+    assert_eq!(original_directory(&slice.domain, &TASK.into()).unwrap().as_deref(), slice.worktree.to_str(),
+        "only the admitted launch placement identifies the original native session's directory");
+    require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap();
+    assert!(require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), failed_workspace.to_str().unwrap()).is_err());
+    let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
+    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+        &AccountId::default_account(), &slice.worktree, input, true).unwrap();
+    assert!(reopening.recovery.is_some());
+    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend,
+        prepared_reopened_launch(&slice, "Continue in the original admission's directory"), capabilities(), None, Some(reopening)).unwrap();
+    slice.settle(&mut replacement);
+    let starts = slice.starts();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1]["resume"].as_str(), Some(native.as_str()));
+    assert_eq!(starts[1]["cwd"].as_str(), slice.worktree.to_str());
+    assert!(starts[1]["history"].as_u64().unwrap() > 0);
+    assert_ne!(replacement.agent(), &old_node);
+    replacement.stop().unwrap();
 }

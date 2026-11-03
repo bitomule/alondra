@@ -642,6 +642,15 @@ impl Native<'_> {
     fn input(&mut self, input: &str, text: &str) -> Result<()> {
         let received = Received { at: now_ms(), uuid: input.into(), text: text.into() };
         append(&self.dir.join("transcript.jsonl"), &json!(text))?;
+        let profile = ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"].into_iter()
+            .find_map(|key| std::env::var_os(key).filter(|value| !value.to_string_lossy().trim().is_empty()).map(PathBuf::from))
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
+            .context("the sandbox native Claude needs its fixture HOME")?;
+        let project: String = self.session.cwd.to_string_lossy().chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
+        append(&profile.join("projects").join(project).join(format!("{}.jsonl", self.session.session_id)), &json!({
+            "type": "user", "sessionId": self.session.session_id, "cwd": self.session.cwd, "uuid": input,
+            "message": {"role": "user", "content": text},
+        }))?;
         append(&self.dir.join("received.jsonl"), &serde_json::to_value(&received)?)?;
         let mission = std::mem::take(&mut self.fresh);
         if mission && self.session.task_id.is_none() {

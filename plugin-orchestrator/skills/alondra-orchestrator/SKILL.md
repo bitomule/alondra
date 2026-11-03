@@ -95,6 +95,16 @@ user follows tasks, not nodes.
     naming it. Never two tasks for the same red main.
   - When what you can see does not settle it, create the task: its node first reproduces the
     defect on a fresh main and ends the task itself if it no longer happens.
+- To reopen a Task with another provider or model, first use `update_launch_plan` while the Task
+  is terminal and its previous node has ended, changing only model, reasoning effort and reason
+  within the user's permissions. Then call `reopen_task`: it immediately queues those saved
+  choices with the mission and approved plan. Admission can start the node between calls, so
+  prepare the choices before reopening. Alondra recovers a verified native session only with
+  the same provider and account in its original directory, recreating that worktree when possible.
+  If the session cannot be proven, the original directory cannot be recovered, or the provider or account
+  changes, Alondra starts a new node with a clean session in that same launch attempt, carrying
+  the mission and approved plan. Native sessions never resume across different providers. You do
+  not need another Task or a separate launch to replace an unrecoverable session.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
   that do not need each other run in parallel. A dependency is a wait: the task starts, or its
   node goes on, once the others are done. It never holds back the merge of a PR the task already

@@ -18,6 +18,18 @@ def account_fixture():
     try:
         with open(path) as source: return json.load(source)
     except FileNotFoundError: return {}
+def thread_metadata(identity):
+    home = os.environ.get('CODEX_HOME') or os.path.join(os.environ['HOME'], '.codex')
+    return os.path.join(home, 'sessions', 'fake-thread-' + identity + '.json')
+def retained_thread(identity):
+    try:
+        with open(thread_metadata(identity)) as source: return json.load(source)
+    except FileNotFoundError: return {}
+def retain_thread(identity, cwd):
+    metadata = thread_metadata(identity)
+    os.makedirs(os.path.dirname(metadata), mode=0o700, exist_ok=True)
+    if not os.path.exists(metadata):
+        with open(metadata, 'w') as target: json.dump({'id': identity, 'cwd': cwd, 'path': os.path.join(os.path.dirname(metadata), 'fake-rollout-' + identity + '.jsonl')}, target)
 def account_read(fixture):
     return fixture.get('accountRead', {'account': {'type': 'chatgpt', 'email': 'first@example.test', 'planType': 'plus'}, 'requiresOpenaiAuth': True})
 def auth_status(fixture):
@@ -75,6 +87,9 @@ for line in sys.stdin:
     result = {}
     if method == 'config/read': result = fixture.get('configRead', {'config': {'mcp_servers': {name: {'command': '/untrusted'} for name in json.loads(os.environ.get('ALONDRA_FAKE_INHERITED_MCP_NAMES', '["inherited-danger"]'))}}})
     elif method in ['thread/start', 'thread/resume']:
+        if method == 'thread/start': thread = fixture.get('freshThreadId', thread)
+        else: thread = message.get('params', {}).get('threadId', thread)
+        retain_thread(thread, message.get('params', {}).get('cwd'))
         result = {'thread': {'id': thread}, 'model': message.get('params', {}).get('model') or 'fixture-model', 'modelProvider': 'openai'}
     elif method == 'account/read': result = account_read(fixture)
     elif method == 'getAuthStatus':
@@ -91,7 +106,9 @@ for line in sys.stdin:
     elif method == 'thread/turns/list': result = {'data': [{'id': child_turn, 'status': 'completed', 'items': []}], 'nextCursor': None}
     elif method == 'thread/read':
         requested = message.get('params', {}).get('threadId')
-        result = {'thread': {'id': requested, 'turns': []}}
+        retained = retained_thread(requested)
+        path = retained.get('path')
+        result = {'thread': {'id': requested, 'cwd': retained.get('cwd'), 'path': path if path and os.path.isfile(path) and not fixture.get('missingRollout') else None, 'turns': []}}
     elif method == 'mcpServerStatus/list':
         if fixture.get('exitMcpAfterFinal'):
             finish()
@@ -124,6 +141,10 @@ for line in sys.stdin:
             with open(fixture['turnResponseReady'], 'wb', buffering=0) as ready: ready.write(b'R')
             with open(fixture['turnResponseBarrier'], 'rb', buffering=0) as release: release.read(1)
         turn_mode = fixture.get('turnMode', mode)
+        retained = retained_thread(thread)
+        if retained.get('path') and not os.path.exists(retained['path']):
+            with open(retained['path'], 'w') as target:
+                target.write(json.dumps({'type': 'session_meta', 'payload': {'id': thread, 'cwd': retained.get('cwd')}}) + '\n')
         turn_number += 1
         turn = 'native-turn-' + str(turn_number)
         note('turn/started', {'threadId': thread, 'turn': {'id': turn, 'status': 'inProgress'}})

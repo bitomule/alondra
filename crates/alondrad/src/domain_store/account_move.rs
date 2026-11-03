@@ -126,6 +126,14 @@ impl DomainStore {
         ).optional()?)
     }
 
+    /// The launch placement of this admitted conversation, independent of later worktrees.
+    pub(crate) fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row(
+            "SELECT d.placement FROM lifecycle_dispatches d JOIN lifecycle_executions e ON e.task_id=d.task_id AND e.generation=d.generation WHERE e.task_id=?1 AND e.conversation_id=?2 AND d.kind='launch' AND d.placement_kind='local' ORDER BY d.id DESC LIMIT 1",
+            params![task.0, conversation], |row| row.get(0),
+        ).optional()?)
+    }
+
     /// The move did not happen: the task stays on its account's limit, for `why`.
     pub(crate) fn record_move_undone(&mut self, task: &TaskId, number: i64, why: &str) -> Result<()> {
         insert_step(&self.conn, task, number, Step::Undone, &json!({"why": why}))

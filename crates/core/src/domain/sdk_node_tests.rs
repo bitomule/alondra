@@ -2,13 +2,82 @@
 //! `node` and `tasks_in_progress`, the screens and the gate) counts its task the same, its phase
 //! never moves, and a pause the gate holds it in lives in its task's lifecycle.
 use super::lifecycle_cache_tests::{run, step, three_tasks, Step};
-use super::lifecycle_tests::{exec, must};
+use super::lifecycle_tests::{assert_aggregate_rules, exec, must, task, user, world};
 use super::*;
 use alondra_domain::{Capacity, LiveState};
 use proptest::prelude::*;
 
 const SDK: &str = "s-task";
 const NODE: &str = "c";
+
+#[test]
+fn only_a_closed_and_reopened_task_can_choose_a_new_native_provider_and_account() {
+    use crate::accounts::{AccountId, AccountKey, Provider};
+
+    let mut s = world();
+    task(&mut s, "planned", None);
+    assert_eq!(s.pending_reopening(&"planned".into()), None);
+    assert_eq!(s.pending_reopening(&"missing".into()), None);
+
+    let mut s = three_tasks();
+    let id = TaskId::from(SDK);
+    assert_eq!(s.pending_reopening(&id), None, "an active execution cannot use reopening's exception");
+    must(&mut s, user(), Command::CancelTask { task_id: id.clone() });
+    assert_eq!(s.pending_reopening(&id), None);
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: id.clone(), end: NodeEnd::Closed, agent_id: Some(NODE.into()) });
+    assert_eq!(s.pending_reopening(&id), None, "a closed task has not yet been reopened");
+    must(&mut s, user(), Command::ReopenTask { task_id: id.clone() });
+    let reopened = s.lifecycle_journal[&id].iter().rev().find_map(|record| match record {
+        LifecycleRecord::Reopened { input } => Some(input.as_str()),
+        _ => None,
+    }).unwrap();
+    assert_eq!(s.pending_reopening(&id), Some(reopened));
+    assert!(s.tasks[&id].agent_id.is_none());
+    assert_aggregate_rules(&s);
+
+    must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "fresh".into(), name: "Fresh".into(), at: 1 });
+    let account = AccountId::parse("work").unwrap();
+    let admit = |provider, account, instance: &str| Command::AdmitExecution {
+        provider, task_id: id.clone(), agent_id: "fresh".into(), conversation: "fresh-codex-conversation".into(),
+        instance: instance.into(), host: "sdk-host".into(), model: None, account, leaves_limit: None,
+    };
+    must(&mut s, Actor::System, admit(Provider::Codex, Some(account.clone()), "first"));
+    assert_eq!(s.tasks[&id].account_key(), AccountKey::new(Provider::Codex, account.clone()));
+    assert_eq!(s.tasks[&id].agent_id, Some("fresh".into()));
+    assert_eq!(s.pending_reopening(&id), None, "the first admission consumes the reopening");
+    for (provider, account) in [(Provider::Claude, Some(account)), (Provider::Codex, None)] {
+        let revision = s.revision;
+        let journal = s.lifecycle_journal.clone();
+        assert_eq!(exec(&mut s, Actor::System, admit(provider, account, "rejected")).unwrap_err().code, "active_account_immutable");
+        assert_eq!(s.revision, revision);
+        assert_eq!(s.lifecycle_journal, journal);
+        assert_eq!(s.pending_reopening(&id), None);
+    }
+    assert_aggregate_rules(&s);
+    must(&mut s, Actor::System, Command::ReleaseTask { task_id: id.clone(), reason: "The host ended".into() });
+    assert_eq!(s.pending_reopening(&id), None, "releasing the new execution cannot reuse the old reopening");
+    assert_eq!(exec(&mut s, Actor::System, admit(Provider::Claude, None, "after-release")).unwrap_err().code, "active_account_immutable");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn reopening_with_the_original_node_kept_cannot_change_its_native_session_account() {
+    use crate::accounts::Provider;
+
+    let mut s = three_tasks();
+    let id = TaskId::from(SDK);
+    must(&mut s, user(), Command::CancelTask { task_id: id.clone() });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: id.clone(), end: NodeEnd::KeptByUser, agent_id: Some(NODE.into()) });
+    must(&mut s, user(), Command::ReopenTask { task_id: id.clone() });
+    assert_eq!(s.pending_reopening(&id), None);
+    assert_eq!(s.tasks[&id].agent_id, Some(NODE.into()));
+    assert!(s.tasks[&id].started);
+    assert_eq!(exec(&mut s, Actor::System, Command::AdmitExecution {
+        provider: Provider::Codex, task_id: id, agent_id: NODE.into(), conversation: "other-conversation".into(),
+        instance: "other-instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,
+    }).unwrap_err().code, "active_account_immutable");
+    assert_aggregate_rules(&s);
+}
 
 #[derive(Clone, Debug)]
 enum Act {

@@ -1095,6 +1095,20 @@ impl Task {
 }
 
 impl DomainState {
+    /// The first execution after this reopening has not been admitted yet.
+    pub fn pending_reopening(&self, task: &TaskId) -> Option<&str> {
+        let task_state = self.tasks.get(task)?;
+        if task_state.started || task_state.agent_id.is_some()
+            || !matches!(task_state.state, TaskState::NotStarted | TaskState::WaitingDependency) {
+            return None;
+        }
+        self.lifecycle_journal.get(task)?.iter().rev().find_map(|record| match record {
+            LifecycleRecord::Reopened { input } => Some(Some(input.as_str())),
+            LifecycleRecord::Admitted { .. } => Some(None),
+            _ => None,
+        }).flatten()
+    }
+
     /// The input a task waits with, named after the revision that queued it: an identity of
     /// Alondra's own, never one of the SDK's.
     pub(super) fn next_input(&self, task: &TaskId) -> String {

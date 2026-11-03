@@ -72,6 +72,117 @@ pub async fn recovery_directory_matches(cwd: &Path, original: &Path) -> bool {
         && relative(cwd, Path::new(&top)) == relative(original, Path::new(&original_top))
 }
 
+/// A reopened task recovers only a demonstrated original folder. An unusable native folder
+/// starts a fresh session in a separate worktree, leaving the old path untouched.
+pub async fn reopen(cwd: &Path, slug: &str, original: &Path, pr_head: Option<&str>) -> Result<(Workplace, bool), String> {
+    let location = reopen_location(cwd, slug, original).await;
+    if normal_absolute(original) && without_links(original) && original.is_dir() {
+        let direct = recovery_directory_matches(cwd, original).await;
+        let managed = if let Some(location) = &location {
+            recovery_directory_matches(&location.top, &location.worktree).await
+        } else { false };
+        if direct || managed {
+            let launch_cwd = if direct { cwd } else { original }.canonicalize()
+                .map_err(|why| format!("Could not resolve the launch folder {}: {why}", cwd.display()))?;
+            let original_top = git(original, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await;
+            let known = original_top.as_deref().map(Path::new).unwrap_or(original);
+            let workplace = isolate(&launch_cwd, slug, Some(known), pr_head).await?;
+            if same_dir(workplace.dir(), original) {
+                return Ok((workplace, true));
+            }
+        }
+    }
+    if let Some(ReopenLocation { top, worktree, inside }) = &location {
+        let task_branch = format!("worktree-{}", worktree.file_name().and_then(|name| name.to_str()).expect("managed task folder"));
+        let branch = if git(top, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{task_branch}")]).await.is_some() {
+            Some(task_branch.as_str())
+        } else if let Some(head) = pr_head
+            && git(top, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{head}")]).await.is_some() {
+            Some(head)
+        } else { None };
+        if std::fs::symlink_metadata(worktree).is_err() && without_links(worktree)
+            && let Some(branch) = branch {
+            let _ = git(top, &["worktree", "prune"]).await;
+            if let Some(path) = worktree.to_str()
+                && run(top, &["worktree", "add", "--quiet", path, branch]).await.is_ok() {
+                include_ignored(top, worktree).await;
+                let restored = within(worktree.clone(), inside);
+                if restored.is_dir() && without_links(&restored)
+                    && recovery_directory_matches(top, worktree).await {
+                    return Ok((Workplace::Made(restored), true));
+                }
+            }
+        }
+    }
+    let base = location.as_ref().map(|location| location.top.clone()).unwrap_or_else(|| cwd.to_path_buf());
+    if !normal_absolute(&base) || !without_links(&base) {
+        return Err(format!("The launch folder {} contains a symbolic link or is not an absolute directory", base.display()));
+    }
+    if !base.is_dir() {
+        return Err(format!("The launch folder {} no longer exists", base.display()));
+    }
+    if let Some(top) = git(&base, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await
+        && main_checkout(Path::new(&top)) && !without_links(&Path::new(&top).join(".claude/worktrees")) {
+        return Err("The managed worktree folder contains a symbolic link".into());
+    }
+    isolate(&base, &format!("{slug}-reopened-{}", crate::auth::random_hex(4)), None, None).await.map(|workplace| (workplace, false))
+}
+
+struct ReopenLocation {
+    top: PathBuf,
+    worktree: PathBuf,
+    inside: PathBuf,
+}
+
+fn managed_reopen_location(path: &Path, slug: &str) -> Option<ReopenLocation> {
+    if slug.is_empty() || slug != self::slug(slug) || !normal_absolute(path) { return None; }
+    for root in path.ancestors() {
+        let managed = root.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+            name == slug || name.strip_prefix(&format!("{slug}-reopened-")).is_some_and(|suffix|
+                suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        });
+        if !managed
+            || root.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("worktrees"))
+            || root.parent().and_then(Path::parent).and_then(Path::file_name) != Some(std::ffi::OsStr::new(".claude")) { continue; }
+        let top = root.parent()?.parent()?.parent()?;
+        return Some(ReopenLocation { top: top.to_path_buf(), worktree: root.to_path_buf(), inside: path.strip_prefix(root).ok()?.to_path_buf() });
+    }
+    None
+}
+
+async fn reopen_location(cwd: &Path, slug: &str, original: &Path) -> Option<ReopenLocation> {
+    let location = managed_reopen_location(original, slug)?;
+    if !without_links(&location.top) || !main_checkout(&location.top) { return None; }
+    let actual = git(&location.top, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await?;
+    if !same_dir(Path::new(&actual), &location.top) { return None; }
+    if let Some(plan) = managed_reopen_location(cwd, slug)
+        && same_dir(&plan.top, &location.top) {
+        return Some(location);
+    }
+    if let Some(top) = git(cwd, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await {
+        let top = PathBuf::from(top);
+        if !without_links(&top) { return None; }
+        let (Some(git_dir), Some(common)) = (
+            git(cwd, &["rev-parse", "--path-format=absolute", "--git-dir"]).await,
+            git(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await,
+        ) else { return None; };
+        if !same_dir(Path::new(&git_dir), Path::new(&common)) { return None; }
+        return same_dir(&top, &location.top).then_some(location);
+    }
+    None
+}
+
+fn normal_absolute(path: &Path) -> bool {
+    path.is_absolute() && path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)))
+}
+
+fn without_links(path: &Path) -> bool {
+    path.ancestors().all(|parent| match std::fs::symlink_metadata(parent) {
+        Ok(meta) => !meta.file_type().is_symlink(),
+        Err(why) => why.kind() == std::io::ErrorKind::NotFound,
+    })
+}
+
 async fn choose(cwd: &Path, slug: &str, known: Option<&Path>, pr_head: Option<&str>) -> Result<Workplace, String> {
     let given = || Ok(Workplace::Given(cwd.to_path_buf()));
     let Some(top) = git(cwd, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await else { return given() };
@@ -279,6 +390,335 @@ mod tests {
         sh(&repo, &["push", "-q", "origin", "HEAD:main"]);
         sh(&repo, &["remote", "set-head", "origin", "main"]);
         (root, repo)
+    }
+
+    #[tokio::test]
+    async fn a_second_reopening_recovers_the_exact_fallback_directory_branch_and_subfolder() {
+        for subfolder in ["", "crates"] {
+            let (_root, repo) = repository("reopen-again");
+            if !subfolder.is_empty() {
+                std::fs::create_dir(repo.join(subfolder)).unwrap();
+                publish(&repo, &[("crates/keep", "keep")]);
+            }
+            let standard = isolate(&repo, "t-again", None, None).await.unwrap().dir().to_path_buf();
+            sh(&repo, &["worktree", "remove", standard.to_str().unwrap()]);
+            sh(&repo, &["branch", "-D", "worktree-t-again"]);
+            let plan = within(standard.clone(), Path::new(subfolder));
+            let (first, recovered) = reopen(&plan, "t-again", &plan, None).await.unwrap();
+            assert!(!recovered);
+            let fallback = first.dir().to_path_buf();
+            let branch = sh(&fallback, &["branch", "--show-current"]);
+            sh(&fallback, &["commit", "-q", "--allow-empty", "-m", "work from the first reopening"]);
+            let head = sh(&fallback, &["rev-parse", "HEAD"]);
+            let original = within(fallback.clone(), Path::new(subfolder));
+            let (existing, recovered) = reopen(&plan, "t-again", &original, None).await.unwrap();
+            assert!(recovered, "the retained plan may name the deleted standard worktree");
+            assert_eq!(existing.dir(), original);
+            sh(&repo, &["worktree", "remove", fallback.to_str().unwrap()]);
+            let (second, recovered) = reopen(&plan, "t-again", &original, None).await.unwrap();
+            assert!(recovered);
+            assert_eq!(second.dir(), original);
+            assert!(original.is_dir());
+            assert_eq!(sh(&original, &["branch", "--show-current"]), branch);
+            assert_eq!(sh(&original, &["rev-parse", "HEAD"]), head);
+            assert!(!standard.exists());
+            sh(&repo, &["worktree", "remove", fallback.to_str().unwrap()]);
+            let (from_main, recovered) = reopen(&repo, "t-again", &original, None).await.unwrap();
+            assert!(recovered, "the same original suffix is recoverable when the plan names main");
+            assert_eq!(from_main.dir(), original);
+        }
+    }
+
+    #[tokio::test]
+    async fn losing_a_fallback_branch_still_allows_the_next_reopening_with_a_deleted_plan_directory() {
+        let (_root, repo) = repository("reopen-lost-again");
+        let standard = isolate(&repo, "t-again", None, None).await.unwrap().dir().to_path_buf();
+        sh(&repo, &["worktree", "remove", standard.to_str().unwrap()]);
+        sh(&repo, &["branch", "-D", "worktree-t-again"]);
+        let (first, recovered) = reopen(&standard, "t-again", &standard, None).await.unwrap();
+        assert!(!recovered);
+        let first = first.dir().to_path_buf();
+        let branch = sh(&first, &["branch", "--show-current"]);
+        sh(&repo, &["worktree", "remove", first.to_str().unwrap()]);
+        sh(&repo, &["branch", "-D", &branch]);
+        let (second, recovered) = reopen(&standard, "t-again", &first, None).await.unwrap();
+        assert!(!recovered);
+        assert!(matches!(second, Workplace::Made(_)));
+        assert!(second.dir().join(".git").is_file());
+        assert_ne!(second.dir(), first);
+        assert!(!standard.exists());
+        assert!(!first.exists());
+    }
+
+    #[tokio::test]
+    async fn reopening_never_restores_a_matching_task_suffix_in_another_repository() {
+        let (_left, left) = repository("reopen-left");
+        let (_right, right) = repository("reopen-right");
+        let plan = left.join(".claude/worktrees/t-again");
+        let original = right.join(".claude/worktrees/t-again-reopened-deadbeef");
+        sh(&right, &["branch", "worktree-t-again-reopened-deadbeef"]);
+        assert!(reopen(&plan, "t-again", &original, None).await.is_err());
+        assert!(!original.exists());
+        assert!(!plan.exists());
+        assert_eq!(sh(&right, &["worktree", "list", "--porcelain"]).lines().filter(|line| line.starts_with("worktree ")).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn only_the_exact_generated_suffix_is_a_recoverable_managed_task_directory() {
+        let (_root, repo) = repository("reopen-suffix");
+        let plan = repo.join(".claude/worktrees/t-again");
+        for name in ["t-again-reopened-abcdefg", "t-again-reopened-123456789", "t-again-reopened-deadbeef-extra", "t-again-reopened-DEADBEEF", "t-again-other-deadbeef"] {
+            let original = repo.join(".claude/worktrees").join(name);
+            sh(&repo, &["branch", &format!("worktree-{name}")]);
+            assert!(reopen(&plan, "t-again", &original, None).await.is_err(), "{name} must not prove the original managed path");
+            assert!(!original.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fallback_suffix_collision_or_link_is_left_untouched_when_reopening_again() {
+        let (root, repo) = repository("reopen-suffix-occupied");
+        let plan = repo.join(".claude/worktrees/t-again");
+        let original = repo.join(".claude/worktrees/t-again-reopened-deadbeef");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::write(original.join("sentinel"), "untouched").unwrap();
+        sh(&repo, &["branch", "worktree-t-again-reopened-deadbeef"]);
+        let (fresh, recovered) = reopen(&plan, "t-again", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert!(fresh.dir().join(".git").is_file());
+        assert_ne!(fresh.dir(), original);
+        assert_eq!(std::fs::read_to_string(original.join("sentinel")).unwrap(), "untouched");
+        let target = root.join("foreign");
+        std::fs::rename(&original, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &original).unwrap();
+        let (fresh, recovered) = reopen(&plan, "t-again", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert!(fresh.dir().join(".git").is_file());
+        assert_ne!(fresh.dir(), original);
+        assert_eq!(std::fs::read_to_string(target.join("sentinel")).unwrap(), "untouched");
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+        assert!(std::fs::symlink_metadata(&original).unwrap().file_type().is_symlink());
+    }
+
+    #[tokio::test]
+    async fn reopening_from_an_alias_of_main_recovers_the_canonical_original_worktree() {
+        let (root, repo) = repository("reopen-main-alias");
+        let original = isolate(&repo, "t-alias", None, None).await.unwrap().dir().to_path_buf();
+        let alias = root.join("main-alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+        let (workplace, recovered) = reopen(&alias, "t-alias", &original, None).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace.dir(), original);
+        assert!(without_links(workplace.dir()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reopening_from_the_system_temporary_folder_alias_recovers_the_canonical_directory() {
+        let (_root, repo) = repository("reopen-system-alias");
+        let original = isolate(&repo, "t-system", None, None).await.unwrap().dir().to_path_buf();
+        let alias = [("/private/tmp", "/tmp"), ("/private/var", "/var")].into_iter().find_map(|(canonical, alias)| {
+            repo.strip_prefix(canonical).ok().map(|inside| Path::new(alias).join(inside))
+        });
+        if let Some(alias) = alias {
+            let (workplace, recovered) = reopen(&alias, "t-system", &original, None).await.unwrap();
+            assert!(recovered);
+            assert_eq!(workplace.dir(), original);
+            assert!(without_links(workplace.dir()));
+        }
+    }
+
+    #[tokio::test]
+    async fn reopening_an_alias_of_the_original_worktree_returns_its_canonical_directory() {
+        let (root, repo) = repository("reopen-original-alias");
+        let original = isolate(&repo, "t-alias", None, None).await.unwrap().dir().to_path_buf();
+        let alias = root.join("worktree-alias");
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let (workplace, recovered) = reopen(&alias, "t-alias", &original, None).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace.dir(), original);
+        assert!(without_links(workplace.dir()));
+    }
+
+    #[tokio::test]
+    async fn reopening_a_lost_subfolder_falls_back_to_a_fresh_checkout_root() {
+        let (_root, repo) = repository("reopen-lost-subfolder");
+        let worktree = isolate(&repo, "t-sub", None, None).await.unwrap().dir().to_path_buf();
+        let original = worktree.join("only-on-task");
+        std::fs::create_dir(&original).unwrap();
+        std::fs::write(original.join("keep"), "work").unwrap();
+        sh(&worktree, &["add", "."]);
+        sh(&worktree, &["commit", "-q", "-m", "task folder"]);
+        sh(&repo, &["worktree", "remove", worktree.to_str().unwrap()]);
+        sh(&repo, &["branch", "-D", "worktree-t-sub"]);
+        let (workplace, recovered) = reopen(&original, "t-sub", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert!(workplace.dir().is_dir());
+        assert!(workplace.dir().join(".git").is_file());
+        assert!(!workplace.dir().join("only-on-task").exists());
+        assert!(workplace.dir().starts_with(repo.join(".claude/worktrees")));
+    }
+
+    #[tokio::test]
+    async fn reopening_an_existing_given_folder_does_not_take_ownership_of_it() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&root).unwrap();
+        let (workplace, recovered) = reopen(&root, "t-given", &root, None).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace, Workplace::Given(root.to_path_buf()));
+        assert!(workplace.chosen().is_none());
+    }
+
+    #[tokio::test]
+    async fn reopening_an_existing_custom_worktree_subfolder_keeps_that_exact_path() {
+        let (_root, repo) = repository("reopen-custom-subfolder");
+        std::fs::create_dir(repo.join("crates")).unwrap();
+        publish(&repo, &[("crates/keep", "keep")]);
+        let custom = repo.join(".claude/worktrees/custom");
+        sh(&repo, &["worktree", "add", "-q", "-b", "custom", custom.to_str().unwrap()]);
+        let original = custom.join("crates");
+        let (workplace, recovered) = reopen(&repo.join("crates"), "t-other", &original, None).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace.dir(), original);
+        assert!(!repo.join(".claude/worktrees/t-other").exists());
+    }
+
+    #[tokio::test]
+    async fn reopening_reconstructs_the_exact_original_directory_with_its_retained_commits() {
+        let (_root, repo) = repository("reopen");
+        let original = isolate(&repo, "t-reopen", None, None).await.unwrap().dir().to_path_buf();
+        sh(&original, &["commit", "-q", "--allow-empty", "-m", "approved work"]);
+        let head = sh(&original, &["rev-parse", "HEAD"]);
+        sh(&repo, &["worktree", "remove", original.to_str().unwrap()]);
+        let (workplace, recovered) = reopen(&repo, "t-reopen", &original, Some(&head)).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace, Workplace::Made(original.clone()));
+        assert_eq!(sh(&original, &["rev-parse", "HEAD"]), head);
+    }
+
+    #[tokio::test]
+    async fn reopening_a_plan_that_names_its_deleted_worktree_finds_the_main_checkout() {
+        let (_root, repo) = repository("reopen-plan");
+        publish(&repo, &[("nested", "keep")]);
+        let original = isolate(&repo, "t-plan", None, None).await.unwrap().dir().to_path_buf();
+        sh(&repo, &["worktree", "remove", original.to_str().unwrap()]);
+        let (workplace, recovered) = reopen(&original, "t-plan", &original, None).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace.dir(), original);
+    }
+
+    #[tokio::test]
+    async fn reopening_a_subfolder_reconstructs_the_same_relative_directory() {
+        let (_root, repo) = repository("reopen-subfolder");
+        std::fs::create_dir(repo.join("crates")).unwrap();
+        publish(&repo, &[("crates/keep", "keep")]);
+        let original = isolate(&repo.join("crates"), "t-sub", None, None).await.unwrap().dir().to_path_buf();
+        sh(&repo, &["worktree", "remove", original.parent().unwrap().to_str().unwrap()]);
+        let (workplace, recovered) = reopen(&original, "t-sub", &original, None).await.unwrap();
+        assert!(recovered);
+        assert_eq!(workplace.dir(), original);
+    }
+
+    #[tokio::test]
+    async fn reopening_without_the_original_branch_starts_fresh_in_another_directory() {
+        let (_root, repo) = repository("reopen-lost-branch");
+        let original = isolate(&repo, "t-lost", None, None).await.unwrap().dir().to_path_buf();
+        sh(&repo, &["worktree", "remove", original.to_str().unwrap()]);
+        sh(&repo, &["branch", "-D", "worktree-t-lost"]);
+        let (workplace, recovered) = reopen(&repo, "t-lost", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert_ne!(workplace.dir(), original);
+        assert!(workplace.dir().is_dir());
+        assert!(!original.exists());
+    }
+
+    #[tokio::test]
+    async fn reopening_never_reconstructs_an_arbitrary_directory_or_overwrites_a_collision() {
+        let (root, repo) = repository("reopen-foreign");
+        sh(&repo, &["branch", "worktree-t-foreign"]);
+        let foreign = root.join("foreign");
+        let (_, recovered) = reopen(&repo, "t-foreign", &foreign, None).await.unwrap();
+        assert!(!recovered);
+        assert!(!foreign.exists());
+        let occupied = repo.join(".claude/worktrees/t-foreign");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("keep"), "untouched").unwrap();
+        let (workplace, recovered) = reopen(&repo, "t-foreign", &occupied, None).await.unwrap();
+        assert!(!recovered);
+        assert_ne!(workplace.dir(), occupied);
+        assert_eq!(std::fs::read_to_string(occupied.join("keep")).unwrap(), "untouched");
+        let (workplace, recovered) = reopen(&occupied, "t-foreign", &occupied, None).await.unwrap();
+        assert!(!recovered);
+        assert!(matches!(workplace, Workplace::Made(_)));
+        assert!(workplace.dir().is_dir());
+        assert_ne!(workplace.dir(), occupied);
+        assert_eq!(std::fs::read_to_string(occupied.join("keep")).unwrap(), "untouched");
+        assert_eq!(std::fs::read_dir(&occupied).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn reopening_never_recovers_a_symbolic_link_as_the_original_worktree() {
+        let (_root, repo) = repository("reopen-link");
+        let original = isolate(&repo, "t-link", None, None).await.unwrap().dir().to_path_buf();
+        let other = repo.join(".claude/worktrees/other");
+        sh(&repo, &["worktree", "move", original.to_str().unwrap(), other.to_str().unwrap()]);
+        std::os::unix::fs::symlink(&other, &original).unwrap();
+        let (workplace, recovered) = reopen(&repo, "t-link", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert_ne!(workplace.dir(), original);
+        assert!(std::fs::symlink_metadata(&original).unwrap().file_type().is_symlink());
+    }
+
+    #[tokio::test]
+    async fn reopening_a_plan_naming_a_linked_worktree_alias_uses_the_verified_main_checkout() {
+        let (_root, repo) = repository("reopen-plan-link");
+        let original = isolate(&repo, "t-alias", None, None).await.unwrap().dir().to_path_buf();
+        let other = repo.join(".claude/worktrees/other");
+        sh(&repo, &["worktree", "move", original.to_str().unwrap(), other.to_str().unwrap()]);
+        std::fs::write(other.join("sentinel"), "untouched").unwrap();
+        let head = sh(&other, &["rev-parse", "HEAD"]);
+        std::os::unix::fs::symlink(&other, &original).unwrap();
+        let (workplace, recovered) = reopen(&original, "t-alias", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert!(matches!(workplace, Workplace::Made(_)));
+        assert_ne!(workplace.dir(), original);
+        assert_ne!(workplace.dir(), other);
+        assert_eq!(sh(&other, &["rev-parse", "HEAD"]), head);
+        assert_eq!(std::fs::read_to_string(other.join("sentinel")).unwrap(), "untouched");
+        assert_eq!(sh(&other, &["status", "--porcelain"]), "?? sentinel");
+    }
+
+    #[tokio::test]
+    async fn reopening_a_plan_naming_a_plain_folder_alias_never_launches_in_its_target() {
+        let (root, repo) = repository("reopen-plain-alias");
+        let other = root.join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("sentinel"), "untouched").unwrap();
+        let original = repo.join(".claude/worktrees/t-alias");
+        std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&other, &original).unwrap();
+        let (workplace, recovered) = reopen(&original, "t-alias", &original, None).await.unwrap();
+        assert!(!recovered);
+        assert!(matches!(workplace, Workplace::Made(_)));
+        assert_ne!(workplace.dir(), original);
+        assert_eq!(std::fs::read_to_string(other.join("sentinel")).unwrap(), "untouched");
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 1);
+        let arbitrary_alias = root.join("alias");
+        std::os::unix::fs::symlink(&other, &arbitrary_alias).unwrap();
+        assert!(reopen(&arbitrary_alias, "t-alias", &arbitrary_alias, None).await.is_err());
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn reopening_never_launches_through_an_ancestor_alias() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(root.join("other/inner")).unwrap();
+        std::fs::write(root.join("other/inner/sentinel"), "untouched").unwrap();
+        std::os::unix::fs::symlink(root.join("other"), root.join("alias")).unwrap();
+        let cwd = root.join("alias/inner");
+        assert!(reopen(&cwd, "t-alias", &cwd, None).await.is_err());
+        assert_eq!(std::fs::read_to_string(root.join("other/inner/sentinel")).unwrap(), "untouched");
+        assert_eq!(std::fs::read_dir(root.join("other/inner")).unwrap().count(), 1);
     }
 
     #[tokio::test]

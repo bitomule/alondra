@@ -4711,7 +4711,7 @@ impl DomainState {
                 }
                 let task=self.task(task_id)?;
                 let previously_admitted=self.lifecycle_journal.get(task_id).is_some_and(|records|records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{execution:Some(_),..}|LifecycleRecord::ResourceAvailable)));
-                if previously_admitted || task.started {
+                if (previously_admitted || task.started) && self.pending_reopening(task_id).is_none() {
                     let target=crate::accounts::AccountKey::new(*provider,account.clone().unwrap_or_else(crate::accounts::AccountId::default_account));
                     if target!=task.account_key(){return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
                 }

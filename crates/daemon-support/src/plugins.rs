@@ -55,6 +55,8 @@ pub fn node() -> Option<PathBuf> {
 
 /// The node plugin this daemon installed, else the copy in `home` an earlier start left.
 pub fn node_in(home: &Path) -> Option<PathBuf> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if home.join(NODE).is_dir() { return Some(home.join(NODE)); }
     node().or_else(|| Some(home.join(NODE)).filter(|plugin| plugin.is_dir()))
 }
 

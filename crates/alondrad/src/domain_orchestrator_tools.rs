@@ -370,7 +370,7 @@ pub(crate) fn ambiguous_model(model: &str, offering: &[alondra_core::accounts::P
     DomainError::new("invalid_input", format!("“{model}” is offered by {}: name it {}", names.join(" and "), qualified.join(" or ")))
 }
 
-fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domain::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool)
+fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domain::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
     -> Result<Option<(alondra_core::options::Resolved, alondra_core::accounts::AccountKey, String)>, DomainError>
 {
     use alondra_core::accounts::Provider;
@@ -407,12 +407,12 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
         initial.requested_reasoning_effort = Some(effort.clone());
     }
     if initial.requested.is_none() && initial.requested_reasoning_effort.is_some() { return Err(DomainError::new("invalid_input", "Choose a model before its native reasoning effort")); }
-    let active = (prior_native || task.selection.as_ref().and_then(|selection| selection.effective.as_ref()).is_some()).then(||task.account_key());
+    let active = (!reopening && (prior_native || task.selection.as_ref().and_then(|selection| selection.effective.as_ref()).is_some())).then(||task.account_key());
     let denied_tools = domain.schedule_request_tools(&task.request_id).map_err(|why| DomainError::new("storage_unavailable", why.to_string()))?.unwrap_or_default();
     validate_native_requirements(Some(&initial), &denied_tools)?;
     let decision = crate::accounts::select_for_node_with_tools(domain, home, &initial, active.as_ref(),
         body.provider.filter(|_| denied_tools.is_empty()), &denied_tools, alondra_core::now_millis())?;
-    if let Some(current) = task.selection.as_ref().and_then(|selection| selection.effective.as_ref())
+    if !reopening && let Some(current) = task.selection.as_ref().and_then(|selection| selection.effective.as_ref())
         && (task.account_key() != decision.account || current.model != decision.selection.model || current.reasoning_effort != decision.selection.reasoning_effort)
     { return Err(DomainError::new("selection_transition_required", "Continue this task through its durable model or account transition so its retained history is carried safely")); }
     intent.effective = Some(decision.selection.clone());
@@ -443,8 +443,9 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-    let prior_native = task.started || current.lifecycle_journal.get(&task.id).is_some_and(|records|records.iter()
-        .any(|record|matches!(record,alondra_core::domain::LifecycleRecord::Admitted{execution:Some(_),..}|alondra_core::domain::LifecycleRecord::ResourceAvailable)));
+    let reopening = current.pending_reopening(&task.id).map(str::to_owned);
+    let prior_native = reopening.is_none() && (task.started || current.lifecycle_journal.get(&task.id).is_some_and(|records|records.iter()
+        .any(|record|matches!(record,alondra_core::domain::LifecycleRecord::Admitted{execution:Some(_),..}|alondra_core::domain::LifecycleRecord::ResourceAvailable))));
     let mut assigned_before = task.agent_id.clone();
     let replaced = match (&assigned_before, body.replace) {
         (Some(old), true) => Some(old.clone()),
@@ -485,12 +486,16 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
     let requested = match &choices {
         Some(choices) => choices.options.clone(),
-        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&cwd)).as_deref(), None),
+        None => {
+            let project = reopening.as_ref().and_then(|_| plan.as_ref().and_then(|plan| plan.project.clone()))
+                .or_else(|| crate::options::project_of(&file, Path::new(&cwd)));
+            file.orchestrator_defaults(project.as_deref(), None)
+        }
     };
     if prior_native && (requested.account_key().is_some_and(|account|account!=task.account_key()) || body.provider.is_some_and(|provider|provider!=task.provider)) {
         return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
     }
-    let native = native_launch(domain, home, task, &requested, &file, &body, prior_native)?;
+    let native = native_launch(domain, home, task, &requested, &file, &body, prior_native, reopening.is_some())?;
     let provider = native.as_ref().map_or(alondra_core::accounts::Provider::Claude, |(_, account, _)| account.provider);
     let pinned = choices.as_ref().and_then(|choices| pinned_account(home, &choices.options));
     let account = match (&native, &pinned) {
@@ -513,7 +518,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             "{why} until {}: {} stays as it is and can be launched after that",
             crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false), body.task)));
     }
-    if !Path::new(&cwd).is_dir() {
+    if reopening.is_none() && !Path::new(&cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
     if let Some(why) = domain.live.machine_watch.refuse_launch(Path::new(&cwd)) {
@@ -526,7 +531,11 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let account = account.unwrap_or_else(alondra_core::accounts::AccountId::default_account);
     let key = alondra_core::accounts::AccountKey::new(provider, account.clone());
-    let known = domain.task_worktree(&task.id).ok().flatten().map(PathBuf::from);
+    let known = if reopening.is_some() {
+        crate::sdk_owner::original_directory(domain, &task.id)
+            .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?
+            .or(domain.task_worktree(&task.id).map_err(plan_storage)?)
+    } else { domain.task_worktree(&task.id).map_err(plan_storage)? }.map(PathBuf::from);
     if prior_native {
         let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
         let original_directory = known.clone().unwrap_or_else(|| PathBuf::from(&cwd));
@@ -543,8 +552,17 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
     let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
-    let workplace = crate::launch_worktree::isolate(Path::new(&cwd), &crate::launch_worktree::slug(&task.id.0), known.as_deref(), pr_head).await
-        .map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
+    let slug = crate::launch_worktree::slug(&task.id.0);
+    let (workplace, recover_directory) = if reopening.is_some() {
+        crate::launch_worktree::reopen(Path::new(&cwd), &slug, known.as_deref().unwrap_or_else(|| Path::new(&cwd)), pr_head).await
+    } else {
+        crate::launch_worktree::isolate(Path::new(&cwd), &slug, known.as_deref(), pr_head).await.map(|workplace| (workplace, false))
+    }.map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
+    let reopening = reopening.map(|input| {
+        let (backend, _) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
+        crate::sdk_owner::prepare_reopening(domain, backend, &task.id, provider, &account, workplace.dir(), input, recover_directory)
+            .map_err(|error| DomainError::new("native_session_required", error.to_string()))
+    }).transpose()?;
     if prior_native {
         let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
         crate::sdk_owner::require_recoverable_session(&runtime, backend, &task.id, provider, &account, workplace.dir().to_string_lossy().as_ref())
@@ -634,8 +652,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),
         };
         let name = body.title.clone().unwrap_or(name);
-        let launched = crate::sdk_owner::launch(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
-            model: resolved.launch_model(), account })
+        let launched = crate::sdk_owner::launch_prepared(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
+            model: resolved.launch_model(), account }, reopening)
             .await
             .map_err(|error| match &replaced {
                 Some(_) => DomainError { message: format!("{} The node it replaced was stopped, so “{}” ({}) has no node now: start one with launch (task {}), without replace.",
@@ -678,7 +696,7 @@ pub(crate) async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplac
     if !state.tasks.get(task).is_some_and(|ended| ended.state.terminal()) {
         return Ok(());
     }
-    match crate::worktree::release_task_worktree(dir, &crate::launch_worktree::slug(&task.0), true).await {
+    match crate::worktree::release_recorded_worktree(dir, false).await {
         Ok(crate::worktree::TaskWorktree::Unsaved(left)) => log!("the worktree of {task}, which ended while it started, is kept: {left}"),
         Ok(_) => {}
         Err(why) => log!("could not delete the worktree of {task}, which ended while it started: {why}"),
@@ -927,13 +945,13 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
     clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "").text
 }
 
-/// The plan the user approved on another task (a report's plan, or a plan it held), which this
-/// task implements: whole, with the points that are this task's when the plan is in phases.
+/// The approved plan this node needs to implement, including its predecessor's own plan when
+/// the task reopens, with only this task's points assigned when the plan is in phases.
 fn approved_plan(state: &DomainState, task: &alondra_core::domain::Task) -> String {
     use alondra_core::domain::{checklist_items, InteractionPayload, Scope};
     let Some(checklist) = state.checklists.get(&task.id) else { return String::new() };
     let Some(source) = state.interactions.get(&checklist.plan) else { return String::new() };
-    if source.scope == (Scope::Task { task_id: task.id.clone() }) {
+    if source.scope == (Scope::Task { task_id: task.id.clone() }) && state.pending_reopening(&task.id).is_none() {
         return String::new();
     }
     let plan = match &source.payload {
@@ -1107,16 +1125,30 @@ pub(crate) fn update_launch_plan(domain: &DomainRuntime, home: &Path, body: Upda
 
 fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -> Result<&'a alondra_core::domain::Task, DomainError> {
     let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-    if task.over() || task.archived {
+    if task.archived {
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
     }
     if let Some(why) = crate::plan_reviews::held(state, task_id) {
         return Err(DomainError::new("plan_review_pending", format!(
             "{why}. Use settle_plan_review with the plan_changed outcome: launch-plan changes cannot bypass a plan review")));
     }
+    if task.state.terminal() {
+        if !state.requests.get(&task.request_id).is_some_and(|request| !request.closed) {
+            return Err(DomainError::new("task_not_active", "Open Request required to prepare a task for reopening"));
+        }
+        let ended = matches!(task.wrap_up.node, Some(alondra_core::domain::NodeEnd::Closed | alondra_core::domain::NodeEnd::Gone))
+            || (task.agent_id.is_none() && task.wrap_up.node.is_none());
+        if task.ending.is_some() || !ended {
+            return Err(DomainError::new("conflict", "The previous node must have ended before preparing this task's next launch choices"));
+        }
+        return Ok(task);
+    }
+    if task.over() {
+        return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
+    }
     let prior_native = state.lifecycle_journal.get(task_id).is_some_and(|records| records.iter().any(|record| matches!(record,
         alondra_core::domain::LifecycleRecord::Admitted { execution: Some(_), .. } | alondra_core::domain::LifecycleRecord::ResourceAvailable)));
-    if !matches!(task.state, alondra_core::domain::TaskState::NotStarted | alondra_core::domain::TaskState::WaitingDependency) || task.started || task.agent_id.is_some() || launched || prior_native {
+    if !matches!(task.state, alondra_core::domain::TaskState::NotStarted | alondra_core::domain::TaskState::WaitingDependency) || task.started || task.agent_id.is_some() || ((launched || prior_native) && state.pending_reopening(task_id).is_none()) {
         return Err(DomainError::new("conflict", "the launch plan can only change before the task has started"));
     }
     Ok(task)
@@ -1127,6 +1159,11 @@ fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
     let _launching = Launching::begin(domain, task_id)?;
     let current = state(domain)?;
     let task = editable_plan(&current, task_id, false)?;
+    let preparing_reopening = task.state.terminal() || current.pending_reopening(task_id).is_some();
+    if preparing_reopening && (replacement.is_some() || changes.as_ref().and_then(Value::as_object)
+        .is_none_or(|fields| fields.keys().any(|field| !matches!(field.as_str(), "model" | "effort" | "reason")))) {
+        return Err(DomainError::new("invalid_input", "A terminal or reopened task can only change its next model, reasoning effort and reason; its mission, folder and approved scope stay unchanged"));
+    }
     let original = domain.launch_plan(task_id).map_err(plan_storage)?;
     let plan = match replacement {
         Some(plan) => plan,
@@ -1141,7 +1178,11 @@ fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
         && choices.options.effort != alondra_core::options::AUTO {
         return Err(DomainError::new("invalid_input", format!("the user chose effort {} for this request, which fixes its launch model and effort", choices.options.effort)));
     }
-    crate::launch_plans::validate(domain, home, &task.request_id, &plan)?;
+    if preparing_reopening {
+        crate::launch_plans::validate_reopening(domain, home, &task.request_id, &plan)?;
+    } else {
+        crate::launch_plans::validate(domain, home, &task.request_id, &plan)?;
+    }
     let mut store = domain.store.lock_or_exit("the domain store");
     let now = state(domain)?;
     editable_plan(&now, task_id, store.task_was_launched(task_id).map_err(plan_storage)?)?;

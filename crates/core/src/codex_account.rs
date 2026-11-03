@@ -208,6 +208,30 @@ pub fn probe(command: Command, account: AccountKey, now: crate::Millis) -> Resul
     probe_matching(command, account, now, |_| true)
 }
 
+/// Checks local thread metadata and its retained rollout without opening a conversation or turn.
+pub fn retained_thread(executable: &Path, environment: &BTreeMap<String, String>, thread: &str, directory: &Path) -> Result<bool, String> {
+    let normal_absolute = |path: &Path| path.is_absolute() && path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)));
+    if thread.is_empty() || thread.len() > 256 || thread.chars().any(char::is_control) || !normal_absolute(executable) || !normal_absolute(directory) {
+        return Ok(false);
+    }
+    let Some(directory) = directory.to_str() else { return Ok(false) };
+    let Some(home) = environment.get("HOME").map(Path::new).filter(|home| normal_absolute(home)) else { return Ok(false) };
+    let mut command = Command::new(executable);
+    command.env_clear().envs(environment).current_dir(home);
+    let mut process = Probe::start(command, PROBE_TIMEOUT)?;
+    process.rpc("initialize", json!({"clientInfo":{"name":"alondra","title":"Alondra","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
+    process.send(json!({"method":"initialized"}))?;
+    let result = process.rpc("thread/read", json!({"threadId":thread,"includeTurns":false}))?;
+    if result["thread"]["id"].as_str() != Some(thread) || result["thread"]["cwd"].as_str() != Some(directory) { return Ok(false); }
+    let Some(path) = result["thread"]["path"].as_str().map(Path::new).filter(|path| normal_absolute(path)) else { return Ok(false) };
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(before) = fs::symlink_metadata(path) else { return Ok(false) };
+    if !before.is_file() || before.file_type().is_symlink() || before.len() == 0 { return Ok(false); }
+    let Ok(file) = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path) else { return Ok(false) };
+    let Ok(opened) = file.metadata() else { return Ok(false) };
+    Ok(opened.is_file() && opened.dev() == before.dev() && opened.ino() == before.ino())
+}
+
 /// Optional quota never prevents cached model metadata; refused identity publishes neither usage nor catalog.
 pub fn probe_matching(command: Command, account: AccountKey, now: crate::Millis, accept_account: impl FnOnce(&ProbeReport) -> bool) -> Result<ProbeReport, String> {
     probe_with_diagnostics(command, account, now, accept_account, false)
@@ -308,6 +332,92 @@ mod tests {
     use super::*;
     use crate::accounts::AccountId;
     use crate::test_support::Directory;
+
+    struct RetainedThreadFixture {
+        _root: Directory,
+        executable: PathBuf,
+        environment: BTreeMap<String, String>,
+        directory: PathBuf,
+        rollout: PathBuf,
+        metadata: PathBuf,
+        trace: PathBuf,
+    }
+
+    impl RetainedThreadFixture {
+        fn new() -> Self {
+            let root = Directory::new();
+            let directory = root.join("repo");
+            fs::create_dir_all(&directory).unwrap();
+            let executable = root.join("native.py");
+            fs::write(&executable, r#"#!/usr/bin/python3
+import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    with open(os.environ['THREAD_FIXTURE_TRACE'], 'a') as trace: trace.write(json.dumps(request) + '\n')
+    method = request['method']
+    if method == 'initialized': continue
+    if method == 'initialize': result = {}
+    elif method == 'thread/read':
+        assert request['params'] == {'threadId':'retained-thread', 'includeTurns':False}
+        with open(os.environ['THREAD_FIXTURE_METADATA']) as source: result = json.load(source)
+        if 'error' in result:
+            print(json.dumps({'id':request['id'], 'error':result['error']}), flush=True)
+            continue
+    else: raise RuntimeError('The metadata probe must not open a session, turn, or inference request')
+    print(json.dumps({'id':request['id'], 'result':result}), flush=True)
+"#).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let rollout = root.join("rollout.jsonl");
+            fs::write(&rollout, "Retained native history\n").unwrap();
+            let metadata = root.join("metadata.json");
+            let trace = root.join("requests.jsonl");
+            let environment = BTreeMap::from([
+                ("HOME".into(), root.display().to_string()), ("PATH".into(), "/usr/bin:/bin".into()),
+                ("THREAD_FIXTURE_METADATA".into(), metadata.display().to_string()), ("THREAD_FIXTURE_TRACE".into(), trace.display().to_string()),
+            ]);
+            Self { _root: root, executable, environment, directory, rollout, metadata, trace }
+        }
+
+        fn record(&self) -> Value { json!({"thread":{"id":"retained-thread", "cwd":self.directory, "path":self.rollout}}) }
+        fn check(&self, record: &Value) -> Result<bool, String> {
+            fs::write(&self.metadata, serde_json::to_vec(record).unwrap()).unwrap();
+            retained_thread(&self.executable, &self.environment, "retained-thread", &self.directory)
+        }
+    }
+
+    #[test]
+    fn retained_thread_probe_reads_only_metadata_and_preserves_the_exact_identity_and_directory() {
+        let f = RetainedThreadFixture::new();
+        assert!(f.check(&f.record()).unwrap());
+        let requests: Vec<Value> = fs::read_to_string(&f.trace).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(requests.iter().map(|request| request["method"].as_str().unwrap()).collect::<Vec<_>>(), ["initialize", "initialized", "thread/read"]);
+        assert_eq!(requests[2]["params"], json!({"threadId":"retained-thread", "includeTurns":false}));
+        for (field, value) in [("id", json!("another-thread")), ("cwd", json!("/another/repo")), ("path", Value::Null), ("path", json!("relative/rollout"))] {
+            let mut record = f.record(); record["thread"][field] = value;
+            assert!(!f.check(&record).unwrap(), "{record}");
+        }
+    }
+
+    #[test]
+    fn stale_empty_and_symbolic_rollout_files_do_not_prove_a_retained_thread() {
+        let f = RetainedThreadFixture::new();
+        fs::remove_file(&f.rollout).unwrap();
+        assert!(!f.check(&f.record()).unwrap());
+        fs::write(&f.rollout, "").unwrap();
+        assert!(!f.check(&f.record()).unwrap());
+        fs::remove_file(&f.rollout).unwrap();
+        let other = f._root.join("other-rollout"); fs::write(&other, "History\n").unwrap();
+        std::os::unix::fs::symlink(other, &f.rollout).unwrap();
+        assert!(!f.check(&f.record()).unwrap());
+    }
+
+    #[test]
+    fn an_unavailable_thread_is_not_recovered_and_native_errors_are_not_exposed() {
+        let f = RetainedThreadFixture::new();
+        let error = f.check(&json!({"error":{"code":-32603,"message":"Sensitive native thread detail"}})).unwrap_err();
+        assert_eq!(error, "Codex refused thread/read");
+        assert!(!retained_thread(&f.executable, &BTreeMap::new(), "retained-thread", &f.directory).unwrap());
+    }
 
     #[test]
     fn named_codex_accounts_are_private_and_never_copy_native_auth() {

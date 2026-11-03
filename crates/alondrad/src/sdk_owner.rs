@@ -7,6 +7,7 @@ pub(crate) mod backend;
 pub(crate) mod seals;
 mod worker;
 mod account_identity;
+mod claude_history;
 pub(crate) use account_identity::NativeAccountIdentity;
 use worker::{Worker, Found};
 use alondra_core::accounts::{AccountKey, Provider};
@@ -254,7 +255,7 @@ pub(crate) struct Driver {
 /// runs through the SDK, and any failure before it is the launch's own, never a `claude --bg`.
 pub(crate) fn start(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch) -> Result<Driver, Failed> {
     let offered = provider_capabilities(launch.options.provider);
-    start_bound(domain, backend, launch, offered, None)
+    start_bound(domain, backend, launch, offered, None, None)
 }
 
 struct NativeRecovery {
@@ -263,41 +264,136 @@ struct NativeRecovery {
     identity: Option<NativeAccountIdentity>,
 }
 
-pub(crate) fn require_recoverable_session(domain:&DomainRuntime,backend:&SdkBackend,task:&TaskId,provider:Provider,account:&alondra_core::accounts::AccountId,directory:&str)->Result<(),Failed>{
-    native_recovery(domain,backend,task,provider,account,directory).map(drop)
+enum NativeRecoveryStatus {
+    Unstarted,
+    Recoverable(NativeRecovery),
+    Unavailable(Failed),
 }
 
-fn native_recovery(domain:&DomainRuntime,backend:&SdkBackend,task:&TaskId,provider:Provider,account:&alondra_core::accounts::AccountId,directory:&str)->Result<Option<NativeRecovery>,Failed>{
-    let state=domain.state().map_err(|error|Failed::new(format!("Reading the original native session: {error:#}")))?;
-    let records=state.lifecycle_journal.get(task).cloned().unwrap_or_default();
-    let Some((at,admission))=records.iter().enumerate().rev().find_map(|(at,record)|match record{
-        LifecycleRecord::Admitted{execution:Some(execution),..} if execution.host==HOST=>Some((at,execution.clone())),_=>None,
-    }) else{
-        if state.tasks.get(task).is_some_and(|task|task.started) || records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{..}|LifecycleRecord::ResourceAvailable)){return Err(Failed::new("This task has legacy native history without a verified SDK continuation. Recover the original legacy session before replacing its node; no fresh session was started".into()))}
-        return Ok(None)
-    };
-    let refuse=||Failed::new("The original native session cannot be proven. Keep this node on its original account and recover its retained native history; create a new node to start a fresh session".into());
-    if records.iter().skip(at+1).any(|record|matches!(record,LifecycleRecord::Admitted{..}))
-        || !records.iter().skip(at+1).any(|record|matches!(record,LifecycleRecord::ResourceAvailable)) {return Err(refuse())}
-    let task_state=state.tasks.get(task).ok_or_else(refuse)?;
-    if task_state.account_key()!=AccountKey::new(provider,account.clone()){return Err(Failed::new("Choose account and provider when creating a node. Recovery must use the original native account".into()))}
-    let (metadata,original_directory)={let store=domain.store.lock_or_exit("the domain store");
-        (store.conversation_metadata(task,&admission.conversation).map_err(|error|Failed::new(format!("Reading the original native conversation: {error:#}")))?,
-        store.task_worktree(task).map_err(|error|Failed::new(format!("Reading the original native worktree: {error:#}")))?)};
-    if original_directory.as_deref()!=Some(directory){return Err(Failed::new("Native session recovery must use the original task worktree".into()))}
-    let session=metadata.as_deref().and_then(|metadata|match provider{Provider::Claude=>alondra_provider_claude::conversation_session(metadata),Provider::Codex=>alondra_provider_codex::conversation_session(metadata)}).ok_or_else(refuse)?;
-    let selected=backend.for_provider(provider,domain.home()).map_err(|error|Failed::new(format!("Locating the original native account: {error:#}")))?;
-    let selected=on_account_provider(domain,&selected,provider,account)?;
-    let identity=NativeAccountIdentity::load_observed(&selected.state_root.join(&admission.instance),provider)?;
-    if let Some(change)=identity.as_ref().and_then(|identity|state.accounts.iter().find(|actual|actual.provider==provider && actual.id==*account).and_then(|actual|identity.change(actual))){return Err(Failed::new(format!("The original native account {change} changed. Restore it before recovering this session")))}
-    if provider==Provider::Codex{
-        if !identity.as_ref().is_some_and(NativeAccountIdentity::can_resume_managed){return Err(Failed::new("This Codex session has no retained managed-account proof. A fresh native process cannot resume an unverified or API-key identity".into()))}
-        require_native_thread_mapping(&selected,&session,account)?;
+pub(crate) fn original_directory(domain: &DomainRuntime, task: &TaskId) -> Result<Option<String>, Failed> {
+    let state = domain.state().map_err(|error| Failed::new(error.to_string()))?;
+    let admission = state.lifecycle_journal.get(task).and_then(|records| records.iter().rev().find_map(|record| match record {
+        LifecycleRecord::Admitted { execution: Some(execution), .. } if execution.host == HOST => Some(execution),
+        _ => None,
+    }));
+    let Some(admission) = admission else { return Ok(None) };
+    domain.store.lock_or_exit("the domain store").conversation_directory(task, &admission.conversation)
+        .map_err(|error| Failed::new(format!("Reading the original native worktree: {error:#}")))
+}
+
+pub(crate) struct Reopening {
+    task: TaskId,
+    account: AccountKey,
+    directory: PathBuf,
+    input: String,
+    recovery: Option<NativeRecovery>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_reopening(
+    domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider,
+    account: &alondra_core::accounts::AccountId, directory: &std::path::Path,
+    input: String, recover_directory: bool,
+) -> Result<Reopening, Failed> {
+    if domain.state().map_err(|error| Failed::new(error.to_string()))?.pending_reopening(task) != Some(input.as_str()) {
+        return Err(Failed::new("The task's reopening changed before its node could start".into()));
     }
-    Ok(Some(NativeRecovery{admission,session,identity}))
+    let recovery = if recover_directory {
+        match native_recovery_status(domain, backend, task, provider, account, &directory.to_string_lossy(), true)? {
+            NativeRecoveryStatus::Recoverable(recovery) => Some(recovery),
+            NativeRecoveryStatus::Unstarted => None,
+            NativeRecoveryStatus::Unavailable(why) => {
+                log!("reopened task {task} starts a new native session: {why}");
+                None
+            }
+        }
+    } else {
+        log!("reopened task {task} starts a new native session: its original native directory cannot be recovered");
+        None
+    };
+    Ok(Reopening { task: task.clone(), account: AccountKey::new(provider, account.clone()), directory: directory.to_path_buf(), input, recovery })
 }
 
-fn require_native_thread_mapping(backend:&SdkBackend,session:&str,account:&alondra_core::accounts::AccountId)->Result<(),Failed>{
+pub(crate) fn require_recoverable_session(domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str) -> Result<(), Failed> {
+    native_recovery(domain, backend, task, provider, account, directory).map(drop)
+}
+
+fn native_recovery(domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str) -> Result<Option<NativeRecovery>, Failed> {
+    match native_recovery_status(domain, backend, task, provider, account, directory, false)? {
+        NativeRecoveryStatus::Unstarted => Ok(None),
+        NativeRecoveryStatus::Recoverable(recovery) => Ok(Some(recovery)),
+        NativeRecoveryStatus::Unavailable(why) => Err(why),
+    }
+}
+
+fn native_recovery_status(domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str, require_history: bool) -> Result<NativeRecoveryStatus, Failed> {
+    let state = domain.state().map_err(|error| Failed::new(format!("Reading the original native session: {error:#}")))?;
+    let records = state.lifecycle_journal.get(task).cloned().unwrap_or_default();
+    let unavailable = |why: String| Ok(NativeRecoveryStatus::Unavailable(Failed::new(why)));
+    let Some((at, admission)) = records.iter().enumerate().rev().find_map(|(at, record)| match record {
+        LifecycleRecord::Admitted { execution: Some(execution), .. } if execution.host == HOST => Some((at, execution.clone())),
+        _ => None,
+    }) else {
+        if state.tasks.get(task).is_some_and(|task| task.started) || records.iter().any(|record| matches!(record, LifecycleRecord::Admitted { .. } | LifecycleRecord::ResourceAvailable)) {
+            return unavailable("This task has legacy native history without a verified SDK continuation. Recover the original legacy session before replacing its node; no fresh session was started".into());
+        }
+        return Ok(NativeRecoveryStatus::Unstarted);
+    };
+    let unproven = "The original native session cannot be proven. Keep this node on its original account and recover its retained native history; create a new node to start a fresh session";
+    if records.iter().skip(at + 1).any(|record| matches!(record, LifecycleRecord::Admitted { .. }))
+        || !records.iter().skip(at + 1).any(|record| matches!(record, LifecycleRecord::ResourceAvailable)) {
+        return unavailable(unproven.into());
+    }
+    let task_state = state.tasks.get(task).ok_or_else(|| Failed::new(unproven.into()))?;
+    if task_state.account_key() != AccountKey::new(provider, account.clone()) {
+        return unavailable("Choose account and provider when creating a node. Recovery must use the original native account".into());
+    }
+    let (metadata, original_directory) = {
+        let store = domain.store.lock_or_exit("the domain store");
+        (store.conversation_metadata(task, &admission.conversation).map_err(|error| Failed::new(format!("Reading the original native conversation: {error:#}")))?,
+         store.conversation_directory(task, &admission.conversation).map_err(|error| Failed::new(format!("Reading the original native worktree: {error:#}")))?)
+    };
+    if original_directory.as_deref() != Some(directory) {
+        return unavailable("Native session recovery must use the original task worktree".into());
+    }
+    let Some(session) = metadata.as_deref().and_then(|metadata| match provider {
+        Provider::Claude => alondra_provider_claude::conversation_session(metadata),
+        Provider::Codex => alondra_provider_codex::conversation_session(metadata),
+    }) else { return unavailable(unproven.into()); };
+    let selected = backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("Locating the original native account: {error:#}")))?;
+    let selected = on_account_provider(domain, &selected, provider, account)?;
+    let identity = match NativeAccountIdentity::load_observed(&selected.state_root.join(&admission.instance), provider) {
+        Ok(identity) => identity,
+        Err(why) => return Ok(NativeRecoveryStatus::Unavailable(why)),
+    };
+    if let Some(change) = identity.as_ref().and_then(|identity| state.accounts.iter().find(|actual| actual.provider == provider && actual.id == *account).and_then(|actual| identity.change(actual))) {
+        return unavailable(format!("The original native account {change} changed. Restore it before recovering this session"));
+    }
+    if provider == Provider::Codex {
+        if !identity.as_ref().is_some_and(NativeAccountIdentity::can_resume_managed) {
+            return unavailable("This Codex session has no retained managed-account proof. A fresh native process cannot resume an unverified or API-key identity".into());
+        }
+        let thread = match require_native_thread_mapping(&selected, &session, account) {
+            Ok(thread) => thread,
+            Err(why) => return Ok(NativeRecoveryStatus::Unavailable(why)),
+        };
+        if require_history {
+            let selected = selected.for_start().map_err(|error| Failed::new(format!("Locating the original Codex executable: {error:#}")))?;
+            let retained = crate::task_closer::blocking(|| alondra_core::codex_account::retained_thread(
+                &selected.native, &selected.native_environment, &thread, std::path::Path::new(directory)));
+            if !retained.unwrap_or(false) {
+                return unavailable("The original Codex thread is unavailable in its native profile".into());
+            }
+        }
+    }
+    if require_history && provider == Provider::Claude
+        && !claude_history::available(&selected.native_environment, &session, std::path::Path::new(directory)) {
+        return unavailable("The original Claude session history is unavailable in its native profile".into());
+    }
+    Ok(NativeRecoveryStatus::Recoverable(NativeRecovery { admission, session, identity }))
+}
+
+fn require_native_thread_mapping(backend:&SdkBackend,session:&str,account:&alondra_core::accounts::AccountId)->Result<String,Failed>{
     use std::os::unix::fs::{MetadataExt,OpenOptionsExt};use std::io::Read;use sha2::Digest;
     let directory=backend.state_root.join("native-threads");let path=directory.join(session);
     let fail=||Failed::new("The original private Codex thread mapping is unavailable. Restore the retained session instead of starting another thread".into());
@@ -308,7 +404,7 @@ fn require_native_thread_mapping(backend:&SdkBackend,session:&str,account:&alond
     let mut bytes=Vec::new();file.by_ref().take(1025).read_to_end(&mut bytes).map_err(|_|fail())?;if bytes.len()>1024{return Err(fail())}
     let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|fail())?;
     let home=sha2::Sha256::digest(backend.native_environment.get("CODEX_HOME").map(String::as_str).unwrap_or("native_default").as_bytes()).iter().map(|byte|format!("{byte:02x}")).collect::<String>();
-    if value["accountId"].as_str()!=Some(account.as_str()) || value["homeDigest"].as_str()!=Some(home.as_str()) || !value["threadId"].as_str().is_some_and(|id|!id.is_empty() && id.len()<=256){return Err(fail())}Ok(())
+    if value["accountId"].as_str()!=Some(account.as_str()) || value["homeDigest"].as_str()!=Some(home.as_str()) || !value["threadId"].as_str().is_some_and(|id|!id.is_empty() && id.len()<=256){return Err(fail())}Ok(value["threadId"].as_str().expect("validated above").to_owned())
 }
 
 /// The existing Claude session an SDK execution continues instead of starting one.
@@ -339,20 +435,32 @@ impl Continuation {
 /// `resume`.
 pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, continuation: Continuation) -> Result<Driver, Failed> {
     let offered = provider_capabilities(launch.options.provider);
-    start_bound(domain, backend, launch, offered, Some(continuation))
+    start_bound(domain, backend, launch, offered, Some(continuation), None)
 }
 
-fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>) -> Result<Driver, Failed> {
+fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>, mut reopening: Option<Reopening>) -> Result<Driver, Failed> {
     let _in_hand = InHand::new(&domain, &launch.task);
     crate::accounts::require_initial_check(&domain).map_err(|error| Failed::new(error.message))?;
     let provider = launch.options.provider;
+    if reopening.as_ref().is_some_and(|reopening| reopening.task != launch.task
+        || reopening.account != AccountKey::new(provider, launch.account.clone())
+        || reopening.directory != PathBuf::from(&launch.directory)) {
+        return Err(Failed::new("The prepared reopening belongs to another node launch".into()));
+    }
     let backend = &backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("{error:#}")))?;
     let backend = &backend.for_start().map_err(|error| Failed::new(format!("{error:#}")))?;
     let backend = &on_account_provider(&domain, backend, provider, &launch.account)?;
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
-    let recovery=if continuation.is_none(){native_recovery(&domain,backend,&launch.task,provider,&launch.account,&launch.directory)?}else{None};
+    if reopening.as_ref().is_some_and(|reopening| state.pending_reopening(&launch.task) != Some(reopening.input.as_str())) {
+        return Err(Failed::new("The task's reopening changed before admission; refresh the task".into()));
+    }
+    let recovery = if let Some(reopening) = &mut reopening {
+        reopening.recovery.take()
+    } else if continuation.is_none() {
+        native_recovery(&domain, backend, &launch.task, provider, &launch.account, &launch.directory)?
+    } else { None };
     let continuation=continuation.or_else(||recovery.as_ref().map(|recovery|Continuation::Native{session:recovery.session.clone()}));
     let envelope = |name: &str, command: Command| CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
@@ -398,6 +506,10 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     });
     let (first, _) = domain
         .own(scope.clone(), |owner| {
+            if let Some(reopening) = &reopening
+                && owner.state().pending_reopening(&launch.task) != Some(reopening.input.as_str()) {
+                return Err(DomainError::new("conflict", "The task's reopening changed before admission; refresh the task").into());
+            }
             let key=AccountKey::new(provider,launch.account.clone());
             let actual=owner.state().accounts.iter().find(|account|account.provider==provider && account.id==launch.account);
             if launch.options.selection.is_some() && actual.is_none_or(|account|account.state!=alondra_core::accounts::AccountState::SignedIn) {
@@ -505,12 +617,23 @@ fn account_of(binding: &ProviderBinding) -> alondra_core::accounts::AccountId {
 /// The launch of a daemon with an SDK backend: the task runs through the SDK or does not
 /// start, with the reason. It never falls back to `claude --bg`.
 pub(crate) async fn launch(domain: &DomainRuntime, launch: Launch) -> Result<serde_json::Value, DomainError> {
+    launch_prepared(domain, launch, None).await
+}
+
+pub(crate) async fn launch_prepared(domain: &DomainRuntime, launch: Launch, reopening: Option<Reopening>) -> Result<serde_json::Value, DomainError> {
     let Some((backend, runtime)) = domain.sdk() else {
         return Err(DomainError::new("unavailable", NO_HOST));
     };
     let backend = backend.clone();
     let task = launch.task.clone();
-    let driver = tokio::task::spawn_blocking(move || start(runtime, &backend, launch))
+    let driver = tokio::task::spawn_blocking(move || {
+        if let Some(reopening) = reopening {
+            let offered = provider_capabilities(launch.options.provider);
+            start_bound(runtime, &backend, launch, offered, None, Some(reopening))
+        } else {
+            start(runtime, &backend, launch)
+        }
+    })
         .await
         .map_err(|error| DomainError::new("launch_failed", format!("the SDK launch stopped: {error}")))?
         .map_err(|Failed { why, .. }| DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")))?;

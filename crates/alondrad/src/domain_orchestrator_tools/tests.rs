@@ -1537,6 +1537,38 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
     assert_eq!(prompt.matches("Store feature prints in Core Data").count(), 1, "the plan once, not again as the request: {prompt}");
 }
 
+#[test]
+fn a_reopened_task_carries_the_plan_approved_in_its_own_previous_native_session() {
+    use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold, NodeEnd};
+    let f = bare_world();
+    give(&f, "t", "agent-b");
+    let plan = "# Make the editor readable\n\n- [ ] Preserve the chosen typeface\n- [ ] Verify the editor contrast\n";
+    command(&f.domain, Actor::System, Command::HoldHook {
+        interaction_id: "own-plan".into(), task_id: "t".into(), agent_id: "agent-b".into(),
+        hold: Hold::Plan, body: plan.into(), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, "Review the editor plan").content(ContentKind::Plan, plan),
+    });
+    command(&f.domain, user(), Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "own-plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
+    });
+    let before = f.domain.state().unwrap();
+    let checklist = before.checklists[&TaskId::from("t")].clone();
+    assert!(approved_plan(&before, &before.tasks[&TaskId::from("t")]).is_empty(), "the current session already holds its own approved plan");
+
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd {
+        task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("agent-b".into()),
+    });
+    command(&f.domain, the_orchestrator(&f.domain), Command::ReopenTask { task_id: "t".into() });
+
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.checklists[&TaskId::from("t")], checklist);
+    let context = approved_plan(&state, &state.tasks[&TaskId::from("t")]);
+    assert!(context.contains(plan.trim()), "a clean native session must receive the whole approved plan: {context}");
+    assert!(context.contains("do not plan again"), "the previous approval still applies: {context}");
+    assert_eq!(context.matches("Preserve the chosen typeface").count(), 1);
+}
+
 /// The task the user decided on, «Editor fonts», and «Editor colours» (t), which waits for it.
 fn decided_on(f: &Fixture) {
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "fonts".into(), request_id: "r".into(),
@@ -1880,6 +1912,157 @@ async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_uniqu
 
 fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, DomainError> {
     update_launch_plan(&f.domain, &f.home, serde_json::from_value(json!({"task_id": task, "changes": changes})).unwrap())
+}
+
+
+fn cancelled_launch_plan_with_history(f: &Fixture) -> crate::launch_plans::LaunchPlan {
+    connect_claude_and_codex(f);
+    let before = stored_selection(f);
+    give(f, "t", "agent-b");
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
+    record(&f.domain, Decision {
+        task_id: "t".into(), request_id: "r".into(), agent_id: Some("agent-b".into()), at: alondra_core::now_millis(),
+        kind: DecisionKind::Launch, model: Some("sonnet".into()), effort: Some("medium".into()), approach: None,
+        chosen_by: ModelChooser::Orchestrator, reason: Some("Original launch".into()), title: "Editor colours".into(),
+        provider: Some(alondra_core::accounts::Provider::Claude), tags: None,
+    });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd {
+        task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()),
+    });
+    assert!(f.domain.store.lock().unwrap().task_was_launched(&"t".into()).unwrap());
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Cancelled);
+    before
+}
+
+#[tokio::test]
+async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_projects_root_changes() {
+    let f = world();
+    main_checkout(&f);
+    let original = f.project.join(".claude/worktrees/t");
+    git_in(&f.project, &["worktree", "add", "-q", "-b", "worktree-t", original.to_str().unwrap()]);
+    let options = alondra_core::options::path_in(&f.home);
+    std::fs::write(&options, format!("projects_root = {:?}\n[projects.App]\ndefaults = {{ effort = \"hard\" }}\n", f.root.to_str().unwrap())).unwrap();
+    let saved = crate::launch_plans::LaunchPlan {
+        project: Some("App".into()), mission: Some("Preserve the approved editor colours and contrast.".into()),
+        ..crate::launch_plans::LaunchPlan::new("app/editor", original.to_str().unwrap())
+    };
+    crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &saved).unwrap();
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &saved, 1).unwrap();
+    f.domain.set_task_worktree(&"t".into(), original.to_str().unwrap()).unwrap();
+    give(&f, "t", "agent-b");
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    git_in(&f.project, &["worktree", "remove", original.to_str().unwrap()]);
+    command(&f.domain, Actor::System, Command::ReleaseTaskWorktree {
+        task_id: "t".into(), path: original.display().to_string(), end: alondra_core::domain::WorktreeEnd::Removed,
+    });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd {
+        task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()),
+    });
+    assert!(!original.exists());
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.is_none(), "the previous release used legacy effort options");
+    assert!(request_choices(&f.domain, &"r".into()).unwrap().is_none());
+
+    std::fs::write(&options, format!("projects_root = {:?}\n[projects.App]\ndefaults = {{ effort = \"hard\" }}\n", f.root.join("new-projects").to_str().unwrap())).unwrap();
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    assert!(crate::options::project_of(&file, &original).is_none(), "the old folder is outside the newly configured projects root");
+    assert_eq!(file.orchestrator_defaults(None, None).effort, alondra_core::options::AUTO);
+    partial_plan(&f, "t", json!({"reason": "Continue the approved work with its original project policy"})).unwrap();
+    command(&f.domain, the_orchestrator(&f.domain), Command::ReopenTask { task_id: "t".into() });
+    assert!(f.domain.state().unwrap().pending_reopening(&"t".into()).is_some());
+    crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    assert!(f.task_node().is_some(), "admission must use App's hard policy instead of rejecting a missing model under global auto");
+    let (folders, prompts) = f.launched(1).await;
+    assert_eq!(f.sdk().starts().len(), 1);
+    assert!(same(&folders[0], &original), "the managed worktree is reconstructed before the native launch: {folders:?}");
+    assert_eq!(f.sdk().flag("--model").as_deref(), Some("opus"));
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].model,
+        Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::User }));
+    assert!(prompts[0].contains(saved.mission.as_deref().unwrap()));
+    let store = f.domain.store.lock().unwrap();
+    assert!(store.launch_queue().unwrap().is_empty());
+    assert!(store.start_retries().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn terminal_launch_choices_can_be_prepared_without_enqueuing_or_starting_the_task() {
+    let f = world();
+    let before = cancelled_launch_plan_with_history(&f);
+    let state = f.domain.state().unwrap();
+    assert!(state.tasks[&TaskId::from("t")].started, "a closed task keeps its start as history");
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some("agent-b".into()));
+    partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high", "reason": "Use Codex for the approved implementation"})).unwrap();
+    assert_eq!(*f.domain.state().unwrap(), *state, "preparing choices does not reopen or rewrite the task and its approvals");
+    let prepared = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
+    assert_eq!(prepared, crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()),
+        reason: Some("Use Codex for the approved implementation".into()), ..before });
+    crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    assert!(f.sdk().starts().is_empty(), "admission between preparation and reopening cannot start a terminal task");
+    {
+        let store = f.domain.store.lock().unwrap();
+        assert!(store.launch_queue().unwrap().is_empty());
+        assert!(store.start_retries().unwrap().is_empty());
+        assert!(store.task_was_launched(&"t".into()).unwrap(), "launch history is never erased to edit choices");
+    }
+    command(&f.domain, the_orchestrator(&f.domain), Command::ReopenTask { task_id: "t".into() });
+    assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap()[0].body["body"]["model"], "codex/gpt-6");
+    partial_plan(&f, "t", json!({"reason": "The reopened task keeps the prepared provider"})).unwrap();
+    assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap().model.as_deref(), Some("codex/gpt-6"),
+        "historical launch decisions do not block an edit before this reopening's first admission");
+    let pending = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
+    for changes in [json!({"tags": {"kind": "feature"}}), json!({"approach": "subagents"})] {
+        assert_eq!(partial_plan(&f, "t", changes).unwrap_err().code, "invalid_input");
+    }
+    let replacement = serde_json::from_value(json!({"task_id": "t", "launch": pending})).unwrap();
+    assert_eq!(set_launch_plan(&f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
+    assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), pending,
+        "a pending reopening preserves its mission, directory, name and approved scope too");
+}
+
+#[test]
+fn preparing_terminal_choices_preserves_scope_and_requires_an_open_request_and_an_ended_node() {
+    let f = world();
+    let before = cancelled_launch_plan_with_history(&f);
+    for changes in [json!({"tags": {"kind": "feature"}}), json!({"approach": "subagents"})] {
+        assert_eq!(partial_plan(&f, "t", changes).unwrap_err().code, "invalid_input");
+    }
+    let replacement = serde_json::from_value(json!({"task_id": "t", "launch": before})).unwrap();
+    assert_eq!(set_launch_plan(&f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
+    assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
+    let mut state = (*f.domain.state().unwrap()).clone();
+    for end in [alondra_core::domain::NodeEnd::KeptByUser, alondra_core::domain::NodeEnd::UsersOwn] {
+        for agent in [Some(AgentId::from("agent-b")), None] {
+            let task = state.tasks.get_mut(&TaskId::from("t")).unwrap();
+            task.wrap_up.node = Some(end);
+            task.agent_id = agent;
+            assert!(editable_plan(&state, &"t".into(), true).is_err(), "a retained live node prevents preparation, including legacy data without its agent id");
+        }
+    }
+    state.tasks.get_mut(&TaskId::from("t")).unwrap().wrap_up.node = Some(alondra_core::domain::NodeEnd::Gone);
+    assert!(editable_plan(&state, &"t".into(), true).is_ok());
+    state.tasks.get_mut(&TaskId::from("t")).unwrap().archived = true;
+    assert!(editable_plan(&state, &"t".into(), true).is_err(), "preparation preserves the archived-task guard");
+    state.tasks.get_mut(&TaskId::from("t")).unwrap().archived = false;
+    state.requests.get_mut(&RequestId::from("r")).unwrap().closed = true;
+    assert!(editable_plan(&state, &"t".into(), true).is_err(), "a closed request cannot reopen its task");
+}
+
+#[tokio::test]
+async fn preparing_terminal_choices_preserves_a_deleted_launch_directory_without_recreating_it() {
+    let f = world();
+    let before = cancelled_launch_plan_with_history(&f);
+    std::fs::remove_dir(&f.project).unwrap();
+    partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high"})).unwrap();
+    let after = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
+    assert_eq!(after, crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()), ..before });
+    crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    assert!(!f.project.exists(), "only the reopened admission reconstructs its workspace");
+    assert!(f.sdk().starts().is_empty());
+    let store = f.domain.store.lock().unwrap();
+    assert!(store.launch_queue().unwrap().is_empty());
+    assert!(store.start_retries().unwrap().is_empty());
 }
 
 fn stored_selection(f: &Fixture) -> crate::launch_plans::LaunchPlan {

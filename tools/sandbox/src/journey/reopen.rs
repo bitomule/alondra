@@ -1,11 +1,12 @@
 //! A task cancelled and reopened goes back through the queue: with every slot taken it waits in the
 //! queue saying why, never in progress with no node, and starts with a new node once there is room
 //! (t-fastconn-5-remove-mailbox, 15 October).
-use anyhow::{Context, bail};
+use anyhow::{Context, bail, ensure};
+use serde_json::json;
 
 use super::{User, steps::*};
 use crate::{
-    fake::{Fakes, script::Step},
+    fake::{Fakes, native::Session, script::Step},
     journey::Report,
     sandbox::Sandbox,
 };
@@ -26,11 +27,23 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         state(report, &user, "t-r1", "In the background")?;
         request(report, fakes, &user, &task_script("req-r2", "t-r2", "Remove the mailbox"), "Remove the mailbox")?;
         let first = launched(report, fakes, "t-r2")?;
+        let first_node = node_id(&first)?.to_owned();
+        let original_branch = crate::fake::git(&first.cwd, &["branch", "--show-current"])?;
+        let original_head = head(&first)?;
+        native_snapshot(report, fakes, "native-before-cancel", &first)?;
+        report.step(&format!("node {first_node} uses native session {} in {}", first.session_id, first.cwd.display()), || {
+            ensure!(first.cwd.join(".git").is_file(), "{} is not the task's linked worktree", first.cwd.display());
+            Ok(())
+        })?;
         state(report, &user, "t-r2", WORKING)?;
         let task = user.view("task:t-r2")?;
         press(report, &user, &task, "cancel:", None, None, "the user cancels the task")?;
         state(report, &user, "t-r2", CANCELLED)?;
         ended(report, fakes, &user, &first)?;
+        wait(report, &format!("cancellation removes the original native directory {}", first.cwd.display()), || {
+            Ok(((!first.cwd.exists()).then_some(()), format!("{} exists: {}", first.cwd.display(), first.cwd.exists())))
+        })?;
+        native_snapshot(report, fakes, "native-after-cancel", &fakes.session(&first.short)?)?;
         limit(report, &user, &one)?;
         let task = user.view("task:t-r2")?;
         press(report, &user, &task, "reopen:", None, None, "the user reopens it")?;
@@ -46,14 +59,39 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             bail!("the queued task still says it stopped: {queued}");
         }
         limit(report, &user, &two)?;
-        let second = wait(report, "with a free slot the queue starts it with a new node", || {
+        let second = wait(report, "with a free slot a new node recovers the original native session", || {
             let session = fakes.session_of("t-r2")?;
-            let seen = format!("{:?}", session.as_ref().map(|session| (&session.short, &session.state)));
-            Ok((session.filter(|session| session.short != first.short && session.running()), seen))
+            let seen = format!("{:?}", session.as_ref().map(|session| (node_id(session), &session.session_id, &session.cwd, &session.state, session.starts)));
+            Ok((session.filter(|session| session.session_id == first.session_id && node_id(session).is_ok_and(|id| id != first_node)
+                && session.starts > first.starts && session.running()), seen))
+        })?;
+        native_snapshot(report, fakes, "native-after-reopen", &second)?;
+        report.step("the new node resumes once, with its native history in the reconstructed original worktree", || {
+            let starts = fakes.starts(&second.short)?;
+            let resumed = starts.last().context("the reopened session has no native start")?;
+            ensure!(second.cwd == first.cwd && second.cwd.is_dir(), "the original directory was not reconstructed: {} -> {}", first.cwd.display(), second.cwd.display());
+            ensure!(crate::fake::git(&second.cwd, &["branch", "--show-current"])? == original_branch, "the reconstructed worktree changed branch");
+            ensure!(head(&second)? == original_head, "the reconstructed worktree changed its commit");
+            ensure!(resumed.resume.as_deref() == Some(first.session_id.as_str()) && resumed.history > 0, "the original conversation was not resumed: {resumed:?}");
+            ensure!(second.starts == first.starts + 1, "the reopen retried the native start: {} -> {}", first.starts, second.starts);
+            Ok(())
         })?;
         state(report, &user, "t-r2", WORKING)?;
-        report.step(&format!("node {} works on it", second.short), || Ok(()))
+        report.step(&format!("node {} works on it with native session {}", node_id(&second)?, second.session_id), || Ok(()))
     });
+}
+
+fn node_id(session: &Session) -> anyhow::Result<&str> {
+    session.env.iter().find(|(name, _)| name == "ALONDRA_SESSION_ID")
+        .map(|(_, value)| value.as_str()).context("the native session has no Alondra node identity")
+}
+
+fn native_snapshot(report: &mut Report, fakes: &Fakes, name: &str, session: &Session) -> anyhow::Result<()> {
+    report.snapshot(name, &json!({
+        "node_id": node_id(session)?, "native_session_id": session.session_id,
+        "native_directory": session.cwd, "directory_exists": session.cwd.is_dir(),
+        "state": session.state, "starts": fakes.starts(&session.short)?,
+    }))
 }
 
 /// The nodes that take a slot now, as every view's status counts them.

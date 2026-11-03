@@ -10,12 +10,21 @@ pub(crate) use alondra_core::domain::LaunchPlan;
 
 /// Whether a plan can start a task of this request: a launch with these fields would be accepted.
 pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {
+    validate_with_directory(domain, home, request_id, plan, true)
+}
+
+/// A closed task preserves its launch directory, which the first reopened admission may rebuild.
+pub(crate) fn validate_reopening(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {
+    validate_with_directory(domain, home, request_id, plan, false)
+}
+
+fn validate_with_directory(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan, require_directory: bool) -> Result<(), DomainError> {
     let invalid = |message: String| DomainError::new("invalid_input", message);
     if let Some(field) = plan.missing() {
         return Err(invalid(format!("{field} is required")));
     }
     let cwd = Path::new(&plan.cwd);
-    if !cwd.is_absolute() || !cwd.is_dir() {
+    if !cwd.is_absolute() || (require_directory && !cwd.is_dir()) {
         return Err(invalid(format!("directory {} does not exist", plan.cwd)));
     }
     if plan.mission.as_deref().is_some_and(|mission| mission.chars().count() > MISSION_LIMIT) {
@@ -27,7 +36,11 @@ pub(crate) fn validate(domain: &DomainRuntime, home: &Path, request_id: &Request
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| invalid(format!("options.toml: {error}")))?;
     let requested = match crate::domain_orchestrator_tools::request_choices(domain, request_id).ok().flatten() {
         Some(choices) => choices.options,
-        None => file.orchestrator_defaults(crate::options::project_of(&file, cwd).as_deref(), None),
+        None => {
+            let project = if require_directory { crate::options::project_of(&file, cwd) }
+                else { plan.project.clone().or_else(|| crate::options::project_of(&file, cwd)) };
+            file.orchestrator_defaults(project.as_deref(), None)
+        }
     };
     let auto = requested.effort == alondra_core::options::AUTO;
     let given = |text: &Option<String>| text.as_deref().is_some_and(|text| !text.trim().is_empty());
@@ -206,6 +219,34 @@ mod tests {
         assert!(unknown.message.contains("nonsense is not a model"), "{}", unknown.message);
         let long = validate(&w.domain, &w.home, &request, &plan(&w, json!({"mission": "x".repeat(32_001)}))).unwrap_err();
         assert_eq!(long.code, "invalid_input");
+    }
+
+    #[test]
+    fn preparing_reopening_uses_the_retained_project_defaults_without_the_directory_and_keeps_explicit_request_choices_binding() {
+        let w = world();
+        std::fs::write(alondra_core::options::path_in(&w.home), "[projects.App]\ndefaults = { effort = \"hard\" }\n").unwrap();
+        let saved = plan(&w, json!({"project": "App", "model": null}));
+        std::fs::remove_dir(&w.project).unwrap();
+        assert!(crate::options::project_of(&crate::domain_schedule_runner::options_at(&w.home).unwrap(), &w.project).is_none(),
+            "the retained workspace cannot infer its original project from the current project root");
+        validate_reopening(&w.domain, &w.home, &"r".into(), &saved).unwrap();
+        assert!(!w.project.exists());
+        assert_eq!(validate(&w.domain, &w.home, &"r".into(), &saved).unwrap_err().code, "invalid_input");
+        let relative = plan(&w, json!({"project": "App", "model": null, "cwd": "App"}));
+        assert_eq!(validate_reopening(&w.domain, &w.home, &"r".into(), &relative).unwrap_err().code, "invalid_input");
+
+        let choices = crate::domain_store::RequestLaunch {
+            project: Some("App".into()), options: alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("App"), None),
+            issue: None, issue_text: None, attachments: vec![],
+        };
+        let state = w.domain.state().unwrap();
+        w.domain.execute_with(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "explicit-choices".into(), expected_revision: state.revision,
+            command: Command::CreateRequest { request_id: "explicit".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false },
+        }, None, Some(&choices), || Ok(())).unwrap();
+        let error = validate_reopening(&w.domain, &w.home, &"explicit".into(), &saved).unwrap_err();
+        assert_eq!(error.message, "effort is auto for this request: the launch plan needs model and reason",
+            "explicit Request choices take precedence over the retained project's defaults");
     }
 
     #[test]

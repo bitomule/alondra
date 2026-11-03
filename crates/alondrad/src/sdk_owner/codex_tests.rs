@@ -61,6 +61,188 @@ fn transcript(path: &Path) -> Vec<serde_json::Value> {
 }
 
 #[test]
+fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_thread() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let mut original = launch(&slice);
+    slice.settle(&mut original);
+    let old_node = original.agent().clone();
+    let native = slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().rev().find_map(|record| match record {
+        LifecycleRecord::Admitted { execution: Some(execution), .. } => Some(execution.clone()), _ => None,
+    }).unwrap();
+    slice.run(&user(), "cancel-codex-rollout", Command::CancelTask { task_id: TASK.into() });
+    original.stop().unwrap();
+    drop(original);
+    slice.run(&system(), "close-codex-rollout", Command::RecordNodeEnd {
+        task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
+    });
+    slice.run(&user(), "reopen-codex-rollout", Command::ReopenTask { task_id: TASK.into() });
+    let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
+    let positive = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Codex,
+        &AccountId::default_account(), &slice.worktree, input.clone(), true).unwrap();
+    assert!(positive.recovery.is_some(), "the managed identity, mapping, directory and native rollout originally prove recovery");
+    let metadata = slice._home.join(".codex/sessions/fake-thread-00000000-0000-4000-8000-000000000001.json");
+    let retained: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
+    std::fs::remove_file(retained["path"].as_str().unwrap()).unwrap();
+    std::fs::write(slice._home.join("codex-native.account.json"), serde_json::to_vec(&serde_json::json!({
+        "missingRollout": true, "freshThreadId": "00000000-0000-4000-8000-000000000002",
+    })).unwrap()).unwrap();
+    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Codex,
+        &AccountId::default_account(), &slice.worktree, input, true).unwrap();
+    assert!(reopening.recovery.is_none(), "a mapping alone cannot prove the missing native thread");
+    let mission = "Publish the release notes with the original mission after the native rollout disappeared.";
+    let options = LaunchOptions { provider: Provider::Codex, model: Some("fixture-model".into()), effort: Some("high".into()), selection: Some(selection()), ..LaunchOptions::default() };
+    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
+        task: TASK.into(), name: "Reopened Codex release notes".into(), directory: slice.worktree.display().to_string(),
+        prompt: mission.into(), plugin: slice.plugin.clone(), options, model: None, account: AccountId::default_account(),
+    }, provider_capabilities(Provider::Codex), None, Some(reopening)).unwrap();
+    slice.settle(&mut replacement);
+    let state = slice.domain.state().unwrap();
+    assert_ne!(replacement.agent(), &old_node);
+    assert_ne!(state.lifecycle_of(&TASK.into()).unwrap().execution().unwrap().conversation().as_str(), native.conversation);
+    assert_eq!(state.lifecycle_of(&TASK.into()).unwrap().execution().unwrap().generation(), 2);
+    let requests = transcript(&trace);
+    assert_eq!(requests.iter().filter(|request| request["method"] == "thread/start").count(), 2, "the original thread and exactly one clean replacement");
+    assert!(!requests.iter().any(|request| request["method"] == "thread/resume"), "the missing rollout is never offered to a failing resume");
+    assert_eq!(requests.iter().filter(|request| request["method"] == "turn/start" && request["params"]["input"][0]["text"] == mission).count(), 1);
+    assert!(requests.iter().any(|request| request["method"] == "turn/start"
+        && request["params"]["threadId"] == "00000000-0000-4000-8000-000000000002"), "the replacement starts a different native thread");
+    assert!(slice.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
+    replacement.stop().unwrap();
+}
+
+#[tokio::test]
+async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queue_without_retrying() {
+    use alondra_core::accounts::AccountsConfig;
+
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let mut accounts = AccountsConfig::fresh();
+    accounts.connect(Provider::Claude);
+    accounts.connect(Provider::Codex);
+    std::fs::write(alondra_core::options::path_in(&slice._home), accounts.to_toml()).unwrap();
+    slice.run(&system(), "reopen-account-order", Command::RecordAccountConfiguration {
+        order: slice.domain.state().unwrap().accounts.iter().map(|account| AccountKey::new(account.provider, account.id.clone())).collect(),
+        version: alondra_core::accounts::config_version(&accounts),
+    });
+
+    let approved = "# Publish the release notes\n\n- [ ] Preserve the approved release scope\n- [ ] Verify the published text\n";
+    let targets = vec![DeliveryTarget::Text { text: "The release notes proposal".into() }];
+    slice.run(&system(), "reporter", Command::RegisterAgent { agent_id: "reporter".into(), name: "Release notes report".into(), at: 0 });
+    slice.run(&user(), "assign-reporter", Command::AssignTask { task_id: TASK.into(), agent_id: "reporter".into(), model: None });
+    slice.run(&Actor::Agent { agent_id: "reporter".into() }, "report-plan", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: TASK.into(), interaction_id: "report".into(),
+        body: "The release notes can be published with the proposed checks.".into(), targets: targets.clone(),
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the release notes proposal", &targets, true).plan(approved),
+    });
+    slice.run(&user(), "approve-report-plan", Command::DecideProposedPlan {
+        presentation_id: "report".into(), targets, choice: PlanChoice::Implement,
+    });
+    slice.run(&system(), "close-reporter", Command::RecordNodeEnd {
+        task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some("reporter".into()),
+    });
+    let task = TaskId::from("reopened-build");
+    let mission = "Publish the release notes. Keep the complete mission after reopening.";
+    let plan = LaunchPlan {
+        mission: Some(mission.into()), model: Some("claude/sonnet".into()), reason: Some("Prepare the approved release notes".into()),
+        ..LaunchPlan::new("release-notes", slice.worktree.to_str().unwrap())
+    };
+    slice.run(&Actor::Orchestrator { generation: 0 }, "create-implementation", Command::CreateTask {
+        plan_items: None, continues: None, task_id: task.clone(), request_id: "implement-report".into(), title: "Publish the release notes".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(plan),
+    });
+    let checklist = slice.domain.state().unwrap().checklists[&task].clone();
+    let mut original = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+        task: task.clone(), name: "Release notes".into(), directory: slice.worktree.display().to_string(),
+        prompt: mission.into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(), model: None,
+        account: AccountId::default_account(),
+    }).unwrap();
+    let old_node = original.agent().clone();
+    slice.domain.record_model_decision(&crate::domain_store::model_metrics::Decision {
+        task_id: task.0.clone(), request_id: "implement-report".into(), agent_id: Some(old_node.0.clone()), at: alondra_core::now_millis(),
+        kind: crate::domain_store::model_metrics::DecisionKind::Launch, model: Some("sonnet".into()), effort: None, approach: None,
+        chosen_by: ModelChooser::Orchestrator, reason: Some("Original Claude launch".into()), title: "Publish the release notes".into(),
+        provider: Some(Provider::Claude), tags: None,
+    }).unwrap();
+    assert!(slice.domain.store.lock().unwrap().task_was_launched(&task).unwrap());
+    let refusal = require_recoverable_session(&slice.domain, &slice.backend, &task, Provider::Claude,
+        &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap_err();
+    assert!(refusal.to_string().contains("The original native session cannot be proven"), "{refusal}");
+    slice.run(&user(), "cancel-implementation", Command::CancelTask { task_id: task.clone() });
+    original.stop().unwrap();
+    drop(original);
+    slice.run(&system(), "close-original", Command::RecordNodeEnd {
+        task_id: task.clone(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
+    });
+    let terminal = slice.domain.state().unwrap();
+    assert_eq!(terminal.tasks[&task].state, alondra_core::domain::TaskState::Cancelled);
+    crate::domain_orchestrator_tools::update_launch_plan(&slice.domain, &slice._home, serde_json::from_value(serde_json::json!({
+        "task_id": task, "changes": {"model": "codex/fixture-model", "reasoning_effort": "high"},
+    })).unwrap()).unwrap();
+    assert_eq!(slice.domain.launch_plan(&task).unwrap().unwrap().mission.as_deref(), Some(mission));
+    assert_eq!(*slice.domain.state().unwrap(), *terminal, "preparing the provider must not reopen or rewrite the task");
+    assert_eq!(slice.domain.state().unwrap().checklists[&task], checklist);
+
+    slice.domain.enable_sdk(slice.backend.clone());
+    slice.domain.live.gate.ignore_mac();
+    let before_starts = slice.starts();
+    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
+    assert_eq!(slice.starts(), before_starts, "admission between updating and reopening starts no node");
+    assert!(!trace.exists(), "Codex has not started while the task is terminal");
+    {
+        let store = slice.domain.store.lock().unwrap();
+        assert!(store.launch_queue().unwrap().is_empty());
+        assert!(store.start_retries().unwrap().is_empty());
+    }
+    slice.run(&Actor::Orchestrator { generation: 0 }, "reopen-implementation", Command::ReopenTask { task_id: task.clone() });
+    assert_eq!(slice.domain.store.lock().unwrap().launch_queue().unwrap()[0].body["body"]["model"], "codex/fixture-model");
+    let mut changed = slice.domain.subscribe();
+    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    let new_node = slice.domain.state().unwrap().tasks[&task].agent_id.clone()
+        .expect("the first queue pass starts the reopened task instead of recording a retry");
+    assert_ne!(new_node, old_node);
+    loop {
+        let state = slice.domain.state().unwrap();
+        let lifecycle = state.lifecycle_of(&task).unwrap();
+        if lifecycle.execution().is_some_and(|execution| execution.node() == &new_node)
+            && lifecycle.activity() == ActivityView::Resting && lifecycle.pending_inputs().is_empty()
+            && state.lifecycle_journal[&task].iter().filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count() == 2 { break; }
+        changed.changed().await.unwrap();
+    }
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&task].provider, Provider::Codex);
+    assert_eq!(state.checklists[&task], checklist);
+    assert_eq!(state.lifecycle_of(&task).unwrap().execution().unwrap().generation(), 2);
+    assert_eq!(state.agents.keys().filter(|agent| agent.0.starts_with("sdk-")).count(), 2);
+    assert!(!state.interactions.keys().any(|card| card.0.starts_with("start-problem-")));
+    {
+        let store = slice.domain.store.lock().unwrap();
+        assert!(store.start_retries().unwrap().is_empty(), "a permanent native-session refusal never becomes a retry");
+        assert!(!store.launch_queue().unwrap().iter().any(|row| row.task_id == task));
+    }
+    let native = transcript(&trace);
+    assert_eq!(native.iter().filter(|message| message["method"] == "thread/start").count(), 1);
+    assert!(!native.iter().any(|message| message["method"] == "thread/resume"), "Codex cannot resume Claude's native history");
+    let launch = native.iter().find(|message| message["method"] == "turn/start").unwrap();
+    let prompt = launch["params"]["input"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains(mission), "{prompt}");
+    assert!(prompt.contains(approved.trim()) && prompt.contains("do not plan again"), "{prompt}");
+    assert_eq!(prompt.matches("Preserve the approved release scope").count(), 1, "the approved plan is carried once: {prompt}");
+
+    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
+    assert_eq!(slice.domain.state().unwrap().tasks[&task].agent_id.as_ref(), Some(&new_node));
+    let after = transcript(&trace);
+    for method in ["thread/start", "thread/resume", "turn/start"] {
+        assert_eq!(after.iter().filter(|message| message["method"] == method).count(), native.iter().filter(|message| message["method"] == method).count(),
+            "another admission pass cannot repeat {method}");
+    }
+    assert!(slice.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
+    slice.domain.stop_sdk_owners();
+}
+
+#[test]
 fn a_codex_node_uses_the_real_owner_store_and_commits_final_public_context_before_ack() {
     let slice = Slice::new();
     let trace = configured(&slice, "complete");
