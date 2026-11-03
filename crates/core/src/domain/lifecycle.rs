@@ -12,7 +12,7 @@ use alondra_domain::{
     decision_callback, decision_continuation, decision_epoch,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, DomainError>;
@@ -340,6 +340,9 @@ pub enum LifecycleRecord {
         input: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
+        /// The node's own card whose answer the input carries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<InteractionId>,
     },
     Presented { delivery: InteractionId },
     /// The standing delivery left: the task goes on with `input`. An SDK execution is told `text`,
@@ -437,6 +440,16 @@ pub enum LifecycleRecord {
         text: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         stalled: bool,
+    },
+    /// The delivery's node rested with a step it owes after it, the answer it was told to its own
+    /// card or its work after the merge: it is woken with `wake`, told `text`, or, woken already
+    /// with nothing new since, the orchestrator settles `unheard_card`.
+    Unfinished {
+        unheard_card: InteractionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
     /// The intent to run `operation` on the task's SDK execution, recorded before it reaches it.
     ControlRequested { control: String, operation: ControlRecord },
@@ -648,8 +661,12 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             wake: wake.as_deref().map(|input| input_id(task, input)).transpose()?,
             stalled: *stalled,
         },
+        LifecycleRecord::Unfinished { unheard_card, wake, .. } => Event::Unfinished {
+            unheard_card: unheard_card.clone(),
+            wake: wake.as_deref().map(|input| input_id(task, input)).transpose()?,
+        },
         LifecycleRecord::ExecutionReleased { input } => Event::ExecutionReleased { input: input_id(task, input)? },
-        LifecycleRecord::Told { input, .. } => Event::Tell { input: input_id(task, input)? },
+        LifecycleRecord::Told { input, answers, .. } => Event::Tell { input: input_id(task, input)?, answers: answers.clone() },
         LifecycleRecord::Presented { delivery } => Event::Present { delivery: delivery.clone() },
         LifecycleRecord::HandedBack { delivery, input, .. } => Event::HandBack { delivery: delivery.clone(), input: input_id(task, input)? },
         LifecycleRecord::Accepted { delivery } => Event::Accept { delivery: delivery.clone(), merge: None },
@@ -775,7 +792,7 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         | LifecycleRecord::ExecutionReleased { input }
         | LifecycleRecord::Reopened { input } => Some((input, None)),
         LifecycleRecord::Compacted { input } => Some((input, Some(COMPACT))),
-        LifecycleRecord::Told { input, text } => Some((input, text.as_deref())),
+        LifecycleRecord::Told { input, text, .. } => Some((input, text.as_deref())),
         LifecycleRecord::Answered { input, text, .. }
         | LifecycleRecord::Resumed { input, text, .. }
         | LifecycleRecord::HandedBack { input, text, .. } => Some((input, text.as_deref())),
@@ -784,7 +801,8 @@ fn introduced(record: &LifecycleRecord) -> Option<(&str, Option<&str>)> {
         | LifecycleRecord::DoubtResent { resent: input, text, .. }
         | LifecycleRecord::HostEnded { resume: Some(input), text, .. }
         | LifecycleRecord::TurnEnded { wake: Some(input), text, .. }
-        | LifecycleRecord::AwaitEnded { wake: Some(input), text, .. } => Some((input, text.as_deref())),
+        | LifecycleRecord::AwaitEnded { wake: Some(input), text, .. }
+        | LifecycleRecord::Unfinished { wake: Some(input), text, .. } => Some((input, text.as_deref())),
         _ => None,
     }
 }
@@ -868,9 +886,10 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             awaits: awaits.as_ref().map(TurnAwait::of),
             stalled: *stalled,
         },
-        Event::Tell { input } => LifecycleRecord::Told {
+        Event::Tell { input, answers } => LifecycleRecord::Told {
             input: input.as_str().into(),
             text: texts.get(input).cloned(),
+            answers: answers.clone(),
         },
         Event::Answer { card, input } => LifecycleRecord::Answered {
             card: card.clone(),
@@ -930,6 +949,11 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             wake: wake.as_ref().map(|input| input.as_str().into()),
             text: wake.as_ref().and_then(|input| texts.get(input).cloned()),
             stalled: *stalled,
+        },
+        Event::Unfinished { unheard_card, wake } => LifecycleRecord::Unfinished {
+            unheard_card: unheard_card.clone(),
+            wake: wake.as_ref().map(|input| input.as_str().into()),
+            text: wake.as_ref().and_then(|input| texts.get(input).cloned()),
         },
         Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
         Event::Present { delivery } => LifecycleRecord::Presented { delivery: delivery.clone() },
@@ -1482,10 +1506,19 @@ impl DomainState {
             awaits,
             stalled,
         };
-        let woke = unexplained && awaits.is_none() && !self.stalled_before(task)
+        let empty = unexplained && awaits.is_none();
+        let woke = empty && !self.stalled_before(task)
             && self.decide(lifecycles, task, ended(Some(self.next_input(task)), None)).is_ok();
         if !woke {
             self.decide(lifecycles, task, ended(None, awaits))?;
+        }
+        let owed = if empty { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
+        if let Some(owed) = &owed {
+            let text = owed.wake_text();
+            let unfinished = |wake: Option<String>| LifecycleRecord::Unfinished { unheard_card: card.clone(), text: wake.as_ref().map(|_| text.clone()), wake };
+            if self.stalled_before(task) || self.decide(lifecycles, task, unfinished(Some(self.next_input(task)))).is_err() {
+                let _ = self.decide(lifecycles, task, unfinished(None));
+            }
         }
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.phase() == TaskPhase::Delivered && lifecycle.activity() == ActivityView::Resting
@@ -1494,7 +1527,10 @@ impl DomainState {
         }
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
             match end {
-                None => self.open_stall(task, card, effects),
+                None => {
+                    let why = owed.unwrap_or_else(|| self.empty_turn(task));
+                    self.open_stall_on(task, card, why, effects);
+                }
                 Some(end) => {
                     let title = self.tasks[task].title.clone();
                     self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, SystemCard::TurnEnded, self.revision + 1));
@@ -1568,6 +1604,70 @@ impl DomainState {
             .and_then(|pr| self.pull_requests.get(pr))
             .filter(|pr| pr.state == PrState::Open && t.final_presentation.is_none())
             .map_or(EmptyTurn::Unexplained, |pr| EmptyTurn::UnpresentedPr { number: pr.number })
+    }
+
+    /// The step the node of `task` still owes its delivery while it rests: the answer to its own
+    /// card it was told and took up, with nothing told to it since, or, once a turn ran after the
+    /// delivery, the work it said runs after the merge. None once Alondra left the case of such a
+    /// rest unsettled: the delivery waits for the user.
+    pub fn owed_step(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<EmptyTurn> {
+        if lifecycle.phase() != TaskPhase::Delivered || lifecycle.activity() != ActivityView::Resting {
+            return None;
+        }
+        let since: Vec<&LifecycleRecord> = self.lifecycle_journal.get(task)?.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Presented { .. }))
+            .collect();
+        if since.iter().any(|record| matches!(record, LifecycleRecord::Answered { card, .. } if self.left_unsettled(card))) {
+            return None;
+        }
+        self.unacted_answer(task, &since).or_else(|| {
+            let ran = since.iter().any(|record| matches!(record, LifecycleRecord::TurnStarted { .. } | LifecycleRecord::InputConsumed { .. }));
+            let reason = self.work_after_merge(task, lifecycle).filter(|_| ran)?;
+            Some(EmptyTurn::AfterMerge { reason })
+        })
+    }
+
+    /// The answer to its own card the node of `task` was told last, newest first in `since`, when
+    /// a turn took it up and nothing else was told to the node or opened a case after it.
+    fn unacted_answer(&self, task: &TaskId, since: &[&LifecycleRecord]) -> Option<EmptyTurn> {
+        let mut taken: BTreeSet<&str> = BTreeSet::new();
+        for record in since {
+            match record {
+                LifecycleRecord::TurnStarted { input, .. } | LifecycleRecord::InputConsumed { input } => {
+                    taken.insert(input);
+                }
+                LifecycleRecord::HandoffResent { input, resent, .. } | LifecycleRecord::DoubtResent { input, resent, .. } => {
+                    if taken.contains(resent.as_str()) {
+                        taken.insert(input);
+                    }
+                }
+                LifecycleRecord::Told { input, answers: Some(card), .. } => {
+                    return self.answered_card(task, card).filter(|_| taken.contains(input.as_str()));
+                }
+                LifecycleRecord::Unfinished { wake: None, .. } => return None,
+                LifecycleRecord::TurnEnded { .. } | LifecycleRecord::AwaitEnded { .. } | LifecycleRecord::Unfinished { .. } => {}
+                record if introduced(record).is_some() => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// `card`, a card the node of `task` asked the user on it, with the answer it has.
+    fn answered_card(&self, task: &TaskId, card: &InteractionId) -> Option<EmptyTurn> {
+        let node = self.tasks.get(task)?.agent_id.as_ref()?;
+        let i = self.interactions.get(card)?;
+        let theirs = matches!(&i.author, Author::Agent { agent_id } if agent_id == node)
+            && i.recipient == Recipient::User
+            && matches!(&i.scope, Scope::Task { task_id } if task_id == task);
+        let said = answer_said(i).filter(|_| theirs)?;
+        Some(EmptyTurn::UnactedAnswer { card: card.clone(), need: i.card.need.clone(), said: said.trim_end_matches('.').to_owned() })
+    }
+
+    /// Whether `card` is a case about a stopped node that Alondra settled itself, for nobody settled it.
+    fn left_unsettled(&self, card: &InteractionId) -> bool {
+        self.interactions.get(card).is_some_and(|i| is_stall_case(i) && matches!(&i.payload,
+            InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == STALL_CLOSE))
     }
 
     /// Whether what a turn ended waiting for ended with nothing told to the node.
@@ -2415,12 +2515,19 @@ pub enum EmptyTurn {
     Unexplained,
     /// The node registered pull request `number`, still open, and never presented it.
     UnpresentedPr { number: u64 },
+    /// The node presented its delivery, asked the user on `card` what `need` says, was told the
+    /// answer, `said`, and rested on it.
+    UnactedAnswer { card: InteractionId, need: String, said: String },
+    /// The node's PR merged and it rests with the work it said runs after the merge, `reason`, owed.
+    AfterMerge { reason: String },
 }
 impl EmptyTurn {
     pub fn wake_text(&self) -> String {
         match self {
             Self::Unexplained => WAKE_INSTRUCTION.to_owned(),
             Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it."),
+            Self::UnactedAnswer { card, need, said } => format!("You asked “{need}” (card {card}) and the user answered: “{said}”. That answer is final and already yours: act on it now. If your delivery changes, present it again with `present_result`; if it stands as it is, present it again as it is. If this turn ends the same way, the orchestrator decides how your task goes on."),
+            Self::AfterMerge { reason } => format!("{} If this turn ends the same way, the orchestrator decides how your task goes on.", post_merge_carry_on_instruction(reason)),
         }
     }
     /// What the orchestrator reads of why the node stopped.
@@ -2428,6 +2535,8 @@ impl EmptyTurn {
         match self {
             Self::Unexplained => "Nothing Alondra knows of explains it.".to_owned(),
             Self::UnpresentedPr { number } => format!("It registered pull request #{number}, still open, and never presented it."),
+            Self::UnactedAnswer { card, need, said } => format!("Its delivery waits for the user's review. After presenting it, it asked the user “{need}” (card {card}), the user answered “{said}”. It took that answer and rested without acting on it."),
+            Self::AfterMerge { reason } => format!("Its PR is merged and it rests with the work it said runs after the merge (“{reason}”) still owed."),
         }
     }
 }
@@ -2601,7 +2710,7 @@ fn capitalized(text: &str) -> String {
 impl DomainState {
     /// What the node said it runs after its PR merged, once its delivery is settled and waits for
     /// that work to end: a host that ends then leaves the task on a card about that work.
-    fn work_after_merge(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<String> {
+    pub(super) fn work_after_merge(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<String> {
         if lifecycle.phase() != TaskPhase::Delivered || lifecycle.post_merge().is_none() {
             return None;
         }

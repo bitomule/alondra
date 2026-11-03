@@ -400,7 +400,7 @@ const EVENT_KINDS: &[&str] = &[
     "merge_observed", "hand_back", "wait_for_dependencies", "dependencies_resolved", "tell", "pause", "resume", "finish", "drain_observed",
     "post_merge_declared", "post_merge_ended", "retire_released_execution", "execution_released", "reopen", "hold_for_plan_review",
     "plan_review_settled", "doubt_handoff", "settle_handoff", "resend_untaken", "resend_doubtful", "discard", "await_ended", "request_control",
-    "compact",
+    "compact", "unfinished",
 ];
 
 const FACT_KINDS: &[&str] = &[

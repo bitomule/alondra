@@ -116,7 +116,7 @@ fn a_delivery_or_the_users_word_starts_the_count_again() {
     start(&mut s, "turn-3");
     end_empty(&mut s, "turn-3");
     assert_eq!(s.tasks[&TaskId::from("t")].stalls, 2);
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Focus on the tests".into(), from_user: true });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Focus on the tests".into(), from_user: true, answers: None });
     assert_eq!(s.tasks[&TaskId::from("t")].stalls, 0, "the user's word is the task moving on");
     assert!(open_case(&s).is_none(), "and it answers the open case");
     start(&mut s, "turn-4");
@@ -129,7 +129,7 @@ fn a_delivery_or_the_users_word_starts_the_count_again() {
 fn the_users_word_while_a_case_is_open_withdraws_it() {
     let mut s = first_case();
     let case = open_case(&s).unwrap();
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Go on with the tests".into(), from_user: true });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Go on with the tests".into(), from_user: true, answers: None });
     assert!(s.interactions[&case].withdrawn, "the orchestrator never settles what no longer holds");
     assert_eq!(settle_closed(&mut s, &case).code, "stall_settled");
 }

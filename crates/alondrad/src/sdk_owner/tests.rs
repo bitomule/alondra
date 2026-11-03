@@ -752,6 +752,35 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     driver.stop().unwrap();
 }
 
+// 3 November: David answered a node's card in words only, and the node read
+// «[From Alondra · 19:55] <text>» with nothing saying it answered its card.
+#[test]
+fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
+    use alondra_core::domain::{CardKind, CardSpec, LifecycleRecord, QuestionOption, Recipient, Scope};
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
+    slice.run(&Actor::Agent { agent_id: driver.agent().clone() }, "ask", Command::AskQuestion {
+        attachments: vec![], interaction_id: "q-name".into(), scope: Scope::Task { task_id: TASK.into() }, recipient: Recipient::User,
+        body: "Pick the name".into(), blocking: true, options, card: CardSpec::derived(CardKind::Decide, "Pick the name"),
+    });
+    slice.answer("q-name", "", Some("Call it Atlas")).unwrap();
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the answer goes to the node");
+    let told = slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().rev()
+        .find_map(|record| match record {
+            LifecycleRecord::Told { text, answers, .. } => Some((text.clone().unwrap_or_default(), answers.clone())),
+            _ => None,
+        })
+        .expect("the node is told the answer");
+    assert_eq!(told.1, Some("q-name".into()), "what it is told names the card it answers");
+    assert!(!told.0.starts_with("[From Alondra"), "the user wrote it, not Alondra: {}", told.0);
+    assert!(told.0.contains("q-name") && told.0.contains("Call it Atlas"), "{}", told.0);
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), None, "the answer ended the wait");
+    driver.stop().unwrap();
+}
+
 // A3: the writer stops between the commit of the turn end and its publication. A runtime opened
 // on the same database gets the host's unacknowledged event again: the exact replay publishes
 // the committed card once and acknowledges it, with no second card.
@@ -1048,7 +1077,7 @@ async fn a_closing_task_that_owes_nothing_ends_its_unowned_host_without_resuming
     for notice in 0..3 {
         slice.run(&Actor::System, &format!("notice-{notice}"), Command::TellNode {
             task_id: TASK.into(), text: format!("[From Alondra · 03:5{notice}] Alondra could not close this session yet"),
-            from_user: false,
+            from_user: false, answers: None,
         });
     }
     let (_, stranded) = strand_host(&slice, driver);
@@ -1158,7 +1187,7 @@ async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() 
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-notes".into(), head: "head-a".into() }],
         is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
     });
-    slice.run(&Actor::System, "end-turn", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into(), from_user: false });
+    slice.run(&Actor::System, "end-turn", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into(), from_user: false, answers: None });
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     slice.run(&Actor::System, "observe", Command::ObservePrState {
@@ -1858,7 +1887,7 @@ fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_ge
     let original_account=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key();
     let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&original_account.account,slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
     for (id,text) in [("queued-first","First exact queued instruction"),("queued-second","Second exact queued instruction")]{
-        slice.run(&Actor::System,id,Command::TellNode{task_id:TASK.into(),text:text.into(), from_user: false});
+        slice.run(&Actor::System,id,Command::TellNode{task_id:TASK.into(),text:text.into(), from_user: false, answers: None});
     }
     driver.stop().unwrap();drop(driver);
     end_unowned_host(Arc::clone(&slice.domain),&slice.backend,TASK.into()).unwrap();
@@ -2244,7 +2273,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
         resumed.observe().unwrap();
     }
     let state = restarted.state().unwrap();
-    let tell = Command::TellNode { task_id: TASK.into(), text: "[From the orchestrator · 17:42] Keep the journal's old rows".into(), from_user: false };
+    let tell = Command::TellNode { task_id: TASK.into(), text: "[From the orchestrator · 17:42] Keep the journal's old rows".into(), from_user: false, answers: None };
     restarted.execute_fixture(&Actor::System, envelope(&state, "orchestrator-message", tell)).unwrap();
     assert_eq!(resumed.pending_permits(), 1, "the message goes to the host while the turn runs");
     resumed.step(&|| false).unwrap();
@@ -3072,7 +3101,7 @@ fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {
 async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_and_asks_nobody() {
     let slice = Slice::new();
     let mut driver = slice.launch_working();
-    slice.run(&Actor::System, "told-before", Command::TellNode { task_id: TASK.into(), text: "Add the changelog".into(), from_user: false });
+    slice.run(&Actor::System, "told-before", Command::TellNode { task_id: TASK.into(), text: "Add the changelog".into(), from_user: false, answers: None });
     driver.sealed();
     let permit = driver.permits.pop_front().expect("the input waits for the host");
     driver.domain.own(driver.scope.clone(), |owner| owner.claim(permit)).unwrap();
@@ -3081,7 +3110,7 @@ async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_a
     driver.stop().unwrap();
     drop(driver);
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
-    slice.run(&Actor::System, "told-after", Command::TellNode { task_id: TASK.into(), text: "Settle your worktrees".into(), from_user: false });
+    slice.run(&Actor::System, "told-after", Command::TellNode { task_id: TASK.into(), text: "Settle your worktrees".into(), from_user: false, answers: None });
     slice.domain.enable_sdk(slice.backend.clone());
     close_pass(&slice).await;
     let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
@@ -3336,7 +3365,7 @@ fn asks_again(slice: &Slice, driver: &mut Driver, cwd: &str, command: &str) -> O
     let answered = slice.decisions().len();
     slice.run(&Actor::System, &format!("tell-{answered}"), Command::TellNode {
         task_id: TASK.into(), text: format!("[From David · 09:00] decide:bash@{cwd} {command}"),
-        from_user: false,
+        from_user: false, answers: None,
     });
     driver.step(&|| false).unwrap();
     slice.until(driver, |slice| slice.decisions().len() > answered || !Slice::open_decision_cards(&slice.domain).is_empty());

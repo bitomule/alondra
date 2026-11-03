@@ -218,7 +218,7 @@ async fn a_claude_bg_node_commands_and_receives_its_answer_once_across_a_daemon_
     });
     let line = next_line(&mut pushed, patience).expect("the answer was written down the connection");
     let id = line["id"].as_str().unwrap().to_owned();
-    assert!(line["text"].as_str().unwrap().ends_with("] Yes."), "{line}");
+    assert!(line["text"].as_str().unwrap().ends_with("Answer to your card question-1 (Decide on merging the fix): Yes."), "{line}");
     assert_eq!(line["as_user"].as_bool(), Some(true), "{line}");
     assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
 

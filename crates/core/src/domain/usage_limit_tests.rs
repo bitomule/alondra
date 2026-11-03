@@ -106,7 +106,7 @@ impl World {
     fn perform(&mut self, act: &Act, n: usize) -> Result<(), String> {
         let node = |at: usize| TASKS[at].1;
         match *act {
-            Act::Tell(at) => drop(exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Notice {n}"), from_user: false })),
+            Act::Tell(at) => drop(exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Notice {n}"), from_user: false, answers: None })),
             Act::TakeInput(at) => drop(self.take_input(at, n)),
             Act::OwnTurn(at) if self.claude[at].turn.is_none() => {
                 let turn = format!("turn-{n}");
@@ -157,7 +157,7 @@ impl World {
                 let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Paused { pause }, at: n as Millis });
             }
             Act::Resume(at) => {
-                let _ = exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Carry on {n}"), from_user: false });
+                let _ = exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Carry on {n}"), from_user: false, answers: None });
                 let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Resumed, at: n as Millis });
             }
             Act::LimitOut => self.out = true,

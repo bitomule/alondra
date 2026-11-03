@@ -825,23 +825,15 @@ fn question_label(question: &str) -> String {
     }
 }
 
-/// What the user answered to each of the questions asked together, in the order asked: the node
-/// is given them all at once, when the last is in.
+/// What was answered to each of the cards asked together, in the order asked: the node is given
+/// them all at once, when the last is in, each naming its card.
 fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain::Interaction) -> String {
     let lines: Vec<String> = state.group_members(interaction).into_iter().enumerate().map(|(index, member)| {
-        let said = match &member.payload {
-            InteractionPayload::Question { options, answer: Some(answer) } => options.iter()
-                .find(|option| option.id == answer.option_id).map(|option| option.label.clone())
-                .or_else(|| answer.inputs.values().find_map(|value| match value {
-                    InputValue::Text(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
-                    _ => None,
-                }))
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
-        format!("{}. {} → {said}", index + 1, member.card.need)
+        let said = alondra_core::domain::answer_said(member).unwrap_or_default();
+        format!("{}. {} (card {}) → {said}", index + 1, member.card.need, member.id)
     }).collect();
-    format!("The user answered your {} questions:\n{}", lines.len(), lines.join("\n"))
+    let who = if matches!(interaction.recipient, Recipient::Orchestrator) { "The orchestrator" } else { "The user" };
+    format!("{who} answered your {} cards:\n{}", lines.len(), lines.join("\n"))
 }
 
 /// What the node that suggested something reads of the orchestrator's decision.
@@ -888,50 +880,28 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     if interaction.card.group.is_some() {
         return grouped_answers(state, interaction);
     }
-    let option = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.as_str());
-    let values: Vec<String> = answer.inputs.values().map(|value| match value {
-        InputValue::Text(value) => value.clone(),
-        InputValue::Boolean(value) => value.to_string(),
-        InputValue::Integer(value) => value.to_string(),
-        InputValue::Form(content) => serde_json::Value::Object(content.clone()).to_string(),
-    }).filter(|value| !value.trim().is_empty()).collect();
-    let mut text = match option {
-        Some(option) if values.is_empty() => format!("{option}."),
-        Some(option) => format!("{option}. {}", values.join("; ")),
-        None => values.join("; "),
-    };
-    for attachment in &answer.attachments {
-        text.push_str(&format!(" Open the attached file “{}” at {}.", attachment.name, attachment.content_reference));
-    }
-    text = text.trim_start().to_owned();
-    if matches!(interaction.recipient, Recipient::Orchestrator) && matches!(interaction.author, Author::Agent { .. }) {
-        text = format!("The orchestrator answered: {text}");
-    }
-    let question = question_label(&interaction.body);
-    if matches!(interaction.author, Author::Orchestrator { .. }) {
-        let request_title = match &interaction.scope {
-            Scope::Orchestrator { request_id: Some(request_id) } => state.requests.get(request_id)
-                .map(|request| request.title.as_deref().unwrap_or(&request.body)),
-            Scope::Task { task_id } => state.tasks.get(task_id)
-                .and_then(|task| state.requests.get(&task.request_id))
-                .map(|request| request.title.as_deref().unwrap_or(&request.body)),
-            _ => None,
-        };
-        text = match request_title {
-            Some(title) => format!("About \"{question}\" (card {}, request \"{}\"): {text}", interaction.id.0, title.trim()),
-            None => format!("About \"{question}\" (card {}): {text}", interaction.id.0),
-        };
-    } else if let Author::Agent { agent_id } = &interaction.author {
-        let other_open = state.interactions.values().any(|other| {
-            other.id != interaction.id && other.author == Author::Agent { agent_id: agent_id.clone() }
-                && !other.withdrawn && matches!(&other.payload,
-                    InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
-        });
-        if other_open {
-            text = format!("About \"{question}\": {text}");
+    let said = alondra_core::domain::answer_said(interaction).unwrap_or_default();
+    match &interaction.author {
+        Author::Orchestrator { .. } => {
+            let question = question_label(&interaction.body);
+            let request_title = match &interaction.scope {
+                Scope::Orchestrator { request_id: Some(request_id) } => state.requests.get(request_id)
+                    .map(|request| request.title.as_deref().unwrap_or(&request.body)),
+                Scope::Task { task_id } => state.tasks.get(task_id)
+                    .and_then(|task| state.requests.get(&task.request_id))
+                    .map(|request| request.title.as_deref().unwrap_or(&request.body)),
+                _ => None,
+            };
+            match request_title {
+                Some(title) => format!("About \"{question}\" (card {}, request \"{}\"): {said}", interaction.id.0, title.trim()),
+                None => format!("About \"{question}\" (card {}): {said}", interaction.id.0),
+            }
         }
+        Author::Agent { .. } if matches!(interaction.recipient, Recipient::Orchestrator) =>
+            format!("The orchestrator answered your card {} ({}): {said}", interaction.id, interaction.card.need),
+        Author::Agent { .. } => format!("Answer to your card {} ({}): {said}", interaction.id, interaction.card.need),
+        _ => said,
     }
-    text
 }
 
 #[cfg(test)]
@@ -1028,7 +998,7 @@ mod tests {
             .find(|message| message.interaction_id.as_deref() == Some("question-agent-a"))
             .unwrap();
         let rendered = render(&state, &message);
-        assert_eq!(rendered, "Yes.");
+        assert_eq!(rendered, "Answer to your card question-agent-a (Answer the question): Yes.");
         assert!(!rendered.contains("data_epoch"));
         assert!(!rendered.contains("protocol"));
     }
@@ -1075,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn answers_name_the_question_when_ambiguous_and_always_name_the_orchestrators_request() {
+    fn answers_always_name_their_card_and_the_orchestrators_request() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "agent-a");
@@ -1088,7 +1058,7 @@ mod tests {
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question-agent-a")).unwrap();
-        assert_eq!(render(&state, &message), "About \"Choose\": Yes.");
+        assert_eq!(render(&state, &message), "Answer to your card question-agent-a (Answer the question): Yes.");
 
         command(&domain, Actor::Orchestrator { generation: 0 }, "orchestrator-question", Command::AskQuestion {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
@@ -1135,7 +1105,7 @@ mod tests {
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question")
                 && message.recipient_kind == "agent").unwrap();
-        assert_eq!(render(&state, &message), "New API. Keep the old response format");
+        assert_eq!(render(&state, &message), "Answer to your card question (Answer the question): New API. Keep the old response format");
     }
 
     fn free_text_question(domain: &Arc<DomainRuntime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
@@ -1231,24 +1201,57 @@ mod tests {
     }
 
     #[test]
-    fn a_free_text_answer_reaches_the_node_as_the_text_alone() {
+    fn a_free_text_answer_reaches_the_node_as_the_text_and_its_card() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
         free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
-        assert_eq!(rendered_for(&domain, "q", "agent"), "Call it Atlas");
+        assert_eq!(rendered_for(&domain, "q", "agent"), "Answer to your card q (Answer the question): Call it Atlas");
     }
 
     #[test]
-    fn a_free_text_answer_names_the_question_only_when_another_is_open() {
+    fn a_free_text_answer_names_its_card_whether_or_not_another_is_open() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
         free_text_question(&domain, "other", agent_actor(), task_scope(), Recipient::User, "Which color?");
         free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
-        assert_eq!(rendered_for(&domain, "q", "agent"), "About \"Which name?\": Call it Atlas");
+        assert_eq!(rendered_for(&domain, "q", "agent"), "Answer to your card q (Answer the question): Call it Atlas");
+    }
+
+    /// 3 November: a node asked its card after presenting its result; David answered in words
+    /// only, and the node read the bare text with nothing saying it answered its card.
+    #[test]
+    fn a_text_answer_names_the_card_it_answers_like_an_option() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        command(&domain, agent_actor(), "ask-options", Command::AskQuestion {
+            attachments: vec![], interaction_id: "options".into(), scope: task_scope(), recipient: Recipient::User,
+            body: "Which name?".into(), blocking: false,
+            options: vec![QuestionOption { id: "atlas".into(), label: "Atlas".into(), description: None }],
+            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Pick a name"),
+        });
+        command(&domain, user_actor(), "answer-options", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: "options".into(), option_id: "atlas".into(), inputs: Default::default(),
+        });
+        free_text_question(&domain, "text", agent_actor(), task_scope(), Recipient::User, "Which color?");
+        free_text_answer(&domain, user_actor(), "text", "Blue");
+        assert_eq!(rendered_for(&domain, "options", "agent"), "Answer to your card options (Pick a name): Atlas.");
+        assert_eq!(rendered_for(&domain, "text", "agent"), "Answer to your card text (Answer the question): Blue");
+    }
+
+    #[test]
+    fn an_answer_the_node_cannot_take_yet_waits_instead_of_being_dropped() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+        assert_eq!(crate::domain_delivery::tell_sdk_nodes(&domain), 0, "the task has no execution to take it yet");
+        assert_eq!(outbox_message(&domain, "q", "agent").state, "retryable", "the answer waits for the node");
     }
 
     #[test]
@@ -1271,7 +1274,7 @@ mod tests {
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::Orchestrator, "Which name?");
         free_text_answer(&domain, Actor::Orchestrator { generation: 0 }, "q", "Call it Atlas");
         let rendered = rendered_for(&domain, "q", "agent");
-        assert_eq!(rendered, "The orchestrator answered: Call it Atlas");
+        assert_eq!(rendered, "The orchestrator answered your card q (Answer the question): Call it Atlas");
         assert!(!rendered.contains("user"));
     }
 
@@ -1643,7 +1646,7 @@ mod tests {
         let answer = node.line().await.unwrap();
         let context = answer["text"].as_str().unwrap();
         let user = crate::domain_messages::user_name();
-        assert!(context.starts_with(&format!("[From {user} · ")) && context.ends_with("] Yes."), "the answer says who and when: {context}");
+        assert!(context.starts_with(&format!("[From {user} · ")) && context.ends_with("] Answer to your card question-session-a (Answer the question): Yes."), "the answer says who and when: {context}");
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "accepting the merge wakes the node for nothing");
         assert!(!context.contains("authorization_id") && !context.contains("pr_id")
             && !context.contains("head") && !context.contains("auth-"), "{context}");
@@ -2479,7 +2482,7 @@ mod tests {
         assert_eq!((line["id"].as_str(), line["as_user"].as_bool()), (Some(format!("o-{id}").as_str()), Some(true)));
         let user = crate::domain_messages::user_name();
         let text = line["text"].as_str().unwrap();
-        assert!(text.starts_with(&format!("[From {user} · ")) && text.ends_with("] Yes."), "the user's answer says who and when: {text}");
+        assert!(text.starts_with(&format!("[From {user} · ")) && text.ends_with("] Answer to your card question-session-a (Answer the question): Yes."), "the user's answer says who and when: {text}");
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "written is not handed");
 
         acknowledge(&domain, "other-session", json!([format!("o-{id}")])).await.unwrap();

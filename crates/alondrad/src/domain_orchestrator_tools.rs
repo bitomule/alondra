@@ -854,7 +854,7 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
     let mut included_inputs = std::collections::BTreeSet::new();
     for record in state.lifecycle_journal.get(&task.id).into_iter().flat_map(|journal| journal.iter()) {
         let (input, text) = match record {
-            alondra_core::domain::LifecycleRecord::Told { input, text }
+            alondra_core::domain::LifecycleRecord::Told { input, text, .. }
             | alondra_core::domain::LifecycleRecord::Answered { input, text, .. }
             | alondra_core::domain::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
             _ => continue,

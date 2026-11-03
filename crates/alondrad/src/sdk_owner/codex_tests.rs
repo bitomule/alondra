@@ -484,7 +484,7 @@ async fn codex_transition_model_is_pending_until_the_exact_native_configuration_
     let backend_path=slice._home.join("codex-backend.json");let mut backend:SdkBackend=serde_json::from_slice(&std::fs::read(&backend_path).unwrap()).unwrap();backend.native_environment.insert("ALONDRA_FAKE_MODELS".into(),"fixture-model,fixture-second".into());std::fs::write(backend_path,serde_json::to_vec(&backend).unwrap()).unwrap();
     slice.domain.enable_sdk(slice.backend.clone());let mut driver=launch(&slice);slice.settle(&mut driver);let instance=driver.agent.clone();
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target.clone(),&stamp);
-    slice.run(&system(),"queued-during-model-change",Command::TellNode{task_id:TASK.into(),text:"Use the configured model for this next input".into(), from_user: false});let queued=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
+    slice.run(&system(),"queued-during-model-change",Command::TellNode{task_id:TASK.into(),text:"Use the configured model for this next input".into(), from_user: false, answers: None});let queued=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
     let (published,mut after_feed)=tokio::sync::watch::channel(false);let weak=Arc::downgrade(&slice.domain);let expected_input=queued.clone();
     slice.on_acknowledge(move||{if let Some(domain)=weak.upgrade() && !Slice::lifecycle(&domain).is_pending(&alondra_foundation::InputId::new(&expected_input).unwrap()){published.send_replace(true);}});
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|value|*value+=1));slice.domain.add_sdk_owner(Owner::spawn(driver));
@@ -912,7 +912,7 @@ fn codex_managed_child_keeps_work_after_parent_turn_and_queues_one_durable_conti
     slice.run(&system(),"complete-managed-child",Command::ReadMcpStatus{task_id:TASK.into()});
     while driver.pending_controls()>0 || driver.pending_permits()>0 || driver.waits_for_host(){driver.step(&||false).unwrap();}
     let state=slice.domain.state().unwrap();let journal=&state.lifecycle_journal[&TaskId::from(TASK)];
-    let wakes:Vec<_>=journal.iter().filter_map(|record|match record{LifecycleRecord::Told{input,text:Some(text)} if text.starts_with("Managed native work finished.")=>Some(input),_=>None}).collect();assert_eq!(wakes.len(),1);
+    let wakes:Vec<_>=journal.iter().filter_map(|record|match record{LifecycleRecord::Told{input,text:Some(text),..} if text.starts_with("Managed native work finished.")=>Some(input),_=>None}).collect();assert_eq!(wakes.len(),1);
     assert_eq!(journal.iter().filter(|record|matches!(record,LifecycleRecord::TurnStarted{input,..} if input==wakes[0])).count(),1);
     assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkStarted{work,..} if work.contains("spawn-child"))));assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkContinued{..})));
     assert_ne!(Slice::lifecycle(&slice.domain).activity(),alondra_domain::ActivityView::OwnWork);driver.stop().unwrap();
@@ -1299,7 +1299,7 @@ async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool)
     let group = old_host.process_group().unwrap();
     stop_codex_host(group);
     kill_native(&native);
-    slice.run(&system(), "message-after-native-loss", Command::TellNode { task_id: TASK.into(), text: "Deliver this after replacing the dead app-server".into(), from_user: true });
+    slice.run(&system(), "message-after-native-loss", Command::TellNode { task_id: TASK.into(), text: "Deliver this after replacing the dead app-server".into(), from_user: true, answers: None });
     let result = driver.step(&|| false);
     if result.is_ok() { old_host.kill().unwrap(); }
     assert!(result.is_err(), "a live host with a dead app-server must be lost before attempting delivery");

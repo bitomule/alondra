@@ -15,7 +15,7 @@ impl DomainRuntime {
     }
 
     /// A stopped node's case the orchestrator left unsettled after its reminder: Alondra closes
-    /// the task itself, never asking the user.
+    /// the task itself, never asking the user, or leaves a delivered one with the user.
     pub(crate) fn close_unsettled_stall(&self, case_id: &InteractionId, task_id: &TaskId) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;
         self.execute_as_system(CommandEnvelope {

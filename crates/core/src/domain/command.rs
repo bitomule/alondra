@@ -456,6 +456,9 @@ pub enum Command {
         /// The user wrote it: their word on the task moves it on.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         from_user: bool,
+        /// The node's own answered card whose answer `text` carries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<InteractionId>,
     },
     /// Alondra saw the task's node, or a subagent it launched, make or take the git worktree at
     /// `path`.

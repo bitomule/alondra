@@ -906,7 +906,7 @@ fn the_first_empty_turn_wakes_the_node_and_the_second_asks_the_user() {
 fn any_new_fact_between_two_empty_turns_counts_from_zero_again() {
     let user_told = |task: &mut TaskLifecycle| {
         started(task, "woken", "wake");
-        apply(task, Event::Tell { input: input("told") });
+        apply(task, Event::Tell { input: input("told"), answers: None });
         fact(task, RuntimeFact::InputConsumed { input: input("told") });
     };
     let own_work = |task: &mut TaskLifecycle| {
@@ -999,7 +999,7 @@ fn a_delivery_under_review_is_work_while_a_turn_runs_and_waits_for_the_user_once
     assert_eq!(task.working_on_delivery(), Some(Worker::Turn));
     ended(&mut task, "woken", None, None);
     assert_eq!((task.working_on_delivery(), task.live()), (None, review.clone()), "nothing runs: it waits for the review");
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     assert_eq!(task.working_on_delivery(), Some(Worker::Alondra(Step::Delivering)));
     started(&mut task, "told", "told");
     assert_eq!(task.working_on_delivery(), Some(Worker::Turn));
@@ -1015,7 +1015,7 @@ fn a_lapsed_wait_with_nothing_told_waits_on_the_orchestrator_once_the_node_was_w
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "stalled-woken".into(), wake: None, awaits: Some(Await::Orchestrator("question".into())), stalled: true });
     apply(&mut task, Event::AwaitEnded { unheard_card: "stalled-woken".into(), wake: None, stalled: true });
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Answering))));
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the user's word answers the case too");
 }
 
@@ -1032,7 +1032,7 @@ fn a_turn_that_ends_on_a_recorded_wait_is_that_wait_until_its_input_arrives() {
         assert!(task.cards().is_empty(), "{awaits:?}: no card asks how it goes on");
         assert_eq!(task.live(), live, "{awaits:?}");
         assert!(!task.holds_slot(), "{awaits:?}: nothing runs");
-        apply(&mut task, Event::Tell { input: input("answer") });
+        apply(&mut task, Event::Tell { input: input("answer"), answers: None });
         assert_eq!(task.awaits(), None, "{awaits:?}: the input that ends the wait moves it on");
         assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "{awaits:?}");
     }
@@ -1071,7 +1071,7 @@ fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_wi
     assert!(!task.holds_slot(), "a resting execution on a pause takes no slot");
     assert_eq!(task.apply(task.revision(), Event::EndPause { card: "pause".into() }), Err(Refusal::InvalidState),
         "nothing tells the resting node how it goes on");
-    apply(&mut task, Event::Tell { input: input("go-on") });
+    apply(&mut task, Event::Tell { input: input("go-on"), answers: None });
     assert_eq!(task.live(), Some(LiveState::WaitingCapacity(Capacity::Machine)), "what it was told waits for the pause to end");
     apply(&mut task, Event::EndPause { card: "pause".into() });
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))));
@@ -1079,7 +1079,7 @@ fn a_pause_ends_without_a_new_input_only_once_the_task_has_something_to_go_on_wi
 
     let mut task = running();
     apply(&mut task, Event::Pause { card: "pause".into(), owner: Owner::User });
-    apply(&mut task, Event::Tell { input: input("resume") });
+    apply(&mut task, Event::Tell { input: input("resume"), answers: None });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting, "what it was told inside its turn waits for the pause to end");
     apply(&mut task, Event::EndPause { card: "pause".into() });
@@ -1097,7 +1097,7 @@ fn a_turn_takes_up_the_notifications_waiting_as_it_starts_and_its_empty_end_wake
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") });
     assert_eq!(task.activity(), ActivityView::Continuation);
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: Some(input("wake")), awaits: None, stalled: false });
     assert_eq!(task.pending_inputs(), vec![&input("wake")], "the empty turn wakes the node");
@@ -1113,7 +1113,7 @@ fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknow
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("child-done") });
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
     fact(&mut task, RuntimeFact::ContinuationConsumed { continuation: continuation("child-done") });
     let stamp = task.execution().unwrap().clone();
@@ -1138,7 +1138,7 @@ fn a_turn_that_ends_without_a_wake_leaves_the_notifications_it_found_waiting() {
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("first"), continuation: continuation("first-done") });
     fact(&mut task, RuntimeFact::WorkEnded { work: work("second"), continuation: continuation("second-done") });
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Continuation);
@@ -1200,6 +1200,8 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         64 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("wake-lapsed")) }),
         65 => Some(Event::Answer { card: "stalled-woken".into(), input: input("instruction") }),
         66 => runtime(RuntimeFact::TurnStarted { turn: turn("woken"), trigger: Trigger::Input(input("instruction")) }),
+        67 => Some(Event::Unfinished { unheard_card: "stalled-owed".into(), wake: Some(input("owed")) }),
+        68 => Some(Event::Unfinished { unheard_card: "stalled-owed".into(), wake: None }),
         22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
         23 => runtime(RuntimeFact::Notification),
         24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
@@ -1213,7 +1215,7 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
         34 => task.turn().cloned().and_then(|turn| runtime(RuntimeFact::InterruptAccepted { turn })),
         35 => task.turn().cloned().map(|turn| Event::RequestControl { control: operation("force"), kind: Control::ForceStop { turn } }),
-        36 => Some(Event::Tell { input: input("told") }),
+        36 => Some(Event::Tell { input: input("told"), answers: None }),
         37 => runtime(RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) }),
         38 => runtime(RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted }),
         _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
@@ -1229,7 +1231,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..67, 1..160)) {
+    fn every_live_task_is_in_one_owned_state(started in any::<bool>(), actions in prop::collection::vec(0u8..69, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
@@ -1306,7 +1308,7 @@ proptest! {
     #[test]
     fn a_stop_never_waits_on_the_user(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         4 => prop::sample::select(vec![2u8, 3, 4, 17, 23, 26, 44, 45, 47, 53, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]),
-        1 => 0u8..67,
+        1 => 0u8..69,
     ], 1..200)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         let mut stops = std::collections::BTreeSet::new();
@@ -1315,6 +1317,7 @@ proptest! {
             let stop = match &event {
                 Event::Runtime { fact: RuntimeFact::TurnEnded { unheard_card, stalled: true, .. }, .. }
                 | Event::AwaitEnded { unheard_card, stalled: true, .. } => Some(unheard_card.clone()),
+                Event::Unfinished { unheard_card, .. } => Some(unheard_card.clone()),
                 _ => None,
             };
             if task.apply(task.revision(), event).is_err() { continue }
@@ -1332,7 +1335,7 @@ proptest! {
     #[test]
     fn no_task_in_progress_is_left_without_a_turn_work_a_delivery_or_an_owned_wait(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         3 => prop::sample::select(vec![2u8, 3, 4, 5, 6, 7, 17, 36, 37, 38, 46, 47, 49, 56, 57, 58, 60, 65]),
-        1 => 0u8..67,
+        1 => 0u8..69,
     ], 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         let (mut fresh, mut callback_waits) = (false, false);
@@ -1361,7 +1364,7 @@ proptest! {
     }
 
     #[test]
-    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..67, 1..160)) {
+    fn arbitrary_histories_preserve_terminal_exclusion_and_atomic_rejections(started in any::<bool>(), actions in prop::collection::vec(0u8..69, 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
         for action in actions {
             let event = arbitrary_event(&task, action);
@@ -2823,7 +2826,7 @@ fn a_turn_claude_opens_by_itself_takes_the_place_of_the_card_and_of_a_waiting_me
 
     let mut told = running();
     fact(&mut told, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
-    apply(&mut told, Event::Tell { input: input("told") });
+    apply(&mut told, Event::Tell { input: input("told"), answers: None });
     fact(&mut told, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
     assert_eq!((told.activity(), told.pending_inputs()), (ActivityView::Working, vec![&input("told")]));
     fact(&mut told, RuntimeFact::InputConsumed { input: input("told") });
@@ -2850,7 +2853,7 @@ fn a_decision_asked_while_what_the_node_was_told_waits_settles_and_the_message_s
     let told = || {
         let mut task = running();
         fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
-        apply(&mut task, Event::Tell { input: input("told") });
+        apply(&mut task, Event::Tell { input: input("told"), answers: None });
         assert_eq!(task.activity(), ActivityView::Starting);
         task
     };
@@ -2926,21 +2929,21 @@ fn a_replacement_settles_the_card_an_ended_host_left_but_never_an_open_question(
 #[test]
 fn what_someone_tells_the_node_joins_the_running_turn_or_waits_for_the_next_host() {
     let mut task = running();
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     assert_eq!(task.pending_inputs(), [&input("told")], "it waits in the inbox of the turn that runs");
-    assert_eq!(task.apply(task.revision(), Event::Tell { input: input("told") }), Err(Refusal::DuplicateObligation), "told once");
+    assert_eq!(task.apply(task.revision(), Event::Tell { input: input("told"), answers: None }), Err(Refusal::DuplicateObligation), "told once");
     fact(&mut task, RuntimeFact::InputConsumed { input: input("told") });
     assert!(task.pending_inputs().is_empty(), "and that same turn takes it");
 
     let mut ended = running();
     fact(&mut ended, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     fact(&mut ended, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
-    apply(&mut ended, Event::Tell { input: input("later") });
+    apply(&mut ended, Event::Tell { input: input("later"), answers: None });
     assert_eq!(ended.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
 
     let mut cancelled = running();
     apply(&mut cancelled, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
-    apply(&mut cancelled, Event::Tell { input: input("clean") });
+    apply(&mut cancelled, Event::Tell { input: input("clean"), answers: None });
     assert_eq!(cancelled.pending_inputs(), [&input("clean")], "a cancelled task's node can still be told to settle its worktrees");
 }
 
@@ -2949,7 +2952,7 @@ fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_
     let mut rested = running();
     fact(&mut rested, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     assert_eq!(rested.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
-    apply(&mut rested, Event::Tell { input: input("deliver") });
+    apply(&mut rested, Event::Tell { input: input("deliver"), answers: None });
     assert!(rested.cards().is_empty(), "being told how to go on is the answer the card waited for");
     assert_eq!(rested.pending_inputs(), [&input("deliver")]);
     assert_eq!(rested.activity(), ActivityView::Starting, "the node takes it in its next turn");
@@ -2957,13 +2960,13 @@ fn what_the_node_is_told_answers_the_card_that_asked_how_it_goes_on_but_never_a_
     let mut gone = running();
     fact(&mut gone, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     fact(&mut gone, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
-    apply(&mut gone, Event::Tell { input: input("later") });
+    apply(&mut gone, Event::Tell { input: input("later"), answers: None });
     assert!(gone.cards().is_empty());
     assert_eq!(gone.pending_inputs(), [&input("later")], "it waits for the host that resumes the session");
 
     let mut asking = running();
     apply(&mut asking, Event::Ask { card: card("question") });
-    apply(&mut asking, Event::Tell { input: input("aside") });
+    apply(&mut asking, Event::Tell { input: input("aside"), answers: None });
     assert_eq!(asking.cards(), [(&card("question"), WaitReason::Question)], "a question the node asked still waits on its answer");
     assert_eq!(asking.pending_inputs(), [&input("aside")]);
 }
@@ -2991,7 +2994,7 @@ proptest! {
                 2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(first) }),
                 3 => runtime(RuntimeFact::InputConsumed { input: first }),
                 4 => runtime(RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false }),
-                5..=8 => Some(Event::Tell { input: named }),
+                5..=8 => Some(Event::Tell { input: named, answers: None }),
                 9 => Some(Event::ExecutionReleased { input: named }),
                 10 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None }),
                 11 => Some(Event::DoubtHandoff { card: "doubt".into(), input: named }),
@@ -3095,7 +3098,7 @@ fn ending_the_work_after_the_merge_or_telling_the_node_settles_the_card_of_its_e
 
     let mut task = merged_with_work_after_it();
     fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
-    apply(&mut task, Event::Tell { input: input("told") });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
     assert!(task.cards().is_empty());
     assert_eq!(task.pending_inputs(), [&input("told")]);
 }
@@ -3107,7 +3110,7 @@ fn answering_a_reply_with_background_work() -> TaskLifecycle {
     apply(&mut task, Event::Present { delivery: "delivery".into() });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
     assert!(task.cards().is_empty() && task.activity() == ActivityView::Resting, "the delivery waits on the user");
-    apply(&mut task, Event::Tell { input: input("reply") });
+    apply(&mut task, Event::Tell { input: input("reply"), answers: None });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("reply"), trigger: Trigger::Input(input("reply")) });
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("reply"), work: work("snapshots") });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("reply"), unheard_card: card("reply-card"), wake: None, awaits: None, stalled: false });
@@ -3238,9 +3241,62 @@ fn a_host_move_may_ignore_only_the_named_answered_callbacks() {
         assert!(background.quiescent_except_callbacks(&allowed));
     }
     let mut input_pending = idle();
-    apply(&mut input_pending, Event::Tell { input: input("queued") });
+    apply(&mut input_pending, Event::Tell { input: input("queued"), answers: None });
     assert!(!input_pending.quiescent_except_callbacks(&allowed), "a queued input remains");
     let mut effect_pending = idle();
     fact(&mut effect_pending, RuntimeFact::EffectAccepted { operation: operation("native-effect") });
     assert!(!effect_pending.quiescent_except_callbacks(&allowed), "a native effect remains");
+}
+
+/// A delivery whose node ended its turn resting.
+fn resting_delivery() -> TaskLifecycle {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    stalled(&mut task, "root", None);
+    assert_eq!((task.phase(), task.activity()), (TaskPhase::Delivered, ActivityView::Resting));
+    task
+}
+fn unfinished(task: &mut TaskLifecycle, wake: Option<&str>) -> Result<(), Refusal> {
+    task.apply(task.revision(), Event::Unfinished { unheard_card: "stalled-owed".into(), wake: wake.map(input) })
+}
+
+/// beta-go, 3 November: the node presented, asked the user, was told the answer and rested on
+/// it for two hours. The step it owes wakes it once; resting again waits on the orchestrator,
+/// never on the user, who still sees only the delivery.
+#[test]
+fn unfinished_wakes_a_resting_delivery_once_then_waits_on_the_orchestrator() {
+    let mut task = resting_delivery();
+    let review = Several::new([InteractionId::from("result")]).map(LiveState::WaitingUser);
+    unfinished(&mut task, Some("owed")).unwrap();
+    assert_eq!(task.pending_inputs(), vec![&input("owed")], "the node is woken with the step it owes");
+    assert!(task.cards().is_empty());
+    started(&mut task, "woken", "owed");
+    stalled(&mut task, "woken", None);
+    assert_eq!(unfinished(&mut task, Some("owed-again")), Err(Refusal::InvalidState), "a second wake in a row is never sent");
+    unfinished(&mut task, None).unwrap();
+    assert_eq!(task.cards(), [(&InteractionId::from("stalled-owed"), WaitReason::Unheard)]);
+    assert!(task.pending_inputs().is_empty());
+    assert_eq!(task.live(), review, "the user sees only the delivery");
+    assert_eq!(unfinished(&mut task, None), Err(Refusal::InvalidState), "one case at a time");
+    apply(&mut task, Event::Answer { card: "stalled-owed".into(), input: input("instruction") });
+    assert_eq!(task.pending_inputs(), vec![&input("instruction")], "the orchestrator's instruction reaches the node");
+    assert_eq!(task.phase(), TaskPhase::Delivered, "the delivery stays");
+}
+
+#[test]
+fn unfinished_is_refused_outside_a_resting_delivery() {
+    let mut working = running();
+    apply(&mut working, Event::Present { delivery: "result".into() });
+    assert_eq!(unfinished(&mut working, Some("owed")), Err(Refusal::InvalidState), "a turn still runs");
+    let mut in_progress = running();
+    stalled(&mut in_progress, "root", None);
+    assert_eq!(unfinished(&mut in_progress, None), Err(Refusal::InvalidState), "nothing is delivered");
+    let mut told = resting_delivery();
+    apply(&mut told, Event::Tell { input: input("told"), answers: None });
+    assert_eq!(unfinished(&mut told, Some("owed")), Err(Refusal::InvalidState), "something already reaches the node");
+    let mut woken = resting_delivery();
+    unfinished(&mut woken, Some("owed")).unwrap();
+    assert_eq!(unfinished(&mut woken, Some("owed")), Err(Refusal::InvalidState), "the wake already waits");
+    let mut planned = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    assert_eq!(unfinished(&mut planned, None), Err(Refusal::InvalidState));
 }

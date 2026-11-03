@@ -8,7 +8,7 @@ mod scheduled_launch;
 pub use scheduled_launch::{SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED};
 mod snooze;
 mod stall;
-pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, is_stall_case, stalled_card_id};
+pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, is_stall_case, stalled_card_id};
 pub(in crate::domain) use stall::stalled_in_place_of;
 pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem};
 #[path = "guards.rs"]
@@ -933,6 +933,31 @@ impl DomainState {
     pub(super) fn answered_question(i: &Interaction) -> bool {
         matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. })
     }
+    /// The refusal that gives an answered card's answer back, every member's for a group.
+    fn already_answered(&self, i: &Interaction) -> String {
+        let said = |member: &Interaction| answer_said(member).unwrap_or_default().trim_end_matches('.').to_owned();
+        let answer = if i.card.group.is_some() {
+            self.group_members(i).into_iter().map(|member| format!("{} ({}) → {}", member.card.need, member.id, said(member)))
+                .collect::<Vec<_>>().join("; ")
+        } else {
+            said(i)
+        };
+        format!("Card {} is already answered: {answer}. It is final: act on it", i.id)
+    }
+    /// `card` is a card the node of `task_id` asked on it, answered and held by no hook: what
+    /// the node is told carries its answer.
+    fn node_answer(&self, task_id: &TaskId, card: &InteractionId) -> Result<()> {
+        let node = self.tasks.get(task_id).and_then(|task| task.agent_id.as_ref());
+        let theirs = self.interactions.get(card).is_some_and(|i| {
+            matches!(&i.scope, Scope::Task { task_id: scope } if scope == task_id)
+                && matches!(&i.author, Author::Agent { agent_id } if Some(agent_id) == node)
+                && Self::answered_question(i)
+        });
+        if !theirs || self.holds.contains_key(card) {
+            return refuse("invalid_input", "answers", &format!("Card {card} is not an answered card of the node of task {task_id}"));
+        }
+        Ok(())
+    }
     /// Every question of the group has its answer: the author is given them all together.
     pub fn group_complete(&self, i: &Interaction) -> bool {
         self.group_members(i).iter().all(|member| !member.withdrawn && Self::answered_question(member))
@@ -1005,7 +1030,7 @@ impl DomainState {
             return refuse("forbidden", "card.replaces", &format!("Card {old} is held by a Claude Code hook: it ends with its hook"));
         }
         if matches!(&x.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }) {
-            return refuse("already_answered", "card.replaces", &format!("Card {old} is already answered: send a new card without card.replaces"));
+            return refuse("already_answered", "card.replaces", &self.already_answered(x));
         }
         if !self.open(x) {
             return refuse("already_withdrawn", "card.replaces", &format!("Card {old} is no longer open: send a new card without card.replaces"));
@@ -3687,10 +3712,10 @@ impl DomainState {
                 };
                 if i.card.group.is_some() {
                     if self.group_complete(i) {
-                        return refuse("question_already_answered", "interaction_id", "The user answered every question: they are final, act on the answers");
+                        return refuse("question_already_answered", "interaction_id", &self.already_answered(i));
                     }
                 } else if Self::answered_question(i) {
-                    return refuse("question_already_answered", "interaction_id", "The user already answered this card: it is final, act on the answer");
+                    return refuse("question_already_answered", "interaction_id", &self.already_answered(i));
                 }
                 if matches!(&i.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
                     return refuse("invalid_action_for_kind", "interaction_id", "The user already accepted this delivery: it cannot be withdrawn");
@@ -3845,7 +3870,7 @@ impl DomainState {
                     }
                 };
                 if answer.is_some() {
-                    return refuse("question_already_answered", "interaction_id", "This card is already answered and its answer is final");
+                    return refuse("question_already_answered", "interaction_id", &self.already_answered(&i));
                 };
                 if i.withdrawn {
                     return fail("withdrawn", "Its author withdrew this question");
@@ -4896,22 +4921,25 @@ impl DomainState {
                 system(actor)?;
                 self.compact_ended_tasks(task_ids)?;
             }
-            Command::TellNode { task_id, text, from_user } => {
+            Command::TellNode { task_id, text, from_user, answers } => {
                 system(actor)?;
                 nonempty(text)?;
                 if self.task(task_id)?.state.terminal() {
                     return fail("task_not_active", &format!("Task {task_id} has ended: its node is gone"));
+                }
+                if let Some(card) = answers {
+                    self.node_answer(task_id, card)?;
                 }
                 if self.lifecycle(lifecycles, task_id)?.execution().is_none_or(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST) {
                     return fail("conflict", &format!("Task {task_id} has no node running through the Agent SDK"));
                 }
                 let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
                 // The user writing to a task whose host was lost is their «Try again», with what they wrote.
-                let lost = held.iter().find(|card| *from_user && self.interactions.get(*card).is_some_and(retakes)).cloned();
+                let lost = held.iter().find(|card| *from_user && answers.is_none() && self.interactions.get(*card).is_some_and(retakes)).cloned();
                 if let Some(card) = lost {
                     self.settle_host_lost(&card, RETAKE, Some(text), lifecycles)?;
                 } else {
-                    let record = LifecycleRecord::Told { input: self.next_input(task_id), text: Some(text.clone()) };
+                    let record = LifecycleRecord::Told { input: self.next_input(task_id), text: Some(text.clone()), answers: answers.clone() };
                     self.decide(lifecycles, task_id, record)?;
                 }
                 let answered: Vec<InteractionId> = {

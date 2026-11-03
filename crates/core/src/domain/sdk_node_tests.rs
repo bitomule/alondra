@@ -108,7 +108,7 @@ fn perform(s: &mut DomainState, act: &Act, n: usize) {
         Act::Task(step) => run(s, step, n).map(drop),
         Act::Pause { by_user } => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(*by_user, at) }, at }).map(drop),
         Act::Resume => {
-            let _ = exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Carry on {n}"), from_user: false });
+            let _ = exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Carry on {n}"), from_user: false, answers: None });
             exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop)
         }
         Act::Interrupt => exec(s, Actor::System, Command::InterruptTurn { agent_id: NODE.into() }).map(drop),
@@ -213,7 +213,7 @@ fn a_pause_of_a_node_of_the_agent_sdk_lives_in_its_task_s_lifecycle() {
         "its interrupted turn ends on the pause, with no card that asks how it goes on");
     assert_eq!(exec(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 6 }).unwrap_err().code, "conflict",
         "the pause ends only once the node has something to go on with");
-    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Go on".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Go on".into(), from_user: false, answers: None });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 7 });
     assert_eq!(s.node_pause(&agent), None);
     assert_eq!(s.live_state(&SDK.into()), Some(LiveState::Working(alondra_domain::Worker::Alondra(alondra_domain::Step::Delivering))));
@@ -259,7 +259,7 @@ fn any_commit_moves_an_older_phase_of_a_node_of_the_agent_sdk() {
     let mut s = three_tasks();
     let agent = AgentId::from(NODE);
     s.agents.get_mut(&agent).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
-    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into(), from_user: false, answers: None });
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
 }
 

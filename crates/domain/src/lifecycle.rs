@@ -556,9 +556,11 @@ pub enum Event {
     },
     /// Someone tells the task's node something outside a card: the input reaches its execution
     /// as it is, inside the turn that runs or as a turn of its own, and waits for the host that
-    /// resumes the session when the execution has none.
+    /// resumes the session when the execution has none. `answers` names the node's own card
+    /// the input answers, when it is one.
     Tell {
         input: InputId,
+        answers: Option<InteractionId>,
     },
     DependenciesResolved {
         input: InputId,
@@ -660,6 +662,13 @@ pub enum Event {
         wake: Option<InputId>,
         stalled: bool,
     },
+    /// A delivery whose node rests still owes a step the node never took after it (the answer to
+    /// its own card, its work after the merge): it wakes the node with `wake` or, woken already
+    /// with nothing new since, waits on `unheard_card`, the orchestrator's.
+    Unfinished {
+        unheard_card: InteractionId,
+        wake: Option<InputId>,
+    },
     /// The intent to run `kind` on the current execution, recorded before anything reaches it.
     RequestControl {
         control: OperationId,
@@ -678,7 +687,7 @@ impl Event {
         match self {
             Self::Answer { input, .. }
             | Self::HandBack { input, .. }
-            | Self::Tell { input }
+            | Self::Tell { input, .. }
             | Self::DependenciesResolved { input }
             | Self::Resume { input, .. }
             | Self::RetireReleasedExecution { input, .. }
@@ -687,6 +696,7 @@ impl Event {
             | Self::DoubtHandoff { input, .. }
             | Self::Compact { input }
             | Self::AwaitEnded { wake: Some(input), .. }
+            | Self::Unfinished { wake: Some(input), .. }
             | Self::Runtime {
                 fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. }
                     | RuntimeFact::InputConsumed { input }
@@ -719,6 +729,7 @@ impl Event {
             | Self::PlanReviewSettled { .. }
             | Self::Discard { .. }
             | Self::AwaitEnded { wake: None, .. }
+            | Self::Unfinished { wake: None, .. }
             | Self::RequestControl { .. } => vec![],
         }
     }
@@ -1486,7 +1497,7 @@ impl TaskLifecycle {
 /// Any card, delivery, work of the node's own, input or new execution starts the count again.
 fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
     let Event::Runtime { fact, .. } = event else {
-        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. });
+        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. } | Event::Unfinished { .. });
     };
     match fact {
         RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. } | RuntimeFact::InputConsumed { input } => Some(input) == woken,

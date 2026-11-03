@@ -691,7 +691,7 @@ impl DomainRuntime {
             if !outcome.changed || (already_requested && outcome.revision > before_revision) { return Ok(outcome); }
             let continuation = CommandEnvelope { protocol_version:PROTOCOL_VERSION,data_epoch:envelope.data_epoch.clone(),
                 command_id:format!("plan-mode-input-{operation}").into(),expected_revision:0,
-                command:Command::TellNode { task_id:task.clone(),text:"Alondra has enabled plan mode. Prepare the task plan for the user's approval before implementation. Preserve the current session and completed work.".into(), from_user: false } };
+                command:Command::TellNode { task_id:task.clone(),text:"Alondra has enabled plan mode. Prepare the task plan for the user's approval before implementation. Preserve the current session and completed work.".into(), from_user: false, answers: None } };
             owner.stage_command(&Actor::System,&continuation,crate::domain_store::Attached::None).cloned()
         })?;
         Ok(outcome)

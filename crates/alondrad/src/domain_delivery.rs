@@ -124,18 +124,41 @@ fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result
         .or_else(|| crate::sdk_handover::successor(domain, &AgentId(agent.clone())).map(|(task, _)| task))
         .ok_or((State::Discarded, "no_task"))?;
     let text = crate::domain_transport::render(&state, message);
-    match crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, &text, &format!("tell-outbox-{}", message.id), false) {
+    let from_user = crate::domain_transport::from_user(&state, message);
+    let answers = answered_card(&state, &task, message);
+    let author = if from_user || answers.is_some() {
+        let origin = domain.store.lock_or_exit("the domain store").message_origin(message.id).map_err(|_| (State::Retryable, "domain_unavailable"))?;
+        origin.map_or_else(|| crate::node_push::ALONDRA.to_owned(), |(_, actor)| crate::node_push::author_of(&actor))
+    } else {
+        crate::node_push::ALONDRA.to_owned()
+    };
+    match crate::domain_messages::tell_sdk_node_answering(domain, &task, &author, &text, &format!("tell-outbox-{}", message.id), from_user, answers) {
         Ok(()) => Ok(()),
         Err(error) if error.code == "idempotency_conflict" => Ok(()),
         Err(error) if matches!(error.code.as_str(), "storage_unavailable" | "stale_revision") => {
             log!("could not tell the node of {task} message {} yet: {error}", message.id);
             Err((State::Retryable, "domain_unavailable"))
         }
+        Err(error) if error.code == "conflict" && state.tasks.get(&task).is_some_and(|task| !task.state.terminal()) => {
+            log!("the node of {task} cannot take message {} yet: {error}", message.id);
+            Err((State::Retryable, "node_not_ready"))
+        }
         Err(error) => {
             log!("the node of {task} cannot be told message {}: {error}", message.id);
             Err((State::Discarded, "node_gone"))
         }
     }
+}
+
+/// The node's own card of `task` whose answer `message` carries.
+fn answered_card(state: &alondra_core::domain::DomainState, task: &TaskId, message: &OutboxMessage) -> Option<InteractionId> {
+    let card = state.interactions.get(&InteractionId(message.interaction_id.clone()?))?;
+    let node = state.tasks.get(task)?.agent_id.as_ref()?;
+    let answered = matches!(&card.payload,
+        InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. });
+    let theirs = matches!(&card.author, alondra_core::domain::Author::Agent { agent_id } if agent_id == node)
+        && matches!(&card.scope, alondra_core::domain::Scope::Task { task_id } if task_id == task);
+    (answered && theirs && !state.holds.contains_key(&card.id)).then(|| card.id.clone())
 }
 
 /// User hints and producer messages are limited separately, so a backlog of

@@ -188,7 +188,7 @@ impl World {
             Step::UncertainOpening(pick) => {
                 if !self.sdk_openings.is_empty() {
                     let id = self.sdk_openings.keys().nth(pick % self.sdk_openings.len()).unwrap().clone();
-                    self.must(Actor::System, Command::TellNode { task_id: id.clone(), text: format!("Queued message at {}", self.s.revision), from_user: true });
+                    self.must(Actor::System, Command::TellNode { task_id: id.clone(), text: format!("Queued message at {}", self.s.revision), from_user: true, answers: None });
                     self.recover_opening(&id);
                 }
             }

@@ -63,7 +63,7 @@ fn among_many_tasks_a_command_touches_and_copies_only_the_ones_it_moves() {
     }
     let asked = TaskId::from("s-task");
     let before = s.clone();
-    must(&mut s, Actor::System, Command::TellNode { task_id: asked.clone(), text: "Notice".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: asked.clone(), text: "Notice".into(), from_user: false, answers: None });
     assert_eq!(grown(&before, &s), BTreeSet::from([asked.clone()]));
     assert_eq!(before.touched_tasks(&s), BTreeSet::from([asked.clone()]));
     for (task, journal) in &before.lifecycle_journal {
@@ -78,7 +78,7 @@ fn among_many_tasks_a_command_touches_and_copies_only_the_ones_it_moves() {
 #[test]
 fn a_journal_serializes_as_the_list_of_its_records() {
     let mut s = three_tasks();
-    must(&mut s, Actor::System, Command::TellNode { task_id: "s-task".into(), text: "Notice".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "s-task".into(), text: "Notice".into(), from_user: false, answers: None });
     let journal = &s.lifecycle_journal[&TaskId::from("s-task")];
     let records: Vec<LifecycleRecord> = journal.iter().cloned().collect();
     assert_eq!(serde_json::to_value(journal).unwrap(), serde_json::to_value(&records).unwrap());

@@ -707,7 +707,7 @@ fn technical_turn_end_preserves_work_and_decisions_and_repeats_as_evidence() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
         facts: vec![RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "background".into() }] });
     must(&mut s, Actor::System, request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Keep this queued instruction".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Keep this queued instruction".into(), from_user: false, answers: None });
     let pending: Vec<_> = s.lifecycle_of(&"t".into()).unwrap().pending_inputs().into_iter().cloned().collect();
     let end = || Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
         facts: vec![RuntimeObservation::TurnEnded { turn: "turn-1".into(), failure: None, failed: None }] };

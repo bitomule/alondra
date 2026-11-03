@@ -12,6 +12,9 @@ pub const STALLED_PREFIX: &str = "stalled-";
 pub const STALL_ATTEMPTS: u32 = 3;
 pub const STALL_INSTRUCT: &str = "instruct";
 pub const STALL_CLOSE: &str = "close";
+/// What a delivered node is told when nobody settled the case of its rest: the delivery is the user's.
+pub const UNSETTLED_DELIVERY: &str = "Your delivery stays with the user for review: do nothing more until they write to you.";
+pub const UNSETTLED_AFTER_MERGE: &str = "Nobody settled how your work after the merge goes on: do nothing more until the user writes to you.";
 /// The longest instruction or result a settlement carries.
 pub const STALL_TEXT_MAX: usize = 4000;
 
@@ -81,11 +84,23 @@ impl DomainState {
 
     /// The case the lifecycle of `task` now waits on, `card`, goes to the orchestrator.
     pub(in crate::domain) fn open_stall(&mut self, task: &TaskId, card: InteractionId, effects: &mut Vec<DomainEffect>) {
+        let why = self.empty_turn(task);
+        self.open_stall_on(task, card, why, effects);
+    }
+
+    /// The case `card` of `task`, whose node stopped for `why`, goes to the orchestrator.
+    pub(in crate::domain) fn open_stall_on(&mut self, task: &TaskId, card: InteractionId, why: EmptyTurn, effects: &mut Vec<DomainEffect>) {
         let Some(t) = self.tasks.get_mut(task) else { return };
         t.stalls += 1;
         let (number, title) = (t.stalls, t.title.clone());
         let only_close = number > STALL_ATTEMPTS;
-        let why = self.empty_turn(task).stall_text();
+        let delivered = !matches!(why, EmptyTurn::Unexplained | EmptyTurn::UnpresentedPr { .. });
+        let why = why.stall_text();
+        let delivery = if delivered {
+            " Its delivery stays with the user while you settle it: instruct sends the node back to its step, close cancels the task and its delivery, and a case nobody settles leaves the delivery with the user."
+        } else {
+            ""
+        };
         let outcomes = if only_close {
             format!("This is case {number}: the orchestrator already sent it back {STALL_ATTEMPTS} times and it stopped again. Settle it with close: the task ends with your result, what got done and what did not.")
         } else {
@@ -93,7 +108,7 @@ impl DomainState {
         };
         let body = format!(
             "The node of Task “{title}” ({task}) stopped with nothing that explains its next step: no result, no question, no work of its own running and nothing it waits for. {why} Alondra already woke it once with what happened. \
-             This is never a question for the user: read its mission, its last words and its worktree below, and settle it with settle_stall(case_id: \"{card}\", task_id: \"{task}\", outcome). {outcomes}");
+             This is never a question for the user: read its mission, its last words and its worktree below, and settle it with settle_stall(case_id: \"{card}\", task_id: \"{task}\", outcome). {outcomes}{delivery}");
         let need = fit_title(&title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without a result or a question: settle how it goes on"));
         self.interactions.insert(card.clone(), Interaction {
             attachments: vec![],
@@ -162,6 +177,11 @@ impl DomainState {
         match outcome {
             StallOutcome::Instruct { .. } => {
                 let record = LifecycleRecord::Answered { card: case_id.clone(), input: self.next_input(task), text };
+                self.decide(lifecycles, task, record)
+            }
+            StallOutcome::Unsettled if self.lifecycle(lifecycles, task)?.phase() == alondra_domain::TaskPhase::Delivered => {
+                let text = if self.work_after_merge(task, self.lifecycle(lifecycles, task)?).is_some() { UNSETTLED_AFTER_MERGE } else { UNSETTLED_DELIVERY };
+                let record = LifecycleRecord::Answered { card: case_id.clone(), input: self.next_input(task), text: Some(text.into()) };
                 self.decide(lifecycles, task, record)
             }
             StallOutcome::Close { .. } | StallOutcome::Unsettled => {

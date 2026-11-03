@@ -637,6 +637,31 @@ impl Answer {
         }
     }
 }
+/// What an answered card's answer says in words: the option chosen, the values filled in and
+/// the files attached. `None` when the card has no answer.
+pub fn answer_said(interaction: &Interaction) -> Option<String> {
+    let (options, answer) = match &interaction.payload {
+        InteractionPayload::Question { options, answer: Some(answer) }
+        | InteractionPayload::ActionRequest { options, answer: Some(answer) } => (options, answer),
+        _ => return None,
+    };
+    let option = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.as_str());
+    let values: Vec<String> = answer.inputs.values().map(|value| match value {
+        InputValue::Text(value) => value.clone(),
+        InputValue::Boolean(value) => value.to_string(),
+        InputValue::Integer(value) => value.to_string(),
+        InputValue::Form(content) => serde_json::Value::Object(content.clone()).to_string(),
+    }).filter(|value| !value.trim().is_empty()).collect();
+    let mut text = match option {
+        Some(option) if values.is_empty() => format!("{option}."),
+        Some(option) => format!("{option}. {}", values.join("; ")),
+        None => values.join("; "),
+    };
+    for attachment in &answer.attachments {
+        text.push_str(&format!(" Open the attached file “{}” at {}.", attachment.name, attachment.content_reference));
+    }
+    Some(text.trim_start().to_owned())
+}
 /// The only ways the orchestrator settles a node's suggestion. There is no answer outside them:
 /// a new task is created by the same command that records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

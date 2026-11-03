@@ -200,6 +200,13 @@ fn reaches(lifecycle: &alondra_domain::TaskLifecycle) -> &'static str {
 /// the same `command_id` tells it once. `from_user` is for the user's own words.
 pub(crate) fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain::TaskId, author: &str, text: &str, command_id: &str, from_user: bool)
     -> Result<(), DomainError> {
+    tell_sdk_node_answering(domain, task, author, text, command_id, from_user, None)
+}
+
+/// Tells the node of the SDK task `task` `text` as `tell_sdk_node` does; `answers` names the
+/// node's own answered card whose answer `text` carries.
+pub(crate) fn tell_sdk_node_answering(domain: &DomainRuntime, task: &alondra_core::domain::TaskId, author: &str, text: &str, command_id: &str,
+    from_user: bool, answers: Option<alondra_core::domain::InteractionId>) -> Result<(), DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let envelope = alondra_core::domain::CommandEnvelope {
         protocol_version: alondra_core::domain::PROTOCOL_VERSION,
@@ -210,6 +217,7 @@ pub(crate) fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain:
             task_id: task.clone(),
             text: crate::node_push::stamped(author, alondra_core::now_millis(), text),
             from_user,
+            answers,
         },
     };
     domain.execute_as_system(envelope).map(|_| ()).map_err(|error| match error {

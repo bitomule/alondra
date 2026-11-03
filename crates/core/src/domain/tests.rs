@@ -1411,6 +1411,54 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     exec(&mut s, orchestrator(), Command::Withdraw { interaction_id: "oq".into() }).unwrap();
     assert!(s.interactions[&"oq".into()].withdrawn);
 }
+fn answered_card(s: &mut DomainState, id: &str, text: &str) {
+    exec(s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Which name?".into(), blocking: false, options: vec![],
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Name the release") }).unwrap();
+    exec(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: id.into(), option_id: String::new(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(text.into()))]) }).unwrap();
+}
+#[test]
+fn withdrawing_an_answered_card_gives_back_its_answer() {
+    let mut s = fixture();
+    answered_card(&mut s, "q", "Call it Atlas");
+    let refusal = exec(&mut s, agent(), Command::Withdraw { interaction_id: "q".into() }).unwrap_err();
+    assert_eq!((refusal.code.as_str(), refusal.subject.as_deref()), ("question_already_answered", Some("interaction_id")));
+    assert!(refusal.message.contains("Card q is already answered: Call it Atlas"), "{}", refusal.message);
+}
+#[test]
+fn replacing_an_answered_card_gives_back_its_answer() {
+    let mut s = fixture();
+    answered_card(&mut s, "q", "Call it Atlas");
+    let mut card = crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Name the release");
+    card.replaces = Some("q".into());
+    let refusal = exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q-again".into(),
+        scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Which name?".into(), blocking: false,
+        options: vec![], card }).unwrap_err();
+    assert_eq!((refusal.code.as_str(), refusal.subject.as_deref()), ("already_answered", Some("card.replaces")));
+    assert!(refusal.message.contains("Card q is already answered: Call it Atlas"), "{}", refusal.message);
+}
+#[test]
+fn a_node_is_told_an_answer_only_of_its_own_answered_card() {
+    let mut s = fixture();
+    answered_card(&mut s, "answered", "Call it Atlas");
+    exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "open".into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Which color?".into(), blocking: false, options: vec![],
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Pick a color") }).unwrap();
+    exec(&mut s, orchestrator(), Command::AskQuestion { attachments: vec![], interaction_id: "theirs".into(),
+        scope: Scope::Orchestrator { request_id: Some("r".into()) }, recipient: Recipient::User, body: "Scope?".into(), blocking: false,
+        options: vec![], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
+    exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "theirs".into(), option_id: String::new(),
+        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("All of it".into()))]) }).unwrap();
+    let tell = |answers: &str| Command::TellNode { task_id: "t".into(), text: "Answer".into(), from_user: true, answers: Some(answers.into()) };
+    for card in ["open", "theirs", "missing"] {
+        let before = s.clone();
+        let refusal = exec(&mut s, Actor::System, tell(card)).unwrap_err();
+        assert_eq!((refusal.code.as_str(), refusal.subject.as_deref()), ("invalid_input", Some("answers")), "{card}");
+        assert_eq!(s, before, "{card}");
+    }
+    assert_eq!(exec(&mut s, Actor::System, tell("answered")).unwrap_err().code, "conflict", "its own answered card passes, to the node it has");
+}
 #[test]
 fn document_revision_invalidates_entire_joint_delivery() {
     let mut s = fixture();
@@ -3362,7 +3410,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordDecisionAborted { task_id: ids.task.into(), generation: 1, epoch: 1 }, false),
         (Command::RecordTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), origin: WorktreeOrigin::Subagent, branch: None }, false),
         (Command::ReleaseTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), end: WorktreeEnd::Removed }, false),
-        (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into(), from_user: false }, false),
+        (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into(), from_user: false, answers: None }, false),
         (Command::RecordDistribution { policy: crate::accounts::Policy::Chain, move_when_exhausted: true }, true),
         (Command::ChangeAccounts { provider: crate::accounts::Provider::Claude,
             change: crate::accounts::AccountChange::Remove { account: crate::accounts::AccountId::default_account() } }, false),

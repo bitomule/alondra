@@ -1404,7 +1404,7 @@ fn a_live_native_cell_continuation_is_one_durable_input_without_retiring_own_wor
     let observe=|cursor,facts|{let state=runtime.state().unwrap();runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap().0};
     observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()},Observation::WorkStarted{turn:turn.clone(),work:work.clone()}]);
     observe(2,vec![Observation::TurnEnded{turn,outcome:alondra_provider_contract::TurnOutcome::Completed}]);
-    let state=runtime.state().unwrap();runtime.execute_as_system(envelope(&state,"already-queued",Command::TellNode{task_id:task(),text:"Preserve this existing input".into(), from_user: false})).unwrap();
+    let state=runtime.state().unwrap();runtime.execute_as_system(envelope(&state,"already-queued",Command::TellNode{task_id:task(),text:"Preserve this existing input".into(), from_user: false, answers: None})).unwrap();
     let before=runtime.state().unwrap();let pending=before.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();
     let before_runtime_cursor=before.lifecycle_of(&task()).unwrap().cursor();
     let before_told=before.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_core::domain::LifecycleRecord::Told{..})).count();

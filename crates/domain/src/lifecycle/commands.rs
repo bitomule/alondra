@@ -135,12 +135,16 @@ impl TaskLifecycle {
             Event::SettleHandoff { card, resend, unheard_card } => self.settle_handoff(card, resend, unheard_card)?,
             Event::Discard { card, unheard_card, stalled } => self.discard(card, unheard_card, unheard_owner(stalled))?,
             Event::AwaitEnded { unheard_card, wake, stalled } => self.await_ended(unheard_card, wake, unheard_owner(stalled))?,
+            Event::Unfinished { unheard_card, wake } => self.unfinished(unheard_card, wake)?,
             Event::ResendUntaken { input, resend } => self.resend(&input, resend)?,
             Event::ResendDoubtful { input, resend } => {
                 self.resend(&input, resend)?;
                 self.settled.insert(input);
             }
-            Event::Tell { input } => {
+            Event::Tell { input, answers } => {
+                if let Some(card) = &answers {
+                    valid_id(&card.0)?;
+                }
                 if self.is_pending(&input) || self.settled.contains(&input) {
                     return Err(Refusal::DuplicateObligation);
                 }
@@ -890,6 +894,33 @@ impl TaskLifecycle {
             }),
         };
         self.woken = woken;
+        Ok(())
+    }
+
+    fn unfinished(&mut self, unheard: InteractionId, wake: Option<InputId>) -> Result<(), Refusal> {
+        valid_id(&unheard.0)?;
+        if wake.as_ref().is_some_and(|input| self.settled.contains(input) || self.is_pending(input)) || (wake.is_some() && self.woken.is_some()) {
+            return Err(Refusal::InvalidState);
+        }
+        let State::Delivered(delivered) = &mut self.state else {
+            return Err(Refusal::InvalidState);
+        };
+        if !delivered.decisions.is_empty() {
+            return Err(Refusal::InvalidState);
+        }
+        let Session::Present(execution) = &mut delivered.session else {
+            return Err(Refusal::InvalidState);
+        };
+        if execution.resource != ResourceEvidence::Available || execution.activity != Activity::Resting {
+            return Err(Refusal::InvalidState);
+        }
+        match &wake {
+            Some(input) => queue_input(execution, input.clone())?,
+            None => {
+                delivered.decisions.insert(unheard.clone(), Card { id: unheard, reason: WaitReason::Unheard, owner: Owner::Orchestrator, callback: None });
+            }
+        }
+        self.woken = wake;
         Ok(())
     }
 

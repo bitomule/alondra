@@ -739,11 +739,11 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
     let mut state = f.domain.state().unwrap().as_ref().clone();
     let task = state.tasks[&TaskId::from("t")].clone();
     for record in [
-        LifecycleRecord::Told { input: "refinement".into(), text: Some("Only change the file-backed profile".into()) },
+        LifecycleRecord::Told { input: "refinement".into(), text: Some("Only change the file-backed profile".into()), answers: None },
         LifecycleRecord::Answered { card: "question".into(), input: "freeform".into(), text: Some("Other: preserve the native default credentials".into()) },
         LifecycleRecord::HandedBack { delivery: "delivery".into(), input: "review".into(), text: Some("The native credentials still changed; repair that".into()) },
     ] { state.lifecycle_journal.get_mut(&task.id).unwrap().push(record); }
-    state.lifecycle_journal.insert("unrelated-task".into(), vec![LifecycleRecord::Told { input: "private".into(), text: Some("Unrelated private input".into()) }]);
+    state.lifecycle_journal.insert("unrelated-task".into(), vec![LifecycleRecord::Told { input: "private".into(), text: Some("Unrelated private input".into()), answers: None }]);
     let context = canonical_task_context(&state, &task);
     assert!(context.complete);
     let first = context.text.find("Only change the file-backed profile").unwrap();
@@ -751,11 +751,11 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
     let third = context.text.find("The native credentials still changed; repair that").unwrap();
     assert!(first < second && second < third);
     assert!(!context.text.contains("Unrelated private input"));
-    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "lost".into(), text: None });
+    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "lost".into(), text: None, answers: None });
     let context = canonical_task_context(&state, &task);
     assert!(!context.complete);
     assert!(context.omitted_sources.contains(&format!("task:{}:input:lost", task.id)));
-    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "oversized".into(), text: Some("界".repeat(CANONICAL_CONTEXT_LIMIT)) });
+    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "oversized".into(), text: Some("界".repeat(CANONICAL_CONTEXT_LIMIT)), answers: None });
     let context = canonical_task_context(&state, &task);
     assert!(!context.complete);
     assert!(context.omitted_sources.contains(&format!("task:{}:input:oversized", task.id)));

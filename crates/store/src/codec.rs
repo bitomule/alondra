@@ -829,6 +829,8 @@ pub(super) enum EventRecord {
     },
     Tell {
         input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<String>,
     },
     Pause {
         card: String,
@@ -904,6 +906,11 @@ pub(super) enum EventRecord {
         wake: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         stalled: bool,
+    },
+    Unfinished {
+        unheard_card: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake: Option<String>,
     },
     RequestControl {
         control: String,
@@ -982,8 +989,9 @@ impl From<&Event> for EventRecord {
             Event::DependenciesResolved { input } => Self::DependenciesResolved {
                 input: input.as_str().to_owned(),
             },
-            Event::Tell { input } => Self::Tell {
+            Event::Tell { input, answers } => Self::Tell {
                 input: input.as_str().to_owned(),
+                answers: answers.as_ref().map(|card| card.0.clone()),
             },
             Event::Pause { card, owner } => Self::Pause {
                 card: card.0.clone(),
@@ -1061,6 +1069,10 @@ impl From<&Event> for EventRecord {
                 wake: wake.as_ref().map(|input| input.as_str().to_owned()),
                 stalled: *stalled,
             },
+            Event::Unfinished { unheard_card, wake } => Self::Unfinished {
+                unheard_card: unheard_card.0.clone(),
+                wake: wake.as_ref().map(|input| input.as_str().to_owned()),
+            },
             Event::ResendUntaken { input, resend } => Self::ResendUntaken {
                 input: input.as_str().to_owned(),
                 resend: resend.as_str().to_owned(),
@@ -1116,6 +1128,7 @@ impl EventRecord {
             Self::ResendDoubtful { .. } => "ResendDoubtful",
             Self::Discard { .. } => "Discard",
             Self::AwaitEnded { .. } => "AwaitEnded",
+            Self::Unfinished { .. } => "Unfinished",
             Self::RequestControl { .. } => "RequestControl",
             Self::Compact { .. } => "Compact",
         }
@@ -1191,8 +1204,9 @@ impl EventRecord {
             EventRecord::DependenciesResolved { input } => Event::DependenciesResolved {
                 input: InputId::new(input).map_err(Error::from)?,
             },
-            EventRecord::Tell { input } => Event::Tell {
+            EventRecord::Tell { input, answers } => Event::Tell {
                 input: InputId::new(input).map_err(Error::from)?,
+                answers: answers.map(InteractionId),
             },
             EventRecord::Pause { card, owner } => {
                 let card = InteractionId(card);
@@ -1276,6 +1290,10 @@ impl EventRecord {
                 unheard_card: InteractionId(unheard_card),
                 wake: wake.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
                 stalled,
+            },
+            EventRecord::Unfinished { unheard_card, wake } => Event::Unfinished {
+                unheard_card: InteractionId(unheard_card),
+                wake: wake.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
             },
             EventRecord::ResendUntaken { input, resend } => Event::ResendUntaken {
                 input: InputId::new(input).map_err(Error::from)?,
@@ -1375,6 +1393,22 @@ mod tests {
         let encoded = serde_json::to_string(&DecisionRecord::from(&filled)).unwrap();
         assert_eq!(Decision::from(serde_json::from_str::<DecisionRecord>(&encoded).unwrap()), filled);
     }
+    #[test]
+    fn an_old_tell_row_reads_with_no_answer() {
+        let old = r#"{"kind":"tell","data":{"input":"input"}}"#;
+        let record: EventRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(record.decode(&aggregate()).unwrap(), Event::Tell { input: InputId::new("input").unwrap(), answers: None });
+        let unlinked = Event::Tell { input: InputId::new("input").unwrap(), answers: None };
+        assert_eq!(serde_json::to_string(&EventRecord::from(&unlinked)).unwrap(), old, "a tell with no answer is written as before");
+    }
+    #[test]
+    fn an_unfinished_delivery_is_stored_with_its_wake_only_when_it_has_one() {
+        let case = Event::Unfinished { unheard_card: "case".into(), wake: None };
+        assert_eq!(serde_json::to_string(&EventRecord::from(&case)).unwrap(), r#"{"kind":"unfinished","data":{"unheard_card":"case"}}"#);
+        let woken = r#"{"kind":"unfinished","data":{"unheard_card":"case","wake":"wake"}}"#;
+        let record: EventRecord = serde_json::from_str(woken).unwrap();
+        assert_eq!(record.decode(&aggregate()).unwrap(), Event::Unfinished { unheard_card: "case".into(), wake: Some(InputId::new("wake").unwrap()) });
+    }
     fn roundtrip(current: &TaskLifecycle, event: Event) {
         let encoded = serde_json::to_vec(&EventRecord::from(&event)).unwrap();
         let decoded: EventRecord = serde_json::from_slice(&encoded).unwrap();
@@ -1469,6 +1503,14 @@ mod tests {
             &current,
             Event::Tell {
                 input: InputId::new("input").unwrap(),
+                answers: None,
+            },
+        );
+        roundtrip(
+            &current,
+            Event::Tell {
+                input: InputId::new("input").unwrap(),
+                answers: Some("card".into()),
             },
         );
         roundtrip(
@@ -1734,6 +1776,8 @@ mod tests {
         );
         roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: Some(InputId::new("wake").unwrap()), stalled: false });
         roundtrip(&current, Event::AwaitEnded { unheard_card: "unheard".into(), wake: None, stalled: false });
+        roundtrip(&current, Event::Unfinished { unheard_card: "unheard".into(), wake: Some(InputId::new("wake").unwrap()) });
+        roundtrip(&current, Event::Unfinished { unheard_card: "unheard".into(), wake: None });
         for (wake, awaits) in [
             (Some(InputId::new("wake").unwrap()), None),
             (None, Some(Await::User("question".into()))),

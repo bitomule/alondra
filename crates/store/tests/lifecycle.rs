@@ -3127,7 +3127,7 @@ fn a_replay_looks_up_each_stored_input_once_however_long_it_stays_pending() {
         let input = format!("told-{told}");
         tx.put_input(&task, payload(&input)).unwrap();
         let revision = tx.load(&task).unwrap().revision();
-        tx.apply(&task, revision, &input, Event::Tell { input: id(&input) }).unwrap();
+        tx.apply(&task, revision, &input, Event::Tell { input: id(&input), answers: None }).unwrap();
         tx.stage_input(&task, &id(&input)).unwrap();
     }
     tx.commit().unwrap();
@@ -3168,7 +3168,7 @@ fn a_transaction_looks_up_each_input_once_however_many_writes_it_makes_on_the_ta
         let input = format!("told-{told}");
         tx.put_input(&task, payload(&input)).unwrap();
         let revision = tx.load(&task).unwrap().revision();
-        tx.apply(&task, revision, &input, Event::Tell { input: id(&input) }).unwrap();
+        tx.apply(&task, revision, &input, Event::Tell { input: id(&input), answers: None }).unwrap();
         tx.stage_input(&task, &id(&input)).unwrap();
     }
     tx.commit().unwrap();
@@ -4135,7 +4135,7 @@ fn cached<'connection>(connection: &'connection Connection, cache: &'connection 
 fn tell(tx: &mut LifecycleTransaction<'_>, task: &TaskId, input: &str) {
     tx.put_input(task, payload(input)).unwrap();
     let revision = tx.load(task).unwrap().revision();
-    tx.apply(task, revision, input, Event::Tell { input: id(input) }).unwrap();
+    tx.apply(task, revision, input, Event::Tell { input: id(input), answers: None }).unwrap();
     tx.stage_input(task, &id(input)).unwrap();
 }
 

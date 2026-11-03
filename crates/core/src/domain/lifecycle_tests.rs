@@ -438,7 +438,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question() {
 
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "short".into(), inputs: BTreeMap::new() });
     assert!(s.lifecycle_of(&"t".into()).unwrap().awaits().is_some(), "the answer is on its way: the turn still waits on it");
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into(), from_user: false, answers: None });
     assert_eq!(s.lifecycle_of(&"t".into()).unwrap().awaits(), None, "the answer told to the node ends its wait");
     assert!(!s.interactions[&InteractionId::from("q")].withdrawn, "the question keeps its answer");
     assert_aggregate_rules(&s);
@@ -717,7 +717,7 @@ fn telling_a_resting_node_how_to_go_on_retires_the_card_that_asked_it() {
     let card = interrupted_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Deliver the parser split".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Deliver the parser split".into(), from_user: false, answers: None });
     assert!(s.interactions[&InteractionId::from(card.as_str())].withdrawn, "the card no longer waits on the user");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_aggregate_rules(&s);
@@ -1006,7 +1006,7 @@ fn a_question_the_node_asked_stays_open_when_an_account_transfer_is_refused() {
     assert_eq!(admit_off_limit(&mut s,"t","m","default",&card).unwrap_err().code,"active_account_immutable");
     assert!(!s.interactions[&InteractionId::from("q")].withdrawn, "the question is still the user's to answer");
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "short".into(), inputs: BTreeMap::new() });
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Short.".into(), from_user: false, answers: None });
     assert_aggregate_rules(&s);
 }
 
@@ -1193,7 +1193,7 @@ fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
 fn cancelled_mid_turn(s: &mut DomainState) -> String {
     sdk_turn(s, "t", "a");
     must(s, user(), Command::CancelTask { task_id: "t".into() });
-    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Settle your worktrees".into(), from_user: false });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Settle your worktrees".into(), from_user: false, answers: None });
     let LifecycleRecord::Told { input, .. } = last(s, "t") else { panic!("told: {:?}", last(s, "t")) };
     input
 }
@@ -1560,7 +1560,7 @@ fn answering_the_reply_with_background_work(s: &mut DomainState) {
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Why this way?".into(), instruction: Instruction::Reply });
-    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: Instruction::Reply.message("Why this way?"), from_user: false });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: Instruction::Reply.message("Why this way?"), from_user: false, answers: None });
     let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
     let reply = replayed.pending_inputs()[0].as_str().to_owned();
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
@@ -1660,7 +1660,7 @@ fn delivered_through_the_sdk(s: &mut DomainState, feedback: Option<Instruction>)
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     must(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Do not guess the state".into(), instruction });
-    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: instruction.message("Do not guess the state"), from_user: false });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: instruction.message("Do not guess the state"), from_user: false, answers: None });
     let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
     let told = replayed.pending_inputs()[0].as_str().to_owned();
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
@@ -1798,7 +1798,7 @@ fn a_resumed_session_alondra_ends_again_goes_on_with_its_message_until_its_ends_
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Keep the journal's old rows".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Keep the journal's old rows".into(), from_user: false, answers: None });
     let told = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().pending_inputs()[0].as_str().to_owned();
     ended(&mut s);
     let again = doubted(&mut s, told);
@@ -2490,7 +2490,7 @@ fn a_delivery_under_review_reads_working_while_a_turn_runs_and_waits_for_the_use
             "the work's end wakes a turn"),
         (vec![LifecycleRecord::TurnResumed { turn: "woken".into(), continuation: "done".into() }], Some(LiveState::Working(Worker::Turn)), "the woken turn runs"),
         (vec![ended("woken")], review.clone(), "nothing runs"),
-        (vec![LifecycleRecord::Told { input: "input:t:2".into(), text: Some("Also bump the changelog".into()) }],
+        (vec![LifecycleRecord::Told { input: "input:t:2".into(), text: Some("Also bump the changelog".into()), answers: None }],
             Some(LiveState::Working(Worker::Alondra(Step::Delivering))), "the message goes to the node"),
         (vec![LifecycleRecord::TurnStarted { turn: "told".into(), input: "input:t:2".into() }], Some(LiveState::Working(Worker::Turn)), "the message's turn runs"),
         (vec![ended("told")], review, "nothing runs again"),

@@ -54,6 +54,7 @@ fn told(notices: usize) -> (Fixture, DomainStore) {
     records.extend((0..notices).map(|notice| LifecycleRecord::Told {
         input: format!("input:task-1:notice-{notice}"),
         text: Some("Alondra could not close this session yet: no host could take over its session".into()),
+        answers: None,
     }));
     store
         .own(scope_of(&state), |owner| Ok(repository::save_journal(owner.journal(), &task, &records, known)?))

@@ -7661,7 +7661,7 @@ fn a_message_claude_has_not_started_reads_waiting_for_claude() {
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
         LifecycleRecord::Presented { delivery: "d".into() },
         LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into(), wake: None, text: None, awaits: None, stalled: false },
-        LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Are you there?".into()) },
+        LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Are you there?".into()), answers: None },
     ];
     let live = LiveSnapshot::default();
     state.lifecycle_journal.insert("t-1".into(), told.clone());
@@ -8644,7 +8644,7 @@ fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_revie
         LifecycleRecord::TurnEnded { turn: "turn-1".into(), unheard_card: "unheard-1".into(), wake: None, text: None, awaits: None, stalled: false },
     ];
     let told = [delivered.clone(), vec![
-        LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Also bump the changelog".into()) },
+        LifecycleRecord::Told { input: "input:t-1:2".into(), text: Some("Also bump the changelog".into()), answers: None },
         LifecycleRecord::TurnStarted { turn: "turn-2".into(), input: "input:t-1:2".into() },
     ]].concat();
     let ended = [told.clone(), vec![LifecycleRecord::TurnEnded { turn: "turn-2".into(), unheard_card: "unheard-2".into(), wake: None, text: None, awaits: None, stalled: false }]].concat();

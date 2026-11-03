@@ -108,7 +108,7 @@ fn wakes(s: &DomainState, outcome: &CommandOutcome, card: &InteractionId) {
 }
 /// What ended the wait reached the node: nothing holds the task and the node goes on.
 fn resumes(s: &mut DomainState, card: &InteractionId) {
-    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered.".into(), from_user: false });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered.".into(), from_user: false, answers: None });
     assert!(!s.interactions.contains_key(card), "no card ever said it stopped");
     let lifecycle = lifecycle(s);
     assert_eq!(lifecycle.awaits(), None, "what the node is told ends the wait");
@@ -377,7 +377,7 @@ fn a_turn_of_the_work_after_the_merge_ends_without_a_card() {
     });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card) && !s.interactions.contains_key(&card));
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into(), from_user: false, answers: None });
     let LifecycleRecord::Told { input, .. } = super::lifecycle_tests::last(&s, "t") else { panic!("told") };
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
@@ -407,7 +407,7 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
         assert!(!render(&s, "tasks", client).contains("sin entregar ni preguntar"), "{client:?}");
     }
     assert!(!s.interactions.contains_key(&card), "the turn ends on the pause its task's lifecycle holds: no card says it stopped");
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The Mac is fine again.".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The Mac is fine again.".into(), from_user: false, answers: None });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
     let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
     assert!(lifecycle.cards().is_empty(), "nothing holds the task: {:?}", lifecycle.cards());
@@ -471,7 +471,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
     end_turn(&mut s, "turn-1");
     must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
     answer_as_orchestrator(&mut s, "t-85fa-ask-depend-1");
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into(), from_user: false, answers: None });
     assert!(!s.interactions.contains_key(&first), "no card ever said it stopped");
     let LifecycleRecord::Told { input, .. } = super::lifecycle_tests::last(&s, "t") else { panic!("told") };
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
@@ -543,7 +543,7 @@ fn the_26_october_turn_that_ended_with_its_pr_registered_and_unpresented_wakes_t
     });
     let pause = Pause { reason: PauseReason::Usage, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "sigue".into(), from_user: false });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "sigue".into(), from_user: false, answers: None });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
     let input = lifecycle(&s).pending_inputs().first().map(|input| input.as_str().to_owned()).expect("«sigue» waits for the node");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![

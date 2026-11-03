@@ -221,6 +221,7 @@ const EVENTS: &[&str] = &[
     "resend_doubtful",
     "discard",
     "await_ended",
+    "unfinished",
     "request_control",
     "compact",
 ];
@@ -286,7 +287,8 @@ fn lifecycle_fields(root: &Value) -> &'static [&'static str] {
         "merge_observed" | "post_merge_declared" => &["operation"],
         "hand_back" => &["delivery", "input"],
         "wait_for_dependencies" => &["dependencies"],
-        "dependencies_resolved" | "tell" | "execution_released" | "reopen" | "compact" => &["input"],
+        "tell" => &["input", "answers"],
+        "dependencies_resolved" | "execution_released" | "reopen" | "compact" => &["input"],
         "pause" => &["card", "owner"],
         "finish" => &["intent", "cleanup", "post_merge"],
         "drain_observed" => &["obligation"],
@@ -297,6 +299,7 @@ fn lifecycle_fields(root: &Value) -> &'static [&'static str] {
         "resend_untaken" | "resend_doubtful" => &["input", "resend"],
         "discard" => &["card", "unheard_card", "stalled"],
         "await_ended" => &["unheard_card", "wake", "stalled"],
+        "unfinished" => &["unheard_card", "wake"],
         "request_control" => &["control", "kind"],
         _ => &[],
     }
