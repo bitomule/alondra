@@ -1720,7 +1720,8 @@ impl DomainState {
     /// `input`, told `text`, was handed to a host that ended before it showed the input was read.
     /// When a host that resumes the same Claude session takes its place (`resumes`), the same text
     /// goes to it with a note that its conversation may already have it: Claude reads its own
-    /// transcript, so it sees whether it did. Otherwise, or when the session keeps closing
+    /// transcript, so it sees whether it did. A session that never opened read nothing, so it is
+    /// sent again however many hosts ended before. Otherwise, or when the session keeps closing
     /// (`keeps_closing`), the task holds on a card that asks the user to send it again or take it
     /// as received.
     #[allow(clippy::too_many_arguments)]
@@ -1730,14 +1731,16 @@ impl DomainState {
         if self.interactions.contains_key(&card) {
             return Err(DomainError::new("conflict", format!("The doubtful input {input} of task {task} is already recorded")));
         }
+        let launch = self.lifecycle(lifecycles, task)?.resource() == Some(ResourceEvidence::Reserved);
         let journal = &self.lifecycle_journal[task];
         let before_end = journal.iter().rposition(|record| matches!(record, LifecycleRecord::HostEnded { .. })).unwrap_or(journal.len());
-        if resumes && !keeps_closing(journal.iter().take(before_end), by_alondra) {
-            let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(format!("{RESENT_NOTE}\n\n{text}")) };
+        if resumes && (launch || !keeps_closing(journal.iter().take(before_end), by_alondra)) {
+            let noted = journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { resent, .. } if resent == input));
+            let text = if noted { text.to_owned() } else { format!("{RESENT_NOTE}\n\n{text}") };
+            let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text) };
             return self.decide(lifecycles, task, record);
         }
         let lifecycle = self.lifecycle(lifecycles, task)?;
-        let launch = lifecycle.resource() == Some(ResourceEvidence::Reserved);
         let closing = lifecycle.phase() == TaskPhase::Finishing;
         self.decide(lifecycles, task, LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.into() })?;
         if closing {

@@ -1835,6 +1835,34 @@ fn a_message_the_ended_host_may_not_have_read_goes_again_to_the_resumed_session_
     assert_aggregate_rules(&s);
 }
 
+// A session that never opened read nothing: however many hosts end before it opens, its mission
+// goes again to the next one by itself, with one note, and nobody is asked.
+#[test]
+fn a_mission_whose_session_never_opened_goes_again_after_every_host_that_ends() {
+    let mut s = world();
+    task(&mut s, "t", None);
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Default::default(),
+        task_id: "t".into(), agent_id: "a".into(), conversation: "conversation-t".into(), instance: "instance-t".into(), host: "sdk-host".into(), model: None,
+        account: None, leaves_limit: None,
+    });
+    let LifecycleRecord::Planned { input: mut pending } = s.lifecycle_journal[&TaskId::from("t")][0].clone() else { panic!("planned first") };
+    let mut text = "Write the release notes".to_owned();
+    for _ in 0..3 {
+        must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: false });
+        let doubted = must(&mut s, Actor::System, Command::RecordDoubtfulHandoff { task_id: "t".into(), generation: 1, input: pending.clone(), text: text.clone(), resumes: true, by_alondra: false });
+        assert!(doubted.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "nobody is asked");
+        let Some(LifecycleRecord::DoubtResent { resent, text: Some(again), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("sent again") };
+        assert_eq!(again.matches("Your session was cut off when its host stopped").count(), 1, "{again}");
+        assert!(again.ends_with("Write the release notes"), "{again}");
+        let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+        assert_eq!(replayed.resource(), Some(alondra_domain::ResourceEvidence::Reserved));
+        assert_eq!(replayed.pending_inputs(), [&alondra_domain::InputId::new(resent.clone()).unwrap()]);
+        (pending, text) = (resent, again);
+    }
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(HANDOFF_DOUBT_PREFIX)));
+    assert_aggregate_rules(&s);
+}
+
 // An execution no host runs, because the daemon could not take it over, holds on a card that says
 // why. «Try again» lets it go on, told to carry on; «Cancel the task» ends it.
 #[test]

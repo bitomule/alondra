@@ -2928,10 +2928,29 @@ fn a_doubtful_send_holds_every_later_send_until_the_user_sends_the_same_text_aga
     tx.apply(&"task".into(), revision, "settle", Event::SettleHandoff { card: "doubt".into(), resend: Some(id("again")), unheard_card: "unheard".into() }).unwrap();
     tx.settle_card(&"task".into(), &"doubt".into(), CardSettlement::Answer(CardAnswer(r#"{"option_id":"resend"}"#.into()))).unwrap();
     tx.stage_input(&"task".into(), &id("again")).unwrap();
-    let committed = tx.commit().unwrap();
+    let mut committed = tx.commit().unwrap();
     assert_eq!(committed.permits.iter().map(|permit| permit.input().clone()).collect::<Vec<_>>(), [id("again")],
         "the message sent again starts the session the ended host never reported");
     assert!(fixture.transaction().unresolved(&"task".into()).unwrap().is_empty(), "the uncertain send no longer holds the task");
+    fixture.transaction().claim(committed.permits.pop().unwrap()).expect("it is claimed before the session opens");
+}
+
+/// A launch whose host ended with it in doubt, before its session opened: sent again by itself, the
+/// resend is what opens the session, so it goes though the session is not open yet.
+#[test]
+fn a_doubtful_launch_sent_again_opens_the_session_that_never_opened() {
+    let mut fixture = Fixture::new();
+    uncertain_launch(&mut fixture);
+    let mut tx = fixture.transaction();
+    assert_eq!(tx.load(&"task".into()).unwrap().resource(), Some(ResourceEvidence::Reserved));
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.put_input(&"task".into(), InputPayload::new(id("again"), "Fixture prompt").unwrap()).unwrap();
+    tx.apply(&"task".into(), revision, "resend", Event::ResendDoubtful { input: id("initial"), resend: id("again") }).unwrap();
+    tx.stage_input(&"task".into(), &id("again")).unwrap();
+    let permit = tx.commit().unwrap().permits.pop().expect("the resend is issued");
+    assert_eq!(permit.input(), &id("again"));
+    let mut tx = fixture.transaction();
+    tx.claim(permit).expect("the resend is claimed before the session opens");
 }
 
 #[test]

@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
 pub(crate) const HOST: &str = "alondra-sdk";
@@ -37,7 +37,8 @@ const DRIVER: &str = "claude-agent-sdk";
 /// turn never holds back an interrupt.
 const WAKE: Duration = Duration::from_millis(250);
 /// How long the owner waits before each new host it puts in place of a replacement that ended
-/// without taking its input; past the last, the task gets a card to try again.
+/// without taking its input; past the last, the task gets a card to try again, unless its session
+/// never opened: then it goes on, waiting the last each time.
 #[cfg(not(test))]
 const RELAUNCH_WAITS: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(30)];
 #[cfg(test)]
@@ -239,12 +240,18 @@ pub(crate) struct Driver {
     /// resumes the same session takes its place.
     moves_to_this_release: bool,
     /// This replacement was handed an input and did not take it: its end is watched and its place
-    /// taken by another host, up to `RELAUNCH_WAITS`.
+    /// taken by another host, up to `RELAUNCH_WAITS` once its session opened.
     untaken: bool,
     /// Earlier replacements in this recovery chain.
     relaunches: usize,
     /// The node plugin this host was taken over with, which the host that replaces it takes too.
     plugin: Option<PathBuf>,
+    /// How long a host handed an input may take to open the Claude session.
+    opening_timeout: Duration,
+    /// Past this moment, a host handed an input whose session has not opened is stuck: another
+    /// host takes its place and gets what is pending again, since a session that never opened read
+    /// nothing.
+    opening_deadline: Option<Instant>,
     #[cfg(test)]
     pub(crate) fail_next_step: bool,
     #[cfg(test)]
@@ -556,7 +563,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
     } {
         return Err(Failed::new("the daemon died after the admission's commit".into()));
     }
-    let mut driver = Driver::new(domain, worker, scope, launch.task, agent);
+    let mut driver = Driver::new(domain, worker, scope, launch.task, agent, Duration::from_secs(backend.io_timeout_seconds));
     let mut sealed = driver.sealed();
     let grant = sealed.owners.pop().ok_or_else(|| Failed::new("the admission issued no owner grant".into()))?;
     let (state, _) = driver.domain.own(driver.scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
@@ -692,7 +699,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
-    let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+    let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.log_host("started, as its admission's first host");
     driver.dispatch(permit)?;
     let read = driver.domain.read();
@@ -801,7 +808,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         if worker.runs_another_release() {
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
-        let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
+        let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
         if let Some(scope)=live_scope{driver.domain.contexts.forget(&driver.task);driver.domain.live.mods.restore_codex_scope(&driver.agent.0,scope,alondra_core::now_millis());}
         driver.log_host("was adopted");
         driver.permits.extend(reserved.permits);
@@ -822,6 +829,9 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         driver.awaiting = read.state().lifecycle_of(&task).ok()
             .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
         drop(read);
+        if driver.awaiting.is_some() && driver.unopened()? {
+            driver.opening_deadline = Some(Instant::now() + driver.opening_timeout);
+        }
         return Ok(Some(driver));
     };
     let relaunch = relaunch && !crate::provider_transition::holds_execution(&domain,&task);
@@ -899,7 +909,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
     worker.relaunch(grant, adapter_state, base, resume, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
     // Continued hosts open the native session lazily, on the first input after these files are synced.
     options.save(worker.state_directory())?;if let Some(identity)=identity.as_ref(){identity.retain(worker.state_directory())?;}
-    let mut driver = Driver::new(domain, worker, scope, task, agent);
+    let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.replacement = true;
     driver.log_host(if resume { "started anew; its Claude resumes the same session on its next input" } else { "started anew; its Claude starts the session on its next input" });
     driver.sealed();
@@ -1167,8 +1177,8 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 }
 
 impl Driver {
-    fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, plugin: None, #[cfg(test)] fail_next_step: false, #[cfg(test)] panic_next_step: false }
+    fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, plugin: None, opening_timeout, opening_deadline: None, #[cfg(test)] fail_next_step: false, #[cfg(test)] panic_next_step: false }
     }
 
     pub(crate) fn agent(&self) -> &AgentId {
@@ -1288,6 +1298,9 @@ impl Driver {
         }
         log!("input {} of {} went to its SDK host ({}): {handoff:?}", input.as_str(), self.task, self.agent);
         self.sealed();
+        if handoff != Handoff::RefusedBeforeOffer && self.unopened()? {
+            self.opening_deadline.get_or_insert(Instant::now() + self.opening_timeout);
+        }
         if handoff == Handoff::Offered {
             self.awaiting = Some(input);
             self.replacement = false;
@@ -1296,6 +1309,23 @@ impl Driver {
             self.untaken = true;
         }
         Ok(())
+    }
+
+    /// Whether the task's Claude session has not opened yet: it has read nothing it was handed.
+    fn unopened(&self) -> Result<bool, Failed> {
+        let read = self.domain.read();
+        let lifecycle = read.state().lifecycle_of(&self.task).map_err(|error| Failed::new(format!("{error:#}")))?;
+        Ok(lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Reserved))
+    }
+
+    /// Whether the host was handed an input and its session has not opened by its deadline.
+    fn opening_overdue(&mut self, now: Instant) -> Result<bool, Failed> {
+        let Some(deadline) = self.opening_deadline else { return Ok(false) };
+        if !self.unopened()? {
+            self.opening_deadline = None;
+            return Ok(false);
+        }
+        Ok(now >= deadline)
     }
 
     /// The next thing the host observed, committed with the domain's decision, and acknowledged
@@ -1429,14 +1459,19 @@ impl Driver {
     /// else read the host when the lifecycle waits for it or the host has something, else wait a
     /// moment for what the store issues for this task.
     pub(crate) fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
-        let stepped = self.step_once(stopped);
+        self.step_at(stopped, Instant::now())
+    }
+
+    /// `step`, as at `now`.
+    fn step_at(&mut self, stopped: &dyn Fn() -> bool, now: Instant) -> Result<(), Failed> {
+        let stepped = self.step_once(stopped, now);
         if stepped.is_err() {
             self.owner_failed = true;
         }
         stepped
     }
 
-    fn step_once(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
+    fn step_once(&mut self, stopped: &dyn Fn() -> bool, now: Instant) -> Result<(), Failed> {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_step) {
             return Err(Failed::new("a step of the owner failed".into()));
@@ -1448,6 +1483,10 @@ impl Driver {
             return Err(Failed::new("the Codex host lost its app-server".into()));
         }
         self.sealed();
+        if self.opening_overdue(now)? {
+            log!("the SDK host of {} did not open its Claude session within {} s of its input: another host takes its place", self.task, self.opening_timeout.as_secs());
+            return Err(Failed::new("the host did not open its Claude session in time".into()));
+        }
         if self.advance_idle_host_of_another_release()? {
             return Ok(());
         }
@@ -1572,11 +1611,12 @@ impl Driver {
     /// Whether the owner should put a host that resumes the session in place of its own: its host
     /// closed or its connection to it failed, which a host that is dying shows before its exit, or
     /// a step of the owner itself failed. A replacement positively observed dead, or one that
-    /// ended without taking its input, is replaced while `RELAUNCH_WAITS` lasts. The
+    /// ended without taking its input, is replaced while `RELAUNCH_WAITS` lasts, and for as long as
+    /// its session has not opened. The
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || (self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && self.relaunches < RELAUNCH_WAITS.len()) && !crate::provider_transition::holds_execution(&self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || (self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && (self.relaunches < RELAUNCH_WAITS.len() || self.unopened().unwrap_or(false))) && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 
@@ -1725,7 +1765,7 @@ impl Owner {
                     };
                     let relaunches = if driver.replacement { driver.relaunches + 1 } else { 0 };
                     if driver.replacement {
-                        driver.domain.seals.pause(RELAUNCH_WAITS[driver.relaunches], &told);
+                        driver.domain.seals.pause(RELAUNCH_WAITS[driver.relaunches.min(RELAUNCH_WAITS.len() - 1)], &told);
                         if told() {
                             break;
                         }

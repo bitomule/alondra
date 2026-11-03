@@ -4488,3 +4488,137 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
     assert_ne!(replacement.agent(), &old_node);
     replacement.stop().unwrap();
 }
+
+/// Swaps the slice's native Claude for one that never gets a prompt, so its session never opens,
+/// and returns where the working one waits to be put back.
+fn hold_prompts(slice: &Slice) -> PathBuf {
+    let fake = slice._home.join("native-fake");
+    std::fs::copy(&slice.backend.native, &fake).unwrap();
+    std::fs::write(&slice.backend.native, HOLDING_NATIVE).unwrap();
+    fake
+}
+
+/// Tells the node `text` as the user does, through the daemon `domain`.
+fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &str) {
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(domain, &slice._home, &user(), "David", driver.agent(), message, true))
+        .unwrap();
+}
+
+/// Sends `signal` to every process of the host's group.
+fn signal_host(driver: &Driver, signal: &str) {
+    let group = driver.worker.host_group().unwrap();
+    assert!(std::process::Command::new("/bin/kill").args([signal, "--", &format!("-{group}")]).status().unwrap().success());
+}
+
+/// The mission and then the user's message reached Claude, each once, and nobody was asked.
+fn mission_then_message(slice: &Slice, domain: &DomainRuntime) {
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[0].ends_with("Write the release notes") && prompts[0].matches("Your session was cut off").count() == 1, "{prompts:?}");
+    assert!(prompts[1].starts_with("[From David · ") && prompts[1].ends_with("Also update the changelog"), "{prompts:?}");
+    assert_eq!(lifecycle(domain).resource(), Some(alondra_domain::ResourceEvidence::Available));
+    assert!(domain.state().unwrap().tasks[&TaskId::from(TASK)].started);
+    for prefix in [HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX, SESSION_ENDED_PREFIX] {
+        assert!(open_card(domain, prefix).is_none(), "no card {prefix}");
+    }
+}
+
+// The daemon went down with a task whose Claude never opened its session. The host that takes it
+// over gets its mission again and opens the session with it, and the message the user sent
+// meanwhile follows.
+#[test]
+fn a_session_that_never_opened_gets_its_mission_and_the_queued_message_from_the_host_that_takes_over() {
+    let slice = Slice::new();
+    let fake = hold_prompts(&slice);
+    let driver = slice.launch();
+    assert_eq!(lifecycle(&slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
+    kill_host_and_daemon(driver);
+    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    tell_through(&restarted, &slice, &resumed, "Also update the changelog");
+    slice.settle(&mut resumed);
+    mission_then_message(&slice, &restarted);
+    resumed.stop().unwrap();
+}
+
+// A host took the mission but its Claude never opens the session. Once the deadline passes,
+// another host takes its place and gets it again; the user's message waits and follows.
+#[test]
+fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_passes() {
+    let slice = Slice::new();
+    let fake = hold_prompts(&slice);
+    let driver = slice.launch();
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    tell_through(&restarted, &slice, &resumed, "Also update the changelog");
+    while resumed.pending_permits() > 0 {
+        resumed.step(&|| false).unwrap();
+    }
+    assert!(resumed.waits_for_host(), "the host took the mission");
+    let opening = Duration::from_secs(slice.backend.io_timeout_seconds);
+    resumed.step_at(&|| false, Instant::now()).unwrap();
+    assert!(!resumed.host_to_replace(), "nothing is replaced before the deadline");
+    assert!(resumed.step_at(&|| false, Instant::now() + opening).is_err(), "past the deadline the host is stuck");
+    assert!(resumed.host_to_replace());
+    let mut recovered = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.settle(&mut recovered);
+    mission_then_message(&slice, &restarted);
+    recovered.stop().unwrap();
+}
+
+// The task of the report: after the daemon restarted, the first input to the new host of a session
+// that never opened went without a receipt (here the host is stopped and the handoff waits out its
+// I/O timeout).
+// The host is replaced by itself, however many ended before, and nobody is asked.
+#[test]
+fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card() {
+    let slice = Slice::new();
+    let fake = hold_prompts(&slice);
+    let driver = slice.launch();
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    tell_through(&restarted, &slice, &resumed, "Also update the changelog");
+    signal_host(&resumed, "-STOP");
+    while resumed.pending_permits() > 0 {
+        resumed.step(&|| false).unwrap();
+    }
+    assert!(resumed.step(&|| false).is_err(), "the input in doubt ends this host");
+    resumed.relaunches = RELAUNCH_WAITS.len();
+    assert!(resumed.host_to_replace(), "a session that never opened is relaunched however many hosts ended before");
+    signal_host(&resumed, "-CONT");
+    let mut recovered = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.settle(&mut recovered);
+    mission_then_message(&slice, &restarted);
+    recovered.stop().unwrap();
+}
+
+// A session that never opened, whose host ended with no host to resume it: the card asks the user
+// whether to send the mission again. «Send it again» reaches the Claude of the host that takes the
+// execution over, though its session has not opened yet.
+#[test]
+fn send_again_on_the_card_of_a_mission_whose_session_never_opened_reaches_claude() {
+    let slice = Slice::new();
+    let fake = hold_prompts(&slice);
+    let driver = slice.launch();
+    kill_host_and_daemon(driver);
+    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    let restarted = slice.restart();
+    end_unowned_host(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    let card = open_card(&restarted, HANDOFF_DOUBT_PREFIX).expect("the user is asked whether to send it again");
+    assert_eq!(lifecycle(&restarted).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
+    answer(&restarted, &card.id, RESEND);
+    let mut resumed = slice.take_over(&restarted);
+    slice.settle(&mut resumed);
+    let prompts = slice.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].ends_with("Write the release notes"), "{prompts:?}");
+    assert_eq!(lifecycle(&restarted).resource(), Some(alondra_domain::ResourceEvidence::Available));
+    resumed.stop().unwrap();
+}

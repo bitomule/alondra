@@ -1421,7 +1421,8 @@ impl<'connection> LifecycleTransaction<'connection> {
             let rejected_restart = kind == "input" && aggregate.resource() == Some(ResourceEvidence::Reserved)
                 && aggregate.pending_inputs().first().is_some_and(|input|input.as_str()==permit.input.as_str())
                 && self.transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events e JOIN lifecycle_dispatches d ON d.task_id=e.task_id AND d.input_id=json_extract(e.event,'$.data.input') WHERE e.task_id=?1 AND json_extract(e.event,'$.kind')='resend_untaken' AND json_extract(e.event,'$.data.resend')=?2 AND d.generation=?3 AND d.status='rejected')",
+                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events e JOIN lifecycle_dispatches d ON d.task_id=e.task_id AND d.input_id=json_extract(e.event,'$.data.input') WHERE e.task_id=?1 AND json_extract(e.event,'$.data.resend')=?2 AND d.generation=?3 AND ((json_extract(e.event,'$.kind')='resend_untaken' AND d.status='rejected') OR (json_extract(e.event,'$.kind')='resend_doubtful' AND d.status IN('handed','uncertain'))))
+                     OR EXISTS(SELECT 1 FROM lifecycle_events s JOIN lifecycle_events q ON q.task_id=s.task_id AND json_extract(q.event,'$.kind')='doubt_handoff' AND json_extract(q.event,'$.data.card')=json_extract(s.event,'$.data.card') JOIN lifecycle_dispatches d ON d.task_id=q.task_id AND d.input_id=json_extract(q.event,'$.data.input') WHERE s.task_id=?1 AND json_extract(s.event,'$.kind')='settle_handoff' AND json_extract(s.event,'$.data.resend')=?2 AND d.generation=?3 AND d.status IN('handed','uncertain'))",
                     params![permit.stamp.task().0,permit.input.as_str(),sql_number(permit.stamp.generation())?],|row|row.get::<_,bool>(0))?;
             if status != "prepared"
                 || (kind == "input" && aggregate.resource() != Some(ResourceEvidence::Available) && !rejected_restart)

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 enum Step {
+    SdkOpening,
+    UncertainOpening(usize),
     Create { scheduled: bool, plan: bool, deps: Vec<usize> },
     Admit(usize),
     LaunchFails { pick: usize, untrusted: bool },
@@ -31,6 +33,8 @@ enum Step {
 
 fn step() -> impl Strategy<Value = Step> {
     prop_oneof![
+        2 => Just(Step::SdkOpening),
+        2 => (0usize..8).prop_map(Step::UncertainOpening),
         3 => (any::<bool>(), prop::bool::weighted(0.8), prop::collection::vec(0usize..8, 0..3))
             .prop_map(|(scheduled, plan, deps)| Step::Create { scheduled, plan, deps }),
         3 => (0usize..8).prop_map(Step::Admit),
@@ -60,6 +64,7 @@ struct World {
     now: i64,
     made: usize,
     nodes: usize,
+    sdk_openings: BTreeMap<TaskId, i64>,
 }
 
 fn user() -> Actor {
@@ -87,7 +92,7 @@ impl World {
 
     /// A normal request, and the request of a weekly scheduled run whose own task works.
     fn new() -> World {
-        let mut w = World { s: DomainState::new("epoch"), facts: BTreeMap::new(), attempts: BTreeMap::new(), stops: BTreeMap::new(), now: 1_000_000, made: 0, nodes: 0 };
+        let mut w = World { s: DomainState::new("epoch"), facts: BTreeMap::new(), attempts: BTreeMap::new(), stops: BTreeMap::new(), now: 1_000_000, made: 0, nodes: 0, sdk_openings: BTreeMap::new() };
         w.must(user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         w.must(orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         w.must(Actor::System, Command::CreateSchedule { schedule: Schedule {
@@ -129,7 +134,7 @@ impl World {
     fn pick(&self, n: usize, keep: impl Fn(&Task, &StartFacts) -> bool) -> Option<TaskId> {
         let none = StartFacts::default();
         let found: Vec<TaskId> = self.s.tasks.values()
-            .filter(|t| !t.state.terminal() && keep(t, self.facts.get(&t.id).unwrap_or(&none)))
+            .filter(|t| !t.state.terminal() && !self.sdk_openings.contains_key(&t.id) && keep(t, self.facts.get(&t.id).unwrap_or(&none)))
             .map(|t| t.id.clone()).collect();
         (!found.is_empty()).then(|| found[n % found.len()].clone())
     }
@@ -162,6 +167,31 @@ impl World {
 
     fn apply(&mut self, step: &Step) {
         match step.clone() {
+            Step::SdkOpening => {
+                self.made += 1;
+                let id: TaskId = format!("sdk-opening-{}", self.made).into();
+                let request = format!("request-{id}");
+                self.must(user(), Command::CreateRequest { request_id: request.as_str().into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+                self.must(orchestrator(), Command::TitleRequest { request_id: request.as_str().into(), title: "Work".into() });
+                self.must(orchestrator(), Command::CreateTask {
+                    task_id: id.clone(), request_id: request.as_str().into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
+                    dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+                });
+                self.must(Actor::System, Command::RegisterAgent { agent_id: format!("node-{id}").into(), name: format!("SDK node {id}"), at: self.now });
+                self.must(Actor::System, Command::AdmitExecution { provider: Default::default(),
+                    task_id: id.clone(), agent_id: format!("node-{id}").into(), conversation: format!("conversation-{id}"),
+                    instance: format!("instance-{id}"), host: "alondra-sdk".into(), model: None, account: None, leaves_limit: None,
+                });
+                self.facts.insert(id.clone(), StartFacts { planned: true, start: Start::Launched, node: NodeFact::Alive, ..Default::default() });
+                self.sdk_openings.insert(id, self.now + 120_000);
+            }
+            Step::UncertainOpening(pick) => {
+                if !self.sdk_openings.is_empty() {
+                    let id = self.sdk_openings.keys().nth(pick % self.sdk_openings.len()).unwrap().clone();
+                    self.must(Actor::System, Command::TellNode { task_id: id.clone(), text: format!("Queued message at {}", self.s.revision), from_user: true });
+                    self.recover_opening(&id);
+                }
+            }
             Step::Create { scheduled, plan, deps } => {
                 self.made += 1;
                 let id: TaskId = format!("t{}", self.made).into();
@@ -253,7 +283,7 @@ impl World {
                 self.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: option.into(), inputs: BTreeMap::new() });
                 if retry {
                     self.fact(&task).node = NodeFact::Reviving;
-                } else {
+                } else if !self.s.tasks[&task].over() {
                     self.must(user(), Command::CancelTask { task_id: task });
                 }
             }
@@ -377,6 +407,8 @@ impl World {
 
     /// What the daemon does after every change: `react`, carried out as the daemon carries it out.
     fn react(&mut self) {
+        let due: Vec<_> = self.sdk_openings.iter().filter(|(_, deadline)| **deadline <= self.now).map(|(task, _)| task.clone()).collect();
+        for task in due { self.recover_opening(&task); }
         for reaction in self.s.react(&self.facts) {
             match reaction {
                 Reaction::Ask(task, problem) => {
@@ -394,11 +426,34 @@ impl World {
         }
     }
 
+    fn recover_opening(&mut self, task: &TaskId) {
+        let lifecycle = self.s.lifecycle_of(task).unwrap();
+        let pending: Vec<_> = lifecycle.pending_inputs().iter().map(|input| (*input).clone()).collect();
+        let texts: BTreeMap<_, _> = journal_writes(task, &self.s.lifecycle_journal[task], 0).unwrap().into_iter()
+            .filter_map(|write| Some((write.input?, write.text?))).collect();
+        self.must(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: 1, resumes: true, ended_work: vec![], by_alondra: false });
+        for input in pending {
+            self.must(Actor::System, Command::RecordDoubtfulHandoff { task_id: task.clone(), generation: 1,
+                input: input.as_str().into(), text: texts.get(&input).cloned().unwrap_or_else(|| "The original mission".into()), resumes: true, by_alondra: false,
+            });
+        }
+        self.sdk_openings.insert(task.clone(), self.now + 120_000);
+    }
+
     fn check(&self, steps: &[Step]) -> Result<(), String> {
         let none = StartFacts::default();
         super::lifecycle_tests::assert_aggregate_rules(&self.s);
         for id in self.open() {
             let task = &self.s.tasks[&id];
+            if let Some(deadline) = self.sdk_openings.get(&id) {
+                if *deadline <= self.now || !self.s.lifecycle_of(&id).unwrap().cards().is_empty() {
+                    return Err(format!("SDK task {id} has an expired or user-blocked startup after {steps:?}"));
+                }
+                let lifecycle = self.s.lifecycle_of(&id).unwrap();
+                if task.agent_id.is_none() || task.started || lifecycle.pending_inputs().is_empty() {
+                    return Err(format!("SDK startup {id} lost its execution or pending mission after {steps:?}"));
+                }
+            }
             if task.started_without_node() {
                 return Err(format!("“{id}” is in progress with no node (state {:?}) after {steps:?}", task.state));
             }

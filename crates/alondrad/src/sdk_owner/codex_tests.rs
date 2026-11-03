@@ -797,7 +797,7 @@ fn repeated_same_email_reauthentication_keeps_the_same_native_session_but_identi
     }
     let before=transcript(&trace).iter().filter(|request|request["method"]=="turn/start").count();
     publish("replacement@example.test",true,"native-replaced-identity");instruct(&slice.domain,"This input must remain queued for explicit user recovery");
-    let error=driver.step_once(&||false).unwrap_err();assert!(error.to_string().contains("different known identity"),"{error}");
+    let error=driver.step_once(&||false,std::time::Instant::now()).unwrap_err();assert!(error.to_string().contains("different known identity"),"{error}");
     assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="turn/start").count(),before);
     assert!(!Slice::lifecycle(&slice.domain).pending_inputs().is_empty());assert_eq!(driver.worker.host_group(),original);
     driver.stop().unwrap();
