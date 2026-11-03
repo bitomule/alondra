@@ -106,7 +106,7 @@ It serves the result as `iroh.reachability` on `/daemon` and `direct_connection`
 {"verdict": "relay_only", "confirmed": false, "reasons": ["no_port_mapping", "no_ipv6"],
  "port_mapping": {"upnp": true, "nat_pmp": true, "pcp": true, "mapped": null},
  "public_ipv4": "203.0.113.7", "public_ipv6": null, "nat": "unknown",
- "port": 47811, "port_fixed": true, "lan_ip": "192.168.1.20",
+ "port": 47811, "port_fixed": true, "lan_ip": "192.0.2.35",
  "sessions": {"lan": 0, "internet": 0, "relay": 0}}
 ```
 

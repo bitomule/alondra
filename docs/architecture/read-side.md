@@ -1,7 +1,6 @@
 # Read side: how screens read the domain
 
-Status: describes `main` on 16 October 2026, after the seven phases of the views-speed plan
-(#1014, #1017, #1018, #1021, #1022, #1027, #1030). The rules at the end are also in `AGENTS.md`.
+The rules at the end are also in `AGENTS.md`.
 
 ## The shape in one paragraph
 
@@ -89,7 +88,7 @@ doing right now, a pause the machine imposed, PR checks). The view adds those fr
 The on-demand rules the index is built from and checked against (`DomainState::inbox_orders`,
 `item`, `attention`, `delivery_blocked_by`, `task_actions`…) still live in
 `crates/core/src/domain/projection.rs`. The name is historical: `DomainProjection`,
-`projection()` and `inbox_projection()` were removed in #1030.
+`projection()` and `inbox_projection()` were removed.
 
 ## Buttons: pure guards
 
@@ -154,17 +153,17 @@ Starting point, copy of the real domain on 15 October (alondrad 0.2.81, ~300 tas
 | domain projection, per view | 1.2–2.7 s |
 | `live::gather`, per request | 150–215 ms |
 
-What each phase changed, as measured in its PR:
+What each phase changed, as measured:
 
-| Phase | PR | Measured |
-|---|---|---|
-| 1. Pure guards | #1014 | inbox projection 1631.6 → 7.4 ms; cold views 1.2–2.1 s → 150–243 ms |
-| Live data once per change | #1017 | home (iOS) first/repeat 208.7/185.3 → 12.6/0.6 ms; five cards 1540 → 31 ms |
-| 2. Read index per revision | #1018 | index build 0.7 ms on the real copy, 2.2 ms median on the 420-waiting fixture |
-| 3. Views read the index | #1021 | real copy, cold `GET /views` 5.3–13.7 → 0.4–6.1 ms |
-| 4. Feed and notifications | #1022 | badge 5.3 → 0.00 ms, push gate 10.7 → 0.00 ms, push content 5.1 → 0.13 ms per change |
-| 5. Home carries first cards | #1027 | trips to the first card 2 → 1 (172 → 80 ms at 80 ms per relay trip) |
-| 6. Projections removed | #1030 | −1958 lines; index build 2.40 → 2.3 ms |
+| Phase | Measured |
+|---|---|
+| 1. Pure guards | inbox projection 1631.6 → 7.4 ms; cold views 1.2–2.1 s → 150–243 ms |
+| Live data once per change | home (iOS) first/repeat 208.7/185.3 → 12.6/0.6 ms; five cards 1540 → 31 ms |
+| 2. Read index per revision | index build 0.7 ms on the real copy, 2.2 ms median on the 420-waiting fixture |
+| 3. Views read the index | real copy, cold `GET /views` 5.3–13.7 → 0.4–6.1 ms |
+| 4. Feed and notifications | badge 5.3 → 0.00 ms, push gate 10.7 → 0.00 ms, push content 5.1 → 0.13 ms per change |
+| 5. Home carries first cards | trips to the first card 2 → 1 (172 → 80 ms at 80 ms per relay trip) |
+| 6. Projections removed | −1958 lines; index build 2.40 → 2.3 ms |
 
 Now, 16 October, `main` at 08a02484:
 

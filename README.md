@@ -1,139 +1,220 @@
 # Alondra
 
-The nervous system of the hive's orchestrator: reliable state for every Claude Code node and
-for the machine, structured questions that reach the user and come back to their node, and
-tools for the orchestrator to act.
+**Run a team of coding agents on your Mac and steer them from your iPhone.**
 
-| Folder | What it is |
-|---|---|
-| `crates/core` | State model and reducer (Rust, no I/O) |
-| `crates/alondrad` | 24/7 daemon: hooks, sentinel, SQLite, API |
-| `crates/alondra` | CLI, TUI, the nodes' MCP server and inbox hook |
-| `plugin/` | Claude Code plugin: hooks, `ask`/`report` tools and skill |
-| `launchd/` | macOS service template for `alondrad` (installed by `alondra doctor --fix`) |
-| `signing/` | App signing: `signing.example.bzl`, and the rule that reads your own `signing.bzl` and profiles from `~/.alondra/signing` |
-| `docs/plan.md` | Design and phased plan |
-| `docs/tasks-plan.md` | Requests, tasks and their state machine, as built |
+Alondra is a daemon that runs Claude Code and Codex sessions on your Mac, turns each piece of work
+into a task with its own worktree and pull request, and brings every decision to you as a card:
+a question, a plan, a permission, a finished pull request. You answer from the terminal, the Mac
+app or the iPhone; the agents carry on.
 
-## Trying it
+Your agents run on your Mac; Alondra Cloud connects your devices. Teams are coming soon.
 
-On a new Mac, follow [`INSTALL.md`](INSTALL.md) (two lines with Homebrew). To build from the repo, see [`docs/building-from-source.md`](docs/building-from-source.md).
+```text
+╭ Tasks ───────────────────────────────────────────────────────────────────────────────────────╮
+│ FOR YOU 7                                                                                    │
+│▌⚡ Choose a name for the CLI flag                    Needs you · alondra · 1 min · 1 min ago │
+│▌  “Pick the name of the new flag”                                                            │
+│ ⚡ Redesign the onboarding screen                    Needs you · alondra · 1 min · 1 min ago │
+│   “Choose the onboarding screen to ship”                                                     │
+│ ⑂ Add a greeting file                               Ready for review · alondra · 1 min · now │
+│   PR #41 · Add greeting.txt                                                                  │
+│ ⑂ Add the onboarding screen                        Ready for review · alondra · <1 min · now │
+│   PR #45 · Add onboarding.txt                                                                │
+│ ⑂ Cache the avatars                                Ready for review · alondra · <1 min · now │
+│   PR #46 · Add avatars.txt                                                                   │
+│ ⑂ Document the config file                         Ready for review · alondra · <1 min · now │
+│   PR #47 · Add config.txt                                                                    │
+│                                                                                              │
+│ IN PROGRESS 6                                                                                │
+│ ◇ Migrate the settings file                                       Working · alondra · <1 min │
+│ ◇ Rename the settings keys                            Resolving conflicts · alondra · <1 min │
+│ ◇ Publish the release once it is merged   Finishing after the merge · alondra · <1 min · now │
+│   release.sh publishes 0.3.0                                                                 │
+│ ◇ Store notes with their version                                  Working · alondra · <1 min │
+│   Sync notes                                                                                 │
+│ ◇ Run the payments test against Stripe                             Working · alondra · 1 min │
+│ ◇ Write the release notes                                In the background · alondra · 1 min │
+│   make test                                                                                  │
+│                                                                                              │
+```
+
+*The Tasks screen of the terminal app, on a demo sandbox with made-up tasks (an excerpt).*
+
+<!-- Replace this capture with the real TUI, iPhone and Mac images (light) from the demo-captures work. -->
+
+## Install
 
 ```bash
-make install        # builds with Bazel and installs alondra and alondrad in ~/.local/bin
-alondra             # the first time: the setup wizard (projects folder, relay, service, plugin); then the TUI
-alondra doctor      # what works and what is missing, with how to fix it (--fix repairs it)
-alondra update      # Homebrew installs: upgrade, then wait until the daemon runs the new version (--check only looks)
-alondra status      # the same as text
+brew install bitomule/tap/alondra
+alondra
 ```
 
-Only the sessions Alondra launches are Alondra's. Every node and every orchestrator batch runs
-through the Claude Agent SDK host that ships with Alondra (`libexec/alondra/sdk/alondra-host`),
-which runs your own Claude Code with your default profile and loads Alondra's plugin into that
-session alone. Any other Claude session (a cron, your own terminal) has no plugin and stays out:
-no node, no task, no card.
+`alondra` sets up the rest the first time: your projects folder, the background service and the
+Claude Code plugin. Run it again at any time; it only changes what is missing.
 
-Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
-`legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
-`close_free_nodes_after`, `compact_idle_nodes_at`, `compact_orchestrator_at`, `auto_update`). An `ALONDRA_*` environment
-variable overrides the file; `alondra config list` shows the values in effect. What Alondra does with
-idle nodes (compact at 30 % before a new task, close or ask after 7 days) is in
-[docs/idle-nodes.md](docs/idle-nodes.md).
+You need a Mac on Apple Silicon with macOS 26 or later, and Claude Code, Codex or both, already
+installed and signed in. [`INSTALL.md`](INSTALL.md) has the details, the iPhone and Mac apps, and
+what to do when something fails.
 
-**The orchestrator** is an inbox owned by Alondra. When work arrives, alondrad runs one batch
-through the Agent SDK host with the node and orchestrator plugins, as a new conversation that
-gets what it needs from Alondra in its prompt, and the host ends with the batch. An idle
-orchestrator runs nothing.
+## What it does
 
-The plugins provide `tasks_in_progress`, `node`, `machine`, `send`, `interrupt`, `launch`, `set_launch_plan`, `define`,
-`cancel` and `reopen`. User questions always use Alondra `ask`; terminal permission
-and question prompts are disabled. Auto mode can deny an operation, which becomes a visible
-failure instead of an invisible prompt.
+1. **You write a request** in the TUI, the Mac app or the iPhone: "add rate limiting to the API".
+2. **The orchestrator** reads it, makes a plan and splits it into tasks. A plan that needs your approval comes back to you
+   as a card for approval before any code changes.
+3. **Each task gets a node**: an agent session in its own git worktree, running Claude Code or
+   Codex with your own account. Nodes work in parallel, within what your Mac and your plans allow.
+4. **Cards bring you in only when needed.** A node that has a question, wants a plan approved or
+   opens a pull request puts one card in front of you. Nothing else interrupts you.
+5. **Alondra merges and cleans up.** When you accept a delivery it merges the pull request and
+   removes the task's worktree.
 
-Every 90 seconds Alondra queues a durable digest of new reports, questions addressed to the
-orchestrator, finished nodes with unfinished worktrees, and machine capacity warnings. Inbox
-claims and completion are persisted. A failed execution with unknown effects blocks its batch
-until the user chooses to retry it or continue without repeating it; later messages stay queued.
-These actions, plus cancellation, are available in the node detail in the apps and TUI.
-`alondra status` shows the execution ID for CLI recovery:
+By design, every task and node has one visible state, and a task waits only for capacity or for you.
+A task that gets stuck anyway is a bug, and fixing those is part of the work.
 
-```sh
-alondra orchestrator cancel RUN_ID
-alondra orchestrator retry RUN_ID --confirm
-alondra orchestrator acknowledge RUN_ID --confirm
-```
+## How it works
 
-### Uncertain deliveries
+| Piece | What it is |
+|---|---|
+| `alondrad` | The daemon: runs 24/7 under launchd, keeps the state in SQLite and serves the API |
+| Orchestrator | Turns requests into plans and tasks; runs only when there is work, never as an idle process |
+| Nodes | One agent session per task, in its own worktree, through the Claude Agent SDK host or Codex |
+| Cards | Questions, plans, permissions and deliveries, each decided from the card alone |
+| `alondra` | The CLI and TUI, and the MCP server the nodes use to ask you things |
+| iPhone and Mac apps | The same cards and tasks, with push notifications |
 
-HTTP acceptance is not proof that Claude executed an action. While a handoff to a
-live node is uncertain, the TUI shows "N messages not confirmed"; `:deliveries`
-shows the recorded evidence and recovery commands. A handoff whose node is gone
-closes by itself (`node_gone`). Check what the attempt was about (its task or card) and what
-its destination already shows before choosing a resolution:
+Only sessions that Alondra launches take part: a Claude session you start in your own terminal has
+no plugin, no task and no card. The design, from the daemon's state model to the read side the
+screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.md).
 
-```sh
-alondra delivery list
-alondra delivery retry ID --expected-version VERSION --checked --confirm-duplicate-risk
-alondra delivery discard ID --expected-version VERSION --checked
-# Use an explicitly approved remote Mac instead of Local:
-alondra delivery --mac MAC_ID list
-```
+## What is different
 
-Add the same `--mac MAC_ID` after `delivery` when resolving a remote attempt.
-A changed version is rejected; inspect again before deciding. Retry can duplicate
-an external effect; discard does not undo it. A menu retry reopens the question
-for a new selection. No command retries an uncertain delivery automatically.
+- **An orchestrator.** A request becomes a plan, the plan becomes tasks, and each
+  task gets its own node in its own worktree. Tasks can depend on each other and wait for one
+  another. The plan comes back to you as a card to approve
+  before any code is written, when the work asks for one.
+- **An inbox of cards.** Everything that needs you arrives as a card, and a card is one thing: a
+  question, a plan, a permission or a finished pull request, with all its context. You decide it
+  from the terminal, the Mac app or the iPhone, and the answer reaches the node that asked.
+- **The daemon lives on your Mac.** `alondrad` runs your agents, keeps the state and serves your
+  devices. The server Alondra Cloud runs is only a control plane (accounts, pairing, push, a
+  relay); it is not where work happens. Clients are the terminal UI, the iPhone app and the Mac app.
+- **Remote access without a VPN.** Away from home your iPhone reaches your Mac over a direct
+  connection when the network allows it, and through the relay when it does not. There is nothing
+  to install on either side: no Tailscale, no port forwarding to set up.
+- **End-to-end encryption between your devices.** Requests and answers are sealed on one device and
+  opened on the other. The relay carries bytes it cannot read.
+- **More than one Mac.** Pair your iPhone with each of your Macs and switch between them in the
+  app. Using several at once from one screen is coming soon.
+- **Review where you are.** Pull request cards open the diff in the iPhone and Mac apps, and in the
+  terminal UI in `tuicr` (installed separately).
+- **Model and effort per task.** For each task the orchestrator picks a model and a reasoning
+  effort from what your connected Claude and Codex accounts offer, and records why. You can choose
+  them yourself instead. A decider that learns from the results of past tasks is coming soon.
+- **MCP servers in one place.** Settings on the Mac and the iPhone lists the MCP servers your agents
+  use and what each offers, and lets you remove one you added to your own settings. Authorizing a
+  server from a device other than the Mac is coming soon.
 
-After a successful batch, Alondra measures the latest main-model input, including cache tokens.
-At `compact_orchestrator_at` percent of the reported context window (default 50; 0 disables
-manual compaction), it runs `/compact` on the same conversation before more work. A compact
-boundary confirms reduction; absent measurements stay unknown. Claude's automatic compaction
-remains enabled. The executor runs when `wake` is on.
+### Providers and sign-in
 
-Existing background orchestrators migrate after becoming idle and releasing their tasks,
-permissions and pending deliveries. Alondra stops the old background process, retains its
-conversation, and adopts its inbox. See
-[the transition plan](docs/orchestrator-on-demand-plan.md) and
-[operational details](docs/orchestrator-on-demand.md).
+Alondra supports **Claude** (through Claude Code) and **Codex**, alone or together, with several
+accounts of each.
 
-### Scheduled tasks
+**Alondra does not manage provider sign-in.** You use your own Claude Code or Codex login, the one
+already on your Mac. Alondra never sees your credentials, never stores them and never asks you for
+them: the agent sessions it launches use the login the provider's own tool holds.
 
-Alondrad keeps local schedules in `~/.alondra/schedules.db` and starts a fresh task at each due
-time. Create and edit them under Tasks → Scheduled Tasks in the Mac and iPhone apps, or press
-`s` on the TUI Tasks screen. A schedule stores its mission, project, local time and launch
-options. The editor's Advanced section accepts one Claude `--disallowedTools` pattern per line;
-those patterns are applied to every run, including a task resumed after a failed start.
+## Alondra Cloud
 
-In Alondra-managed Claude sessions, the `PreToolUse` hook redirects `CronCreate` to the
-`schedule_create` MCP tool. This keeps durable work in Alondra, where it is visible and can be
-paused or edited. Subhour polling remains in the current Claude session because Alondra does
-not support that cadence. The hook does not affect Claude sessions outside Alondra. See the
-[Claude scheduled tasks documentation](https://code.claude.com/docs/en/scheduled-tasks).
+Alondra Cloud connects your devices: accounts, pairing, push notifications and a
+relay for when your iPhone cannot reach your Mac directly. Access opens little by little: join the
+waiting list at [getalondra.com](https://getalondra.com).
 
-### The TUI
+On the same Wi-Fi your devices connect directly to your Mac, with no account. The
+server code is in this repository under the same license.
 
-- **Waiting for you**: questions from the nodes (structured, menu, permissions and plans), PR
-  cards and reports, grouped by the task they belong to (`docs/cards.md`). `Enter` opens them
-  with all their context, `1`–`4` picks an option and `r` answers with text.
-- **Tasks**: each request with its tasks, what depends on what, each task's state (waiting for
-  another, running, needs you, in review, closing, done, cancelled) and what its node is doing.
-  `x` cancels a task and `Shift+R` reopens it (`docs/tasks-plan.md`). A task's screen shows
-  what its node runs now, its steps, subagents and background work, and offers `i` to interrupt it.
-- `Tab` moves between the two, `r` messages the selected task's node and `Shift+M` the orchestrator.
+Either way the work happens on your Mac, and the traffic between your devices is end-to-end
+encrypted.
 
-## Development
+## Privacy
 
-`make build` / `make test` with Bazel; tests run only through Bazel. See
-[`docs/building-from-source.md`](docs/building-from-source.md).
+Alondra Cloud is a control plane. It does not run your agents and does not read your work.
 
-### Install on an iPhone
+What passes through it:
 
-`make device DEVICE="name or UDID"` builds the arm64 iOS app, installs it on that paired device,
-and opens it. The device
-must have Developer Mode enabled and be reachable from this Mac. Existing app data
-is retained; the running app is restarted.
+- your account (sign-in identity and email);
+- the registry of your devices: device IDs, public keys and the endpoint IDs used to connect them;
+- push notification tokens, and the push messages themselves, sealed for each device (a generic
+  fallback text is used when a device cannot open them);
+- connection metadata the relay sees by necessity: addresses, timing and how many bytes it carried
+  for each device, which Alondra Cloud uses to measure its cost.
 
-Keep the development profiles for the app and notification extension in `~/.alondra/signing`
-(`ALONDRA_SIGNING_DIR`), configured by a `signing.bzl` there copied from `signing/signing.example.bzl`.
-Both profiles must include the selected device and have a matching local signing
-identity. Profiles and private keys are never committed.
+What never leaves your Mac:
+
+- your code, repositories and worktrees;
+- task and card contents, plans, diffs, transcripts and attachments, which travel between your
+  devices end to end, as sealed envelopes the relay carries without being able to open them;
+- your Claude and Codex credentials: Alondra never sees them.
+
+The protocol is in [`docs/iroh-protocol.md`](docs/iroh-protocol.md); report anything that looks
+wrong under [`SECURITY.md`](SECURITY.md).
+
+## FAQ
+
+**Does it replace Claude Code or Codex?** No. It launches them and adds what they lack across many
+sessions: one place for all the questions, a state per task, pull requests and worktrees handled
+for you.
+
+**Does my code leave my Mac?** Only to the providers you already use (Anthropic, OpenAI) and to
+GitHub, exactly as if you ran those tools yourself. Alondra Cloud never receives it.
+
+**Do I need an account with Alondra?** Not on the same network. Reaching your Mac from your iPhone
+away from home goes through Alondra Cloud.
+
+**Which platforms?** The daemon, CLI and TUI need an Apple Silicon Mac. The apps are for iPhone
+and Mac. They are in alpha and come with access to Alondra Cloud: join the waiting list at
+[getalondra.com](https://getalondra.com).
+
+**Where are the logs and settings?** In `~/.alondra/`. `alondra doctor` says what works and how to
+fix what does not.
+
+## Documentation
+
+- [`INSTALL.md`](INSTALL.md): install, apps, troubleshooting
+- [`docs/architecture/overview.md`](docs/architecture/overview.md): how the pieces fit
+- [`docs/iroh-protocol.md`](docs/iroh-protocol.md): how devices talk to a Mac
+- [`docs/building-from-source.md`](docs/building-from-source.md): build it yourself
+- [`docs/running-tests.md`](docs/running-tests.md): run the tests
+
+## Contributing
+
+Pull requests go straight to this repository. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first, and
+the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Bugs and ideas are issues here; hangs and
+crashes go to [bitomule/alondra-issues](https://github.com/bitomule/alondra-issues); security
+reports go through [`SECURITY.md`](SECURITY.md).
+
+## License
+
+Alondra is released under the [Functional Source License, Version 1.1, MIT Future License](https://fsl.software)
+(FSL-1.1-MIT). The full text is in [`LICENSE.md`](LICENSE.md); the notices for the software Alondra includes are in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+- **You may** use it for your own work, inside your company, for education and research, and to
+  provide professional services to a client. You may read it, change it and contribute to it.
+- **You may not** offer Alondra, or something substantially similar, as a commercial product or
+  service that competes with it.
+- **Each version becomes MIT** two years after it is published.
+- For a permission or a commercial license, write to
+  [licensing@getalondra.com](mailto:licensing@getalondra.com).
+
+This is source-available, not an OSI-approved open source license.
+
+The Claude Agent SDK that Alondra downloads when it builds is Anthropic's, under Anthropic's own
+terms, and is not covered by this license.
+
+### Trademark
+
+"Alondra" and the Alondra logo are not licensed. The license covers the code, not the name or the
+logo: forks and derived services must use another name and another logo. A project that builds on Alondra and
+uses "Alondra" in its name should say that it is not affiliated with this project.
+
+Copyright 2026 David Collado Sela.

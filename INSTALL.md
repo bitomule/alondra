@@ -14,7 +14,8 @@ Alondra brings everything else it runs, Node and the Agent SDK included.
 
 ## The apps
 
-The iPhone and Mac apps come through TestFlight while Alondra is in alpha. Open the app on the
+The iPhone and Mac apps are in alpha and come with access to Alondra Cloud (join the waiting list at
+getalondra.com), through TestFlight. Open the app on the
 same Wi-Fi as your Mac: it finds the Mac, both screens show the same code, and you allow it on
 the Mac (in the Mac app or the TUI).
 

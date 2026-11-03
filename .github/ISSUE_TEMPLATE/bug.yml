@@ -1,0 +1,32 @@
+name: Bug
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `alondra --version`, and the app version if it is about an app.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`alondra doctor` output"
+      render: text
+  - type: markdown
+    attributes:
+      value: Remove secrets and private repository names from anything you paste. Everything here is public.

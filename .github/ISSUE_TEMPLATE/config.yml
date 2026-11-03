@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Alondra stuck or hanging
+    url: https://github.com/bitomule/alondra-issues/issues/new/choose
+    about: Hangs, crashes and tasks that do not move go to the issues repository, with the diagnostics it asks for.
+  - name: Report a security vulnerability
+    url: https://github.com/bitomule/alondra/blob/main/SECURITY.md
+    about: Never in a public issue. Follow SECURITY.md to report it privately.
