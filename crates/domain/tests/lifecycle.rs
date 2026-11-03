@@ -16,6 +16,7 @@ fn continuation(value: &str) -> ContinuationId {
 fn operation(value: &str) -> OperationId {
     OperationId::new(value).unwrap()
 }
+#[track_caller]
 fn apply(task: &mut TaskLifecycle, event: Event) {
     task.apply(task.revision(), event).unwrap();
 }
@@ -30,6 +31,7 @@ fn admit(task: &mut TaskLifecycle, instance: &str) {
         },
     );
 }
+#[track_caller]
 fn fact(task: &mut TaskLifecycle, fact: RuntimeFact) {
     let stamp = task.execution().unwrap().clone();
     let cursor = task.cursor().unwrap() + 1;
@@ -3196,4 +3198,49 @@ fn retry_answer_before_native_readiness_preserves_original_mission_and_never_cla
     assert_eq!(task.resource(),Some(ResourceEvidence::Reserved));assert_eq!(task.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["original-mission","user-retry"]);assert!(task.turn().is_none());
     let before=format!("{task:?}");let stamp=task.execution().unwrap().clone();assert!(task.apply(task.revision(),Event::Runtime{stamp,cursor:1,fact:RuntimeFact::TurnStarted{turn:turn("invalid"),trigger:Trigger::Input(input("original-mission"))}}).is_err());assert_eq!(format!("{task:?}"),before);
     fact(&mut task,RuntimeFact::ResourceAvailable);fact(&mut task,RuntimeFact::TurnStarted{turn:turn("actual"),trigger:Trigger::Input(input("original-mission"))});assert_eq!(task.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["user-retry"]);
+}
+
+
+#[test]
+fn a_host_move_may_ignore_only_the_named_answered_callbacks() {
+    let old = CallbackId::new("superseded-plan").unwrap();
+    let allowed = std::collections::BTreeSet::from([old.clone()]);
+    let active = || {
+        let mut active = running();
+        fact(&mut active, RuntimeFact::Ask { card: "old-plan".into(), callback: old.clone(), reason: WaitReason::Permission });
+        apply(&mut active, Event::Decide { card: "old-plan".into(), decision: Decision::Deny { message: "superseded".into() } });
+        active
+    };
+    assert!(!active().quiescent_except_callbacks(&allowed), "a root turn still runs");
+    let end = || RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false };
+    let idle = || {
+        let mut idle = active();
+        fact(&mut idle, end());
+        idle
+    };
+    assert!(idle().quiescent_except_callbacks(&allowed));
+    assert!(!idle().quiescent_except_callbacks(&std::collections::BTreeSet::new()));
+    let mut another_plan = idle();
+    fact(&mut another_plan, RuntimeFact::Ask { card: "current-plan".into(), callback: CallbackId::new("current-plan").unwrap(), reason: WaitReason::Permission });
+    assert!(!another_plan.quiescent_except_callbacks(&allowed), "the current plan still needs an answer");
+    apply(&mut another_plan, Event::Decide { card: "current-plan".into(), decision: Decision::Allow });
+    assert!(!another_plan.quiescent_except_callbacks(&allowed), "the current plan's answer still needs delivery");
+    for name in ["native-child", "native-command"] {
+        let mut background = active();
+        fact(&mut background, RuntimeFact::WorkStarted { turn: turn("root"), work: work(name) });
+        fact(&mut background, end());
+        assert!(!background.quiescent_except_callbacks(&allowed), "native work still runs");
+        fact(&mut background, RuntimeFact::WorkEnded { work: work(name), continuation: continuation("native-notification") });
+        assert!(!background.quiescent_except_callbacks(&allowed), "a real owned continuation remains");
+        fact(&mut background, RuntimeFact::TurnStarted { turn: turn("notified"), trigger: Trigger::OwnedContinuation(continuation("native-notification")) });
+        assert!(!background.quiescent_except_callbacks(&allowed), "the turn reading the continuation still runs");
+        fact(&mut background, RuntimeFact::TurnEnded { turn: turn("notified"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false });
+        assert!(background.quiescent_except_callbacks(&allowed));
+    }
+    let mut input_pending = idle();
+    apply(&mut input_pending, Event::Tell { input: input("queued") });
+    assert!(!input_pending.quiescent_except_callbacks(&allowed), "a queued input remains");
+    let mut effect_pending = idle();
+    fact(&mut effect_pending, RuntimeFact::EffectAccepted { operation: operation("native-effect") });
+    assert!(!effect_pending.quiescent_except_callbacks(&allowed), "a native effect remains");
 }

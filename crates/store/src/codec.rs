@@ -231,6 +231,7 @@ pub(super) enum DecisionRecord {
         content: Option<serde_json::Map<String, serde_json::Value>>,
     },
     Decline,
+    Superseded,
 }
 impl From<&Decision> for DecisionRecord {
     fn from(decision: &Decision) -> Self {
@@ -247,6 +248,7 @@ impl From<&Decision> for DecisionRecord {
                 content: content.clone(),
             },
             Decision::Decline => Self::Decline,
+            Decision::Superseded => Self::Superseded,
         }
     }
 }
@@ -258,6 +260,7 @@ impl From<DecisionRecord> for Decision {
             DecisionRecord::Deny { message } => Self::Deny { message },
             DecisionRecord::Accept { text, content } => Self::Accept { text, content },
             DecisionRecord::Decline => Self::Decline,
+            DecisionRecord::Superseded => Self::Superseded,
         }
     }
 }

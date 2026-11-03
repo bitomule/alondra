@@ -300,6 +300,8 @@ pub enum Decision {
         content: Option<serde_json::Map<String, Value>>,
     },
     Decline {},
+    /// Only for a host that announced `plan_supersession`: a newer plan replaced this one.
+    Superseded {},
 }
 
 impl DecisionKind {
@@ -314,6 +316,7 @@ impl Decision {
         match self {
             Self::Allow { .. } | Self::Deny { .. } => kind.has_tool_use(),
             Self::Accept { .. } | Self::Decline {} => !kind.has_tool_use(),
+            Self::Superseded {} => kind == DecisionKind::Plan,
         }
     }
 }

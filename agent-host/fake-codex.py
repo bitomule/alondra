@@ -54,13 +54,14 @@ def checkpoint_after_barrier(release, native_turn, ready):
     os.close(descriptor)
     usage = {'totalTokens': 37, 'inputTokens': 37, 'cachedInputTokens': 0, 'outputTokens': 0, 'reasoningOutputTokens': 0}
     note('thread/tokenUsage/updated', {'threadId': thread, 'turnId': native_turn, 'tokenUsage': {'total': usage, 'last': usage, 'modelContextWindow': 32768}})
-def finish():
+def finish(native_turn=None):
+    native_turn = turn if native_turn is None else native_turn
     if os.environ.get('ALONDRA_FAKE_TOKEN_USAGE') == '1':
         total = {'totalTokens': 30 * turn_number, 'inputTokens': 20 * turn_number, 'cachedInputTokens': 0, 'outputTokens': 10 * turn_number, 'reasoningOutputTokens': 0}
-        note('thread/tokenUsage/updated', {'threadId': thread, 'turnId': turn, 'tokenUsage': {'total': total, 'last': {'totalTokens': 30, 'inputTokens': 20, 'cachedInputTokens': 0, 'outputTokens': 10, 'reasoningOutputTokens': 0}, 'modelContextWindow': 32768}})
-    note('item/agentMessage/delta', {'threadId': thread, 'turnId': turn, 'itemId': 'answer', 'delta': 'untrusted delta'})
-    note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'agentMessage', 'id': 'answer', 'text': os.environ.get('ALONDRA_FAKE_FINAL_TEXT', ''), 'phase': 'final_answer'}})
-    note('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'completed'}})
+        note('thread/tokenUsage/updated', {'threadId': thread, 'turnId': native_turn, 'tokenUsage': {'total': total, 'last': {'totalTokens': 30, 'inputTokens': 20, 'cachedInputTokens': 0, 'outputTokens': 10, 'reasoningOutputTokens': 0}, 'modelContextWindow': 32768}})
+    note('item/agentMessage/delta', {'threadId': thread, 'turnId': native_turn, 'itemId': 'answer', 'delta': 'untrusted delta'})
+    note('item/completed', {'threadId': thread, 'turnId': native_turn, 'item': {'type': 'agentMessage', 'id': 'answer', 'text': os.environ.get('ALONDRA_FAKE_FINAL_TEXT', ''), 'phase': 'final_answer'}})
+    note('turn/completed', {'threadId': thread, 'turn': {'id': native_turn, 'status': 'completed'}})
 for line in sys.stdin:
     message = json.loads(line)
     if os.environ.get('ALONDRA_FAKE_TRANSCRIPT'):
@@ -157,7 +158,33 @@ for line in sys.stdin:
             ready = threading.Event()
             threading.Thread(target=checkpoint_after_barrier, args=(fixture['checkpointRelease'], turn, ready), daemon=True).start()
             ready.wait()
-        if turn_mode == 'permission' and turn_number == 1:
+        if turn_mode == 'replace_plan_with_work':
+            if turn_number <= 2:
+                note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'plan', 'id': 'plan-work-' + str(turn_number), 'text': '- [ ] Implement the change\n- [ ] Verify the result'}})
+                if turn_number == 1:
+                    owned = fixture['ownedCommand']
+                    script = 'import os,sys; print(os.getpid(),flush=True); open(sys.argv[1]).read()'
+                    child = subprocess.Popen(['/usr/bin/python3', '-c', script, owned['release']], stdout=subprocess.PIPE, text=True)
+                    pid = int(child.stdout.readline().strip())
+                    with open(owned['pidFile'], 'w') as target: json.dump({'pid': pid}, target)
+                    command_turn = turn
+                    note('item/started', {'threadId': thread, 'turnId': command_turn, 'item': {'type': 'commandExecution', 'id': 'plan-owned-command', 'command': 'work waits on its explicit barrier', 'cwd': os.getcwd(), 'processId': str(pid), 'status': 'inProgress', 'aggregatedOutput': '', 'exitCode': None}})
+                    def complete_plan_work():
+                        code = child.wait()
+                        child.stdout.close()
+                        note('item/completed', {'threadId': thread, 'turnId': command_turn, 'item': {'type': 'commandExecution', 'id': 'plan-owned-command', 'command': 'work waits on its explicit barrier', 'cwd': os.getcwd(), 'processId': str(pid), 'status': 'completed', 'aggregatedOutput': 'Work completed naturally', 'exitCode': code}})
+                    threading.Thread(target=complete_plan_work, daemon=True).start()
+                note('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'completed'}})
+            elif message.get('params', {}).get('input', [{}])[0].get('text', '').startswith('Implement the plan the user just approved.'):
+                implementation_turn = turn
+                release = fixture['planImplementationRelease']
+                def finish_implementation():
+                    with open(release) as barrier: barrier.read(1)
+                    finish(implementation_turn)
+                threading.Thread(target=finish_implementation, daemon=True).start()
+            else:
+                finish()
+        elif turn_mode == 'permission' and turn_number == 1:
             send({'id': 88, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread, 'turnId': turn, 'itemId': 'pending-permission', 'command': 'alondra-fixture-needs-consent', 'cwd': os.getcwd(), 'reason': 'The fixture waits for explicit user permission', 'availableDecisions': ['accept', 'decline']}})
         elif turn_mode == 'blocked_command' and turn_number == 1:
             owned = fixture['ownedCommand']
@@ -205,8 +232,9 @@ for line in sys.stdin:
             note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type': 'collabAgentToolCall', 'id': 'spawn-child', 'tool': 'spawnAgent', 'status': 'completed', 'senderThreadId': thread, 'receiverThreadIds': ['native-child'], 'agentsStates': {'native-child': {'status': 'running', 'message': None}}}})
             note('item/completed', {'threadId': 'native-child', 'turnId': child_turn, 'item': {'type': 'plan', 'id': 'child-plan', 'text': 'This child plan must never become the whole task plan'}})
             note('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'completed'}})
-        elif turn_mode == 'plan' and turn_number == 1:
-            note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type':'plan','id':'plan-item','text':'- [ ] Implement the change\n- [ ] Verify the result'}})
+        elif (turn_mode == 'plan' and turn_number == 1) or (turn_mode == 'replace_plan' and turn_number <= 2):
+            plan_item = 'plan-item-' + str(turn_number) if turn_mode == 'replace_plan' else 'plan-item'
+            note('item/completed', {'threadId': thread, 'turnId': turn, 'item': {'type':'plan','id':plan_item,'text':'- [ ] Implement the change\n- [ ] Verify the result'}})
             note('turn/completed', {'threadId': thread, 'turn': {'id':turn,'status':'completed'}})
         elif turn_mode == 'question':
             params = {'threadId': thread, 'turnId': turn, 'itemId': 'question-item', 'questions': [{'id': 'language', 'header': 'Language', 'question': 'Which language?', 'options': [{'label': 'English', 'description': 'English text'}], 'isSecret': False, 'isOther': True}]}

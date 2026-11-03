@@ -1369,10 +1369,7 @@ impl Driver {
         }
         if self.worker.provider()==Provider::Codex && let Some(reason)=alondra_provider_codex::account_refusal(&batch){self.native_account_refusal=Some(reason.into());return Err(Failed::new(reason.into()))}
         if !unrecorded.is_empty() {
-            // The task's record no longer follows its Claude: only that turn fails, cut by a new
-            // host that resumes the same session, as one whose host ended does.
-            self.owner_failed = true;
-            return Err(Failed::new(format!("Alondra could not record what its Claude did ({}): its session goes on in a new host", unrecorded.join("; "))));
+            log!("the SDK owner of {} keeps its host after an observation omitted lifecycle reactions: {}", self.task, unrecorded.join("; "));
         }
         Ok(acceptance)
     }
@@ -1430,11 +1427,34 @@ impl Driver {
             || matches!(lifecycle.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation))
     }
 
+    fn legacy_plan_supersessions(&self) -> Result<BTreeSet<alondra_foundation::CallbackId>, Failed> {
+        if self.worker.provider() != Provider::Codex || self.worker.supports_plan_supersession() {
+            return Ok(BTreeSet::new());
+        }
+        let read = self.domain.read();
+        let state = read.state();
+        let lifecycle = state.lifecycle_of(&self.task).map_err(|error| Failed::new(format!("{error:#}")))?;
+        Ok(state.lifecycle_journal.get(&self.task).into_iter().flatten().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Admitted { .. }))
+            .filter_map(|record| match record {
+                LifecycleRecord::Decided { epoch, decision: DecisionRecord::Superseded, .. } => Some(alondra_domain::decision_callback(lifecycle.generation(), *epoch)),
+                _ => None,
+            })
+            .filter(|callback| lifecycle.callback(callback) == Some(alondra_domain::CallbackView::Answered))
+            .collect())
+    }
+
     /// A late observation can change whether an old host is idle. Read it before considering any
     /// unsent input, then reconsider the lifecycle on the next step. Once its observations are
     /// drained, move the idle host to this release before handing it another instruction.
     fn advance_idle_host_of_another_release(&mut self) -> Result<bool, Failed> {
-        if !self.worker.runs_another_release() || (self.expects_host()? && !self.only_unsent_input()?) {
+        let deferred = self.legacy_plan_supersessions()?;
+        let supersession_only = !deferred.is_empty() && self.awaiting.is_none() && self.results.is_empty()
+            && self.domain.read().state().lifecycle_of(&self.task)
+                .map_err(|error| Failed::new(format!("{error:#}")))?.quiescent_except_callbacks(&deferred);
+        if !deferred.is_empty() {
+            if !supersession_only { return Ok(false); }
+        } else if !self.worker.runs_another_release() || (self.expects_host()? && !self.only_unsent_input()?) {
             return Ok(false);
         }
         if self.worker.readable(Duration::ZERO).unwrap_or(true) {
@@ -1490,7 +1510,10 @@ impl Driver {
         if self.advance_idle_host_of_another_release()? {
             return Ok(());
         }
-        if let Some(permit) = self.controls.pop_front() {
+        let deferred = self.legacy_plan_supersessions()?;
+        if let Some(index) = self.controls.iter().position(|permit| !deferred.iter()
+            .any(|callback| callback.as_str() == permit.control().as_str())) {
+            let permit = self.controls.remove(index).expect("the control was just found");
             return self.control(permit);
         }
         self.wake_completed_codex_work()?;

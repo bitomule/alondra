@@ -669,6 +669,162 @@ async fn codex_transition_cancellation_before_source_drain_aborts_without_a_new_
 
 
 #[test]
+fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_across_adoption() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "replace_plan");
+    let mut driver = launch(&slice);
+    slice.until(&mut driver, |slice| slice.observations_with("turn/completed") == 1);
+    let first = Slice::open_decision_cards(&slice.domain).remove(0);
+    let execution = Slice::lifecycle(&slice.domain).execution().cloned().unwrap();
+    tell(&slice, &driver, "Revise the plan before I approve it");
+    slice.until(&mut driver, |slice| slice.observations_with("turn/completed") == 2);
+    let open = Slice::open_decision_cards(&slice.domain);
+    assert_eq!(open.len(), 1, "only the revised plan waits for approval");
+    let revised = &open[0];
+    assert_ne!(revised, &first);
+    let state = slice.domain.state().unwrap();
+    assert!(state.interactions[&InteractionId::from(first.as_str())].withdrawn);
+    assert_eq!(Slice::lifecycle(&slice.domain).execution(), Some(&execution));
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
+    slice.answer(revised, Hold::APPROVE, None).unwrap();
+    drop(driver);
+    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    slice.rest(&mut adopted);
+    let state = restarted.state().unwrap();
+    let lifecycle = Slice::lifecycle(&restarted);
+    assert_eq!(lifecycle.execution(), Some(&execution));
+    assert!(Slice::open_decision_cards(&restarted).is_empty());
+    assert!(matches!(state.interactions[&InteractionId::from(revised.as_str())].payload, InteractionPayload::Question { answer: Some(_), .. }));
+    assert_eq!(Slice::decision_cards(&restarted).len(), 2, "adoption never presents another plan");
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
+    assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "initialize").count(), 1, "the native process stayed alive");
+    let turns: Vec<_> = transcript(&trace).into_iter().filter(|message| message["method"] == "turn/start").collect();
+    assert_eq!(turns.len(), 4, "two plans, one implementation and the canonical empty-turn wake");
+    assert!(turns.iter().all(|message| !message["params"]["input"][0]["text"].as_str().is_some_and(|text| text.starts_with("Revise the plan using this user feedback:"))), "supersession starts no revision turn");
+    let wake = state.lifecycle_journal[&TaskId::from(TASK)].iter().find_map(|record| match record {
+        LifecycleRecord::TurnEnded { wake: Some(wake), text, .. } => Some((wake, text)), _ => None,
+    }).unwrap();
+    assert_eq!(turns[3]["params"]["input"][0]["text"].as_str(), wake.1.as_deref());
+    assert!(state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record,
+        LifecycleRecord::TurnStarted { input, .. } if input == wake.0)));
+    assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start" && message["params"]["input"][0]["text"].as_str().is_some_and(|text| text.starts_with("Implement the plan the user just approved."))).count(), 1);
+    adopted.stop().unwrap();
+}
+
+
+#[test]
+fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "replace_plan_with_work");
+    let backend_path = slice._home.join("codex-backend.json");
+    let current: SdkBackend = serde_json::from_slice(&std::fs::read(&backend_path).unwrap()).unwrap();
+    let mut legacy = current.clone();
+    legacy.host = runfile("FIXTURE_CODEX_PLAN_LEGACY_HOST");
+    legacy.node = legacy.host.clone();
+    legacy.host_sha256 = backend::digest(&legacy.host).unwrap();
+    legacy.node_sha256 = legacy.host_sha256.clone();
+    std::fs::write(&backend_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let command_release = slice._home.join("legacy-work-release");
+    let implementation_release = slice._home.join("legacy-implementation-release");
+    for path in [&command_release, &implementation_release] {
+        let path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    }
+    let pid_file = slice._home.join("legacy-work-pid");
+    let sidecar = slice._home.join("codex-native.account.json");
+    let fixture = serde_json::json!({
+        "ownedCommand": {"release": command_release, "pidFile": pid_file},
+        "planImplementationRelease": implementation_release,
+    });
+    std::fs::write(&sidecar, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let mut original = launch(&slice);
+    slice.until(&mut original, |slice| slice.observations_with("turn/completed") == 1);
+    let group = original.worker.host_group().unwrap();
+    let pid: serde_json::Value = serde_json::from_slice(&std::fs::read(&pid_file).unwrap()).unwrap();
+    let child = alondra_process_group::members(group).unwrap().into_iter()
+        .find(|member| member.pid == pid["pid"].as_i64().unwrap() as i32).unwrap();
+    assert!(alondra_process_group::alive(&child).unwrap());
+    assert!(!original.worker.supports_plan_supersession());
+    drop(original);
+    // The manifest release string is unchanged: support comes from hello, not a version guess.
+    std::fs::write(&backend_path, serde_json::to_vec(&current).unwrap()).unwrap();
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let mut adopted = slice.take_over(&restarted);
+    let revise: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Revise the plan before I approve it"})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "David", adopted.agent(), revise, true))
+        .unwrap();
+    while slice.observations_with("turn/completed") < 2 {
+        adopted.step(&|| false).unwrap();
+    }
+    let cards = Slice::open_decision_cards(&restarted);
+    assert_eq!(cards.len(), 1);
+    let newest = InteractionId::from(cards[0].as_str());
+    let status_reads = || slice.control_rows().iter().filter(|(kind, _, status)| kind == "mcp_status" && status == "handed").count();
+    let before_reads = status_reads();
+    let state = restarted.state().unwrap();
+    restarted.execute_as_system(envelope(&state, "legacy-status-behind-supersession", Command::ReadMcpStatus { task_id: TASK.into() })).unwrap();
+    while status_reads() == before_reads { adopted.step(&|| false).unwrap(); }
+    assert!(!adopted.moves_to_this_release);
+    assert!(alondra_process_group::alive(&child).unwrap(), "the command survives adoption and the deferred response");
+    assert!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").all(|message|
+        !message["params"]["input"][0]["text"].as_str().unwrap().starts_with("Revise the plan using this user feedback:")));
+    // Let the command finish naturally. Its owned continuation still prevents a host move.
+    std::fs::write(&command_release, b"done\n").unwrap();
+    while slice.observations_with("Work completed naturally") == 0 { adopted.step(&|| false).unwrap(); }
+    let before_reads = status_reads();
+    let state = restarted.state().unwrap();
+    restarted.execute_as_system(envelope(&state, "legacy-status-while-plan-pending", Command::ReadMcpStatus { task_id: TASK.into() })).unwrap();
+    while status_reads() == before_reads { adopted.step(&|| false).unwrap(); }
+    assert!(!adopted.moves_to_this_release, "the current unanswered plan prevents a move even after native work ends");
+    assert!(!alondra_process_group::alive(&child).unwrap());
+    let state = restarted.state().unwrap();
+    assert!(!state.interactions[&newest].withdrawn);
+    assert!(matches!(state.interactions[&newest].payload, InteractionPayload::Question { answer: None, .. }));
+    answer(&restarted, &newest, Hold::APPROVE);
+    while slice.observations_with("alondra/planContinuationAccepted") == 0 { adopted.step(&|| false).unwrap(); }
+    while Slice::lifecycle(&restarted).activity() != ActivityView::Working { adopted.step(&|| false).unwrap(); }
+    let before_reads = status_reads();
+    let state = restarted.state().unwrap();
+    restarted.execute_as_system(envelope(&state, "legacy-status-during-implementation", Command::ReadMcpStatus { task_id: TASK.into() })).unwrap();
+    while status_reads() == before_reads { adopted.step(&|| false).unwrap(); }
+    assert!(!adopted.moves_to_this_release, "the implementation root turn still runs on the legacy host");
+    let approved = restarted.state().unwrap();
+    // Cold inference after the move produces no new plan; this test judges retained approvals.
+    let mut completed = fixture;
+    completed["turnMode"] = serde_json::json!("complete");
+    std::fs::write(&sidecar, serde_json::to_vec(&completed).unwrap()).unwrap();
+    std::fs::write(&implementation_release, b"done\n").unwrap();
+    while !adopted.moves_to_this_release { adopted.step(&|| false).unwrap(); }
+    assert!(Slice::lifecycle(&restarted).turn().is_none());
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
+    let controls = std::mem::take(&mut adopted.controls);
+    let mut renewed = adopted.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    renewed.controls.extend(controls);
+    slice.rest(&mut renewed);
+    let state = restarted.state().unwrap();
+    assert_eq!(state.interactions[&newest], approved.interactions[&newest]);
+    assert_eq!(state.checklists, approved.checklists);
+    assert_eq!(Slice::decision_cards(&restarted).len(), 2, "the answered plan is never presented again");
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
+    let next: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Report what the implementation changed"})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "David", renewed.agent(), next, true))
+        .unwrap();
+    slice.rest(&mut renewed);
+    assert_eq!(Slice::decision_cards(&restarted).len(), 2, "the renewed host presents no plan again");
+    assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "initialize").count(), 2);
+    let resumes: Vec<_> = transcript(&trace).into_iter().filter(|message| message["method"] == "thread/resume").collect();
+    assert_eq!(resumes.len(), 1);
+    assert_eq!(resumes[0]["params"]["threadId"], "00000000-0000-4000-8000-000000000001");
+    assert!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").all(|message|
+        !message["params"]["input"][0]["text"].as_str().unwrap().starts_with("Revise the plan using this user feedback:")));
+    renewed.stop().unwrap();
+}
+
+#[test]
 fn a_codex_plan_approved_after_its_turn_ended_commits_the_new_turn_under_the_same_owner() {
     let slice = Slice::new();
     let trace = configured(&slice, "plan");

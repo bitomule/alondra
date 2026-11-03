@@ -276,6 +276,23 @@ fn missing_or_changed_owned_trigger_is_refused_before_attach_without_repairs() {
     }
 }
 
+#[test]
+fn upgrading_never_blesses_an_unknown_required_card_guard() {
+    for install in [false, true] {
+        let mut database = Database::domain();
+        let mut tx = database.connection.transaction().unwrap();
+        LifecycleTransaction::install(&mut tx).unwrap();
+        tx.commit().unwrap();
+        database.connection.execute_batch("DROP TRIGGER lifecycle_required_card_stays_actionable; CREATE TRIGGER lifecycle_required_card_stays_actionable BEFORE UPDATE ON interactions BEGIN SELECT 1; END;").unwrap();
+        let before = schema_snapshot(&database.connection);
+        let mut tx = database.connection.transaction().unwrap();
+        let result = if install { LifecycleTransaction::install(&mut tx) } else { LifecycleTransaction::upgrade(&mut tx) };
+        assert!(matches!(result, Err(Error::UnsupportedJournalFormat)));
+        drop(tx);
+        assert_eq!(schema_snapshot(&database.connection), before);
+    }
+}
+
 /// A journal installed before the controls existed: its own schema and format marker, nothing else.
 fn journal_before_controls() -> Database {
     let database = Database::domain();

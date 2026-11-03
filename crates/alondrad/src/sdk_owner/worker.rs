@@ -75,6 +75,9 @@ impl Worker {
     pub fn submit(&mut self, command: &CommittedCommand) -> Result<Handoff, AdapterError> { dispatch!(self, submit, command) }
     pub fn stopper(&self) -> Option<HostStop> { dispatch!(self, stopper) }
     pub fn host_group(&self) -> Option<i32> { dispatch!(self, host_group) }
+    pub fn supports_plan_supersession(&self) -> bool {
+        match self { Self::Claude(_) => true, Self::Codex(worker) => worker.supports_plan_supersession() }
+    }
     pub fn runs_another_release(&self) -> bool { dispatch!(self, runs_another_release) }
     pub fn host_exited(&mut self) -> bool { dispatch!(self, host_exited) }
     pub fn native_liveness(&mut self) -> Result<Option<alondra_provider_codex::NativeLiveness>, AdapterError> {

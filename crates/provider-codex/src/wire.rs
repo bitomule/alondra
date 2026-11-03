@@ -309,6 +309,9 @@ impl Connection {
             }
         }
     }
+    pub(super) fn supports_plan_supersession(&self) -> bool {
+        self.capabilities.iter().any(|capability| capability == "plan_supersession")
+    }
     /// Whether the host announced the capability that carries `action`. One that did not is never
     /// sent it, as its release may not even read it: the action is refused before any offer.
     fn carries(&self, action: &alondra_codex_protocol::Action) -> bool {

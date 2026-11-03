@@ -221,6 +221,54 @@ test('a native plan approves into the next default turn only after its exact car
   assert.equal(f.events.filter((event) => event.type === 'decision_requested' && event.kind === 'plan').length, 1);
 });
 
+for (const answerNewestFirst of [false, true]) {
+  test(`a superseded native plan closes without another revision turn (newest answered first: ${answerNewestFirst})`, { timeout: 15000 }, async (t) => {
+    const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'replace_plan' } });
+    f.session.offer('00000000-0000-4000-8000-000000000003', 'Plan the change');
+    const first = await f.next((event) => event.type === 'decision_requested' && event.kind === 'plan');
+    await f.next(method('turn/completed'));
+    f.session.offer('00000000-0000-4000-8000-000000000004', 'Revise the plan');
+    const newest = await f.next((event) => event.type === 'decision_requested' && event.kind === 'plan' && event !== first);
+    const request = (event) => ({ request_id: event.request_id, epoch: f.events.indexOf(event) + 1, kind: event.kind, tool_use_id: event.tool_use_id, asked: event.payload });
+    const allow = () => assert.equal(f.session.respond(request(newest), { behavior: 'allow', updated_input: {} }), true);
+    if (answerNewestFirst) {
+      allow();
+      await f.next((event) => method('alondra/planContinuationAccepted')(event) && event.payload.params.epoch === request(newest).epoch);
+    }
+    assert.equal(f.session.respond(request(first), { behavior: 'superseded' }), true);
+    const cancelled = await f.next((event) => event.type === 'decision_settled' && event.epoch === request(first).epoch);
+    assert.equal(cancelled.outcome, 'cancelled');
+    assert.equal(f.session.respond(request(first), { behavior: 'superseded' }), false);
+    if (!answerNewestFirst) allow();
+    await f.next((event) => method('alondra/planContinuationAccepted')(event) && event.payload.params.epoch === request(newest).epoch);
+    const turns = f.messages().filter((message) => message.method === 'turn/start');
+    assert.equal(turns.length, 3, 'two planning turns and one approved implementation');
+    assert.equal(turns.filter((message) => message.params.input[0].text.startsWith('Revise the plan using this user feedback:')).length, 0);
+    assert.equal(f.events.filter((event) => event.type === 'decision_requested' && event.kind === 'plan').length, 2);
+    assert.equal(f.events.filter((event) => event.type === 'decision_settled' && event.epoch === request(first).epoch).length, 1);
+  });
+}
+
+test('denying a newer native plan by policy preserves the users feedback on the older plan', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'replace_plan' } });
+  f.session.offer('00000000-0000-4000-8000-000000000003', 'Plan the change');
+  const first = await f.next((event) => event.type === 'decision_requested' && event.kind === 'plan');
+  await f.next(method('turn/completed'));
+  f.session.offer('00000000-0000-4000-8000-000000000004', 'Another plan while the task waits');
+  const newer = await f.next((event) => event.type === 'decision_requested' && event.kind === 'plan' && event !== first);
+  const request = (event) => ({ request_id: event.request_id, epoch: f.events.indexOf(event) + 1, kind: event.kind, tool_use_id: event.tool_use_id, asked: event.payload });
+  assert.equal(f.session.respond(request(newer), { behavior: 'deny', message: 'The task waits for another task before its plan can be approved' }), true);
+  await f.next((event) => method('alondra/planContinuationAccepted')(event) && event.payload.params.epoch === request(newer).epoch);
+  const feedback = 'The user requests changes to the plan: keep the existing parser';
+  assert.equal(f.session.respond(request(first), { behavior: 'deny', message: feedback }), true);
+  const continuation = await f.next((event) => method('alondra/planContinuationAccepted')(event) && event.payload.params.epoch === request(first).epoch);
+  const turns = f.messages().filter((message) => message.method === 'turn/start');
+  assert.equal(turns.length, 4);
+  assert.equal(turns.filter((message) => message.params.input[0].text === `Revise the plan using this user feedback: ${feedback}`).length, 1);
+  assert.equal(continuation.payload.params.requestId, first.request_id);
+  assert.equal(f.session.respond(request(first), { behavior: 'deny', message: feedback }), false);
+});
+
 for (const accountId of ['default', 'work']) {
   test(`only additional account ${accountId} forces file credential storage`, { timeout: 15000 }, async (t) => {
     const f = fixture(t, { config: { accountId, hostRelease: 'fixture-release' } });

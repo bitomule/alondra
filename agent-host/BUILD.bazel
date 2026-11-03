@@ -9,7 +9,7 @@ exports_files(["pnpm-lock.yaml", "package.json"])
 
 ts_project(
     name = "host_lib",
-    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "host-session.ts", "codex-session.ts", "codex-main.ts", "codex-legacy-fixture.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
+    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "host-session.ts", "codex-session.ts", "codex-main.ts", "codex-legacy-fixture.ts", "codex-plan-legacy-fixture.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
     tsconfig = "tsconfig.json",
     declaration = True,
     transpiler = "tsc",
@@ -220,6 +220,21 @@ js_run_binary(
     srcs = [":codex.cjs", "host-entitlements.plist"],
     outs = ["alondra-codex-host", "alondra-codex-host.manifest.json"],
     args = ["$(location codex.cjs)", "$(location alondra-codex-host)", "$(location alondra-codex-host.manifest.json)", "$(location host-entitlements.plist)", "codex-app-server-0.163.0"],
+)
+
+js_run_binary(
+    name = "codex_plan_legacy_fixture_bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "codex-plan-legacy-fixture.ts"],
+    outs = ["codex-plan-legacy-fixture.cjs", "codex-plan-legacy-fixture.meta.json"],
+    args = ["$(location codex-plan-legacy-fixture.ts)", "$(location codex-plan-legacy-fixture.cjs)", "$(location codex-plan-legacy-fixture.meta.json)"],
+)
+js_run_binary(
+    name = "codex_plan_legacy_fixture_host",
+    tool = ":sea_tool",
+    srcs = [":codex-plan-legacy-fixture.cjs", "host-entitlements.plist"],
+    outs = ["alondra-codex-plan-legacy-fixture-host", "alondra-codex-plan-legacy-fixture-host.manifest.json"],
+    args = ["$(location codex-plan-legacy-fixture.cjs)", "$(location alondra-codex-plan-legacy-fixture-host)", "$(location alondra-codex-plan-legacy-fixture-host.manifest.json)", "$(location host-entitlements.plist)", "codex-app-server-0.163.0"],
 )
 
 js_test(

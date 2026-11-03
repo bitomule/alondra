@@ -221,6 +221,126 @@ fn runtime_reopened(fixture: &Fixture, runtime: DomainRuntime) -> DomainRuntime 
     drop(runtime);
     DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap()
 }
+
+#[test]
+fn a_late_plan_observation_after_approval_commits_without_reopening_the_card() {
+    use alondra_provider_contract::DecisionKind;
+    let binding = binding_with(BTreeSet::from([Capability::OfferInput, Capability::Decisions]));
+    let (fixture, store, execution) = running_with(&binding);
+    let runtime = runtime(&fixture, store);
+    let state = runtime.state().unwrap();
+    runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "answer-fixture-question", answer())).unwrap();
+    let input = runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();
+    let request = Observation::Asked {
+        request: "native-plan".into(), epoch: 1, kind: DecisionKind::Plan, tool_use: Some("plan-item".into()),
+        payload: serde_json::to_vec(&serde_json::json!({"tool":"plan","input":{"plan":"- [ ] Implement the change\n- [ ] Verify the change"}})).unwrap(),
+    };
+    let observe = |cursor, facts| {
+        let state = runtime.state().unwrap();
+        runtime.own(scope_of(&state), |owner| {
+            let acceptance = owner.stage_observation(&binding, 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)?;
+            assert!(owner.unrecorded().is_empty(), "reconciliation leaves no lifecycle failure");
+            Ok(acceptance)
+        }).unwrap()
+    };
+    observe(1, vec![Observation::Available, Observation::TurnStarted { input, turn: TurnId::new("plan-turn").unwrap() }, request.clone()]);
+    let card = alondra_core::domain::decision_card_id(&task(), execution.generation(), 1);
+    let state = runtime.state().unwrap();
+    assert!(state.interactions.contains_key(&card), "the native plan is presented: {:?}", state.lifecycle_journal[&task()]);
+    runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "approve-native-plan", Command::AnswerQuestion {
+        interaction_id: card.clone(), option_id: Hold::APPROVE.into(), inputs: BTreeMap::new(), attachments: vec![],
+    })).unwrap();
+    let before = runtime.state().unwrap();
+    runtime.take_acknowledgements();
+    let (acceptance, _) = observe(2, vec![request.clone()]);
+    assert_eq!(acceptance, ObservationAcceptance::Accepted);
+    assert_eq!(runtime.take_acknowledgements().iter().map(|committed| committed.observations.len()).sum::<usize>(), 1, "the late observation is acknowledged after publication");
+    let after = runtime.state().unwrap();
+    assert_eq!(after.interactions, before.interactions);
+    assert_eq!(after.checklists, before.checklists);
+    assert_eq!(after.lifecycle_journal, before.lifecycle_journal);
+    observe(3, vec![Observation::DecisionSettled { epoch: 1, answered: true, continued: true }]);
+    let settled = runtime.state().unwrap();
+    observe(4, vec![request.clone()]);
+    assert_eq!(runtime.read().state().lifecycle_journal, settled.lifecycle_journal, "an ended decision is never asked again");
+    observe(5, vec![Observation::DecisionSettled { epoch: 1, answered: true, continued: true }, Observation::DecisionSettled { epoch: 1, answered: false, continued: false }]);
+    assert_eq!(runtime.read().state().lifecycle_journal, settled.lifecycle_journal, "duplicate or contradictory ends cannot change a settled decision");
+    let mut changed_request = request;
+    let Observation::Asked { payload, .. } = &mut changed_request else { unreachable!() };
+    *payload = serde_json::to_vec(&serde_json::json!({"tool":"plan","input":{"plan":"- [ ] A different plan cannot reuse this identity"}})).unwrap();
+    let before = counts(&observer(&fixture));
+    let state = runtime.state().unwrap();
+    assert!(runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding, 1, &batch(&execution, 6), &Normalizer::Facts(vec![changed_request]), no_home(), false)).is_err());
+    assert_eq!(counts(&observer(&fixture)), before, "a changed request rolls back evidence and checkpoint");
+    assert_eq!(observer(&fixture).query_row("SELECT count(*) FROM lifecycle_decision_requests WHERE task_id=?1", [TASK], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}
+#[test]
+fn a_native_plan_repeated_at_a_new_epoch_reuses_its_exact_approved_decision() {
+    use alondra_provider_contract::DecisionKind;
+    let binding = binding_with(BTreeSet::from([Capability::OfferInput, Capability::Decisions]));
+    let (fixture, store, execution) = running_with(&binding);
+    let runtime = runtime(&fixture, store);
+    let state = runtime.state().unwrap();
+    runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "answer-fixture-question", answer())).unwrap();
+    let input = runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();
+    let requested = |epoch| Observation::Asked {
+        request: "same-native-plan".into(), epoch, kind: DecisionKind::Plan, tool_use: Some("same-native-item".into()),
+        payload: serde_json::to_vec(&serde_json::json!({"tool":"plan","input":{"plan":"- [ ] Implement the change\n- [ ] Verify the change"}})).unwrap(),
+    };
+    let observe = |cursor, facts| {
+        let state = runtime.state().unwrap();
+        runtime.own(scope_of(&state), |owner| {
+            let acceptance = owner.stage_observation(&binding, 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)?;
+            assert!(owner.unrecorded().is_empty());
+            Ok(acceptance)
+        }).unwrap()
+    };
+    observe(1, vec![Observation::Available, Observation::TurnStarted { input, turn: TurnId::new("plan-turn").unwrap() }, requested(1)]);
+    let original = alondra_core::domain::decision_card_id(&task(), execution.generation(), 1);
+    let state = runtime.state().unwrap();
+    runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "approve-original-plan", Command::AnswerQuestion {
+        interaction_id: original.clone(), option_id: Hold::APPROVE.into(), inputs: BTreeMap::new(), attachments: vec![],
+    })).unwrap();
+    let approved = runtime.state().unwrap();
+    runtime.take_acknowledgements();
+    observe(2, vec![requested(2)]);
+    let replayed = runtime.state().unwrap();
+    assert_eq!(replayed.interactions, approved.interactions, "a new transport epoch cannot present the same native plan again");
+    assert_eq!(replayed.checklists, approved.checklists);
+    assert!(!replayed.interactions.contains_key(&alondra_core::domain::decision_card_id(&task(), execution.generation(), 2)));
+    assert!(replayed.lifecycle_journal[&task()].iter().any(|record| matches!(record,
+        LifecycleRecord::DecidedByPolicy { epoch: 2, decision: DecisionRecord::Allow })));
+    assert_eq!(runtime.take_acknowledgements().iter().map(|committed| committed.observations.len()).sum::<usize>(), 1);
+    let database = observer(&fixture);
+    let responses: Vec<String> = database.prepare("SELECT argument FROM lifecycle_controls WHERE task_id=?1 AND kind='respond' AND epoch IN(1,2) ORDER BY epoch").unwrap()
+        .query_map([TASK], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0], responses[1], "the second callback receives the exact recorded decision");
+    observe(3, vec![Observation::DecisionSettled { epoch: 1, answered: true, continued: true }, Observation::DecisionSettled { epoch: 2, answered: true, continued: true }]);
+    observe(4, vec![requested(4)]);
+    assert_eq!(runtime.read().state().interactions, approved.interactions, "settling the original callback does not erase its approved native identity");
+    assert_eq!(runtime.read().state().checklists, approved.checklists);
+    assert_eq!(database.query_row("SELECT argument FROM lifecycle_controls WHERE task_id=?1 AND epoch=4", [TASK], |row| row.get::<_, String>(0)).unwrap(), responses[0]);
+    for damage in 0..3 {
+        let mut changed = requested(5);
+        let Observation::Asked { tool_use, kind, payload, .. } = &mut changed else { unreachable!() };
+        match damage {
+            0 => *payload = serde_json::to_vec(&serde_json::json!({"tool":"plan","input":{"plan":"- [ ] This changed plan requires a new identity"}})).unwrap(),
+            1 => *tool_use = Some("different-native-item".into()),
+            _ => *kind = DecisionKind::Permission,
+        }
+        runtime.take_acknowledgements();
+        let before = counts(&database);
+        let requests_before: i64 = database.query_row("SELECT count(*) FROM lifecycle_decision_requests WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap();
+        let state = runtime.state().unwrap();
+        assert!(runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding, 1, &batch(&execution, 5), &Normalizer::Facts(vec![changed]), no_home(), false)).is_err());
+        assert_eq!(counts(&database), before, "conflicting native plan identity rolls back evidence, request and checkpoint");
+        assert_eq!(database.query_row("SELECT count(*) FROM lifecycle_decision_requests WHERE task_id=?1", [TASK], |row| row.get::<_, i64>(0)).unwrap(), requests_before);
+        assert!(runtime.take_acknowledgements().is_empty(), "rejected evidence is never acknowledged");
+        assert_eq!(runtime.read().state().interactions, approved.interactions);
+    }
+}
+
 fn observer(fixture: &Fixture) -> Connection {
     Connection::open(fixture.path()).unwrap()
 }

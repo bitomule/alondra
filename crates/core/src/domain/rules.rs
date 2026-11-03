@@ -4732,7 +4732,7 @@ impl DomainState {
             Command::RecordRuntimeFacts { task_id, generation, facts } => {
                 system(actor)?;
                 self.task(task_id)?;
-                self.record_runtime_facts(task_id, *generation, facts, lifecycles)?;
+                self.record_runtime_facts(task_id, *generation, facts, effects, lifecycles)?;
             }
             Command::RecordTurnBoundary { task_id, generation, turn, failure, failed } => {
                 system(actor)?;

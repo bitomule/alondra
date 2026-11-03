@@ -154,6 +154,7 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
             content: Some(crate::elicitation::elicitation_content(payload.pointer("/native/requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
+        (Decision::Superseded, DecisionKind::Plan) => WireDecision::Superseded {},
         _ => return Err(AdapterError::InvalidObservation),
     };
     Ok(Action::Respond {
@@ -394,6 +395,10 @@ impl CodexWorker {
             Host::Launched(host) => Some(host.process_group()),
             Host::Adopted(..) => None,
         }
+    }
+    /// A live host can cancel an obsolete local plan without starting another native turn.
+    pub fn supports_plan_supersession(&self) -> bool {
+        self.adapter.connection.as_ref().is_some_and(Connection::supports_plan_supersession)
     }
     /// Whether this worker's host was launched by a daemon of another release, which left it
     /// running when it upgraded: it is put in place with one of this release once its node rests.

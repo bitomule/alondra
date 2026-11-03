@@ -304,7 +304,8 @@ impl<'connection> OwnerTransaction<'connection> {
             let lifecycle = journal.load(&task_id)?;
             Ok((lifecycle.execution() == Some(&execution)).then(|| lifecycle.cursor().unwrap_or(0)))
         };
-        let before = if probe { cursor(&self.journal)? } else { None };
+        let before = cursor(&self.journal)?;
+        let mut reconciled = false;
         let mut commands = vec![];
         let mut continuations=std::collections::BTreeMap::new();
         let mut read_status = false;
@@ -364,9 +365,37 @@ impl<'connection> OwnerTransaction<'connection> {
                 }
                 ObservedFact::Asked { request, epoch, kind, tool_use, payload } => {
                     flush(&mut commands, &mut technical);
+                    let conn = self.conn;
+                    let prior = self.journal.inspect(|| {
+                        conn.prepare("SELECT epoch,tool_use_id,kind,payload FROM lifecycle_decision_requests WHERE task_id=?1 AND generation=?2 AND request_id=?3 AND epoch<?4 ORDER BY epoch")
+                            .and_then(|mut query| query.query_map(rusqlite::params![task_id.0, i64::try_from(generation).unwrap_or(i64::MAX), request, i64::try_from(*epoch).unwrap_or(i64::MAX)], |row| {
+                                let epoch = row.get::<_, i64>(0)?;
+                                let epoch = u64::try_from(epoch).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, epoch))?;
+                                Ok((epoch, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, row.get::<_, Vec<u8>>(3)?))
+                            })?.collect::<Result<Vec<_>, _>>())
+                            .map_err(|error| StoreError::Storage(error.into()))
+                    })?;
+                    let plan_identity = *kind == alondra_provider_contract::DecisionKind::Plan || prior.iter().any(|(_, _, kind, _)| kind == "plan");
+                    if plan_identity && prior.iter().any(|(_, previous_tool, previous_kind, previous_payload)| {
+                        *kind != alondra_provider_contract::DecisionKind::Plan || previous_kind != "plan" || previous_tool != tool_use || previous_payload != payload
+                    }) {
+                        self.journal.inspect(|| Err::<(), StoreError>(alondra_store::Error::ObservationConflict.into()))?;
+                    }
+                    let recorded = (*kind == alondra_provider_contract::DecisionKind::Plan).then(|| {
+                        prior.iter().find_map(|(previous, ..)| {
+                            self.draft.state.lifecycle_journal.get(&task_id)?.iter().rev()
+                                .take_while(|record| !matches!(record, alondra_core::domain::LifecycleRecord::Admitted { .. }))
+                                .any(|record| match record {
+                                    alondra_core::domain::LifecycleRecord::Decided { card, epoch, .. } => epoch == previous
+                                        && self.draft.state.holds.get(card) == Some(&alondra_core::domain::Hold::Plan),
+                                    alondra_core::domain::LifecycleRecord::DecidedByPolicy { epoch, .. } => epoch == previous,
+                                    _ => false,
+                                })
+                                .then_some(*previous)
+                        })
+                    }).flatten();
                     let kept = alondra_store::DecisionRequest::new(request.clone(), tool_use.clone(), *kind, payload.clone())?;
                     self.journal.put_decision_request(&execution, *epoch, &kept)?;
-                    let conn = self.conn;
                     let (payload, worktree, worktrees) = self.journal.inspect(|| {
                         let payload: serde_json::Value = serde_json::from_slice(payload).map_err(|error| StoreError::Storage(error.into()))?;
                         let worktree = conn
@@ -388,7 +417,7 @@ impl<'connection> OwnerTransaction<'connection> {
                         tool: asked.tool,
                         input: asked.input,
                         mcp_server: asked.mcp_server,
-                        prompt: asked.prompt,
+                        prompt: recorded.map_or(asked.prompt, |epoch| alondra_core::domain::DecisionPrompt::RecordedPlan { epoch }),
                     });
                 }
                 ObservedFact::Worktree { path, branch, subagent } => {
@@ -462,6 +491,15 @@ impl<'connection> OwnerTransaction<'connection> {
             commands.push(Command::ReadMcpStatus { task_id: task_id.clone() });
         }
         for (index, command) in commands.into_iter().enumerate() {
+            if let Command::RecordDecisionSettled { epoch, .. } | Command::RecordDecisionAborted { epoch, .. } = &command {
+                let ended = self.draft.state.lifecycle_journal.get(&task_id).is_some_and(|records| records.iter().rev()
+                    .take_while(|record| !matches!(record, alondra_core::domain::LifecycleRecord::Admitted { .. }))
+                    .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::DecisionSettled { epoch: known } | alondra_core::domain::LifecycleRecord::DecisionAborted { epoch: known, .. } if known == epoch)));
+                if ended {
+                    reconciled = true;
+                    continue;
+                }
+            }
             let command_id=if let Some((work,activation))=continuations.get(&index){
                 let mut live=false;
                 for record in self.draft.state.lifecycle_journal.get(&task_id).into_iter().flatten(){
@@ -502,7 +540,8 @@ impl<'connection> OwnerTransaction<'connection> {
                 if let Some(refusal) = refused_for_test(&envelope.command, false) {
                     return Err(refusal);
                 }
-                self.stage_command(&Actor::System, &envelope, Attached::None)?;
+                let changed = self.stage_command(&Actor::System, &envelope, Attached::None)?.changed;
+                reconciled |= !changed && matches!(envelope.command, Command::RecordDecisionRequest { .. });
                 continue;
             }
             // What Alondra cannot record never stops the node's owner or its host: each command is
@@ -514,6 +553,21 @@ impl<'connection> OwnerTransaction<'connection> {
             if continuations.contains_key(&index) {
                 log!("the domain refused the native work continuation of {task_id}: {}: the observation commits without another input",refusal.message);
                 continue;
+            }
+            if let Command::RecordTurnBoundary { task_id, generation, turn, failure, failed } = &envelope.command {
+                let technical = CommandEnvelope {
+                    command_id: format!("{}:observed-end", envelope.command_id.0).as_str().into(),
+                    command: Command::RecordRuntimeFacts {
+                        task_id: task_id.clone(), generation: *generation,
+                        facts: vec![RuntimeObservation::TurnEnded { turn: turn.clone(), failure: failure.clone(), failed: failed.clone() }],
+                    },
+                    ..envelope.clone()
+                };
+                if self.refusal(&technical).is_none() {
+                    self.stage_command(&Actor::System, &technical, Attached::None)?;
+                    log!("the end of {turn} on {task_id} is recorded without its refused reaction: {}", refusal.message);
+                    continue;
+                }
             }
             if let Command::RecordDecisionRequest { task_id, generation, epoch, .. } = &envelope.command {
                 let denial = CommandEnvelope {
@@ -539,7 +593,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 self.journal.inspect(|| super::codex_metrics::stage(self.conn, &account, &task_id.0, &message, alondra_core::now_millis()).map_err(|error| StoreError::Storage(error.into())))?;
             }
         }
-        let accepted = if !probe {
+        let accepted = if !probe && !reconciled {
             pending.settle(&mut self.journal).map_err(application_error)?
         } else {
             let moved = match (before, cursor(&self.journal)?) { (Some(before), Some(after)) => after.saturating_sub(before), _ => 0 };

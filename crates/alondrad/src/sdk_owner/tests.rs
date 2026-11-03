@@ -2352,62 +2352,73 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
 }
 
-// Alondra cannot record the end of Claude's turn, so the task's record no longer follows its
-// Claude: only that turn fails. The owner stops that host, a new one resumes the same session and
-// the task goes on by itself, with no card to try again.
+// Refusing a turn-end reaction must not discard the actual end or replace its running host.
 #[test]
-fn a_turn_end_alondra_cannot_record_fails_only_that_turn_and_a_new_host_resumes_the_session() {
+fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {
     let slice = Slice::new();
+    let acknowledged = watch_acknowledgements(&slice);
     let mut driver = slice.launch();
-    crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
-    let failed = loop {
-        if let Err(Failed { why, .. }) = driver.observe() {
-            break why;
+    let execution = lifecycle(&slice.domain).execution().cloned().unwrap();
+    let group = driver.worker.host_group().unwrap();
+    let mut native = None;
+    for round in 0..2 {
+        let before = slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter()
+            .filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count();
+        if round > 0 {
+            tell(&slice, &driver, "Write the next release note in the same session");
         }
-    };
-    assert!(failed.starts_with("Alondra could not record what its Claude did (the end of its turn"), "{failed}");
-    assert!(driver.host_to_replace(), "its host is replaced, not lost");
-    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
-    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card to try again");
-    assert_goes_on_by_itself(&slice, &slice.domain, &mut resumed, &session);
-    assert_eq!(Slice::read_cards(&slice.domain).iter().filter(|(_, answered)| !answered).count(), 1, "the resumed turn ends with its one card");
-    resumed.stop().unwrap();
+        crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
+        slice.settle(&mut driver);
+        let state = slice.domain.state().unwrap();
+        let journal = &state.lifecycle_journal[&TaskId::from(TASK)];
+        assert!(journal.iter().filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count() > before,
+            "the actual observed end remains recorded after its reaction was refused");
+        assert!(lifecycle(&slice.domain).turn().is_none(), "no ended turn remains open");
+        assert_eq!(lifecycle(&slice.domain).execution(), Some(&execution));
+        assert_eq!(driver.worker.host_group(), Some(group));
+        assert!(!driver.host_to_replace());
+        assert!(!journal.iter().any(|record| matches!(record, LifecycleRecord::HostEnded { .. })));
+        assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
+        assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none());
+        let starts = slice.starts();
+        assert_eq!(starts.len(), 1, "the native process was never replaced");
+        let current = (starts[0]["session"].clone(), starts[0]["pid"].clone());
+        if let Some(previous) = &native { assert_eq!(&current, previous); }
+        native = Some(current);
+        let ended = journal.iter().rev().find_map(|record| match record {
+            LifecycleRecord::TurnEnded { turn, .. } => Some(turn.clone()), _ => None,
+        }).unwrap();
+        let before_replay = state.lifecycle_journal.clone();
+        slice.run(&Actor::System, &format!("end-evidence-replay-{round}"), Command::RecordRuntimeFacts {
+            task_id: TASK.into(), generation: execution.generation(), facts: vec![RuntimeObservation::TurnEnded { turn: ended, failure: None, failed: None }],
+        });
+        assert_eq!(slice.domain.read().state().lifecycle_journal, before_replay, "the same ended turn is evidence, not another transition");
+    }
+    assert!(!acknowledged.lock().unwrap().is_empty(), "the host was acknowledged after publication");
+    assert!(slice.prompts().iter().any(|prompt| prompt.contains("Write the next release note in the same session")),
+        "a second real input reached the same native process and ended");
+    driver.stop().unwrap();
 }
 
-// The same keeps happening in the sessions Alondra resumed, before any of their turns ended. An end
-// Alondra caused says nothing about the session, so the second one resumes it too; by the third in
-// a row, resuming once more would only end the same way, so one card asks the user how it goes on.
 #[test]
-fn a_turn_end_alondra_keeps_failing_to_record_asks_the_user_once_on_its_third_end() {
+fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
     let slice = Slice::new();
-    let mut driver = slice.launch();
-    let unrecorded = |driver: &mut Driver| loop {
-        if let Err(Failed { why, .. }) = driver.observe() {
-            break why;
-        }
-    };
+    let mut driver = slice.launch_working();
+    let group = driver.worker.host_group();
+    let starts = slice.starts();
+    let prompts = slice.prompts();
+    assert_eq!(press_interrupt(&slice, driver.agent())["outcome"], "applied");
+    driver.step(&|| false).unwrap();
     crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
-    unrecorded(&mut driver);
-    let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    for _ in 0..2 {
-        resumed.step(&|| false).unwrap();
-        assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "an end Alondra caused resumes the session again");
-        crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
-        unrecorded(&mut resumed);
-        assert!(resumed.host_to_replace());
-        resumed = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    }
-    let mut again = resumed;
-    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card to try again");
-    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("one card asks how it goes on");
-    let InteractionPayload::Question { options, .. } = &card.payload else { unreachable!() };
-    assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), [CARRY_ON, CANCEL_TASK]);
-    let open = slice.domain.read().state().interactions.values()
-        .filter(|card| card.scope == alondra_core::domain::Scope::Task { task_id: TASK.into() } && !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
-        .count();
-    assert_eq!(open, 1, "only that card waits on the user");
-    again.stop().unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(driver.worker.host_group(), group);
+    assert_eq!(slice.starts(), starts);
+    assert_eq!(slice.prompts(), prompts, "a user interruption never becomes another inference turn");
+    assert!(Slice::lifecycle(&slice.domain).turn().is_none());
+    assert_eq!(Slice::turn_end_need(&slice.domain), "You interrupted “<title>”: tell it how to go on");
+    assert!(!driver.host_to_replace());
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
+    driver.stop().unwrap();
 }
 
 // A subagent hands its report back after the turn ended: Claude starts a turn by itself while the

@@ -67,6 +67,30 @@ impl DomainState {
         system(actor)?;
         self.task(task)?;
         self.sdk_execution(task, generation, lifecycles)?;
+        if self.lifecycle_journal.get(task).is_some_and(|records| records.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Admitted { .. }))
+            .any(|record| match record {
+                LifecycleRecord::DecisionAsked { epoch: known, .. } => hold == Hold::Plan && *known == epoch,
+                LifecycleRecord::Decided { epoch: known, .. } | LifecycleRecord::DecidedByPolicy { epoch: known, .. }
+                | LifecycleRecord::DecisionSettled { epoch: known } | LifecycleRecord::DecisionAborted { epoch: known, .. } => *known == epoch,
+                _ => false,
+            })) {
+            return Ok(());
+        }
+        if let DecisionPrompt::RecordedPlan { epoch: previous } = prompt {
+            if hold != Hold::Plan || *previous >= epoch {
+                return fail("invalid_input", "A repeated plan must name an earlier plan request");
+            }
+            let decision = self.lifecycle_journal.get(task).into_iter().flatten().rev()
+                .take_while(|record| !matches!(record, LifecycleRecord::Admitted { .. }))
+                .find_map(|record| match record {
+                    LifecycleRecord::Decided { epoch, decision, card } if epoch == previous
+                        && self.holds.get(card) == Some(&Hold::Plan) => Some(decision.clone()),
+                    LifecycleRecord::DecidedByPolicy { epoch, decision } if epoch == previous => Some(decision.clone()),
+                    _ => None,
+                }).ok_or_else(|| DomainError::new("invalid_input", "The repeated plan has no recorded decision in this execution"))?;
+            return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
+        }
         let plan = match (hold, prompt) {
             (Hold::Plan, DecisionPrompt::Card { body, .. }) => Some(body.as_str()),
             _ => None,
@@ -81,14 +105,27 @@ impl DomainState {
         }
         let node = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.node().clone()).ok_or_else(|| DomainError::new("stale_execution", "The task has no execution"))?;
         let winding_down = self.tasks.get(task).is_some_and(|t| Self::winding_down(t) && t.agent_id.as_ref() == Some(&node));
-        let asker = Actor::Agent { agent_id: node };
+        let asker = Actor::Agent { agent_id: node.clone() };
         if !winding_down {
             self.assigned(&asker, task)?;
         }
         let scope = Scope::Task { task_id: task.clone() };
+        if hold == Hold::Plan {
+            let previous = self.slot_holders(&scope, &Author::Agent { agent_id: node }, &CardSlot::Plan);
+            for card in previous {
+                let lifecycle = self.lifecycle(lifecycles, task)?;
+                let epoch = lifecycle.card_callback(&card).and_then(|callback| alondra_domain::decision_epoch(generation, callback));
+                if let Some(epoch) = epoch {
+                    self.decide(lifecycles, task, LifecycleRecord::Decided {
+                        card, epoch, decision: DecisionRecord::Superseded,
+                    })?;
+                }
+            }
+        }
         let id = decision_card_id(task, generation, epoch);
         let mut cards = vec![];
         match prompt {
+            DecisionPrompt::RecordedPlan { .. } => return fail("invalid_input", "A repeated plan creates no card"),
             DecisionPrompt::Card { body, options, card } => {
                 validate_options(options)?;
                 cards.push((id.clone(), body.clone(), options.clone(), card.clone()));

@@ -144,6 +144,8 @@ pub enum DecisionRecord {
         content: Option<serde_json::Map<String, serde_json::Value>>,
     },
     Decline,
+    /// A newer plan of the same execution replaced this plan before anyone answered it.
+    Superseded,
 }
 impl From<&DecisionRecord> for Decision {
     fn from(record: &DecisionRecord) -> Self {
@@ -153,6 +155,7 @@ impl From<&DecisionRecord> for Decision {
             DecisionRecord::Deny { message } => Self::Deny { message: message.clone() },
             DecisionRecord::Accept { text, content } => Self::Accept { text: text.clone(), content: content.clone() },
             DecisionRecord::Decline => Self::Decline,
+            DecisionRecord::Superseded => Self::Superseded,
         }
     }
 }
@@ -164,6 +167,7 @@ impl From<&Decision> for DecisionRecord {
             Decision::Deny { message } => Self::Deny { message: message.clone() },
             Decision::Accept { text, content } => Self::Accept { text: text.clone(), content: content.clone() },
             Decision::Decline => Self::Decline,
+            Decision::Superseded => Self::Superseded,
         }
     }
 }
@@ -200,6 +204,8 @@ pub struct ExecutionIdentity {
 pub enum RuntimeObservation {
     ResourceAvailable,
     TurnStarted { turn: String, input: String },
+    /// A proven root turn ended; optional failure reactions could not be recorded.
+    TurnEnded { turn: String, failure: Option<SdkApiFailure>, failed: Option<String> },
     /// Work that outlived its turn woke Claude, which took it up in a root turn of its own.
     TurnResumed { turn: String, continuation: String },
     /// Claude opened a root turn by itself, with nothing the task gave it or knows of.
@@ -1297,6 +1303,23 @@ impl DomainState {
 
     fn agrees(&self, t: &Task, lifecycle: &TaskLifecycle) -> std::result::Result<(), String> {
         use TaskState as S;
+        for (id, _) in lifecycle.cards() {
+            let recipient = match lifecycle.card_owner(id) {
+                Some(alondra_domain::Owner::Orchestrator) => Recipient::Orchestrator,
+                _ => Recipient::User,
+            };
+            let actionable = self.interactions.get(id).is_some_and(|card| {
+                let need = card.card.need.trim();
+                card.scope == (Scope::Task { task_id: t.id.clone() }) && card.recipient == recipient
+                    && !card.withdrawn
+                    && matches!(card.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
+                    && matches!(card.card.kind, CardKind::Decide | CardKind::Review | CardKind::Authorize | CardKind::Provide | CardKind::Test | CardKind::Do | CardKind::Problem)
+                    && !need.is_empty() && need.chars().count() <= 90 && !need.contains('\n') && !card.card.need.contains('\0')
+            });
+            if !actionable {
+                return Err(format!("required card {id} is not actionable"));
+            }
+        }
         let phase = lifecycle.phase();
         let node = lifecycle.execution().map(|stamp| stamp.node());
         let started = lifecycle.resource().is_some_and(|resource| resource != ResourceEvidence::Reserved);
@@ -1404,12 +1427,19 @@ impl DomainState {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
         let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
-        let interrupted = self.lifecycle_journal.get(task).is_some_and(|journal| interrupted(journal, turn));
         if let Some(hold) = kind.and_then(ClaudeHold::for_failure) {
             self.hold_on_claude(task, hold, failure.and_then(|failure| failure.resets_at), effects, lifecycles)?;
         }
+        let end = self.observed_turn_end(task, turn, failure, failed);
+        let unexplained = end.is_none() && failure.is_none();
+        self.finish_observed_turn(task, generation, turn, end, unexplained, effects, lifecycles)
+    }
+
+    fn observed_turn_end<'a>(&self, task: &TaskId, turn: &str, failure: Option<&'a SdkApiFailure>, failed: Option<&'a str>) -> Option<TurnEnd<'a>> {
+        let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
+        let interrupted = self.lifecycle_journal.get(task).is_some_and(|journal| interrupted(journal, turn));
         let provider = self.tasks[task].provider;
-        let end = match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
+        match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
             Some(failure) => Some(TurnEnd::Refused(failure)),
             None if interrupted => Some(TurnEnd::Interrupted),
             None => failed.map(|code| match code {
@@ -1418,10 +1448,30 @@ impl DomainState {
                 code if provider == crate::accounts::Provider::Codex => TurnEnd::NativeFailed(code),
                 code => TurnEnd::Failed(code),
             }),
-        };
+        }
+    }
+
+    /// A failed reaction cannot erase evidence that the current root turn ended. Repeated
+    /// evidence of an end already recorded in this execution changes nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn record_observed_turn_end(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>,
+        effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        if self.lifecycle_journal.get(task).is_some_and(|records| records.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Admitted { .. }))
+            .any(|record| matches!(record, LifecycleRecord::TurnEnded { turn: known, .. } if known == turn))) {
+            return Ok(());
+        }
+        let end = self.observed_turn_end(task, turn, failure, failed).or_else(|| failure.map(TurnEnd::Refused));
+        let unexplained = end.is_none() && failure.is_none();
+        self.finish_observed_turn(task, generation, turn, end, unexplained, effects, lifecycles)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_observed_turn(&mut self, task: &TaskId, generation: u64, turn: &str,
+        end: Option<TurnEnd<'_>>, unexplained: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let stalled = end.is_none();
         let card = if stalled { stalled_card_id(task, generation, turn) } else { turn_ended_card_id(task, generation, turn) };
-        let unexplained = stalled && failure.is_none();
         let awaits = self.turn_await(task).filter(|_| unexplained);
         let wake_text = self.empty_turn(task).wake_text();
         let ended = |wake: Option<String>, awaits: Option<TurnAwait>| LifecycleRecord::TurnEnded {
@@ -1909,7 +1959,7 @@ impl DomainState {
 
     /// What the SDK observed of the task's execution of `generation`, applied in order. Facts about
     /// another execution, or about one of the `claude --bg` backend, are refused.
-    pub(super) fn record_runtime_facts(&mut self, task: &TaskId, generation: u64, facts: &[RuntimeObservation], lifecycles: &mut Lifecycles) -> Result<()> {
+    pub(super) fn record_runtime_facts(&mut self, task: &TaskId, generation: u64, facts: &[RuntimeObservation], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         if facts.is_empty() {
             return Err(DomainError::new("invalid_input", "An observation without facts records nothing"));
@@ -1923,6 +1973,10 @@ impl DomainState {
                 }
                 RuntimeObservation::ResourceAvailable => LifecycleRecord::ResourceAvailable,
                 RuntimeObservation::TurnStarted { turn, input } => LifecycleRecord::TurnStarted { turn, input },
+                RuntimeObservation::TurnEnded { turn, failure, failed } => {
+                    self.record_observed_turn_end(task, generation, &turn, failure.as_ref(), failed.as_deref(), effects, lifecycles)?;
+                    continue;
+                }
                 RuntimeObservation::TurnResumed { turn, continuation } => {
                     if is_decision(generation, &continuation) {
                         return Err(DomainError::new("invalid_input", "A decision's turn goes on only when its decision reaches Claude"));

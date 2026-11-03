@@ -44,6 +44,121 @@ fn plan(checked: bool) -> String {
 }
 
 #[test]
+fn a_replayed_plan_request_after_approval_keeps_the_answer_and_callback() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let asked = || request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true)));
+    must(&mut s, Actor::System, asked());
+    must(&mut s, user(), answer(&card_of(7), Hold::APPROVE, None));
+    let before = s.clone();
+    let replayed = must(&mut s, Actor::System, asked());
+    assert!(!replayed.changed, "a late observation changes no decision or card");
+    assert_eq!(s.interactions, before.interactions);
+    assert_eq!(s.lifecycle_journal, before.lifecycle_journal);
+    assert_eq!(s.checklists, before.checklists);
+    must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_native_plan_reobserved_at_a_new_epoch_reuses_its_exact_recorded_answer() {
+    for option in [Hold::APPROVE, Hold::REQUEST_CHANGES] {
+        for settled in [false, true] {
+            let mut s = world();
+            sdk_turn(&mut s, "t", "a");
+            must(&mut s, Actor::System, request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
+            must(&mut s, user(), answer(&card_of(7), option, Some("Keep the existing parser")));
+            let LifecycleRecord::Decided { decision, .. } = last(&s, "t") else { panic!("the actual user's answer") };
+            if settled { settle(&mut s, 7); }
+            let before = s.clone();
+            let replay = request(8, Hold::Plan, Some("plan"), json!({}), None, DecisionPrompt::RecordedPlan { epoch: 7 });
+            let outcome = must(&mut s, Actor::System, replay.clone());
+            assert!(outcome.created_ids.is_empty());
+            assert_eq!(s.interactions, before.interactions);
+            assert_eq!(s.checklists, before.checklists);
+            assert_eq!(last(&s, "t"), LifecycleRecord::DecidedByPolicy { epoch: 8, decision });
+            assert!(!must(&mut s, Actor::System, replay).changed);
+            settle(&mut s, 8);
+            assert_aggregate_rules(&s);
+        }
+    }
+}
+
+#[test]
+fn a_repeated_plan_requires_an_earlier_recorded_decision_in_the_current_execution() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
+    let replay = |epoch, previous, hold| request(epoch, hold, Some("plan"), json!({}), None, DecisionPrompt::RecordedPlan { epoch: previous });
+    assert_eq!(refused_unchanged(&mut s, Actor::System, replay(8, 7, Hold::Plan)), "invalid_input", "a pending review is no answer");
+    must(&mut s, user(), answer(&card_of(7), Hold::APPROVE, None));
+    assert_eq!(refused_unchanged(&mut s, Actor::System, replay(8, 8, Hold::Plan)), "invalid_input");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, replay(8, 9, Hold::Plan)), "invalid_input");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, replay(8, 6, Hold::Plan)), "invalid_input");
+    assert_eq!(refused_unchanged(&mut s, Actor::System, replay(8, 7, Hold::Permission)), "invalid_input");
+    assert_eq!(refused_unchanged(&mut s, user(), replay(8, 7, Hold::Plan)), "forbidden");
+}
+
+#[test]
+fn a_new_plan_decides_the_old_callback_before_withdrawing_its_card() {
+    for answered in [true, false] {
+        let mut s = world();
+        sdk_turn(&mut s, "t", "a");
+        let asked = |epoch| request(epoch, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true)));
+        must(&mut s, Actor::System, asked(7));
+        must(&mut s, Actor::System, asked(8));
+        assert!(s.interactions[&InteractionId::from(card_of(7).as_str())].withdrawn);
+        assert_eq!(held(&s), [card_of(8)], "the old card is no longer required before withdrawal");
+        let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+        assert_eq!(lifecycle.callback(&alondra_domain::decision_callback(1, 7)), Some(alondra_domain::CallbackView::Answered));
+        assert!(s.lifecycle_journal[&TaskId::from("t")].iter().any(|record| matches!(record,
+            LifecycleRecord::Decided { epoch: 7, decision: DecisionRecord::Superseded, .. })));
+        must(&mut s, Actor::System, if answered {
+            Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 }
+        } else {
+            Command::RecordDecisionAborted { task_id: "t".into(), generation: 1, epoch: 7 }
+        });
+        assert_eq!(held(&s), [card_of(8)], "the old request's late end leaves the revised plan alone");
+        must(&mut s, user(), answer(&card_of(8), Hold::APPROVE, None));
+        assert!(held(&s).is_empty());
+        assert_aggregate_rules(&s);
+    }
+}
+
+#[test]
+fn required_plan_cards_are_validated_before_the_store_writes_them() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
+    let id = InteractionId::from(card_of(7).as_str());
+    for damage in 0..4 {
+        let mut broken = s.clone();
+        let card = broken.interactions.get_mut(&id).unwrap();
+        match damage {
+            0 => card.withdrawn = true,
+            1 => card.recipient = Recipient::Orchestrator,
+            2 => card.card.need = "Too long".repeat(20),
+            _ => card.card.kind = CardKind::Know,
+        }
+        assert_eq!(broken.validate_journal().unwrap_err().code, "lifecycle_mismatch", "a required plan must remain actionable");
+    }
+}
+
+#[test]
+fn a_policy_denied_plan_leaves_the_previous_review_and_its_feedback_intact() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
+    must(&mut s, Actor::System, request(8, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(false))));
+    assert_eq!(held(&s), [card_of(7)]);
+    assert!(!s.interactions[&InteractionId::from(card_of(7).as_str())].withdrawn);
+    must(&mut s, user(), answer(&card_of(7), Hold::REQUEST_CHANGES, Some("Keep the existing parser")));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Decided { epoch: 7, decision: DecisionRecord::Deny { message }, .. }
+        if message == "The user requests changes to the plan: Keep the existing parser"));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
 fn alondras_own_tools_pass_only_from_the_alondra_plugins_server() {
     let ask = Some("mcp__plugin_alondra_alondra__ask");
     let server = |name: &str, source: &str| McpServerOrigin { name: name.into(), source: source.into() };
@@ -583,4 +698,54 @@ fn a_consumed_native_plan_starts_its_new_turn_before_core_settles_the_decision()
         assert_eq!(s.lifecycle_journal[&TaskId::from("t")].iter().filter(|record| matches!(record, LifecycleRecord::DecisionContinued { epoch: 7 })).count(), 1);
         assert_aggregate_rules(&s);
     }
+}
+
+#[test]
+fn technical_turn_end_preserves_work_and_decisions_and_repeats_as_evidence() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+        facts: vec![RuntimeObservation::WorkStarted { turn: "turn-1".into(), work: "background".into() }] });
+    must(&mut s, Actor::System, request(7, Hold::Plan, Some("plan"), json!({}), None, card_prompt(Hold::Plan, &plan(true))));
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Keep this queued instruction".into(), from_user: false });
+    let pending: Vec<_> = s.lifecycle_of(&"t".into()).unwrap().pending_inputs().into_iter().cloned().collect();
+    let end = || Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+        facts: vec![RuntimeObservation::TurnEnded { turn: "turn-1".into(), failure: None, failed: None }] };
+    must(&mut s, Actor::System, end());
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert!(lifecycle.turn().is_none());
+    assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::OwnWork);
+    assert_eq!(held(&s), [card_of(7)]);
+    assert_eq!(lifecycle.callback(&alondra_domain::decision_callback(1, 7)), Some(alondra_domain::CallbackView::AwaitingAnswer));
+    assert_eq!(lifecycle.pending_inputs().into_iter().cloned().collect::<Vec<_>>(), pending);
+    let before = s.lifecycle_journal.clone();
+    assert!(!must(&mut s, Actor::System, end()).changed);
+    assert_eq!(s.lifecycle_journal, before);
+    must(&mut s, user(), answer(&card_of(7), Hold::APPROVE, None));
+    must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn technical_failed_turn_ends_preserve_the_outcome_without_automatic_wakes() {
+    for native in [false, true] {
+        let mut s = world();
+        sdk_turn(&mut s, "t", "a");
+        if native { s.tasks.get_mut(&TaskId::from("t")).unwrap().provider = crate::accounts::Provider::Codex; }
+        let before = s.lifecycle_of(&"t".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>();
+        must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+            facts: vec![RuntimeObservation::TurnEnded { turn: "turn-1".into(), failure: None,
+                failed: Some(if native { "codex_request_rejected" } else { "error_during_execution" }.into()) }] });
+        assert!(matches!(last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, stalled: false, .. }));
+        assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>(), before);
+        assert_aggregate_rules(&s);
+    }
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+        facts: vec![RuntimeObservation::TurnEnded { turn: "turn-1".into(),
+            failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }), failed: None }] });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, stalled: false, .. }));
+    assert!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().is_empty());
+    assert_aggregate_rules(&s);
 }

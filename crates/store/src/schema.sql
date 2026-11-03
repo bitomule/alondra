@@ -60,7 +60,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS lifecycle_one_launch ON lifecycle_dispatches(t
 CREATE TRIGGER IF NOT EXISTS lifecycle_required_card_stays_actionable BEFORE UPDATE ON interactions
  WHEN EXISTS(SELECT 1 FROM lifecycle_cards c WHERE c.card_id=OLD.id)
  AND (NEW.id<>OLD.id OR NEW.task_id IS NOT OLD.task_id OR NEW.scope_kind<>'task'
-   OR NEW.recipient_kind<>'user' OR NEW.kind NOT IN('question','action_request')
+   OR NEW.recipient_kind<>OLD.recipient_kind OR NEW.recipient_kind NOT IN('user','orchestrator')
+   OR NEW.kind NOT IN('question','action_request')
    OR NEW.answer IS NOT NULL OR NEW.withdrawn<>0 OR json_type(NEW.options) IS NOT 'array'
    OR COALESCE(json_extract(NEW.card,'$.kind') IN('decide','review','authorize','provide','test','do','problem'),0)=0
    OR json_type(NEW.card,'$.need') IS NOT 'text'

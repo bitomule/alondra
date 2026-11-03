@@ -15,12 +15,12 @@ const EARLIER: [&str; 3] = [
     include_str!("controls_before_force_stop.sql"),
     include_str!("controls_before_clear_auth.sql"),
 ];
-/// The triggers journals installed before each retention hold: the observation triggers refused
-/// every update and delete, an input kept its text for good and a provider command was never
-/// deleted.
-const BEFORE_RETENTION: [&str; 2] = [
+/// Earlier guards kept all observation and input bytes, and allowed only the user's required
+/// cards to change. Only these exact definitions may be replaced on an existing journal.
+const EARLIER_TRIGGERS: [&str; 3] = [
     include_str!("observations_before_retention.sql"),
     include_str!("inputs_and_commands_before_compaction.sql"),
+    include_str!("cards_before_orchestrator.sql"),
 ];
 
 pub(super) fn install(connection: &Connection) -> Result<()> {
@@ -61,7 +61,7 @@ pub(super) fn extend(connection: &Connection) -> Result<bool> {
     if format.as_deref() != Some(FORMAT) {
         return Ok(false);
     }
-    retain(connection)?;
+    upgrade_triggers(connection)?;
     for (_, name, _) in objects(ADDITIONS)? {
         let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get(0))?;
         if present {
@@ -105,11 +105,10 @@ fn widen(connection: &Connection) -> Result<()> {
     }
     Ok(())
 }
-/// Replaces each trigger that still has its definition from before a retention with the current
-/// one; the table and its rows are untouched.
-fn retain(connection: &Connection) -> Result<()> {
+/// Replaces known earlier trigger definitions without changing the tables or their rows.
+fn upgrade_triggers(connection: &Connection) -> Result<()> {
     let current = objects(SCHEMA)?;
-    for (_, name, previous) in BEFORE_RETENTION.iter().map(|before| objects(before)).collect::<Result<Vec<_>>>()?.into_iter().flatten() {
+    for (_, name, previous) in EARLIER_TRIGGERS.iter().map(|before| objects(before)).collect::<Result<Vec<_>>>()?.into_iter().flatten() {
         let held: Option<String> = connection
             .query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1", [name], |row| row.get(0))
             .optional()?;

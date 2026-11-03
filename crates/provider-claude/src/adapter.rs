@@ -57,6 +57,9 @@ pub struct WorkerProfile {
     pub handoff_context: Option<String>,
 }
 
+/// What Claude reads when a newer plan of its own replaced the one it asked to leave plan mode with.
+const SUPERSEDED_PLAN: &str = "A newer plan replaces this request; wait for its review";
+
 /// Opaque technical worker. The application owns SQL, policy and publication.
 /// Configuration alone creates no host, SDK query or native process.
 /// ```
@@ -162,6 +165,7 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
             content: Some(crate::elicitation::elicitation_content(payload.get("requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
+        (Decision::Superseded, DecisionKind::Plan) => WireDecision::Deny { message: SUPERSEDED_PLAN.into() },
         _ => return Err(AdapterError::InvalidObservation),
     };
     Ok(Action::Respond {

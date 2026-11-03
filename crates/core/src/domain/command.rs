@@ -832,6 +832,8 @@ pub struct McpServerOrigin {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DecisionPrompt {
+    /// The same native plan request already decided in this execution, observed at a new epoch.
+    RecordedPlan { epoch: u64 },
     /// One card, as a held hook asks it.
     Card { body: String, options: Vec<QuestionOption>, card: CardSpec },
     /// Claude's questions asked together: a card each, decided together once the last is answered.

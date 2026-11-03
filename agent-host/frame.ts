@@ -35,11 +35,12 @@ const decisionKind = z.enum(DECISION_KINDS);
 const decision = z.discriminatedUnion('behavior', [
   z.strictObject({ behavior: z.literal('allow'), updated_input: object }), z.strictObject({ behavior: z.literal('deny'), message: text(MAX_FRAME_BYTES) }),
   z.strictObject({ behavior: z.literal('accept'), content: object.optional() }), z.strictObject({ behavior: z.literal('decline') }),
+  z.strictObject({ behavior: z.literal('superseded') }),
 ]);
 export type Decision = z.infer<typeof decision>;
 /** An elicitation comes from an MCP server, not from a tool call; every other request names its tool use. */
 export const hasToolUse = (kind: DecisionKind): boolean => kind !== 'elicitation';
-const answers = (kind: DecisionKind, behavior: Decision['behavior']): boolean => hasToolUse(kind) === (behavior === 'allow' || behavior === 'deny');
+const answers = (kind: DecisionKind, behavior: Decision['behavior']): boolean => behavior === 'superseded' ? kind === 'plan' : hasToolUse(kind) === (behavior === 'allow' || behavior === 'deny');
 const action = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('start'), cwd: text(4096).refine((s) => s.startsWith('/')), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),
   z.strictObject({ type: z.literal('offer'), input_id: inputId, prompt: text(MAX_FRAME_BYTES) }),
@@ -55,7 +56,7 @@ const action = z.discriminatedUnion('type', [
 ]);
 export type Action = z.infer<typeof action>;
 export const HOST_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_reconnect', 'mcp_sign_in', 'mcp_clear_auth'] as const;
-export type Capability = typeof HOST_CAPABILITIES[number] | 'native_account_policy' | 'causal_child_continuations';
+export type Capability = typeof HOST_CAPABILITIES[number] | 'native_account_policy' | 'causal_child_continuations' | 'plan_supersession';
 /** The capability that carries each action, as the daemon's `Action::capability` names it: an action added after the protocol's version names its own, so an owner never sends it to a host that cannot read it. */
 export const ACTION_CAPABILITIES: Record<Action['type'], Capability | undefined> = {
   start: 'streaming_input', offer: 'streaming_input', respond: 'exact_decisions', interrupt: 'interrupt', force_stop: 'force_stop', close: undefined,

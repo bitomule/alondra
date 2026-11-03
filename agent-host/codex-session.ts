@@ -7,7 +7,7 @@ import type { Decision, DecisionKind } from './frame.js';
 import { InputNotOffered, type DecisionRequest, type HostConfiguration, type HostSession, type Observation } from './host-session.js';
 
 export const CODEX_VERSION = 'codex-app-server-0.163.0';
-export const CODEX_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_sign_in', 'native_account_policy', 'causal_child_continuations'] as const;
+export const CODEX_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_sign_in', 'native_account_policy', 'causal_child_continuations', 'plan_supersession'] as const;
 const MAX_NATIVE_LINE = 4 * 1024 * 1024;
 const MAX_PENDING = 64;
 type Json = Record<string, unknown>;
@@ -604,7 +604,13 @@ export class CodexSession implements HostSession {
     const entry = this.asked.get(request.request_id);
     if (!entry || entry.epoch !== request.epoch || entry.kind !== request.kind || entry.tool !== request.tool_use_id || !isDeepStrictEqual(entry.payload, request.asked)) return false;
     if (entry.method === 'alondra/planApproval') {
-      if (this.answeringPlans.has(request.request_id) || !['allow', 'deny'].includes(decision.behavior) || this.queue.length >= 64) return false;
+      if (this.answeringPlans.has(request.request_id) || !['allow', 'deny', 'superseded'].includes(decision.behavior)) return false;
+      if (decision.behavior === 'superseded') {
+        this.answered.set(request.request_id, { identity: createHash('sha256').update(JSON.stringify(entry.payload)).digest('hex'), result: { local: true } });
+        this.settled(request.request_id, entry, 'cancelled');
+        return true;
+      }
+      if (this.queue.length >= 64) return false;
       const allow = decision.behavior === 'allow';
       this.mode = allow ? 'default' : 'plan';
       this.answeringPlans.add(request.request_id);

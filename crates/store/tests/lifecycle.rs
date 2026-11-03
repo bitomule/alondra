@@ -1371,6 +1371,47 @@ fn required_card_need_cannot_be_updated_to_unusable_text() {
 }
 
 #[test]
+fn required_card_metadata_updates_preserve_the_orchestrators_ownership() {
+    for owner in [Owner::User, Owner::Orchestrator] {
+        for upgrade in [false, true] {
+            let mut fixture = Fixture::new();
+            fixture.create("task");
+            fixture.launch("task");
+            fixture.card("task", "required");
+            let (recipient, other) = if owner == Owner::Orchestrator { ("orchestrator", "user") } else { ("user", "orchestrator") };
+            fixture.connection.execute("UPDATE interactions SET recipient_kind=?1 WHERE id='required'", [recipient]).unwrap();
+            let mut tx = fixture.transaction();
+            tx.apply(&"task".into(), 1, "pause", Event::Pause { card: "required".into(), owner }).unwrap();
+            tx.commit().unwrap();
+            let journal = |connection: &Connection| connection.prepare("SELECT json_array(revision,command_id,event) FROM lifecycle_events WHERE task_id='task' ORDER BY revision").unwrap()
+                .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            let before = journal(&fixture.connection);
+            if upgrade {
+                fixture.connection.execute_batch("DROP TRIGGER lifecycle_required_card_stays_actionable").unwrap();
+                fixture.connection.execute_batch(include_str!("../src/cards_before_orchestrator.sql")).unwrap();
+                if owner == Owner::Orchestrator {
+                    assert!(fixture.connection.execute("UPDATE interactions SET body=body WHERE id='required'", []).is_err(), "the old guard rejects even an unchanged orchestrator card");
+                }
+                let mut tx = fixture.connection.transaction().unwrap();
+                LifecycleTransaction::upgrade(&mut tx).unwrap();
+                tx.commit().unwrap();
+                let schema: String = fixture.connection.query_row("SELECT sql FROM sqlite_master WHERE name='lifecycle_required_card_stays_actionable'", [], |row| row.get(0)).unwrap();
+                let mut tx = fixture.connection.transaction().unwrap();
+                LifecycleTransaction::upgrade(&mut tx).unwrap();
+                tx.commit().unwrap();
+                assert_eq!(fixture.connection.query_row("SELECT sql FROM sqlite_master WHERE name='lifecycle_required_card_stays_actionable'", [], |row| row.get::<_, String>(0)).unwrap(), schema);
+            }
+            assert_eq!(fixture.connection.execute("UPDATE interactions SET body='Updated case details',revision=revision+1 WHERE id='required'", []).unwrap(), 1);
+            assert_eq!(fixture.transaction().load(&"task".into()).unwrap().card_owner(&"required".into()), Some(owner));
+            assert!(fixture.connection.execute("UPDATE interactions SET recipient_kind=?1 WHERE id='required'", [other]).is_err());
+            assert!(fixture.connection.execute("UPDATE interactions SET answer='{}' WHERE id='required'", []).is_err());
+            assert!(fixture.connection.execute("UPDATE interactions SET withdrawn=1 WHERE id='required'", []).is_err());
+            assert_eq!(journal(&fixture.connection), before, "upgrading and updating metadata retain every journal byte");
+        }
+    }
+}
+
+#[test]
 fn restore_rechecks_required_card_need_after_guard_corruption() {
     for need in unusable_needs() {
         let mut fixture = Fixture::new();

@@ -435,6 +435,8 @@ pub enum Decision {
     /// of its field's type, or only the words they wrote when the form had no values.
     Accept { text: String, content: Option<serde_json::Map<String, serde_json::Value>> },
     Decline,
+    /// A newer plan of the same execution replaced this plan before anyone answered it.
+    Superseded,
 }
 
 fn valid_decision(decision: &Decision) -> Result<(), Refusal> {
@@ -449,7 +451,7 @@ fn valid_decision(decision: &Decision) -> Result<(), Refusal> {
 /// or denied; a question or an MCP server's request is answered, accepted, declined or denied.
 fn decides(reason: WaitReason, decision: &Decision) -> bool {
     match decision {
-        Decision::Allow => reason == WaitReason::Permission,
+        Decision::Allow | Decision::Superseded => reason == WaitReason::Permission,
         Decision::Answers { .. } | Decision::Accept { .. } | Decision::Decline => reason == WaitReason::Question,
         Decision::Deny { .. } => matches!(reason, WaitReason::Permission | WaitReason::Question),
     }
@@ -1215,6 +1217,19 @@ impl TaskLifecycle {
             CallbackState::Answered(callback) if callback == id => Some(CallbackView::Answered),
             _ => None,
         })
+    }
+    /// No native turn, owned work, input, effect or other callback remains before a host move.
+    /// The allowed callbacks have answers that this host cannot consume without starting work.
+    pub fn quiescent_except_callbacks(&self, allowed: &BTreeSet<CallbackId>) -> bool {
+        let Some(execution) = self.session() else { return false };
+        !allowed.is_empty()
+            && execution.resource == ResourceEvidence::Available
+            && execution.inbox.is_empty()
+            && execution.effects.is_empty()
+            && execution.callbacks.iter().all(|state| matches!(state,
+                CallbackState::Answered(callback) if allowed.contains(callback)))
+            && matches!(&execution.activity, Activity::Continuation(pending)
+                if pending.iter().all(|wake| matches!(wake, Wake::Callback(callback) if allowed.contains(callback))))
     }
     /// The callback a card the task holds decides, if it decides one.
     pub fn card_callback(&self, card: &InteractionId) -> Option<&CallbackId> {
