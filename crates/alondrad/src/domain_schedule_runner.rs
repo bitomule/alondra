@@ -399,8 +399,13 @@ async fn dispatch_pending(
     if !ready || paused || domain.live.machine_watch.disk_low() {
         return Ok(());
     }
+    let key = crate::admission::Key::Run(run_id.0.clone());
+    if state.scheduled_launch_guard(run_id).is_err() {
+        domain.live.gate.forget(&key);
+        return Ok(());
+    }
     let waiting = crate::admission::Waiting {
-        key: crate::admission::Key::Run(run_id.0.clone()),
+        key: key.clone(),
         priority: crate::admission::run_priority(&state, run),
         resuming: false,
         since: run.claimed_at.unwrap_or(now),
@@ -418,8 +423,14 @@ async fn dispatch_pending(
         },
     ) {
         Ok(_) => (),
-        Err(error) if ordinary_conflict(&error) => return Ok(()),
-        Err(error) => return Err(error.into()),
+        Err(error) if ordinary_conflict(&error) => {
+            domain.live.gate.not_started(&key);
+            return Ok(());
+        }
+        Err(error) => {
+            domain.live.gate.not_started(&key);
+            return Err(error.into());
+        }
     }
     let agent = match launch_through_sdk(domain, &intent, &task, &policy, home).await {
         Ok(agent) => agent,
@@ -579,6 +590,9 @@ pub(crate) async fn run_cycle(
         if let Err(error) = recover_uncertain(domain, &run_id) {
             log!("could not recover scheduled run {run_id}: {error:#}");
         }
+    }
+    for (run_id, reason) in domain.state()?.scheduled_launches_of_ended_tasks() {
+        fail_run(domain, &run_id, reason.into())?;
     }
     answer_failed_launches(domain, home)?;
     let paused = domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low();
@@ -1268,6 +1282,83 @@ mod tests {
         let revision = state.revision;
         run_cycle(&restarted, &fixture.home, false).await.unwrap();
         assert_eq!(restarted.state().unwrap().revision, revision, "the run is not retried every cycle");
+    }
+
+    /// Puts a run back as a daemon before the fix left it: still waiting to launch after its Task
+    /// was cancelled.
+    fn leave_launch_waiting(domain: &DomainRuntime, run: &str) {
+        let store = domain.store.lock().unwrap();
+        let conn = store.conn_for_test();
+        let triggers: Vec<(String, String)> = conn
+            .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN ('schedule_run_result_transition','schedule_launch_transition')")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(triggers.len(), 2);
+        for (name, _) in &triggers {
+            conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
+        conn.execute(
+            "UPDATE schedule_runs SET state='sent', error=NULL, launch=json_set(launch,'$.state','pending','$.finished_at',NULL,'$.error',NULL) WHERE id=?1",
+            [run],
+        )
+        .unwrap();
+        for (_, sql) in &triggers {
+            conn.execute_batch(sql).unwrap();
+        }
+    }
+
+    // On 0.3.14 four cancelled High-priority scheduled tasks kept their launch waiting: the gate
+    // let them through every minute, their claim was refused, and nothing else ever started.
+    #[tokio::test]
+    async fn a_launch_left_waiting_by_a_cancelled_task_never_passes_the_gate_and_ends_on_the_next_start() {
+        let fixture = Fixture::new();
+        fixture.claim("stuck");
+        finish_claim(&fixture.domain, &fixture.home, &"stuck".into()).unwrap();
+        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("stuck")].task_id.clone().unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task.clone() }).unwrap();
+        leave_launch_waiting(&fixture.domain, "stuck");
+
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let state = restarted.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
+        assert_eq!((run.state, run.launch.as_ref().unwrap().state), (ScheduleRunState::Sent, ScheduleLaunchState::Pending));
+        assert_eq!(state.tasks[&task].state, TaskState::Cancelled);
+        let waiting = crate::admission::Waiting {
+            key: crate::admission::Key::Run("stuck".into()),
+            priority: alondra_core::domain::TaskPriority::High,
+            resuming: false,
+            since: 0,
+        };
+        assert!(restarted.live.gate.ask(&restarted, waiting, alondra_core::now_millis()).is_err(), "the gate never lets a launch of a cancelled task through");
+
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
+        let state = restarted.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
+        assert_eq!(run.error.as_deref(), Some(alondra_core::domain::SCHEDULED_TASK_CANCELLED));
+        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-stuck")), "no Problem on a cancelled Task");
+        let revision = state.revision;
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
+        assert_eq!(restarted.state().unwrap().revision, revision, "it is settled once");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_scheduled_task_before_it_launches_ends_its_run_for_good() {
+        let fixture = Fixture::new();
+        fixture.claim("cancelled");
+        finish_claim(&fixture.domain, &fixture.home, &"cancelled".into()).unwrap();
+        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")].task_id.clone().unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
+
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
+        assert_eq!(run.error.as_deref(), Some(alondra_core::domain::SCHEDULED_TASK_CANCELLED));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -334,6 +334,55 @@ fn the_user_cancels_a_task_whose_scheduled_launch_failed() {
     state.validate().unwrap();
 }
 
+fn sent_scheduled_task(state: &mut DomainState) {
+    let mut definition = schedule();
+    definition.title = "Updated review".into();
+    exec(state, Actor::System, Command::CreateSchedule { schedule: definition }).unwrap();
+    exec(state, Actor::System, Command::ClaimScheduleRun {
+        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Due,
+        now: 100, next_after_now: Some(200), expected_schedule_revision: None,
+    }).unwrap();
+    let (request, task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    exec(state, Actor::System, Command::RecordScheduleRunSent {
+        run_id: "run-1".into(), request, task, launch: scheduled_launch(), finished_at: 101,
+    }).unwrap();
+}
+
+#[test]
+fn cancelling_a_scheduled_task_before_it_launches_ends_its_run() {
+    let mut state = fixture();
+    sent_scheduled_task(&mut state);
+    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    receipt(&mut state, "scheduled-task");
+    let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
+    assert_eq!(run.state, ScheduleRunState::Failed);
+    assert_eq!(run.error.as_deref(), Some(SCHEDULED_TASK_CANCELLED));
+    assert_eq!(run.finished_at, Some(101));
+    assert_eq!(run.launch.as_ref().map(|launch| launch.state), Some(ScheduleLaunchState::Failed));
+    assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-run-1")), "a cancelled task gets no launch problem");
+    assert!(state.scheduled_launches_of_ended_tasks().is_empty());
+    reject_unchanged(&mut state, Actor::System, Command::ClaimScheduleLaunch { run_id: "run-1".into(), now: 102 }, "conflict");
+    state.validate().unwrap();
+}
+
+#[test]
+fn a_launch_left_waiting_by_a_cancelled_task_is_never_ready_and_is_found_to_settle() {
+    let mut state = fixture();
+    sent_scheduled_task(&mut state);
+    let run_id = ScheduleRunId::from("run-1");
+    assert!(state.scheduled_launch_guard(&run_id).is_ok());
+    assert!(state.scheduled_launches_of_ended_tasks().is_empty());
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().state = TaskState::Cancelled;
+    assert_eq!(state.scheduled_launch_guard(&run_id).map_err(|error| error.code), Err("conflict".to_owned()));
+    assert_eq!(state.scheduled_launches_of_ended_tasks(), [(run_id.clone(), SCHEDULED_TASK_CANCELLED)]);
+    exec(&mut state, Actor::System, Command::RecordScheduleRunFailed {
+        run_id: run_id.clone(), reason: SCHEDULED_TASK_CANCELLED.into(), finished_at: 102,
+    }).unwrap();
+    assert_eq!(state.schedule.runs[&run_id].state, ScheduleRunState::Failed);
+    assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-run-1")));
+    assert!(state.scheduled_launches_of_ended_tasks().is_empty());
+}
+
 #[test]
 fn a_scheduled_request_tells_the_user_its_answer() {
     let mut state = fixture();

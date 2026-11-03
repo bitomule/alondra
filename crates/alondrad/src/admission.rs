@@ -19,7 +19,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom, WARNING_SPACING};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
 use alondra_core::machine_incident::bytes_text;
 use alondra_core::views::{Lang, LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
@@ -403,7 +403,11 @@ impl Admission {
         let queued = queued_launches(domain, &state, now);
         let mut inner = self.lock_with(domain);
         let key = waiting.key.clone();
-        let ended = matches!(&key, Key::Task(task) if state.tasks.get(task).is_none_or(|task| task.over() || task.archived));
+        let ended = match &key {
+            Key::Task(task) => state.tasks.get(task).is_none_or(|task| task.over() || task.archived),
+            Key::Run(_) => !still_waits(&state, &key),
+            Key::Resume(_) => false,
+        };
         if !ended && inner.admitted.iter().any(|(admitted, at)| *admitted == key && now - at < IN_FLIGHT) {
             return Ok(());
         }
@@ -780,8 +784,7 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
         Key::Task(task) => state.tasks.get(task).is_some_and(|task| !task.archived && !task.state.terminal()
             && !matches!(task.state, TaskState::Closing)
             && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.phase.live() && !agent.phase.coming_back()))),
-        Key::Run(run) => state.schedule.runs.get(&run.as_str().into()).is_some_and(|run| run.state == ScheduleRunState::Sent
-            && run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Pending)),
+        Key::Run(run) => state.scheduled_launch_guard(&run.as_str().into()).is_ok(),
     }
 }
 

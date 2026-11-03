@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod account_login;
 pub use account_login::{AccountLogin, AccountLoginPhase};
 mod plan_review;
+mod scheduled_launch;
+pub use scheduled_launch::{SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED};
 mod snooze;
 mod stall;
 pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, is_stall_case, stalled_card_id};
@@ -1829,6 +1831,7 @@ impl DomainState {
             post_merge: None,
         };
         self.decide(lifecycles, task_id, record)?;
+        self.settle_scheduled_launch(task_id)?;
         let t = self.tasks.get_mut(task_id).unwrap();
         if let Some(agent_id) = t.agent_id.clone() {
             t.wrap_up.close_cancelled = true;
@@ -2716,19 +2719,7 @@ impl DomainState {
             }
             Command::ClaimScheduleLaunch { run_id, now } => {
                 system(actor)?;
-                let task_id = self.schedule.runs.get(run_id)
-                    .and_then(|run| run.task_id.as_ref())
-                    .ok_or_else(|| DomainError::new("conflict", "Scheduled Run has no Task"))?;
-                let task = self.tasks.get(task_id)
-                    .ok_or_else(|| DomainError::new("conflict", "Scheduled Task is missing"))?;
-                if task.agent_id.is_some()
-                    || task.state != TaskState::NotStarted
-                    || task.started
-                    || !task.dependencies.is_empty()
-                    || task.stack.is_some()
-                {
-                    return fail("conflict", "Scheduled Task is no longer ready to launch");
-                }
+                self.scheduled_launch_guard(run_id)?;
                 self.schedule.claim_launch(run_id, *now)?;
             }
             Command::RecordScheduleLaunchHanded { run_id, session_id, agent_id, finished_at } => {
