@@ -8,12 +8,14 @@
 //! together is never more than the disk lost, so what they reserve covers what they may still
 //! take. A stretch's peak is the most it took. A stretch that ends keeps its peak, cut at
 //! `PEAK_CEILING_BYTES`, as one of its project's latest `STRETCHES_KEPT`; a project is estimated at
-//! the second highest of them, so one stray reading does not decide it. A stretch already running
-//! when the daemon started never knew what it used before: it reserves its whole estimate and keeps
+//! the second highest of them, so one stray reading does not decide it. The stretches running and the
+//! latest reading are kept across a restart, so a node at work goes on from what it took. A stretch
+//! whose start went unseen (no reading kept) never knew what it used before: its build most likely
+//! already took its space, which the free space shows, so it reserves `UNSEEN_START_BYTES` and keeps
 //! nothing.
 //!
-//! Another volume builds write to is measured the same way, once a stretch took at least
-//! `LEARNED_BYTES` from it; a project not measured there yet reserves what the heaviest one measured
+//! Another volume builds write to is measured the same way, by what the volume itself holds, once a
+//! stretch took at least `LEARNED_BYTES` from it; a project not measured there yet reserves what the heaviest one measured
 //! there takes.
 //!
 //! On 27 October six nodes building at once took the disk from 34 GB to nothing: each start found
@@ -29,6 +31,8 @@ const GB: u64 = 1_000_000_000;
 pub(crate) const UNMEASURED_PEAK_BYTES: u64 = 8 * GB;
 /// What a project measured enough reserves at the least.
 pub(crate) const MEASURED_PEAK_FLOOR_BYTES: u64 = GB;
+/// What a stretch whose start went unseen reserves at the most.
+pub(crate) const UNSEEN_START_BYTES: u64 = MEASURED_PEAK_FLOOR_BYTES;
 /// No stretch is kept as having used more, whatever else filled the disk while it ran.
 pub(crate) const PEAK_CEILING_BYTES: u64 = 30 * GB;
 pub(crate) const STRETCHES_KEPT: usize = 12;
@@ -104,7 +108,7 @@ fn second_highest(measured: &Measured) -> u64 {
     peaks.get(1).or(peaks.first()).copied().unwrap_or(0)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Stretch {
     project: Option<String>,
     used: u64,
@@ -113,8 +117,9 @@ struct Stretch {
     whole: bool,
 }
 
-/// The stretches running now; never saved.
-#[derive(Clone, Debug, Default)]
+/// The stretches running now and the latest reading, kept across a restart.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct Ledger {
     usable: Option<u64>,
     stretches: BTreeMap<TaskId, Stretch>,
@@ -122,7 +127,7 @@ pub(crate) struct Ledger {
 
 impl Ledger {
     /// Takes a sample of the usable space with the tasks working now and their project; returns
-    /// whether a stretch ended, which frees what it reserved.
+    /// whether a stretch ended or one whose start went unseen began, which frees what they reserved.
     pub(crate) fn sample(&mut self, estimates: &mut Estimates, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
         let ended: Vec<TaskId> = self.stretches.keys().filter(|task| !working.contains_key(*task)).cloned().collect();
         for task in &ended {
@@ -135,11 +140,15 @@ impl Ledger {
             self.share(before as i128 - usable as i128);
         }
         let watched = self.usable.is_some();
+        let mut unseen = false;
         for (task, project) in working {
-            self.stretches.entry(task.clone()).or_insert_with(|| Stretch { project: project.clone(), used: 0, peak: 0, whole: watched });
+            self.stretches.entry(task.clone()).or_insert_with(|| {
+                unseen |= !watched;
+                Stretch { project: project.clone(), used: 0, peak: 0, whole: watched }
+            });
         }
         self.usable = Some(usable);
-        !ended.is_empty()
+        !ended.is_empty() || unseen
     }
 
     /// Splits what the disk lost evenly among the stretches running, or takes what it gained off
@@ -167,12 +176,17 @@ impl Ledger {
     }
 
     /// What `task` may still take of its `estimate`: what its stretch did not take yet, all of it
-    /// before its first sample or when its start went unmeasured.
+    /// before its first sample, and at most `UNSEEN_START_BYTES` when its start went unseen.
     pub(crate) fn reserved(&self, task: &TaskId, estimate: u64) -> u64 {
         match self.stretches.get(task) {
             Some(stretch) if stretch.whole => estimate.saturating_sub(stretch.used),
-            _ => estimate,
+            Some(stretch) => estimate.min(UNSEEN_START_BYTES).saturating_sub(stretch.used),
+            None => estimate,
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.stretches.is_empty()
     }
 
     /// What `task`'s stretch has taken so far.
@@ -269,17 +283,38 @@ mod tests {
         assert_eq!((estimates.0["app"].peaks.as_slice(), estimates.0["web"].peaks.as_slice()), ([8 * GB].as_slice(), [2 * GB].as_slice()));
     }
 
+    /// The release that first measured peaks found every node at work with no reading kept: each
+    /// reserved its project's whole estimate, and 7 of them on 26.8 GB free left room for none.
     #[test]
-    fn a_stretch_already_running_when_the_daemon_started_reserves_its_whole_estimate_and_keeps_nothing() {
+    fn a_stretch_whose_start_went_unseen_reserves_little_and_keeps_nothing() {
         let (mut ledger, mut estimates) = (Ledger::default(), measured(&[4 * GB, 4 * GB, 4 * GB]));
-        ledger.sample(&mut estimates, 50 * GB, &working(&[("t1", "app")]), 0);
-        ledger.sample(&mut estimates, 47 * GB, &working(&[("t1", "app")]), 1);
-        assert_eq!(ledger.reserved(&task("t1"), estimates.estimate(Some("app"))), 4 * GB, "what it used before the restart is unknown");
-        ledger.sample(&mut estimates, 47 * GB, &working(&[("t1", "app"), ("t2", "app")]), 2);
-        ledger.sample(&mut estimates, 45 * GB, &working(&[("t1", "app"), ("t2", "app")]), 3);
+        assert!(ledger.sample(&mut estimates, 50 * GB, &working(&[("t1", "app")]), 0), "the gate looks again: t1 reserves less than a new start");
+        assert_eq!(ledger.reserved(&task("t1"), estimates.estimate(Some("app"))), UNSEEN_START_BYTES, "its build most likely already took its space");
+        ledger.sample(&mut estimates, 49_600_000_000, &working(&[("t1", "app")]), 1);
+        assert_eq!(ledger.reserved(&task("t1"), estimates.estimate(Some("app"))), 600_000_000, "less what it took since");
+        ledger.sample(&mut estimates, 47 * GB, &working(&[("t1", "app")]), 2);
+        assert_eq!(ledger.reserved(&task("t1"), estimates.estimate(Some("app"))), 0);
+        assert_eq!(ledger.reserved(&task("t1"), 500_000_000), 0, "never more than its estimate");
+        ledger.sample(&mut estimates, 47 * GB, &working(&[("t1", "app"), ("t2", "app")]), 3);
+        ledger.sample(&mut estimates, 45 * GB, &working(&[("t1", "app"), ("t2", "app")]), 4);
         assert_eq!(ledger.reserved(&task("t2"), estimates.estimate(Some("app"))), 3 * GB, "started after: measured whole");
-        ledger.sample(&mut estimates, 45 * GB, &BTreeMap::new(), 4);
-        assert_eq!(estimates.0["app"].peaks, [4 * GB, 4 * GB, 4 * GB, GB], "only the stretch measured whole is kept");
+        assert!(!ledger.sample(&mut estimates, 45 * GB, &working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]), 5), "a start seen frees nothing");
+        ledger.sample(&mut estimates, 45 * GB, &BTreeMap::new(), 6);
+        assert_eq!(estimates.0["app"].peaks, [4 * GB, 4 * GB, 4 * GB, GB, 0], "only the stretches measured whole are kept");
+    }
+
+    #[test]
+    fn the_stretches_at_work_and_the_latest_reading_survive_a_restart() {
+        let (mut ledger, mut estimates) = (Ledger::default(), measured(&[6 * GB, 6 * GB, 6 * GB]));
+        ledger.sample(&mut estimates, 50 * GB, &BTreeMap::new(), 0);
+        ledger.sample(&mut estimates, 50 * GB, &working(&[("t1", "app")]), 1);
+        ledger.sample(&mut estimates, 46 * GB, &working(&[("t1", "app")]), 2);
+        let mut reopened: Ledger = serde_json::from_slice(&serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert_eq!(reopened.reserved(&task("t1"), estimates.estimate(Some("app"))), 2 * GB, "6 GB less the 4 it took before the restart");
+        reopened.sample(&mut estimates, 45 * GB, &working(&[("t1", "app"), ("t2", "app")]), 3);
+        assert_eq!(reopened.used(&task("t1")), 5 * GB, "what the disk lost while the daemon restarted is t1's, which ran across both readings");
+        assert_eq!(reopened.reserved(&task("t2"), estimates.estimate(Some("app"))), 6 * GB, "t2 started after the reading kept: measured whole");
+        assert!(serde_json::from_str::<Ledger>("{}").unwrap().is_empty(), "a file of an earlier daemon still reads");
     }
 
     #[test]

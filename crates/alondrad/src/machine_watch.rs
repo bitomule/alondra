@@ -79,7 +79,9 @@ struct Record {
     /// What a node of each project takes on the disk at its peak.
     #[serde(default)]
     peaks: crate::disk_peaks::Estimates,
-    #[serde(skip)]
+    /// The nodes at work on the Mac's own disk and its latest reading, so a restart goes on from
+    /// what each one took.
+    #[serde(default)]
     stretches: crate::disk_peaks::Ledger,
     /// The disk was short of room for the next build when last asked.
     #[serde(skip)]
@@ -116,7 +118,7 @@ enum Candidates {
     None,
     Mounted,
     #[cfg(test)]
-    Given(Vec<(PathBuf, crate::disk::Space)>),
+    Given(Vec<(PathBuf, crate::disk::Space, u64)>),
 }
 
 impl Record {
@@ -388,25 +390,39 @@ impl MachineWatch {
         self.record().candidates = Candidates::Mounted;
     }
 
+    /// Volumes alone on their disk: what they hold grows by what their free space falls.
     #[cfg(test)]
     pub(crate) fn give_volumes(&self, volumes: Vec<(PathBuf, crate::disk::Space)>) {
+        let volumes = volumes.into_iter().map(|(mount, space)| (mount, space, space.total.saturating_sub(space.usable()))).collect();
         self.record().candidates = Candidates::Given(volumes);
     }
 
-    fn candidate_spaces(&self) -> Vec<(PathBuf, crate::disk::Space)> {
+    #[cfg(test)]
+    pub(crate) fn give_volumes_holding(&self, volumes: Vec<(PathBuf, crate::disk::Space, u64)>) {
+        self.record().candidates = Candidates::Given(volumes);
+    }
+
+    /// Every other volume builds may write to, its space and what it holds.
+    fn candidate_spaces(&self) -> Vec<(PathBuf, crate::disk::Space, u64)> {
         let candidates = self.record().candidates.clone();
         match candidates {
             Candidates::None => vec![],
             Candidates::Mounted => crate::disk::candidate_volumes().into_iter()
                 .filter(|mount| !crate::disk::same_volume(mount, own_disk()))
-                .filter_map(|mount| crate::disk::space(&mount).map(|space| (mount, space)))
+                .filter_map(|mount| {
+                    let space = crate::disk::space(&mount)?;
+                    let held = crate::disk::held(&mount).unwrap_or_else(|| space.total.saturating_sub(space.usable()));
+                    Some((mount, space, held))
+                })
                 .collect(),
             #[cfg(test)]
             Candidates::Given(volumes) => volumes,
         }
     }
 
-    /// Takes a sample of every other volume builds may write to with the tasks at work. One a
+    /// Takes a sample of every other volume builds may write to with the tasks at work, by what the
+    /// volume itself holds: an APFS volume shares its free space with the others of its container,
+    /// such as the Mac's own disk, so what they write never counts as taken from it. One a
     /// stretch took `disk_peaks::LEARNED_BYTES` from becomes a volume builds write to: watched, its
     /// card raised when it runs low, and its room reserved like the Mac's own disk's. Returns
     /// whether a stretch ended on one of them.
@@ -418,7 +434,7 @@ impl MachineWatch {
         let mut record = self.record();
         let mut ended = false;
         let mut learned = vec![];
-        for (mount, space) in &spaces {
+        for (mount, space, held) in &spaces {
             let Record { build_volumes, candidate_peaks, volume_stretches, .. } = &mut *record;
             let known = build_volumes.contains_key(mount);
             let estimates = match build_volumes.get_mut(mount) {
@@ -426,12 +442,12 @@ impl MachineWatch {
                 None => candidate_peaks.entry(mount.clone()).or_default(),
             };
             let stretches = volume_stretches.entry(mount.clone()).or_default();
-            ended |= stretches.sample(estimates, space.usable(), working, now);
+            ended |= stretches.sample(estimates, space.total.saturating_sub(*held), working, now);
             if !known && estimates.most().max(stretches.most()) >= crate::disk_peaks::LEARNED_BYTES {
                 learned.push(mount.clone());
             }
         }
-        record.volume_spaces = spaces.into_iter().collect();
+        record.volume_spaces = spaces.into_iter().map(|(mount, space, _)| (mount, space)).collect();
         for mount in &learned {
             log!("builds write to {}: Alondra watches it and reserves the room they take there", mount.display());
             let estimates = record.candidate_peaks.remove(mount).unwrap_or_default();
@@ -445,18 +461,19 @@ impl MachineWatch {
     }
 
     /// Takes a sample of the usable space of the Mac's own disk with the tasks at work, by
-    /// project; returns whether one stopped working, which frees what it reserved.
+    /// project; returns whether one stopped working or one whose start went unseen began, which
+    /// frees what they reserved.
     pub(crate) fn measure_peaks(&self, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
         let mut record = self.record();
         if record.peaks_ignored {
             return false;
         }
         let Record { stretches, peaks, .. } = &mut *record;
-        let ended = stretches.sample(peaks, usable, working, now);
-        if ended {
+        let freed = stretches.sample(peaks, usable, working, now);
+        if freed || !stretches.is_empty() {
             self.save(&record);
         }
-        ended
+        freed
     }
 
     #[cfg(test)]
@@ -491,7 +508,7 @@ impl MachineWatch {
         let short = short.or_else(|| record.volume_short(working, project));
         let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
         short.or_else(|| carded.then(|| crate::disk::Room {
-            free: record.disk.or_else(|| crate::disk::space(own_disk())).map_or(0, |space| space.shown_free()),
+            free: record.disk.map_or(0, |space| space.shown_free()),
             needed,
             volume: None,
         }))
@@ -663,8 +680,8 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     let mac = watch.mac();
     let working = domain.state().map(|state| crate::admission::working_projects(&state)).unwrap_or_default();
     let usable = disk_space(machine).usable();
-    let ended = machine.disk_total > 0 && watch.measure_peaks(usable, &working, now);
-    if watch.measure_volumes(&working, now) || ended {
+    let freed = machine.disk_total > 0 && watch.measure_peaks(usable, &working, now);
+    if watch.measure_volumes(&working, now) || freed {
         domain.live.gate.poke();
     }
     if let Some(home) = watch.home() {
@@ -780,10 +797,10 @@ mod tests {
         tasks.iter().map(|(task, project)| (TaskId((*task).into()), Some((*project).into()))).collect()
     }
 
-    /// The daemon restarts while a node builds: what each project took is kept, the node at work
-    /// reserves its whole estimate, since what it took before is unknown, and its stretch is not kept.
+    /// The daemon restarts while a node builds: what each project took and what the node at work
+    /// took so far are kept, so it reserves only what it may still take.
     #[test]
-    fn what_each_project_takes_is_kept_across_a_restart_and_a_node_at_work_reserves_all_of_it() {
+    fn what_each_project_takes_and_what_a_node_at_work_took_are_kept_across_a_restart() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let watch = MachineWatch::persisted_in(&home);
@@ -794,17 +811,40 @@ mod tests {
             watch.measure_peaks(88 * GB, &working(&[(task, "app")]), at + 2);
             assert!(watch.measure_peaks(100 * GB, &BTreeMap::new(), at + 3), "its stretch ended");
         }
+        watch.measure_peaks(100 * GB, &working(&[("t4", "app")]), 50);
+        watch.measure_peaks(91 * GB, &working(&[("t4", "app")]), 51);
         let reopened = MachineWatch::persisted_in(&home);
-        reopened.measure_disk(crate::disk::Space { free: 20 * GB, purgeable: 0, total: 500 * GB });
-        reopened.measure_peaks(91 * GB, &working(&[("t4", "app")]), 100);
-        reopened.measure_peaks(89 * GB, &working(&[("t4", "app")]), 101);
-        assert_eq!(reopened.disk_reserved(&working(&[("t4", "app")])), 12 * GB, "the 2 GB it took since are not taken off");
+        reopened.measure_disk(crate::disk::Space { free: 15 * GB, purgeable: 0, total: 500 * GB });
+        assert_eq!(reopened.disk_reserved(&working(&[("t4", "app")])), 3 * GB, "12 GB less the 9 it took before the restart");
+        reopened.measure_peaks(89 * GB, &working(&[("t4", "app")]), 100);
+        assert_eq!(reopened.disk_reserved(&working(&[("t4", "app")])), GB, "and the 2 it took since");
         assert_eq!(reopened.disk_room(&working(&[("t4", "app")]), Some("app")),
-            Some(crate::disk::Room { free: 20 * GB, needed: 12 * GB + 12 * GB + 5 * GB, volume: None }), "t4's 12 GB and the next one's on top of the 5 GB line");
+            Some(crate::disk::Room { free: 15 * GB, needed: GB + 12 * GB + 5 * GB, volume: None }), "t4's last GB and the next one's 12 on top of the 5 GB line");
         reopened.measure_peaks(89 * GB, &BTreeMap::new(), 102);
         assert_eq!(reopened.record().peaks.estimate(Some("app")), 12 * GB);
+        assert_eq!(reopened.record().peaks.most(), 12 * GB, "t4's 11 GB is kept beside the three 12 GB");
         let earlier: Record = serde_json::from_str(r#"{"incident": null, "declared": {}, "builds": [5000000000]}"#).unwrap();
         assert_eq!(earlier.peaks, crate::disk_peaks::Estimates::default(), "a file of an earlier daemon still reads");
+        assert!(earlier.stretches.is_empty());
+    }
+
+    /// 2 November: the first daemon to reserve peaks started on a HOME that had measured none, with 7
+    /// nodes at work and 26.8 GB free. Each reserved the 8 GB default, so the next start needed
+    /// 69 GB. Their builds had already taken their space, which the free space shows.
+    #[test]
+    fn nodes_at_work_when_peaks_were_first_measured_leave_room_for_the_next_start() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(FILE), r#"{"incident": null, "declared": {}}"#).unwrap();
+        let watch = MachineWatch::persisted_in(&home);
+        let free = 26_800_000_000;
+        watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 494 * GB });
+        let at_work: Vec<(String, &str)> = (1..=7).map(|index| (format!("t{index}"), "alondra")).collect();
+        let at_work: Vec<(&str, &str)> = at_work.iter().map(|(task, project)| (task.as_str(), *project)).collect();
+        let at_work = working(&at_work);
+        assert!(watch.measure_peaks(free, &at_work, 0), "the gate looks again once their stretches began");
+        assert_eq!(watch.disk_reserved(&at_work), 7 * GB);
+        assert_eq!(watch.disk_room(&at_work, Some("alondra")), None, "7 GB for the nodes at work and 8 GB for the next start fit over the 5 GB line");
     }
 
     fn space(free: u64) -> crate::disk::Space {
@@ -849,6 +889,30 @@ mod tests {
         let reopened = MachineWatch::persisted_in(&home);
         assert_eq!(reopened.record().build_volumes.keys().collect::<Vec<_>>(), [&cache]);
         assert_eq!(reopened.record().build_volumes[&cache].most(), 24_500_000_000, "t1's peak there, the most the volume lost while it worked");
+    }
+
+    /// /Volumes/BuildCache is an APFS volume of the Mac's own container: its free space is the
+    /// container's, so a node writing to the Mac's own disk lowers it too. It is learned only by
+    /// what it holds itself.
+    #[test]
+    fn a_volume_sharing_the_macs_free_space_is_learned_by_what_it_holds() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let watch = MachineWatch::persisted_in(&home);
+        let cache = PathBuf::from("/Volumes/BuildCache");
+        let t1 = working(&[("t1", "app")]);
+        let give = |free: u64, held: u64| watch.give_volumes_holding(vec![(cache.clone(), crate::disk::Space { free, purgeable: 0, total: 40 * GB }, held)]);
+        give(30 * GB, 10 * GB);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        watch.measure_volumes(&t1, 1);
+        give(20 * GB, 10 * GB);
+        watch.measure_volumes(&t1, 2);
+        assert!(watch.record().build_volumes.is_empty(), "t1 took 10 GB from the Mac's own disk, none from BuildCache");
+        give(17 * GB, 13 * GB);
+        watch.measure_volumes(&t1, 3);
+        assert_eq!(watch.record().build_volumes.keys().collect::<Vec<_>>(), [&cache], "t1 wrote 3 GB into BuildCache");
+        watch.measure_volumes(&BTreeMap::new(), 4);
+        assert_eq!(watch.record().build_volumes[&cache].most(), 3 * GB, "its peak there is what it wrote there");
     }
 
     /// A volume builds write to running low opens the disk's card naming it, while the Mac's own

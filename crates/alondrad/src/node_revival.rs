@@ -57,16 +57,21 @@ impl Losses {
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
     let Some(mut lost) = domain.live.losses.take() else { return };
-    if let Ok(state) = domain.state() {
-        for agent in state.agents.keys() {
-            domain.live.losses.report(&agent.0);
-        }
-    }
+    report_known(&domain);
     tokio::spawn(watch_stalls(domain.clone()));
     tokio::spawn(wake_when_waits_end(domain.clone()));
     while let Some(session) = lost.recv().await {
         let domain = domain.clone();
         tokio::spawn(async move { revive(&domain, &session, timing).await });
+    }
+}
+
+/// At its start the daemon reports lost every known session that may still have to be brought
+/// back: one revival each, so never the many agents whose tasks are over.
+fn report_known(domain: &DomainRuntime) {
+    let Ok(state) = domain.state() else { return };
+    for agent in state.agents.keys().filter(|agent| may_need(domain, &state, &agent.0)) {
+        domain.live.losses.report(&agent.0);
     }
 }
 
@@ -264,14 +269,20 @@ fn still_stalled(domain: &DomainRuntime, session: &str) -> bool {
 /// first if its session is gone.
 /// A node of the Agent SDK is no background session: its owner takes over its host, or replaces
 /// one that ended, so it is never respawned here.
+/// The handover journal is read last: it waits for the domain store, which every agent the daemon
+/// reports lost at its start would otherwise hold a thread for.
 pub(crate) fn needed(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
+    may_need(domain, &state, session) && !crate::sdk_handover::moved(domain, &AgentId(session.to_owned()))
+}
+
+/// `needed` by what the domain's state and the live connections say, without the handover journal.
+fn may_need(domain: &DomainRuntime, state: &DomainState, session: &str) -> bool {
     let agent = AgentId(session.to_owned());
-    !crate::sdk_owner::runs_through_sdk(&state, &agent)
-        && !crate::sdk_handover::moved(domain, &agent)
+    open_task(state, session)
         && state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
-        && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
-        && !awaits_other_tasks(&state, session)
+        && !crate::sdk_owner::runs_through_sdk(state, &agent)
+        && !awaits_other_tasks(state, session)
         && !domain.live.is_closed(session)
         && !domain.live.mods.connected(session)
 }
@@ -488,6 +499,56 @@ mod tests {
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(std::future::Future::poll(wait.as_mut(), &mut context).is_pending(), "the same account still holds this disconnected node");
         assert!(moves(&domain).is_empty());
+    }
+
+    /// Holds the domain store from another thread until dropped.
+    struct HeldStore(Option<std::sync::mpsc::Sender<()>>, Option<std::thread::JoinHandle<()>>);
+
+    impl Drop for HeldStore {
+        fn drop(&mut self) {
+            drop(self.0.take());
+            if let Some(holder) = self.1.take() {
+                holder.join().unwrap();
+            }
+        }
+    }
+
+    fn hold_store(domain: &Arc<DomainRuntime>) -> HeldStore {
+        let (taken, ready) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let domain = domain.clone();
+        let holder = std::thread::spawn(move || {
+            let _store = domain.store.lock().unwrap();
+            taken.send(()).unwrap();
+            let _ = held.recv();
+        });
+        ready.recv().unwrap();
+        HeldStore(Some(release), Some(holder))
+    }
+
+    #[tokio::test]
+    async fn a_node_without_an_open_task_is_not_needed_without_waiting_for_the_domain_store() {
+        let (_home, domain) = world(false);
+        let _held = hold_store(&domain);
+        domain.store.on_wait(|| panic!("needed waited for the domain store for a node with no open task"));
+        assert!(!needed(&domain, SESSION));
+    }
+
+    #[tokio::test]
+    async fn the_daemon_reports_lost_at_its_start_only_the_nodes_of_open_tasks() {
+        let (_home, domain) = world(true);
+        let finished: Vec<String> = (0..64).map(|index| format!("{index:08x}-0000-4000-8000-000000000000")).collect();
+        for session in &finished {
+            command(&domain, Actor::System, &format!("register-{session}"), Command::RegisterAgent { agent_id: AgentId(session.clone()), name: "alondra/done".into(), at: 0 });
+        }
+        let mut lost = domain.live.losses.take().unwrap();
+        while lost.try_recv().is_ok() {}
+        report_known(&domain);
+        let mut reported = vec![];
+        while let Ok(session) = lost.try_recv() {
+            reported.push(session);
+        }
+        assert_eq!(reported, vec![SESSION.to_owned()], "one revival per session that may need one, not one per known agent");
     }
 
     #[tokio::test]

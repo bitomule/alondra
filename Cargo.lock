@@ -60,7 +60,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alondra"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-core",
  "alondra-e2e",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-agent-application"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-agent-protocol"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-foundation",
  "hmac 0.12.1",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-agent-runtime"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-codex-protocol"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-foundation",
  "hmac 0.12.1",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-core"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-domain"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-foundation",
  "proptest",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-e2e"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "base64 0.23.1",
  "hkdf 0.12.4",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-foundation"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "serde",
  "serde_json",
@@ -195,14 +195,14 @@ dependencies = [
 
 [[package]]
 name = "alondra-process-group"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "alondra-provider-claude"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-agent-application",
  "alondra-agent-protocol",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-provider-codex"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-agent-application",
  "alondra-agent-runtime",
@@ -241,14 +241,14 @@ dependencies = [
 
 [[package]]
 name = "alondra-provider-contract"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-foundation",
 ]
 
 [[package]]
 name = "alondra-relay"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-e2e",
  "anyhow",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-store"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "alondrad"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "alondra-agent-application",
  "alondra-agent-runtime",

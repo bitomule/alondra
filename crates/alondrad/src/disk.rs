@@ -121,6 +121,12 @@ pub(crate) fn space(path: &Path) -> Option<Space> {
     Some(Space { purgeable, ..free })
 }
 
+/// What the volume of `path` itself holds, `df`'s Used: on APFS the free space is the whole
+/// container's, so it falls with what any of its volumes writes; this grows only with the volume's own.
+pub(crate) fn held(path: &Path) -> Option<u64> {
+    platform::held(path)
+}
+
 fn free_space(path: &Path) -> Option<Space> {
     let path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
@@ -144,6 +150,31 @@ mod platform {
         unsafe { url.getResourceValue_forKey_error(&mut value, NSURLVolumeAvailableCapacityForImportantUsageKey) }.ok()?;
         let number = value?.downcast::<NSNumber>().ok()?;
         u64::try_from(number.longLongValue()).ok()
+    }
+
+    pub(super) fn held(path: &Path) -> Option<u64> {
+        use std::os::unix::ffi::OsStrExt as _;
+        #[repr(C, packed(4))]
+        struct Reply {
+            length: u32,
+            used: libc::off_t,
+        }
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+        let mut wanted = libc::attrlist {
+            bitmapcount: libc::ATTR_BIT_MAP_COUNT, reserved: 0, commonattr: 0,
+            volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_SPACEUSED, dirattr: 0, fileattr: 0, forkattr: 0,
+        };
+        let mut reply = std::mem::MaybeUninit::<Reply>::zeroed();
+        let size = std::mem::size_of::<Reply>();
+        if unsafe { libc::getattrlist(path.as_ptr(), (&raw mut wanted).cast(), reply.as_mut_ptr().cast(), size, 0) } != 0 {
+            return None;
+        }
+        let reply = unsafe { reply.assume_init() };
+        let (length, used) = (reply.length, reply.used);
+        if (length as usize) < size {
+            return None;
+        }
+        u64::try_from(used).ok()
     }
 
     /// Every mount point that is local, writable and not hidden from Finder.
@@ -172,6 +203,10 @@ mod platform {
 
     pub(super) fn mounted() -> Vec<std::path::PathBuf> {
         vec![]
+    }
+
+    pub(super) fn held(_path: &std::path::Path) -> Option<u64> {
+        None
     }
 }
 
@@ -322,6 +357,21 @@ mod tests {
         }
         assert!(candidates.iter().all(|mount| !mount.starts_with("/Library/Developer/CoreSimulator/Volumes")), "{candidates:?}");
         assert!(candidates.iter().all(|mount| mount.is_dir()), "{candidates:?}");
+    }
+
+    /// What `df` reports as Used for the folder's volume, which on APFS is not its size less its
+    /// free space: that free space is the whole container's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn what_a_volume_holds_is_what_df_reports_as_used() {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir(&dir).unwrap();
+        let held = held(&dir).expect("getattrlist gives the volume's space used");
+        let df = std::process::Command::new("df").arg("-k").arg(&dir).output().unwrap();
+        let line = String::from_utf8_lossy(&df.stdout).lines().nth(1).unwrap().to_owned();
+        let used_kb: u64 = line.split_whitespace().nth(2).unwrap().parse().unwrap();
+        assert!((held / 1024).abs_diff(used_kb) < 1024 * 1024, "getattrlist {} KB, df {used_kb} KB", held / 1024);
+        assert_eq!(super::held(Path::new("/no/such/alondra/folder")), None);
     }
 
     #[test]
