@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 
 SCRIPT = pathlib.Path(__file__).parents[1] / 'smoke-setup.py'
@@ -56,6 +57,16 @@ class ProfileSmokeTests(unittest.TestCase):
             s.check_report(cellar, self.prefix)
         with self.assertRaisesRegex(RuntimeError, 'did not say what it would install'):
             s.check_report({'checks': [{'id': 'providers'}, {'id': 'service', 'fixable': True}]}, self.prefix)
+
+
+    def test_a_doctor_that_runs_no_command_leaves_no_log_and_passes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = pathlib.Path(temporary) / 'observations.jsonl'
+            self.assertEqual(s.observed(calls), [], 'since #1395 a fresh user\'s doctor runs neither claude nor launchctl')
+            s.check_observations(s.observed(calls), self.home)
+            calls.write_text('["claude", ["auth", "login"], ["/fixture/user", null, null]]\n')
+            with self.assertRaisesRegex(RuntimeError, 'attempted a mutation'):
+                s.check_observations(s.observed(calls), self.home)
 
 
 if __name__ == '__main__':

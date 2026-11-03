@@ -78,6 +78,11 @@ def check_observations(entries, smoke_home, explicit_profile=None):
             raise RuntimeError(f'Doctor attempted a mutation: {name} {args}')
 
 
+def observed(calls):
+    """Every command the doctor ran through the doubles; it creates no log when it runs none."""
+    return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+
+
 def free_port():
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
@@ -150,7 +155,7 @@ else:
         check_report(doc, prefix, explicit_profile)
         if profile_snapshot(smoke_home) != before:
             raise RuntimeError('Doctor wrote files in the isolated user profile')
-        check_observations([json.loads(line) for line in calls.read_text().splitlines()], smoke_home, explicit_profile)
+        check_observations(observed(calls), smoke_home, explicit_profile)
         label = 'implicit-unset' if profile_name is None else f'explicit-{profile_name}'
         print(f'Installed doctor profile {label} passed read-only observations; no real login, registration or daemon start tested.')
 
