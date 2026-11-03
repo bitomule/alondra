@@ -91,6 +91,12 @@ struct Record {
     peaks_ignored: bool,
     #[serde(skip)]
     disk: Option<crate::disk::Space>,
+    #[serde(skip)]
+    boot_disk: Option<crate::disk::Space>,
+    #[serde(skip)]
+    swap: crate::swap_disk::SwapDisk,
+    #[serde(skip)]
+    swap_short: bool,
     /// What a node of each project takes at its peak on each other volume builds were seen to
     /// write to, by mount point; such a volume is watched like one nodes were launched on.
     #[serde(default)]
@@ -344,6 +350,8 @@ impl MachineWatch {
             return None;
         }
         record.sampled_at = machine.at;
+        record.swap.sample(machine.compressor, now);
+        record.boot_disk = (machine.disk_total > 0).then(|| disk_space(machine));
         let before = record.mac.room(0, now);
         record.mac.step(machine, now);
         let after = record.mac.room(0, now);
@@ -468,8 +476,8 @@ impl MachineWatch {
         if record.peaks_ignored {
             return false;
         }
-        let Record { stretches, peaks, .. } = &mut *record;
-        let freed = stretches.sample(peaks, usable, working, now);
+        let Record { stretches, peaks, swap, .. } = &mut *record;
+        let freed = stretches.sample_excluding(peaks, usable, working, now, swap.allocated_change);
         if freed || !stretches.is_empty() {
             self.save(&record);
         }
@@ -498,13 +506,25 @@ impl MachineWatch {
     /// The disk short of room for the next node, of `project`, on top of what the `working` tasks
     /// may still take: the Mac's own disk, or else a volume builds write to, named. Also while the
     /// disk's card is open, when no node starts. Once short, a disk needs margin to have room again.
-    pub(crate) fn disk_room(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>) -> Option<crate::disk::Room> {
+    pub(crate) fn disk_room(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<crate::disk::Room> {
         let reserved = self.disk_reserved(working);
         let mut record = self.record();
         let estimate = if record.peaks_ignored { 0 } else { record.peaks.estimate(project) };
         let needed = reserved + estimate + crate::disk::low_lines().usable;
         let short = record.disk.and_then(|space| space.room_for(needed, record.short).err());
         record.short = short.is_some();
+        let swap_short = if record.peaks_ignored { None } else {
+            record.swap.reserve(now).zip(record.boot_disk).and_then(|(swap_reserve, space)| {
+                // Swap needs immediately writable space, even when macOS reports purgeable room.
+                let needed = needed.saturating_add(swap_reserve);
+                let margin = if record.swap_short { crate::disk::recovered_lines().usable - crate::disk::low_lines().usable } else { 0 };
+                (space.free < needed.saturating_add(margin)).then_some(crate::disk::Room {
+                    free: space.free, needed, volume: None,
+                })
+            })
+        };
+        record.swap_short = swap_short.is_some();
+        let short = swap_short.or(short);
         let short = short.or_else(|| record.volume_short(working, project));
         let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
         short.or_else(|| carded.then(|| crate::disk::Room {
@@ -514,13 +534,26 @@ impl MachineWatch {
         }))
     }
 
+    /// Swap and boot-container budget beside the queue hold, for the throttled log.
+    pub(crate) fn disk_detail(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<String> {
+        let reserved = self.disk_reserved(working);
+        let record = self.record();
+        let space = record.boot_disk?;
+        let swap = record.swap.line(now).unwrap_or_else(|| "swap unavailable".into());
+        let builds = reserved.saturating_add(if record.peaks_ignored { 0 } else { record.peaks.estimate(project) });
+        let remaining = i128::from(space.free) - i128::from(builds);
+        Some(format!("{swap}; container free {:.2} GB, builds reserved {:.2} GB, free less builds {:.2} GB",
+            space.free as f64 / 1_000_000_000.0, builds as f64 / 1_000_000_000.0, remaining as f64 / 1_000_000_000.0))
+    }
+
     /// Whether the fullest disk fell under its floor.
     pub(crate) fn under_floor(&self) -> bool {
         self.record().disk.is_some_and(|space| space.under_floor())
     }
 
     fn short(&self) -> bool {
-        self.record().short
+        let record = self.record();
+        record.short || record.swap_short
     }
 
     /// Why no node may start in `cwd` now, if the disk is nearly full there or on the Mac. The
@@ -726,6 +759,7 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
     if space {
         crate::sdk_owner::retake_waiting_for_space(domain);
     }
+    domain.live.gate.poke();
     #[cfg(test)]
     domain.live.machine_watch.sampled.notify_one();
     actions
@@ -797,6 +831,44 @@ mod tests {
         tasks.iter().map(|(task, project)| (TaskId((*task).into()), Some((*project).into()))).collect()
     }
 
+    #[test]
+    fn swap_history_is_not_restored_but_build_estimates_are() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let watch = MachineWatch::persisted_in(&home);
+        watch.seed_peaks("app", &[GB; 3]);
+        for step in 0..=30 {
+            let at = 10_000 + step * SAMPLE;
+            let compressor = alondra_core::MemoryCompressor { swap_used: GB + step as u64 * 10_000_000,
+                swap_total: Some(2 * GB), ..alondra_core::MemoryCompressor::default() };
+            watch.sample(&Machine { at, compressor: Some(compressor), ..machine(7 * GB, 29) }, at);
+        }
+        assert!(watch.record().swap.reserve(10_000 + 5 * MIN).is_some());
+        watch.save(&watch.record());
+        let reopened = MachineWatch::persisted_in(&home);
+        assert_eq!(reopened.record().swap.reserve(10_000 + 5 * MIN), None);
+        assert_eq!(reopened.record().peaks.estimate(Some("app")), GB);
+    }
+
+    #[test]
+    fn swap_uses_the_boot_container_even_when_another_volume_is_tightest() {
+        let watch = MachineWatch::default();
+        watch.seed_peaks("app", &[GB; 3]);
+        for step in 0..=30 {
+            let at = 10_000 + step * SAMPLE;
+            let compressor = alondra_core::MemoryCompressor { swap_used: GB + step as u64 * 10_000_000,
+                swap_total: Some(2 * GB), ..alondra_core::MemoryCompressor::default() };
+            watch.sample(&Machine { at, compressor: Some(compressor), ..machine(20 * GB, 29) }, at);
+        }
+        watch.measure_disk(space(8 * GB));
+        let now = 10_000 + 5 * MIN;
+        assert_eq!(watch.disk_room(&BTreeMap::new(), Some("app"), now), None,
+            "the 8 GB on another volume is not swap's free space");
+        watch.record().boot_disk = Some(crate::disk::Space { free: 7 * GB, purgeable: 40 * GB, total: 500 * GB });
+        assert!(watch.disk_room(&BTreeMap::new(), Some("app"), now).is_some(),
+            "purgeable space does not pay swap's immediate writes");
+    }
+
     /// The daemon restarts while a node builds: what each project took and what the node at work
     /// took so far are kept, so it reserves only what it may still take.
     #[test]
@@ -818,7 +890,7 @@ mod tests {
         assert_eq!(reopened.disk_reserved(&working(&[("t4", "app")])), 3 * GB, "12 GB less the 9 it took before the restart");
         reopened.measure_peaks(89 * GB, &working(&[("t4", "app")]), 100);
         assert_eq!(reopened.disk_reserved(&working(&[("t4", "app")])), GB, "and the 2 it took since");
-        assert_eq!(reopened.disk_room(&working(&[("t4", "app")]), Some("app")),
+        assert_eq!(reopened.disk_room(&working(&[("t4", "app")]), Some("app"), 100),
             Some(crate::disk::Room { free: 15 * GB, needed: GB + 12 * GB + 5 * GB, volume: None }), "t4's last GB and the next one's 12 on top of the 5 GB line");
         reopened.measure_peaks(89 * GB, &BTreeMap::new(), 102);
         assert_eq!(reopened.record().peaks.estimate(Some("app")), 12 * GB);
@@ -844,7 +916,7 @@ mod tests {
         let at_work = working(&at_work);
         assert!(watch.measure_peaks(free, &at_work, 0), "the gate looks again once their stretches began");
         assert_eq!(watch.disk_reserved(&at_work), 7 * GB);
-        assert_eq!(watch.disk_room(&at_work, Some("alondra")), None, "7 GB for the nodes at work and 8 GB for the next start fit over the 5 GB line");
+        assert_eq!(watch.disk_room(&at_work, Some("alondra"), 0), None, "7 GB for the nodes at work and 8 GB for the next start fit over the 5 GB line");
     }
 
     fn space(free: u64) -> crate::disk::Space {
@@ -879,10 +951,10 @@ mod tests {
         watch.measure_disk(crate::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
         give(7 * GB, 10 * GB);
         watch.measure_volumes(&t1, 5);
-        assert_eq!(watch.disk_room(&t1, Some("web")), None, "t1 already took its estimate there: 1 GB for the next one fits over the 5 GB line");
+        assert_eq!(watch.disk_room(&t1, Some("web"), 0), None, "t1 already took its estimate there: 1 GB for the next one fits over the 5 GB line");
         give(5_500_000_000, 10 * GB);
         watch.measure_volumes(&t1, 6);
-        assert_eq!(watch.disk_room(&t1, Some("web")), Some(crate::disk::Room { free: 5_500_000_000, needed: 6 * GB, volume: Some("BuildCache".into()) }),
+        assert_eq!(watch.disk_room(&t1, Some("web"), 0), Some(crate::disk::Room { free: 5_500_000_000, needed: 6 * GB, volume: Some("BuildCache".into()) }),
             "the Mac's own disk has room, BuildCache does not, and is named");
         watch.measure_volumes(&BTreeMap::new(), 7);
 
@@ -948,7 +1020,7 @@ mod tests {
         watch.measure_peaks(40 * GB, &working(&[("t1", "app")]), 1);
         watch.measure_disk(crate::disk::Space { free: 8 * GB, purgeable: 0, total: 500 * GB });
         assert_eq!(watch.disk_used(&TaskId::from("t1")), 0);
-        assert_eq!(watch.disk_room(&working(&[("t1", "app")]), Some("app")), None, "8 GB free are over the 5 GB line");
+        assert_eq!(watch.disk_room(&working(&[("t1", "app")]), Some("app"), 0), None, "8 GB free are over the 5 GB line");
     }
 
     #[test]
@@ -1394,7 +1466,7 @@ mod tests {
         watch.poison();
         watch.measure_disk(crate::disk::Space { free: 0, purgeable: 0, total: 500 * GB });
         watch.poison();
-        assert!(watch.disk_room(&working(&[("t1", "app")]), None).is_some(), "an empty disk has no room for the next build");
+        assert!(watch.disk_room(&working(&[("t1", "app")]), None, 0).is_some(), "an empty disk has no room for the next build");
     }
 
     #[tokio::test]

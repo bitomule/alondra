@@ -731,6 +731,8 @@ pub struct MemoryCompressor {
     /// Pages kept compressed, in memory or swapped out.
     pub stored_pages: u64,
     pub swap_used: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_total: Option<u64>,
     pub swapins: u64,
     pub swapouts: u64,
 }

@@ -25,6 +25,7 @@ mod claude_trust;
 mod direct;
 mod disk;
 mod disk_peaks;
+mod swap_disk;
 mod save;
 mod domain_agent_lifecycle;
 mod domain_api;

@@ -95,13 +95,15 @@ fn compressor() -> Option<MemoryCompressor> {
     if status != libc::KERN_SUCCESS {
         return None;
     }
-    let swap = sysctl_value::<libc::xsw_usage>(c"vm.swapusage")?;
+    let swap = sysctl_value::<libc::xsw_usage>(c"vm.swapusage")
+        .filter(|swap| swap.xsu_used <= swap.xsu_total);
     Some(MemoryCompressor {
         page_size,
         uncompressed_pages: u64::from(stats.free_count) + u64::from(stats.active_count) + u64::from(stats.inactive_count),
         compressor_pages: u64::from(stats.compressor_page_count),
         stored_pages: stats.total_uncompressed_pages_in_compressor,
-        swap_used: swap.xsu_used,
+        swap_used: swap.map_or(0, |swap| swap.xsu_used),
+        swap_total: swap.map(|swap| swap.xsu_total),
         swapins: stats.swapins,
         swapouts: stats.swapouts,
     })

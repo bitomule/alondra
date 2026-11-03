@@ -229,6 +229,7 @@ pub(crate) struct Snapshot {
     pub in_flight: usize,
     pub hold: Option<Hold>,
     pub disk: Option<crate::disk::Room>,
+    disk_detail: Option<String>,
 }
 
 impl Admission {
@@ -965,8 +966,9 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let head = queue.first().and_then(|head| task_of(state, &head.key));
     let reserving = projects_of(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
     let project = head.and_then(|task| state.tasks.get(&task)).and_then(|task| task.project.as_deref());
-    let disk = domain.live.machine_watch.disk_room(&reserving, project);
-    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk };
+    let disk = domain.live.machine_watch.disk_room(&reserving, project, now);
+    let disk_detail = domain.live.machine_watch.disk_detail(&reserving, project, now);
+    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk, disk_detail };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
 }
@@ -1096,7 +1098,9 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
             let on_user: Vec<TaskId> = state.agents.values().filter(|agent| state.node_waits_on_user(&agent.id))
                 .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();
             if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
-                log!("{line}");
+                let detail = snapshot.disk_detail.as_deref().filter(|_| matches!(hold, Hold::Disk { .. }))
+                    .map(|detail| format!("; {detail}")).unwrap_or_default();
+                log!("{line}{detail}");
             }
         }
         match (snapshot.queue.first(), snapshot.hold) {

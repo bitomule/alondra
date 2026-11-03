@@ -883,6 +883,143 @@ fn machine_cards(domain: &DomainRuntime) -> usize {
     domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)).count()
 }
 
+fn swap_sample(domain: &DomainRuntime, free: u64, used: u64, now: Millis) {
+    swap_sample_with_total(domain, free, used, 30 * GB, now);
+}
+
+fn swap_sample_with_total(domain: &DomainRuntime, free: u64, used: u64, total: u64, now: Millis) {
+    let compressor = alondra_core::MemoryCompressor { swap_used: used, swap_total: Some(total),
+        ..alondra_core::MemoryCompressor::default() };
+    crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 64u64 << 30,
+        memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(compressor),
+        disk_total: 500 * GB, disk_available: free, ..Machine::default() });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
+}
+
+#[test]
+fn growing_swap_holds_a_resume_in_the_queue_and_a_quiet_minute_releases_it() {
+    let (home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    domain.live.machine_watch.seed_peaks("app", &[GB; 3]);
+    create_in(&domain, "t1", "app");
+    start(&domain, "t1", 1_000);
+    gate.pause_by_user(&domain, "agent-t1", 1_000).unwrap();
+    domain.report(Envelope { session_id: "agent-t1".into(), report: Report::TurnComplete { answer: String::new(), aborted: true } }, 1_000);
+    for step in 0..=30 {
+        swap_sample(&domain, 7_300_000_000, 20 * GB + step * 10_000_000, 10_000 + step as Millis * SAMPLE);
+    }
+    let now = 10_000 + 5 * MIN;
+    assert!(gate.resume_now(&domain, "agent-t1", now));
+    let logged = crate::save::full_disk::fill();
+    logged.free();
+    look(&domain, &home.0, now);
+    assert!(still_paused(&domain, "t1"));
+    assert!(matches!(gate.live(&domain, now).unwrap().queued[0].hold, alondra_core::views::LiveHold::Disk { .. }));
+    let lines = logged.lines();
+    let held = lines.iter().find(|line| line.contains("the admission gate holds")).expect("a disk hold is logged");
+    assert!(held.contains("swap 20.30/30.00 GB, growth +0.300 GB over 300 s"), "{held}");
+    assert!(held.contains("container free 7.30 GB, builds reserved 1.00 GB, free less builds 6.30 GB"), "{held}");
+    look(&domain, &home.0, now + SAMPLE);
+    assert_eq!(logged.lines().iter().filter(|line| line.contains("the admission gate holds")).count(), 1,
+        "the new numbers do not repeat the hold every sample");
+    for step in 1..=6 {
+        swap_sample(&domain, 7_300_000_000, 20_300_000_000, now + step * SAMPLE);
+    }
+    look(&domain, &home.0, now + MIN);
+    assert!(!still_paused(&domain, "t1"), "swap's old growth leaves no disk hysteresis behind");
+    assert_eq!(machine_cards(&domain), 0);
+}
+
+#[test]
+fn swap_does_not_spend_the_build_reserve_and_its_log_names_the_whole_budget() {
+    let (_home, domain) = world();
+    let watch = &domain.live.machine_watch;
+    watch.seed_peaks("build", &[4 * GB; 3]);
+    watch.seed_peaks("next", &[GB; 3]);
+    create_in(&domain, "build", "build");
+    swap_sample_with_total(&domain, 12 * GB, 20 * GB, 21 * GB, 10_000);
+    start(&domain, "build", 10_000);
+    swap_sample_with_total(&domain, 12 * GB, 20 * GB, 21 * GB, 20_000);
+    for step in 1..=30 {
+        swap_sample_with_total(&domain, 12 * GB - step * 100_000_000, 20 * GB + step * 100_000_000,
+            21 * GB + step * 100_000_000, 20_000 + step as Millis * SAMPLE);
+    }
+    let working = working_projects(&domain.state().unwrap());
+    assert_eq!(watch.disk_reserved(&working), 4 * GB, "the 3 GB lost to swap did not pay for a build");
+    assert_eq!(watch.disk_used(&TaskId::from("build")), 0);
+    let line = watch.disk_detail(&working, Some("next"), 20_000 + 5 * MIN).unwrap();
+    assert_eq!(line, "swap 23.00/24.00 GB, growth +3.000 GB over 300 s, swap reserve 24.00 GB; container free 9.00 GB, builds reserved 5.00 GB, free less builds 4.00 GB");
+    swap_sample_with_total(&domain, 9 * GB, 22 * GB, 24 * GB, 30_000 + 5 * MIN);
+    assert_eq!(watch.disk_reserved(&working), 4 * GB, "freeing used swap slots without shrinking the files consumed no build space");
+    swap_sample_with_total(&domain, 10 * GB, 22 * GB, 23 * GB, 40_000 + 5 * MIN);
+    assert_eq!(watch.disk_reserved(&working), 4 * GB, "reclaiming a swapfile freed no build space");
+}
+
+#[test]
+fn stable_and_shrinking_swap_leave_the_disk_gate_open_on_the_same_small_disk() {
+    for change in [-10_000_000i64, 0, 10_000_000] {
+        let (_home, domain) = world();
+        domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+        domain.live.machine_watch.seed_peaks("app", &[GB; 3]);
+        create_in(&domain, "next", "app");
+        for step in 0..=30 {
+            let used = (20 * GB) as i64 + step * change;
+            swap_sample(&domain, 7_300_000_000, used as u64, 10_000 + step * SAMPLE);
+        }
+        let result = ask(&domain, "next", 10_000 + 5 * MIN);
+        if change > 0 {
+            assert!(matches!(result, Err(Hold::Disk { .. })), "{result:?}");
+        } else {
+            assert_eq!(result, Ok(()), "change {change}");
+        }
+        assert_eq!(machine_cards(&domain), 0);
+    }
+}
+
+// 30 October: builds took 2 GB, swap another 2.7 GB, with memory still 29% free.
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 8, ..proptest::prelude::ProptestConfig::default() })]
+    #[test]
+    fn growing_swap_holds_starts_on_the_measured_disk_but_not_with_room(extra_gb in 0u64..=1) {
+        for roomy in [false, true] {
+            let (_home, domain) = world();
+            let gate = &domain.live.gate;
+            gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+            let watch = &domain.live.machine_watch;
+            watch.seed_peaks("build", &[2 * GB; 3]);
+            watch.seed_peaks("next", &[GB; 3]);
+            create_in(&domain, "build", "build");
+            create_in(&domain, "next", "next");
+            let extra = if roomy { (10 + extra_gb) * GB } else { extra_gb * GB };
+            for step in 0..=240u64 {
+                let now = 10_000 + step as Millis * SAMPLE;
+                let free = 12 * GB + extra - 4_700_000_000 * step / 240;
+                let used = 20_200_000_000 + 2_700_000_000 * step / 240;
+                let counters = serde_json::from_value(serde_json::json!({
+                    "page_size": 16384, "uncompressed_pages": 3_000_000, "compressor_pages": 100_000,
+                    "stored_pages": 200_000, "swap_used": used, "swap_total": used + 600_000_000,
+                    "swapins": 0, "swapouts": 0,
+                })).unwrap();
+                crate::machine_watch::pace(&domain, &Machine { at: now, memory_total: 64u64 << 30,
+                    memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(counters),
+                    disk_total: 500 * GB, disk_available: free, ..Machine::default() });
+                watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
+                if step == 0 {
+                    start(&domain, "build", now);
+                }
+            }
+            let result = ask(&domain, "next", 10_000 + 40 * MIN);
+            if roomy {
+                proptest::prop_assert_eq!(result, Ok(()));
+            } else {
+                proptest::prop_assert!(matches!(result, Err(Hold::Disk { .. })), "{:?}", result);
+            }
+            proptest::prop_assert_eq!(machine_cards(&domain), 0);
+        }
+    }
+}
+
 /// 27 October: six nodes building at once took the disk from 34 GB to nothing, each start having
 /// found room for one build. A start now waits, with no card, while the nodes at work may still
 /// take the room it needs, and goes once one of them ends and frees what it reserved.

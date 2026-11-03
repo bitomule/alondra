@@ -129,6 +129,11 @@ impl Ledger {
     /// Takes a sample of the usable space with the tasks working now and their project; returns
     /// whether a stretch ended or one whose start went unseen began, which frees what they reserved.
     pub(crate) fn sample(&mut self, estimates: &mut Estimates, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
+        self.sample_excluding(estimates, usable, working, now, 0)
+    }
+
+    /// Swap already took space from the boot container, but is not part of a build's peak.
+    pub(crate) fn sample_excluding(&mut self, estimates: &mut Estimates, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis, swap_change: i128) -> bool {
         let ended: Vec<TaskId> = self.stretches.keys().filter(|task| !working.contains_key(*task)).cloned().collect();
         for task in &ended {
             let Some(stretch) = self.stretches.remove(task) else { continue };
@@ -137,7 +142,7 @@ impl Ledger {
             }
         }
         if let Some(before) = self.usable {
-            self.share(before as i128 - usable as i128);
+            self.share(before as i128 - usable as i128 - swap_change);
         }
         let watched = self.usable.is_some();
         let mut unseen = false;
