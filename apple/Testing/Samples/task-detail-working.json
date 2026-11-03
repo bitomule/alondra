@@ -53,15 +53,18 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "State",
               "value": "Working",
               "tone": "accent"
             },
             {
+              "kind": "request",
               "label": "Request",
               "value": "Build a feature"
             },
             {
+              "kind": "folder",
               "label": "Folder",
               "value": "/work/alondra/.claude/worktrees/t-1"
             }
@@ -481,6 +484,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Priority",
               "value": "Normal"
             },

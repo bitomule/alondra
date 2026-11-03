@@ -297,6 +297,7 @@ public struct MacServiceDetail: View {
                                                onContent: { presentation.send(.contentRequested($0)) },
                                                onAttachment: { presentation.send(.attachmentRequested($0)) },
                                                onContentRow: { showContent(of: document, scrollTo: proxy) },
+                                               onFilledForm: { presentation.send(.sendForm($0, $1, content: $2)) },
                                                diff: presentation.diff,
                                                diffFailed: presentation.diffFailed,
                                                onDiffNeeded: { presentation.send(.diffNeeded($0)) },

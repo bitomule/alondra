@@ -224,6 +224,26 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 760), spanish: true, variants: [.light]) { MacServiceDetail(presentation: store) }
     }
 
+    private func formCard(spanish: Bool) throws -> StoreOf<MacPresentationFeature> {
+        try presentation(sidebar: spanish ? "sidebar-mac-es" : "sidebar-mac") { state in
+            guard let base = try? self.document("card-elicitation-form-ios"),
+                  let card = try? RequestedFormCard.document(spanish ? SpanishTestData.document(base) : base, spanish: spanish) else { return }
+            state.detailDocument = card
+            state.selection = .viewKey(card.key)
+            state.selectedViewKey = card.key
+        }
+    }
+
+    func test_card_anMCPServersForm() throws {
+        let store = try formCard(spanish: false)
+        assertWindow(size: CGSize(width: 900, height: 820)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_anMCPServersForm_spanish() throws {
+        let store = try formCard(spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 820), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_questionOfSeveralAskedTogether() throws {
         let store = try presentation(detail: "card-group-mac")
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }

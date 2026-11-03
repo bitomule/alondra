@@ -15,6 +15,7 @@ struct MacSectionView: View {
     var onContent: (ContentRef) -> Void
     var onAttachment: (Attachment) -> Void
     var onContentRow: () -> Void
+    var onFilledForm: (AlondraContract.Action, RequestedForm, [String: JSONValue]) -> Void = { _, _, _ in }
     var diff: MacDiff?
     var diffFailed: String?
     var onDiffNeeded: (ContentRef) -> Void = { _ in }
@@ -68,7 +69,7 @@ struct MacSectionView: View {
             if !folded {
                 ForEach(identifiedItems, id: \.id) { _, item in
                     if case let .card(card) = item, card.need != nil {
-                        MacCardView(card: card, returnReason: returnReasons[card.id], onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow)
+                        MacCardView(card: card, returnReason: returnReasons[card.id], onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow, onFilledForm: onFilledForm)
                     } else if case let .actions(bar) = item {
                         MacActionBar(bar: bar, onAction: onAction)
                     } else if section.id == "documents", case let .facts(facts) = item {

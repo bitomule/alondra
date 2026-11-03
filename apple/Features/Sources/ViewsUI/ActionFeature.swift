@@ -20,6 +20,9 @@ public struct ActionFeature: Sendable {
         public var fields: [String: JSONValue] = [:]
         public var modelFields: [Field] = []
         public var modelFormAvailable = true
+        /// The MCP form the card asks to fill and its values, sent only with the option that accepts it.
+        public var requestedForm: RequestedForm?
+        public var content: [String: JSONValue] = [:]
         public var formReplacement: ChangedNotice?
         public var confirmation: Confirm?
         public var pending: ActionRequest?
@@ -98,6 +101,9 @@ public struct ActionFeature: Sendable {
             if action.presentation == .options && !freeText && selectedOptionID == nil {
                 return String(localized: "Choose an option")
             }
+            if let requestedForm, selectedOptionID == RequestedForm.acceptOption, let problem = requestedForm.problem(content) {
+                return problem
+            }
             let input = selectedOptionID.flatMap { id in action.options.first { $0.id == id }?.input } ?? action.input
             if case let .text(_, required, _, _) = input, required, action.optionId == nil, comments.isEmpty, !typed {
                 return String(localized: "Enter a response")
@@ -125,6 +131,8 @@ public struct ActionFeature: Sendable {
         case attachmentUploadFailed(String)
         case commentsChanged([ActionComment])
         case fieldsChanged([String: JSONValue])
+        /// The card's MCP form and what the person filled in, to go with the option that accepts it.
+        case formFilled(RequestedForm, [String: JSONValue])
         case attachmentPicker(AttachmentFeature.Action)
         case submit
         case confirm
@@ -184,6 +192,7 @@ public struct ActionFeature: Sendable {
                 state.requiresAttachments = value.attachments
                 state.selectedOptionID = value.optionId; state.text = ""; state.attachments = []
                 state.comments = []; state.fields = [:]; state.modelFields = []; state.modelFormAvailable = true; state.formReplacement = nil; state.confirmation = nil
+                state.requestedForm = nil; state.content = [:]
                 state.pending = nil; state.inFlight = false; state.stamp = nil
                 state.error = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
@@ -194,6 +203,7 @@ public struct ActionFeature: Sendable {
                 state.action = value
                 state.selectedOptionID = nil; state.text = ""; state.attachments = []
                 state.comments = []; state.fields = fields; state.modelFields = modelFields; state.modelFormAvailable = true; state.formReplacement = nil; state.confirmation = nil
+                state.requestedForm = nil; state.content = [:]
                 state.pending = nil; state.inFlight = false; state.stamp = nil
                 state.error = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
@@ -222,6 +232,10 @@ public struct ActionFeature: Sendable {
                 state.pendingAttachmentSubmit = false
                 return send(&state)
             case let .commentsChanged(comments): state.comments = comments; return .none
+            case let .formFilled(form, content):
+                if state.content != content, !state.inFlight { state.pending = nil }
+                state.requestedForm = form; state.content = content; state.error = nil
+                return .none
             case .fieldsChanged(var fields):
                 if fields["model"] != state.fields["model"] {
                     if fields["reasoning_effort"] != nil { fields["reasoning_effort"] = .string("auto") }
@@ -429,7 +443,8 @@ public struct ActionFeature: Sendable {
             input: ActionInput(text: state.text.isEmpty ? nil : state.text,
                 attachments: state.attachments.isEmpty ? nil : state.attachments,
                 comments: state.comments.isEmpty ? nil : state.comments,
-                fields: state.fields.isEmpty ? nil : state.fields),
+                fields: state.fields.isEmpty ? nil : state.fields,
+                content: state.requestedForm != nil && state.selectedOptionID == RequestedForm.acceptOption ? state.content : nil),
             resolvesCard: resolvesCard ?? state.action?.resolvesCard
         )
         guard let unsure = state.unsure, unsure.dataEpoch == request.dataEpoch, unsure.actionId == request.actionId,

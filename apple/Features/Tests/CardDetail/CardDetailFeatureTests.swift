@@ -568,6 +568,67 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subject?.title, "Choose the welcome copy")
         XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
     }
+    // MARK: An MCP server's form
+
+    @MainActor
+    func testAcceptingAnMCPFormSendsWhatWasFilledTypedAndDecliningSendsNone() async throws {
+        let feed = FeedStub()
+        let card = try Fixtures.document("card-elicitation-form-ios")
+        let store = self.store(card, feed: feed)
+        await store.send(.screen(.loaded(card)))
+        XCTAssertEqual(store.state.formValues, ["remember": .bool(false)], "a switch starts off, as it is shown")
+        let accept = try XCTUnwrap(store.state.subject?.buttons.first { $0.optionId == "accept" })
+        let decline = try XCTUnwrap(store.state.subject?.buttons.first { $0.optionId == "decline" })
+
+        await store.send(.formChanged(["remember": .bool(true), "minutes": .integer(5)]))
+        await store.send(.actionTapped(accept))
+        await store.skipReceivedActions()
+
+        let declining = self.store(card, feed: feed)
+        await declining.send(.screen(.loaded(card)))
+        await declining.send(.formChanged(["remember": .bool(true)]))
+        await declining.send(.actionTapped(decline))
+        await declining.skipReceivedActions()
+
+        XCTAssertEqual(feed.requests.map(\.optionId), ["accept", "decline"])
+        XCTAssertEqual(feed.requests.map(\.input.content), [["remember": .bool(true), "minutes": .integer(5)], nil])
+    }
+
+    @MainActor
+    func testAnMCPFormOutsideItsLimitsIsNotSentAndSaysWhichField() async throws {
+        let feed = FeedStub()
+        let card = try Fixtures.document("card-elicitation-form-ios")
+        let store = self.store(card, feed: feed)
+        await store.send(.screen(.loaded(card)))
+        let accept = try XCTUnwrap(store.state.subject?.buttons.first { $0.optionId == "accept" })
+
+        await store.send(.formChanged(["remember": .bool(true), "minutes": .integer(0)]))
+        await store.send(.actionTapped(accept))
+        await store.skipReceivedActions()
+
+        XCTAssertTrue(feed.requests.isEmpty)
+        XCTAssertEqual(store.state.actions.error, "Check minutes: it is outside what it allows")
+    }
+
+    func testAFormStartsFromItsDefaultsAndNamesTheFirstFieldItLacks() throws {
+        let form = try ContractCodec.decode(RequestedForm.self, from: Data(#"""
+        {"fields":[
+          {"name":"email","title":"Email","required":true,"kind":{"kind":"text","format":"email","max_length":5}},
+          {"name":"size","required":true,"kind":{"kind":"choice","options":[{"value":"s","title":"Small"},{"value":"l"}],"default":"s"}},
+          {"name":"tags","kind":{"kind":"choices","options":[{"value":"a"},{"value":"b"}],"max_items":1}},
+          {"name":"ratio","kind":{"kind":"number","integer":false,"maximum":1,"default":0.5}}
+        ]}
+        """#.utf8))
+
+        XCTAssertEqual(form.initialValues, ["size": .string("s"), "ratio": .number(0.5)])
+        XCTAssertEqual(form.problem(form.initialValues), "Fill in Email")
+        XCTAssertNil(form.problem(form.initialValues.merging(["email": .string("a@b")]) { $1 }))
+        for wrong: [String: JSONValue] in [["email": .string("a@b.es")], ["size": .string("m")], ["tags": .array([.string("a"), .string("b")])],
+                                            ["ratio": .number(2)], ["size": .integer(1)]] {
+            XCTAssertNotNil(form.problem(form.initialValues.merging(["email": .string("a@b")]) { $1 }.merging(wrong) { $1 }), "\(wrong)")
+        }
+    }
+
 }
 
 final class CardDetailLoadingTests: XCTestCase {

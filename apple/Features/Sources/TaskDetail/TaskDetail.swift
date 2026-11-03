@@ -92,6 +92,9 @@ public struct TaskDetail: Equatable, Sendable {
     public var pause: WireAction? { action("pause") }
     public var resume: WireAction? { action("resume") }
     public var priority: WireAction? { action("set_priority") }
+    /// The priority menu drawn in place of `fact`: only the fact the daemon marks as the priority,
+    /// so an older daemon that marks none shows the priority as text.
+    public func priorityMenu(for fact: Fact) -> WireAction? { fact.kind == .priority ? priority : nil }
     public var modelSelection: WireAction? {
         actions.first { if case .view(let key) = $0.link { key.hasPrefix("task_selection:") } else { false } }
     }
@@ -128,7 +131,7 @@ public extension TaskDetail {
             }, collapsed: section(id)?.collapsed ?? false, count: section(id)?.count.map(Int.init))
         }
         let facts = factsOf("header")
-        let state = facts.first { $0.link == nil }
+        let state = facts.first { $0.kind == .state }
         let now = rowsOf("now").first.map { Reference(text: $0.title, link: $0.link) }
         self.init(
             title: document.title ?? "",
@@ -138,8 +141,8 @@ public extension TaskDetail {
             runTime: rowsOf("elapsed").first.flatMap { row in
                 row.badges.first { $0.elapsed != nil }.map { RunTime(title: row.title, label: $0) }
             },
-            folder: facts.dropFirst(2).first { $0.link == nil && $0.value.hasPrefix("/") }?.value,
-            request: facts.dropFirst().first { $0.link == nil }.map { Reference(text: $0.value, link: $0.link) },
+            folder: facts.first { $0.kind == .folder }?.value,
+            request: facts.first { $0.kind == .request }.map { Reference(text: $0.value, link: $0.link) },
             now: now,
             readings: factsOf("readings"),
             activity: activities("activity"),

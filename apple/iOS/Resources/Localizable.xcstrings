@@ -1,6 +1,14 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Optional": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Opcional"}}}},
+    "Choose…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige…"}}}},
+    "Fill in %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Rellena %@"}}}},
+    "Check %@: it is outside what it allows": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Revisa %@: está fuera de lo que admite"}}}},
+    "%@ to %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "De %1$@ a %2$@"}}}},
+    "At least %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Al menos %@"}}}},
+    "At most %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Como mucho %@"}}}},
+    "Alondra on your Mac could not do it.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra en tu Mac no pudo hacerlo."}}}},
     "since now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "desde ahora"}}}},
     "Finished subagents": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subagentes terminados"}}}},
     "Finished in the background": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Terminado en segundo plano"}}}},

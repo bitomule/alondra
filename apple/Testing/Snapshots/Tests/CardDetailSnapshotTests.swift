@@ -99,6 +99,24 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard(spanish: true)), language: .spanish)
     }
 
+    private func formCard(spanish: Bool) throws -> StoreOf<CardDetailFeature> {
+        let base = try Fixtures.document("card-elicitation-form-ios")
+        let card = try RequestedFormCard.document(spanish ? try Fixtures.spanish(base) : base, spanish: spanish)
+        return ScreenStores.cardDetail(card) { state in
+            let form = state.subject?.card?.form
+            state.form = form
+            state.formValues = (form?.initialValues ?? [:]).merging(["email": .string("ana@example.com")]) { $1 }
+        }
+    }
+
+    func test_anMCPServersForm() throws {
+        assertDetail(try formCard(spanish: false))
+    }
+
+    func test_anMCPServersForm_es() throws {
+        assertDetail(try formCard(spanish: true), language: .spanish)
+    }
+
     func test_decideWithItsHistory() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID).withHistory())
         assertDetail(store)

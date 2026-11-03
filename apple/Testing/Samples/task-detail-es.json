@@ -27,6 +27,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "Estado",
               "value": "Te necesita",
               "tone": "warning"
@@ -40,6 +41,7 @@
               }
             },
             {
+              "kind": "request",
               "label": "Solicitud",
               "value": "Pulir la beta de Alondra"
             }

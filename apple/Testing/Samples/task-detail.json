@@ -27,6 +27,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "State",
               "value": "Needs you",
               "tone": "warning"
@@ -40,6 +41,7 @@
               }
             },
             {
+              "kind": "request",
               "label": "Request",
               "value": "Polish the Alondra beta"
             }

@@ -116,6 +116,9 @@ public struct CardDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 header(subject)
+                if let form = subject.card?.form {
+                    RequestedFormView(form: form, values: Binding(get: { store.formValues }, set: { store.send(.formChanged($0)) }))
+                }
                 ForEach(subject.sections, id: \.id) { section in
                     sectionView(section)
                 }

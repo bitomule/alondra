@@ -1,6 +1,14 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Optional": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Opcional"}}}},
+    "Choose…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige…"}}}},
+    "Fill in %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Rellena %@"}}}},
+    "Check %@: it is outside what it allows": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Revisa %@: está fuera de lo que admite"}}}},
+    "%@ to %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "De %1$@ a %2$@"}}}},
+    "At least %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Al menos %@"}}}},
+    "At most %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Como mucho %@"}}}},
+    "Alondra on your Mac could not do it.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra en tu Mac no pudo hacerlo."}}}},
     "Send a crash report": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviar informe de fallo"}}}},
     "Logs of your Mac with everything private left out. You see all of it before it is sent.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Logs de tu Mac con todo lo privado fuera. Lo ves entero antes de enviarlo."}}}},
     "Collecting the report: the logs, the tasks and the nodes of the last hours…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Recogiendo el informe: los logs, las tareas y los nodos de las últimas horas…"}}}},

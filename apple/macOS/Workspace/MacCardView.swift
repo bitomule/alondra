@@ -15,9 +15,13 @@ struct MacCardView: View {
     var onReply: (AlondraContract.Action, String) -> Void
     var onLink: (AlondraContract.Link) -> Void
     var onContent: () -> Void
+    var onFilledForm: (AlondraContract.Action, RequestedForm, [String: JSONValue]) -> Void = { _, _, _ in }
 
     @State private var reply = ""
     @State private var moreOpen = false
+    /// What the person changed in the card's form; until then the form shows its defaults.
+    @State private var formValues: [String: JSONValue]?
+    @State private var formProblem: String?
     @FocusState private var replyFocused: Bool
 
     private var buttons: MacCardButtons { MacCardButtons(card, excluding: excludedActionIDs) }
@@ -38,6 +42,13 @@ struct MacCardView: View {
             }
             if let row = card.contentRow { MacContentRow(row: row, open: onContent) }
             if !card.blocks.isEmpty || !card.blockedBy.isEmpty { MacBlockChips(card: card, open: onLink) }
+            if let form = card.form {
+                RequestedFormView(form: form, values: Binding(get: { formValues ?? form.initialValues }, set: { formValues = $0; formProblem = nil }))
+                    .onChange(of: form) { formValues = nil; formProblem = nil }
+                if let formProblem {
+                    Text(formProblem).font(.callout).foregroundStyle(MacCardPalette.risk).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             MacActionColumn(buttons: buttons, moreOpen: $moreOpen, onAction: press)
             if let returnReason {
                 Text(returnReason).font(.callout).foregroundStyle(MacCardPalette.risk).fixedSize(horizontal: false, vertical: true)
@@ -63,6 +74,12 @@ struct MacCardView: View {
 
     /// An option answers at once; what the person already wrote in the card's field goes with it.
     private func press(_ action: AlondraContract.Action) {
+        if let form = card.form, form.isFilled(by: action) {
+            let values = formValues ?? form.initialValues
+            formProblem = form.problem(values)
+            if formProblem == nil { onFilledForm(action, form, values) }
+            return
+        }
         guard let words = action.carrying(reply) else { return onAction(action) }
         reply = ""
         onReply(action, words)

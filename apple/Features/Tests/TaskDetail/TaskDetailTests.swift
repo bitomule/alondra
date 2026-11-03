@@ -20,6 +20,46 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.modelSelection?.link, .view(key: "task_selection:t-1"))
     }
 
+    private func taskDetail(header: [[String: Any]], options: [[String: Any]] = []) throws -> TaskDetail {
+        TaskDetail(document: try Samples.document("task-detail-working", editing: { object in
+            var sections = object["sections"] as! [[String: Any]]
+            for (id, facts) in [("header", header), ("options", options)] {
+                let index = sections.firstIndex { $0["id"] as? String == id }!
+                sections[index]["items"] = [["type": "facts", "items": facts]]
+            }
+            object["sections"] = sections
+        }))
+    }
+
+    func testThePriorityMenuGoesOnTheFactTheDaemonMarksAsThePriorityWhateverItsLabel() throws {
+        let detail = try taskDetail(header: [], options: [
+            ["kind": "priority", "label": "Prioridad (inicio)", "value": "Normal"],
+            ["label": "Priority", "value": "Alta"],
+        ])
+        let priority = try XCTUnwrap(detail.priority)
+
+        XCTAssertEqual(detail.options.elements.map { detail.priorityMenu(for: $0)?.id }, [priority.id, nil],
+                       "a fact named like the action but not marked as the priority stays text")
+    }
+
+    func testTheHeaderTakesItsStateRequestAndFolderByTheirKindNotTheirPlaceOrText() throws {
+        let detail = try taskDetail(header: [
+            ["kind": "folder", "label": "Folder", "value": "~/wt"],
+            ["kind": "request", "label": "Request", "value": "/fix the build"],
+            ["kind": "state", "label": "State", "value": "Working", "tone": "accent"],
+        ])
+
+        XCTAssertEqual(detail.state, "Working")
+        XCTAssertEqual(detail.stateTone, .accent)
+        XCTAssertEqual(detail.request?.text, "/fix the build")
+        XCTAssertEqual(detail.folder, "~/wt")
+
+        let older = try taskDetail(header: [["label": "State", "value": "Working"], ["label": "Request", "value": "/fix the build"]],
+                                   options: [["label": "Priority", "value": "Normal"]])
+        XCTAssertNil(older.folder, "a fact without a kind is never taken for the folder")
+        XCTAssertNil(older.options.elements.first.flatMap(older.priorityMenu(for:)))
+    }
+
     func testEverySectionTheDaemonNamesLandsInItsPlace() throws {
         let detail = TaskDetail(document: try Samples.document("task-detail"))
 

@@ -132,6 +132,8 @@ public struct MacPresentationFeature: Sendable {
         case settled(String)
         case beginViewAction(AlondraContract.Action, target: String? = nil)
         case sendReply(AlondraContract.Action, text: String)
+        /// The option that accepts a card's MCP form, sent with what the person filled in.
+        case sendForm(AlondraContract.Action, RequestedForm, content: [String: JSONValue])
         case beginViewForm(AlondraContract.Form)
         case reloadForm(String, JSONValue)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
@@ -198,6 +200,15 @@ public struct MacPresentationFeature: Sendable {
                 }
                 state.actionPresented = false
                 return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.submit)))
+            case let .sendForm(action, form, content):
+                guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
+                let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
+                state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
+                state.actionFeature.unsure = action.id.flatMap { state.unsure[$0] }
+                state.activeForm = nil
+                state.actionTarget = state.selectedViewKey.flatMap(Self.cardID)
+                state.actionPresented = false
+                return .concatenate(.send(.action(.present(action))), .send(.action(.formFilled(form, content))), .send(.action(.submit)))
             case .beginViewForm(let form):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"

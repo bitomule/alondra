@@ -538,4 +538,21 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.send(.opened(.node("n-1")))
         await store.receive(\.delegate.open, .node("n-1"))
     }
+
+    @MainActor
+    func testAcceptingAnMCPFormFromTheQueueOpensTheCardToFillItAndDecliningAnswersAtOnce() async throws {
+        let feed = FeedStub()
+        let store = try await store("i-1", feed: feed, loaded: try Fixtures.document("card-elicitation-form-ios"))
+        let accept = try XCTUnwrap(store.state.buttons.first { $0.optionId == "accept" })
+        let decline = try XCTUnwrap(store.state.buttons.first { $0.optionId == "decline" })
+
+        await store.send(.actionTapped(accept))
+        await store.receive(\.opened, .card("i-1"))
+        XCTAssertTrue(feed.requests.isEmpty, "the form is filled in the card before anything is sent")
+
+        await store.send(.actionTapped(decline))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.optionId), ["decline"])
+        XCTAssertNil(feed.requests.first?.input.content)
+    }
 }

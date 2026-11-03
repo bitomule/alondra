@@ -374,7 +374,7 @@ public struct TaskDetailView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(detail.options.elements.enumerated()), id: \.offset) { index, fact in
                         Group {
-                            if let priority = detail.priority, fact.label == priority.label {
+                            if let priority = detail.priorityMenu(for: fact) {
                                 priorityMenu(priority, value: fact.value)
                             } else {
                                 HStack(alignment: .firstTextBaseline) {

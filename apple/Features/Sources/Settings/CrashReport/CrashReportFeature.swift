@@ -16,6 +16,11 @@ import Foundation
         case unreadable
     }
 
+    /// Why the daemon turned a report down, as its report routes name it.
+    public enum ReportRefusal: String, Sendable {
+        case invalid, noCli = "no_cli", cliFailed = "cli_failed", timedOut = "timed_out", gone
+    }
+
     public enum Stage: Equatable, Sendable {
         case describing
         case building
@@ -160,17 +165,27 @@ import Foundation
 
     static func failure(_ error: any Error, _ client: CrashReportClient) -> Failure {
         if error is CrashReportUnreadable { return .unreadable }
-        switch error as? APIError {
-        case .server(_, _, let detail?, _), .conflict(_, let detail?, _), .forbidden(_, let detail?, _):
-            if !detail.isEmpty { return .refused(detail) }
-        default: break
-        }
+        if let why = refusal(error) { return .refused(why) }
         switch client.problem(error) {
         case .macNotAnswering, .alondraNotRunning, .macNotOnNetwork, .macChangedIdentity, .localNetworkDenied, .unexpected:
             return .notAnswering(onThisMac: client.onThisMac)
         case let problem:
             return .problem(problem)
         }
+    }
+
+    /// The Mac's words when it answered and turned the report down: a refusal the daemon names, or
+    /// any 4xx answer from an older daemon that names none. A 5xx is the Mac not answering yet.
+    static func refusal(_ error: any Error) -> String? {
+        let status: Int, kind: String?, detail: String?
+        switch error as? APIError {
+        case let .server(code, named, words, _): (status, kind, detail) = (code, named, words)
+        case let .conflict(named, words, _): (status, kind, detail) = (409, named, words)
+        case let .forbidden(named, words, _): (status, kind, detail) = (403, named, words)
+        default: return nil
+        }
+        guard kind.flatMap(ReportRefusal.init(rawValue:)) != nil || (400..<500).contains(status) else { return nil }
+        return detail ?? String(localized: "Alondra on your Mac could not do it.")
     }
 
     public static func message(_ failure: Failure) -> String {

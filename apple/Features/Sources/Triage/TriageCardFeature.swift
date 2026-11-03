@@ -218,6 +218,7 @@ public struct TriageCardFeature: Sendable {
             if case .view(let key) = link { return .send(.opened(ViewKey(rawValue: key))) }
             return .none
         }
+        if let form = state.card?.form, form.isFilled(by: action) { return .send(.opened(.card(state.id))) }
         if Self.asksForWords(action) {
             state.composition = Composition(action: action)
             return .none

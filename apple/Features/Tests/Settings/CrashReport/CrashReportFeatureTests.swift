@@ -115,4 +115,22 @@ final class CrashReportFeatureTests: XCTestCase {
         await store.send(.build)
         await store.send(.startOver) { $0 = CrashReportFeature.State() }
     }
+
+    func testARefusalIsDecidedByTheAnswersStatusAndKindNeverByWhetherItCarriesText() async {
+        let cases: [(APIError, CrashReportFeature.Failure)] = [
+            (.server(status: 503, kind: nil, detail: "starting", reasons: []), .notAnswering(onThisMac: true)),
+            (.server(status: 503, kind: "timed_out", detail: "The report took too long", reasons: []), .refused("The report took too long")),
+            (.conflict(kind: "cli_failed", detail: "GitHub said no", reasons: []), .refused("GitHub said no")),
+            (.server(status: 404, kind: "gone", detail: nil, reasons: []), .refused("Alondra on your Mac could not do it.")),
+        ]
+        for (error, failure) in cases {
+            let client = CrashReportClient(build: { _, _, _ in Self.report }, file: { _, _ in "" },
+                                           send: { _, _ in throw error }, problem: { _ in .macNotAnswering }, onThisMac: true)
+            let store = TestStore(initialState: CrashReportFeature.State(stage: .ready(Self.report))) { CrashReportFeature() } withDependencies: {
+                $0.crashReports = client
+            }
+            await store.send(.send) { $0.stage = .sending(Self.report) }
+            await store.receive(\.failed) { $0.stage = .failed(failure, report: "r-20261027-0000abcd") }
+        }
+    }
 }

@@ -31,6 +31,7 @@ swift_test(
     srcs = glob(["Tests/*.swift"]) + [
         "//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift",
         "//apple/Testing/Fixtures:DiffFixture.swift",
+        "//apple/Testing/Fixtures:RequestedFormCard.swift",
         "//apple/Testing/Fixtures:SpanishTestData.swift",
     ],
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [

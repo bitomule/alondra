@@ -68,11 +68,13 @@
           "type": "facts",
           "items": [
             {
+              "kind": "state",
               "label": "State",
               "value": "Needs you · 5 open questions",
               "tone": "warning"
             },
             {
+              "kind": "request",
               "label": "Request",
               "value": "Polish the Alondra beta"
             }
@@ -415,6 +417,7 @@
           "type": "facts",
           "items": [
             {
+              "kind": "priority",
               "label": "Priority",
               "value": "Normal"
             },

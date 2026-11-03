@@ -33,6 +33,9 @@ public struct CardDetailFeature: Sendable {
         public var composition: TriageCardFeature.Composition?
         public var preview: AttachmentPreview?
         public var awaitingAttachments = false
+        /// What the person filled in the MCP form the card carries, starting from its defaults.
+        public var formValues: [String: JSONValue] = [:]
+        public var form: RequestedForm?
 
         public init(key: ViewKey) {
             screen = ScreenFeature.State(key: key)
@@ -136,6 +139,7 @@ public struct CardDetailFeature: Sendable {
         case commentDeleted
         case commentCancelled
         case replyChanged(String)
+        case formChanged([String: JSONValue])
         case actionTapped(WireAction)
         case menuOptionPicked(WireAction, optionID: String)
         case reasonChanged(String)
@@ -186,6 +190,10 @@ public struct CardDetailFeature: Sendable {
                     return .merge(.cancel(id: CancelID.loadDeadline), .send(.delegate(.settled(why))), .run { [dismiss] _ in await dismiss() })
                 }
                 state.actions.dataEpoch = document.dataEpoch
+                if let form = state.subject?.card?.form, form != state.form {
+                    state.form = form
+                    state.formValues = form.initialValues
+                }
                 if let inline = Self.commentableText(of: document) {
                     state.content = inline
                     state.contentDigest = nil
@@ -254,6 +262,9 @@ public struct CardDetailFeature: Sendable {
             case .replyChanged(let text):
                 state.reply = text
                 return .none
+            case .formChanged(let values):
+                state.formValues = values
+                return .none
             case .actionTapped(let action):
                 let field = action == state.subject?.replyAction
                 if !field, case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
@@ -264,6 +275,7 @@ public struct CardDetailFeature: Sendable {
                 }
                 return .concatenate(
                     .send(.actions(.present(action))),
+                    state.form.map { .send(.actions(.formFilled($0, state.formValues))) } ?? .none,
                     .send(.actions(.commentsChanged(state.feedback))),
                     .send(.actions(.textChanged(state.reply))),
                     .send(.submit)
