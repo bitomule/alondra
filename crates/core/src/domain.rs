@@ -33,6 +33,8 @@ mod request_over_tests;
 #[cfg(test)]
 mod request_outcome_tests;
 #[cfg(test)]
+mod request_plan_close_tests;
+#[cfg(test)]
 mod continuation_tests;
 #[cfg(test)]
 mod cited_files_tests;

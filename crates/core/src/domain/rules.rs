@@ -1151,6 +1151,80 @@ impl DomainState {
             request.closed = true;
         }
     }
+    #[allow(clippy::too_many_arguments)]
+    fn close_request(&mut self, request_id: &RequestId, answer: Option<&String>, withdrawn: bool, title: Option<&String>, headline: Option<&str>,
+        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        let request = self
+            .requests
+            .get_mut(request_id)
+            .ok_or_else(|| DomainError::new("not_found", "Request missing"))?;
+        request.closed = true;
+        request.withdrawn = withdrawn;
+        if answer.is_some() {
+            request.answer = answer.cloned();
+        }
+        if title.is_some() {
+            request.title = title.cloned();
+        }
+        let tell = !request.maintenance && !request.withdrawn && request.origin.the_user_asked();
+        let has_tasks = self.tasks.values().any(|t| &t.request_id == request_id);
+        if tell && has_tasks {
+            self.tell_it_is_done(request_id, answer.map(String::as_str), created, effects)?;
+        } else if let Some(answer) = answer.filter(|_| tell) {
+            self.tell_the_answer(request_id, answer, headline, created, effects)?;
+        }
+        Ok(())
+    }
+    /// A request whose tasks just ended closes by itself when they built every approved plan it
+    /// holds, its Done card summing up each task's final result. Without a plan, or with a point
+    /// of one no finished task delivered, it stays for the orchestrator.
+    fn close_delivered_plans(&mut self, before: &Self, created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        let ended_before = before.open_requests_with_every_task_over();
+        for request_id in self.open_requests_with_every_task_over() {
+            if ended_before.contains(&request_id) {
+                continue;
+            }
+            if let Some(summary) = self.delivered_plans_summary(&request_id) {
+                self.close_request(&request_id, Some(&summary), false, None, None, created, effects)?;
+            }
+        }
+        Ok(())
+    }
+    /// What each task of the request delivered, when every one of them finished and together they
+    /// marked done every point of every plan approved for it.
+    fn delivered_plans_summary(&self, request: &RequestId) -> Option<String> {
+        let mut tasks: Vec<&Task> = self.tasks.values().filter(|t| &t.request_id == request).collect();
+        let carried_on: BTreeSet<&TaskId> = tasks.iter().filter_map(|t| t.continues.as_ref()).collect();
+        tasks.retain(|t| !carried_on.contains(&t.id));
+        if tasks.iter().any(|t| t.state != TaskState::Done) {
+            return None;
+        }
+        let held: Vec<(&Task, &Checklist)> = tasks.iter().filter_map(|t| self.checklists.get(&t.id).map(|c| (*t, c))).collect();
+        let mut plans: BTreeSet<&InteractionId> = held.iter().map(|(_, c)| &c.plan).collect();
+        plans.extend(self.request_plans.get(request).map(|approved| &approved.presentation_id));
+        if plans.is_empty() {
+            return None;
+        }
+        for plan in plans {
+            let mut holders = held.iter().filter(|(_, c)| &c.plan == plan).peekable();
+            holders.peek()?;
+            if !holders.all(|(t, c)| self.marked_every_point(t, c)) {
+                return None;
+            }
+        }
+        tasks.sort_by_key(|t| t.revision);
+        let lines: Vec<String> = tasks.iter().filter_map(|t| {
+            let result = self.interactions.get(t.final_presentation.as_ref()?)?;
+            let said = result.card.content.as_ref().and_then(|c| c.summary.as_deref()).map(str::trim).filter(|s| !s.is_empty())
+                .map_or_else(|| body_title(&result.body).trim_start_matches('#').trim().to_owned(), str::to_owned);
+            Some(if said.is_empty() { t.title.clone() } else { format!("{}: {said}", t.title) })
+        }).collect();
+        Some(lines.join("\n")).filter(|summary| !summary.is_empty())
+    }
+    fn marked_every_point(&self, task: &Task, checklist: &Checklist) -> bool {
+        let Some(marks) = task.final_presentation.as_ref().and_then(|p| self.checklist_marks.get(p)) else { return false };
+        checklist.items.iter().all(|item| marks.iter().any(|mark| mark.item == item.id))
+    }
     /// Open Requests that have Tasks and none of them still open: only the orchestrator moves them
     /// on, by closing them or creating their next Tasks.
     fn open_requests_with_every_task_over(&self) -> BTreeSet<RequestId> {
@@ -2495,6 +2569,7 @@ impl DomainState {
         next.reconcile_snoozed_cards(self, &mut effects);
         next.forget_what_ended_tasks_allowed();
         next.close_finished_messages();
+        next.close_delivered_plans(self, &mut created, &mut effects)?;
         let ended_before = self.open_requests_with_every_task_over();
         for request_id in next.open_requests_with_every_task_over().into_iter().filter(|id| !ended_before.contains(id)) {
             let mut tasks = next.tasks.values().filter(|t| t.request_id == request_id);
@@ -2993,25 +3068,7 @@ impl DomainState {
                 for text in answer.iter().chain(title).chain(headline) {
                     nonempty(text)?;
                 }
-                let request = self
-                    .requests
-                    .get_mut(request_id)
-                    .ok_or_else(|| DomainError::new("not_found", "Request missing"))?;
-                request.closed = true;
-                request.withdrawn = *withdrawn;
-                if answer.is_some() {
-                    request.answer = answer.clone();
-                }
-                if title.is_some() {
-                    request.title = title.clone();
-                }
-                let tell = !request.maintenance && !request.withdrawn && request.origin.the_user_asked();
-                let has_tasks = self.tasks.values().any(|t| &t.request_id == request_id);
-                if tell && has_tasks {
-                    self.tell_it_is_done(request_id, answer.as_deref(), created, effects)?;
-                } else if let Some(answer) = answer.as_ref().filter(|_| tell) {
-                    self.tell_the_answer(request_id, answer, headline.as_deref(), created, effects)?;
-                }
+                self.close_request(request_id, answer.as_ref(), *withdrawn, title.as_ref(), headline.as_deref(), created, effects)?;
             }
             Command::RegisterAgent { agent_id, name, at } => {
                 system(actor)?;
