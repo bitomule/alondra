@@ -51,3 +51,15 @@ sh_test(
     size = "small",
     tags = ["local"],
 )
+
+# Starts the real SourceKit-LSP on the root files it reads, with a fake build server.
+sh_test(
+    name = "sourcekit_lsp_workspace_test",
+    srcs = ["//tools:tests/test_sourcekit_lsp_workspace.py"],
+    data = ["Package.swift", "Package.resolved"] + glob(
+        [".bsp/skbsp.json", ".sourcekit-lsp/config.json"],
+        allow_empty = True,
+    ),
+    size = "small",
+    tags = ["no-sandbox"],
+)

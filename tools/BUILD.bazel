@@ -14,7 +14,10 @@ exports_files(
 )
 
 exports_files(
-    ["plugin-mod-test.sh"],
+    [
+        "plugin-mod-test.sh",
+        "tests/test_sourcekit_lsp_workspace.py",
+    ],
     visibility = ["//:__pkg__"],
 )
 

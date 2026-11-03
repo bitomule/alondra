@@ -22,6 +22,10 @@ checks:
       - "apple/**"
       - "plugin/**"
       - "tools/plugin-mod-test.sh"
+      - "tools/tests/test_sourcekit_lsp_workspace.py"
+      - "Package.swift"
+      - ".bsp/skbsp.json"
+      - ".sourcekit-lsp/**"
       - "deploy/brew/**"
       - "deploy/apple/**"
       - "deploy/pi/**"
@@ -58,6 +62,7 @@ checks:
         - //apple:push_keychain_group_test
         - //apple:update_keeps_session_test
         - //:plugin_mod_test
+        - //:sourcekit_lsp_workspace_test
         - //deploy/brew:plugin_payload_test
         - //deploy/brew:upgrade_rehearsal_test
         - //deploy/apple:prepare_test

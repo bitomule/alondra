@@ -7,6 +7,7 @@ bazel_dep(name = "rules_apple", version = "5.0.0-rc3", repo_name = "build_bazel_
 bazel_dep(name = "rules_swift", version = "4.0.0-rc3", repo_name = "build_bazel_rules_swift")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift_package_manager", version = "1.23.0")
+bazel_dep(name = "sourcekit_bazel_bsp", version = "0.8.3", dev_dependency = True)
 
 # simpool routes `ios_test_runner` through a shared, flock-guarded simulator pool, so concurrent
 # test actions never share one fixed-name simulator. An archive, not git_override: under Bazel

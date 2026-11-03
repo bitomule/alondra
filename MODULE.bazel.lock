@@ -266,6 +266,8 @@
     "https://bcr.bazel.build/modules/rules_swift/4.0.0-rc3/source.json": "1df75b8e34e3fe4db2f4f602c31d718630ddc650decd9de8e841aa719c3792ce",
     "https://bcr.bazel.build/modules/rules_swift_package_manager/1.23.0/MODULE.bazel": "128a8fde4c1135e22b3cfe1162fc02ae6c1f8e05de1cf26a1d615393015cec1c",
     "https://bcr.bazel.build/modules/rules_swift_package_manager/1.23.0/source.json": "d76705259067603ddf77c0da5b158a13d869d30d45a106f5e4687ceeae54aac4",
+    "https://bcr.bazel.build/modules/sourcekit_bazel_bsp/0.8.3/MODULE.bazel": "a28cd6eca59c264fccd6878471a7562cf2ce1c69d4034ef3288d651555d8dafa",
+    "https://bcr.bazel.build/modules/sourcekit_bazel_bsp/0.8.3/source.json": "f39da9ab26a1cdf2fa6dce428b7775d7e86baeb279f0d9f77e03057c75ee4c8c",
     "https://bcr.bazel.build/modules/stardoc/0.5.1/MODULE.bazel": "1a05d92974d0c122f5ccf09291442580317cdd859f07a8655f1db9a60374f9f8",
     "https://bcr.bazel.build/modules/stardoc/0.5.3/MODULE.bazel": "c7f6948dae6999bf0db32c1858ae345f112cacf98f174c7a8bb707e41b974f1c",
     "https://bcr.bazel.build/modules/stardoc/0.5.4/MODULE.bazel": "6569966df04610b8520957cb8e97cf2e9faac2c0309657c537ab51c16c18a2a4",

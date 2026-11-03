@@ -1,0 +1,19 @@
+{
+  "name": "sourcekit-bazel-bsp",
+  "version": "0.8.3",
+  "bspVersion": "2.2.0",
+  "languages": ["c", "cpp", "objective-c", "objective-cpp", "swift"],
+  "argv": [
+    "tools/sourcekit-bsp.sh",
+    "serve",
+    "--target",
+    "//apple:AlondraMac",
+    "--target",
+    "//apple:AlondraiOS",
+    "--bazel-wrapper",
+    "bazelisk",
+    "--apple-support-repo-name",
+    "apple_support",
+    "--experimental-no-extra-output-base"
+  ]
+}
