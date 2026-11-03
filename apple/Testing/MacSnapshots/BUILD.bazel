@@ -39,6 +39,7 @@ swift_test(
         "//apple/Design:Resources/AlondraDesign.xcstrings",
         "//fixtures/diffs",
         "//fixtures/views:cards",
+        "//fixtures/views:metrics",
         "//fixtures/views:newer_daemon",
         "//fixtures/views:pr_images",
         ":localizations",

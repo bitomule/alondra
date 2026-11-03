@@ -33,8 +33,7 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# The Metrics screen, which the apps do not open yet: its links stay out of the cards' contract
-# until they do.
+# The Metrics screen, which Settings opens on the iPhone and the Mac.
 filegroup(
     name = "metrics",
     srcs = glob(["metrics/*.json"], allow_empty = True),

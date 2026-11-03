@@ -83,6 +83,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         state.machineSettings.settings = MachineSetting.all(in: machine)
         state.allowedRules.rules = AllowedRule.all(in: machine)
         state.mcpServers.document = mcpServers
+        state.metrics.offered = true
         state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
         state.devices = [
             TrustedDevice(id: "phone-1", name: "iPhone", origin: .direct, lastUsed: Date(timeIntervalSinceNow: -300)),

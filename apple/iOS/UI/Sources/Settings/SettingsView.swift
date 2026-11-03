@@ -18,6 +18,7 @@ public struct SettingsView: View {
             AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             ServerSettingsSection(store: store.scope(state: \.accounts, action: \.accounts))
             McpServersRow(store: store.scope(state: \.mcpServers, action: \.mcpServers))
+            MetricsRow(store: store.scope(state: \.metrics, action: \.metrics))
             if store.supportsNotifications { notifications } else if store.alertsNeedAccount { alertsNeedAccount }
             ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
             CrashReportRow(store: store.scope(state: \.crashReport, action: \.crashReport))
@@ -66,6 +67,7 @@ public struct SettingsView: View {
         .task { await store.send(.allowedRules(.task)).finish() }
         .task { await store.send(.accounts(.task)).finish() }
         .task { await store.send(.mcpServers(.task)).finish() }
+        .task { await store.send(.metrics(.task)).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
     }

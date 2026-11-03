@@ -156,6 +156,31 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    func test_settings_metrics() throws {
+        for spanish in [false, true] {
+            let document = try document(spanish ? "metrics-ios-es" : "metrics-ios", folder: "metrics")
+            var state = MetricsFeature.State(key: ViewKey(rawValue: document.key))
+            state.document = document
+            state.offered = true
+            let store = Store(initialState: state) { EmptyReducer<MetricsFeature.State, MetricsFeature.Action>() }
+            assertWindow(size: CGSize(width: 640, height: 2000), spanish: spanish, variants: Appearance.allCases) {
+                NavigationStack { MetricsScreen(store: store) }
+            }
+        }
+    }
+
+    func test_settings_metricsChangingPeriod() throws {
+        let document = try document("metrics-ios", folder: "metrics")
+        var state = MetricsFeature.State(key: ViewKey(rawValue: "metrics?period=30d&compare=previous"))
+        state.document = document
+        state.offered = true
+        state.chosen = "period:30d"
+        let store = Store(initialState: state) { EmptyReducer<MetricsFeature.State, MetricsFeature.Action>() }
+        assertWindow(size: CGSize(width: 640, height: 900), variants: [.light]) {
+            NavigationStack { MetricsScreen(store: store) }
+        }
+    }
+
     func test_settings_claudeAccounts() throws {
         for spanish in [false, true] {
             var state = ServerSettingsFeature.State(key: .accounts, client: .mac)

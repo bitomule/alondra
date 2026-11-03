@@ -14,7 +14,7 @@ enum SampleViews {
         let environment = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
             .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
-        for directory in ["apple/Testing/Samples", "fixtures/views/cards"] {
+        for directory in ["apple/Testing/Samples", "fixtures/views/cards", "fixtures/views/metrics"] {
             let url = root.appendingPathComponent(directory).appendingPathComponent("\(name).json")
             if let data = try? Data(contentsOf: url) { return try ContractCodec.decode(ViewDocument.self, from: data) }
         }

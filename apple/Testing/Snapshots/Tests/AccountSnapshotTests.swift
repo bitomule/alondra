@@ -215,13 +215,13 @@ final class AccountSnapshotTests: XCTestCase {
 
     func test_settings() throws {
         let mcpServers = try SampleViews.document("mcp-servers-ios")
-        let store = settings { $0.mcpServers.document = mcpServers }
+        let store = settings { $0.mcpServers.document = mcpServers; $0.metrics.offered = true }
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
     func test_settings_spanish() throws {
         let mcpServers = try SampleViews.document("mcp-servers-ios-es")
-        let store = settings { $0.mcpServers.document = mcpServers }
+        let store = settings { $0.mcpServers.document = mcpServers; $0.metrics.offered = true }
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 

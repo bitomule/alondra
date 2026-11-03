@@ -98,6 +98,7 @@ ios_unit_test(
         "//fixtures/diffs",
         "//fixtures/views:all",
         "//fixtures/views:cards",
+        "//fixtures/views:metrics",
         "//fixtures/views:newer_daemon",
     ],
     env = {

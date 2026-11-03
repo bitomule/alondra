@@ -31,6 +31,7 @@ public struct ViewKey: RawRepresentable, Hashable, Codable, Sendable {
     public static let machine = ViewKey(rawValue: "machine")
     public static let mcpServers = ViewKey(rawValue: "mcp_servers")
     public static let accounts = ViewKey(rawValue: "accounts")
+    public static let metrics = ViewKey(rawValue: "metrics")
 
     private static func formEncode(_ value: String) -> String {
         var result = ""

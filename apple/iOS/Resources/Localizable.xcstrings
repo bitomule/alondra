@@ -69,6 +69,7 @@
     "Turn On Alerts": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Activar los avisos"}}}},
     "Not Now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no"}}}},
     "MCP servers": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidores MCP"}}}},
+    "Metrics": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Métricas"}}}},
     "Name of the new account": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nombre de la cuenta nueva"}}}},
     "Work": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo"}}}},
     "Add": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadir"}}}},
