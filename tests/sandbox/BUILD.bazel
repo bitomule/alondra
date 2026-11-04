@@ -1,4 +1,4 @@
-# Opt-in like the tests/system lab: real daemons, relay and loopback ports, outside `make test`.
+# Opt-in like the system suites: real daemons, relay and loopback ports, outside `make test`.
 # Every sandbox Mac runs its tasks and orchestrator batches through the Agent SDK host, whose
 # native Claude is the sandbox's scripted fake: the pinned Node and the host bundle are data.
 sh_test(

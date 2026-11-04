@@ -217,7 +217,7 @@ impl Fixture {
 }
 
 #[test]
-#[ignore = "Requires explicit native-core smoke runner, disposable Pi realm and temporary Keychain"]
+#[ignore = "Requires explicit native-core smoke runner, disposable hosted realm and temporary Keychain"]
 fn offline_logout_then_real_revoke() {
     // No unwrap/Debug of parsed inputs or HTTP errors: the harness must never print tokens.
     let result = (|| -> Result<()> {

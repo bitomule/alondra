@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Finds control decisions that read prose in production Rust, TypeScript and Swift.
 
-The rule and the inventory of known cases are in docs/architecture/typed-control-decisions.md.
+The rule: a branch that changes behaviour decides on a type, never on prose. The inventory of
+known cases is the allowlist next to this file.
 Matching is syntactic, line by line, with comments and test code left out. Every match is either
 in the allowlist (with its category and reason) or a failure; an allowlist entry that matches
 nothing is a failure too, so the list only shrinks.

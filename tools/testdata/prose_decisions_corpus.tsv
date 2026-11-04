@@ -1,4 +1,4 @@
-# Every finding of docs/architecture/typed-control-decisions.md §4 and §5, as it reads in the code
+# Every finding of the prose-decision audit, as it reads in the code
 # the audit found. Each line must stay detected: finding<TAB>language<TAB>snippet.
 D-01	rust	    let reason = reason.to_ascii_lowercase();
 D-01	rust	    has(reason, &["already merged", "was merged"])

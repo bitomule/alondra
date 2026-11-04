@@ -23,10 +23,10 @@ always builds with `-c dbg`, never from a TestFlight artifact.
 **Declared doubles:** HTTP peers, OIDC browser (always forbidden), memory credential
 storage, synthetic keys/tokens and fixed service clock. The peers implement
 `ServiceHTTPTransport` / `AuthHTTPTransport`; there is no socket, URLSession call,
-Rust daemon, PostgreSQL, Keycloak, Pi or cloud request. The synthetic Mac opens
+Rust daemon, PostgreSQL, Keycloak, hosted server or cloud request. The synthetic Mac opens
 and signs envelopes with CryptoKit. This is native **client integration**, not a
 real-service E2E, authentication interoperability, UI, APNs or production capacity
-gate. The shipping backend integration suite remains under `tests/system`.
+gate. Backend integration against real services is a separate release gate.
 
 ## Commands
 

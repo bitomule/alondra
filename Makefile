@@ -213,8 +213,8 @@ e2e-iroh:
 	tools/e2e-iroh.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
-# The real alondra over iroh against a one-Mac sandbox and a real iroh-relay in Docker (the Pi's
-# image): directly, then through the iroh relay only, then revoked (tools/e2e-iroh-cli.sh).
+# The real alondra over iroh against a one-Mac sandbox and a real iroh-relay in Docker (the hosted
+# relay's image): directly, then through the iroh relay only, then revoked (tools/e2e-iroh-cli.sh).
 e2e-iroh-cli:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
 	tools/e2e-iroh-cli.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
@@ -342,7 +342,7 @@ e2e-ios-cards:
 	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); $(call E2E_CARDS,ios)
 
 # «Allow always» on the permission cards of the sandbox's scripted nodes, through the Agent SDK host,
-# against its own sandbox: the cases of docs/permitir-siempre-design.md §9.4 (tools/e2e_allow_always.py).
+# against its own sandbox: the allow-always cases (tools/e2e_allow_always.py).
 e2e-allow-always:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
 	$(SDK_HOST_ENV) python3 tools/e2e_allow_always.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \

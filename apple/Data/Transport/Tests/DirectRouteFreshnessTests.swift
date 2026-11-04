@@ -359,7 +359,7 @@ private let freshnessAnswer = APIResponse.completed(status: 200, body: freshness
             "response_body_bytes": stats.responseBytes, "decoded_body_sha256": bodies.sorted(),
             "selected_route": "localNetwork", "process_cpu_ms": after.cpu - before.cpu,
             "process_lifetime_maxrss_bytes_before": before.rss, "process_lifetime_maxrss_bytes_after": after.rss,
-            "limits": "Controlled cache age t0...t60 and real CryptoKit envelopes against owned in-memory HTTP peers. No actual network, daemon, relay, Keychain, installed app or Pi. CPU covers only 61 requests; lifetime RSS includes test runtime/fixtures. Held-gate tests prove dispatch ordering; artificial time is not RTT or end-user latency. Ciphertext/read IDs vary; plaintext body/effects are the oracle.",
+            "limits": "Controlled cache age t0...t60 and real CryptoKit envelopes against owned in-memory HTTP peers. No actual network, daemon, relay, Keychain, installed app or hosted server. CPU covers only 61 requests; lifetime RSS includes test runtime/fixtures. Held-gate tests prove dispatch ordering; artificial time is not RTT or end-user latency. Ciphertext/read IDs vary; plaintext body/effects are the oracle.",
         ]
         let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
         print("DIRECT_ROUTE_MEASUREMENT " + String(decoding: data, as: UTF8.self))

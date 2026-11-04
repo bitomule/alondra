@@ -1,5 +1,5 @@
 // UI contract tests use explicit API doubles. Real Rust/Keycloak/PostgreSQL
-// acceptance belongs to tests/system and is a separate release gate.
+// acceptance is a separate release gate.
 import { test, expect, type Page } from '@playwright/test';
 const owner = { id: 'owner', display_name: 'Alice de prueba', status: 'active', is_admin: true };
 const token = 'A'.repeat(43);

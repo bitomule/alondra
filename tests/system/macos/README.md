@@ -1,6 +1,6 @@
 # Disposable macOS gates
 
-These are opt-in tests on this Mac. They do not use hosted CI or the Pi. The default
+These are opt-in tests on this Mac. They do not use hosted CI or a hosted server. The default
 profile installs the public Brew package and exercises the local daemon and TUI.
 MAV is needed only for the optional Apple app profile.
 
@@ -125,7 +125,7 @@ Every invocation creates a uniquely named `alondra-gate-*` clone, with two CPUs 
 HOME, Keychain or directory is mounted. The Apple profile disables the guest Ethernet interface before launch; the CLI
 profile does so after downloading and testing the public Homebrew package. This
 uses the image’s synthetic guest administrator, never host sudo. It runs no
-account login or cloud connector. Never point it at the Pi to fill an acceptance gap.
+account login or cloud connector. Never point it at a hosted server to fill an acceptance gap.
 
 The base needs its driver permissions once when prepared. macOS does not provide
 an ordinary unattended API to grant those permissions. Clones inherit them; the

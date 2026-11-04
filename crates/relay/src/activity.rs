@@ -245,7 +245,7 @@ impl Phone {
         if self.urgent_pending && self.frequent_updates && urgent_allowed { 10 } else { 5 }
     }
 
-    /// The pushes the phone's state calls for now (the rules in `docs/architecture/live-activity-relay.md`).
+    /// The pushes the phone's state calls for now.
     pub fn plan(&self, now_ms: u64) -> Vec<Send> {
         let active = self.active();
         match &self.live {

@@ -4313,7 +4313,7 @@ agreement_key = "{}"
         assert!(!id.contains("push"), "APNs never reads the card id");
     }
 
-    /// The relay on the Pi is deployed by hand and an older one refuses unknown fields: alerts
+    /// A self-hosted relay is deployed by hand and an older one refuses unknown fields: alerts
     /// still arrive without a collapse id, a background push fails without reaching the phone.
     #[tokio::test]
     async fn pushes_carry_collapse_id_or_background_type_and_alerts_survive_an_older_relay() {

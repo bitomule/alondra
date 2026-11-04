@@ -1,6 +1,6 @@
 #!/bin/sh
 # Usage: tools/e2e-iroh-cli.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
-# A one-Mac sandbox whose relay announces a real iroh-relay (the image the Pi runs, in dev mode on
+# A one-Mac sandbox whose relay announces a real iroh-relay (the image the hosted relay runs, in dev mode on
 # loopback, asking the sandbox relay who may connect). The real alondra pairs directly, reads over
 # iroh, then with only the iroh relay, and is shut out of it once revoked. Everything it started is
 # removed when it ends, also on failure. IROH_RELAY_BIN=<iroh-relay 1.3.0 built with --features

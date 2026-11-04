@@ -34,10 +34,10 @@ public struct OIDCConfiguration: Sendable {
         clientID: "alondra-ios",
         redirectURI: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak")!,
         scopes: ["openid", "profile", "offline_access"],
-        // Keycloak 26.7.4, revokeRefreshToken=false. deploy/pi/smoke-refresh-revocation.py
+        // Keycloak 26.7.4, revokeRefreshToken=false. A smoke test against a temporary realm
         // checks that revoking a predecessor rejects every token it led to (passed 2026-09-26)
         // and that a refreshed predecessor still refreshes (added 2026-10-06, not yet run on
-        // the Pi; Keycloak documents it under "Revoke Refresh Token"). Rerun on issuer drift.
+        // the hosted server; Keycloak documents it under "Revoke Refresh Token"). Rerun on issuer drift.
         revocationScope: .offlineSession,
         refreshReplay: .predecessorStaysValid
     )

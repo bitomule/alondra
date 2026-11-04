@@ -1,7 +1,7 @@
 # Lines the prose-decision guard (//tools:prose_decisions_test) matches and allows.
 # path<TAB>line with spaces collapsed<TAB>category<TAB>reason
 # Categories: display, log, user-search, format, own-grammar, security-parse, or finding:<id> for a
-# case of docs/architecture/typed-control-decisions.md still to fix. The list only shrinks: the
+# case of the prose-decision audit still to fix. The list only shrinks: the
 # phase that fixes a finding removes its lines, and a line that no longer matches fails the test.
 apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.outcomeUnknown } ?? (detail == Self.outcomeUnknown)) ? .retry : .final	own-grammar	daemons from before kind send only the code outcome_unknown in error
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
