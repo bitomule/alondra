@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
+import { Commands } from '../public/Commands';
 import { api, type Session } from '../lib/api';
 
 export function meta() {
@@ -30,7 +31,7 @@ export default function Install() {
 
     <section aria-labelledby="mac-title">
       <h2 id="mac-title">On your Mac</h2>
-      <pre className="command"><code>brew install bitomule/tap/alondra{'\n'}alondra</code></pre>
+      <Commands commands={[{ run: 'brew install bitomule/tap/alondra' }, { run: 'alondra' }]}/>
       <p>The first time, <code>alondra</code> asks for the folder with your projects, starts the background service and registers its Claude Code plugin, which loads only in the sessions Alondra starts. Run it again whenever you like: it only changes what is missing. Alondra brings Node and the Agent SDK it needs, and Homebrew installs tuicr, which the terminal app uses to show diffs.</p>
     </section>
 
@@ -43,7 +44,7 @@ export default function Install() {
 
     <section aria-labelledby="fail-title">
       <h2 id="fail-title">If something fails</h2>
-      <pre className="command"><code>alondra doctor{'\n'}alondra doctor --fix</code></pre>
+      <Commands commands={[{ run: 'alondra doctor' }, { run: 'alondra doctor --fix' }]}/>
       <p><code>alondra doctor</code> tells you what works and what is missing, with the command that fixes each thing. With <code>--fix</code> it repairs what it can. <code>alondra update</code> installs the newest release. The daemon writes its log to <code>~/.alondra/alondrad.log</code>.</p>
     </section>
 

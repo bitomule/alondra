@@ -1,4 +1,5 @@
 import { Link } from 'react-router';
+import { Commands } from '../public/Commands';
 
 export function meta() {
   return [
@@ -29,7 +30,7 @@ export default function Docs() {
     </ul>
     <section aria-labelledby="cli-title">
       <h2 id="cli-title">The command line</h2>
-      <pre className="command"><code>alondra            # set up, or open the terminal app{'\n'}alondra doctor     # check what works{'\n'}alondra doctor --fix{'\n'}alondra update     # install the newest release{'\n'}alondra metrics    # how tasks went, by project or model</code></pre>
+      <Commands commands={[{ run: 'alondra', note: 'set up, or open the terminal app' }, { run: 'alondra doctor', note: 'check what works' }, { run: 'alondra doctor --fix', note: 'repair what it can' }, { run: 'alondra update', note: 'install the newest release' }, { run: 'alondra metrics', note: 'how tasks went, by project or model' }]}/>
       <p>The overview on <Link className="text-link" to="/how-it-works">how Alondra works</Link> explains the pieces these commands talk to.</p>
     </section>
   </article>;

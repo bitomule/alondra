@@ -63,7 +63,7 @@ test('the skip link and the pages are reachable with the keyboard', async ({ pag
  await expect(page.getByRole('link', { name: 'Skip to content' })).toBeFocused();
  await page.getByRole('contentinfo').getByRole('link', { name: 'Install', exact: true }).click();
  await expect(page).toHaveURL(/\/install$/);
- await expect(page.locator('pre')).toHaveText(['brew install bitomule/tap/alondra\nalondra', 'alondra doctor\nalondra doctor --fix']);
+ await expect(page.locator('.command-line')).toHaveText(['brew install bitomule/tap/alondra', 'alondra', 'alondra doctor', 'alondra doctor --fix']);
  await page.getByRole('contentinfo').getByRole('link', { name: 'Security and privacy', exact: true }).click();
  await expect(page.getByRole('heading', { name: 'What Alondra Cloud sees' })).toBeVisible();
 });
@@ -140,6 +140,21 @@ test('under reduced motion there is nothing to pause', async ({ page }) => {
  await page.goto('/');
  await expect(page.getByRole('button', { name: /^(Pause|Play) the/ })).toHaveCount(0);
 });
+
+for (const width of [320, 390]) {
+ test(`at ${width}px no command, code block or terminal replay is cut or scrolls sideways`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
+  for (const path of PUBLIC) {
+   await page.goto(path);
+   const cut = await page.locator('.copy-command code, pre, .demo-screen, .demo-line > span').evaluateAll(nodes => nodes.filter(node => node.scrollWidth > node.clientWidth + 1).map(node => `${node.className || node.tagName}: ${node.textContent?.slice(0, 40)}`));
+   expect(cut, path).toEqual([]);
+  }
+  await page.goto('/');
+  const box = await page.locator('.hero .copy-command').boundingBox();
+  const button = await page.locator('.hero .copy-command button').boundingBox();
+  expect(button!.x + button!.width).toBeLessThanOrEqual(box!.x + box!.width + 1);
+ });
+}
 
 test('on a phone the waitlist field is one line tall', async ({ page }) => {
  await page.setViewportSize({ width: 390, height: 844 });

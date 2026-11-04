@@ -88,6 +88,9 @@ p .text-link, li .text-link { font-family: inherit; font-size: inherit; font-wei
 .steps p { color: var(--color-ink-2); }
 .command { margin: 0; padding: var(--space-md) var(--space-lg); background: var(--color-term-bg); color: var(--color-term-fg); border-radius: var(--radius-sm); font-size: var(--text-sm); line-height: 1.7; overflow-x: auto; max-width: 36rem; }
 .command code { font-family: inherit; }
+.command-line { display: block; padding-left: 2ch; text-indent: -2ch; }
+.command-line::before { content: '$ ' / ''; color: var(--color-term-dim); }
+.command-note { color: var(--color-term-dim); }
 
 /* Features with a capture */
 .feature { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 5fr); gap: var(--space-2xl); align-items: center; }
@@ -333,7 +336,11 @@ p .text-link, li .text-link { font-family: inherit; font-size: inherit; font-wei
 }
 @media (max-width: 40rem) {
   .copy-command { font-size: var(--text-xs); }
-  .demo-screen { padding: var(--space-md); }
-  .demo-row { grid-template-columns: 19ch minmax(0, 1fr); gap: 0 1ch; }
-  .demo-note { grid-column: 1 / -1; padding-left: 2ch; white-space: normal; }
+  .copy-command code { white-space: normal; overflow-wrap: anywhere; overflow-x: visible; align-self: center; }
+  .command { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: visible; padding: var(--space-sm) var(--space-md); }
+  .command-note { display: block; }
+  .demo-screen { padding: var(--space-md); overflow-x: visible; }
+  .demo-line { white-space: normal; }
+  .demo-row { grid-template-columns: minmax(0, 1fr); margin-bottom: var(--space-3xs); }
+  .demo-states, .demo-note { padding-left: 2ch; }
 }
