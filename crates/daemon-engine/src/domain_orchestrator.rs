@@ -208,6 +208,8 @@ impl Executor {
             if runtime.last_error.is_some() || stopped.is_err() || !confirmed {
                 let why = stopped.err().map(|error| format!("The previous process could not be fenced: {error:#}"))
                     .unwrap_or_else(|| "The daemon restarted with an unresolved operation; reconcile its durable result before continuing".into());
+                log!("orchestrator: batch {} was running when the daemon restarted and is not confirmed ({why}); admitted {:?}; unconfirmed {:?}",
+                    run.id, admitted, self.domain.unconfirmed_operations(&run.id));
                 let problem = BatchProblem { stop:if runtime.failure==Some(Failure::Denied) {BatchStop::Denied} else {BatchStop::Interrupted},calls:admitted,subjects:vec![],error:why.clone() };
                 if runtime.last_error.is_none() {
                     self.failed(runtime,&run,why,Some(problem))?;
@@ -565,6 +567,11 @@ impl Executor {
             && let Some(reset) = output.stream.limit()
         {
             crate::orchestrator_provider::record_limit(&self.domain, &selection, reset, now_millis());
+        }
+        if !matches!(end, BatchEnd::Handled) {
+            log!("orchestrator: batch {} did not end handled ({:?}); result received: {}, success: {}, denied: {}, storage failure: {}, native request rejected: {}, restarted: {}; admitted {:?}; unconfirmed {:?}",
+                run.id, end, output.stream.result, output.stream.success, output.stream.denied, output.stream.storage_failure,
+                output.stream.native_request_rejected, restarted, changes, self.domain.unconfirmed_operations(&run.id));
         }
         let problem = |stop: BatchStop, calls: Vec<String>| BatchProblem { stop, calls, subjects: self.subjects(&claimed), error: String::new() };
         match end {

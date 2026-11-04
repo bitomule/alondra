@@ -383,3 +383,62 @@ async fn a_claude_denial_cannot_be_replayed_after_losing_both_final_writes_and_r
     );
     assert!(restarted.pending().unwrap().is_empty());
 }
+
+async fn finish_batch_after_tool_call(
+    f: &Fixture,
+    kind: &'static str,
+    answer: Result<serde_json::Value, DomainError>,
+) {
+    f.mark_once("fixture:quiet-hold");
+    let during = async {
+        f.held().await;
+        let bearer = f.starts().into_iter().next().unwrap();
+        let outcome = crate::domain_runtime::batch_operations::execute(
+            Arc::clone(&f.executor.domain),
+            &bearer,
+            Some("abcd"),
+            kind,
+            serde_json::json!({"task": "task"}),
+            async move { answer },
+        )
+        .await;
+        f.release();
+        outcome
+    };
+    let ((), outcome) = tokio::join!(f.tick(), during);
+    drop(outcome);
+}
+
+#[tokio::test]
+async fn a_tool_call_the_domain_refused_does_not_stop_a_batch_that_finishes() {
+    let f = fixture();
+    request(&f, "refused");
+    let refusal = DomainError::new(
+        "conflict",
+        "the task or its launch plan changed; read it again before updating",
+    );
+    finish_batch_after_tool_call(&f, "set_launch_plan", Err(refusal)).await;
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(
+        runtime.active_run.is_none() && runtime.failure.is_none() && runtime.last_error.is_none(),
+        "{runtime:?}"
+    );
+    assert!(
+        f.cards(PROBLEM_PREFIX).is_empty(),
+        "a refusal changed nothing, so there is nothing for the user to decide"
+    );
+    assert_eq!(f.attempts(), ["handed"]);
+}
+
+#[tokio::test]
+async fn a_tool_call_whose_outcome_was_lost_still_stops_the_batch() {
+    let f = fixture();
+    request(&f, "lost");
+    let lost = DomainError::new(
+        "operation_uncertain",
+        "The operation executor stopped; reconcile its effects before continuing",
+    );
+    finish_batch_after_tool_call(&f, "send", Err(lost)).await;
+    assert_eq!(f.cards(PROBLEM_PREFIX).len(), 1);
+    assert_eq!(f.attempts(), ["uncertain"]);
+}

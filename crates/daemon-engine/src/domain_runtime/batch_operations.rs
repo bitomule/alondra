@@ -83,10 +83,19 @@ impl DomainRuntime {
         }
     }
 
+    /// The operations of a run whose result nobody knows, as `kind:state(code)`, for the log.
+    pub(crate) fn unconfirmed_operations(&self, run: &str) -> Vec<String> {
+        let operations = self.store.lock_or_exit("the domain store").tool_operations(run).unwrap_or_default();
+        operations.iter().filter(|row| crate::domain_store::batch_effects::is_unconfirmed(row)).map(|row| {
+            let code = row.4.as_deref().and_then(|error| serde_json::from_str::<DomainError>(error).ok()).map_or(String::new(), |error| format!("({})", error.code));
+            format!("{}:{}{code}",row.1,row.2)
+        }).collect()
+    }
+
     pub(crate) fn confirmed_batch_effects(&self, run: &str, admitted: &[String]) -> std::result::Result<bool,StoreError> {
         let store = self.store.lock_or_exit("the domain store");
         let operations = store.tool_operations(run)?;
-        if operations.iter().any(|row| row.2 != "succeeded") { return Ok(false); }
+        if operations.iter().any(crate::domain_store::batch_effects::is_unconfirmed) { return Ok(false); }
         let mut confirmed = std::collections::BTreeMap::<String,usize>::new();
         for effect in store.batch_effects(run)? { if effect.changed { *confirmed.entry(effect.kind).or_default() += 1; } }
         for (_,kind,_,_,_) in operations { *confirmed.entry(kind).or_default() += 1; }
@@ -199,5 +208,25 @@ mod tests {
         assert!(!domain.confirmed_batch_effects("run",&["launch".into()]).unwrap());
         let changed = execute(Arc::clone(&domain),&token,Some("ab12"),"launch",json!({"task":"different"}),async { panic!("a reused identity cannot change its command") }).await;
         assert!(changed.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_settled_and_a_lost_outcome_is_named_in_the_log() {
+        let home = Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let domain = Arc::new(DomainRuntime::open_at(&home,&home.join("domain.db")).unwrap());
+        let token = domain.bind_orchestrator("run").unwrap().expose_for_child_environment().to_owned();
+        let refused = execute(Arc::clone(&domain),&token,Some("ab12"),"set_launch_plan",json!({"task":"task"}),async { Err(DomainError::new("conflict","the task or its launch plan changed")) }).await;
+        assert_eq!(refused.unwrap_err().code,"conflict");
+        assert!(domain.confirmed_batch_effects("run",&["set_launch_plan".into()]).unwrap(), "a refusal changed nothing");
+        assert!(domain.unconfirmed_operations("run").is_empty());
+        let lost = execute(Arc::clone(&domain),&token,Some("cd34"),"send",json!({"node":"node"}),async { Err(DomainError::new("operation_uncertain","its executor stopped")) }).await;
+        assert_eq!(lost.unwrap_err().code,"operation_uncertain");
+        assert!(!domain.confirmed_batch_effects("run",&["set_launch_plan".into(),"send".into()]).unwrap());
+        assert_eq!(domain.unconfirmed_operations("run"),["send:uncertain(operation_uncertain)"]);
+        let outcomes = domain.store.lock().unwrap().batch_outcomes("run",&domain.state().unwrap().data_epoch,"",32).unwrap();
+        let mut statuses: Vec<_> = outcomes["entries"].as_array().unwrap().iter().map(|entry| (entry["kind"].as_str().unwrap().to_owned(),entry["status"].as_str().unwrap().to_owned())).collect();
+        statuses.sort();
+        assert_eq!(statuses,[("send".to_owned(),"uncertain".to_owned()),("set_launch_plan".to_owned(),"refused".to_owned())]);
     }
 }

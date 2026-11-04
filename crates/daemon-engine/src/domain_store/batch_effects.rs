@@ -9,6 +9,32 @@ CREATE TABLE IF NOT EXISTS orchestrator_batch_reports(run TEXT NOT NULL REFERENC
 CREATE TABLE IF NOT EXISTS orchestrator_tool_operations(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),call TEXT NOT NULL,kind TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),request TEXT NOT NULL CHECK(json_valid(request)),state TEXT NOT NULL CHECK(state IN('started','succeeded','uncertain')),result TEXT,error TEXT,PRIMARY KEY(run,call));\
 CREATE TABLE IF NOT EXISTS orchestrator_batch_decisions(run TEXT PRIMARY KEY REFERENCES orchestrator_batch_runs(run),target TEXT NOT NULL CHECK(target IN('discarded','retryable')));";
 
+/// What a tool answers when the domain turned the call down before it changed anything: the
+/// call is settled and nothing is left to reconcile. Any other error leaves its effects unknown.
+const REFUSED_BEFORE_ANY_EFFECT: &[&str] = &[
+    "invalid_input", "conflict", "not_found", "node_paused", "task_not_active", "task_closed", "not_assigned",
+    "forbidden", "plan_review_pending", "model_is_binding", "active_account_immutable", "task_moving",
+    "usage_exhausted", "disk_low", "account_unavailable", "model_unavailable", "unsupported_capability",
+    "workspace_untrusted", "main_checkout", "session_unreachable",
+];
+
+pub(crate) fn refused_before_any_effect(code: Option<&str>) -> bool {
+    code.is_some_and(|code| REFUSED_BEFORE_ANY_EFFECT.contains(&code))
+}
+
+fn error_code(error: Option<&str>) -> Option<String> {
+    error.and_then(|error| serde_json::from_str::<DomainError>(error).ok()).map(|error| error.code)
+}
+
+/// An operation that is neither done nor refused before it changed anything.
+pub(crate) fn is_unconfirmed(operation: &(String, String, String, Option<String>, Option<String>)) -> bool {
+    match operation.2.as_str() {
+        "succeeded" => false,
+        "uncertain" => !refused_before_any_effect(error_code(operation.4.as_deref()).as_deref()),
+        _ => true,
+    }
+}
+
 const OPERATION_BYTES: i64 = 32 * 1024 * 1024;
 const OUTCOME_BYTES: usize = 512 * 1024;
 const OUTCOME_RESERVE: i64 = 512;
@@ -126,13 +152,14 @@ impl DomainStore {
     pub(crate) fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> {
         let actual: String = self.conn.query_row("SELECT data_epoch FROM orchestrator_batch_runs WHERE run=?1",[run],|row| row.get(0))?;
         ensure!(actual==epoch.0,"The batch belongs to a different data epoch");
-        let mut query = self.conn.prepare("SELECT identity,kind,status,metadata,result,error FROM (SELECT 'command:'||call||':'||command_id AS identity,kind,'succeeded' AS status,json_object('actor',actor,'command_id',command_id,'data_epoch',data_epoch,'digest',hex(digest),'revision',revision,'changed',changed) AS metadata,NULL AS result,NULL AS error FROM orchestrator_batch_effects WHERE run=?1 UNION ALL SELECT 'tool:'||call,kind,state,json_object('call',call),substr(result,1,2048),substr(error,1,2048) FROM orchestrator_tool_operations WHERE run=?1) WHERE identity>?2 ORDER BY identity LIMIT ?3")?;
-        let rows = query.query_map(params![run,after,i64::try_from(limit.clamp(1,32)+1)?],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<String>>(5)?)))?;
+        let mut query = self.conn.prepare("SELECT identity,kind,status,metadata,result,error,code FROM (SELECT 'command:'||call||':'||command_id AS identity,kind,'succeeded' AS status,json_object('actor',actor,'command_id',command_id,'data_epoch',data_epoch,'digest',hex(digest),'revision',revision,'changed',changed) AS metadata,NULL AS result,NULL AS error,NULL AS code FROM orchestrator_batch_effects WHERE run=?1 UNION ALL SELECT 'tool:'||call,kind,state,json_object('call',call),substr(result,1,2048),substr(error,1,2048),json_extract(error,'$.code') FROM orchestrator_tool_operations WHERE run=?1) WHERE identity>?2 ORDER BY identity LIMIT ?3")?;
+        let rows = query.query_map(params![run,after,i64::try_from(limit.clamp(1,32)+1)?],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?)))?;
         let mut entries = vec![];
         let mut more = false;
         for row in rows {
-            let (identity,kind,status,metadata,result,error) = row?;
+            let (identity,kind,status,metadata,result,error,code) = row?;
             if entries.len()==limit.clamp(1,32) { more=true;break; }
+            let status = if status=="uncertain" && refused_before_any_effect(code.as_deref()) { "refused".to_owned() } else { status };
             let excerpt = |value:Option<String>| value.map(|mut value| { let mut end=value.len().min(2048);while !value.is_char_boundary(end) {end-=1;}value.truncate(end);value });
             entries.push(serde_json::json!({"id":identity,"kind":kind,"status":status,"receipt_ref":serde_json::from_str::<Value>(&metadata)?,"result_excerpt":excerpt(result),"error_excerpt":excerpt(error)}));
         }
