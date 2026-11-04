@@ -71,6 +71,9 @@ pub struct Live {
     /// Asks the accounts check to run now.
     pub(crate) account_check: tokio::sync::Notify,
     pub(crate) initial_account_check_pending: std::sync::atomic::AtomicBool,
+    /// Sign-in checks wait for Claude to end instead of its deadline: a test's Claude is a script
+    /// it just wrote, whose first run waits while macOS checks the new executable.
+    pub(crate) unbounded_claude_status: std::sync::atomic::AtomicBool,
     pub(crate) measured: crate::usage_probe::Measured,
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub machine_watch: crate::machine_watch::MachineWatch,

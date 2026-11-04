@@ -804,7 +804,7 @@ printf '{"loggedIn":%s}' "$state"
 [ "$state" = true ]
 "#).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let context = crate::claude_auth::ContextEnv { home: root.clone(), path: root.join("bin").to_string_lossy().into_owned(), config_dir: Some(root.join(".claude").to_string_lossy().into_owned()) };
+        let context = crate::claude_auth::ContextEnv { home: root.clone(), path: root.join("bin").to_string_lossy().into_owned(), config_dir: Some(root.join(".claude").to_string_lossy().into_owned()), status_timeout: None };
         let mut paths = paths(); paths.home = root.clone(); paths.bin = root.join("bin");
         for (explicit, implicit, migrated) in [("false", "true", true), ("true", "true", false), ("false", "false", false)] {
             std::fs::write(root.join("explicit-state"), explicit).unwrap();
@@ -816,7 +816,7 @@ printf '{"loggedIn":%s}' "$state"
             std::fs::write(&plist, render_plist_with_context("profile-probe", &paths, &selected).unwrap()).unwrap();
             let value = read_plist(&plist).unwrap();
             let vars = value["EnvironmentVariables"].as_object().unwrap().iter().map(|(k,v)| (k.clone(), v.as_str().unwrap().to_owned())).collect();
-            let installed = crate::claude_auth::ContextEnv::from_environment(&root, &vars).unwrap();
+            let installed = crate::claude_auth::ContextEnv { status_timeout: None, ..crate::claude_auth::ContextEnv::from_environment(&root, &vars).unwrap() };
             assert_eq!(installed.config_dir, selected.config_dir);
             assert_eq!(installed.status().unwrap(), if migrated { implicit } else { explicit } == "true");
             assert!(!legacy_default_profile(&value, &root));
