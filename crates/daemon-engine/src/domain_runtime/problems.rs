@@ -68,6 +68,24 @@ impl DomainRuntime {
         options: Vec<QuestionOption>,
         recommended: Option<&str>,
     ) -> Result<CommandOutcome, StoreError> {
+        self.raise_worded_problem_with_form(scope, id, system, cause, need, why, body, options, recommended, None)
+    }
+
+    /// `raise_worded_problem_in` with a form the user fills beside the option `accept`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn raise_worded_problem_with_form(
+        &self,
+        scope: Scope,
+        id: &str,
+        system: Option<SystemCard>,
+        cause: &str,
+        need: String,
+        why: String,
+        body: String,
+        options: Vec<QuestionOption>,
+        recommended: Option<&str>,
+        form: Option<alondra_core::requested_form::RequestedForm>,
+    ) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;
         if state.interactions.contains_key(&InteractionId(id.to_owned())) {
             return Err(DomainError::new("invalid_input", "Problem already raised").into());
@@ -75,6 +93,7 @@ impl DomainRuntime {
         let mut card = CardSpec::new(CardKind::Problem, need).why(why);
         card.recommended = recommended.map(str::to_owned);
         card.system = system;
+        card.form = form;
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use alondra_core::discard_worktrees::{CancelledWorktree, DISCARD, DISCARD_WORKTREES_PREFIX, DiscardWorktrees};
+use alondra_core::discard_worktrees::{CancelledWorktree, DISCARD_WORKTREES_PREFIX, DiscardWorktrees};
 use alondra_core::domain::{
     Author, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, PrState, Scope, SystemCard, Task, TaskId, TaskState,
     WorktreeEnd,
@@ -17,13 +17,6 @@ use crate::domain_github::execute_system;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::worktree::TaskWorktree;
-
-/// Worktrees David asked to keep exactly as they are: never deleted, never listed on a card.
-const KEPT_BY_DAVID: [&str; 1] = ["t-settings-mcp-modals-ios"];
-
-fn kept_by_david(task: &TaskId) -> bool {
-    KEPT_BY_DAVID.contains(&task.0.as_str())
-}
 
 enum Settled {
     Gone(WorktreeEnd),
@@ -60,7 +53,7 @@ fn raise_card(domain: &DomainRuntime, id: &str, scope: Scope, tasks: Vec<Cancell
     let card = DiscardWorktrees { tasks };
     let (need, why) = card.text(Lang::En);
     let (options, recommended) = card.options();
-    domain.raise_worded_problem_in(scope, id, Some(SystemCard::DiscardWorktrees), &format!("discard-worktrees:{id}"), need, why, card.to_body(), options, Some(recommended))
+    domain.raise_worded_problem_with_form(scope, id, Some(SystemCard::DiscardWorktrees), &format!("discard-worktrees:{id}"), need, why, card.to_body(), options, Some(recommended), card.form(Lang::En))
         .map_err(|error| anyhow!("could not ask whether to delete the unsaved changes of cancelled worktrees: {error:?}"))?;
     Ok(())
 }
@@ -70,13 +63,10 @@ fn raise_card(domain: &DomainRuntime, id: &str, scope: Scope, tasks: Vec<Cancell
 pub(crate) async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()> {
     let mut paths: Vec<(String, bool)> = task.open_worktrees().map(|(path, _)| (path.clone(), true)).collect();
     paths.extend(domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)).map(|dir| (dir, false)));
-    let kept = kept_by_david(&task.id);
     let mut held = CancelledWorktree { task_id: task.id.0.clone(), title: task.title.clone(), files: 0, paths: vec![] };
     let mut ends = vec![];
     for (path, recorded) in paths {
-        let end = if kept {
-            WorktreeEnd::KeptByUser
-        } else if crate::task_worktrees::heir(domain, task, &path)?.is_some() {
+        let end = if crate::task_worktrees::heir(domain, task, &path)?.is_some() {
             WorktreeEnd::HandedOver
         } else {
             match settle_path(domain, task, &path).await? {
@@ -122,16 +112,14 @@ fn in_use(domain: &DomainRuntime, state: &DomainState, task: &TaskId, path: &str
             .any(|other| domain.launch_plan(&other.id).ok().flatten().is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)))
 }
 
-/// Deletes the worktrees of every card the user answered Delete. Keep needs nothing: the answered
-/// card is what stops anyone from asking again. A worktree already gone is nothing to do.
+/// Deletes the worktrees the user chose to delete on each answered card: all of them, or only
+/// the ones ticked. Keep needs nothing: the answered card is what stops anyone from asking again.
+/// A worktree already gone is nothing to do.
 pub(crate) async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
     let state = domain.state()?;
     for (card, listed) in covering_cards(&state) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &card.payload else { continue };
-        if answer.option_id != DISCARD {
-            continue;
-        }
-        for entry in listed.tasks.iter().filter(|entry| !kept_by_david(&TaskId(entry.task_id.clone()))) {
+        for entry in listed.deleted_by(&answer.option_id, answer.form_values()) {
             let task_id = TaskId(entry.task_id.clone());
             let keeps_branch = state.tasks.get(&task_id).is_some_and(|task| keeps_branch(&state, task));
             for path in entry.paths.iter().filter(|path| !in_use(domain, &state, &task_id, path)) {
@@ -155,7 +143,7 @@ pub(crate) async fn sweep(domain: &DomainRuntime) -> Result<()> {
     let stored: std::collections::BTreeMap<TaskId, String> = domain.store.lock_or_exit("the domain store").task_worktrees()?.into_iter().collect();
     let mut unsaved = vec![];
     for task in state.tasks.values().filter(|task| task.state == TaskState::Cancelled) {
-        if kept_by_david(&task.id) || matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {
+        if matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {
             continue;
         }
         let mut paths: Vec<&String> = stored.get(&task.id).into_iter()

@@ -551,6 +551,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     card.attachments = attachment_refs(interaction);
     if interaction.is_some_and(|i| !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. })) {
         card.form = spec.form.clone();
+        if let Some(interaction) = interaction.filter(|i| i.system_card == Some(SystemCard::DiscardWorktrees))
+            && let Some(own) = crate::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
+        {
+            card.form = own.form(context.lang);
+        }
     }
     if let Some(pr) = pr {
         let own_title = live_pr(pr, context).and_then(|detail| detail.title.as_deref()).map(str::trim).filter(|title| !title.is_empty());

@@ -1102,6 +1102,15 @@ impl Rig {
         });
     }
 
+    fn answer_discard_ticking(&self, tasks: &[&str]) {
+        let card = self.discard_cards()[0].id.clone();
+        let form = json!({"delete": tasks}).as_object().unwrap().clone();
+        command(&self.domain, user(), "answer-discard-ticked", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: card, option_id: "accept".into(),
+            inputs: [(alondra_core::domain::ANSWER_CONTENT.to_string(), alondra_core::domain::InputValue::Form(form))].into(),
+        });
+    }
+
     /// A task already cancelled that has no node, with a worktree of its own left behind.
     fn cancelled_with_worktree(&self, id: &str, unsaved: &[&str]) -> (crate::test_support::Directory, std::path::PathBuf) {
         command(&self.domain, user(), &format!("request-{id}"), Command::CreateRequest {
@@ -1207,13 +1216,12 @@ async fn a_cancelled_task_with_an_open_pull_request_keeps_its_branch_when_its_wo
 }
 
 #[tokio::test]
-async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card_and_david_s_exception() {
+async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card() {
     let rig = Rig::undelivered(thirty_minutes());
     let (_a_root, a) = rig.cancelled_with_worktree("t-a", &["one.txt", "two.txt"]);
     let (b_root, b) = rig.cancelled_with_worktree("t-b", &[]);
     let (_c_root, c) = rig.cancelled_with_worktree("t-c", &["three.txt"]);
-    let (_kept_root, kept) = rig.cancelled_with_worktree("t-settings-mcp-modals-ios", &["mine.txt"]);
-    for task in ["t-a", "t-b", "t-c", "t-settings-mcp-modals-ios"] {
+    for task in ["t-a", "t-b", "t-c"] {
         assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from(task)].state, TaskState::Cancelled);
     }
 
@@ -1224,10 +1232,9 @@ async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card
     let cards = rig.discard_cards();
     assert_eq!(cards.len(), 1, "one card for all of them");
     let card = DiscardWorktrees::from_body(&cards[0].body).unwrap();
-    assert_eq!(card.tasks.iter().map(|task| (task.task_id.as_str(), task.files)).collect::<Vec<_>>(), [("t-a", 2), ("t-c", 1)],
-        "David's exception is never listed");
+    assert_eq!(card.tasks.iter().map(|task| (task.task_id.as_str(), task.files)).collect::<Vec<_>>(), [("t-a", 2), ("t-c", 1)]);
     let (options, _) = card.options();
-    assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Delete all", "Keep all"]);
+    assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Delete the ticked", "Delete all", "Keep all"]);
 
     crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
     assert_eq!(rig.discard_cards().len(), 1, "a second start does not repeat the card");
@@ -1235,7 +1242,6 @@ async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card
     rig.answer_discard("discard");
     rig.pass(T0).await;
     assert!(!a.exists() && !c.exists(), "Delete all removes the listed worktrees");
-    assert!(kept.join("mine.txt").exists(), "David's exception is never touched");
 }
 
 #[tokio::test]
@@ -1247,5 +1253,30 @@ async fn keeping_all_the_existing_cancelled_worktrees_deletes_none_and_no_later_
     rig.pass(T0).await;
     crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
     assert!(a.join("one.txt").exists());
+    assert_eq!(rig.discard_cards().len(), 1);
+}
+
+#[tokio::test]
+async fn deciding_the_existing_worktrees_one_by_one_deletes_only_the_ticked_and_leaves_the_others_untouched() {
+    let rig = Rig::undelivered(thirty_minutes());
+    let (_a_root, a) = rig.cancelled_with_worktree("t-a", &["one.txt"]);
+    let (b_root, b) = rig.cancelled_with_worktree("t-b", &["two.txt"]);
+    let (_c_root, c) = rig.cancelled_with_worktree("t-c", &["three.txt"]);
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    let cards = rig.discard_cards();
+    assert_eq!(cards.len(), 1);
+    let spec = &cards[0].card;
+    let form = spec.form.as_ref().expect("the card lets the user tick the worktrees to delete");
+    let alondra_core::requested_form::RequestedFieldKind::Choices { options, .. } = &form.fields[0].kind else { panic!("a multiple choice") };
+    assert_eq!(options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), ["t-a", "t-b", "t-c"]);
+
+    rig.answer_discard_ticking(&["t-a", "t-b"]);
+    rig.pass(T0).await;
+    assert!(!a.exists() && !b.exists(), "the ticked worktrees are deleted");
+    assert!(!branch_exists(&b_root.join("repo"), "worktree-t-b"));
+    assert!(c.join("three.txt").exists(), "the one left unticked is intact");
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    rig.pass(T0 + MINUTE).await;
+    assert!(c.join("three.txt").exists(), "and nobody asks about it again");
     assert_eq!(rig.discard_cards().len(), 1);
 }

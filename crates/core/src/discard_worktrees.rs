@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CardSpec, QuestionOption, clip};
+use crate::domain::{CardSpec, Hold, QuestionOption, clip};
+use crate::requested_form::{RequestedChoice, RequestedField, RequestedFieldKind, RequestedForm};
 use crate::views::Lang;
 use crate::views::text::{t, tf};
 
@@ -14,6 +15,10 @@ pub const DISCARD_ALL_LABEL: &str = "Delete all";
 pub const KEEP: &str = "keep";
 pub const KEEP_LABEL: &str = "Keep";
 pub const KEEP_ALL_LABEL: &str = "Keep all";
+pub const DISCARD_TICKED: &str = Hold::ACCEPT;
+pub const DISCARD_TICKED_LABEL: &str = "Delete the ticked";
+/// The form field that holds the tasks whose worktrees the user ticked to delete.
+pub const TICKED_FIELD: &str = "delete";
 const TITLE_SHOWN: usize = 40;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -50,10 +55,48 @@ impl DiscardWorktrees {
         self.tasks.len() > 1
     }
 
+    /// With several tasks the user ticks the ones to delete on the card's form, or deletes or
+    /// keeps them all; the recommended answer never deletes.
     pub fn options(&self) -> (Vec<QuestionOption>, &'static str) {
         let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
-        let (discard, keep) = if self.several() { (DISCARD_ALL_LABEL, KEEP_ALL_LABEL) } else { (DISCARD_LABEL, KEEP_LABEL) };
-        (vec![option(DISCARD, discard), option(KEEP, keep)], KEEP)
+        let options = if self.several() {
+            vec![option(DISCARD_TICKED, DISCARD_TICKED_LABEL), option(DISCARD, DISCARD_ALL_LABEL), option(KEEP, KEEP_ALL_LABEL)]
+        } else {
+            vec![option(DISCARD, DISCARD_LABEL), option(KEEP, KEEP_LABEL)]
+        };
+        (options, KEEP)
+    }
+
+    /// The tasks to tick, each with its files, when there is more than one to decide on.
+    pub fn form(&self, lang: Lang) -> Option<RequestedForm> {
+        self.several().then(|| RequestedForm { fields: vec![RequestedField {
+            name: TICKED_FIELD.into(),
+            title: Some(t!(lang, "Worktrees to delete", "Carpetas a borrar").into()),
+            description: None,
+            required: true,
+            kind: RequestedFieldKind::Choices {
+                options: self.tasks.iter().map(|task| RequestedChoice {
+                    value: task.task_id.clone(),
+                    title: Some(format!("{} · {}", task.title, files_text(lang, task.files))),
+                }).collect(),
+                min_items: Some(1),
+                max_items: None,
+                default: vec![],
+            },
+        }] })
+    }
+
+    /// The tasks whose worktrees an answer deletes: all of them, the ones ticked, or none.
+    pub fn deleted_by(&self, option: &str, form: Option<&serde_json::Map<String, serde_json::Value>>) -> Vec<&CancelledWorktree> {
+        match option {
+            DISCARD => self.tasks.iter().collect(),
+            DISCARD_TICKED => {
+                let ticked: Vec<&str> = form.and_then(|form| form.get(TICKED_FIELD)).and_then(serde_json::Value::as_array)
+                    .map(|values| values.iter().filter_map(serde_json::Value::as_str).collect()).unwrap_or_default();
+                self.tasks.iter().filter(|task| ticked.contains(&task.task_id.as_str())).collect()
+            }
+            _ => vec![],
+        }
     }
 
     /// What the card says it needs and why, in `lang`.
@@ -89,7 +132,16 @@ impl DiscardWorktrees {
             t!(lang, "touches nothing and Alondra does not ask again.", "no toca nada y Alondra no vuelve a preguntar."),
         );
         let heading = t!(lang, "**Unsaved changes:**", "**Cambios sin guardar:**");
-        format!("{heading}\n\n{list}\n**{discard}:** {discards}\n\n**{keep}:** {keeps}")
+        let ticked = if self.several() {
+            let (label, says) = (
+                t!(lang, "Delete the ticked", "Borrar las marcadas"),
+                t!(lang, "deletes only the worktrees you tick above and keeps the rest.", "borra solo las carpetas que marques arriba y conserva las demás."),
+            );
+            format!("**{label}:** {says}\n\n")
+        } else {
+            String::new()
+        };
+        format!("{heading}\n\n{list}\n{ticked}**{discard}:** {discards}\n\n**{keep}:** {keeps}")
     }
 }
 
@@ -98,6 +150,10 @@ pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &
     let deletes = t!(lang, "Deletes the worktree and its unsaved changes for good", "Borra el worktree y sus cambios sin guardar para siempre");
     let keeps = t!(lang, "Leaves everything as it is and does not ask again", "Lo deja todo como está y no vuelve a preguntar");
     Some(match (id, label) {
+        (DISCARD_TICKED, DISCARD_TICKED_LABEL) => (
+            t!(lang, "Delete the ticked", "Borrar las marcadas"),
+            t!(lang, "Deletes the worktrees ticked above for good and keeps the rest", "Borra para siempre las carpetas marcadas arriba y conserva las demás"),
+        ),
         (DISCARD, DISCARD_LABEL) => (t!(lang, "Delete", "Borrar"), deletes),
         (DISCARD, DISCARD_ALL_LABEL) => (t!(lang, "Delete all", "Borrar todas"), deletes),
         (KEEP, KEEP_LABEL) => (t!(lang, "Keep", "Conservar"), keeps),
@@ -136,7 +192,19 @@ mod tests {
         let detail = card.detail(Lang::Es);
         assert!(detail.contains("- **Title of a**: 3 ficheros") && detail.contains("- **Title of b**: 1 fichero"), "{detail}");
         let (options, _) = card.options();
-        assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), [DISCARD_ALL_LABEL, KEEP_ALL_LABEL]);
+        assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), [DISCARD_TICKED_LABEL, DISCARD_ALL_LABEL, KEEP_ALL_LABEL]);
+        assert_eq!(option_text(DISCARD_TICKED, DISCARD_TICKED_LABEL, Lang::Es).unwrap().0, "Borrar las marcadas");
+        let form = card.form(Lang::Es).expect("several tasks are decided one by one");
+        let RequestedFieldKind::Choices { options, .. } = &form.fields[0].kind else { panic!("a multiple choice") };
+        assert_eq!(options.iter().map(|o| (o.value.as_str(), o.title.as_deref().unwrap())).collect::<Vec<_>>(),
+            [("a", "Title of a · 3 ficheros"), ("b", "Title of b · 1 fichero")]);
+        assert!(DiscardWorktrees { tasks: vec![task("a", 1)] }.form(Lang::Es).is_none());
+        let ticked: serde_json::Map<String, serde_json::Value> = serde_json::from_str(r#"{"delete": ["b"]}"#).unwrap();
+        let ids = |tasks: Vec<&CancelledWorktree>| tasks.into_iter().map(|task| task.task_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(card.deleted_by(DISCARD_TICKED, Some(&ticked))), ["b"], "only the ticked one is deleted");
+        assert_eq!(ids(card.deleted_by(DISCARD, None)), ["a", "b"]);
+        assert!(card.deleted_by(KEEP, Some(&ticked)).is_empty());
+        assert!(card.deleted_by(DISCARD_TICKED, None).is_empty(), "nothing ticked deletes nothing");
         assert_eq!(option_text(DISCARD, DISCARD_ALL_LABEL, Lang::Es).unwrap().0, "Borrar todas");
         assert_eq!(option_text(KEEP, KEEP_ALL_LABEL, Lang::En).unwrap().0, "Keep all");
         assert_eq!(option_text(KEEP, "Something else", Lang::Es), None);

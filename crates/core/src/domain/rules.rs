@@ -148,7 +148,8 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
         (Some(v), _) if v.trim().is_empty() => return refuse("invalid_input", "card.verify", "Say how you will check the user did it"),
         _ => {}
     }
-    if card.form.is_some() && (card.kind != CardKind::Provide || source != Source::Hold) {
+    let asks_which_worktrees = card.kind == CardKind::Problem && card.system == Some(SystemCard::DiscardWorktrees);
+    if card.form.is_some() && !asks_which_worktrees && (card.kind != CardKind::Provide || source != Source::Hold) {
         return refuse("invalid_input", "card.form", "Only a held request for input from an MCP server carries a form");
     }
     if let Some(destination) = &card.secret_destination {
