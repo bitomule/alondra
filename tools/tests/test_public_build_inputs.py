@@ -27,6 +27,10 @@ class PublicBuildInputs(unittest.TestCase):
         self.assertEqual(always_on, [])
         self.assertIn("common:buildbuddy --remote_cache=", rc)
 
+    def test_every_test_runs_with_a_short_tmpdir(self):
+        rc = runfile(".bazelrc").read_text()
+        self.assertRegex(rc, r"(?m)^test --run_under=//tools:test_tmpdir$")
+
     def test_the_makefile_has_no_maintainer_values_and_no_cargo_test(self):
         makefile = runfile("Makefile").read_text()
         self.assertNotIn("David iPhone", makefile)

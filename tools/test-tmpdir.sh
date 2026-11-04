@@ -1,8 +1,8 @@
 #!/bin/bash
-# Wraps every `bazel test` (via `test --run_under` in ~/.bazelrc; ~/bin/bazel-test-tmpdir is a copy
-# of this file): the test gets its own short TMPDIR, removed when it exits, fails or is cut, so tests
-# that never clean their temp dirs cannot fill the disk. Short and under /tmp because macOS caps a
-# unix socket path at 104 bytes.
+# Wraps every `bazel test` (`test --run_under` in .bazelrc; the maintainer's ~/.bazelrc runs a
+# copy, ~/bin/bazel-test-tmpdir): the test gets its own short TMPDIR, removed when it exits, fails
+# or is cut, so tests that never clean their temp dirs cannot fill the disk. Short and under /tmp
+# because macOS caps a unix socket path at 104 bytes.
 root=${BAZEL_TEST_TMPDIR_ROOT:-/tmp}
 
 remove() {

@@ -36,3 +36,6 @@ common:warming --config=upload
 common:warming --remote_download_minimal
 
 test --keep_going
+# Every test gets its own short TMPDIR under /tmp, removed when it ends: macOS caps a unix socket
+# path at 104 bytes, and the default one under /var/folders is too long for the daemon's sockets.
+test --run_under=//tools:test_tmpdir

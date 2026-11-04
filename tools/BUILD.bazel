@@ -75,6 +75,12 @@ sh_test(
     size = "small",
 )
 
+sh_binary(
+    name = "test_tmpdir",
+    srcs = ["test-tmpdir.sh"],
+    visibility = ["//visibility:public"],
+)
+
 sh_test(
     name = "bazel_test_tmpdir_test",
     srcs = ["tests/test_bazel_test_tmpdir.py"],
