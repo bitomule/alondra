@@ -234,3 +234,27 @@ fn the_limit_twice_in_a_row_and_its_end_leave_the_task_at_work_again() {
     }
     assert!(matches!(world.s.live_state(&"t".into()), Some(LiveState::Working(_))), "{:?}", world.s.live_state(&"t".into()));
 }
+
+fn replay_acts(acts: &[Act]) {
+    let mut world = World::new();
+    for (n, act) in acts.iter().enumerate() {
+        let step = n + 2;
+        world.perform(act, step).unwrap();
+        if let Err(why) = world.holds() {
+            let journal = &world.s.lifecycle_journal[&TaskId::from(TASKS[0].0)];
+            panic!("after #{n} {act:?}: {why}\n{:#?}", journal.iter().rev().take(6).collect::<Vec<_>>());
+        }
+    }
+}
+
+/// Two empty turns in a row, the second one over a notification of work that ended while no turn
+/// ran: the turn read it, and the task is left with the stop's case for the orchestrator.
+#[test]
+fn a_second_empty_turn_over_the_notification_of_ended_work_is_left_to_the_orchestrator() {
+    replay_acts(&[Act::EndTurn(0), Act::TakeInput(0), Act::EndTurn(0), Act::OwnTurn(0), Act::StartWork(0), Act::EndTurn(0), Act::EndWork(0), Act::Resume(0), Act::TakeInput(0), Act::EndTurn(0)]);
+}
+
+#[test]
+fn a_second_empty_turn_over_a_notification_and_a_told_message_is_left_to_the_orchestrator() {
+    replay_acts(&[Act::EndTurn(0), Act::TakeInput(0), Act::EndTurn(0), Act::OwnTurn(0), Act::StartWork(0), Act::EndTurn(0), Act::Tell(0), Act::EndWork(0), Act::TakeInput(0), Act::EndTurn(0)]);
+}
