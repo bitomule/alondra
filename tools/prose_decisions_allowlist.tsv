@@ -192,7 +192,8 @@ crates/core/src/node_guard.rs	let touches_key = |s: &str| s.contains(USER_KEY_FI
 crates/relay/src/auth.rs	.strip_prefix("Bearer ")?;	security-parse	Authorization header scheme (RFC 6750)
 crates/relay/src/auth.rs	.strip_prefix("Bearer ")	security-parse	Authorization header scheme (RFC 6750)
 crates/relay/src/auth.rs	.strip_prefix("Bearer ").context("expected Bearer token")?;	security-parse	Authorization header scheme (RFC 6750)
-crates/relay/src/main.rs	.and_then(|v| v.strip_prefix("Bearer "))	security-parse	Authorization header scheme (RFC 6750)
+crates/relay/src/lib.rs	.and_then(|v| v.strip_prefix("Bearer "))	security-parse	Authorization header scheme (RFC 6750)
+crates/relay/src/operator.rs	.and_then(|v| v.strip_prefix("Bearer "))	security-parse	Authorization header scheme (RFC 6750)
 apple/Features/Sources/NewRequest/RequestOptionsFeature.swift	!item.id.isEmpty && words.allSatisfy { item.label.lowercased().contains($0) }	user-search	filter typed by the user
 apple/macOS/Workspace/MacServiceWorkspace.swift	return text.localizedCaseInsensitiveContains(filterText)	user-search	filter typed by the user
 crates/alondra/src/tui.rs	self.input.text().trim().to_lowercase()	user-search	the TUI's search box
