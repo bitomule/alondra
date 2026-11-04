@@ -86,6 +86,7 @@ checks:
         - //deploy/pi:pi_ssh_test
         - //deploy/pi:backup_sites_test
         - //deploy/server:cloudflare_test
+        - //deploy/server:deploy_test
         - //deploy/server:stack_test
 
   sdk-host:
