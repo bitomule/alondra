@@ -5,7 +5,7 @@
 //! after a gap in their numbers, and periodically. `docs/architecture/relay-operator-api.md`
 //! is the contract.
 
-use crate::auth::{Removal, RemovalConflict, RemovalsApplied};
+use crate::auth::{Removal, RemovalsApplied};
 use crate::{Server, error};
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
@@ -152,15 +152,12 @@ async fn removals(State(server): State<Arc<Server>>, Json(batch): Json<RemovalBa
             (StatusCode::CONFLICT, Json(json!({"error": "removals_gap", "applied": applied})))
                 .into_response()
         }
-        Err(failure) => removal_failure(&failure).into_response(),
-    }
-}
-
-fn removal_failure(failure: &anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
-    if failure.is::<RemovalConflict>() {
-        error(StatusCode::CONFLICT, "removal_conflict")
-    } else {
-        error(StatusCode::SERVICE_UNAVAILABLE, "registry_unavailable")
+        Ok(RemovalsApplied::Behind(applied)) => {
+            server.operator.gap.notify_one();
+            (StatusCode::CONFLICT, Json(json!({"error": "removals_behind", "applied": applied})))
+                .into_response()
+        }
+        Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "registry_unavailable").into_response(),
     }
 }
 
@@ -272,10 +269,15 @@ pub async fn reconcile_from_source(server: &Server) -> Result<()> {
         body.extend_from_slice(&chunk);
     }
     let list: RemovalList = serde_json::from_slice(&body)?;
-    ensure!(list.removals.iter().all(valid_removal), "account source list has an invalid removal");
+    let (removals, invalid): (Vec<_>, Vec<_>) = list.removals.into_iter().partition(valid_removal);
+    if !invalid.is_empty() {
+        eprintln!("alondra-relay: the account source lists {} removals with an invalid ID; skipped", invalid.len());
+    }
     let _gate = server.device_gate.write().await;
-    server.auth.reconcile_removals(list.seq, &list.removals)?;
-    purge(server, list.removals.iter()).await;
+    let changed = server.auth.reconcile_removals(list.seq, &removals)?;
+    if !changed.is_empty() {
+        purge(server, changed.iter()).await;
+    }
     Ok(())
 }
 
