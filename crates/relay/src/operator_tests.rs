@@ -85,6 +85,7 @@ mod operator_api {
                 iroh_relay: Some(TEST_IROH_RELAY.into()),
                 iroh_access_token: Some(TEST_IROH_ACCESS_TOKEN.into()),
                 report_repo: None,
+                identity: None,
                 testflight_url: None,
                 operator,
                 test_directory: None,

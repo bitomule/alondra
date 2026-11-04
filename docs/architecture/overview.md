@@ -74,6 +74,11 @@ to the relay.
 pairing invitations, push notifications through APNs and the admission check for the iroh relay.
 It stores accounts and device public keys, not content.
 
+A relay's `GET /v1/bootstrap` names the protocol, the epoch devices sign with, the iroh relay, and
+in `identity` the OIDC issuer whose tokens it accepts with the client id of the apps
+(`apple_client_id`) and of the CLI (`cli_client_id`). The apps and the CLI are built for one relay
+and one issuer, held in constants.
+
 ## Where to look
 
 | Question | Start at |
