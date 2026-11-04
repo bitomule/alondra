@@ -83,7 +83,11 @@ fn reopening_with_the_original_node_kept_cannot_change_its_native_session_accoun
 enum Act {
     Task(Step),
     Pause { by_user: bool },
+    DiskPause,
     Resume,
+    /// The gate ends a pause for the disk without telling the node anything first.
+    ResumeAlone,
+    HostEnded,
     Interrupt,
 }
 
@@ -91,9 +95,16 @@ fn act() -> impl Strategy<Value = Act> {
     prop_oneof![
         4 => step().prop_map(Act::Task),
         1 => any::<bool>().prop_map(|by_user| Act::Pause { by_user }),
+        1 => Just(Act::DiskPause),
         1 => Just(Act::Resume),
+        1 => Just(Act::ResumeAlone),
+        1 => Just(Act::HostEnded),
         1 => Just(Act::Interrupt),
     ]
+}
+
+fn disk_pause(since: Millis) -> Pause {
+    Pause { reason: PauseReason::Disk, since, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false }
 }
 
 fn pause(by_user: bool, since: Millis) -> Pause {
@@ -107,9 +118,15 @@ fn perform(s: &mut DomainState, act: &Act, n: usize) {
     let _ = match act {
         Act::Task(step) => run(s, step, n).map(drop),
         Act::Pause { by_user } => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(*by_user, at) }, at }).map(drop),
+        Act::DiskPause => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(at) }, at }).map(drop),
         Act::Resume => {
             let _ = exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Carry on {n}"), from_user: false, answers: None });
             exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop)
+        }
+        Act::ResumeAlone => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop),
+        Act::HostEnded => {
+            let Ok(generation) = s.lifecycle_of(&SDK.into()).map(|lifecycle| lifecycle.generation()) else { return };
+            exec(s, Actor::System, Command::RecordHostEnded { task_id: SDK.into(), generation, resumes: false, by_alondra: false, ended_work: vec![] }).map(drop)
         }
         Act::Interrupt => exec(s, Actor::System, Command::InterruptTurn { agent_id: NODE.into() }).map(drop),
     };
@@ -154,7 +171,7 @@ fn agree(s: &DomainState) -> Result<(), String> {
     if let Some(pause) = &pause {
         let held = match &pause.reason {
             PauseReason::ByUser => matches!(&live, Some(LiveState::WaitingUser(cards)) if cards.iter().any(|card| card.0.starts_with(NODE_PAUSE_PREFIX))),
-            _ => matches!(live, Some(LiveState::WaitingCapacity(Capacity::Machine)) | Some(LiveState::WaitingUser(_))),
+            _ => matches!(live, Some(LiveState::WaitingCapacity(Capacity::Machine | Capacity::Disk)) | Some(LiveState::WaitingUser(_))),
         };
         if !held || slot {
             return Err(format!("a paused node is {live:?} with a slot {slot}"));
@@ -171,8 +188,12 @@ proptest! {
         let mut s = three_tasks();
         prop_assert_eq!(agree(&s), Ok(()));
         for (n, act) in acts.iter().enumerate() {
+            let paused = s.node_pause(&NODE.into()).is_some();
             perform(&mut s, act, n);
             prop_assert_eq!(agree(&s), Ok(()), "after {:?} in {:?}", act, acts);
+            if paused && matches!(act, Act::Resume | Act::ResumeAlone) {
+                prop_assert_eq!(s.node_pause(&NODE.into()), None, "the gate's resume always ends its pause: {:?}", acts);
+            }
         }
     }
 }
@@ -211,13 +232,49 @@ fn a_pause_of_a_node_of_the_agent_sdk_lives_in_its_task_s_lifecycle() {
     run(&mut s, &Step::TurnEnded, 0).unwrap();
     assert!(matches!(s.live_state(&SDK.into()), Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX))),
         "its interrupted turn ends on the pause, with no card that asks how it goes on");
-    assert_eq!(exec(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 6 }).unwrap_err().code, "conflict",
-        "the pause ends only once the node has something to go on with");
     must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Go on".into(), from_user: false, answers: None });
     must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 7 });
+    assert!(matches!(s.lifecycle_journal[&TaskId::from(SDK)].last(), Some(LifecycleRecord::PauseEnded { .. })), "what it was told is what it goes on with");
     assert_eq!(s.node_pause(&agent), None);
     assert_eq!(s.live_state(&SDK.into()), Some(LiveState::Working(alondra_domain::Worker::Alondra(alondra_domain::Step::Delivering))));
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
+}
+
+/// 4 Nov, t-oss-9-export: the disk fell under its floor while the node built, so the gate held its
+/// next turn. The turn it ran ended, then its host did, with nothing told. Once the disk had room
+/// the gate ended the pause with nothing new to tell, the lifecycle refused it every minute, and
+/// the task stayed paused at the head of the queue. The pause now ends by telling the node to
+/// carry on, in the same session.
+#[test]
+fn a_disk_pause_the_node_rested_through_ends_by_telling_it_to_carry_on_in_the_same_session() {
+    for host_ended in [false, true] {
+        let mut s = three_tasks();
+        let agent = AgentId::from(NODE);
+        must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(5) }, at: 5 });
+        assert_eq!(s.live_state(&SDK.into()), Some(LiveState::WaitingCapacity(Capacity::Disk)));
+        run(&mut s, &Step::TurnEnded, 0).unwrap();
+        if host_ended {
+            let generation = s.lifecycle_of(&SDK.into()).unwrap().generation();
+            must(&mut s, Actor::System, Command::RecordHostEnded { task_id: SDK.into(), generation, resumes: false, by_alondra: false, ended_work: vec![] });
+        }
+        let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
+        let card = s.lifecycle_journal[&TaskId::from(SDK)].iter().rev().find_map(|record| match record {
+            LifecycleRecord::Paused { card, .. } => Some(card.clone()),
+            _ => None,
+        }).unwrap();
+        assert!(lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card }).is_err(), "nothing waits for the resting node");
+        let session = lifecycle.execution().cloned();
+
+        must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 6 });
+        assert_eq!(s.node_pause(&agent), None, "the pause ended (host ended: {host_ended})");
+        let Some(LifecycleRecord::Resumed { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from(SDK)].last() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from(SDK)].last()) };
+        assert!(text.contains("carry on with your task"), "{text}");
+        let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
+        assert_eq!(lifecycle.pending_inputs().len(), 1, "the node is told to carry on");
+        assert_eq!(lifecycle.execution().cloned(), session, "in the same session");
+        assert!(!s.paused_nodes().contains_key(&agent));
+        assert_aggregate_rules(&s);
+    }
 }
 
 /// A node's own wait for the machine is a wait on capacity, which the gate ends.

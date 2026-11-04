@@ -712,6 +712,35 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
         "its own declared reset admits the same node");
 }
 
+/// 4 Nov: the gate resumed t-oss-9-export every minute at the head of the queue, the node machine
+/// refused it every time, and the ten tasks behind it never started. A resume the node machine
+/// refused stays out of the queue until its task's lifecycle moves, and the next one goes ahead.
+#[test]
+fn a_resume_the_node_machine_refused_lets_the_queue_go_on_until_its_task_moves() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    gate.ignore_mac();
+    let base = alondra_core::now_millis();
+    paused_by_user(&domain, "t1", TaskPriority::High, base);
+    create(&domain, "t2");
+    assert!(gate.resume_now(&domain, "agent-t1", base));
+    let queue = |now| gate.snapshot(&domain, now).unwrap().queue.into_iter().map(|waiting| waiting.key).collect::<Vec<_>>();
+    assert_eq!(queue(base).first(), Some(&Key::Resume("agent-t1".into())), "the resumed node comes first");
+
+    let revision = lifecycle_revision(&domain.state().unwrap(), "agent-t1").unwrap();
+    gate.lock().refused.insert("agent-t1".into(), revision);
+    assert!(!queue(base + MIN).contains(&Key::Resume("agent-t1".into())), "a refused resume is not tried again as it is");
+    assert_eq!(ask(&domain, "t2", base + MIN), Ok(()), "the next one in the queue goes ahead");
+    assert!(still_paused(&domain, "t1"));
+
+    gate.lock().refused.insert("agent-t1".into(), revision - 1);
+    assert!(queue(base + 2 * MIN).contains(&Key::Resume("agent-t1".into())), "once its task's lifecycle moved it is tried again");
+    gate.lock().refused.insert("agent-t1".into(), revision);
+    assert!(gate.resume_now(&domain, "agent-t1", base + 2 * MIN));
+    assert!(queue(base + 2 * MIN).contains(&Key::Resume("agent-t1".into())), "and when the user resumes it again");
+}
+
 /// Starts the node of task `id` and then the user pauses it at `at`: its turn is cut and it holds
 /// no slot.
 fn paused_by_user(domain: &DomainRuntime, id: &str, priority: TaskPriority, at: Millis) {

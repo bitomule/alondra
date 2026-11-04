@@ -891,6 +891,29 @@ async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_
     assert_eq!(node.domain.state().unwrap().tasks[&TaskId::from(SDK_TASK)].state, alondra_core::domain::TaskState::NeedsYou);
 }
 
+/// 4 Nov, t-oss-9-export: the disk fell under its floor while the node built, and the gate held its
+/// next turn. The turn it ran ended with nothing told; once the disk had room the gate ended the
+/// pause with nothing new, the lifecycle refused that every minute, and the node never came back.
+/// Now its pause ends by telling it to carry on.
+#[tokio::test]
+async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_it_to_carry_on() {
+    const GB: u64 = 1_000_000_000;
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    assert!(domain.live.gate.hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    interrupt_sdk_node(&domain, &node.agent());
+    node.step_until(SdkNode::turn_ended);
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
+    assert_eq!(node.pending_inputs(), 0, "nothing waits for it");
+
+    domain.live.machine_watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    node.gate_look().await;
+    assert!(domain.live.gate.paused(&domain, &node.agent()).is_none(), "the pause ended");
+    node.until_told("held your next turn while the disk was nearly full");
+    assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
+}
+
 /// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and
 /// still counts as working; once it ends, what the node is told waits, with no card, shown in the
 /// queue for the disk; once the disk has room it gets it, and is never told it was held. The

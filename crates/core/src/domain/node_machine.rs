@@ -62,6 +62,16 @@ fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alond
 }
 
 /// The pause a card of `node_pause_card` stands for.
+/// What a node of the Agent SDK that rested through the gate's pause is told once it ends.
+fn go_on_after(kind: NodePauseKind) -> &'static str {
+    match kind {
+        NodePauseKind::Disk => "Alondra held your next turn while the disk was nearly full. There is room again: carry on with your task.",
+        NodePauseKind::Machine => "Alondra paused you while the Mac lacked room. The Mac is fine again: carry on with your task and run again what was cut.",
+        NodePauseKind::Usage => "Your usage limit has reset. Carry on with what you were doing.",
+        NodePauseKind::User => "You were resumed. Carry on with your task and run again what was cut.",
+    }
+}
+
 fn pause_of_card(card: &Interaction) -> Option<Pause> {
     let Some(SystemCard::NodePause { pause, since }) = &card.system_card else { return None };
     let reason = match pause {
@@ -942,14 +952,32 @@ impl DomainState {
                 self.hold_node_pause(&task, card, owner, system, lifecycles)
             }
             NodeEvent::Resumed => {
-                let card = task.as_ref().and_then(|task| self.held_pause(task)).ok_or_else(|| DomainError::new("not_paused", "The node is not paused"))?;
-                self.decide(lifecycles, task.as_ref().expect("held above"), super::LifecycleRecord::PauseEnded { card: card.clone() })?;
+                let task = task.as_ref();
+                let card = task.and_then(|task| self.held_pause(task)).ok_or_else(|| DomainError::new("not_paused", "The node is not paused"))?;
+                let task = task.expect("held above");
+                let record = self.end_of_pause(task, &card, lifecycles)?;
+                self.decide(lifecycles, task, record)?;
                 self.retire(&card);
                 Ok(())
             }
             NodeEvent::PauseCleanup { .. } | NodeEvent::PauseReleased => Ok(()),
             event => self.move_node(agent, event, at),
         }
+    }
+
+    /// How the gate's pause `card` of `task` ends: with nothing new when what the task goes on with
+    /// already waits for its node, or, when its node rested through the pause with nothing left to
+    /// do (its turn ended, or its host did), told to carry on in the same session.
+    fn end_of_pause(&self, task: &TaskId, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<super::LifecycleRecord> {
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card: card.clone() }).is_ok() {
+            return Ok(super::LifecycleRecord::PauseEnded { card: card.clone() });
+        }
+        let kind = match self.interactions.get(card).and_then(|card| card.system_card.as_ref()) {
+            Some(SystemCard::NodePause { pause, .. }) => *pause,
+            _ => NodePauseKind::User,
+        };
+        Ok(super::LifecycleRecord::Resumed { card: card.clone(), input: self.next_input(task), text: Some(go_on_after(kind).into()) })
     }
 
     /// A node of the Agent SDK an older daemon moved through its phase takes `ThroughSdk`, and a

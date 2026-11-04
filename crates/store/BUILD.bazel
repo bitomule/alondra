@@ -50,10 +50,10 @@ low_opt_rust_test(
     name = "recorded_journal_test",
     crate_root = "tests/recorded_journal.rs",
     srcs = ["tests/recorded_journal.rs", "//crates:test_support.rs"],
-    compile_data = ["fixtures/sdk-host-disconnect-loop.sql", "//crates/alondrad:src/domain_store/schema.sql"],
+    compile_data = ["fixtures/disk-pause-resting-node.sql", "fixtures/sdk-host-disconnect-loop.sql", "//crates/alondrad:src/domain_store/schema.sql"],
     edition = "2024",
     env = {"HOME": "."},
-    deps = [":store", "//crates/foundation:foundation"] + all_crate_deps(normal = True, normal_dev = True),
+    deps = [":store", "//crates/domain:domain", "//crates/foundation:foundation"] + all_crate_deps(normal = True, normal_dev = True),
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

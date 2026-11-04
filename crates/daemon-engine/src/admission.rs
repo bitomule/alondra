@@ -153,6 +153,10 @@ struct Inner {
     at_work: BTreeSet<Key>,
     tuning: Tuning,
     told: Told,
+    /// Resumes the node machine refused, by session, with the revision of its task's lifecycle
+    /// then: the pause stays out of the queue until that lifecycle moves, so a node that cannot
+    /// come back is not retried every minute at the head of the queue.
+    refused: BTreeMap<String, u64>,
     /// A sandbox with fast timing: its fake nodes cost nothing, so the Mac never holds a start.
     ignores_mac: bool,
 }
@@ -260,13 +264,16 @@ impl Admission {
         }
         if let Ok(state) = domain.state() {
             inner.saved.pauses.paused = domain_paused(&state);
+            let Inner { saved, refused, .. } = &mut *inner;
+            refused.retain(|session, _| saved.pauses.paused.contains_key(session));
         }
         inner
     }
 
     /// Hands what changed in the pauses to the node machine, then saves the rest of the gate.
-    fn save_with(&self, domain: &DomainRuntime, inner: &Inner) {
-        hand_pauses(domain, &inner.saved.pauses.paused);
+    fn save_with(&self, domain: &DomainRuntime, inner: &mut Inner) {
+        let refused = hand_pauses(domain, &inner.saved.pauses.paused);
+        inner.refused.extend(refused);
         self.save(inner);
     }
 
@@ -315,7 +322,7 @@ impl Admission {
         inner.saved.pauses.paused.insert(session.to_owned(), Paused {
             task, reason, since: now, cut: None, turn_since, cleanup: crate::pauses::Cleanup::Done, released: false,
         });
-        self.save_with(domain, &inner);
+        self.save_with(domain, &mut inner);
         drop(inner);
         self.poke();
         true
@@ -327,7 +334,7 @@ impl Admission {
         let mut inner = self.lock_with(domain);
         inner.saved.pauses.resumed.remove(session);
         crate::pauses::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
-        self.save_with(domain, &inner);
+        self.save_with(domain, &mut inner);
         let paused = inner.saved.pauses.paused.get(session).cloned();
         drop(inner);
         if let Some(paused) = paused.filter(|_| crate::pauses::through_sdk(domain, session)) {
@@ -344,7 +351,8 @@ impl Admission {
             return false;
         }
         inner.saved.pauses.resumed.entry(session.to_owned()).or_insert(now);
-        self.save_with(domain, &inner);
+        inner.refused.remove(session);
+        self.save_with(domain, &mut inner);
         drop(inner);
         self.poke();
         true
@@ -375,7 +383,7 @@ impl Admission {
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
             inner.saved.pauses.paused.remove(session);
             log!("{session} is no longer paused: the user wrote to it");
-            self.save_with(domain, &inner);
+            self.save_with(domain, &mut inner);
         }
     }
 
@@ -385,7 +393,7 @@ impl Admission {
         for paused in inner.saved.pauses.paused.values_mut().filter(|paused| matches!(paused.reason, Reason::Declared { .. })) {
             paused.released = true;
         }
-        self.save_with(domain, &inner);
+        self.save_with(domain, &mut inner);
         drop(inner);
         self.poke();
     }
@@ -425,7 +433,7 @@ impl Admission {
             resume_locked(domain, &mut inner, session, now);
         }
         admit(&mut inner, key, now);
-        self.save_with(domain, &inner);
+        self.save_with(domain, &mut inner);
         Ok(())
     }
 
@@ -598,9 +606,10 @@ fn domain_paused(state: &DomainState) -> BTreeMap<String, Paused> {
 /// Turns the pauses the gate wants into events of the node machine: a new pause, its cleanup, its
 /// release, a resume. The machine refuses what cannot be (pausing a node that waits on the user),
 /// and the gate reads back what it accepted. A node of the Agent SDK has no processes of its own
-/// to clean up, and its task's lifecycle keeps only that it is paused.
-fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
-    let Ok(state) = domain.state() else { return };
+/// to clean up, and its task's lifecycle keeps only that it is paused. Returns the resumes the
+/// machine refused, with the revision of their task's lifecycle.
+fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) -> BTreeMap<String, u64> {
+    let Ok(state) = domain.state() else { return BTreeMap::new() };
     let held = domain_paused(&state);
     let mut events = vec![];
     for (session, paused) in wanted {
@@ -625,13 +634,20 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
     }
     let ended = events.iter().any(|(_, event)| matches!(event, NodeEvent::Resumed | NodeEvent::PauseReleased));
     let mut resumed = vec![];
+    let mut refused = BTreeMap::new();
     for (session, event) in events {
         let key = event.key();
-        let resumes = matches!(event, NodeEvent::Resumed) && state.through_sdk(&AgentId(session.clone()));
+        let resume = matches!(event, NodeEvent::Resumed);
+        let resumes = resume && state.through_sdk(&AgentId(session.clone()));
         match crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.clone()), event) {
             Ok(true) if resumes => resumed.extend(open_task_of(&state, session)),
             Ok(_) => {}
-            Err(error) => log!("could not record that {session} {key}: {error}"),
+            Err(error) => {
+                log!("could not record that {session} {key}: {error}");
+                if let Some(revision) = resume.then(|| lifecycle_revision(&state, session)).flatten() {
+                    refused.insert(session.clone(), revision);
+                }
+            }
         }
     }
     if ended {
@@ -640,6 +656,12 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
     for task in resumed {
         crate::sdk_owner::take_if_unowned(domain, &task);
     }
+    refused
+}
+
+/// The revision of the lifecycle of the open task of the node `session`.
+fn lifecycle_revision(state: &DomainState, session: &str) -> Option<u64> {
+    state.lifecycle_of(&open_task_of(state, session)?).ok().map(|lifecycle| lifecycle.revision())
 }
 
 /// A paused node's turn came: it is told to carry on, or brought back first if it is not connected.
@@ -950,6 +972,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let resumed = &inner.saved.pauses.resumed;
     let returning = inner.saved.pauses.paused.iter()
         .filter(|(_, paused)| !(paused.reason == Reason::Disk && working_tasks.contains(&paused.task)))
+        .filter(|(session, _)| inner.refused.get(*session).is_none_or(|refused| lifecycle_revision(state, session) != Some(*refused)))
         .filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
         Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
         _ => paused.returns(usage_clear && (!matches!(paused.reason, Reason::Usage)
@@ -1093,7 +1116,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         deliver_owed(domain, &mut inner);
         note_at_work(&mut inner, &state);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
-        gate.save_with(domain, &inner);
+        gate.save_with(domain, &mut inner);
         let held = snapshot.queue.first().zip(snapshot.hold.as_ref());
         if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
             let working: Vec<TaskId> = working_tasks(&state).into_iter().collect();
@@ -1114,13 +1137,13 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 let session = session.clone();
                 resume_locked(domain, &mut inner, &session, now);
                 admit(&mut inner, Key::Resume(session), now);
-                gate.save_with(domain, &inner);
+                gate.save_with(domain, &mut inner);
                 None
             }
             (Some(head), None) => {
                 let key = head.key.clone();
                 admit(&mut inner, key.clone(), now);
-                gate.save_with(domain, &inner);
+                gate.save_with(domain, &mut inner);
                 Some(key)
             }
             _ => None,
