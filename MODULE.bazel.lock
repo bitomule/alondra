@@ -744,7 +744,7 @@
         "usagesDigest": "vpMdyjxJRWZZVhNt2Ok1Oj3cFSneICI6mRPjzLIBzE0=",
         "recordedFileInputs": {
           "@@//Cargo.lock": "23f2924cca8f9c417fa6cdc9a6d218f899d7ba5b418ba878a363970049b16fbe",
-          "@@//Cargo.toml": "43df5fc5c0630e9089b872d2ca245a16a6cf7bbe2fe0ca272356f8ef5a3f05e4",
+          "@@//Cargo.toml": "2900d812dfa566acd592b353ae72b49996000cef68a940df7cee05aac5918aad",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
           "@@//crates/agent-runtime/Cargo.toml": "82c56108f7d4e5949935ca409dc8e8ee457bf5239bed43281ac2179ebda0290d",

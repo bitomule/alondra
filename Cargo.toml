@@ -5,7 +5,7 @@ members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation"
 [workspace.package]
 version = "0.3.17"
 edition = "2024"
-license = "FSL-1.1-MIT"
+license = "Elastic-2.0"
 publish = false
 
 [workspace.dependencies]

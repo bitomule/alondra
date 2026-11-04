@@ -2,7 +2,8 @@
   "sourceLanguage": "en",
   "strings": {
     "Licenses": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencias"}}}},
-    "Functional Source License 1.1, MIT Future License": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Functional Source License 1.1, con licencia MIT futura"}}}},
+    "Elastic License 2.0": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elastic License 2.0"}}}},
+    "You can use, copy, modify and share Alondra. You can’t offer it to others as a hosted service.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes usar, copiar, modificar y compartir Alondra. No puedes ofrecerla a otros como servicio gestionado."}}}},
     "The Alondra name and logo are not licensed.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El nombre y el logotipo de Alondra no tienen licencia."}}}},
     "Third-party software": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Software de terceros"}}}},
     "License": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencia"}}}},

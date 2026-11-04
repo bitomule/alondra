@@ -8,6 +8,7 @@ import re
 import unittest
 from pathlib import Path
 
+ELV2_SHA256 = "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2"
 ROOT = Path(os.environ["TEST_SRCDIR"], os.environ["TEST_WORKSPACE"]) if "TEST_SRCDIR" in os.environ else Path(__file__).absolute().parents[2]
 spec = importlib.util.spec_from_file_location("third_party_notices", ROOT / "tools/third_party_notices.py")
 notices = importlib.util.module_from_spec(spec)
@@ -15,18 +16,19 @@ spec.loader.exec_module(notices)
 
 
 class LicenseTests(unittest.TestCase):
-    def test_license_is_the_unmodified_fsl_template_with_the_copyright_line(self):
+    def test_license_is_the_unmodified_elv2_text_with_the_copyright_line(self):
         text = (ROOT / "LICENSE.md").read_text()
-        self.assertTrue(text.startswith("# Functional Source License, Version 1.1, MIT Future License\n"))
-        self.assertIn("\nFSL-1.1-MIT\n", text)
-        self.assertIn("\nCopyright 2026 David Collado Sela\n", text)
-        self.assertNotIn("${", text)
+        self.assertTrue(text.startswith("Copyright 2026 David Collado Sela\n\nElastic License 2.0\n\nURL: https://www.elastic.co/licensing/elastic-license\n"))
+        self.assertTrue(text.rstrip().endswith("**trademark** means trademarks, service marks, and similar rights."))
+        self.assertEqual(hashlib.sha256(text.split("\n\n", 1)[1].encode()).hexdigest(), ELV2_SHA256)
+        for former in ("Functional Source", "FSL", "Future License"):
+            self.assertNotIn(former, text)
 
-    def test_every_manifest_declares_fsl(self):
+    def test_every_manifest_declares_elv2(self):
         workspace = (ROOT / "Cargo.toml").read_text().split("[workspace.package]", 1)[1].split("\n[", 1)[0]
-        self.assertIn('\nlicense = "FSL-1.1-MIT"\n', workspace)
+        self.assertIn('\nlicense = "Elastic-2.0"\n', workspace)
         for manifest in ("agent-host/package.json", "web/package.json"):
-            self.assertEqual(json.loads((ROOT / manifest).read_text())["license"], "FSL-1.1-MIT", manifest)
+            self.assertEqual(json.loads((ROOT / manifest).read_text())["license"], "Elastic-2.0", manifest)
 
     def test_notices_were_generated_from_the_current_lockfiles(self):
         self.assertEqual(notices.stale(ROOT), [])
@@ -34,9 +36,9 @@ class LicenseTests(unittest.TestCase):
     def test_app_licenses_screen_data_matches_the_license_and_the_notices(self):
         self.assertEqual((ROOT / notices.APP_LICENSES).read_text(), notices.app_licenses_source(ROOT))
 
-    def test_notices_say_the_agent_sdk_is_not_under_fsl(self):
+    def test_notices_say_the_agent_sdk_is_not_under_elv2(self):
         text = (ROOT / "THIRD_PARTY_NOTICES.md").read_text()
-        section = text.split("## Anthropic Agent SDK: not under FSL", 1)[1].split("\n## ", 1)[0]
+        section = text.split("## Anthropic Agent SDK: not under ELv2", 1)[1].split("\n## ", 1)[0]
         self.assertIn("not covered by Alondra's license", section)
         self.assertIn("All rights reserved", section)
         self.assertNotIn("@anthropic-ai/claude-agent-sdk 0.3", text.split("## Agent SDK host packages", 1)[1])

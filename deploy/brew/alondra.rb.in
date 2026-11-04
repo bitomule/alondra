@@ -2,7 +2,7 @@ class Alondra < Formula
   desc "Task and notification bridge for Claude and Codex"
   homepage "https://davidcollado.dev"
   version "@VERSION@"
-  license "FSL-1.1-MIT"
+  license "Elastic-2.0"
 
   depends_on macos: :tahoe
   depends_on arch: :arm64

@@ -109,7 +109,7 @@ export default function Landing() {
 
     <section className="band wrap license-note" aria-labelledby="license-title">
       <h2 id="license-title">The source is there to read.</h2>
-      <p>Alondra is released under FSL-1.1-MIT. Use it for your own work, inside your company, for non-commercial research or to provide services to a client. You may not sell it as a competing product, and every version becomes MIT two years after it is published.</p>
+      <p>Alondra is released under the Elastic License 2.0. Use it, copy it, change it and share it. You may not offer it to others as a hosted or managed service.</p>
       <p><Link className="text-link" to="/license">What the license allows</Link></p>
     </section>
   </>;

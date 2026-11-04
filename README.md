@@ -194,15 +194,14 @@ reports go through [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-Alondra is released under the [Functional Source License, Version 1.1, MIT Future License](https://fsl.software)
-(FSL-1.1-MIT). The full text is in [`LICENSE.md`](LICENSE.md); the notices for the software Alondra includes are in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Alondra is released under the [Elastic License 2.0](https://www.elastic.co/licensing/elastic-license)
+(ELv2, SPDX `Elastic-2.0`). The full text is in [`LICENSE.md`](LICENSE.md); the notices for the software Alondra
+includes are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
-- **You may** use it for your own work, inside your company, for education and research, and to
-  provide professional services to a client. You may read it, change it and contribute to it.
-- **You may not** offer Alondra, or something substantially similar, as a commercial product or
-  service that competes with it.
-- **Each version becomes MIT** two years after it is published.
+- **You may** use it, copy it, modify it and distribute it, for yourself, inside your company or
+  for a client.
+- **You may not** offer Alondra to others as a hosted or managed service that gives them a substantial
+  part of its features.
 - For a permission or a commercial license, write to
   [licensing@getalondra.com](mailto:licensing@getalondra.com).
 

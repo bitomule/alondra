@@ -4,10 +4,9 @@ Thanks for helping. Read this before opening a pull request.
 
 ## Licensing of contributions
 
-Alondra is under the Functional Source License, Version 1.1, MIT Future License (see
-`LICENSE.md`). By sending a contribution you agree that it is released under that same license,
-and that, like every other version, it becomes MIT two years after it is published. There is no
-separate contributor agreement and no copyright assignment: you keep your copyright.
+Alondra is under the Elastic License 2.0 (see `LICENSE.md`). By sending a contribution you agree
+that it is released under that same license. There is no separate contributor agreement and no
+copyright assignment: you keep your copyright.
 
 ## Where things go
 

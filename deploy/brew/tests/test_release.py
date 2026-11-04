@@ -104,7 +104,7 @@ class PublicPayloadTests(unittest.TestCase):
 
     def test_the_formula_declares_the_license_and_installs_it(self):
         formula = (r.ROOT / 'deploy/brew/alondra.rb.in').read_text()
-        self.assertIn('license "FSL-1.1-MIT"', formula)
+        self.assertIn('license "Elastic-2.0"', formula)
         self.assertIn('prefix.install "LICENSE.md", "THIRD_PARTY_NOTICES.md"', formula)
 
     def test_bazel_stamps_the_version_cargo_ships(self):

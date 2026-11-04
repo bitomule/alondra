@@ -46,7 +46,7 @@ export default function PublicLayout() {
             <Link to="/security">Security and privacy</Link>
             <Link to="/license">License</Link>
           </nav>
-          <p className="footer-legal">Alondra is source-available under FSL-1.1-MIT. The name and the logo are not part of the license.</p>
+          <p className="footer-legal">Alondra is source-available under the Elastic License 2.0. The name and the logo are not part of the license.</p>
         </div>
       </footer>
     </div>

@@ -36,12 +36,15 @@ public struct LicensesScreen: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Alondra").foregroundStyle(Palette.ink)
-                        Text("Functional Source License 1.1, MIT Future License")
+                        Text("Elastic License 2.0")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
             } footer: {
-                Text("The Alondra name and logo are not licensed.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("You can use, copy, modify and share Alondra. You can’t offer it to others as a hosted service.")
+                    Text("The Alondra name and logo are not licensed.")
+                }
             }
             Section {
                 ForEach(AppLicenses.packages) { license in
