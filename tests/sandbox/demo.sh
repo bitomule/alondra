@@ -22,9 +22,6 @@ expected = {
     "Offline mode",
     "Orders refresh rate",
 }
-missing = expected - titles
-assert not missing, f"the demo world lacks {missing}; it has {titles}"
-for title in titles:
-    assert not any(word in title for word in ("Redraft", "Lumo", "BlurCamera", "Quill", "MealScale")), title
+assert titles == expected, f"the demo world has {titles}, not only its invented {expected}"
 print(f"The demo world has its {len(expected)} invented tasks")
 PY
