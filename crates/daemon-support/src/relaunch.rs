@@ -17,6 +17,9 @@ pub const EVERY: Duration = Duration::from_secs(60);
 /// same binary is checked again once this long has passed.
 const RETRY_REJECTED: Duration = Duration::from_secs(600);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(300);
+/// Asked after preflight has run the binary once: the first start of a freshly installed binary is
+/// the slow one (the system checks it before it runs), and that start gets the preflight budget.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
@@ -126,14 +129,15 @@ impl Watcher {
 
 /// Runs the binary found at `path` the way launchd would, with this daemon's environment.
 pub fn run_preflight(path: &Path) -> Outcome {
-    let version = output(path, "--version", Duration::from_secs(10))
-        .and_then(|(ok, text)| ok.then(|| text.split_whitespace().last().map(str::to_string)).flatten());
-    let passed = match output(path, "--preflight", PREFLIGHT_TIMEOUT) {
+    let preflight = output(path, "--preflight", PREFLIGHT_TIMEOUT);
+    let passed = match &preflight {
         None => Err(format!("{} --preflight did not finish", path.display())),
         Some((true, _)) => Ok(()),
         Some((false, text)) => Err(text.lines().map(str::trim).filter(|l| !l.is_empty()).last()
             .unwrap_or("preflight failed without a reason").to_string()),
     };
+    let version = preflight.and_then(|_| output(path, "--version", VERSION_TIMEOUT))
+        .and_then(|(ok, text)| ok.then(|| text.split_whitespace().last().map(str::to_string)).flatten());
     Outcome { version, passed }
 }
 
@@ -319,5 +323,21 @@ mod tests {
         let outcome = run_preflight(&bin);
         assert_eq!(outcome.version.as_deref(), Some("0.2.0"));
         assert_eq!(outcome.passed, Err("preflight failed: bootstrap failed integrity audit".into()));
+    }
+
+    #[test]
+    fn a_slow_first_start_of_a_new_binary_still_reports_its_version() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir: &Path = &scratch_directory;
+        std::fs::create_dir_all(dir).unwrap();
+        let bin = dir.join("alondrad");
+        let started = dir.join("started");
+        replace(&bin, &format!(
+            "#!/bin/sh\n[ -e '{0}' ] || {{ touch '{0}'; sleep 12; }}\n[ \"$1\" = --version ] && echo 'alondrad 99.0.0'\nexit 0\n",
+            started.display()));
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let outcome = run_preflight(&bin);
+        assert_eq!(outcome.passed, Ok(()));
+        assert_eq!(outcome.version.as_deref(), Some("99.0.0"));
     }
 }
