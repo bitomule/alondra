@@ -50,6 +50,8 @@ struct Server {
     iroh_relay: Option<String>,
     /// The `owner/repo` crash reports go to, announced in bootstrap when whoever runs the relay sets it.
     report_repo: Option<String>,
+    /// The sign-in service apps and the CLI use with this relay, announced in bootstrap.
+    identity: Option<Identity>,
     testflight_url: Option<String>,
     operator: operator::Operator,
     #[cfg(test)]
@@ -110,10 +112,10 @@ async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
     }
 }
 async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
-    (StatusCode::OK, Json(bootstrap_body(&server.epoch, server.iroh_relay.as_deref(), server.report_repo.as_deref())))
+    (StatusCode::OK, Json(bootstrap_body(&server.epoch, server.iroh_relay.as_deref(), server.report_repo.as_deref(), server.identity.as_ref())))
 }
 
-fn bootstrap_body(epoch: &str, iroh_relay: Option<&str>, report_repo: Option<&str>) -> Value {
+fn bootstrap_body(epoch: &str, iroh_relay: Option<&str>, report_repo: Option<&str>, identity: Option<&Identity>) -> Value {
     let mut body = json!({"protocol":1,"epoch":epoch});
     if let Some(iroh_relay) = iroh_relay {
         body["iroh_relay"] = json!(iroh_relay);
@@ -121,7 +123,33 @@ fn bootstrap_body(epoch: &str, iroh_relay: Option<&str>, report_repo: Option<&st
     if let Some(report_repo) = report_repo {
         body["report_repo"] = json!(report_repo);
     }
+    if let Some(identity) = identity {
+        body["identity"] = json!(identity);
+    }
     body
+}
+
+/// The OIDC issuer whose tokens this relay accepts and the client each kind of app signs in as.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+struct Identity {
+    issuer: String,
+    apple_client_id: String,
+    cli_client_id: String,
+}
+
+/// `ALONDRA_APPLE_CLIENT_ID` and `ALONDRA_CLI_CLIENT_ID`: both, or neither for a relay that
+/// announces no sign-in service.
+fn identity(issuer: &str, apple: Option<String>, cli: Option<String>) -> anyhow::Result<Option<Identity>> {
+    let id = |value: Option<String>| value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let valid = |id: &str| id.len() <= 255 && id.chars().all(|c| c.is_ascii_graphic());
+    match (id(apple), id(cli)) {
+        (None, None) => Ok(None),
+        (Some(apple_client_id), Some(cli_client_id)) => {
+            anyhow::ensure!(valid(&apple_client_id) && valid(&cli_client_id), "OIDC client ids must be printable ASCII");
+            Ok(Some(Identity { issuer: issuer.to_owned(), apple_client_id, cli_client_id }))
+        }
+        _ => anyhow::bail!("ALONDRA_APPLE_CLIENT_ID and ALONDRA_CLI_CLIENT_ID must be set together"),
+    }
 }
 
 /// `ALONDRA_REPORT_REPO`: a GitHub `owner/repo`, or unset for none.
@@ -917,6 +945,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
         Err(_) => None,
     };
+    let identity = identity(&auth.config.issuer, std::env::var("ALONDRA_APPLE_CLIENT_ID").ok(), std::env::var("ALONDRA_CLI_CLIENT_ID").ok())?;
     let server = Arc::new(Server {
         activity: activity::Store::open(&auth.config.device_registry_path)?,
         auth,
@@ -932,6 +961,7 @@ pub async fn run() -> anyhow::Result<()> {
         iroh_access_token,
         iroh_relay,
         report_repo: report_repo(std::env::var("ALONDRA_REPORT_REPO").ok())?,
+        identity,
         testflight_url: testflight::from_env()?,
         operator,
         #[cfg(test)]
@@ -1119,6 +1149,7 @@ mod http_tests {
             iroh_relay: iroh_access_token.as_ref().map(|_| TEST_IROH_RELAY.to_owned()),
             iroh_access_token,
             report_repo: None,
+            identity: None,
             testflight_url: None,
             operator: operator::Operator::default(),
             #[cfg(test)]
@@ -3412,14 +3443,27 @@ mod http_tests {
 
         #[test]
         fn bootstrap_announces_the_report_repo_only_when_one_is_configured() {
-            assert_eq!(bootstrap_body("e", None, None), json!({"protocol": 1, "epoch": "e"}));
-            assert_eq!(bootstrap_body("e", None, Some("owner/reports"))["report_repo"], "owner/reports");
+            assert_eq!(bootstrap_body("e", None, None, None), json!({"protocol": 1, "epoch": "e"}));
+            assert_eq!(bootstrap_body("e", None, Some("owner/reports"), None)["report_repo"], "owner/reports");
             assert_eq!(report_repo(None).unwrap(), None);
             assert_eq!(report_repo(Some(" ".into())).unwrap(), None);
             assert_eq!(report_repo(Some("bitomule/alondra-issues".into())).unwrap().as_deref(), Some("bitomule/alondra-issues"));
             for bad in ["bitomule", "a/b/c", "/repo", "owner/", "https://github.com/a/b", "a b/c"] {
                 assert!(report_repo(Some(bad.into())).is_err(), "{bad}");
             }
+        }
+
+        #[test]
+        fn bootstrap_announces_the_sign_in_service_only_when_both_clients_are_configured() {
+            let issuer = "https://id.example/realms/alondra";
+            assert_eq!(identity(issuer, None, None).unwrap(), None);
+            assert_eq!(identity(issuer, Some(" ".into()), None).unwrap(), None);
+            for (apple, cli) in [(Some("app"), None), (None, Some("cli")), (Some("a b"), Some("cli"))] {
+                assert!(identity(issuer, apple.map(Into::into), cli.map(Into::into)).is_err(), "{apple:?} {cli:?}");
+            }
+            let announced = identity(issuer, Some("app".into()), Some("cli".into())).unwrap();
+            assert_eq!(bootstrap_body("e", None, None, announced.as_ref())["identity"],
+                json!({"issuer": issuer, "apple_client_id": "app", "cli_client_id": "cli"}));
         }
 
         #[tokio::test]

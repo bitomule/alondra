@@ -769,6 +769,7 @@ mod tests {
             iroh_access_token: None,
             iroh_relay: None,
             report_repo: None,
+            identity: None,
             testflight_url: None,
             operator: crate::operator::Operator::default(),
             test_directory: Some(scratch_directory),
