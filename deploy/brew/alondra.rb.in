@@ -1,6 +1,6 @@
 class Alondra < Formula
   desc "Task and notification bridge for Claude and Codex"
-  homepage "https://davidcollado.dev"
+  homepage "https://github.com/bitomule/alondra"
   version "@VERSION@"
   license "Elastic-2.0"
 
