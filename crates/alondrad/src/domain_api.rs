@@ -5,10 +5,11 @@ use crate::auth::{Signed, is_local};
 use crate::domain_authority::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
 use crate::domain_runtime::DomainRuntime;
+pub(crate) use alondra_daemon_engine::reply::status_for;
 use std::path::Path as FsPath;
 use alondra_core::domain::*;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::{Extension, Json, Router};
@@ -1201,16 +1202,6 @@ pub(crate) async fn resource_command_runtime(
         Err(StoreError::Storage(error)) => return Err(error),
     })
 }
-pub(crate) fn status_for(error: &DomainError) -> StatusCode {
-    match error.code.as_str() {
-        "forbidden" | "not_assigned" => StatusCode::FORBIDDEN,
-        "not_found" => StatusCode::NOT_FOUND,
-        "invalid_input" | "invalid_action_for_kind" | "launch_plan_required" => StatusCode::UNPROCESSABLE_ENTITY,
-        "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        "storage_unavailable" => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::CONFLICT,
-    }
-}
 pub(crate) fn domain_error(error: DomainError) -> Response {
     (status_for(&error), Json(error)).into_response()
 }
@@ -1251,6 +1242,7 @@ fn store_error(error: StoreError) -> Response {
 mod tests {
     use super::*;
     use crate::domain_authority::Principal;
+    use axum::http::StatusCode;
     use base64::{
         Engine as _,
         engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},

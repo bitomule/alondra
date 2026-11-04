@@ -229,7 +229,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--daemon", required=True)
     ap.add_argument("--cli", required=True)
-    ap.add_argument("--seed", required=True, help="the alondrad_test binary")
+    ap.add_argument("--seed", required=True, help="the daemon_engine_test binary")
     ap.add_argument("--nodes", type=int, default=9)
     ap.add_argument("--hook-every", type=float, default=0.25, help="seconds between one node's hooks")
     ap.add_argument("--clients", type=int, default=3)

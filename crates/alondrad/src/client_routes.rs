@@ -3,7 +3,6 @@
 //! the only authority; nothing here decides an action.
 use crate::locks::Poisonable as _;
 mod close;
-mod live;
 mod mcp;
 mod new_work;
 mod pr_details;
@@ -29,8 +28,13 @@ use std::time::Duration;
 
 pub(crate) use crate::node_close::Sessions;
 pub(crate) use new_work::Github;
-pub(crate) use live::{ClosedNode, Live, Relaunch};
-pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView, Viewed};
+pub(crate) use alondra_daemon_engine::live::Relaunch;
+#[cfg(test)]
+pub(crate) use alondra_daemon_engine::live::{ClosedNode, Live};
+pub(crate) use alondra_daemon_engine::reply::Reply;
+pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView};
+#[cfg(test)]
+pub(crate) use pr_details::Viewed;
 #[cfg(test)]
 pub(crate) use pr_details::FakePrView;
 
@@ -68,33 +72,6 @@ pub(crate) struct Client {
     device_languages_path: PathBuf,
     /// A holder that panics leaves it whole, so it is recovered: one assignment or clone.
     report_cli: std::sync::Mutex<Option<PathBuf>>,
-}
-
-/// What a route answers: the status and the JSON body both the local listener and the relay
-/// carry.
-pub(crate) struct Reply {
-    pub status: StatusCode,
-    pub body: Value,
-}
-
-impl Reply {
-    fn ok(body: Value) -> Self {
-        Self { status: StatusCode::OK, body }
-    }
-
-    fn error(error: DomainError) -> Self {
-        Self { status: crate::domain_api::status_for(&error), body: json!(error) }
-    }
-
-    pub(crate) fn into_value(self) -> Value {
-        json!({"status": self.status.as_u16(), "body": self.body})
-    }
-}
-
-impl IntoResponse for Reply {
-    fn into_response(self) -> Response {
-        (self.status, Json(self.body)).into_response()
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -466,7 +443,7 @@ impl Client {
             Some((machine, usage, _)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
-        let nodes = live::runtime_nodes(self.domain.live.nodes(), &state, |task| state_times.get(task).copied());
+        let nodes = alondra_daemon_engine::live::runtime_nodes(self.domain.live.nodes(), &state, |task| state_times.get(task).copied());
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
             let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
             (id.0.clone(), json!({"project": task.project, "state_since": state_times.get(id),

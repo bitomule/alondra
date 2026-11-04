@@ -7,14 +7,14 @@ apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:G-16	crash report issues found by their GitHub title, which anyone can edit
-crates/alondrad/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
-crates/alondrad/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns
+crates/daemon-engine/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
+crates/daemon-engine/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns
 crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	own-grammar	an Alondra card id built from another of its ids; decides nothing
 crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	format	GitHub release tag of a version
 crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
 crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
-crates/alondrad/src/orchestrator_codex.rs	let detail = bounded_public(&item.to_string(),16384).to_lowercase();	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
-crates/alondrad/src/orchestrator_codex.rs	if detail.contains("forbidden") || detail.contains("permission_denied") || detail.contains("permission denied") || detail.contains("user denied") {	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
+crates/daemon-engine/src/orchestrator_codex.rs	let detail = bounded_public(&item.to_string(),16384).to_lowercase();	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
+crates/daemon-engine/src/orchestrator_codex.rs	if detail.contains("forbidden") || detail.contains("permission_denied") || detail.contains("permission denied") || detail.contains("user denied") {	finding:codex-mcp-denial	MCP tool failure taken for a permission denial by its text (§4)
 crates/alondra/src/client.rs	&& serde_json::from_slice::<Value>(&answer).is_ok_and(|value| value["error"] == "wrong signature")	finding:G-15	signed retry decided by a code in a field that also carries verify's phrases
 agent-host/codex-session.ts	this.config.nativeRpcError?.(pending.method, String(error.code ?? 'failed'), typeof error.message === 'string' ? error.message.slice(0, 2000) : '');	display	message carried through to the card or diagnostic as it is
 agent-host/codex-session.ts	this.childStates.set(child, { parent, activation: activating ? id : old?.activation ?? id, status, pending: activating && started, ...(text(state.message) ? { report: text(state.message) } : old?.report && (!activating || old.activation === id) ? { report: old.report } : {}) });	display	message carried through to the card or diagnostic as it is
@@ -81,15 +81,15 @@ crates/alondra/src/tui/unified_diff.rs	if let Some(from) = raw.strip_prefix("ren
 crates/alondra/src/tui/unified_diff.rs	if let Some(to) = raw.strip_prefix("rename to ") {	format	git diff headers
 crates/alondra/src/tui/unified_diff.rs	if raw.starts_with("Binary files ") || raw == "GIT binary patch" {	format	git diff headers
 crates/alondrad/src/domain_api.rs	for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {	format	git diff headers
-crates/alondrad/src/domain_messages.rs	hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest	format	digest hex
+crates/daemon-engine/src/domain_messages.rs	hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest	format	digest hex
 crates/daemon-support/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
 crates/daemon-support/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
 crates/daemon-support/src/launch_worktree.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
-crates/alondrad/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
-crates/alondrad/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
-crates/alondrad/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
-crates/alondrad/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
-crates/alondrad/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
+crates/daemon-engine/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
+crates/daemon-engine/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
+crates/daemon-engine/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
+crates/daemon-engine/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
+crates/daemon-engine/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
 crates/daemon-support/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
 crates/core/src/accounts.rs	if !names.insert(name.to_lowercase()) {	format	emails and account names compare without case
 crates/core/src/artifact.rs	if kind == "claude.ai/artifact/" && text[..i].ends_with("claude.ai/code/") {	format	artifact URL
@@ -138,10 +138,10 @@ crates/alondra/src/tui.rs	if let Some(view) = self.card_view.clone().filter(|vie
 crates/alondra/src/tui/bindings.rs	_ => match hint.to_ascii_lowercase().as_str() {	own-grammar	key hint grammar
 crates/alondra/src/tui/inbox.rs	match hint.to_ascii_lowercase().as_str() {	own-grammar	key hint grammar
 crates/alondra/src/tui/view_render.rs	key.strip_prefix(SECTION_HEADER)	own-grammar	view key grammar
-crates/alondrad/src/claude_access.rs	command_id: format!("probe-{provider:?}-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),	own-grammar	id built by Alondra
-crates/alondrad/src/domain_store.rs	ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");	own-grammar	policy revision Alondra composes
+crates/daemon-engine/src/claude_access.rs	command_id: format!("probe-{provider:?}-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),	own-grammar	id built by Alondra
+crates/daemon-engine/src/domain_store.rs	ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");	own-grammar	policy revision Alondra composes
 crates/daemon-support/src/hook_text.rs	tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;	own-grammar	MCP tool name token mcp__<server>__<tool>
-crates/alondrad/src/orchestrator_provider.rs	if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {	own-grammar	policy revision Alondra composes
+crates/daemon-engine/src/orchestrator_provider.rs	if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {	own-grammar	policy revision Alondra composes
 crates/alondrad/src/views/actions.rs	value.as_bytes()[19].to_ascii_lowercase(),	own-grammar	operation id grammar
 crates/core/src/activity.rs	let alondra_call = h.event == "PostToolUse" && h.tool_name.as_deref().is_some_and(|t| t.starts_with(ALONDRA_TOOLS));	own-grammar	MCP tool name token mcp__<server>__<tool>
 crates/core/src/domain/cited_files.rs	let path = line.strip_prefix("## ")?.trim();	own-grammar	heading Alondra writes for an included file
@@ -162,8 +162,8 @@ crates/store/src/journal_format.rs	part.strip_prefix("CREATE ")	own-grammar	migr
 crates/store/src/journal_format.rs	let (kind, remaining) = if let Some(value) = body.strip_prefix("TABLE IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
-crates/alondrad/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
-crates/alondrad/src/domain_store/typed_cards.rs	let owner = cause.as_deref().and_then(|cause| cause.strip_prefix(REFUSED_CARDS_CAUSE));	own-grammar	one-time upgrade of refused-cards problems stored before system_card
+crates/daemon-engine/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
+crates/daemon-engine/src/domain_store/typed_cards.rs	let owner = cause.as_deref().and_then(|cause| cause.strip_prefix(REFUSED_CARDS_CAUSE));	own-grammar	one-time upgrade of refused-cards problems stored before system_card
 crates/alondra/src/account.rs	if header_host.is_none_or(|h| h.trim() != format!("127.0.0.1:{expected_port}")) {	security-parse	Host header of the loopback callback
 crates/alondra/src/report/canary.rs	let lowered = value.to_lowercase();	security-parse	privacy check of a failure report before it is sent
 crates/alondra/src/report/canary.rs	let lowered = text.to_lowercase();	security-parse	privacy check of a failure report before it is sent
@@ -211,4 +211,4 @@ crates/core/src/options.rs	let mut out: Vec<String> = ranked.iter().filter(|n| q
 crates/core/src/views/misc.rs	.to_ascii_lowercase();	user-search	search or sort over text the user filters
 crates/core/src/views/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains(&q))	user-search	search or sort over text the user filters
 crates/alondra/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
-crates/alondrad/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
+crates/daemon-engine/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110

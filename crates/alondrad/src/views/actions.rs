@@ -4,7 +4,7 @@
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
 
-use crate::locks::Poisonable as _;
+use alondra_daemon_engine::local_actions::{LocalActionReceipt, LocalActionResource, LocalResourceGuard};
 #[path = "model_input.rs"]
 mod model_input;
 
@@ -177,7 +177,7 @@ pub(super) async fn execute(
     let (_resources, _worker) = if gate.is_some() {
         loop {
             let requested = action.as_ref().map_or_else(Vec::new,
-                |action| LocalActionResource::of(&domain.state().expect("domain snapshot unavailable"), action));
+                |action| resources_of(&domain.state().expect("domain snapshot unavailable"), action));
             let mut held = Vec::with_capacity(requested.len());
             for (key, exclusive) in &requested {
                 let resource = domain.local_actions.resource(key.clone());
@@ -189,7 +189,7 @@ pub(super) async fn execute(
             }
             let worker = domain.local_actions.workers.acquire().await.expect("local action workers closed");
             let current = action.as_ref().map_or_else(Vec::new,
-                |action| LocalActionResource::of(&domain.state().expect("domain snapshot unavailable"), action));
+                |action| resources_of(&domain.state().expect("domain snapshot unavailable"), action));
             if current == requested { break (held, Some(worker)); }
         }
     } else { (Vec::new(), None) };
@@ -212,152 +212,63 @@ pub(super) async fn execute(
     }
 }
 
-struct LocalActionReceipt {
-    body: Vec<u8>,
-    reply: Value,
-    at: std::time::Instant,
-}
-
-type LocalActionKey = (String, String);
-struct LocalActionGate {
-    lock: tokio::sync::Mutex<Option<std::sync::Arc<LocalActionReceipt>>>,
-    _slot: tokio::sync::OwnedSemaphorePermit,
-}
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum LocalActionResource {
-    Interaction(String),
-    Agent(String),
-    Task(String),
-    PullRequest(String),
-    OrchestratorDecision,
-    NodeLimitSettings,
-    AccountSettings,
-    AllowedRules,
-    Mcp(String),
-}
-enum LocalResourceGuard {
-    Read { _guard: tokio::sync::OwnedRwLockReadGuard<()> },
-    Write { _guard: tokio::sync::OwnedRwLockWriteGuard<()> },
-}
-impl LocalActionResource {
-    fn of(state: &alondra_core::domain::DomainState, action: &ActionId) -> Vec<(Self, bool)> {
-        use alondra_core::domain::{AgentId, PrId, Scope};
-        let mut keys = std::collections::BTreeMap::new();
-        let mut add = |key, exclusive| { keys.entry(key).and_modify(|write| *write |= exclusive).or_insert(exclusive); };
-        match action.verb {
-            Verb::Reply => {
-                add(Self::Interaction(action.subject.clone()), true);
-                if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
-                    && let Scope::Task { task_id } = &interaction.scope
-                {
-                    add(Self::Task(task_id.0.clone()), false);
-                    if let Some(agent) = state.tasks.get(task_id).and_then(|task| task.agent_id.as_ref()) {
-                        add(Self::Agent(agent.0.clone()), false);
-                    }
+fn resources_of(state: &alondra_core::domain::DomainState, action: &ActionId) -> Vec<(LocalActionResource, bool)> {
+    use alondra_core::domain::{AgentId, PrId, Scope};
+    let mut keys = std::collections::BTreeMap::new();
+    let mut add = |key, exclusive| { keys.entry(key).and_modify(|write| *write |= exclusive).or_insert(exclusive); };
+    match action.verb {
+        Verb::Reply => {
+            add(LocalActionResource::Interaction(action.subject.clone()), true);
+            if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
+                && let Scope::Task { task_id } = &interaction.scope
+            {
+                add(LocalActionResource::Task(task_id.0.clone()), false);
+                if let Some(agent) = state.tasks.get(task_id).and_then(|task| task.agent_id.as_ref()) {
+                    add(LocalActionResource::Agent(agent.0.clone()), false);
                 }
-            },
-            Verb::Msg if action.subject != "view" => {
-                add(Self::Agent(action.subject.clone()), false);
-                if let Some(task) = &action.extra { add(Self::Task(task.clone()), false); }
-            },
-            Verb::AskPr | Verb::Conflicts => {
-                if let Some(pr) = state.pull_requests.get(&PrId(action.subject.clone())) {
-                    add(Self::Task(pr.task_id.0.clone()), false);
-                    if let Some(agent) = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.as_ref()) {
-                        add(Self::Agent(agent.0.clone()), false);
-                    }
+            }
+        },
+        Verb::Msg if action.subject != "view" => {
+            add(LocalActionResource::Agent(action.subject.clone()), false);
+            if let Some(task) = &action.extra { add(LocalActionResource::Task(task.clone()), false); }
+        },
+        Verb::AskPr | Verb::Conflicts => {
+            if let Some(pr) = state.pull_requests.get(&PrId(action.subject.clone())) {
+                add(LocalActionResource::Task(pr.task_id.0.clone()), false);
+                if let Some(agent) = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.as_ref()) {
+                    add(LocalActionResource::Agent(agent.0.clone()), false);
                 }
-            },
-            Verb::Close => add(Self::Agent(action.subject.clone()), true),
-            Verb::Relaunch | Verb::Resume | Verb::Pause => {
-                if state.agents.contains_key(&AgentId(action.subject.clone())) {
-                    add(Self::Agent(action.subject.clone()), true);
-                } else {
-                    add(Self::Task(action.subject.clone()), true);
-                    if let Some(agent) = state.tasks.get(&TaskId(action.subject.clone())).and_then(|task| task.agent_id.as_ref()) {
-                        add(Self::Agent(agent.0.clone()), true);
-                    }
+            }
+        },
+        Verb::Close => add(LocalActionResource::Agent(action.subject.clone()), true),
+        Verb::Relaunch | Verb::Resume | Verb::Pause => {
+            if state.agents.contains_key(&AgentId(action.subject.clone())) {
+                add(LocalActionResource::Agent(action.subject.clone()), true);
+            } else {
+                add(LocalActionResource::Task(action.subject.clone()), true);
+                if let Some(agent) = state.tasks.get(&TaskId(action.subject.clone())).and_then(|task| task.agent_id.as_ref()) {
+                    add(LocalActionResource::Agent(agent.0.clone()), true);
                 }
-            },
-            Verb::CloseUnmerged => {
-                if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
-                    && let Some(pr) = pr_of(state, current_delivery(state, interaction))
-                {
-                    add(Self::PullRequest(pr.id.0.clone()), true);
-                    add(Self::Task(pr.task_id.0.clone()), true);
-                }
-            },
-            Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
-            Verb::SetLimit => add(Self::NodeLimitSettings, true),
-            Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
-            | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ProviderConnect | Verb::AccountAdd | Verb::ModelProfile => add(Self::AccountSettings, true),
-            Verb::TaskSelection | Verb::MoveTask => add(Self::Task(action.subject.clone()), true),
-            Verb::RemoveRule => add(Self::AllowedRules, true),
-            Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(Self::Mcp(action.subject.clone()), true),
-            _ => {},
-        }
-        keys.into_iter().collect()
+            }
+        },
+        Verb::CloseUnmerged => {
+            if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
+                && let Some(pr) = pr_of(state, current_delivery(state, interaction))
+            {
+                add(LocalActionResource::PullRequest(pr.id.0.clone()), true);
+                add(LocalActionResource::Task(pr.task_id.0.clone()), true);
+            }
+        },
+        Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(LocalActionResource::OrchestratorDecision, true),
+        Verb::SetLimit => add(LocalActionResource::NodeLimitSettings, true),
+        Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
+        | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ProviderConnect | Verb::AccountAdd | Verb::ModelProfile => add(LocalActionResource::AccountSettings, true),
+        Verb::TaskSelection | Verb::MoveTask => add(LocalActionResource::Task(action.subject.clone()), true),
+        Verb::RemoveRule => add(LocalActionResource::AllowedRules, true),
+        Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(LocalActionResource::Mcp(action.subject.clone()), true),
+        _ => {},
     }
-}
-pub(crate) struct LocalActions {
-    /// A holder that panics leaves it whole, so it is recovered: replay receipts, pruned and
-    /// inserted one by one.
-    receipts: std::sync::Mutex<std::collections::HashMap<LocalActionKey, std::sync::Arc<LocalActionReceipt>>>,
-    /// A holder that panics leaves it whole, so it is recovered: weak pointers, pruned and inserted
-    /// one by one.
-    gates: std::sync::Mutex<std::collections::HashMap<LocalActionKey, std::sync::Weak<LocalActionGate>>>,
-    slots: std::sync::Arc<tokio::sync::Semaphore>,
-    workers: tokio::sync::Semaphore,
-    /// A holder that panics leaves it whole, so it is recovered: weak pointers, pruned and inserted
-    /// one by one.
-    resources: std::sync::Mutex<std::collections::HashMap<LocalActionResource, std::sync::Weak<tokio::sync::RwLock<()>>>>,
-    pub(super) journal_admissions: std::sync::Arc<tokio::sync::Semaphore>,
-    pub(super) journal_worker: std::sync::Arc<tokio::sync::Semaphore>,
-}
-impl Default for LocalActions {
-    fn default() -> Self {
-        Self {
-            receipts: Default::default(), gates: Default::default(),
-            slots: std::sync::Arc::new(tokio::sync::Semaphore::new(1024)),
-            workers: tokio::sync::Semaphore::new(2), resources: Default::default(),
-            journal_admissions: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
-            journal_worker: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
-        }
-    }
-}
-impl LocalActions {
-    fn gate(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionGate>> {
-        let mut gates = self.gates.lock_or_recover("the local action gates");
-        gates.retain(|_, gate| gate.strong_count() > 0);
-        if let Some(gate) = gates.get(key).and_then(std::sync::Weak::upgrade) { return Some(gate); }
-        let slot = self.slots.clone().try_acquire_owned().ok()?;
-        let gate = std::sync::Arc::new(LocalActionGate { lock: Default::default(), _slot: slot });
-        gates.insert(key.clone(), std::sync::Arc::downgrade(&gate));
-        Some(gate)
-    }
-    fn resource(&self, key: LocalActionResource) -> std::sync::Arc<tokio::sync::RwLock<()>> {
-        let mut resources = self.resources.lock_or_recover("the local action resources");
-        resources.retain(|_, gate| gate.strong_count() > 0);
-        if let Some(gate) = resources.get(&key).and_then(std::sync::Weak::upgrade) { return gate; }
-        let gate = std::sync::Arc::new(tokio::sync::RwLock::new(()));
-        resources.insert(key, std::sync::Arc::downgrade(&gate));
-        gate
-    }
-    fn cached(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionReceipt>> {
-        let mut receipts = self.receipts.lock_or_recover("the local action receipts");
-        receipts.retain(|_, entry| entry.at.elapsed() < std::time::Duration::from_secs(600));
-        receipts.get(key).cloned()
-    }
-    fn remember(&self, key: LocalActionKey, receipt: LocalActionReceipt) -> std::sync::Arc<LocalActionReceipt> {
-        let mut receipts = self.receipts.lock_or_recover("the local action receipts");
-        if receipts.len() >= 1024 {
-            let oldest = receipts.iter().min_by_key(|(_, entry)| entry.at).map(|(key, _)| key.clone());
-            if let Some(oldest) = oldest { receipts.remove(&oldest); }
-        }
-        let receipt = std::sync::Arc::new(receipt);
-        receipts.insert(key, receipt.clone());
-        receipt
-    }
+    keys.into_iter().collect()
 }
 
 pub(crate) fn external_request(body: &Value) -> bool {

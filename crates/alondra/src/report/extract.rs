@@ -282,12 +282,13 @@ fn unescape(text: &str) -> String {
 /// Where the catalog's calls are, relative to the workspace root: the daemon, its launcher, and the
 /// crates it runs whose `eprintln!` also land in `alondrad.log`.
 pub const LOG_SOURCES: &[&str] =
-    &["crates/alondrad/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/core/src", "crates/provider-claude/src"];
+    &["crates/alondrad/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/daemon-engine/src", "crates/core/src",
+        "crates/provider-claude/src"];
 
 /// Functions that word a whole log line, which the daemon then logs as `log!("{line}")`: each of
 /// their `format!` texts is a template too.
 pub const LINE_BUILDERS: &[(&str, &str)] =
-    &[("crates/alondrad/src/admission.rs", "hold_line"), ("crates/alondrad/src/domain_orchestrator.rs", "account_wait_change")];
+    &[("crates/daemon-engine/src/admission.rs", "hold_line"), ("crates/daemon-engine/src/domain_orchestrator.rs", "account_wait_change")];
 
 /// The `format!` texts in the body of `function`, with their line in `source`.
 pub fn builder_formats(source: &str, function: &str) -> Vec<(usize, String)> {
@@ -306,6 +307,7 @@ pub const BUILT_IN: &[(&str, &str)] = &[("std:main", "Error: {}")];
 pub const VOCABULARY_SOURCES: &[&str] = &[
     "crates/alondrad/src",
     "crates/daemon-support/src",
+    "crates/daemon-engine/src",
     "crates/core/src",
     "crates/domain/src",
     "crates/foundation/src",

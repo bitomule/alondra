@@ -1,6 +1,6 @@
+// The engine's fixtures take its `Directory`, so alondrad's tests share that one.
 #[cfg(test)]
-#[path = "../../test_support.rs"]
-mod test_support;
+use alondra_daemon_engine::test_support;
 
 #[macro_use]
 extern crate alondra_daemon_support;
@@ -11,37 +11,26 @@ use alondra_daemon_support::{
     blocking_work,
     classify,
     claude_check,
-    codex_credentials,
     device_usage,
-    disk,
-    disk_peaks,
     domain_authority,
-    domain_content,
     domain_cutover,
     exit,
     hook_socket,
-    hook_text,
     iroh_terminals,
     job_state,
-    launch_worktree,
     local_network,
     locks,
     log,
-    node_cost,
     open_files,
     plugins,
     pr_heads,
     pr_ids,
-    process_watch,
     prs,
     push,
     relaunch,
     reports,
     result_files,
     revoked_devices,
-    runtime_mutex,
-    save,
-    schedules,
     scoped_reads,
     secret_files,
     service_files,
@@ -52,97 +41,85 @@ use alondra_daemon_support::{
     workflow_state,
     worktree,
 };
-#[cfg(target_os = "macos")]
-use alondra_daemon_support::schedule_clock;
+#[cfg(test)]
+use alondra_daemon_support::{disk};
+use alondra_daemon_engine::{
+    account_move,
+    accounts,
+    admission,
+    allow_always,
+    auto_launch,
+    claude_access,
+    cleanup,
+    database_check,
+    domain_database_migration,
+    domain_github,
+    domain_holds,
+    domain_merges,
+    domain_messages,
+    domain_orchestrator,
+    domain_orchestrator_reads,
+    domain_orchestrator_tools,
+    domain_runtime,
+    domain_schedule_api,
+    domain_schedule_runner,
+    domain_store,
+    domain_transport,
+    home_renames,
+    idle_compaction,
+    issues,
+    launch_plans,
+    local_network_card,
+    machine,
+    machine_watch,
+    mcp_probe,
+    mcp_remove,
+    mcp_waits,
+    node_close,
+    node_push,
+    node_reconcile,
+    node_reports,
+    node_revival,
+    node_work,
+    options,
+    pauses,
+    pr_images,
+    pr_viewed,
+    provider_transition,
+    retention,
+    sdk_handover,
+    sdk_owner,
+    task_closer,
+    task_context,
+    task_worktrees,
+    usage_pause,
+    usage_probe,
+};
+#[cfg(test)]
+use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
 
-mod account_move;
-mod accounts;
-mod native_probe;
-mod allow_always;
 mod operation_journal;
-mod api_failures;
-mod claude_access;
-mod cleanup;
-mod claude_trust;
 mod direct;
-mod swap_disk;
-mod domain_agent_lifecycle;
 mod domain_api;
 mod domain_bootstrap;
-mod domain_database_migration;
 mod domain_delivery;
 #[cfg(test)]
 mod domain_e2e_tests;
-mod domain_github;
-mod domain_merges;
-mod domain_holds;
-mod domain_messages;
-mod domain_orchestrator;
-mod orchestrator_inbox;
-mod domain_orchestrator_reads;
-mod domain_orchestrator_tools;
-mod domain_runtime;
-mod domain_schedule_api;
-mod domain_schedule_runner;
-mod domain_sessions;
-mod domain_store;
-mod domain_transport;
-mod home_renames;
 mod iroh_endpoint;
-mod issues;
-mod local_network_card;
 mod reachability;
-mod machine;
-mod mcp_probe;
-mod mcp_remove;
-mod mcp_sign_in;
-mod mcp_waits;
-mod machine_state;
-mod machine_watch;
-mod admission;
-mod pauses;
-mod auto_launch;
-mod launch_plans;
-mod plan_reviews;
-mod stall_context;
-mod start_failures;
-mod node_close;
-mod node_reconcile;
 mod device_expiry;
-mod retention;
-mod metrics_capture;
-mod node_push;
-mod node_reports;
-mod node_work;
-mod task_closer;
-mod task_worktrees;
-mod node_revival;
-mod idle_compaction;
 mod notices;
-mod options;
-mod orchestrator_process;
-mod orchestrator_provider;
-mod orchestrator_codex;
-mod orchestrator_sdk;
 mod preflight;
-mod pr_images;
-mod pr_viewed;
 mod push_gate;
 mod activity_push;
+mod push_alerts;
 mod push_retract;
-mod sdk_handover;
-mod sdk_live;
-mod codex_live;
-mod provider_transition;
-mod sdk_owner;
 mod service;
 mod settings;
-mod task_context;
-mod usage_pause;
-mod usage_probe;
 mod client_routes;
 mod views;
-mod database_check;
+#[cfg(test)]
+mod engine_tests;
 #[cfg(test)]
 mod startup_tests;
 
@@ -660,7 +637,7 @@ async fn serve_domain(
     .into_future();
     tokio::spawn(usage_pause::run(
         domain.clone(),
-        usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
+        push_alerts::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
     tokio::spawn(claude_access::run(domain.clone()));
     tokio::spawn(accounts::run(domain.clone(), config.home.clone()));
@@ -669,7 +646,7 @@ async fn serve_domain(
     let machine_watch = tokio::spawn(machine_watch::run(
         domain.clone(),
         gauges.clone(),
-        usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
+        push_alerts::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
     let outbox = tokio::spawn(domain_delivery::run(
         domain.clone(),

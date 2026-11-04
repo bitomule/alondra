@@ -2,8 +2,6 @@
 //! on. The daemon is the only writer of `options.toml` for them, and a change applies without a
 //! restart because every reader loads the file again.
 use crate::locks::Poisonable as _;
-use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -20,9 +18,7 @@ pub(crate) const FOLDERS: &str = "/settings/folders";
 /// The `config.toml` keys `alondra config set` changes; only this Mac's own CLI reaches it.
 pub(crate) const CONFIG: &str = "/settings/config";
 
-/// A holder that panics leaves it whole, so it is recovered: it holds nothing, and every file it
-/// guards is replaced whole.
-pub(crate) static WRITER: Mutex<()> = Mutex::new(());
+pub(crate) use alondra_daemon_engine::settings_file::{WRITER, replace};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,14 +154,6 @@ fn store(home: &Path, user_home: &Path, value: &str) -> Result<(), Refused> {
     let canonical = root.canonicalize().map_err(|e| Refused::CannotCreate(e.to_string()))?;
     let text = projects_folder::with_root(&original, &canonical).map_err(Refused::CannotCreate)?;
     replace(&file, text.as_bytes()).map_err(|e| Refused::CannotCreate(format!("{}: {e}", file.display())))
-}
-
-pub(crate) fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let next = path.with_extension(format!("toml.{}", std::process::id()));
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&next)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&next, path)
 }
 
 #[cfg(test)]

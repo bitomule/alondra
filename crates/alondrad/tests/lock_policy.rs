@@ -3,9 +3,9 @@
 //! fail, as the machine watch's lock did on 25 October.
 use std::path::{Path, PathBuf};
 
-const SOURCES: [&str; 2] = ["crates/alondrad/src", "crates/daemon-support/src"];
-/// What marks an item that only tests compile: alondrad's tests also build the support crate with
-/// its `test-hooks` feature.
+const SOURCES: [&str; 3] = ["crates/alondrad/src", "crates/daemon-support/src", "crates/daemon-engine/src"];
+/// What marks an item that only tests compile: alondrad's tests also build the support and engine
+/// crates with their `test-hooks` feature.
 const TEST_ONLY: [&str; 2] = ["#[cfg(test)]", "#[cfg(any(test, feature = \"test-hooks\"))]"];
 
 fn next_test_only(text: &str) -> Option<(usize, usize)> {

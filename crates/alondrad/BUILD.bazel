@@ -6,7 +6,13 @@ load("//:version.bzl", "VERSION")
 
 exports_files(
     ["src/domain_store/schema.sql", "src/domain_store/schedule_launch_transition.sql"],
-    visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__"],
+    visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__", "//crates/daemon-engine:__pkg__"],
+)
+
+# The engine's acceptance catalog checks that the scenarios it names have tests here.
+exports_files(
+    ["src/domain_api.rs", "src/service/domain_parity_tests.rs"],
+    visibility = ["//crates/daemon-engine:__pkg__"],
 )
 
 rust_library(
@@ -15,28 +21,17 @@ rust_library(
         ["src/**/*.rs"],
         exclude = ["src/main.rs", "src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
     ),
-    compile_data = [
-        "src/domain_store/schema.sql",
-        "src/domain_store/schedule_launch_transition.sql",
-        "src/domain_store/model_metrics.sql",
-    ],
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
     edition = "2024",
     version = VERSION,
     deps = all_crate_deps(normal = True) + [
-        "//crates/agent-application:agent_application",
-        "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
+        "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-support:daemon_support",
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
-        "//crates/foundation:foundation",
         "//crates/process-group:process_group",
-        "//crates/provider-claude:provider_claude",
-        "//crates/provider-codex:provider_codex",
-        "//crates/provider-contract:provider_contract",
-        "//crates/store:store",
     ],
 )
 
@@ -85,19 +80,13 @@ low_opt_rust_test(
     compile_data = [
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",
-        "//crates/core:src/domain/tests.rs",
-        "//crates/daemon-support:report_sources",
         "//fixtures/client-v2",
         "//fixtures/push",
         "//fixtures/views:all",
         "//fixtures/views:cards",
-        "//fixtures/domain-v2:acceptance.json",
         "Info.plist",
-        "src/domain_store/schema.sql",
-        "src/domain_store/schedule_launch_transition.sql",
-        "src/domain_store/model_metrics.sql",
     ],
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
@@ -111,26 +100,18 @@ low_opt_rust_test(
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
         "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
         "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
-        "FIXTURE_CODEX_PLAN_LEGACY_HOST": "$(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host)",
         "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
         "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
         "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
         "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
     },
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        "//crates/agent-application:agent_application",
-        "//crates/agent-runtime:agent_runtime",
-        "//crates/codex-protocol:codex_protocol",
         "//crates/core:alondra_core",
+        "//crates/daemon-engine:daemon_engine_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
-        "//crates/foundation:foundation",
         "//crates/process-group:process_group",
-        "//crates/provider-claude:provider_claude",
-        "//crates/provider-codex:provider_codex",
-        "//crates/provider-contract:provider_contract",
-        "//crates/store:store",
     ],
     data = [
         ":alondrad",
@@ -139,7 +120,6 @@ low_opt_rust_test(
         "//agent-host:alondra-host",
         "//agent-host:alondra-codex-host",
         "//agent-host:codex-legacy-fixture",
-        "//agent-host:alondra-codex-plan-legacy-fixture-host",
         "//agent-host:fake-codex.py",
         "//agent-host:codex-model-double.py",
         "//agent-host:fake-codex-mcp.py",
@@ -168,7 +148,7 @@ rust_inputs_test(
 low_opt_rust_test(
     name = "lock_policy_test",
     srcs = ["tests/lock_policy.rs"],
-    data = [":report_sources", "//crates/daemon-support:report_sources"],
+    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-support:report_sources"],
     edition = "2024",
 )
 

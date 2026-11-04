@@ -163,6 +163,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-daemon-engine"
+version = "0.3.16"
+dependencies = [
+ "alondra-agent-application",
+ "alondra-agent-runtime",
+ "alondra-codex-protocol",
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-domain",
+ "alondra-foundation",
+ "alondra-process-group",
+ "alondra-provider-claude",
+ "alondra-provider-codex",
+ "alondra-provider-contract",
+ "alondra-store",
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "libc",
+ "p256 0.14.0",
+ "proptest",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "alondra-daemon-support"
 version = "0.3.16"
 dependencies = [
@@ -321,19 +355,12 @@ dependencies = [
 name = "alondrad"
 version = "0.3.16"
 dependencies = [
- "alondra-agent-application",
- "alondra-agent-runtime",
- "alondra-codex-protocol",
  "alondra-core",
+ "alondra-daemon-engine",
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-e2e",
- "alondra-foundation",
  "alondra-process-group",
- "alondra-provider-claude",
- "alondra-provider-codex",
- "alondra-provider-contract",
- "alondra-store",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -345,14 +372,12 @@ dependencies = [
  "notify",
  "p256 0.14.0",
  "portmapper",
- "proptest",
  "reqwest",
  "ring",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "sysinfo",
  "tempfile",
  "tokio",
  "toml",

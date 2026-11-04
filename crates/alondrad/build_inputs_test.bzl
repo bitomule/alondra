@@ -33,11 +33,9 @@ rust_inputs_test = analysistest.make(
     attrs = {
         "test_sources": attr.bool(mandatory = True),
         "source_dir": attr.string(default = "crates/alondrad/src/"),
-        "required_sources": attr.string_list(default = ["crates/alondrad/src/lib.rs", "crates/alondrad/src/domain_store/owner.rs"]),
+        "required_sources": attr.string_list(default = ["crates/alondrad/src/lib.rs", "crates/alondrad/src/domain_api.rs"]),
         "test_only_sources": attr.string_list(default = [
-            "crates/alondrad/src/domain_store/owner_tests.rs",
             "crates/alondrad/src/service/tests/iroh_tests.rs",
-            "crates/test_support.rs",
         ]),
     },
 )

@@ -1,0 +1,139 @@
+load("//crates/alondrad:build_inputs_test.bzl", "rust_inputs_test")
+load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/agent-application:agent_application",
+    "//crates/agent-runtime:agent_runtime",
+    "//crates/core:alondra_core",
+    "//crates/domain:domain",
+    "//crates/foundation:foundation",
+    "//crates/process-group:process_group",
+    "//crates/provider-claude:provider_claude",
+    "//crates/provider-codex:provider_codex",
+    "//crates/provider-contract:provider_contract",
+    "//crates/store:store",
+]
+
+# The domain store's schema stays in alondrad, where the crates that create a store for their
+# tests read it.
+SQL = [
+    "//crates/alondrad:src/domain_store/schema.sql",
+    "//crates/alondrad:src/domain_store/schedule_launch_transition.sql",
+    "src/domain_store/model_metrics.sql",
+]
+
+rust_library(
+    name = "daemon_engine",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
+    ),
+    compile_data = SQL,
+    crate_name = "alondra_daemon_engine",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates/alondrad:__pkg__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
+)
+
+# alondrad's unit tests build against the hooks and fixtures its tests drive: a store that traces
+# its reads, an SDK slice with a fake native Claude, a fake GitHub.
+rust_library(
+    name = "daemon_engine_test_hooks",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = SQL,
+    crate_features = ["test-hooks"],
+    crate_name = "alondra_daemon_engine",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = [LOW_OPT_LEVEL],
+    version = VERSION,
+    visibility = ["//crates/alondrad:__pkg__"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/codex-protocol:codex_protocol",
+        "//crates/daemon-support:daemon_support_test_hooks",
+    ],
+)
+
+low_opt_rust_test(
+    name = "daemon_engine_test",
+    size = "large",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = SQL + [
+        "//crates/alondrad:src/domain_api.rs",
+        "//crates/alondrad:src/service/domain_parity_tests.rs",
+        "//crates/core:src/domain/tests.rs",
+        "//crates/daemon-support:report_sources",
+        "//fixtures/client-v2",
+        "//fixtures/domain-v2:acceptance.json",
+    ],
+    crate_name = "alondra_daemon_engine",
+    crate_root = "src/lib.rs",
+    data = [
+        "//agent-host:alondra-codex-host",
+        "//agent-host:alondra-host",
+        "//agent-host:alondra-codex-plan-legacy-fixture-host",
+        "//agent-host:codex-legacy-fixture",
+        "//agent-host:codex-model-double.py",
+        "//agent-host:fake-codex-mcp.py",
+        "//agent-host:fake-codex.py",
+        "//agent-host:orchestrator-fake-claude.py",
+        "//agent-host:persistent-fake-claude.py",
+        "//crates/alondra:alondra",
+        "//crates/alondrad:alondrad",
+    ],
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {
+        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
+        "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
+        "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
+        "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
+        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
+        "FIXTURE_CODEX_PLAN_LEGACY_HOST": "$(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host)",
+        "FIXTURE_DAEMON": "$(rootpath //crates/alondrad:alondrad)",
+        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
+        "HOME": ".",
+    },
+    rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/codex-protocol:codex_protocol",
+        "//crates/daemon-support:daemon_support_test_hooks",
+    ],
+)
+
+rust_inputs_test(
+    name = "production_inputs_test",
+    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_store/owner.rs"],
+    source_dir = "crates/daemon-engine/src/",
+    target_under_test = ":daemon_engine",
+    test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/test_support.rs"],
+    test_sources = False,
+)
+
+rust_inputs_test(
+    name = "test_hooks_inputs_test",
+    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_store/owner.rs"],
+    source_dir = "crates/daemon-engine/src/",
+    target_under_test = ":daemon_engine_test_hooks",
+    test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/test_support.rs"],
+    test_sources = True,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# Read by the crash report's build script for its log catalog and the words of the code, and by
+# alondrad's lock policy test.
+filegroup(
+    name = "report_sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+)
