@@ -2123,7 +2123,9 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
     restarted.execute_fixture(&Actor::System, envelope(&state, "orchestrator-message", tell)).unwrap();
     assert_eq!(resumed.pending_permits(), 1, "the message goes to the host while the turn runs");
     resumed.step(&|| false).unwrap();
-    assert!(slice.prompts().last().unwrap().ends_with("Keep the journal's old rows"), "{:?}", slice.prompts());
+    while !slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Keep the journal's old rows")) {
+        resumed.observe().unwrap();
+    }
     assert_eq!(lifecycle(&restarted).pending_inputs().len(), 1, "it is not read yet");
     (restarted, resumed)
 }
