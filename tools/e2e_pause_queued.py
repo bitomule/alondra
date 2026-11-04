@@ -51,7 +51,7 @@ def main():
             options.write("\nmax_working_nodes = 1\n")
         node = Node(sandbox)
         node.call(("ask", {"interaction_id": "queue-tasks", "scope": node.scope(), "recipient": {"kind": "orchestrator"},
-                           "need": "Queue three tasks for this request", "why": "They wait for a free slot.", "blocking": False,
+                           "title": "Queue three tasks for this request", "need": "Queue three tasks for this request", "why": "They wait for a free slot.", "blocking": False,
                            "content": {"kind": "report", "body": f"Queue three tasks after {node.task}"},
                            "options": [{"id": "done", "label": "Done", "description": "They exist"},
                                        {"id": "no", "label": "No", "description": "Not now"}]}))

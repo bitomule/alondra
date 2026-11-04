@@ -80,7 +80,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         state(report, &user, "t-attachments", WORKING)?;
         let ask_with_files = Step::Call { tool: "ask".into(), arguments: serde_json::json!({
             "interaction_id": "q-onboarding", "scope": {"kind": "task", "task_id": "t-attachments"}, "recipient": {"kind": "user"}, "blocking": true,
-            "need": "Choose the onboarding screen to ship",
+            "title": "Onboarding screen", "need": "Choose the onboarding screen to ship",
             "why": "The screenshot and the recording show the new screen; the old one stays until you pick.",
             "options": [
                 {"id": "new", "label": "Ship the new screen", "description": "The new onboarding replaces the old one in the next release"},

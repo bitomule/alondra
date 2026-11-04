@@ -65,12 +65,12 @@ def main():
     try:
         node = Node(sandbox)
         node.call(("ask", {"interaction_id": "create-phases", "scope": node.scope(), "recipient": {"kind": "orchestrator"},
-                           "need": "Create the phases that come after my task", "why": "The plan has two more phases.", "blocking": False,
+                           "title": "Create the phases that come after my task", "need": "Create the phases that come after my task", "why": "The plan has two more phases.", "blocking": False,
                            "content": {"kind": "report", "body": f"Create the phases after {node.task}"},
                            "options": [{"id": "done", "label": "Done", "description": "They exist"},
                                        {"id": "no", "label": "No", "description": "Not now"}]}))
         wait_for(sandbox.orchestrator_log + ".created", "the orchestrator never created the phases", seconds=TIMEOUT * 3)
-        node.call(("ask", {"interaction_id": "decision", "scope": node.scope(), "recipient": {"kind": "user"}, "need": DECISION,
+        node.call(("ask", {"interaction_id": "decision", "scope": node.scope(), "recipient": {"kind": "user"}, "title": DECISION, "need": DECISION,
                            "why": "Phases C and D start after it.", "blocking": True,
                            "content": {"kind": "report", "body": "With the 360 px copy only 11 of 21 groups match."},
                            "options": [{"id": "threshold", "label": "Adjust the threshold", "description": "Measure again with +0.10"},

@@ -64,7 +64,7 @@ def ask(sandbox, to_user):
     recipient, interaction = ({"kind": "user"}, QUESTION) if to_user else ({"kind": "orchestrator"}, "t-phases-1")
     step = {"do": "call", "tool": "ask", "arguments": {
         "interaction_id": interaction, "scope": {"kind": "task", "task_id": TASK}, "recipient": recipient,
-        "need": "Create one task per phase 2-7", "why": "The user approved a plan in phases", "blocking": to_user,
+        "title": "Create one task per phase 2-7", "need": "Create one task per phase 2-7", "why": "The user approved a plan in phases", "blocking": to_user,
         "body": "The plan is approved: create one task per phase 2-7.",
         "options": [{"id": "create", "label": "Create them", "description": "One task per phase"},
                     {"id": "decline", "label": "Do not create them", "description": "This task does every phase"}]}}

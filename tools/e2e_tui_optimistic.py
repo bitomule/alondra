@@ -190,7 +190,7 @@ def main():
         asker, deliverer = Node(sandbox), Node(sandbox)
         nodes = [asker, deliverer]
         asker.call(asker.ask("question", QUESTION, ["stable", "beta"]))
-        deliverer.call(("present_result", {"task_id": deliverer.task, "interaction_id": "delivery", "need": DELIVERY,
+        deliverer.call(("present_result", {"task_id": deliverer.task, "interaction_id": "delivery", "title": DELIVERY, "need": DELIVERY,
                                            "content": {"kind": "report", "body": "Home has a Blurry photos row."},
                                            "targets": [{"kind": "text", "text": "Home has a Blurry photos row."}], "is_final": True}))
         tui = Terminal([sandbox.alondra], sandbox.env, None)
