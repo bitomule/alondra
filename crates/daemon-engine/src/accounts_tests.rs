@@ -618,6 +618,7 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
 async fn a_stale_model_catalog_retries_the_account_check_until_models_are_ready() {
     let f = fixture();
     let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    domain.live.unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
     let state = crate::sdk_owner::tests::HostRoot::new();
     let (mut backend, _) = crate::sdk_owner::tests::fixture_backend(&f.home, &state);
     std::fs::write(&backend.native, r#"#!/usr/bin/python3

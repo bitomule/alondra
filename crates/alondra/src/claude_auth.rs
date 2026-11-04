@@ -13,6 +13,9 @@ pub struct ContextEnv {
     pub home: PathBuf,
     pub path: String,
     pub config_dir: Option<String>,
+    /// How long `claude auth status` may take; `None` waits for it to end, for a test's script,
+    /// whose first run waits while macOS checks the new executable.
+    pub status_timeout: Option<Duration>,
 }
 
 pub(crate) struct CodexContext {
@@ -104,6 +107,7 @@ impl ContextEnv {
             home: home.to_owned(),
             path: daemon_path(home, bin),
             config_dir,
+            status_timeout: Some(alondra_core::claude_account::STATUS_TIMEOUT),
         }
     }
 
@@ -126,6 +130,7 @@ impl ContextEnv {
                 .clone(),
             config_dir: alondra_core::claude_account::configured_profile(&|key| vars.get(key).cloned())
                 .map(|p| p.to_string_lossy().into_owned()),
+            status_timeout: Some(alondra_core::claude_account::STATUS_TIMEOUT),
         })
     }
 
@@ -169,7 +174,7 @@ impl ContextEnv {
             let result = stdout.take(65537).read_to_end(&mut bytes).map(|_| bytes);
             let _ = tx.send(result);
         });
-        let exit = wait(&mut child, Duration::from_secs(10))?;
+        let exit = wait(&mut child, self.status_timeout)?;
         let bytes = rx
             .recv_timeout(Duration::from_secs(1))
             .context(tr!("Claude took too long to say whether it is signed in", "Claude tardó demasiado en decir si hay sesión iniciada"))??;
@@ -177,7 +182,8 @@ impl ContextEnv {
     }
 }
 
-fn wait(child: &mut std::process::Child, timeout: Duration) -> Result<std::process::ExitStatus> {
+fn wait(child: &mut std::process::Child, timeout: Option<Duration>) -> Result<std::process::ExitStatus> {
+    let Some(timeout) = timeout else { return Ok(child.wait()?) };
     let until = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -230,6 +236,7 @@ mod tests {
             home: "/tmp".into(),
             path: "/nonexistent-alondra-test".into(),
             config_dir: None,
+            status_timeout: None,
         };
         assert!(
             env.status()
@@ -259,6 +266,7 @@ fi
             home: dir.clone(),
             path: dir.to_string_lossy().into_owned(),
             config_dir: Some(dir.join("profile").to_string_lossy().into_owned()),
+            status_timeout: None,
         };
         assert!(env.status().unwrap());
         std::fs::remove_dir_all(dir).unwrap();
@@ -292,6 +300,7 @@ fi
             home: dir.clone(),
             path: format!("{}:/usr/bin:/bin", dir.display()),
             config_dir: Some(dir.join("custom").to_string_lossy().into_owned()),
+            status_timeout: None,
         };
         assert!(context.status().unwrap());
         // Reproduce the old env_clear omission with the same executable/profile.
@@ -343,6 +352,8 @@ fi
         assert_eq!(context.home, Path::new("/Users/other"));
         assert_eq!(context.config_dir.as_deref(), Some("/Users/other/custom"));
         assert_eq!(context.path, "/opt/homebrew/bin");
+        assert_eq!(context.status_timeout, Some(alondra_core::claude_account::STATUS_TIMEOUT));
+        assert_eq!(ContextEnv::for_setup(Path::new("/Users/other"), Path::new("/opt/homebrew/bin")).status_timeout, Some(alondra_core::claude_account::STATUS_TIMEOUT));
     }
 
     // The daemon's nodes run with `claude_account::configured_profile` of this same environment:

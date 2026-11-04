@@ -46,7 +46,7 @@ impl Claude {
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
         let user_home = Self::user_home(domain);
-        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: Some(claude_account::STATUS_TIMEOUT) })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live.unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT) })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
