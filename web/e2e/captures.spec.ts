@@ -23,7 +23,11 @@ for (const colorScheme of ['light', 'dark'] as const) {
     await page.goto(path);
     await settle(page);
     await page.screenshot({ path: join(out!, `${slug}-${name}-${colorScheme}.png`), fullPage: true });
-    if (path === '/') await page.screenshot({ path: join(out!, `hero-${name}-${colorScheme}.png`) });
+    if (path === '/') {
+     await page.screenshot({ path: join(out!, `hero-${name}-${colorScheme}.png`) });
+     await page.locator('[aria-labelledby="flow-title"]').screenshot({ path: join(out!, `flow-${name}-${colorScheme}.png`) });
+    }
+    if (path === '/how-it-works') await page.locator('#metrics').screenshot({ path: join(out!, `metrics-${name}-${colorScheme}.png`) });
    }
    await context.close();
   });

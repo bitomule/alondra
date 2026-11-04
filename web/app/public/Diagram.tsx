@@ -14,7 +14,7 @@ function Desktop() {
       <g className="node"><rect x="40" y="260" width="250" height="110" rx="8"/><text className="node-title" x="58" y="296">Agent sessions</text><text x="58" y="322">Claude Code or Codex,</text><text x="58" y="343">one worktree per task</text></g>
       <path className="line line-inside" d="M165 230 V260"/>
       <g className="node"><rect x="405" y="120" width="190" height="110" rx="8"/><text className="node-title" x="421" y="156">Control plane</text><text x="421" y="182">Accounts, pairing,</text><text x="421" y="203">device list, push</text></g>
-      <g className="node"><rect x="405" y="260" width="190" height="110" rx="8"/><text className="node-title" x="421" y="296">iroh relay</text><text x="421" y="322">Carries sealed bytes</text><text x="421" y="343">it cannot open</text></g>
+      <g className="node"><rect x="405" y="260" width="190" height="110" rx="8"/><text className="node-title" x="421" y="296">Relay</text><text x="421" y="322">Carries sealed bytes</text><text x="421" y="343">it cannot open</text></g>
       <g className="node"><rect x="710" y="150" width="250" height="70" rx="8"/><text className="node-title" x="728" y="191">iPhone app</text></g>
       <g className="node"><rect x="710" y="240" width="250" height="70" rx="8"/><text className="node-title" x="728" y="281">Mac app</text></g>
       <g className="node"><rect x="710" y="330" width="250" height="70" rx="8"/><text className="node-title" x="728" y="371">Terminal UI</text></g>
@@ -39,7 +39,7 @@ function Narrow() {
       <g className="group"><rect x="20" y="430" width="300" height="170" rx="14"/><text className="group-title" x="36" y="454">Your devices</text></g>
       <g className="node"><rect x="36" y="48" width="130" height="92" rx="8"/><text className="node-title" x="48" y="76">alondrad</text><text x="48" y="98">State,</text><text x="48" y="116">orchestrator</text></g>
       <g className="node"><rect x="176" y="48" width="128" height="92" rx="8"/><text className="node-title" x="188" y="76">Agent sessions</text><text x="188" y="98">Claude Code</text><text x="188" y="116">or Codex</text></g>
-      <g className="node"><rect x="36" y="254" width="130" height="96" rx="8"/><text className="node-title" x="48" y="282">iroh relay</text><text x="48" y="304">Sealed bytes</text><text x="48" y="322">only</text></g>
+      <g className="node"><rect x="36" y="254" width="130" height="96" rx="8"/><text className="node-title" x="48" y="282">Relay</text><text x="48" y="304">Sealed bytes</text><text x="48" y="322">only</text></g>
       <g className="node"><rect x="176" y="254" width="128" height="96" rx="8"/><text className="node-title" x="188" y="282">Control plane</text><text x="188" y="304">Accounts,</text><text x="188" y="322">pairing, push</text></g>
       <g className="node"><rect x="36" y="466" width="268" height="36" rx="8"/><text className="node-title" x="48" y="490">iPhone app</text></g>
       <g className="node"><rect x="36" y="510" width="268" height="36" rx="8"/><text className="node-title" x="48" y="534">Mac app</text></g>

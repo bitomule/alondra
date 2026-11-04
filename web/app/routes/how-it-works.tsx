@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
 import { Capture } from '../public/Capture';
 import { Diagram } from '../public/Diagram';
+import { FlowDiagram } from '../public/FlowDiagram';
 
 export function meta() {
   return [
@@ -23,6 +24,7 @@ const SECTIONS = [
   ['encryption', 'Encryption'],
   ['macs', 'More than one Mac'],
   ['models', 'Models and effort'],
+  ['metrics', 'Metrics'],
   ['mcp', 'MCP servers'],
 ] as const;
 
@@ -40,8 +42,16 @@ export default function HowItWorks() {
     <section id="orchestrator" aria-labelledby="orchestrator-title">
       <h2 id="orchestrator-title">The orchestrator turns a request into tasks</h2>
       <p>You write a request in the terminal app, the Mac app or the iPhone app. The orchestrator is an agent session on one of your accounts, so it uses your tokens like any other session. Alondra starts it when there is work and stops it when there is not. It reads the request, writes a plan and splits it into tasks. When the work calls for it, the plan comes back to you as a card to approve before any code changes.</p>
-      <p>Each task gets a node: an agent session, Claude Code or Codex with your own login, running in a git worktree that Alondra creates for that task. Tasks can depend on each other. A pull request built on top of another task’s pull request is merged after it.</p>
-      <p>Before it starts a node, Alondra looks at the memory, the processor and the disk of your Mac. When the machine has no room, the task waits and says why. Memory and processor load only hold new starts: a running node is never paused or stopped for them. When the disk runs low, a node’s next turn waits until there is room.</p>
+      <FlowDiagram/>
+      <h3>Tasks wait for each other</h3>
+      <p>A task can depend on others. It starts once they have landed, and a pull request built on top of another task’s pull request is merged after it. Tasks with nothing between them run at the same time.</p>
+      <p>Before it starts a node, Alondra looks at the memory, the processor and the disk of your Mac, and at how many nodes may work at once: a number you set in Settings, or one Alondra works out from your Mac’s cores and what its nodes take. When there is no room, the task waits and says why. Memory and processor load only hold new starts: a running node is never paused or stopped for them. When the disk runs low, a node’s next turn waits until there is room.</p>
+      <h3>A model and an account for each task</h3>
+      <p>Each task gets a node: an agent session, Claude Code or Codex with your own login, running in a git worktree that Alondra creates for that task. The orchestrator picks its model and its reasoning effort, as <a className="text-link" href="#models">Which model, and how much effort</a> explains, and Alondra runs it on one of your accounts.</p>
+      <h3>Decisions reach you, conversations do not</h3>
+      <p>You never read the agents’ conversations. A task shows what its agent is doing right now and the last thing it said. Whatever needs you, a question, a plan, a permission or a finished pull request, arrives as a card in the inbox.</p>
+      <h3>Deciding and doing stay apart</h3>
+      <p>You and the orchestrator decide what gets built: only the orchestrator creates tasks and sets what each one waits for. A node only does its own task. When it sees something outside it, it suggests it to the orchestrator, which folds it into the task, turns it down with a reason or makes it a new task.</p>
       <p>When you accept a delivery, Alondra merges the pull request and removes the worktree. You can also let it merge by itself once the checks pass.</p>
       <Capture name="tui-tasks" className="doc-capture" alt="The terminal app: the request “Ship Lumen 2.4” split into five tasks. One needs you with a question, two pull requests are ready for review, one task runs in the background and one waits for it."/>
     </section>
@@ -70,7 +80,7 @@ export default function HowItWorks() {
 
     <section id="remote" aria-labelledby="remote-title">
       <h2 id="remote-title">Reaching your Mac from anywhere</h2>
-      <p>On the same Wi-Fi, a device finds your Mac with Bonjour and talks to it over the local network. Anywhere else it uses iroh, which runs on QUIC: a connection starts through the relay and moves to a direct path as soon as one opens. You pair a device once, in person, and after that you install nothing on the network: no Tailscale, no VPN, no port forwarding to set up.</p>
+      <p>On the same Wi-Fi, a device finds your Mac with Bonjour and talks to it over the local network. Anywhere else a connection starts through the Alondra Cloud relay and moves to a direct connection as soon as one opens. You pair a device once, in person, and after that you install nothing on the network: no Tailscale, no VPN, no port forwarding to set up.</p>
       <p>A direct path does not always open. A phone on mobile data usually sits behind a router that blocks it, and then a direct path opens only if your Mac’s network allows it: a router port mapping, a forwarded port or public IPv6. Otherwise the relay carries the session. It works the same, with a little more latency. When we measured it from a phone on mobile data, 0 of 30 connections went direct, so away from home expect the relay. Settings in the iPhone and Mac apps show whether each Mac is reached directly or through the relay, and why a direct path does not open; in the terminal, <code>alondra doctor</code> says why.</p>
       <p>On the same Wi-Fi your iPhone connects straight to your Mac and needs no account. Without one it gets no notifications.</p>
     </section>
@@ -84,15 +94,25 @@ export default function HowItWorks() {
 
     <section id="macs" aria-labelledby="macs-title">
       <h2 id="macs-title">More than one Mac</h2>
-      <p>Pair the iPhone app, the Mac app and the terminal app with each of your Macs and switch between them; in the terminal app the <code>]</code> key moves to the next Mac. While the iPhone app is open it keeps a connection to every paired Mac, so switching does not wait for one. Its Live Activity adds up the counts of every Mac: the one you have selected updates live, and the others show their last numbers.</p>
+      <p>Pair the iPhone app, the Mac app and the terminal app with each of your Macs and switch between them; in the terminal app the <code>]</code> key moves to the next Mac. While the iPhone app is open it keeps a connection to every paired Mac, so switching does not wait for one.</p>
       <Soon>Showing the inbox and the tasks of several Macs together on one screen.</Soon>
     </section>
 
     <section id="models" aria-labelledby="models-title">
       <h2 id="models-title">Which model, and how much effort</h2>
-      <p>Alondra runs Claude Code and Codex, alone or together, with several accounts of each. For each task the orchestrator picks a model and a reasoning effort from what your connected accounts offer. It takes the strongest model for risky work such as concurrency, security or data migrations, and otherwise the cheapest one that fits. It follows written rules over a table of the models your accounts offer: each model’s capability sheet and, once a model has finished enough of your tasks, how they went, such as how many were done the first time and what they cost on average. It records its reason, and <code>alondra metrics</code> reports how tasks went, which you can filter by model.</p>
+      <p>Alondra runs Claude Code and Codex, alone or together, with several accounts of each. For each task the orchestrator picks a model and a reasoning effort from what your connected accounts offer. It takes the strongest model for risky work such as concurrency, security or data migrations, and otherwise the cheapest one that fits. It follows written rules over a table of the models your accounts offer: each model’s capability sheet and, once a model has finished enough of your tasks, how they went, such as how many were done the first time and what they cost on average. It records its reason.</p>
+      <p>Alondra then runs the task on one of your accounts that offers that model, in the order you set, and passes over any whose plan has run out. You can pin a task to one account in its form.</p>
       <p>You can set the model and the effort yourself in the apps and in the terminal. A choice you make wins.</p>
       <Soon>A decider that learns from the results of past tasks and adjusts its choices.</Soon>
+    </section>
+
+    <section id="metrics" aria-labelledby="metrics-title">
+      <h2 id="metrics-title">Metrics: how your tasks went</h2>
+      <p>Settings › Metrics on the iPhone and the Mac shows how your tasks went. In the terminal app <kbd>Shift</kbd>+<kbd>M</kbd> opens the same view, and <code>alondra metrics</code> prints it.</p>
+      <p>For the tasks that ended, it counts how many were done with no rework, the rounds of changes and the times each one needed you, and how many were reopened, relaunched or cancelled. It adds up their cost in total, per task, per merged pull request and per changed line; their input, output and cache tokens; their steps, and how many of those only looked or waited; and the time they spent working, waiting for you, queued and blocked.</p>
+      <p>You pick the last 7, 30 or 90 days or all time, and compare them with the period before, or with the days since a version or a date. The results split by model and effort and by project, and choosing a row filters by it. <code>alondra metrics</code> can also split them by provider and by kind of task.</p>
+      <p>The cost is the provider’s own estimate, not your bill. Codex reports tokens but no price, so its tasks show no cost.</p>
+      <p>The numbers are there for you to see which model does your kind of work well and what it costs, and the orchestrator reads them too: its table of models carries, for each model, how many of your tasks it finished, how many were done the first time and what they cost on average.</p>
     </section>
 
     <section id="mcp" aria-labelledby="mcp-title">
@@ -105,7 +125,6 @@ export default function HowItWorks() {
       <h2 id="more-title">Also in the box</h2>
       <ul className="plain">
         <li>Scheduled runs that start work on a timetable.</li>
-        <li>A Live Activity on the iPhone with three counts: cards for you, waiting tasks and working tasks. It carries no card text.</li>
         <li>The apps and the terminal app in English and Spanish.</li>
       </ul>
     </section>

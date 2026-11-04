@@ -49,7 +49,9 @@ what to do when something fails.
 2. **The orchestrator** reads it, makes a plan and splits it into tasks. A plan that needs your approval comes back to you
    as a card for approval before any code changes.
 3. **Each task gets a node**: an agent session in its own git worktree, running Claude Code or
-   Codex with your own account. Nodes work in parallel, within what your Mac and your plans allow.
+   Codex with your own account. The orchestrator picks the model and the reasoning effort of each
+   task, and Alondra runs it on one of your accounts. A task that depends on another waits until
+   that one has landed; the rest work in parallel, within what your Mac and your plans allow.
 4. **Cards bring you in only when needed.** A node that has a question, wants a plan approved or
    opens a pull request puts one card in front of you. Nothing else interrupts you.
 5. **Alondra merges and cleans up.** When you accept a delivery it merges the pull request and
@@ -77,8 +79,13 @@ screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.
 
 - **An orchestrator.** A request becomes a plan, the plan becomes tasks, and each
   task gets its own node in its own worktree. Tasks can depend on each other and wait for one
-  another. The plan comes back to you as a card to approve
-  before any code is written, when the work asks for one.
+  another; the ones with nothing between them run at the same time. The plan comes back to you as
+  a card to approve before any code is written, when the work asks for one.
+- **Deciding and doing stay apart.** You and the orchestrator decide what gets built: only the
+  orchestrator creates tasks. A node only does its own task; something it sees outside it goes to
+  the orchestrator as a suggestion.
+- **Decisions, not conversations.** You never read the agents' conversations. A task shows what
+  its agent is doing and the last thing it said, and whatever needs you arrives as a card.
 - **An inbox of cards.** Everything that needs you arrives as a card, and a card is one thing: a
   question, a plan, a permission or a finished pull request, with all its context. You decide it
   from the terminal, the Mac app or the iPhone, and the answer reaches the node that asked.
@@ -95,8 +102,15 @@ screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.
 - **Review where you are.** Pull request cards open the diff in the iPhone and Mac apps, and in the
   terminal UI in `tuicr` (installed separately).
 - **Model and effort per task.** For each task the orchestrator picks a model and a reasoning
-  effort from what your connected Claude and Codex accounts offer, and records why. You can choose
-  them yourself instead. A decider that learns from the results of past tasks is coming soon.
+  effort from what your connected Claude and Codex accounts offer, and records why. Alondra runs the
+  task on one of your accounts that offers that model, in the order you set, passing over any whose
+  plan has run out. You can choose the model, the effort and the account yourself instead. A decider
+  that learns from the results of past tasks is coming soon.
+- **Metrics.** Settings › Metrics on the iPhone and the Mac, `Shift+M` in the TUI and
+  `alondra metrics` show how your tasks went, by model and effort and by project: how many were
+  done with no rework, the rounds of changes and your interventions, the provider's estimate of
+  their cost, tokens, steps, and the time spent working, waiting for you and queued. The
+  orchestrator reads the same numbers when it picks a model.
 - **MCP servers in one place.** Settings on the Mac and the iPhone lists the MCP servers your agents
   use and what each offers, and lets you remove one you added to your own settings. Authorizing a
   server from a device other than the Mac is coming soon.
@@ -132,8 +146,7 @@ What passes through it:
 - the registry of your devices: device IDs, public keys and the endpoint IDs used to connect them;
 - push notification tokens, and the push messages themselves, sealed for each device (a generic
   fallback text is used when a device cannot open them);
-- connection metadata the relay sees by necessity: addresses, timing and how many bytes it carried
-  for each device, which Alondra Cloud uses to measure its cost.
+- connection metadata the relay sees by necessity: addresses, timing and how many bytes it carried.
 
 What never leaves your Mac:
 
@@ -142,7 +155,7 @@ What never leaves your Mac:
   devices end to end, as sealed envelopes the relay carries without being able to open them;
 - your Claude and Codex credentials: Alondra never sees them.
 
-The protocol is in [`docs/iroh-protocol.md`](docs/iroh-protocol.md); report anything that looks
+How devices talk to a Mac is in [the device protocol](docs/iroh-protocol.md); report anything that looks
 wrong under [`SECURITY.md`](SECURITY.md).
 
 ## FAQ
@@ -168,7 +181,7 @@ fix what does not.
 
 - [`INSTALL.md`](INSTALL.md): install, apps, troubleshooting
 - [`docs/architecture/overview.md`](docs/architecture/overview.md): how the pieces fit
-- [`docs/iroh-protocol.md`](docs/iroh-protocol.md): how devices talk to a Mac
+- [The device protocol](docs/iroh-protocol.md): how devices talk to a Mac
 - [`docs/building-from-source.md`](docs/building-from-source.md): build it yourself
 - [`docs/running-tests.md`](docs/running-tests.md): run the tests
 

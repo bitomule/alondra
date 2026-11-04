@@ -15,7 +15,6 @@ filegroup(
         "web/package-lock.json",
         "web/app/public/fonts/OFL-archivo.txt",
         "web/app/public/fonts/OFL-martian-mono.txt",
-        "web/app/public/fonts/OFL-newsreader.txt",
     ],
     visibility = ["//tools:__pkg__"],
 )

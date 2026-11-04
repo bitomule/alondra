@@ -32,7 +32,7 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."""
-FONT_LICENSES = ('archivo', 'martian-mono', 'newsreader')
+FONT_LICENSES = ('archivo', 'martian-mono')
 INPUT_LINE = re.compile(r'^<!-- input (\S+) ([0-9a-f]{64}) -->$', re.M)
 
 
@@ -269,8 +269,8 @@ The Alondra name, logo and app icon are not licensed. FSL grants no trademark ri
 
 ## Fonts
 
-The website serves three fonts under the SIL Open Font License 1.1: Archivo, Martian Mono and
-Newsreader. Their license files ship next to them in `web/app/public/fonts`.
+The website serves two fonts under the SIL Open Font License 1.1: Archivo and Martian Mono.
+Their license files ship next to them in `web/app/public/fonts`.
 
 {fonts}
 ## Icons and symbols

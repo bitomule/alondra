@@ -1,13 +1,12 @@
 /* Tokens of the public site. web/DESIGN.md documents them and is normative. */
 @font-face { font-family: 'Archivo Alondra'; src: url('./fonts/archivo-variable.woff2') format('woff2'); font-weight: 100 900; font-stretch: 62% 125%; font-display: swap; }
-@font-face { font-family: 'Newsreader Alondra'; src: url('./fonts/newsreader-variable.woff2') format('woff2'); font-weight: 200 800; font-display: swap; }
 @font-face { font-family: 'Martian Mono Alondra'; src: url('./fonts/martian-mono-variable.woff2') format('woff2'); font-weight: 100 800; font-display: swap; }
 
 :root {
   color-scheme: light dark;
 
   --font-display: 'Archivo Alondra', ui-sans-serif, sans-serif;
-  --font-body: 'Newsreader Alondra', ui-serif, serif;
+  --font-body: 'Archivo Alondra', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Martian Mono Alondra', ui-monospace, monospace;
 
   --color-paper: oklch(97% 0.012 85);
@@ -47,9 +46,9 @@
   --color-term-dim: oklch(62% 0.01 230);
 
   --text-2xs: 0.6875rem;
-  --text-xs: 0.78rem;
-  --text-sm: 0.9rem;
-  --text-base: 1.125rem;
+  --text-xs: 0.84rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1.1875rem;
   --text-lg: 1.3rem;
   --text-xl: clamp(1.35rem, 1.1rem + 0.8vw, 1.6rem);
   --text-2xl: clamp(1.7rem, 1.3rem + 1.4vw, 2.3rem);

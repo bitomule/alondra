@@ -101,6 +101,29 @@ test('what is not built yet is marked as coming soon, and nothing sells plans, p
  }
 });
 
+test('no public page names the transport library or the Live Activity, in text, alt text, labels or metadata', async ({ page }) => {
+ for (const path of PUBLIC) {
+  await page.goto(path);
+  const said = await page.evaluate(() => [
+   document.body.innerText,
+   document.title,
+   ...Array.from(document.querySelectorAll('svg text'), node => node.textContent ?? ''),
+   ...Array.from(document.querySelectorAll('[alt], [aria-label], [title], meta[content]'), node => ['alt', 'aria-label', 'title', 'content'].map(name => node.getAttribute(name) ?? '').join(' ')),
+  ].join('\n').toLowerCase());
+  for (const banned of ['iroh', 'live activit']) expect(said, `${path}: ${banned}`).not.toContain(banned);
+ }
+});
+
+test('body copy is set in the sans text face at reading size', async ({ page }) => {
+ for (const path of ['/', '/how-it-works', '/security']) {
+  await page.goto(path);
+  const body = await page.locator('main p').first().evaluate(node => { const style = getComputedStyle(node); return { family: style.fontFamily, size: parseFloat(style.fontSize), weight: Number(style.fontWeight) }; });
+  expect(body.family, path).toMatch(/^"?Archivo Alondra/);
+  expect(body.size, path).toBeGreaterThanOrEqual(18);
+  expect(body.weight, path).toBeGreaterThanOrEqual(400);
+ }
+});
+
 test('under reduced motion the replay shows its final state and nothing moves', async ({ page }) => {
  await page.emulateMedia({ reducedMotion: 'reduce' });
  await page.goto('/');
@@ -108,6 +131,7 @@ test('under reduced motion the replay shows its final state and nothing moves', 
  await demo.scrollIntoViewIfNeeded();
  await expect(demo.locator('.demo-after').first()).toBeVisible();
  await expect(demo.locator('.demo-before').first()).toHaveCSS('opacity', '0');
+ await expect(page.locator('.flow .flow-lit').first()).toHaveCSS('animation-name', 'none');
  await page.goto('/how-it-works');
  await expect(page.locator('.diagram .packets').first()).toBeHidden();
 });
@@ -124,12 +148,13 @@ test('with motion allowed the replay plays once it is visible', async ({ page })
 test('every moving figure can be paused, and pausing stops its motion', async ({ page }) => {
  await page.emulateMedia({ reducedMotion: 'no-preference' });
  await page.goto('/');
- for (const [figure, what] of [['.demo', 'replay'], ['.journey', 'highlights'], ['.diagram', 'envelopes']] as const) {
+ for (const [figure, what] of [['.flow', 'flow'], ['.demo', 'replay'], ['.journey', 'highlights'], ['.diagram', 'envelopes']] as const) {
   await page.locator(figure).scrollIntoViewIfNeeded();
   const pause = page.getByRole('button', { name: `Pause the ${what}` });
   await pause.click();
   await expect(page.getByRole('button', { name: `Play the ${what}` })).toBeVisible();
  }
+ await expect(page.locator('.flow-playing .flow-lit').first()).toHaveCSS('animation-play-state', 'paused');
  await expect(page.locator('.journey-playing .mark-1')).toHaveCSS('animation-play-state', 'paused');
  await expect(page.locator('.demo-playing .demo-plan')).toHaveCSS('animation-play-state', 'paused');
  expect(await page.locator('.diagram-wide').evaluate(svg => (svg as SVGSVGElement).animationsPaused())).toBe(true);

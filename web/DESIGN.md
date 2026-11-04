@@ -43,12 +43,12 @@ typography:
   headline-lg: { fontFamily: Archivo, fontSize: 54.4px, fontWeight: 600, lineHeight: 1.08, letterSpacing: -0.02em, fontVariation: "'wdth' 108" }
   headline-md: { fontFamily: Archivo, fontSize: 36.8px, fontWeight: 600, lineHeight: 1.08, letterSpacing: -0.02em }
   headline-sm: { fontFamily: Archivo, fontSize: 25.6px, fontWeight: 600, lineHeight: 1.08, letterSpacing: -0.02em }
-  body-lg: { fontFamily: Newsreader, fontSize: 25.6px, fontWeight: 400, lineHeight: 1.3 }
-  body-md: { fontFamily: Newsreader, fontSize: 18px, fontWeight: 400, lineHeight: 1.6 }
-  body-sm: { fontFamily: Newsreader, fontSize: 14.4px, fontWeight: 400, lineHeight: 1.6 }
-  label-md: { fontFamily: Archivo, fontSize: 14.4px, fontWeight: 600, lineHeight: 1.3 }
-  label-sm: { fontFamily: Archivo, fontSize: 12.5px, fontWeight: 600, lineHeight: 1.5 }
-  code: { fontFamily: Martian Mono, fontSize: 14.4px, fontWeight: 400, lineHeight: 1.7 }
+  body-lg: { fontFamily: Archivo, fontSize: 25.6px, fontWeight: 400, lineHeight: 1.3 }
+  body-md: { fontFamily: Archivo, fontSize: 19px, fontWeight: 400, lineHeight: 1.6 }
+  body-sm: { fontFamily: Archivo, fontSize: 15px, fontWeight: 400, lineHeight: 1.6 }
+  label-md: { fontFamily: Archivo, fontSize: 15px, fontWeight: 600, lineHeight: 1.3 }
+  label-sm: { fontFamily: Archivo, fontSize: 13.4px, fontWeight: 600, lineHeight: 1.5 }
+  code: { fontFamily: Martian Mono, fontSize: 15px, fontWeight: 400, lineHeight: 1.7 }
 rounded:
   none: 0px
   sm: 7.2px
@@ -112,9 +112,10 @@ overrides the same names; components never branch on the mode.
 
 ## Typography
 
-Two families for prose and one for code: Archivo (variable, width 100 to 112) for headings, labels
-and buttons; Newsreader for body copy; Martian Mono only inside commands and the replay. All three
-are self-hosted (`web/app/public/fonts`) with `font-display: swap`. Display sizes are fluid
+One family for prose and one for code: Archivo (variable) at width 108 to 112 for headings and at
+its normal width for body copy, labels and buttons; Martian Mono only inside commands and the
+replay. Body copy is 19px at weight 400 with a 1.6 line height, because the thin serif it replaced
+read poorly at 18px, above all in dark mode. Both are self-hosted (`web/app/public/fonts`) with `font-display: swap`. Display sizes are fluid
 (`clamp()`); the values in the tokens are their maximum. Headings use `text-wrap: balance`.
 
 ## Layout
@@ -137,7 +138,8 @@ the card journey; `phone` for a phone capture shown on its own; `full` for the "
 
 ## Motion
 
-Three pieces move, all played once when they scroll into view (`useArmed`): the terminal replay
+Four pieces move, all played once when they scroll into view (`useArmed`): the flow diagram
+lights the request, the plan, the working tasks, the waiting task and the cards in turn, the terminal replay
 types a request and resolves three tasks, the card journey highlights the same card in the terminal
 and on the iPhone, and the diagram sends sealed envelopes along the direct and relayed paths.
 Easing `cubic-bezier(0.16, 1, 0.3, 1)`, durations 120ms (controls), 220ms and 420ms. Under

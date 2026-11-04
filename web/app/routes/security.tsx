@@ -31,7 +31,7 @@ export default function Security() {
         <li>Your account: the sign-in identity, your email, the name you chose, and a log of changes to your account and invitations.</li>
         <li>The list of your devices: device and Mac identifiers, the names you give them, their public keys, the endpoint identifiers they use to connect, and the devices you revoked.</li>
         <li>Push notification tokens, and the push messages sealed for each device. A device that cannot open one shows a generic text instead.</li>
-        <li>For the iPhone’s Live Activity, the latest sealed counts of each Mac, and three flags beside them in the clear: whether something waits or works on that Mac, whether the phone is outside its quiet hours, and whether the inbox grew.</li>
+        <li>For the iPhone, the latest sealed counts of cards and tasks of each Mac, and three flags beside them in the clear: whether something waits or works on that Mac, whether the phone is outside its quiet hours, and whether the inbox grew.</li>
         <li>Your web session while you are signed in to this site, with its sign-in tokens sealed.</li>
         <li>What any relay sees when it carries a connection: the network addresses of both ends, when they talk and how much they send. It cannot read what they send.</li>
       </ul>

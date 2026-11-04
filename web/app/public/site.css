@@ -1,6 +1,6 @@
 /* Hallmark · route: custom (bespoke) · structure: working-notebook editorial, real captures as the evidence, one diagram
  * idea: "the daemon is on your Mac; everything else is how you reach it"
- * paper: oklch(97% 0.012 85) · stage: oklch(20% 0.022 250) · accent: oklch(66% 0.165 50) · display: Archivo (wide) · body: Newsreader · outlier: Martian Mono (code only)
+ * paper: oklch(97% 0.012 85) · stage: oklch(20% 0.022 250) · accent: oklch(66% 0.165 50) · display: Archivo (wide) · body: Archivo (normal width) · outlier: Martian Mono (code only)
  * axes: light and dark by system / grotesk-sans / warm · gates: not yet run
  */
 @import './tokens.css';
@@ -9,7 +9,7 @@
 html, body { margin: 0; overflow-x: clip; }
 html { -webkit-text-size-adjust: 100%; scrollbar-color: var(--color-ink-3) var(--color-paper); }
 ::selection { background: var(--color-accent); color: var(--color-on-accent); }
-body { background: var(--color-paper); color: var(--color-ink); font-family: var(--font-body); font-size: var(--text-base); line-height: 1.6; text-rendering: optimizeLegibility; }
+body { background: var(--color-paper); color: var(--color-ink); font-family: var(--font-body); font-stretch: 100%; font-weight: 400; font-size: var(--text-base); line-height: 1.6; text-rendering: optimizeLegibility; }
 img, svg { max-width: 100%; }
 a { color: inherit; text-underline-offset: 0.22em; text-decoration-thickness: 1px; }
 code, pre { font-family: var(--font-mono); }
@@ -126,8 +126,9 @@ p .text-link, li .text-link { font-family: inherit; font-size: inherit; font-wei
 .doc-lede { font-size: var(--text-xl); line-height: 1.35; color: var(--color-ink-2); }
 .doc > section { max-width: 46rem; padding-block: var(--space-xl); border-top: 1px solid var(--color-rule); }
 .doc > section h2 { font-size: var(--text-2xl); margin-bottom: var(--space-md); }
+.doc > section h3 { font-size: var(--text-lg); font-stretch: 100%; margin: var(--space-lg) 0 var(--space-xs); }
 .doc > section > p, .doc > section > .plain, .doc > .rows { color: var(--color-ink-2); }
-.doc > section p code, .doc li code { font-size: 0.85em; background: var(--color-paper-3); color: var(--color-ink); padding: 0.1em 0.35em; border-radius: 0.25rem; }
+.doc > section p code, .doc li code, .doc kbd { font-size: 0.85em; background: var(--color-paper-3); color: var(--color-ink); padding: 0.1em 0.35em; border-radius: 0.25rem; }
 .doc > .rows { max-width: 52rem; }
 .plain { margin: 0 0 var(--space-sm); padding-left: 1.2rem; max-width: 66ch; }
 .plain li { margin-bottom: var(--space-xs); }
@@ -343,4 +344,36 @@ p .text-link, li .text-link { font-family: inherit; font-size: inherit; font-wei
   .demo-line { white-space: normal; }
   .demo-row { grid-template-columns: minmax(0, 1fr); margin-bottom: var(--space-3xs); }
   .demo-states, .demo-note { padding-left: 2ch; }
+}
+
+/* Flow: request, plan, tasks, cards */
+.flow { margin: 0 0 var(--space-xl); max-width: 62rem; }
+.flow-art { display: block; width: 100%; height: auto; font-family: var(--font-body); font-size: 15px; fill: var(--color-ink-2); }
+.flow-narrow { display: none; font-size: 13px; max-width: 28rem; }
+.flow .lane rect { fill: var(--color-paper-2); stroke: var(--color-rule); stroke-width: 1.5; }
+.flow .lane-title { font-family: var(--font-display); font-weight: 600; font-size: 15px; fill: var(--color-ink); }
+.flow .flow-stage rect { fill: var(--color-card); stroke: var(--color-ink-3); stroke-width: 1.2; }
+.flow .flow-stage .flow-lit { fill: none; stroke: var(--color-accent); stroke-width: 3; opacity: 0; }
+.flow .node-title { font-family: var(--font-display); font-weight: 600; fill: var(--color-ink); }
+.flow-task-waits rect:first-child { stroke-dasharray: 5 5; }
+.flow-runs { fill: var(--color-accent-ink); font-family: var(--font-display); font-weight: 500; }
+.flow-task-waits .flow-runs { fill: var(--color-ink-3); }
+.flow-note { fill: var(--color-ink-2); }
+.flow-line { fill: none; stroke: var(--color-ink-3); stroke-width: 2; stroke-linejoin: round; }
+.flow-wait { stroke-dasharray: 4 5; }
+.flow-arrow { fill: var(--color-ink-3); }
+.flow figcaption { margin-top: var(--space-sm); font-size: var(--text-sm); color: var(--color-ink-3); }
+.flow figcaption .motion-toggle { margin-top: 0; margin-left: var(--space-2xs); min-height: 2rem; vertical-align: middle; }
+.flow-playing .flow-lit { animation: flowlit 10s linear infinite; }
+.flow-playing .flow-stage-2 .flow-lit { animation-delay: -8s; }
+.flow-playing .flow-stage-3 .flow-lit { animation-delay: -6s; }
+.flow-playing .flow-stage-4 .flow-lit { animation-delay: -4s; }
+.flow-playing .flow-stage-5 .flow-lit { animation-delay: -2s; }
+@keyframes flowlit { 0% { opacity: 1; } 18% { opacity: 1; } 21% { opacity: 0; } 100% { opacity: 0; } }
+@media (max-width: 40rem) {
+  .flow-wide { display: none; }
+  .flow-narrow { display: block; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow .flow-lit { animation: none !important; opacity: 0; }
 }

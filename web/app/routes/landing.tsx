@@ -3,6 +3,7 @@ import { Capture } from '../public/Capture';
 import { CardJourney } from '../public/CardJourney';
 import { CopyCommand } from '../public/CopyCommand';
 import { Diagram } from '../public/Diagram';
+import { FlowDiagram } from '../public/FlowDiagram';
 import { TerminalDemo } from '../public/TerminalDemo';
 import { WaitlistForm, useWaitlist } from '../public/WaitlistForm';
 
@@ -15,14 +16,17 @@ export function meta() {
 }
 
 const STEPS = [
-  { title: 'You write what you want.', body: 'Something like “add rate limiting to the API”, from the terminal app, the Mac app or the iPhone app.' },
-  { title: 'The orchestrator makes the plan.', body: 'It cuts the request into tasks. Each task gets its own agent session, Claude Code or Codex, in its own git worktree. A task can wait for another one.' },
-  { title: 'You decide what needs you.', body: 'A session with a question, a plan to approve or a finished pull request puts one card in front of you. Everything else keeps running.' },
+  { title: 'The orchestrator makes the plan.', body: 'You write what you want, from the terminal app, the Mac app or the iPhone app. The orchestrator turns it into a plan and the plan into tasks. Only the orchestrator creates tasks.' },
+  { title: 'Tasks wait for each other.', body: 'A task that depends on another starts once that one has landed. Tasks with nothing between them run at the same time, as many as your Mac has room for.' },
+  { title: 'Each task gets its own model.', body: 'The orchestrator picks Claude or Codex, the model and the reasoning effort for each task, and writes down why. You can connect several accounts of each provider: Alondra runs each task on one of them and passes over any whose plan has run out.' },
+  { title: 'Only decisions reach you.', body: 'You never read the agents’ conversations. Each task shows what its agent is doing and the last thing it said, and whatever needs you arrives as a card.' },
+  { title: 'Deciding and doing stay apart.', body: 'You and the orchestrator decide what gets built. Each node, one agent session in its own git worktree, only does its task. It cannot create tasks; it can only suggest one to the orchestrator.' },
 ];
 
 const MORE = [
   { title: 'The work stays on your Mac', body: 'The daemon, your repositories, your worktrees and your Claude and Codex logins stay on your Mac. Alondra Cloud only connects your devices.' },
-  { title: 'A model for each task', body: 'The orchestrator picks a model and a reasoning effort for each task from what your Claude and Codex accounts offer, and records why. You can choose them yourself. A decider that learns from past results is coming soon.', soon: true },
+  { title: 'Metrics for every task', body: 'Settings › Metrics on the iPhone and the Mac shows how your tasks went, by model and by project: how many were done with no rework, how long they waited for you, and the provider’s estimate of what they cost. The orchestrator reads the same numbers when it picks a model.' },
+  { title: 'Your choice of model wins', body: 'Set the model and the effort of a task yourself and the orchestrator keeps them. A decider that learns from past results is coming soon.', soon: true },
   { title: 'More than one Mac', body: 'Pair your iPhone with each of your Macs and switch between them. Using several at once from one screen is coming soon.', soon: true },
   { title: 'MCP servers in one place', body: 'Settings lists the MCP servers your agents use, project by project, with their status. Authorizing a server from a device other than the Mac is coming soon.', soon: true },
 ];
@@ -49,14 +53,17 @@ export default function Landing() {
       </div>
     </section>
 
-    <section className="band wrap split" aria-labelledby="steps-title">
-      <div>
-        <h2 id="steps-title">From a request to a pull request</h2>
+    <section className="band wrap" aria-labelledby="flow-title">
+      <h2 id="flow-title">How Alondra works</h2>
+      <p className="band-lede">You and the orchestrator decide. The nodes do the work, each on the model its task needs.</p>
+      <FlowDiagram/>
+      <div className="split">
         <ol className="steps">
           {STEPS.map(step => <li key={step.title}><h3>{step.title}</h3><p>{step.body}</p></li>)}
         </ol>
+        <TerminalDemo/>
       </div>
-      <TerminalDemo/>
+      <p><Link className="text-link" to="/how-it-works#orchestrator">How the orchestrator works</Link></p>
     </section>
 
     <section className="band wrap" aria-labelledby="card-title">
