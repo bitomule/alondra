@@ -33,6 +33,8 @@ pub enum SystemCard {
     StartProblem,
     PostMergeProblem,
     CloseProblem,
+    /// Cancelled tasks whose worktrees hold changes no commit has, and the user decides on them.
+    DiscardWorktrees,
     LaunchProblem { run: String },
     BatchProblem { run: String },
     StuckProblem,

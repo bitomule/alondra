@@ -1838,10 +1838,10 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
     slice.domain.stop_sdk_host(&new).unwrap();
 }
 
-// A cancelled SDK task whose subagent left work in its worktree keeps its host: the node is told
-// which worktree holds what, and the task ends only once the node gave it up.
+// A cancelled SDK task is closed whatever its subagent left in its worktree: the worktrees with
+// nothing unsaved are deleted, the one with unsaved files waits for the user's answer on a card.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_cancelled_sdk_task_with_work_left_in_a_subagents_worktree_keeps_its_host_until_the_node_settles_it() {
+async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_closed_and_the_user_decides_on_them() {
     let slice = Slice::new();
     let root = Directory::new();
     let own = crate::worktree::testing::task_worktree(&root, TASK);
@@ -1862,20 +1862,15 @@ async fn a_cancelled_sdk_task_with_work_left_in_a_subagents_worktree_keeps_its_h
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
     let timing = crate::task_closer::Timing::new(None);
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
-    assert!(slice.domain.owns_sdk_host(&agent), "the host stays so the node can settle its worktree");
-    let state = slice.domain.state().unwrap();
-    assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Closing);
-    let told = state.lifecycle_journal[&TaskId::from(TASK)].iter().rev()
-        .find_map(|record| match record { alondra_core::domain::LifecycleRecord::Told { text, .. } => text.clone(), _ => None })
-        .expect("the node is told what holds the close");
-    assert!(told.contains(subagent.to_str().unwrap()) && told.contains("discard"), "{told}");
-    assert!(subagent.join("draft.txt").exists(), "nothing with work is deleted");
-    slice.run(&Actor::Agent { agent_id: agent.clone() }, "give-up", Command::ConfirmCleanup { task_id: TASK.into(), discard: vec![subagent.to_str().unwrap().into()] });
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis() + 10 * 60_000).await.unwrap();
     let state = slice.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
-    assert!(!subagent.exists() && !own.exists(), "both worktrees are deleted once nothing in them is lost");
-    assert!(!slice.domain.owns_sdk_host(&agent));
+    assert!(!slice.domain.owns_sdk_host(&agent), "the host is closed: the node has nothing to settle");
+    assert!(subagent.join("draft.txt").exists(), "nothing with unsaved files is deleted unasked");
+    assert!(!own.exists(), "the worktree with nothing unsaved is deleted");
+    let cards: Vec<_> = state.interactions.values().filter(|i| i.system_card == Some(alondra_core::domain::SystemCard::DiscardWorktrees)).collect();
+    assert_eq!(cards.len(), 1);
+    let card = alondra_core::discard_worktrees::DiscardWorktrees::from_body(&cards[0].body).unwrap();
+    assert_eq!((card.tasks[0].files, card.tasks[0].paths.clone()), (1, vec![subagent.to_str().unwrap().to_owned()]));
 }
 
 // The task's native Claude loads every settings source of the user's default profile, with no

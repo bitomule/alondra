@@ -110,6 +110,7 @@ pub mod settings_file;
 pub mod stall_context;
 pub mod start_failures;
 pub mod swap_disk;
+pub mod cancelled_worktrees;
 pub mod task_closer;
 pub mod task_context;
 pub mod task_worktrees;

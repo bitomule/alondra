@@ -51,6 +51,9 @@ impl Timing {
 pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing: Timing) {
     let mut changed = domain.subscribe();
     let mut backoff = FIRST_BACKOFF;
+    if let Err(error) = crate::cancelled_worktrees::sweep(&domain).await {
+        log!("could not settle the worktrees of cancelled tasks: {error:#}");
+    }
     loop {
         let pause = match pass(&domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
             Ok(()) => {
@@ -128,6 +131,13 @@ pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
 /// Nothing of a task that ends without a node stays behind: not its worktree, not its launch.
 /// The receipt makes the task done or cancelled.
 async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
+    if task.cancelled() {
+        crate::cancelled_worktrees::release_cancelled(domain, task).await?;
+        if !task.worktrees.is_empty() && !domain.state()?.tasks.get(&task.id).is_some_and(Task::ending) {
+            return Ok(());
+        }
+        return record_unattended(domain, task);
+    }
     let left = crate::task_worktrees::release_all(domain, task).await?;
     if !left.is_empty() {
         let list: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
@@ -145,6 +155,10 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
             Err(why) => anyhow::bail!("the worktree of {} could not be released: {why}", task.id),
         }
     }
+    record_unattended(domain, task)
+}
+
+fn record_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     {
         let mut store = domain.store.lock_or_exit("the domain store");
         store.dequeue_launch(&task.id)?;
@@ -159,6 +173,9 @@ fn millis(duration: Duration) -> i64 {
 }
 
 pub async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64) -> Result<()> {
+    if let Err(error) = crate::cancelled_worktrees::apply_answers(domain).await {
+        log!("could not delete the worktrees the user chose to delete: {error:#}");
+    }
     let state = domain.state()?;
     let due_tasks: Vec<(TaskId, Due)> = state.tasks.values().filter_map(|task| due(&state, task).map(|kind| (task.id.clone(), kind))).collect();
     let rows = domain.store.lock_or_exit("the domain store").task_closings()?;
@@ -305,7 +322,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if !ready || (now < row.next_attempt && !confirmed) {
         return Ok(());
     }
-    let left = crate::task_worktrees::leftovers(domain, task).await;
+    let left = if task.cancelled() { vec![] } else { crate::task_worktrees::leftovers(domain, task).await };
     if !left.is_empty() {
         return hold_for_worktrees(domain, timing, now, task, &agent, row, &left, matches!(kind, Due::Cleanup));
     }
@@ -422,7 +439,7 @@ async fn close_sdk_node(
     if now < row.next_attempt && !confirmed {
         return Ok(());
     }
-    let left = crate::task_worktrees::leftovers(domain, task).await;
+    let left = if task.cancelled() { vec![] } else { crate::task_worktrees::leftovers(domain, task).await };
     if !left.is_empty() {
         if !owned && let Err(why) = take_over(domain, task) {
             log!("no host could resume the session of {} to settle its worktrees: {why}", task.id);
@@ -499,6 +516,10 @@ fn sdk_working(state: &DomainState, task: &Task) -> bool {
 async fn finish_with_worktree(
     domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, cleanup: bool, end: NodeEnd,
 ) -> Result<()> {
+    if task.cancelled() {
+        crate::cancelled_worktrees::release_cancelled(domain, task).await?;
+        return finish(domain, &row, Some(agent), end);
+    }
     let left = crate::task_worktrees::release_all(domain, task).await?;
     if !left.is_empty() {
         let detail: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();

@@ -1337,6 +1337,11 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     {
         return Some(card.text(lang));
     }
+    if matches!(interaction.system_card, Some(SystemCard::DiscardWorktrees))
+        && let Some(card) = crate::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
+    {
+        return Some(card.text(lang));
+    }
     if matches!(interaction.system_card, Some(SystemCard::OverPace { .. })) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
         return Some((
@@ -1375,6 +1380,12 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             Some(t!(lang, "Every task that waits for it goes on without it", "Las tareas que lo esperan siguen sin él").into()));
     }
     if let Some((label, description)) = crate::close_problem::option_text(&option.id, &option.label, lang) {
+        return (label.into(), Some(description.into()));
+    }
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::DiscardWorktrees))
+        && let Some((label, description)) = crate::discard_worktrees::option_text(&option.id, &option.label, lang)
+    {
         return (label.into(), Some(description.into()));
     }
     if let Some((label, description)) = crate::orchestrator_cards::option_text(&option.id, &option.label, lang) {
@@ -1826,6 +1837,13 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::CloseProblem))
         && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
+    {
+        out.push(markdown(card.detail(lang)));
+        return out;
+    }
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::DiscardWorktrees))
+        && let Some(card) = crate::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
         return out;

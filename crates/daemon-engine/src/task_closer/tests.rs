@@ -1049,16 +1049,17 @@ async fn a_task_launched_in_the_worktree_without_naming_the_task_it_carries_on_t
 }
 
 #[tokio::test]
-async fn a_cancelled_task_whose_continuation_is_already_over_keeps_its_unsaved_worktree_as_before() {
+async fn a_cancelled_task_whose_continuation_is_already_over_leaves_its_unsaved_worktree_to_the_users_card() {
     let (rig, _root, dir) = moved(Some("t"));
     command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into() });
     for minutes in [0, 5, 10, 20] {
-        let _ = pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + minutes * MINUTE).await;
+        rig.pass(T0 + minutes * MINUTE).await;
     }
-    assert!(dir.join("a.txt").exists(), "work no remote has is never deleted");
-    assert_eq!(rig.task().state, TaskState::Closing);
-    assert_eq!(worktree_end(&rig, "t", &dir), Some(None), "nobody else goes on in it, so it is not handed over");
-    assert!(rig.closing().unwrap().last_error.unwrap().contains("1 uncommitted file(s)"));
+    assert!(dir.join("a.txt").exists(), "work no remote has is never deleted unasked");
+    assert_eq!(rig.task().state, TaskState::Cancelled, "the unsaved file no longer keeps the task from closing");
+    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_core::domain::WorktreeEnd::KeptByUser)), "nobody else goes on in it, so it waits for the user");
+    assert_eq!(rig.discard_cards().len(), 1);
+    assert!(rig.cards().is_empty());
 }
 
 #[tokio::test]
@@ -1078,4 +1079,173 @@ async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_
     assert!(rig.cards().is_empty());
     assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(Some(alondra_core::domain::WorktreeEnd::HandedOver)));
     assert_eq!(worktree_end(&rig, "t-sonnet", &dir), Some(None), "the continuation still working keeps it");
+}
+
+use alondra_core::discard_worktrees::DiscardWorktrees;
+use alondra_core::domain::SystemCard;
+
+fn branch_exists(repository: &std::path::Path, branch: &str) -> bool {
+    let out = std::process::Command::new("git").arg("-C").arg(repository)
+        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).output().unwrap();
+    out.status.success()
+}
+
+impl Rig {
+    fn discard_cards(&self) -> Vec<alondra_core::domain::Interaction> {
+        self.domain.state().unwrap().interactions.values().filter(|i| i.system_card == Some(SystemCard::DiscardWorktrees)).cloned().collect()
+    }
+
+    fn answer_discard(&self, option: &str) {
+        let card = self.discard_cards()[0].id.clone();
+        command(&self.domain, user(), &format!("answer-discard-{option}"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: card, option_id: option.into(), inputs: Default::default(),
+        });
+    }
+
+    /// A task already cancelled that has no node, with a worktree of its own left behind.
+    fn cancelled_with_worktree(&self, id: &str, unsaved: &[&str]) -> (crate::test_support::Directory, std::path::PathBuf) {
+        command(&self.domain, user(), &format!("request-{id}"), Command::CreateRequest {
+            request_id: format!("r-{id}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        command(&self.domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask {
+            plan_items: None, continues: None, task_id: id.into(), request_id: format!("r-{id}").into(), title: format!("Task {id}"), agent_id: None,
+            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        });
+        command(&self.domain, user(), &format!("cancel-{id}"), Command::CancelTask { task_id: id.into() });
+        let root = crate::test_support::Directory::new();
+        let dir = crate::worktree::testing::task_worktree(&root, id);
+        for file in unsaved {
+            std::fs::write(dir.join(file), "x").unwrap();
+        }
+        self.domain.store.lock().unwrap().set_task_worktree(&id.into(), dir.to_str().unwrap(), T0).unwrap();
+        (root, dir)
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_task_with_unsaved_files_asks_once_and_deletes_nothing_until_the_user_says_delete() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    std::fs::write(dir.join("b.txt"), "y").unwrap();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    rig.pass(T0).await;
+    rig.pass(T0 + MINUTE).await;
+
+    let task = rig.task();
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)), "the cancelled task closes; its files wait for the user");
+    assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists(), "nothing is deleted before the user answers");
+    assert!(rig.cards().is_empty(), "no card about a session that cannot close");
+    let cards = rig.discard_cards();
+    assert_eq!(cards.len(), 1);
+    let card = DiscardWorktrees::from_body(&cards[0].body).expect("the body holds what clients word");
+    assert_eq!((card.tasks.len(), card.tasks[0].task_id.as_str(), card.tasks[0].files), (1, "t", 2));
+    let InteractionPayload::Question { options, answer: None } = &cards[0].payload else { panic!("a question card") };
+    assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["discard", "keep"]);
+    rig.pass(T0 + 60 * MINUTE).await;
+    assert_eq!(rig.discard_cards().len(), 1, "asked once");
+    assert!(dir.exists());
+
+    rig.answer_discard("discard");
+    rig.pass(T0 + 61 * MINUTE).await;
+    assert!(!dir.exists(), "Delete removes the worktree");
+    assert!(!branch_exists(&root.join("repo"), "worktree-t"), "and its local branch, which has no open pull request");
+    assert_eq!(rig.discard_cards().len(), 1);
+}
+
+#[tokio::test]
+async fn keeping_the_unsaved_files_of_a_cancelled_task_touches_nothing_and_never_asks_again() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    rig.pass(T0).await;
+    rig.answer_discard("keep");
+    for minutes in [1, 60, 600] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    assert!(dir.join("a.txt").exists());
+    assert!(branch_exists(&root.join("repo"), "worktree-t"));
+    assert_eq!(rig.discard_cards().len(), 1, "the answered card is why nobody asks again");
+}
+
+#[tokio::test]
+async fn cancelling_a_task_without_unsaved_files_deletes_its_worktree_and_branch_without_a_card() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    rig.pass(T0).await;
+    rig.pass(T0 + MINUTE).await;
+    assert!(!dir.exists());
+    assert!(!branch_exists(&root.join("repo"), "worktree-t"));
+    assert!(rig.discard_cards().is_empty() && rig.cards().is_empty());
+    assert_eq!(rig.task().state, TaskState::Cancelled);
+}
+
+#[tokio::test]
+async fn a_cancelled_task_with_an_open_pull_request_keeps_its_branch_when_its_worktree_goes() {
+    let rig = Rig::new(thirty_minutes());
+    command(&rig.domain, agent(), "register-pr", Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+    });
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    rig.pass(T0).await;
+    rig.pass(T0 + MINUTE).await;
+    assert!(!dir.exists());
+    assert!(branch_exists(&root.join("repo"), "worktree-t"), "the open pull request still needs its branch");
+}
+
+#[tokio::test]
+async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card_and_david_s_exception() {
+    let rig = Rig::undelivered(thirty_minutes());
+    let (_a_root, a) = rig.cancelled_with_worktree("t-a", &["one.txt", "two.txt"]);
+    let (b_root, b) = rig.cancelled_with_worktree("t-b", &[]);
+    let (_c_root, c) = rig.cancelled_with_worktree("t-c", &["three.txt"]);
+    let (_kept_root, kept) = rig.cancelled_with_worktree("t-settings-mcp-modals-ios", &["mine.txt"]);
+    for task in ["t-a", "t-b", "t-c", "t-settings-mcp-modals-ios"] {
+        assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from(task)].state, TaskState::Cancelled);
+    }
+
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    assert!(!b.exists(), "a worktree with nothing unsaved goes without asking");
+    assert!(!branch_exists(&b_root.join("repo"), "worktree-t-b"));
+    assert!(a.join("one.txt").exists() && c.join("three.txt").exists(), "the others wait for the user");
+    let cards = rig.discard_cards();
+    assert_eq!(cards.len(), 1, "one card for all of them");
+    let card = DiscardWorktrees::from_body(&cards[0].body).unwrap();
+    assert_eq!(card.tasks.iter().map(|task| (task.task_id.as_str(), task.files)).collect::<Vec<_>>(), [("t-a", 2), ("t-c", 1)],
+        "David's exception is never listed");
+    let (options, _) = card.options();
+    assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Delete all", "Keep all"]);
+
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    assert_eq!(rig.discard_cards().len(), 1, "a second start does not repeat the card");
+
+    rig.answer_discard("discard");
+    rig.pass(T0).await;
+    assert!(!a.exists() && !c.exists(), "Delete all removes the listed worktrees");
+    assert!(kept.join("mine.txt").exists(), "David's exception is never touched");
+}
+
+#[tokio::test]
+async fn keeping_all_the_existing_cancelled_worktrees_deletes_none_and_no_later_start_asks_again() {
+    let rig = Rig::undelivered(thirty_minutes());
+    let (_a_root, a) = rig.cancelled_with_worktree("t-a", &["one.txt"]);
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    rig.answer_discard("keep");
+    rig.pass(T0).await;
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    assert!(a.join("one.txt").exists());
+    assert_eq!(rig.discard_cards().len(), 1);
 }

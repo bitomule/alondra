@@ -292,15 +292,9 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
             None => Ok(TaskWorktree::Absent),
         };
     }
-    let Some(top) = git(dir, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await.map(PathBuf::from) else {
+    let Some(top) = alondras_top(dir, &named).await else {
         return Ok(TaskWorktree::NotAlondras);
     };
-    let alondras = top.join(".git").is_file()
-        && named(&top)
-        && top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees"));
-    if !alondras {
-        return Ok(TaskWorktree::NotAlondras);
-    }
     if !give_up && let Some(left) = unsaved(&top).await? {
         return Ok(TaskWorktree::Unsaved(left));
     }
@@ -311,6 +305,25 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
     std::fs::rename(&top, &trash).map_err(|e| format!("could not set {} aside to delete it: {e}", top.display()))?;
     let freed = empty_trash(top, trash).await?;
     Ok(TaskWorktree::Removed { freed })
+}
+
+/// The root of `dir` when it is a linked worktree in a repository's `.claude/worktrees` that
+/// `named` accepts: the only folders Alondra deletes.
+async fn alondras_top(dir: &Path, named: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let top = git(dir, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await.map(PathBuf::from)?;
+    (top.join(".git").is_file() && named(&top) && top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees"))).then_some(top)
+}
+
+/// How many files a worktree Alondra made holds that no commit has; `None` when `dir` is gone or
+/// is not such a worktree.
+pub async fn uncommitted_files_of_alondras_worktree(dir: &Path) -> Result<Option<usize>, String> {
+    if !dir.exists() {
+        return Ok(None);
+    }
+    match alondras_top(dir, &|_: &Path| true).await {
+        Some(top) => uncommitted_files(&top).await.map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Where a worktree is moved before it is deleted, beside it: in one rename it is either whole,
@@ -393,6 +406,43 @@ pub async fn unsaved(top: &Path) -> Result<Option<String>, String> {
         parts.push(format!("{unpushed} commit(s) not pushed"));
     }
     Ok((!parts.is_empty()).then(|| format!("{} in {}", parts.join(" and "), top.display())))
+}
+
+/// The files of `top` that no commit has: changed, staged or not tracked by git.
+pub async fn uncommitted_files(top: &Path) -> Result<usize, String> {
+    let status = git(top, &["status", "--porcelain", "--untracked-files=all"]).await
+        .ok_or_else(|| format!("git could not tell whether {} has unsaved changes", top.display()))?;
+    Ok(status.lines().filter(|line| !line.trim().is_empty()).count())
+}
+
+/// Deletes a worktree Alondra made as it is, whatever it holds: the caller has the user's word or
+/// knows it holds no unsaved files. With `keep_branch` false the branch Claude Code made for it goes too, unless it
+/// holds commits that neither a remote nor the default branch has.
+pub async fn discard_worktree(dir: &Path, keep_branch: bool) -> Result<TaskWorktree, String> {
+    let made_for_it = dir.file_name().and_then(|name| name.to_str()).map(|name| format!("worktree-{name}"));
+    let branch = branch_in(dir).await.filter(|branch| Some(branch) == made_for_it.as_ref());
+    let repository = git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await
+        .and_then(|common| PathBuf::from(common).parent().map(Path::to_path_buf));
+    let released = release(dir, |_| true, true, true).await?;
+    if let (TaskWorktree::Removed { .. }, false, Some(branch), Some(repository)) = (&released, keep_branch, branch, repository) {
+        delete_saved_branch(&repository, &branch).await;
+    }
+    Ok(released)
+}
+
+async fn delete_saved_branch(repository: &Path, branch: &str) {
+    let on_a_remote = git(repository, &["rev-list", "--count", branch, "--not", "--remotes"]).await.is_some_and(|count| count == "0");
+    let in_default = match local_default_branch(repository).await {
+        Some(default) => git(repository, &["merge-base", "--is-ancestor", branch, &format!("refs/heads/{default}")]).await.is_some(),
+        None => false,
+    };
+    if !(on_a_remote || in_default) {
+        log!("keeping the branch {branch}: it holds commits no remote has");
+        return;
+    }
+    if git(repository, &["branch", "-D", branch]).await.is_none() {
+        log!("could not delete the branch {branch} of {}", repository.display());
+    }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -626,6 +676,52 @@ mod tests {
         testing::git(&dir, &["checkout", "-q", "-"]);
         assert_eq!(evidence_refusal_in(&dir, &cite(&aside)).await.map(|e| e.code), Some("evidence_commit_not_in_work".into()),
             "a commit on another branch is not this work");
+    }
+
+    fn branch_exists(repository: &Path, branch: &str) -> bool {
+        std::process::Command::new("git").arg("-C").arg(repository)
+            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).status().unwrap().success()
+    }
+
+    #[tokio::test]
+    async fn changed_staged_and_untracked_files_all_count_as_unsaved_and_a_clean_worktree_counts_none() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-count");
+        assert_eq!(uncommitted_files_of_alondras_worktree(&dir).await, Ok(Some(0)));
+        std::fs::write(dir.join("new.txt"), "x").unwrap();
+        std::fs::create_dir(dir.join("out")).unwrap();
+        std::fs::write(dir.join("out/a"), "x").unwrap();
+        std::fs::write(dir.join("out/b"), "x").unwrap();
+        assert_eq!(uncommitted_files_of_alondras_worktree(&dir).await, Ok(Some(3)), "each untracked file counts, also inside a new folder");
+        assert_eq!(uncommitted_files_of_alondras_worktree(&root.join("repo")).await, Ok(None), "a main checkout is not an Alondra worktree");
+        assert!(matches!(discard_worktree(&dir, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert_eq!(uncommitted_files_of_alondras_worktree(&dir).await, Ok(None), "a deleted one holds nothing");
+    }
+
+    #[tokio::test]
+    async fn discarding_a_worktree_deletes_its_pushed_branch_but_keeps_one_with_commits_no_remote_has() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let pushed = testing::task_worktree(&root, "t-pushed");
+        assert!(matches!(discard_worktree(&pushed, true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(branch_exists(&repo, "worktree-t-pushed"), "with an open pull request the branch stays");
+
+        let other_root = crate::test_support::Directory::new();
+        let again = testing::task_worktree(&other_root, "t-again");
+        assert!(matches!(discard_worktree(&again, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!again.exists());
+        assert!(!branch_exists(&other_root.join("repo"), "worktree-t-again"), "a pushed branch with no open pull request goes with it");
+
+        let local = repo.join(".claude/worktrees/t-local");
+        testing::git(&repo, &["worktree", "add", "-q", "-b", "worktree-t-local", local.to_str().unwrap()]);
+        testing::git(&local, &["commit", "-q", "--allow-empty", "-m", "only here"]);
+        assert!(matches!(discard_worktree(&local, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!local.exists());
+        assert!(branch_exists(&repo, "worktree-t-local"), "commits no remote has are not lost with the branch");
+
+        testing::git(&repo, &["worktree", "add", "-q", "-b", "feature-x", repo.join(".claude/worktrees/t-other").to_str().unwrap()]);
+        assert!(matches!(discard_worktree(&repo.join(".claude/worktrees/t-other"), false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(branch_exists(&repo, "feature-x"), "only the branches Claude Code makes for a worktree are deleted");
     }
 
     #[tokio::test]
