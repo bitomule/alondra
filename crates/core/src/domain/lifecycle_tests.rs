@@ -2503,3 +2503,43 @@ fn a_delivery_under_review_reads_working_while_a_turn_runs_and_waits_for_the_use
         assert_eq!(s.live_state(&"t".into()), live, "{why}");
     }
 }
+
+fn journal_of_a_turn_over_the_notification_of_ended_work() -> Vec<LifecycleRecord> {
+    vec![
+        LifecycleRecord::Planned { input: "input:t:1".into() },
+        LifecycleRecord::Admitted {
+            node: "a".into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn-1".into(), input: "input:t:1".into() },
+        LifecycleRecord::WorkStarted { turn: "turn-1".into(), work: "build".into() },
+        LifecycleRecord::TurnEnded { turn: "turn-1".into(), unheard_card: "unheard-turn-1".into(), wake: None, text: None, awaits: None, stalled: false },
+        LifecycleRecord::WorkEnded { work: "build".into(), continuation: "build-ended".into() },
+        LifecycleRecord::Told { input: "input:t:2".into(), text: Some("Carry on".into()), answers: None },
+        LifecycleRecord::TurnStarted { turn: "turn-2".into(), input: "input:t:2".into() },
+    ]
+}
+
+// A journal recorded before a stalled turn consumed the notifications it read: the turn ended
+// without waking the node nor waiting on anything and the notification stayed, as it replays today.
+#[test]
+fn a_journal_recorded_with_a_stalled_turn_over_a_notification_keeps_the_task_woken() {
+    use alondra_domain::{LiveState, Step, Worker};
+    let mut s = DomainState::new("epoch");
+    let mut journal = journal_of_a_turn_over_the_notification_of_ended_work();
+    journal.push(LifecycleRecord::TurnEnded { turn: "turn-2".into(), unheard_card: "stalled-turn-2".into(), wake: None, text: None, awaits: None, stalled: true });
+    s.lifecycle_journal.insert("t".into(), journal);
+    assert_eq!(s.live_state(&"t".into()), Some(LiveState::Working(Worker::Alondra(Step::Waking))));
+}
+
+#[test]
+fn a_stalled_turn_that_consumed_the_notification_it_read_leaves_the_task_to_the_orchestrator() {
+    use alondra_domain::{LiveState, Step, Worker};
+    let mut s = DomainState::new("epoch");
+    let mut journal = journal_of_a_turn_over_the_notification_of_ended_work();
+    journal.push(LifecycleRecord::WorkContinued { continuation: "build-ended".into() });
+    journal.push(LifecycleRecord::TurnEnded { turn: "turn-2".into(), unheard_card: "stalled-turn-2".into(), wake: None, text: None, awaits: None, stalled: true });
+    s.lifecycle_journal.insert("t".into(), journal);
+    assert_eq!(s.live_state(&"t".into()), Some(LiveState::Working(Worker::Alondra(Step::Answering))));
+}

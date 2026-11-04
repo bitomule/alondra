@@ -1515,6 +1515,9 @@ impl DomainState {
         let woke = empty && !self.stalled_before(task)
             && self.decide(lifecycles, task, ended(Some(self.next_input(task)), None)).is_ok();
         if !woke {
+            if awaits.is_none() {
+                self.consume_notifications_read(task, generation, lifecycles)?;
+            }
             self.decide(lifecycles, task, ended(None, awaits))?;
         }
         let owed = if empty { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
@@ -1542,6 +1545,20 @@ impl DomainState {
                     effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A turn that ends without waking the node or waiting on anything read the notifications it
+    /// found: they are consumed before it ends, or the task would stay woken for work that nobody
+    /// is going to tell the node about again, with no card for the stop.
+    fn consume_notifications_read(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+        let read: Vec<String> = self.lifecycle(lifecycles, task)?.notifications_read().into_iter()
+            .map(|continuation| continuation.as_str().to_owned())
+            .filter(|continuation| !is_decision(generation, continuation))
+            .collect();
+        for continuation in read {
+            self.decide(lifecycles, task, LifecycleRecord::WorkContinued { continuation })?;
         }
         Ok(())
     }

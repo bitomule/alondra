@@ -1220,6 +1220,19 @@ impl TaskLifecycle {
             _ => None,
         }
     }
+    /// The notifications of work that ended which the running root turn found waiting when it
+    /// started, and so read, that its end has not yet said what became of.
+    pub fn notifications_read(&self) -> Vec<&ContinuationId> {
+        match self.session().map(|execution| &execution.activity) {
+            Some(Activity::Turn { continuations, taken, .. }) => continuations.intersection(taken)
+                .filter_map(|wake| match wake {
+                    Wake::Owned(continuation) => Some(continuation),
+                    Wake::Callback(_) => None,
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
     /// How far stopping the root turn the execution runs went, if it is in one.
     pub fn turn_stop(&self) -> Option<TurnStop> {
         match &self.session()?.activity {
