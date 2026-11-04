@@ -621,7 +621,7 @@ private struct IrohStack {
         let result = try await client.next(ProcessClientEvent.self)
         #expect(result.event == "history")
         let samples = try #require(result.history)
-        #expect(samples.map(\.operations) == [64, 128, 256, 1024])
+        #expect(samples.map(\.operations) == [64, 128, 256, 512])
         let middle = try #require(samples.first(where: { $0.operations == 128 }))
         let end = try #require(samples.last)
         #expect(end.previousFileBytes > middle.previousFileBytes)

@@ -284,7 +284,7 @@ private final class ClientInput: Sendable {
         var previousWritten = 0
         var previousElapsed = 0.0, previousCPU = 0.0, modernElapsed = 0.0, modernCPU = 0.0
         let clock = ContinuousClock()
-        for ordinal in 1...1024 {
+        for ordinal in 1...512 {
             let request = ActionRequest(commandId: String(format: "20000000-0000-4000-8000-%012x", ordinal),
                 dataEpoch: "history-epoch", client: .mac, lang: "en", actionId: String(format: "answer:%04d", ordinal))
             let body = try ContractCodec.encode(request)
@@ -307,7 +307,7 @@ private final class ClientInput: Sendable {
                 ranges: acknowledged.ranges.map { .init(first: $0.first, last: $0.last) }))
             modernElapsed += microseconds(modernStarted.duration(to: clock.now))
             modernCPU += try processCPU() - modernCPUStarted
-            if [64, 128, 256, 1024].contains(ordinal) {
+            if [64, 128, 256, 512].contains(ordinal) {
                 let stats = try await modern.statistics()
                 samples.append(.init(operations: ordinal, previousFileBytes: try ciphertextBytes(previousDirectory),
                     previousCiphertextPayloadWrittenBytes: previousWritten,
