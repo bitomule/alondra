@@ -29,6 +29,7 @@ checks:
       - "deploy/brew/**"
       - "deploy/apple/**"
       - "deploy/pi/**"
+      - "deploy/server/**"
       - "tools/shared.bzl"
       - "tools/e2e-sandbox.sh"
       - "tools/sandbox_accounts.py"
@@ -82,6 +83,9 @@ checks:
         - //deploy/pi/iroh-relay:relay_access_test
         - //deploy/pi/iroh-relay:traffic_test
         - //deploy/pi:pi_ssh_test
+        - //deploy/pi:backup_sites_test
+        - //deploy/server:cloudflare_test
+        - //deploy/server:stack_test
 
   sdk-host:
     uses: bazel/test
