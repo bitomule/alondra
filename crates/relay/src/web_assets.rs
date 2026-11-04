@@ -14,8 +14,12 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 
 const PAGES: &[&str] = &[
     "",
-    "privacy",
+    "how-it-works",
     "install",
+    "docs",
+    "security",
+    "privacy",
+    "license",
     "account",
     "admin",
     "invite",
@@ -197,6 +201,22 @@ pub async fn serve(State(server): State<Arc<Server>>, method: Method, uri: Uri) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn serves_every_page_the_site_prerenders() {
+        let config = include_str!("../../../web/react-router.config.ts");
+        let start = config.find("prerender: [").expect("prerender list") + "prerender: [".len();
+        let end = start + config[start..].find(']').expect("end of the prerender list");
+        let mut prerendered: Vec<&str> = config[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|route| !route.is_empty())
+            .map(|route| route.trim_matches('\'').trim_start_matches('/'))
+            .collect();
+        let mut served = PAGES.to_vec();
+        prerendered.sort_unstable();
+        served.sort_unstable();
+        assert_eq!(served, prerendered);
+    }
     #[test]
     fn exact_script_hashes_and_no_api_fallback() {
         let csp = policy(
