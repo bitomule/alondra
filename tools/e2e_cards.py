@@ -54,7 +54,7 @@ CARDS = {
 
 ORCHESTRATOR_ANSWER = "Do it yourself"
 ORCHESTRATOR_CARD = {"interaction_id": "orchestrator-decide", "scope": {"kind": "orchestrator", "request_id": None},
-                     "recipient": {"kind": "user"}, "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
+                     "recipient": {"kind": "user"}, "title": CARDS["orchestrator"], "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
                      "blocking": False, "options": [{"id": "mine", "label": "I'll do it", "description": "No task is created"},
                                                     {"id": "new_task", "label": "Create a task", "description": "A node fixes it"}]}
 
@@ -165,13 +165,13 @@ class Node:
         return {"kind": "task", "task_id": self.task}
 
     def ask(self, interaction, need, options):
-        return ("ask", {"interaction_id": interaction, "scope": self.scope(), "recipient": {"kind": "user"}, "need": need,
+        return ("ask", {"interaction_id": interaction, "scope": self.scope(), "recipient": {"kind": "user"}, "title": need, "need": need,
                         "why": "The release waits for this.", "blocking": False,
                         "options": [{"id": o, "label": o.capitalize(), "description": f"Go with {o}"} for o in options]})
 
     def action(self, interaction, need):
         """A request_action card with its default buttons, Done and I can't do it."""
-        return ("request_action", {"interaction_id": interaction, "scope": self.scope(), "recipient": {"kind": "user"}, "need": need,
+        return ("request_action", {"interaction_id": interaction, "scope": self.scope(), "recipient": {"kind": "user"}, "title": need, "need": need,
                                    "why": "The release waits for this.", "verify": "I check it myself", "blocking": False,
                                    "steps": ["Open the developer console", "Do it"]})
 
@@ -214,7 +214,7 @@ def seed(asker, deliverer):
     answered, so the delivery comes from a second node."""
     asker.call(
         asker.ask("option", CARDS["option"], ["stable", "beta"]),
-        ("request_input", {"interaction_id": "text", "scope": asker.scope(), "recipient": {"kind": "user"}, "need": CARDS["text"],
+        ("request_input", {"interaction_id": "text", "scope": asker.scope(), "recipient": {"kind": "user"}, "title": CARDS["text"], "need": CARDS["text"],
                            "why": "The release notes need it.", "kind": "text", "blocking": False}),
         asker.ask("reply", CARDS["reply"], ["settings", "preferences"]),
         asker.action("action", CARDS["action"]),
@@ -226,7 +226,7 @@ def seed(asker, deliverer):
                                for n in range(1, 5)]}),
     )
     deliverer.call(
-        ("present_result", {"task_id": deliverer.task, "interaction_id": "delivery", "need": CARDS["delivery"],
+        ("present_result", {"task_id": deliverer.task, "interaction_id": "delivery", "title": CARDS["delivery"], "need": CARDS["delivery"],
                             "content": {"kind": "report", "body": "The store moved in one go."},
                             "targets": [{"kind": "text", "text": "The store moved in one go."}], "is_final": True}),
     )
@@ -241,7 +241,7 @@ def seed_orchestrator(sandbox, node):
     with open(os.path.join(fake, "ask.json"), "w") as card:
         json.dump(ORCHESTRATOR_CARD, card)
     node.call(("ask", {"interaction_id": "to-orchestrator", "scope": node.scope(), "recipient": {"kind": "orchestrator"},
-                       "need": "Tell me who fixes the memory pauses", "why": "My build is cut in a loop.", "blocking": False,
+                       "title": "Tell me who fixes the memory pauses", "need": "Tell me who fixes the memory pauses", "why": "My build is cut in a loop.", "blocking": False,
                        "options": [{"id": "wait", "label": "Wait", "description": "Keep waiting"},
                                    {"id": "go", "label": "Go on", "description": "Go on without it"}]}))
     deadline = time.time() + TIMEOUT

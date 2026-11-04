@@ -166,7 +166,7 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
 fn decision(id: &str, task: &str, options: Value) -> Value {
     json!({"kind":"ask_question", "interaction_id":id, "scope":{"kind":"task", "task_id":task},
         "recipient":{"kind":"user"}, "body":"Which name?", "blocking":false, "options":options,
-        "card":{"kind":"decide", "need":"Pick a name", "why":"The release needs one"}})
+        "card":{"kind":"decide", "title":"Release name", "need":"Pick a name", "why":"The release needs one"}})
 }
 
 fn names() -> Value {
@@ -194,7 +194,7 @@ fn three_rejections_of_the_same_card_raise_a_problem() {
     let problem = &raised[0];
     assert_eq!(problem.author, Author::System);
     assert_eq!(problem.scope, Scope::Task { task_id: "t1".into() });
-    assert!(problem.card.need.contains("Fixture agent"), "{}", problem.card.need);
+    assert!(problem.card.effective_title().contains("Fixture agent"), "{}", problem.card.effective_title());
     assert!(problem.card.why.contains("options") && problem.card.why.contains("invalid_input"), "{}", problem.card.why);
     assert!(problem.body.contains("3 times") && problem.body.contains("stuck"), "{}", problem.body);
     assert!(problem.card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Diagnosis));
@@ -252,7 +252,7 @@ fn a_retried_card_is_the_first_card_and_not_a_second_one() {
     let again = fixture.runtime.execute_bearer(&fixture.agent, &envelope(&fixture)).unwrap();
     assert_eq!(first.created_ids, again.created_ids);
     let cards = fixture.runtime.state().unwrap().interactions.values()
-        .filter(|i| i.card.need == "Pick a name").count();
+        .filter(|i| i.card.effective_title() == "Release name").count();
     assert_eq!(cards, 1);
 }
 

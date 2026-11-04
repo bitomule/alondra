@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v29d8fca63fc6282f",
+  "version": "vc9cd1cf9dd91da3b",
   "cursor": "cursor-1",
   "title": "Run `git reset --hard origin/main`",
   "status": {
@@ -68,7 +68,8 @@
           "type": "card",
           "id": "cc2d034b-249e-4487-a89b-57de38c26372",
           "kind": "authorize",
-          "need": "Run `git reset --hard origin/main`",
+          "need": "Autoriza esta acción",
+          "title_is_separate": true,
           "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "command",
@@ -183,7 +184,6 @@
     },
     {
       "id": "content",
-      "title": "Contenido",
       "collapsed": false,
       "items": [
         {

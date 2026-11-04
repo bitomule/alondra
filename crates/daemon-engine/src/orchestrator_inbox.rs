@@ -213,7 +213,7 @@ fn waits(i: &Interaction) -> bool {
 
 fn quoted(i: &Interaction) -> String {
     let body: String = i.body.trim().chars().take(BODY_SHOWN).collect();
-    format!("\"{}\"\n{body}", i.card.need)
+    format!("\"{}\"\n{body}", i.card.effective_title())
 }
 
 fn unsettled(state: &DomainState, suggestion: &Interaction) -> Option<Step> {
@@ -267,7 +267,7 @@ fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
             request: state.requests.get(&task.request_id).filter(|request| !request.closed).map(|request| request.id.clone()),
             id,
             card,
-            problem: UnansweredProblem { question_id: question.id.0.clone(), task_title: task.title.clone(), question: question.card.need.clone() },
+            problem: UnansweredProblem { question_id: question.id.0.clone(), task_title: task.title.clone(), question: question.card.effective_title().to_owned() },
         });
     }
     let (id, card) = inbox_card(UNANSWERED_NOTICE_PREFIX, InboxCard::UnansweredNotice, &question.id.0, reminders + 1);

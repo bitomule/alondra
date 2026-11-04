@@ -347,7 +347,7 @@ pub fn push_content(
 }
 
 fn push_alert(card: &Card) -> Option<PushAlert> {
-    let title = one_line(card.need.as_deref().unwrap_or(&card.title), PUSH_TITLE_CHARS)?;
+    let title = one_line(&card.title, PUSH_TITLE_CHARS)?;
     let body = card.why.as_deref().and_then(|why| one_line(why, PUSH_BODY_CHARS))
         .or_else(|| card.eyebrow.as_ref().and_then(|label| one_line(&label.text, PUSH_BODY_CHARS)));
     Some(PushAlert { title, body })

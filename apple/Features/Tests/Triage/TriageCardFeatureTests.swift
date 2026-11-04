@@ -42,7 +42,7 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.send(.screen(.task))
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.card?.need, "Choose the welcome copy")
+        XCTAssertEqual(store.state.card?.title, "Choose the welcome copy")
         XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
     }
 

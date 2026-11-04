@@ -42,7 +42,8 @@
             "kind": "pull_request",
             "pr_id": "pr"
           }
-        ]
+        ],
+        "title": "Keep the filter?"
       },
       "blocks": [
         "d"
@@ -91,7 +92,8 @@
             "kind": "pull_request",
             "pr_id": "pr"
           }
-        ]
+        ],
+        "title": "Keep the filter?"
       },
       "blocks": [
         "d"
@@ -157,12 +159,13 @@
       ],
       "card": {
         "kind": "review",
-        "need": "Review the release",
+        "need": "Review the result",
         "why": "",
         "content": {
           "kind": "report",
           "body": "Everything shipped"
-        }
+        },
+        "title": "Review the release"
       },
       "blocks": [],
       "blocked_by": [

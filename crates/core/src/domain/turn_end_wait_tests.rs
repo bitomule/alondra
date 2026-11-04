@@ -586,6 +586,6 @@ fn the_stop_of_a_task_with_a_long_title_reaches_no_phone() {
     end_turn(&mut s, "turn-2");
     let read = ReadSnapshot::build(std::sync::Arc::new(s.clone()));
     assert!(!crate::views::push_content(&read, &case, Lang::Es).is_ok_and(|content| content.alert.is_some()), "no alert for the user");
-    let need = &s.interactions[&InteractionId::from(case.as_str())].card.need;
+    let need = s.interactions[&InteractionId::from(case.as_str())].card.effective_title();
     assert!(need.starts_with("“simpool: un") && need.chars().count() <= CardSpec::TITLED_NEED_MAX, "{need}");
 }

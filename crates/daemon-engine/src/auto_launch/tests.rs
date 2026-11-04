@@ -513,7 +513,7 @@ async fn a_failed_start_is_tried_again_by_itself_then_put_to_the_user_who_can_tr
     }
     pass(&f.domain, &f.home).await.unwrap();
     let card = problem(&f, "f1").expect("the user is asked once the retries are spent");
-    assert_eq!(card.card.need, "“Task f1” does not start");
+    assert_eq!(card.card.effective_title(), "“Task f1” does not start");
     let body = &card.card.content.as_ref().unwrap().body;
     assert!(body.contains("did not start through the Agent SDK") && body.contains("Permission denied"), "the card says why: {body}");
     pass(&f.domain, &f.home).await.unwrap();
@@ -551,7 +551,7 @@ async fn trusting_an_untrusted_folder_from_its_card_starts_the_task() {
     assert_eq!(launches(&f), 0);
     assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::WorkspaceUntrusted));
     let card = problem(&f, "f1").expect("only the user can trust it");
-    assert_eq!(card.card.need, "Trust App so “Task f1” can start");
+    assert_eq!(card.card.effective_title(), "Trust App so “Task f1” can start");
 
     answer(&f, &card.id, alondra_core::domain::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
@@ -640,7 +640,7 @@ async fn a_cancelled_dependency_goes_to_the_orchestrator_first_and_then_to_the_u
     assert!(problem(&f, "f1").is_none());
     crate::orchestrator_inbox::settle(&f.domain);
     let card = problem(&f, "f1").expect("the user decides once the orchestrator left it");
-    assert_eq!(card.card.need, "“Task f0” was cancelled: start “Task f1” without it?");
+    assert_eq!(card.card.effective_title(), "“Task f0” was cancelled: start “Task f1” without it?");
     crate::orchestrator_inbox::settle(&f.domain);
     assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1);
     assert_eq!(notices().len(), 2);
@@ -741,7 +741,7 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);
     pass(&f.domain, &f.home).await.unwrap();
     let card = problem(&f, "f1").expect("the user decides");
-    assert_eq!(card.card.need, "Relaunch “Task f1” or cancel it");
+    assert_eq!(card.card.effective_title(), "Relaunch “Task f1” or cancel it");
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1, "one card");
 

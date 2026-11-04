@@ -59,7 +59,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         state(report, &user, "t-refresh", WORKING)?;
         let ask = Step::Call { tool: "ask".into(), arguments: serde_json::json!({
             "interaction_id": "q-refresh", "scope": {"kind": "task", "task_id": "t-refresh"}, "recipient": {"kind": "user"}, "blocking": true,
-            "need": "How often should Harbor refresh the order list?",
+            "title": "Refresh interval", "need": "How often should Harbor refresh the order list?",
             "why": "The list refreshes in the background; the interval decides how fresh it is and how much battery it costs.",
             "options": [
                 {"id": "minute", "label": "Every minute", "description": "New orders show almost at once; the battery drains faster"},
@@ -73,7 +73,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         state(report, &user, "t-offline", WORKING)?;
         let plan = Step::Call { tool: "present_result".into(), arguments: serde_json::json!({
             "task_id": "t-offline", "interaction_id": "plan-offline", "is_final": true,
-            "need": "Approve the plan for offline mode",
+            "title": "Plan for offline mode", "need": "Approve the plan for offline mode",
             "body": "Three phases: entries kept on the device, a queue of offline edits, and a banner with tests.",
             "targets": [{"kind": "text", "text": "Plan for offline mode"}],
             "content": {"kind": "report", "body": PLAN_REPORT},

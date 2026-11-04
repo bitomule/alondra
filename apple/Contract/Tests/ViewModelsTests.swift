@@ -92,8 +92,8 @@ final class ViewModelsTests: XCTestCase {
             if case let .card(card) = item { card } else { nil }
         }.first)
         XCTAssertEqual(card.kind, .review)
-        XCTAssertEqual(card.need, "Review the beta candidate")
-        XCTAssertEqual(card.title, "Add the compact schedule editor")
+        XCTAssertEqual(card.need, "Review the result")
+        XCTAssertEqual(card.title, "Review the beta candidate")
         XCTAssertEqual(card.contentRow?.kind, "diff")
         XCTAssertTrue(card.blockedBy.isEmpty, "a delivery held back is no card, so the golden review has nothing holding it")
         XCTAssertNotNil(card.reply)

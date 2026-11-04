@@ -47,7 +47,7 @@ SEEN = "Lee el informe sobre limpiar los duplicados de Redraft"
 
 
 def deliver(node, interaction, need, body, plan=None):
-    result = {"task_id": node.task, "interaction_id": interaction, "need": need,
+    result = {"task_id": node.task, "interaction_id": interaction, "title": need, "need": need,
               "content": {"kind": "report", "body": body},
               "targets": [{"kind": "text", "text": "Informe"}], "is_final": True}
     if plan:

@@ -47,6 +47,41 @@ from the capability the daemon issued to a session: public session ids and proce
 never grant it, and an old session without one must resume with the current plugin. Never infer
 a task, a PR's owner, the user's acceptance or a completion from hook text.
 
+## Card fields and title
+
+Every new card has an explicit `title`: its subject, one non-empty line of at most
+160 characters. The detail shows it once as the large heading above the content.
+`need` is the short action requested, one non-empty line of at most 90 characters.
+`why` explains why in at most 240 characters; it is required when the card asks for
+something. These are short lines, never the document.
+
+`content.kind` names the content type; `content.body` holds the complete content,
+without repeating `title` as its first heading. When content is present, kind and
+a non-empty body are required. `content.summary` is an optional label of at most
+60 characters. Do not put the title in summary either.
+
+Correct: title "Release design", need "Choose a design", why "The release needs
+one design", content {kind: "options", body: "Atlas uses a compact layout; Borealis
+uses larger text."}. Incorrect: title "Release design" and body "# Release design"
+followed by the same content, or a document pasted into need/why.
+
+For suggest, what supplies the title, why_not_mine supplies why, and where/detail
+are content; Alondra supplies need. For close_request, headline supplies the answer
+card title and answer supplies content; Alondra supplies need. For an orchestrator
+answer_clarification with text, title and need are explicit and text is the content.
+
+This applies to ask, request_input, request_action, request_test, publish_information,
+raise_problem, present_result and every other card producer available to your role.
+Each entry in ask.questions has its own title and question (its need), why and options.
+For a result, title names what changed and need asks to review it. For a native plan,
+the task title provides the card heading: write the plan body without an opening
+heading that repeats that title. Start with the proposal or a section heading.
+
+The domain validates structure, required fields, types and lengths, never wording.
+It does not compare titles with headings and does not remove or rewrite headings.
+A refusal identifies the field to fix. Old stored cards without title remain readable.
+
+
 ## Requests and tasks
 
 What the user asks for is a request; you turn it into tasks, and a node works each task. The

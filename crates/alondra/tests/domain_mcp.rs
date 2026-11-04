@@ -170,7 +170,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "ask",
         json!({
             "interaction_id":"question-one", "scope":{"kind":"task", "task_id":"task-one"},
-            "recipient":{"kind":"user"}, "need":"Pick the answer", "why":"The task cannot go on without it",
+            "recipient":{"kind":"user"}, "title":"Release answer", "need":"Pick the answer", "why":"The task cannot go on without it",
             "blocking":true, "recommended":"yes",
             "options":[{"id":"yes", "label":"Yes"}, {"id":"no", "label":"No"}]
         }),
@@ -189,7 +189,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "mcp-node",
         "present_result",
         json!({
-            "task_id":"task-one", "interaction_id":"answer-delivery", "need":"Review the answer",
+            "task_id":"task-one", "interaction_id":"answer-delivery", "title":"Release answer", "need":"Review the answer",
             "content":{"kind":"report", "body":"The requested answer"},
             "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true
         }),
@@ -290,7 +290,7 @@ fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + S
 fn needy_ask(id: &str) -> Value {
     json!({
         "interaction_id":id, "scope":{"kind":"task", "task_id":"task-one"}, "recipient":{"kind":"user"},
-        "why":"It holds the release back", "blocking":true, "options":[{"id":"a", "label":"A"}, {"id":"b", "label":"B"}]
+        "title":"Release answer", "need":"", "why":"It holds the release back", "blocking":true, "options":[{"id":"a", "label":"A"}, {"id":"b", "label":"B"}]
     })
 }
 

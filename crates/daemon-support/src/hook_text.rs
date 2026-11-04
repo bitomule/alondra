@@ -102,6 +102,10 @@ pub fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String>
     summary.map(str::to_string).or_else(|| (!input.is_null()).then(|| input.to_string()))
 }
 
+pub fn card_subject(metadata: &str) -> String {
+    alondra_core::domain::clip(&metadata.split_whitespace().collect::<Vec<_>>().join(" "), alondra_core::domain::CardSpec::TITLE_MAX)
+}
+
 pub fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
     let server = str_field(p, "mcp_server_name").unwrap_or_else(|| "An MCP server".into());
     let message = str_field(p, "message").unwrap_or_default();
@@ -131,6 +135,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn card_title_contract_elicitation_bounds_metadata_without_changing_the_message() {
+        let server = format!("{}\nserver", "a".repeat(200));
+        let message = "# Original message\n\nPreserve every word.";
+        let (title, detail, _) = elicitation_card(&json!({"mcp_server_name":server,"message":message}));
+        assert!(title.chars().count() <= alondra_core::domain::CardSpec::TITLE_MAX);
+        assert!(!title.contains(['\n', '\r']));
+        assert!(detail.unwrap().contains(message));
+    }
+
+    #[test]
     fn an_elicitation_becomes_an_accept_or_decline_card() {
         let context7 = json!({"session_id": "s", "hook_event_name": "Elicitation", "mcp_server_name": "context7", "mode": "form",
             "message": "You're using Context7 anonymously. Get a free API key for higher rate limits.",
@@ -149,6 +163,7 @@ mod tests {
         for (what, payload, title, accept_hint) in cases {
             let (said, detail, options) = elicitation_card(payload);
             assert_eq!(said, title, "{what}");
+            assert!(detail.as_ref().is_some_and(|detail| detail.contains(payload["message"].as_str().unwrap())), "{what}: the message is preserved");
             assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), [answer_option::ACCEPT, answer_option::DECLINE], "{what}");
             assert_eq!(options[0].description.as_deref(), accept_hint, "{what}");
             assert!(detail.is_some_and(|d| d.contains(str_field(payload, "mcp_server_name").unwrap().as_str())), "{what}");

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v456c2a4cd4d70e5c",
+  "version": "v2c5636005b7b7170",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
@@ -77,6 +77,7 @@
           "id": "published-1",
           "kind": "review",
           "need": "Body 2",
+          "title_is_separate": true,
           "meta": "Release the daemon with the memory pause fix",
           "content_row": {
             "kind": "report",

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "ios",
-  "version": "v8e82e8ef56f71a85",
+  "version": "v61ff5574f2b6e014",
   "cursor": "cursor-1",
   "title": "He creado 3 tareas",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "request-tasks-r-sync-1",
           "kind": "know",
-          "need": "He creado 3 tareas",
+          "need": "Lee esta novedad",
+          "title_is_separate": true,
           "why": "Primero «Guardar las notas con su versión»; «Sincronizar desde el iPhone» y «Sincronizar desde el Mac» después, en paralelo.",
           "meta": "Sincronizar notas",
           "reply": {
@@ -110,7 +111,6 @@
     },
     {
       "id": "content",
-      "title": "Contenido",
       "collapsed": false,
       "items": [
         {

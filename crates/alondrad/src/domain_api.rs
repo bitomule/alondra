@@ -879,6 +879,7 @@ pub(crate) fn resource_envelope(
     let mut envelope = body.clone();
     let envelope_body = envelope.as_object_mut()?;
     for key in ["data_epoch", "command_id", "expected_revision"] { envelope_body.remove(key); }
+    adapt_legacy_card_fields(envelope_body);
     serde_json::from_value(json!({
         "protocol_version": 2,
         "data_epoch": data_epoch,
@@ -886,6 +887,34 @@ pub(crate) fn resource_envelope(
         "expected_revision": expected_revision,
         "command": envelope,
     })).ok()
+}
+
+fn adapt_legacy_card_fields(command: &mut serde_json::Map<String, Value>) {
+    let body = command.get("body").and_then(Value::as_str).filter(|body| !body.trim().is_empty()).map(str::to_owned);
+    if let Some(card) = command.get_mut("card").and_then(Value::as_object_mut)
+        && !card.contains_key("title")
+        && let (Some(need), Some(kind)) = (card.get("need").and_then(Value::as_str), card.get("kind"))
+        && let Ok(kind) = serde_json::from_value::<alondra_core::domain::CardKind>(kind.clone())
+    {
+        // A previous MCP process keeps its old catalog until its SDK host rests.
+        let adapted = alondra_core::domain::CardSpec::new(kind, need);
+        card.insert("title".into(), json!(adapted.title));
+        card.insert("need".into(), json!(adapted.need));
+        if card.get("content").is_none_or(Value::is_null)
+            && let Some(body) = body
+        {
+            card.insert("content".into(), json!({"kind":"report","body":body}));
+        }
+    }
+    if command.get("kind").and_then(Value::as_str) == Some("ask_questions")
+        && let Some(questions) = command.get_mut("questions").and_then(Value::as_array_mut)
+    {
+        for (index, question) in questions.iter_mut().enumerate() {
+            if let Some(question) = question.as_object_mut() {
+                question.entry("title").or_insert_with(|| json!(format!("Question {}", index + 1)));
+            }
+        }
+    }
 }
 
 pub(crate) fn resource_envelope_from_path(method: &str, path: &str, body: Value) -> Option<CommandEnvelope> {
@@ -1546,6 +1575,38 @@ mod tests {
     }
 
     #[test]
+    fn card_title_contract_adapts_only_absent_legacy_fields() {
+        let literal = "# Release design\n\nKeep every heading.";
+        let legacy = json!({"kind":"publish_information", "card":{
+            "kind":"know", "need":"Release design", "content":{"kind":"report","body":literal}
+        }});
+        let mut adapted = legacy.clone();
+        adapt_legacy_card_fields(adapted.as_object_mut().unwrap());
+        assert_eq!(adapted["card"]["title"], "Release design");
+        assert_eq!(adapted["card"]["need"], "Read this update");
+        assert_eq!(adapted["card"]["content"]["body"], literal);
+        for content in [None, Some(Value::Null)] {
+            let mut body_only = json!({"kind":"publish_information", "body":literal,
+                "card":{"kind":"know","need":"Release design"}});
+            if let Some(content) = content { body_only["card"]["content"] = content; }
+            adapt_legacy_card_fields(body_only.as_object_mut().unwrap());
+            assert_eq!(body_only["card"]["content"]["body"], literal);
+        }
+        for title in [json!("New subject"), json!(""), Value::Null] {
+            let mut explicit = legacy.clone();
+            explicit["card"]["title"] = title;
+            let before = explicit.clone();
+            adapt_legacy_card_fields(explicit.as_object_mut().unwrap());
+            assert_eq!(explicit, before, "explicit titles reach domain validation unchanged");
+        }
+        let mut grouped = json!({"kind":"ask_questions","questions":[{"need":"Which design?"},{"title":"Theme","need":"Which theme?"}]});
+        adapt_legacy_card_fields(grouped.as_object_mut().unwrap());
+        assert_eq!(grouped["questions"][0]["title"], "Question 1");
+        assert_eq!(grouped["questions"][0]["need"], "Which design?");
+        assert_eq!(grouped["questions"][1]["title"], "Theme");
+    }
+
+    #[test]
     fn resource_routes_adapt_to_strict_typed_commands() {
         let meta = json!({"data_epoch":"epoch","command_id":"stable-1","expected_revision":7});
         let mut create_task = meta.clone();
@@ -1849,6 +1910,40 @@ mod tests {
         drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
+    #[tokio::test]
+    async fn card_title_contract_accepts_a_live_legacy_mcp_producer() {
+        let (home, host) = fixture();
+        let _directory = host.test_directory.clone();
+        let (base, server, _, _) = server(host.clone()).await;
+        let token = host.domain.issue(Principal::Agent {
+            session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
+        }).unwrap();
+        let state = host.domain.state().unwrap();
+        let literal = "# Release design\n\nThe document remains literal.";
+        let response = reqwest::Client::new().post(format!("{base}/questions"))
+            .bearer_auth(token.expose_for_child_environment())
+            .json(&json!({"data_epoch":state.data_epoch,"command_id":"legacy-card","expected_revision":state.revision,
+                "interaction_id":"legacy-card","scope":{"kind":"task","task_id":"task-a"},
+                "recipient":{"kind":"user"},"body":literal,"blocking":false,
+                "options":[{"id":"atlas","label":"Atlas","description":"Use the larger text"},
+                    {"id":"borealis","label":"Borealis","description":"Use the compact text"}],
+                "card":{"kind":"decide","need":"Release design","why":"The release needs one design",
+                    "content":{"kind":"options","body":literal}}}))
+            .send().await.unwrap();
+        let status = response.status();
+        let answer: Value = response.json().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "{answer}");
+        let state = host.domain.state().unwrap();
+        let card = &state.interactions[&"legacy-card".into()].card;
+        assert_eq!(card.title.as_deref(), Some("Release design"));
+        assert_eq!(card.need, "Choose an option");
+        assert_eq!(card.content.as_ref().unwrap().body, literal);
+        server.abort();
+        let _ = server.await;
+        drop(host);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[tokio::test]
     async fn a_producer_cannot_choose_user_authority_or_spoof_an_actor() {
         let (home, host) = fixture();

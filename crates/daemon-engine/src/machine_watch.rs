@@ -1367,7 +1367,7 @@ mod tests {
         clock.samples(5).await;
         let cards = open_machine_cards(&domain);
         assert_eq!(cards.len(), 1, "one card for the incident, not one per sample");
-        assert_eq!(cards[0].card.need, "Free up disk space: 0 B left");
+        assert_eq!(cards[0].card.effective_title(), "Free up disk space: 0 B left");
         assert!(orchestrator_inbox(&domain).is_empty(), "the orchestrator has nothing to do about it: {:?}", orchestrator_inbox(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "the card got through: no push in its place");
 

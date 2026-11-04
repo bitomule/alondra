@@ -527,7 +527,7 @@ fn a_start_that_keeps_failing_is_retried_then_put_to_the_user() {
     }
     w.apply(&Step::LaunchFails { pick: 0, untrusted: false });
     let card = w.s.open_start_problem(&task).expect("the user is asked").clone();
-    assert_eq!(card.card.need, "“Task t1” does not start");
+    assert_eq!(card.card.effective_title(), "“Task t1” does not start");
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card.id.clone()))));
     w.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id, option_id: START_RETRY.into(), inputs: BTreeMap::new() });
     assert_eq!(w.s.react(&w.facts), vec![Reaction::Retry(task.clone())]);
@@ -544,7 +544,7 @@ fn a_closed_node_asks_the_user() {
     w.apply(&Step::UserClosesNode(0));
     w.react();
     let closed = w.s.open_start_problem(&"t1".into()).expect("a card for the closed node");
-    assert_eq!(closed.card.need, "Relaunch “Task t1” or cancel it");
+    assert_eq!(closed.card.effective_title(), "Relaunch “Task t1” or cancel it");
 }
 
 /// A task with `dependencies` on a task that is cancelled waits for its re-plan.
@@ -581,7 +581,7 @@ fn a_task_whose_dependency_is_cancelled_goes_to_the_orchestrator_and_never_start
 
     w.must(Actor::System, Command::RaiseStartProblem { task_id: waiting.clone(), problem: StartProblem::DependencyCancelled { dependency: "t1".into() } });
     let card = w.s.open_start_problem(&waiting).expect("the user's card once the orchestrator left it").clone();
-    assert_eq!(card.card.need, "“Task t1” was cancelled: start “Task t2” without it?");
+    assert_eq!(card.card.effective_title(), "“Task t1” was cancelled: start “Task t2” without it?");
     assert_eq!(w.s.holder(&w.s.tasks[&waiting], &w.facts[&waiting]), Ok(Holder::User(UserCause::Card(card.id.clone()))));
     w.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id, option_id: START_WITHOUT.into(), inputs: BTreeMap::new() });
     let t = &w.s.tasks[&waiting];

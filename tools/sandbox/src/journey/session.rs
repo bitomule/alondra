@@ -95,7 +95,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let resumed = crash_and_carry_on(report, fakes, &user, &node, "t-s4")?;
         report.step("a call with the old bearer is refused", || {
             let (refused, text) = native::call_with(fakes, &node, &bearer, "present_result", json!({
-                "task_id": "t-s4", "interaction_id": "late-s4", "need": "Too late", "body": "Too late",
+                "task_id": "t-s4", "interaction_id": "late-s4", "title": "Session ended", "need": "Too late", "body": "Too late",
                 "targets": [{"kind": "text", "text": "Too late"}], "is_final": false,
             }))?;
             if !refused || !text.contains("forbidden") {

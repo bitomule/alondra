@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "mac",
-  "version": "v784bedbd0a441621",
+  "version": "v0ecad21ca5064b3c",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -160,7 +160,8 @@
           "type": "card",
           "id": "a98d034b-249e-4487-a89b-57de38c26372",
           "kind": "decide",
-          "need": "Choose the welcome copy",
+          "need": "Choose an option",
+          "title_is_separate": true,
           "why": "The new empty state is ready; the beta ships with the copy you pick.",
           "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
@@ -208,7 +209,8 @@
           "type": "card",
           "id": "8fa4034b-249e-4487-a89b-57de38c26372",
           "kind": "decide",
-          "need": "Ship the compact schedule editor with this beta?",
+          "need": "Elige una opción",
+          "title_is_separate": true,
           "why": "The review of the pull request waits for your answer.",
           "meta": "Alondra · Demo Garden",
           "link": {
@@ -250,7 +252,8 @@
           "type": "card",
           "id": "cc2d034b-249e-4487-a89b-57de38c26372",
           "kind": "authorize",
-          "need": "Run `git reset --hard origin/main`",
+          "need": "Autoriza esta acción",
+          "title_is_separate": true,
           "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
             "kind": "command",
@@ -296,7 +299,8 @@
           "type": "card",
           "id": "hf-weekly-2026-09-30",
           "kind": "review",
-          "need": "Review the beta candidate",
+          "need": "Revisa el resultado",
+          "title_is_separate": true,
           "why": "All required checks passed and the branch is up to date with main.",
           "meta": "Alondra · Demo Garden",
           "content_row": {
@@ -344,7 +348,8 @@
           "type": "card",
           "id": "f12d034b-249e-4487-a89b-57de38c26372",
           "kind": "know",
-          "need": "The simulator pass is clean",
+          "need": "Lee esta novedad",
+          "title_is_separate": true,
           "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
           "meta": "Alondra · Demo Garden",
           "content_row": {

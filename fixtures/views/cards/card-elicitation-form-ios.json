@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:i-1",
   "client": "ios",
-  "version": "vfd798b674b632269",
+  "version": "v6e871c086349e4ce",
   "cursor": "cursor-1",
   "title": "Sign in to the calendar",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "i-1",
           "kind": "provide",
-          "need": "Sign in to the calendar",
+          "need": "Provide the requested information",
+          "title_is_separate": true,
           "why": "The server asks.",
           "meta": "Build a feature",
           "reply": {

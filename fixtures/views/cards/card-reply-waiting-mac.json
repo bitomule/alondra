@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v64ee513d1a8b731a",
+  "version": "ve9ebabc519ed4422",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -54,6 +54,7 @@
           "id": "d",
           "kind": "review",
           "need": "Review the result",
+          "title_is_separate": true,
           "why": "Your reply arrived and waits: **Fix it** is paused and reads it when it resumes. “the design is poor, the toggles are poor”",
           "meta": "owner/repo · → main",
           "content_row": {

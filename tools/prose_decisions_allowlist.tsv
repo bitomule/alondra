@@ -48,7 +48,6 @@ crates/alondrad/src/views/actions.rs	Verb::Ans if stamp.contains(" · ") => Outc
 crates/core/src/domain/rules.rs	if !labels.insert(option.label.trim().to_lowercase()) {	display	two buttons with the same text cannot be told apart: equality, not interpretation (like G-04)
 crates/core/src/domain/rules.rs	return fail("unchanged", &format!("Task {} is already {} priority: nothing changed", task_id.0, format!("{priority:?}").to_lowercase()));	display	priority name inside a refusal message
 crates/core/src/views/card.rs	let extension = extension.to_ascii_lowercase();	display	text picked or cased for display
-crates/core/src/views/card.rs	let refusal = crate::domain::REFUSALS.into_iter().find(|error| interaction.card.need.ends_with(crate::domain::api_refusal(error)))	display	card text re-chosen from its stored text, display only (G-01)
 crates/core/src/views/card.rs	markdown.lines().find_map(|line| line.strip_prefix("# ")).map(str::trim).filter(|title| !title.is_empty()).map(str::to_owned)	display	text picked or cased for display
 crates/core/src/views/card.rs	.filter(|line| !(line.trim_start().to_ascii_lowercase().starts_with("pr:") && line.contains(&marker)))	display	text picked or cased for display
 crates/core/src/views/card.rs	.filter(|text| report.as_deref().is_none_or(|report| !report.contains(*text) && !text.contains(report)))	display	text picked or cased for display
@@ -213,3 +212,4 @@ crates/core/src/views/misc.rs	.to_ascii_lowercase();	user-search	search or sort 
 crates/core/src/views/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains(&q))	user-search	search or sort over text the user filters
 crates/alondra/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
 crates/daemon-engine/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
+crates/core/src/domain/rules.rs	if need.is_empty() || card.need.contains(['\n', '\r']) {	format	a card's request is one line: a field shape check, not an interpretation of what it says

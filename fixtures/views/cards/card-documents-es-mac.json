@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "v555f598370b2d692",
+  "version": "v64889cf446e60cc2",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "result-1",
           "kind": "review",
-          "need": "Approve the plan to index Redraft's whole library",
+          "need": "Review the result",
+          "title_is_separate": true,
           "why": "The research found it viable. Approving it creates the tasks that build it; the report is beside it.",
           "meta": "Redraft: analyse the whole library at once",
           "content_row": {
@@ -131,7 +132,6 @@
     },
     {
       "id": "content",
-      "title": "Contenido",
       "collapsed": false,
       "items": [
         {
@@ -160,7 +160,7 @@
             },
             {
               "label": "Informe",
-              "value": "Summary",
+              "value": "Conclusiones",
               "link": {
                 "kind": "view",
                 "key": "document:result-1.report"

@@ -296,7 +296,7 @@ fn schedule_commands_preserve_claim_and_result_history() {
     ]);
     let problem = &state.interactions[&"problem-launch-run-1".into()];
     assert_eq!((problem.card.kind, problem.author.clone()), (CardKind::Problem, Author::System));
-    assert!(problem.card.need.contains("Updated review") && problem.card.why.contains("Workspace not trusted."), "{:?}", problem.card);
+    assert!(problem.card.effective_title().contains("Updated review") && problem.card.why.contains("Workspace not trusted."), "{:?}", problem.card);
     assert_eq!(problem.card.content.as_ref().map(|c| c.kind), Some(ContentKind::Diagnosis));
     let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
     assert_eq!(run.state, ScheduleRunState::Failed);
@@ -4452,7 +4452,7 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice) && !pending(&s, "q"));
     let card = &s.interactions[&InteractionId(notice.clone())].card;
-    assert_eq!(card.need, "No longer waits for your answer: Decide whether to cover invalid card numbers");
+    assert_eq!(card.effective_title(), "No longer waits for your answer: Decide whether to cover invalid card numbers");
     assert_eq!(card.why, "The work was finished before you answered");
     assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
     let again = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();

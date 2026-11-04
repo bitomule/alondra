@@ -15,14 +15,14 @@ pub(crate) fn held(state: &DomainState, task: &TaskId) -> Option<String> {
 fn decided(state: &DomainState, decisions: &[InteractionId]) -> Vec<String> {
     decisions.iter().filter_map(|id| state.interactions.get(id)).map(|card| {
         let InteractionPayload::Question { options, answer: Some(answer) } = &card.payload else {
-            return format!("- “{}”: no answer", card.card.need);
+            return format!("- “{}”: no answer", card.card.effective_title());
         };
         let option = options.iter().find(|o| o.id == answer.option_id).map_or(answer.option_id.as_str(), |o| o.label.as_str());
         let words = match answer.inputs.get(ANSWER_TEXT) {
             Some(InputValue::Text(text)) if !text.trim().is_empty() => format!(" They wrote: {}", text.trim()),
             _ => String::new(),
         };
-        format!("- “{}” → {option}.{words}\n  What the node asked: {}", card.card.need, card.body.trim())
+        format!("- “{}” → {option}.{words}\n  What the node asked: {}", card.card.effective_title(), card.body.trim())
     }).collect()
 }
 

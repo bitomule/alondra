@@ -2849,7 +2849,7 @@ fn unheard_card_views_match_goldens() {
 }
 
 #[test]
-fn the_mac_sidebar_lists_one_waiting_section_by_need() {
+fn the_mac_sidebar_lists_one_waiting_section_by_title() {
     let state = golden_fixture();
     let live = golden_live();
     let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
@@ -2862,7 +2862,7 @@ fn the_mac_sidebar_lists_one_waiting_section_by_need() {
     for row in &rows {
         let Some(Item::Card(card)) = render(&state, &live, Client::Mac, Lang::En, &format!("card:{}", row.id), "").sections.iter()
             .flat_map(|section| section.items.clone()).next() else { panic!("{} renders as a card", row.id) };
-        assert_eq!(Some(&row.title), card.need.as_ref(), "a row is titled by what the card needs");
+        assert_eq!(row.title, card.title, "a row carries the card subject");
         assert_eq!(row.kind, card.kind, "a row carries its card's kind");
         assert_eq!(row.badges.first(), card.eyebrow.as_ref());
     }
@@ -3271,7 +3271,7 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
     });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:problem-orchestrator-run-1", "");
     let card = card_of(&view);
-    assert_eq!(card.need.as_deref(), Some("El orquestador se cortó a medias: decide si lo repite"));
+    assert_eq!(card.title, "El orquestador se cortó a medias: decide si lo repite");
     assert!(card.why.as_deref().is_some_and(|why| why.starts_with("Se detuvo antes de terminar")), "{:?}", card.why);
     assert_eq!(card.actions.iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str())).collect::<Vec<_>>(),
         [("continue", "★ Seguir sin repetirlo"), ("retry", "Repetirlo desde el principio")]);
@@ -3279,7 +3279,7 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
     assert!(matches!(&detail.items[0], Item::Markdown(text) if text.text.contains("**Estaba atendiendo:**\n- Make the editor readable")
         && text.text.contains("**Ya había hecho:** crear una tarea.") && text.text.contains("Error técnico")), "{:?}", detail.items);
     let english = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:problem-orchestrator-run-1", "");
-    assert_eq!(card_of(&english).need.as_deref(), Some(need.as_str()));
+    assert_eq!(card_of(&english).title, need);
 }
 
 #[test]
@@ -4445,8 +4445,8 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert_eq!(card.kind, Some(crate::domain::CardKind::Review));
     assert_eq!(card.eyebrow.as_ref().unwrap().text, "Review · PR #12");
     assert_eq!(card.icon, Icon::PullRequest);
-    assert_eq!(card.need.as_deref(), Some("Review the beta candidate"));
-    assert_eq!(card.title, "Add the compact schedule editor", "the detail is titled with the PR's own title");
+    assert_eq!(card.need.as_deref(), Some("Review the result"));
+    assert_eq!(card.title, "Review the beta candidate", "an explicit card subject remains authoritative");
     assert_eq!(
         card.meta.as_deref(),
         Some("example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running")
@@ -4627,7 +4627,7 @@ fn a_pull_request_description_repeats_neither_the_report_nor_the_link_to_the_pr(
     let mut state = golden_fixture();
     let report = "PR: https://github.com/example/repo/pull/12 (rebased)\n\nReplaces the long schedule form with a compact editor.";
     for interaction in state.interactions.values_mut() {
-        if interaction.card.need == "Review the beta candidate" {
+        if interaction.card.effective_title() == "Review the beta candidate" {
             interaction.card.content = Some(crate::domain::CardContent {
                 kind: crate::domain::ContentKind::Report,
                 summary: None,
@@ -4651,7 +4651,7 @@ fn internal_task_ids_in_a_card_read_as_the_task_title() {
         (task.id.0.clone(), task.title.clone())
     };
     for interaction in state.interactions.values_mut() {
-        if interaction.card.need == "Review the beta candidate" {
+        if interaction.card.effective_title() == "Review the beta candidate" {
             interaction.card.why = format!("Closes {id} and unblocks t-unknown-task.");
         }
     }
@@ -6243,7 +6243,8 @@ const TRUST_COMMAND_BODY: &str = "Ejecútalo una vez en el terminal del Mac. Hac
 fn know_notice(state: &mut DomainState, need: &str, why: &str, body: &str) {
     let interaction = state.interactions.get_mut(&"i-4".into()).unwrap();
     interaction.payload = InteractionPayload::Information { read_by: BTreeSet::new() };
-    interaction.card = spec(crate::domain::CardKind::Know, need, why);
+    interaction.card = spec(crate::domain::CardKind::Know, need, why).needing(need);
+    interaction.card.title = None;
     interaction.body = body.into();
 }
 
@@ -6259,12 +6260,18 @@ fn a_know_card_sent_with_only_need_and_body_shows_the_whole_body_with_its_code_b
 }
 
 #[test]
-fn a_body_that_only_repeats_the_card_or_holds_alondras_own_data_is_not_shown_again() {
+fn card_title_contract_legacy_body_is_literal_while_system_data_stays_out_of_content() {
     let mut state = fixture();
     know_notice(&mut state, "The build is green", "All 400 tests pass.", "The build is green\n\nAll 400 tests pass.");
-    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
-    assert!(markdown_items(&view).is_empty());
-    assert!(card_of(&view).content_row.is_none());
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "card:i-4", "");
+        assert_eq!(markdown_items(&view)[0].text, "The build is green\n\nAll 400 tests pass.");
+        let card = card_of(&view);
+        assert!(card.content_row.is_some());
+        assert!(!card.title_is_separate);
+        assert_eq!(card.title, "The build is green");
+        assert_eq!(card.need.as_deref(), Some("The build is green"), "older Apple clients keep their controls");
+    }
     know_notice(&mut state, "The build is green", "", "{\"machine\":\"data\"}");
     state.interactions.get_mut(&"i-4".into()).unwrap().author = Author::System;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
@@ -6336,7 +6343,8 @@ const KNOW_COMMAND_CASES: [(&str, Client, Lang); 3] = [
 fn know_command_state() -> DomainState {
     let mut state = golden_fixture();
     let interaction = state.interactions.get_mut(&KNOW_COMMAND_CARD.into()).unwrap();
-    interaction.card = spec(crate::domain::CardKind::Know, "Pega este comando en el terminal: confía en todos los repos de ~/Projects", "");
+    interaction.card = spec(crate::domain::CardKind::Know, "Pega este comando en el terminal: confía en todos los repos de ~/Projects", "").needing("Pega este comando en el terminal: confía en todos los repos de ~/Projects");
+    interaction.card.title = None;
     interaction.body = TRUST_COMMAND_BODY.into();
     state
 }
@@ -6905,7 +6913,7 @@ fn an_untrusted_folder_card_speaks_the_users_language_and_offers_no_reply() {
     let id = state.interactions.keys().find(|id| id.0.starts_with(crate::domain::START_PROBLEM_PREFIX)).unwrap().0.clone();
 
     let spanish = decidable_card(&state, Lang::Es, &id);
-    assert_eq!(spanish.need.as_deref(), Some("Confía en indie-apps para que «Build a feature» arranque"));
+    assert_eq!(spanish.title, "Confía en indie-apps para que «Build a feature» arranque");
     assert_eq!(spanish.why.as_deref(), Some("Claude Code solo arranca sesiones en carpetas de confianza, y aún no confía en esta."));
     let labels: Vec<&str> = spanish.actions.iter().chain(&spanish.more).map(|action| action.label.as_str()).collect();
     assert!(labels.contains(&"Confiar y arrancarla") && labels.contains(&"Cancelar la tarea"), "{labels:?}");
@@ -6914,7 +6922,7 @@ fn an_untrusted_folder_card_speaks_the_users_language_and_offers_no_reply() {
     assert!(detail.contains("Carpeta: /Users/someone/Projects/indie-apps") && detail.contains("acepta el aviso"), "{detail}");
 
     let english = decidable_card(&state, Lang::En, &id);
-    assert_eq!(english.need.as_deref(), Some("Trust indie-apps so “Build a feature” can start"));
+    assert_eq!(english.title, "Trust indie-apps so “Build a feature” can start");
     assert!(english.actions.iter().chain(&english.more).any(|action| action.label.contains("Trust it and start it")));
     assert!(english.reply.is_none());
 }
@@ -7358,7 +7366,7 @@ fn a_cards_documents_are_links_in_their_own_section_and_never_part_of_its_text()
     let view_link = |key: &str| Link::View { key: key.into() };
     assert_eq!(links, [
         ("Documento", "Library index design", Some(&view_link("document:design-r1"))),
-        ("Informe", "Summary", Some(&view_link("document:result-1.report"))),
+        ("Informe", "Conclusiones", Some(&view_link("document:result-1.report"))),
         ("docs/research/competitors.md", "How other apps index a library", Some(&view_link("document:result-1.file-1"))),
         ("docs/measurements.md", "Measurements", Some(&view_link("document:result-1.file-2"))),
     ]);
@@ -7442,10 +7450,10 @@ fn home_changes_version_with_its_first_cards_only() {
     let home = |state: &DomainState| render(state, &live, Client::Ios, Lang::Es, "home", "").version;
     let before = home(&state);
     let mut third = state.clone();
-    third.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap().card.need = "Review another candidate".into();
+    third.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap().card.title = Some("Review another candidate".into());
     assert_ne!(home(&third), before, "the third card changed, so the home that carries it did");
     let mut fourth = state.clone();
-    fourth.interactions.get_mut(&"f12d034b-249e-4487-a89b-57de38c26372".into()).unwrap().card.need = "Read another notice".into();
+    fourth.interactions.get_mut(&"f12d034b-249e-4487-a89b-57de38c26372".into()).unwrap().card.title = Some("Read another notice".into());
     assert_ne!(render(&fourth, &live, Client::Ios, Lang::Es, "card:f12d034b-249e-4487-a89b-57de38c26372", "").version,
         render(&state, &live, Client::Ios, Lang::Es, "card:f12d034b-249e-4487-a89b-57de38c26372", "").version);
     assert_eq!(home(&fourth), before, "a card past the first three leaves home as it was");
@@ -7777,7 +7785,7 @@ fn the_mcp_sign_in_card_matches_goldens() {
 #[test]
 fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
     let (state, card) = mcp_card(Client::Tui, Lang::Es);
-    assert_eq!(card.need.as_deref(), Some("Inicia sesión en linear: esperan 2 tareas"));
+    assert_eq!(card.title, "Inicia sesión en linear: esperan 2 tareas");
     assert!(card.why.as_deref().is_some_and(|why| why.contains("Conectar abre el inicio de sesión")
         && why.ends_with("Esperan: «Task t» y «Task u».")), "every waiting task is named: {:?}", card.why);
     let labels: Vec<&str> = card.actions.iter().map(|action| action.label.as_str()).collect();
@@ -8840,8 +8848,8 @@ fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
         for lang in [Lang::En, Lang::Es] {
             let view = render(&state, &LiveSnapshot::default(), client, lang, "card:claude-signed-out-t-1", "");
             let card = card_of(&view);
-            assert!(card.need.as_ref().unwrap().contains("Codex work"), "{card:?}");
-            assert!(!card.need.as_ref().unwrap().contains("Claude work"), "{card:?}");
+            assert!(card.title.contains("Codex work"), "{card:?}");
+            assert!(!card.title.contains("Claude work"), "{card:?}");
             let why = card.why.as_ref().unwrap();
             assert!(why.contains("CODEX_HOME=~/.alondra/provider-accounts/codex/work codex login"), "{why}");
             assert!(!why.contains("alondra accounts"), "{why}");
@@ -9082,7 +9090,7 @@ fn a_secret_card_says_where_the_value_goes_and_types_it_hidden() {
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q-key".into(),
         scope: Scope::Task { task_id: "t-1".into() }, recipient: Recipient::User, body: "Send the Stripe test key".into(), blocking: false,
         options: vec![QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
-        card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe test key").why("The payments test calls Stripe with it") } });
+        card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Stripe test key").needing("Send the Stripe test key").why("The payments test calls Stripe with it") } });
     let live = LiveSnapshot::default();
     for (client, lang, filename, expected) in [
         (Client::Ios, Lang::En, "card-secret.json", include_str!("../../../../fixtures/views/cards/card-secret.json")),
@@ -9151,7 +9159,7 @@ fn a_pull_request_card_and_its_detail_show_the_images_the_daemon_brought_and_say
 fn a_report_that_repeats_the_description_shows_its_images_too() {
     let mut state = golden_fixture();
     for interaction in state.interactions.values_mut() {
-        if interaction.card.need == "Review the beta candidate" {
+        if interaction.card.effective_title() == "Review the beta candidate" {
             interaction.card.content = Some(crate::domain::CardContent {
                 kind: crate::domain::ContentKind::Report,
                 summary: None,
@@ -9487,4 +9495,29 @@ fn a_task_detail_offers_to_move_it_to_each_account_its_rule_accepts() {
     state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap().state = TaskState::Done;
     let done = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     assert!(find_action(&done, "move_task:").is_none(), "a finished task does not move");
+}
+
+#[test]
+fn card_title_contract_details_have_separate_fields_and_no_content_label() {
+    use crate::domain::{CardKind, ContentKind as Content};
+    let body = "# Release design\n\nKeep this heading literally.";
+    for title in ["Release design", "Review the plan"] {
+        let state = held_fixture(crate::domain::Hold::Plan,
+            spec(CardKind::Review, "Review the plan", "The release needs a design.")
+                .titled(title).needing("Review the plan").content(Content::Plan, body));
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let view = render(&state, &LiveSnapshot::default(), client, lang, "card:i-1", "");
+                let card = card_of(&view);
+                assert_eq!(card.title, title);
+                assert!(card.title_is_separate);
+                assert_eq!(card.need.as_deref(), Some(if lang == Lang::Es { "Revisa el plan" } else { "Review the plan" }));
+                assert!(card.reply.is_some());
+                assert!(!card.actions.is_empty());
+                let section = view.sections.iter().find(|section| section.id == "content").unwrap();
+                assert_eq!(section.title, None);
+                assert!(section.items.iter().any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == body)));
+            }
+        }
+    }
 }

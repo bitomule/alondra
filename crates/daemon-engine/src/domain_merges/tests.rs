@@ -503,7 +503,7 @@ async fn a_merge_refused_for_access_raises_one_card_while_reads_work_until_a_mer
     merger.merge_due(&domain, &github).await.unwrap();
     let raised = problems(&domain);
     assert_eq!(raised.len(), 1, "the successful reads in between do not clear it");
-    assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: GraphQL: must have admin rights"), "{}", raised[0].card.need);
+    assert!(raised[0].card.effective_title().starts_with("Alondra can't merge PR #7: GraphQL: must have admin rights"), "{}", raised[0].card.effective_title());
     assert!(!raised[0].withdrawn);
     assert_eq!(task(&domain), TaskState::WaitingDependency, "not handed back: only the user can grant access");
     github.merges.lock().unwrap().remove(&7);
@@ -567,7 +567,7 @@ async fn checks_that_need_someone_on_github_raise_one_card_and_wait() {
     assert!(merger.merge_due(&domain, &github).await.unwrap());
     let raised = problems(&domain);
     assert_eq!(raised.len(), 1);
-    assert_eq!(raised[0].card.need, "Act on the checks of PR #7 on GitHub");
+    assert_eq!(raised[0].card.effective_title(), "Act on the checks of PR #7 on GitHub");
     assert_eq!(task(&domain), TaskState::ForYourReview, "not handed back");
     github.open(7, HEAD, Checks::Passed);
     merger.merge_due(&domain, &github).await.unwrap();
@@ -812,7 +812,7 @@ async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
     }
     let raised = problems(&domain);
     assert_eq!(raised.len(), 1, "one card however long it fails");
-    assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: To get started"), "{}", raised[0].card.need);
+    assert!(raised[0].card.effective_title().starts_with("Alondra can't merge PR #7: To get started"), "{}", raised[0].card.effective_title());
     assert_eq!(raised[0].scope, Scope::Task { task_id: "t".into() });
     assert_eq!(task(&domain), TaskState::WaitingDependency, "the acceptance stands");
     github.open(7, HEAD, Checks::Passed);

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "ios",
-  "version": "v38f2d74026450dc5",
+  "version": "vf0c991ed68e93723",
   "cursor": "cursor-1",
   "title": "Inicia sesión en linear: esperan 2 tareas",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "mcp-sign-in-t-18",
           "kind": "problem",
-          "need": "Inicia sesión en linear: esperan 2 tareas",
+          "need": "Resuelve el problema",
+          "title_is_separate": true,
           "why": "Claude no puede usar el servidor MCP linear hasta que inicies sesión. Conectar abre el inicio de sesión; al terminar, las tareas que esperan siguen solas. Esperan: «Task t» y «Task u».",
           "meta": "Alondra",
           "link": {

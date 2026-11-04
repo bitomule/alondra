@@ -296,6 +296,7 @@ fn questions_asked_together_are_decided_once_the_last_is_answered() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     let question = |need: &str, labels: &[&str]| GroupQuestion {
+        title: Some("Release choices".into()),
         need: need.into(), why: String::new(), recommended: None,
         options: labels.iter().enumerate().map(|(at, label)| QuestionOption { id: format!("o{at}"), label: (*label).into(), description: None }).collect(),
     };
@@ -320,6 +321,7 @@ fn questions_asked_together_are_decided_once_the_last_is_answered() {
 #[test]
 fn questions_asked_together_are_answered_in_any_order_and_decided_once() {
     let question = |need: &str, labels: &[&str]| GroupQuestion {
+        title: Some("Release choices".into()),
         need: need.into(), why: String::new(), recommended: None,
         options: labels.iter().enumerate().map(|(at, label)| QuestionOption { id: format!("o{at}"), label: (*label).into(), description: None }).collect(),
     };

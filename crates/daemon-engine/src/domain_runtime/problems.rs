@@ -127,7 +127,7 @@ impl DomainRuntime {
                 interaction_id: id.to_owned().into(),
                 scope: Scope::Orchestrator { request_id: None },
                 recipient: Recipient::Orchestrator,
-                card: CardSpec { system, ..CardSpec::derived(CardKind::Know, &body) },
+                card: CardSpec { system, ..CardSpec::new(CardKind::Know, "Task update").content(ContentKind::Report, &body) },
                 body,
             },
         })
@@ -150,7 +150,7 @@ impl DomainRuntime {
                 interaction_id: id.to_owned().into(),
                 scope: Scope::Orchestrator { request_id: None },
                 recipient: Recipient::User,
-                card: CardSpec::derived(CardKind::Know, &body),
+                card: CardSpec::new(CardKind::Know, "Alondra update").content(ContentKind::Report, &body),
                 body,
             },
         })

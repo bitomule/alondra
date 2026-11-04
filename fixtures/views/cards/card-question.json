@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vf72a94a9fe86d4bd",
+  "version": "vc3a1c0a6a6cec3cf",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -68,7 +68,8 @@
           "type": "card",
           "id": "a98d034b-249e-4487-a89b-57de38c26372",
           "kind": "decide",
-          "need": "Choose the welcome copy",
+          "need": "Choose an option",
+          "title_is_separate": true,
           "why": "The new empty state is ready; the beta ships with the copy you pick.",
           "meta": "Restore the native review experience · Demo Garden",
           "content_row": {
@@ -165,7 +166,6 @@
     },
     {
       "id": "content",
-      "title": "Content",
       "collapsed": false,
       "items": [
         {

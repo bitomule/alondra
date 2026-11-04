@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "ios",
-  "version": "v0eeb3ca4b6e9b9e2",
+  "version": "v62cf627add272724",
   "cursor": "cursor-1",
   "title": "Done in part: 1 of 3 tasks was cancelled",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "request-done-r-accounts",
           "kind": "know",
-          "need": "Done in part: 1 of 3 tasks was cancelled",
+          "need": "Read this update",
+          "title_is_separate": true,
           "why": "Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.",
           "meta": "Dos cuentas de Claude",
           "reply": {
@@ -110,7 +111,6 @@
     },
     {
       "id": "content",
-      "title": "Content",
       "collapsed": false,
       "items": [
         {

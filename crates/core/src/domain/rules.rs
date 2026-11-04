@@ -121,11 +121,24 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
         let allowed: Vec<String> = source.kinds().iter().map(|k| kind_name(*k)).collect();
         return refuse("invalid_input", "card.kind", &format!("{} does not send a {kind} card: use one of {}", source.command(), allowed.join(", ")));
     }
+    if card.title.is_none() {
+        return refuse("invalid_input", "card.title", "Provide a title separately from need and content.body");
+    }
+    if let Some(title) = &card.title
+        && (title.trim().is_empty() || title.chars().count() > CardSpec::TITLE_MAX || title.contains(['\n', '\r']))
+    {
+        return refuse("invalid_input", "card.title", "Provide a non-empty title on one line, at most 160 characters; put the content in card.content.body");
+    }
+    if let Some(content) = &card.content
+        && content.body.trim().is_empty()
+    {
+        return refuse("invalid_input", "card.content.body", "Provide the complete content, or omit card.content when there is no body");
+    }
     let need = card.need.trim();
-    if need.is_empty() || need.contains('\n') {
+    if need.is_empty() || card.need.contains(['\n', '\r']) {
         return refuse("invalid_input", "card.need", "Say in one line, in the imperative, what you need from the user");
     }
-    if need.chars().count() > CardSpec::NEED_MAX {
+    if card.need.chars().count() > CardSpec::NEED_MAX {
         return refuse("invalid_input", "card.need", &format!("At most {} characters: keep what you need short and move the rest to card.why or card.content", CardSpec::NEED_MAX));
     }
     if card.why.chars().count() > CardSpec::WHY_MAX {
@@ -138,9 +151,9 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
         return refuse("invalid_input", "card.content", "A review card carries what to review: add card.content with its kind and body");
     }
     if let Some(summary) = card.content.as_ref().and_then(|c| c.summary.as_ref())
-        && summary.chars().count() > CardSpec::SUMMARY_MAX
+        && (summary.chars().count() > CardSpec::SUMMARY_MAX || summary.contains(['\n', '\r']))
     {
-        return refuse("invalid_input", "card.content.summary", &format!("At most {} characters, like \"6 files · +120 −40\"; leave it out and Alondra computes one", CardSpec::SUMMARY_MAX));
+        return refuse("invalid_input", "card.content.summary", &format!("One line of at most {} characters, like \"6 files · +120 −40\"; leave it out and Alondra computes one", CardSpec::SUMMARY_MAX));
     }
     match (&card.verify, card.kind) {
         (None, CardKind::Do) => return refuse("invalid_input", "card.verify", "A do card says how you will check the user did it"),
@@ -192,6 +205,8 @@ fn group_cards(group: &InteractionId, why: &str, questions: &[GroupQuestion]) ->
         }
         let own_why = if question.why.trim().is_empty() { why } else { question.why.as_str() };
         let mut card = CardSpec::new(CardKind::Decide, question.need.trim()).why(own_why.trim());
+        card.title = question.title.clone();
+        card.need = question.need.clone();
         card.recommended = question.recommended.clone();
         card.group = Some(QuestionGroup { id: group.0.clone(), index: (at + 1) as u8, total: questions.len() as u8 });
         Ok((QuestionGroup::card_id(group, at + 1), card, question.options.clone()))
@@ -817,7 +832,7 @@ impl DomainState {
                 }
                 id(&request_id.0)?;
                 self.apply(actor, &Command::CreateRequest {
-                    request_id: request_id.clone(), body: format!("{}\n\n{}", i.card.need, i.body),
+                    request_id: request_id.clone(), body: format!("{}\n\n{}", i.card.effective_title(), i.body),
                     auto_merge: false, maintenance: false, message: true,
                 }, effects, created, lifecycles)?;
                 if let (Author::Agent { agent_id }, Some(request)) = (&i.author, self.requests.get_mut(request_id)) {
@@ -938,7 +953,7 @@ impl DomainState {
     fn already_answered(&self, i: &Interaction) -> String {
         let said = |member: &Interaction| answer_said(member).unwrap_or_default().trim_end_matches('.').to_owned();
         let answer = if i.card.group.is_some() {
-            self.group_members(i).into_iter().map(|member| format!("{} ({}) → {}", member.card.need, member.id, said(member)))
+            self.group_members(i).into_iter().map(|member| format!("{} ({}) → {}", member.card.effective_title(), member.id, said(member)))
                 .collect::<Vec<_>>().join("; ")
         } else {
             said(i)
@@ -972,7 +987,7 @@ impl DomainState {
             .filter(|i| &i.author == author && &i.scope == scope && &i.recipient == to && self.open(i))
             .filter(|i| matches!(i.payload, InteractionPayload::Information { .. }))
             .max_by_key(|i| i.order)
-            .filter(|i| i.body == body && i.card.need == card.need)
+            .filter(|i| i.body == body && i.card.title == card.title && i.card.need == card.need)
             .map(|i| i.id.clone())
     }
     /// R7: after the user asked for a clarification, the author's next card replaces that card.
@@ -1289,9 +1304,14 @@ impl DomainState {
         let answer = answer.trim();
         let card = match headline {
             Some(headline) if answer.chars().count() > CardSpec::WHY_MAX || answer.lines().filter(|l| !l.trim().is_empty()).count() > 1 =>
-                CardSpec::new(CardKind::Know, clip(headline, CardSpec::NEED_MAX)).content(ContentKind::Report, answer),
-            Some(headline) => CardSpec::new(CardKind::Know, clip(headline, CardSpec::NEED_MAX)).why(answer),
-            None => CardSpec::derived(CardKind::Know, answer),
+                CardSpec::new(CardKind::Know, headline).content(ContentKind::Report, answer),
+            Some(headline) => CardSpec::new(CardKind::Know, headline).why(answer),
+            None => {
+                let title = self.requests.get(request).and_then(|request| request.title.as_deref())
+                    .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "));
+                let title = title.as_deref().filter(|title| !title.is_empty()).unwrap_or("Answer");
+                CardSpec::new(CardKind::Know, clip(title, CardSpec::TITLE_MAX)).content(ContentKind::Report, answer)
+            }
         };
         self.tell_the_user(format!("{request}-answer"), request, answer.into(), card, None, created, effects);
         Ok(())
@@ -1455,7 +1475,7 @@ impl DomainState {
         }
         match &holds.first_card(delivery) {
             Some(x) => {
-                let need = self.interactions.get(x).map_or_else(String::new, |blocker| blocker.card.need.clone());
+                let need = self.interactions.get(x).map_or_else(String::new, |blocker| blocker.card.effective_title().to_owned());
                 refuse(
                     "blocked",
                     "presentation_id",
@@ -2181,7 +2201,7 @@ impl DomainState {
             if self.interactions.contains_key(&id) {
                 continue;
             }
-            let need = clip(&format!("No longer waits for your answer: {}", q.card.need), CardSpec::NEED_MAX);
+            let need = clip(&format!("No longer waits for your answer: {}", q.card.effective_title()), CardSpec::NEED_MAX);
             let why = clip("The work was finished before you answered", CardSpec::WHY_MAX);
             let body = q.card.content.as_ref().map_or_else(|| q.body.clone(), |c| c.body.clone());
             let card = CardSpec::new(CardKind::Know, need).why(&why).content(ContentKind::Report, &body);
@@ -3097,8 +3117,15 @@ impl DomainState {
                 {
                     return fail("task_not_active", "Request still has unfinished Tasks");
                 };
-                for text in answer.iter().chain(title).chain(headline) {
-                    nonempty(text)?;
+                for (field, text) in [("answer", answer.as_deref()), ("title", title.as_deref())] {
+                    if text.is_some_and(|text| text.trim().is_empty()) {
+                        return refuse("invalid_input", field, "Provide non-empty text, or omit this field");
+                    }
+                }
+                if let Some(headline) = headline
+                    && (headline.trim().is_empty() || headline.chars().count() > CardSpec::NEED_MAX || headline.contains(['\n', '\r']))
+                {
+                    return refuse("invalid_input", "headline", "Provide a non-empty subject on one line, at most 90 characters; put the complete answer in answer");
                 }
                 self.close_request(request_id, answer.as_ref(), *withdrawn, title.as_ref(), headline.as_deref(), created, effects)?;
             }
@@ -3714,7 +3741,7 @@ impl DomainState {
                 }
                 let unanswered = match (&i.author, &i.scope, actor) {
                     (Author::Agent { agent_id }, Scope::Task { task_id }, Actor::System) if Self::asks_the_orchestrator(i) && !i.withdrawn =>
-                        Some((agent_id.clone(), task_id.clone(), unanswered_withdrawn_notice(&i.card.need))),
+                        Some((agent_id.clone(), task_id.clone(), unanswered_withdrawn_notice(i.card.effective_title()))),
                     _ => None,
                 };
                 if i.card.group.is_some() {
@@ -4344,7 +4371,7 @@ impl DomainState {
                 if *is_final && self.interactions.values().any(|i| self.asked_aside(i, task_id)) {
                     let open = self.interactions.values()
                         .filter(|i| self.asked_aside(i, task_id))
-                        .map(|i| format!("“{}”", i.card.need)).collect::<Vec<_>>().join(", ");
+                        .map(|i| format!("“{}”", i.card.effective_title())).collect::<Vec<_>>().join(", ");
                     return refuse("unanswered_questions", "is_final", &format!(
                         "You have unanswered questions ({open}): wait for the answers before you deliver, or withdraw the ones you no longer need"));
                 }

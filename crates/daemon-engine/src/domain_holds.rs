@@ -8,7 +8,7 @@
 //! card is withdrawn when the hook goes away. An MCP elicitation has no mod answer, so its
 //! settings hook keeps waiting and a hook that goes away withdraws its card.
 use crate::domain_runtime::DomainRuntime;
-use crate::hook_text::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
+use crate::hook_text::{card_subject, elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DecisionPrompt, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload,
@@ -200,6 +200,7 @@ fn questions_of(input: &Value) -> Vec<GroupQuestion> {
             .collect();
         let (options, recommended) = recommending(options);
         GroupQuestion {
+            title: Some(card_subject(&str_field(question, "header").filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "Decision".into()))),
             why: if asked == need { String::new() } else { clip(&asked, CardSpec::WHY_MAX) },
             need, options, recommended,
         }
@@ -209,10 +210,9 @@ fn questions_of(input: &Value) -> Vec<GroupQuestion> {
 /// The card a held prompt stands for: a permission is authorized, a plan reviewed, Claude's
 /// question decided.
 fn hold_card(hold: Hold, body: &str, options: &[QuestionOption], recommended: Option<String>, title: Option<&str>) -> CardSpec {
-    let first_line = |text: &str| text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned();
     match hold {
         Hold::Permission => {
-            let need = clip(title.unwrap_or_else(|| body.lines().next().unwrap_or_default()), CardSpec::NEED_MAX);
+            let need = clip(title.unwrap_or("Permission requested"), CardSpec::NEED_MAX);
             let card = CardSpec::new(CardKind::Authorize, need);
             match body.split_once("\n\n") {
                 Some((_, command)) => card.content(ContentKind::Command, command),
@@ -220,19 +220,15 @@ fn hold_card(hold: Hold, body: &str, options: &[QuestionOption], recommended: Op
             }
         }
         Hold::Plan => {
-            let heading = body.lines().map(str::trim).find(|line| line.starts_with('#'))
-                .map(|line| line.trim_start_matches('#').trim().to_owned())
-                .filter(|line| !line.is_empty())
-                .unwrap_or_else(|| first_line(body));
-            CardSpec::new(CardKind::Review, clip(&heading, CardSpec::NEED_MAX)).content(ContentKind::Plan, body)
+            CardSpec::new(CardKind::Review, card_subject(title.unwrap_or("Plan"))).needing("Review the plan").content(ContentKind::Plan, body)
         }
         Hold::Question => {
             let kind = if options.len() >= 2 { CardKind::Decide } else { CardKind::Provide };
-            let mut card = CardSpec::new(kind, clip(&first_line(body), CardSpec::NEED_MAX));
+            let mut card = CardSpec::new(kind, title.unwrap_or("Decision")).content(ContentKind::Options, body);
             card.recommended = recommended;
             card
         }
-        Hold::Elicitation => CardSpec::new(CardKind::Provide, clip(&first_line(body), CardSpec::NEED_MAX)),
+        Hold::Elicitation => CardSpec::new(CardKind::Provide, title.unwrap_or("Information requested")).content(ContentKind::Report, body),
     }
 }
 
@@ -250,7 +246,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
         None => title,
     };
     let mut options = hold.options_offering(allow.as_ref().is_some_and(|allow| allow.rules().is_some()));
-    let mut title = None;
+    let mut title = (hold == Hold::Plan).then(|| task.title.clone());
     let mut recommended = None;
     let body = match hold {
         Hold::Permission => {
@@ -272,6 +268,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
             match questions.pop() {
                 Some(only) => {
                     options = only.options;
+                    title = only.title;
                     recommended = only.recommended;
                     input.pointer("/questions/0/question").and_then(Value::as_str).unwrap_or("?").to_owned()
                 }
@@ -279,9 +276,10 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
             }
         }
         Hold::Elicitation => {
-            let (title, detail, card_options) = elicitation_card(elicitation.unwrap_or(&Value::Null));
+            let (subject, detail, card_options) = elicitation_card(elicitation.unwrap_or(&Value::Null));
+            title = Some(subject);
             options[0].description = card_options.into_iter().next().and_then(|option| option.description);
-            titled(title, detail)
+            detail.unwrap_or_else(|| "Provide the requested information".into())
         }
     };
     let mut card = hold_card(hold, &body, &options, recommended, title.as_deref());
@@ -310,7 +308,7 @@ pub(crate) struct SdkDecision {
 /// options in `request` and the folder Claude Code runs it from in `cwd`; an MCP server's request
 /// for input is its form. «Allow always» is offered as for a held permission prompt, and «allow in
 /// this task» for a command that stays in the task's folders.
-pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
+pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
     let hold = match kind {
         DecisionKind::Permission => Hold::Permission,
         DecisionKind::Question => Hold::Question,
@@ -356,7 +354,7 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
         Hold::Plan => {
             let plan = str_field(&input, "plan").unwrap_or_default();
             let whole = include_linked_files(&plan, |path| read_cited_file(worktree.map(Path::new), path)).unwrap_or(plan);
-            card(whole, hold.options_offering(false), None, None, None)
+            card(whole, hold.options_offering(false), None, Some(task_title), None)
         }
         Hold::Question => {
             let mut questions = questions_of(&input);
@@ -365,7 +363,7 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
                 1 => {
                     let only = questions.pop().expect("one question");
                     let body = input.pointer("/questions/0/question").and_then(Value::as_str).unwrap_or("?").to_owned();
-                    card(body, only.options, only.recommended, None, None)
+                    card(body, only.options, only.recommended, only.title.as_deref(), None)
                 }
                 _ => DecisionPrompt::Questions { questions },
             }
@@ -378,7 +376,7 @@ pub(crate) fn sdk_decision(kind: DecisionKind, payload: &Value, worktree: Option
             let (title, detail, card_options) = elicitation_card(&form);
             let mut options = hold.options_offering(false);
             options[0].description = card_options.into_iter().next().and_then(|option| option.description);
-            let mut prompt = card(titled(title, detail), options, None, None, None);
+            let mut prompt = card(detail.unwrap_or_else(|| "Provide the requested information".into()), options, None, Some(&title), None);
             if let DecisionPrompt::Card { card, .. } = &mut prompt {
                 card.form = alondra_core::requested_form::RequestedForm::from_schema(payload.get("requestedSchema").unwrap_or(&Value::Null));
             }
@@ -574,4 +572,37 @@ pub(crate) fn elicitation_decision(held: &Held, answer: &Answer) -> Value {
         out["content"] = elicitation_content(&held.input, note(answer).as_deref().unwrap_or_default(), answer.form_values());
     }
     json!({"hookSpecificOutput": out})
+}
+
+#[cfg(test)]
+mod card_title_tests {
+    use super::*;
+
+    #[test]
+    fn card_title_contract_native_plan_uses_task_metadata() {
+        for body in ["- [ ] Implement the design", "# A different heading\n\n- [ ] Implement", "# Task subject\n\n- [ ] Implement"] {
+            let card = hold_card(Hold::Plan, body, &[], None, Some("Task subject"));
+            assert_eq!(card.title.as_deref(), Some("Task subject"));
+            assert_eq!(card.need, "Review the plan");
+            assert_eq!(card.content.unwrap().body, body);
+        }
+    }
+
+    #[test]
+    fn card_title_contract_native_questions_use_headers() {
+        let questions = questions_of(&json!({"questions":[{
+            "header":"Release design", "question":"Which design should ship?",
+            "options":[{"label":"Atlas"},{"label":"Borealis"}]
+        }]}));
+        assert_eq!(questions[0].title.as_deref(), Some("Release design"));
+        assert_eq!(questions[0].need, "Which design should ship?");
+    }
+
+    #[test]
+    fn card_title_contract_native_plan_accepts_multiline_task_metadata() {
+        let body = "- [ ] Preserve the plan literally";
+        let card = hold_card(Hold::Plan, body, &[], None, Some("Fix parser\nwith tests"));
+        assert_eq!(card.title.as_deref(), Some("Fix parser with tests"));
+        assert_eq!(card.content.unwrap().body, body);
+    }
 }

@@ -556,7 +556,7 @@ async fn a_node_the_api_keeps_failing_while_others_work_asks_the_user_after_its_
     assert_eq!(cards.len(), 1, "the fourth failure in a row asks the user");
     assert_eq!(phase(&bench, "t1"), NodePhase::WaitingUser { in_turn: false }, "the user holds it now, not a slot");
     let es = alondra_core::start_problem::card("Task t1", &serde_json::from_str(&cards[0].body).unwrap(), None, alondra_core::views::Lang::Es);
-    assert_eq!(es.need, "Los errores de la API de Claude cortan una y otra vez «Task t1»");
+    assert_eq!(es.effective_title(), "Los errores de la API de Claude cortan una y otra vez «Task t1»");
     let options: Vec<&str> = match &cards[0].payload {
         alondra_core::domain::InteractionPayload::Question { options, .. } => options.iter().map(|option| option.id.as_str()).collect(),
         _ => panic!("a question"),

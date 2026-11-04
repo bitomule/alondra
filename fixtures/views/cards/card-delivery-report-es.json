@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "v6f686b5c7386a61b",
+  "version": "vd4882eaba372fdbd",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
@@ -53,7 +53,8 @@
           "type": "card",
           "id": "result-2",
           "kind": "review",
-          "need": "Read why Redraft does not need a widget",
+          "need": "Review the result",
+          "title_is_separate": true,
           "meta": "Redraft: analyse the whole library at once",
           "content_row": {
             "kind": "report",
@@ -124,7 +125,6 @@
     },
     {
       "id": "content",
-      "title": "Contenido",
       "collapsed": false,
       "items": [
         {

@@ -533,10 +533,10 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
     let screen = rendered(&mut app, 120, 40);
     dump("detail: Decide", &screen);
     let at = |needle: &str| screen.find(needle).unwrap_or_else(|| panic!("{needle}: {screen}"));
-    assert!(at("? DECIDE · Restore the native review experience") < at("Choose the welcome copy"));
+    assert!(at("╭ decide ") < at("Choose the welcome copy"));
     assert!(at("Choose the welcome copy") < at("The new empty state is ready"));
-    assert!(at("The new empty state is ready") < at("Content"));
-    assert!(at("Content") < at("Context"));
+    assert!(at("The new empty state is ready") < at("Context"));
+    assert!(!screen.contains("? DECIDE ·") && !screen.contains("│Content"), "{screen}");
     assert!(at("Context") < at(" 1  ★ Ship the concise copy"));
     assert!(at(" 1  ★ Ship the concise copy") < at(" 2  Keep the warmer copy"));
     assert!(at(" 2  Keep the warmer copy") < at(" r  Reply"));
@@ -695,7 +695,7 @@ fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
     let mut app = card_screen(held_card(Hold::Permission, spec), crate::i18n::Lang::Es);
     let screen = rendered(&mut app, 120, 34);
     dump("detail: Authorize", &screen);
-    assert!(screen.contains("◆ AUTORIZAR"), "{screen}");
+    assert!(screen.contains("╭ autorizar "), "{screen}");
     assert!(screen.contains("Allow publishing Brew 0.2.36") && screen.contains("Restarts the daemon"), "{screen}");
     assert!(screen.contains("alondra update"), "the command is shown whole: {screen}");
     assert!(screen.contains(" 1  Permitir") && screen.contains(" 2  Denegar") && screen.contains(" r  Responder"), "{screen}");
@@ -706,7 +706,7 @@ fn review_pr_detail_shows_what_blocks_it_and_offers_no_merge() {
     let mut app = english(blocked_pr());
     let screen = rendered(&mut app, 120, 46);
     dump("detail: Review PR, blocked", &screen);
-    assert!(screen.contains("◎ REVIEW · PR #12"), "{screen}");
+    assert!(screen.contains("╭ review · pr #12 "), "{screen}");
     assert!(screen.contains("▤ Changes · 4 files · +120 −30 · d view changes") && !screen.contains("0 B"), "{screen}");
     assert!(screen.contains("blocked by Ship the compact schedule editor"), "{screen}");
     assert!(!screen.contains("Merge") && !screen.contains("Answer “Ship"), "a blocked merge is not on the card, grey or not: {screen}");
@@ -734,7 +734,7 @@ fn problem_detail_leads_with_its_kind_and_offers_what_to_do() {
     }));
     let screen = rendered(&mut app, 120, 34);
     dump("detail: Problem", &screen);
-    assert!(screen.contains("! PROBLEM") && screen.contains("The orchestrator run failed"), "{screen}");
+    assert!(screen.contains("╭ problem ") && screen.contains("The orchestrator run failed"), "{screen}");
     assert!(screen.contains(" 1  Retry") && screen.contains(" 2  Stop"), "{screen}");
 }
 
@@ -743,7 +743,7 @@ fn know_detail_only_offers_seen_and_the_reply() {
     let mut app = english(fixture_view("card-information.json"));
     let screen = rendered(&mut app, 120, 34);
     dump("detail: Know", &screen);
-    assert!(screen.contains("· FYI") || screen.contains("· KNOW"), "{screen}");
+    assert!(screen.contains("╭ fyi ") || screen.contains("╭ know "), "{screen}");
     assert!(screen.contains("The simulator pass is clean"), "{screen}");
     assert!(screen.contains(" 1  Seen") && screen.contains(" r  Reply") && !screen.contains(" m  "), "{screen}");
     let footer = draw::footer_keys(&app);

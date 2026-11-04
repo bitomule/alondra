@@ -86,7 +86,7 @@ import Testing
         let questionCard = try #require(question.sections.flatMap(\.items).compactMap { item -> Card? in
             if case let .card(card) = item { card } else { nil }
         }.first)
-        #expect(questionCard.need == "Choose the welcome copy")
+        #expect(questionCard.title == "Choose the welcome copy")
         #expect(questionCard.actions.compactMap(\.optionId) == ["clear", "warm"])
         guard case let .document(information) = try await client.load(.card(ids[3]), nil) else {
             Issue.record("The information demo card must load")
@@ -149,7 +149,7 @@ import Testing
             Issue.record("The demo delivery card must load")
             return
         }
-        #expect(deliveryCard.need == "Review the beta candidate")
+        #expect(deliveryCard.title == "Review the beta candidate")
     }
 
     @Test func pullRequestOpensDiffAndItsCardRequestsChangesInItsField() async throws {

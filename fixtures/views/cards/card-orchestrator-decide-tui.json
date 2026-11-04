@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "tui",
-  "version": "vf05484493a1bd3a5",
+  "version": "vc6d0d74807369647",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
@@ -68,7 +68,8 @@
           "type": "card",
           "id": "memory-pause-livelock-ask",
           "kind": "decide",
-          "need": "Decide who fixes the memory pauses that cut the same build in a loop",
+          "need": "Choose an option",
+          "title_is_separate": true,
           "why": "A node found a loop in the memory rule that leaves a task stuck.",
           "meta": "Alondra",
           "content_row": {
@@ -150,7 +151,6 @@
     },
     {
       "id": "content",
-      "title": "Content",
       "collapsed": false,
       "items": [
         {

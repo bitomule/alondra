@@ -135,7 +135,7 @@ fn abort_unapplied_model_change(domain: &DomainRuntime, change: &Transition) -> 
         }), Attached::None)?;
         owner.stage_command(&Actor::System, &envelope(domain, &format!("{}-notice", plan.id), Command::PublishInformation {
             interaction_id: notice_id.as_str().into(), scope: Scope::Task { task_id: plan.task.clone() }, recipient: Recipient::User,
-            body: code.into(), attachments: vec![], card: CardSpec::derived(CardKind::Know, "The model change was not applied"),
+            body: code.into(), attachments: vec![], card: CardSpec::new(CardKind::Know, "The model change was not applied"),
         }), Attached::None)?;
         owner.provider_transition_phase(&plan.id, change.phase, Phase::Aborted, json!({"reason":code,"model_applied":false}))?;
         Ok(true)

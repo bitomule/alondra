@@ -198,7 +198,7 @@ def main():
         made = tempfile.mkdtemp(prefix="assets-", dir=sandbox.scratch)
         attachments = store(sandbox, assets(made))
         node = e2e_cards.Node(sandbox)
-        node.call(("ask", {"interaction_id": "attachments", "scope": node.scope(), "recipient": {"kind": "user"}, "need": NEED,
+        node.call(("ask", {"interaction_id": "attachments", "scope": node.scope(), "recipient": {"kind": "user"}, "title": NEED, "need": NEED,
                            "why": "La versión nueva sale cuando des el visto bueno a lo que se ve en la captura y en el vídeo.",
                            "blocking": False, "attachments": attachments,
                            "options": [{"id": "ok", "label": "Se ve bien", "description": "La versión sale con esta captura y este vídeo"},

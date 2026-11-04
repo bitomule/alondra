@@ -80,7 +80,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         state(report, &user, "t-attachments", WORKING)?;
         let ask_with_files = Step::Call { tool: "ask".into(), arguments: serde_json::json!({
             "interaction_id": "q-onboarding", "scope": {"kind": "task", "task_id": "t-attachments"}, "recipient": {"kind": "user"}, "blocking": true,
-            "need": "Choose the onboarding screen to ship",
+            "title": "Onboarding screen", "need": "Choose the onboarding screen to ship",
             "why": "The screenshot and the recording show the new screen; the old one stays until you pick.",
             "options": [
                 {"id": "new", "label": "Ship the new screen", "description": "The new onboarding replaces the old one in the next release"},
@@ -99,6 +99,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
             Step::Commit { file: "research-measurements.md".into(), text: "# Measurements\n\n| Library | Time |\n|---|---|\n| 10 000 photos | 4 min |\n".into() },
             Step::Call { tool: "ask".into(), arguments: serde_json::json!({
                 "interaction_id": "q-documents", "scope": {"kind": "task", "task_id": "t-documents"}, "recipient": {"kind": "user"}, "blocking": true,
+                "title": "Whole-library indexing",
                 "need": "Choose how Redraft indexes the whole library",
                 "why": "The research found two ways other apps do it; the index starts once you pick one.",
                 "options": [
@@ -111,11 +112,24 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         ];
         act(report, &fakes, &researching, "the node asks with the two documents it cites", &documents)?;
 
+        request(report, &fakes, &user, &task_script("req-plan", "t-plan", "Create two design skills"), "Create two design skills")?;
+        let planning = launched(report, &fakes, "t-plan")?;
+        state(report, &user, "t-plan", WORKING)?;
+        let plan = Step::Call { tool: "present_result".into(), arguments: serde_json::json!({
+            "task_id": "t-plan", "interaction_id": "result-design-skills",
+            "title": "Plan: two design skills", "need": "Review the plan",
+            "targets": [{"kind": "text", "text": "Design skills proposal"}], "is_final": true,
+            "content": {"kind": "report", "body": "Web and native design guidance will live in separate skills."},
+            "plan": "Separate web and native design guidance.\n\n- [ ] Write the web design skill\n- [ ] Write the native design skill",
+        }) };
+        act(report, &fakes, &planning, "the node proposes a plan with a separate title and content", &[plan])?;
+        outcome_card(report, &user, "result-design-skills", "the design plan is ready to review")?;
+
         request(report, &fakes, &user, &task_script("req-secret", "t-secret", "Run the payments test against Stripe"), "Run the payments test against Stripe")?;
         let secret = launched(report, &fakes, "t-secret")?;
         state(report, &user, "t-secret", WORKING)?;
         let ask_secret = Step::Call { tool: "request_input".into(), arguments: serde_json::json!({
-            "scope": {"kind": "task", "task_id": "t-secret"}, "interaction_id": "q-stripe-key", "need": "Send the Stripe test key", "why": "The payments test calls Stripe with it",
+            "scope": {"kind": "task", "task_id": "t-secret"}, "interaction_id": "q-stripe-key", "title": "Stripe test key", "need": "Send the Stripe test key", "why": "The payments test calls Stripe with it",
             "recipient": {"kind": "user"}, "kind": "secret", "blocking": false, "destination": {"file": ".env", "variable": "STRIPE_KEY"},
         }) };
         act(report, &fakes, &secret, "the node asks for a secret that goes to .env", &[ask_secret])?;

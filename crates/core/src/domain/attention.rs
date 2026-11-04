@@ -175,7 +175,7 @@ impl DomainState {
             return Attention::Wait(WaitReason::BlockedBy { task: blocker });
         }
         if let Some(card) = holds.first_card(&p.id).and_then(|id| self.interactions.get(&id)) {
-            return Attention::Wait(WaitReason::Answer { card: card.id.clone(), need: card.card.need.clone() });
+            return Attention::Wait(WaitReason::Answer { card: card.id.clone(), need: card.card.effective_title().to_owned() });
         }
         if let Some(stack) = &t.stack
             && let Some(upstream) = self.interactions.get(&stack.presentation_id)
