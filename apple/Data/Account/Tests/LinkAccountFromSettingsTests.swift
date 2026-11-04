@@ -10,7 +10,7 @@ import Testing
 
 private let macSigning = P256.Signing.PrivateKey()
 private let macAgreement = P256.KeyAgreement.PrivateKey()
-private let relayURL = "https://alondra-api.davidcollado.dev"
+private let relayURL = "https://api.getalondra.com"
 private let invitationExpiry = UInt64(Date().timeIntervalSince1970 * 1_000) + 600_000
 
 private final class LoginNonce: Sendable {
@@ -42,13 +42,13 @@ private struct KeycloakDouble: AuthHTTPTransport {
         let path = request.url!.path
         if path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
         if path.hasSuffix("/revoke") { return AuthHTTPResponse(status: 200, body: Data()) }
         if path.hasSuffix("/userinfo") { return AuthHTTPResponse(status: 200, body: Data(#"{"sub":"owner-a"}"#.utf8)) }
         let claims = try JSONSerialization.data(withJSONObject: [
-            "iss": "https://alondra-auth.davidcollado.dev/realms/alondra", "aud": "alondra-ios",
+            "iss": "https://auth.getalondra.com/realms/alondra", "aud": "alondra-ios",
             "nonce": nonce.current!, "exp": Int(Date().timeIntervalSince1970) + 3_600])
         let body = try JSONSerialization.data(withJSONObject: [
             "access_token": "access", "refresh_token": "refresh", "token_type": "Bearer", "expires_in": 3_600,

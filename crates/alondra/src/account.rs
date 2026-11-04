@@ -18,7 +18,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use url::Url;
 
-const ISSUER: &str = "https://alondra-auth.davidcollado.dev/realms/alondra";
+const ISSUER: &str = "https://auth.getalondra.com/realms/alondra";
+const PREVIOUS_ISSUER: &str = "https://alondra-auth.davidcollado.dev/realms/alondra";
 const CLIENT_ID: &str = "alondra-cli";
 const KEYCHAIN_SERVICE: &str = "dev.davidcollado.alondra.service-login";
 const CALLBACK_PATH: &str = "/oauth2redirect/alondra-cli";
@@ -432,6 +433,7 @@ pub fn login() -> Result<()> {
         state: SessionState::Active,
     };
     set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(&session)?)?;
+    let _ = delete_generic_password(KEYCHAIN_SERVICE, PREVIOUS_ISSUER);
     println!(
         "Signed in as {}.",
         user.preferred_username.as_deref().unwrap_or(&session.sub)
@@ -865,7 +867,7 @@ mod tests {
         assert!(
             endpoint(
                 ISSUER,
-                "https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token"
+                "https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token"
             )
             .is_ok()
         );
@@ -879,7 +881,7 @@ mod tests {
         assert!(
             endpoint(
                 ISSUER,
-                "http://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token"
+                "http://auth.getalondra.com/realms/alondra/protocol/openid-connect/token"
             )
             .is_err()
         );

@@ -69,7 +69,7 @@ private func wire(_ key: P256.KeyAgreement.PublicKey) -> String {
 
 private func pairing(_ mac: String, relay: Bool) -> ApprovedServicePairing {
     var approved = ApprovedServicePairing(
-        relayURL: relay ? URL(string: "https://alondra-api.davidcollado.dev") : nil, macID: mac,
+        relayURL: relay ? URL(string: "https://api.getalondra.com") : nil, macID: mac,
         deviceID: "phone-" + mac, ownerSub: relay ? "owner-a" : nil,
         macSigningKey: wire(P256.Signing.PrivateKey().publicKey), macAgreementKey: wire(P256.KeyAgreement.PrivateKey().publicKey),
         signingPrivateKey: P256.Signing.PrivateKey().rawRepresentation,

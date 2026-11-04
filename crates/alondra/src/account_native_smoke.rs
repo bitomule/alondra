@@ -76,7 +76,7 @@ impl Fixture {
 
     fn issuer(&self) -> String {
         format!(
-            "https://alondra-auth.davidcollado.dev/realms/{}",
+            "https://auth.getalondra.com/realms/{}",
             self.realm
         )
     }

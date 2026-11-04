@@ -21,7 +21,7 @@ use std::{
 
 mod iroh;
 
-pub const RELAY: &str = "https://alondra-api.davidcollado.dev";
+pub const RELAY: &str = alondra_core::service_config::RELAY_ORIGIN;
 static ACTIVE: OnceLock<Arc<Profile>> = OnceLock::new();
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

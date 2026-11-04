@@ -10,7 +10,7 @@ export function meta({ params, location }: { params: { locale?: string }; locati
   return [
     { title: es ? 'Alondra — El orquestador para tus agentes' : 'Alondra — The orchestrator for your agents' },
     { name: 'description', content: es ? 'El orquestador para tus agentes. Alondra está en construcción. Apúntate a la alpha privada.' : 'The orchestrator for your agents. Alondra is in the making. Join the private alpha waitlist.' },
-    ...(preview ? [{ name: 'robots', content: 'noindex, nofollow' }] : [{ tagName: 'link', rel: 'canonical', href: `https://alondra.davidcollado.dev/${es ? '' : '?lang=en'}` }]),
+    ...(preview ? [{ name: 'robots', content: 'noindex, nofollow' }] : [{ tagName: 'link', rel: 'canonical', href: `https://getalondra.com/${es ? '' : '?lang=en'}` }]),
   ];
 }
 

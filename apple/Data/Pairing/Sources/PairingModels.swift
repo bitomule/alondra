@@ -107,7 +107,7 @@ public struct PairingPending: Sendable {
 /// One verified, approved pairing. The private keys are stored in this-device-only Keychain data.
 /// A pairing made on the local network has no relay and no account owner.
 public struct ApprovedServicePairing: Codable, Sendable {
-    public let relayURL: URL?
+    public internal(set) var relayURL: URL?
     public let macID: String
     public let deviceID: String
     public let ownerSub: String?

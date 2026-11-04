@@ -99,6 +99,27 @@ private func sign(_ approval: DirectPairingProtocol.Approval, with key: P256.Sig
         #expect(collection.selected?.routes == nil)
     }
 
+    @Test func aPairingSavedOnThePreviousRelayHostMovesToTheCurrentOne() throws {
+        let saved = Data("""
+        {"version":1,"pairings":[{"relayURL":"https://alondra-api.davidcollado.dev","macID":"mac-1",
+        "deviceID":"phone-1","ownerSub":"owner","macSigningKey":"\(try key(1))","macAgreementKey":"\(try key(2))",
+        "signingPrivateKey":"\(Data(repeating: 3, count: 32).base64EncodedString())",
+        "agreementPrivateKey":"\(Data(repeating: 4, count: 32).base64EncodedString())","approvedAtMs":1}],
+        "selectedID":{"relayURL":"https://alondra-api.davidcollado.dev","ownerSub":"owner","macID":"mac-1","deviceID":"phone-1"}}
+        """.utf8)
+        let collection = try JSONDecoder().decode(ApprovedPairingCollection.self, from: saved)
+        let current = URL(string: "https://api.getalondra.com")
+        #expect(collection.selected?.relayURL == current)
+        #expect(collection.selectedID?.relayURL == current)
+        #expect(collection.pairings(ownerSub: "owner", relayURL: current!).count == 1)
+    }
+
+    @Test func aRelayThatIsNotThePreviousHostIsLeftAlone() {
+        let other = URL(string: "https://relay.example.test")
+        #expect(ServiceHosts.current(other) == other)
+        #expect(ServiceHosts.current(nil) == nil)
+    }
+
     @Test func aDirectPairingRoundTripsWithoutRelayOrOwner() throws {
         var direct = ApprovedServicePairing(relayURL: nil, macID: "mac-1", deviceID: "phone-1", ownerSub: nil,
             macSigningKey: try key(1), macAgreementKey: try key(2), signingPrivateKey: Data(repeating: 3, count: 32),
@@ -114,7 +135,7 @@ private func sign(_ approval: DirectPairingProtocol.Approval, with key: P256.Sig
     }
 
     @Test func aDirectPairingIsPinnedAgainstARelayPairingOfTheSameMac() throws {
-        let relay = ApprovedServicePairing(relayURL: URL(string: "https://alondra-api.davidcollado.dev")!, macID: "mac-1",
+        let relay = ApprovedServicePairing(relayURL: URL(string: "https://api.getalondra.com")!, macID: "mac-1",
             deviceID: "phone-1", ownerSub: "owner", macSigningKey: try key(1), macAgreementKey: try key(2),
             signingPrivateKey: Data(repeating: 3, count: 32), agreementPrivateKey: Data(repeating: 4, count: 32), approvedAtMs: 1)
         let impostor = ApprovedServicePairing(relayURL: nil, macID: "mac-1", deviceID: "phone-2", ownerSub: nil,
@@ -126,7 +147,7 @@ private func sign(_ approval: DirectPairingProtocol.Approval, with key: P256.Sig
     }
 
     @Test func signingOutKeepsDirectPairings() throws {
-        let relay = ApprovedServicePairing(relayURL: URL(string: "https://alondra-api.davidcollado.dev")!, macID: "mac-1",
+        let relay = ApprovedServicePairing(relayURL: URL(string: "https://api.getalondra.com")!, macID: "mac-1",
             deviceID: "phone-1", ownerSub: "owner", macSigningKey: try key(1), macAgreementKey: try key(2),
             signingPrivateKey: Data(repeating: 3, count: 32), agreementPrivateKey: Data(repeating: 4, count: 32), approvedAtMs: 1)
         let direct = ApprovedServicePairing(relayURL: nil, macID: "mac-2", deviceID: "phone-2", ownerSub: nil,
@@ -162,7 +183,7 @@ private func sign(_ approval: DirectPairingProtocol.Approval, with key: P256.Sig
     }
 
     @Test func pairingAgainNeverTouchesTheRelayPairingOfThatMac() throws {
-        let relay = ApprovedServicePairing(relayURL: URL(string: "https://alondra-api.davidcollado.dev")!, macID: "mac-1",
+        let relay = ApprovedServicePairing(relayURL: URL(string: "https://api.getalondra.com")!, macID: "mac-1",
             deviceID: "phone-1", ownerSub: "owner", macSigningKey: try key(1), macAgreementKey: try key(2),
             signingPrivateKey: Data(repeating: 3, count: 32), agreementPrivateKey: Data(repeating: 4, count: 32), approvedAtMs: 1)
         let impostor = ApprovedServicePairing(relayURL: nil, macID: "mac-1", deviceID: "phone-2", ownerSub: nil,

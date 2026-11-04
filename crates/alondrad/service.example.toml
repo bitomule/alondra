@@ -4,7 +4,7 @@
 # Each device_id and signing_key must match an active local `devices.json` pairing.
 # Enrollment is attempted once per device ID and recorded before the network call.
 # To approve again after a relay-side revoke or failed attempt, pair under a NEW device ID.
-relay_url = "https://api.alondra.davidcollado.dev/"
+relay_url = "https://api.getalondra.com/"
 mac_id = "replace-with-mac-route-id"
 owner_sub = "replace-with-keycloak-subject"
 signing_key_path = "service-signing.key"

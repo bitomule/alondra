@@ -3,9 +3,15 @@ import Security
 
 public struct KeychainRefreshTokenStorage: RefreshTokenStorage {
     private let service: String
-    private let account = "oidc-refresh-token"
+    private let account: String
+    private static let previousIssuerAccount = "oidc-refresh-token"
 
-    public init(service: String = "com.bitomule.alondra.auth") { self.service = service }
+    /// The saved token belongs to one issuer. A token kept from before the issuer changed is
+    /// discarded, so the app asks to sign in again instead of presenting it to the new issuer.
+    public init(service: String = "com.bitomule.alondra.auth", issuer: URL = OIDCConfiguration.alondra.issuer) {
+        self.service = service
+        account = "oidc-refresh-token@\(issuer.host() ?? "")"
+    }
 
     public func read() throws -> RefreshCredential? {
         var query = baseQuery
@@ -13,7 +19,10 @@ public struct KeychainRefreshTokenStorage: RefreshTokenStorage {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
+        if status == errSecItemNotFound {
+            try deletePreviousIssuerCredential()
+            return nil
+        }
         guard status == errSecSuccess else { throw AuthError.keychain(status) }
         guard let data = result as? Data else {
             throw AuthError.unreadableCredential
@@ -35,6 +44,14 @@ public struct KeychainRefreshTokenStorage: RefreshTokenStorage {
 
     public func delete() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw AuthError.keychain(status) }
+        try deletePreviousIssuerCredential()
+    }
+
+    private func deletePreviousIssuerCredential() throws {
+        var query = baseQuery
+        query[kSecAttrAccount as String] = Self.previousIssuerAccount
+        let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw AuthError.keychain(status) }
     }
 

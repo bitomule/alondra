@@ -98,5 +98,5 @@ test('the new landing keeps language switching and keyboard navigation accessibl
  await expect(page.getByRole('heading', { level: 1 })).toHaveText('The orchestrator for your agents.');
  await page.reload();
  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
- await expect(page.locator('link[rel=canonical]')).toHaveAttribute('href', 'https://alondra.davidcollado.dev/?lang=en');
+ await expect(page.locator('link[rel=canonical]')).toHaveAttribute('href', 'https://getalondra.com/?lang=en');
 });

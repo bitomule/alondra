@@ -4,7 +4,7 @@ import Foundation
 /// A local binding identity, not authorization. OIDC issuer is not stored in the legacy
 /// pairing contract; callers must still validate the configured provider and owner.
 public struct ApprovedPairingID: Codable, Hashable, Sendable {
-    public let relayURL: URL?
+    public internal(set) var relayURL: URL?
     public let ownerSub: String?
     public let macID: String
     public let deviceID: String
@@ -115,7 +115,8 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         if !values.contains(.version) {
             // Decode old bytes in memory only. A failed read must never rewrite keys.
-            let legacy = try ApprovedServicePairing(from: decoder)
+            var legacy = try ApprovedServicePairing(from: decoder)
+            legacy.relayURL = ServiceHosts.current(legacy.relayURL)
             pairings = [legacy]
             selectedID = ApprovedPairingID(legacy)
             return
@@ -123,8 +124,16 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         guard try values.decode(Int.self, forKey: .version) == 1 else {
             throw PairingStoreError.unsupportedVersion
         }
-        pairings = try values.decode([ApprovedServicePairing].self, forKey: .pairings)
-        selectedID = try values.decodeIfPresent(ApprovedPairingID.self, forKey: .selectedID)
+        pairings = try values.decode([ApprovedServicePairing].self, forKey: .pairings).map {
+            var pairing = $0
+            pairing.relayURL = ServiceHosts.current(pairing.relayURL)
+            return pairing
+        }
+        selectedID = try values.decodeIfPresent(ApprovedPairingID.self, forKey: .selectedID).map {
+            var id = $0
+            id.relayURL = ServiceHosts.current(id.relayURL)
+            return id
+        }
         let ids = pairings.map(ApprovedPairingID.init)
         guard Set(ids).count == ids.count,
               pairings.isEmpty ? selectedID == nil : selectedID.map(ids.contains) == true else {

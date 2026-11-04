@@ -765,6 +765,7 @@ impl Service {
         if !file.exists() {
             return Ok(None);
         }
+        alondra_core::service_config::migrate_previous_relay(home)?;
         let config: Config = toml::from_str(&std::fs::read_to_string(&file)?)
             .with_context(|| format!("invalid {}", file.display()))?;
         if config.mac_id.is_empty() {

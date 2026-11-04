@@ -12,7 +12,7 @@ import Testing
 /// approved pairing collection item. An update keeps both items; the new build must read them.
 private enum Build4 {
     static let credential = #"{"token":"refresh-from-build-4","status":"active","version":1}"#
-    static let pairings = #"{"pairings":[{"ownerSub":"owner-a","macSigningKey":"BObV_1DlZno1_L-gZxZf6UPE3xG4nezPAyR-7wwERu0MRPX0qrbaj1TdSCFwyL-pGOmJZTLNFGAHjldWVc7K-wY","signingPrivateKey":"0j\/VoQGXlPDuFyoHLYErjD8WBGmRuyWY2U2JxQTqJi4=","name":"Mac Studio","approvedAtMs":1791000000000,"macAgreementKey":"BA6JIIzc1VGvtPmNpUSgRETIFNoo2SEYhY0tc1aZIXtOsVR85NlNOGomVMpArUEVJn0k41dmKHGi7bQTycUlAWo","agreementPrivateKey":"JtPiLX6tGfLKm7nkwOKSg4MHiFtykAsnkvi218pFHjk=","relayURL":"https:\/\/alondra-api.davidcollado.dev","deviceID":"phone-1","macID":"mac-studio"}],"version":1,"selectedID":{"deviceID":"phone-1","macID":"mac-studio","relayURL":"https:\/\/alondra-api.davidcollado.dev","ownerSub":"owner-a"}}"#
+    static let pairings = #"{"pairings":[{"ownerSub":"owner-a","macSigningKey":"BObV_1DlZno1_L-gZxZf6UPE3xG4nezPAyR-7wwERu0MRPX0qrbaj1TdSCFwyL-pGOmJZTLNFGAHjldWVc7K-wY","signingPrivateKey":"0j\/VoQGXlPDuFyoHLYErjD8WBGmRuyWY2U2JxQTqJi4=","name":"Mac Studio","approvedAtMs":1791000000000,"macAgreementKey":"BA6JIIzc1VGvtPmNpUSgRETIFNoo2SEYhY0tc1aZIXtOsVR85NlNOGomVMpArUEVJn0k41dmKHGi7bQTycUlAWo","agreementPrivateKey":"JtPiLX6tGfLKm7nkwOKSg4MHiFtykAsnkvi218pFHjk=","relayURL":"https:\/\/api.getalondra.com","deviceID":"phone-1","macID":"mac-studio"}],"version":1,"selectedID":{"deviceID":"phone-1","macID":"mac-studio","relayURL":"https:\/\/api.getalondra.com","ownerSub":"owner-a"}}"#
 }
 
 /// Holds the credential as the Keychain does: bytes, read back through the persisted format.
@@ -52,7 +52,7 @@ private struct Issuer: AuthHTTPTransport {
         let path = request.url!.path
         if path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
         if path.hasSuffix("/token") {

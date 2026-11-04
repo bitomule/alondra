@@ -21,7 +21,7 @@ private actor ScriptedIssuer: AuthHTTPTransport {
         let path = request.url!.path
         if path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
         if path.hasSuffix("/revoke") { return AuthHTTPResponse(status: 200, body: Data()) }

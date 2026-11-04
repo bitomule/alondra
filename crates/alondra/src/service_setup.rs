@@ -18,7 +18,7 @@ use p256::{SecretKey, ecdsa::SigningKey, elliptic_curve::sec1::ToSec1Point};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 
-const RELAY: &str = "https://alondra-api.davidcollado.dev";
+const RELAY: &str = alondra_core::service_config::RELAY_ORIGIN;
 const SERVICE_FILE: &str = "service.toml";
 const SIGNING_FILE: &str = "signing.key";
 const AGREEMENT_FILE: &str = "agreement.key";
@@ -270,6 +270,9 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
 }
 
 fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool) -> Result<bool> {
+    if write {
+        alondra_core::service_config::migrate_previous_relay(home)?;
+    }
     service_file_at(home, identity, owner_sub, write, RELAY)
 }
 
@@ -582,6 +585,23 @@ mod tests {
         assert_eq!(table["direct"]["port"].as_integer(), Some(47999));
         assert!(has_relay(&home).unwrap());
         assert!(!service_file(&home, &identity, "owner", false).unwrap());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn enrolling_again_accepts_a_service_file_that_names_the_previous_relay() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-service-previous-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&home).unwrap();
+        prepare_local_quietly(&home).unwrap();
+        let (identity, _) = load_or_create_keys(&home).unwrap();
+        assert!(service_file(&home, &identity, "owner", true).unwrap());
+        let path = home.join(SERVICE_FILE);
+        let previous = fs::read_to_string(&path).unwrap().replace(RELAY, "https://alondra-api.davidcollado.dev");
+        fs::write(&path, previous).unwrap();
+        assert!(!service_file(&home, &identity, "owner", true).unwrap());
+        let table: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(table["relay_url"].as_str(), Some(RELAY));
         fs::remove_dir_all(home).unwrap();
     }
 }

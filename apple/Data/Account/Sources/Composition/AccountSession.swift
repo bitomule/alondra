@@ -373,7 +373,7 @@ public final class AccountSession {
 
     /// A QR may name the relay but cannot authorize a destination for the account bearer.
     private static func validateRelay(_ url: URL?) throws {
-        guard let url, url.scheme == "https", url.host()?.lowercased() == "alondra-api.davidcollado.dev",
+        guard let url, url.scheme == "https", url.host()?.lowercased() == ServiceHosts.relayHost,
               url.port == nil || url.port == 443, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil, url.path.isEmpty || url.path == "/" else {
             throw PairingError.invalidInvitation

@@ -16,7 +16,7 @@ private actor FixtureTransport: AuthHTTPTransport {
         requests.append(request)
         if request.url!.path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
         if request.url!.path.hasSuffix("/revoke") { return revocationResponse(request) }
@@ -35,7 +35,7 @@ private actor BlockingRefreshTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         if request.httpMethod != "POST" {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke"}
             """.utf8))
         }
         if request.url!.path.hasSuffix("/revoke") {
@@ -67,7 +67,7 @@ private actor SlowTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         if request.httpMethod != "POST" {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke"}
             """.utf8))
         }
         started = true
@@ -111,7 +111,7 @@ private actor UserInfoTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         if request.url!.path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
         if request.url!.path.hasSuffix("/revoke") { return AuthHTTPResponse(status: 200, body: Data()) }
@@ -142,7 +142,7 @@ private actor UserInfoTransport: AuthHTTPTransport {
 private struct OffIssuerUserInfoTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         AuthHTTPResponse(status: 200, body: Data("""
-        {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://attacker.example/userinfo"}
+        {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://attacker.example/userinfo"}
         """.utf8))
     }
 }
@@ -943,7 +943,7 @@ private struct OffIssuerRevocationTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         XCTAssertTrue(request.url!.path.hasSuffix("openid-configuration"))
         return AuthHTTPResponse(status: 200, body: Data("""
-        {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://attacker.example/revoke"}
+        {"issuer":"https://auth.getalondra.com/realms/alondra","authorization_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://auth.getalondra.com/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://attacker.example/revoke"}
         """.utf8))
     }
 }

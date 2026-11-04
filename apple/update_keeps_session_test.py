@@ -2,7 +2,8 @@
 """An App Store or TestFlight update keeps the app's Keychain items and container, so the new
 build stays signed in and paired only if it looks for them where the old build wrote them:
 the same Keychain service and account, the same default Keychain group and the same
-Application Support folder. Changing any of these signs every phone out on update."""
+Application Support folder. Changing any of these signs every phone out on update. The account is tied to the issuer, so
+moving to another issuer signs out once, on purpose."""
 import plistlib
 import sys
 
@@ -11,7 +12,8 @@ DEFAULT_GROUP = "$(AppIdentifierPrefix)com.bitomule.alondra"
 PINNED = {
     "KeychainRefreshTokenStorage.swift": [
         'service: String = "com.bitomule.alondra.auth"',
-        'private let account = "oidc-refresh-token"',
+        'account = "oidc-refresh-token@\\(issuer.host() ?? "")"',
+        'private static let previousIssuerAccount = "oidc-refresh-token"',
         "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly",
     ],
     "PairingStore.swift": [

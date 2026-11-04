@@ -30,7 +30,7 @@ public struct OIDCConfiguration: Sendable {
     }
 
     public static let alondra = OIDCConfiguration(
-        issuer: URL(string: "https://alondra-auth.davidcollado.dev/realms/alondra")!,
+        issuer: URL(string: "https://auth.getalondra.com/realms/alondra")!,
         clientID: "alondra-ios",
         redirectURI: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak")!,
         scopes: ["openid", "profile", "offline_access"],

@@ -9,6 +9,8 @@ use std::{
 };
 
 pub const FILE_NAME: &str = "service.toml";
+pub const RELAY_ORIGIN: &str = "https://api.getalondra.com";
+const PREVIOUS_RELAY_ORIGIN: &str = "https://alondra-api.davidcollado.dev";
 
 pub struct ServiceConfigLock {
     file: File,
@@ -87,6 +89,29 @@ pub fn remove_device(home: &Path, _lock: &ServiceConfigLock, device_id: &str) ->
     write_atomically(&path, text.as_bytes())
 }
 
+/// Points a `service.toml` that still names the previous relay at [`RELAY_ORIGIN`], keeping every
+/// other field. Returns whether it rewrote the file; any other relay is left as the user set it.
+pub fn migrate_previous_relay(home: &Path) -> io::Result<bool> {
+    let path = home.join(FILE_NAME);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let _lock = ServiceConfigLock::exclusive(home)?;
+    let mut table: toml::Table = toml::from_str(&fs::read_to_string(&path)?)
+        .map_err(|error| io::Error::other(format!("invalid {}: {error}", path.display())))?;
+    let previous = table
+        .get("relay_url")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|url| url.trim_end_matches('/') == PREVIOUS_RELAY_ORIGIN);
+    if !previous {
+        return Ok(false);
+    }
+    table.insert("relay_url".into(), RELAY_ORIGIN.into());
+    let text = toml::to_string_pretty(&table).map_err(io::Error::other)?;
+    write_atomically(&path, text.as_bytes())?;
+    Ok(true)
+}
+
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Ok(meta) = fs::symlink_metadata(path)
         && (!meta.is_file() || meta.file_type().is_symlink())
@@ -134,5 +159,31 @@ mod tests {
         let table: toml::Table = toml::from_str(&fs::read_to_string(home.join(FILE_NAME)).unwrap()).unwrap();
         assert!(table["devices"].as_array().unwrap().is_empty());
         assert_eq!(table["direct"]["port"].as_integer(), Some(47999));
+    }
+
+    #[test]
+    fn moves_the_previous_relay_to_the_current_one_and_keeps_the_rest() {
+        let home = home();
+        fs::write(
+            home.join(FILE_NAME),
+            "relay_url = \"https://alondra-api.davidcollado.dev/\"\nowner_sub = \"owner\"\nmac_id = \"mac-1\"\n\n[[devices]]\ndevice_id = \"phone-1\"\nsigning_key = \"sk\"\nagreement_key = \"ak\"\n",
+        )
+        .unwrap();
+        assert!(migrate_previous_relay(&home).unwrap());
+        let table: toml::Table = toml::from_str(&fs::read_to_string(home.join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(table["relay_url"].as_str(), Some(RELAY_ORIGIN));
+        assert_eq!(table["owner_sub"].as_str(), Some("owner"));
+        assert_eq!(table["devices"].as_array().unwrap().len(), 1);
+        assert!(!migrate_previous_relay(&home).unwrap());
+    }
+
+    #[test]
+    fn leaves_another_relay_and_a_missing_file_alone() {
+        let home = home();
+        assert!(!migrate_previous_relay(&home).unwrap());
+        let text = "relay_url = \"https://relay.example\"\nowner_sub = \"owner\"\n";
+        fs::write(home.join(FILE_NAME), text).unwrap();
+        assert!(!migrate_previous_relay(&home).unwrap());
+        assert_eq!(fs::read_to_string(home.join(FILE_NAME)).unwrap(), text);
     }
 }
