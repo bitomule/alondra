@@ -200,8 +200,10 @@ cp signing/signing.example.bzl ~/.alondra/signing/signing.bzl
 ```
 
 Edit `~/.alondra/signing/signing.bzl`: `IOS_BUNDLE_ID = "com.<you>.alondra"`; keep the
-other lines, which derive `.mac` and `.NotificationService` from it and name the two profiles
-downloaded in 4a. The team comes from the profiles.
+other lines, which derive `.NotificationService` and `.LiveActivity` from it and name the profiles
+downloaded in 4a. The team comes from the profiles (or from a `TEAM_ID = "..."` line you add).
+The entitlements and the push Keychain group are generated from these values at build time, so
+no file in `apple/` names a bundle id or a team.
 
 Build and install the iOS app on the iPhone (USB or same Wi-Fi, unlocked, Developer Mode on:
 Settings → Privacy & Security → Developer Mode):

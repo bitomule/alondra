@@ -26,7 +26,5 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>AlondraNotificationService.NotificationService</string>
 	</dict>
-	<key>AlondraPushKeychainAccessGroup</key>
-	<string>658YBSK6MG.com.bitomule.alondra.push</string>
 </dict>
 </plist>

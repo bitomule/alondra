@@ -1,0 +1,24 @@
+load("//apple:entitlements.bzl", "entitlements_follow_signing_test", "signed_entitlements")
+
+SAMPLE_BUNDLE_ID = "org.sample.notes"
+
+signed_entitlements(
+    name = "sample",
+    ios_bundle_id = SAMPLE_BUNDLE_ID,
+    live_activity_bundle_id = SAMPLE_BUNDLE_ID + ".Activity",
+    notification_service_bundle_id = SAMPLE_BUNDLE_ID + ".Service",
+    team_id = "SAMPLE0001",
+)
+
+entitlements_follow_signing_test(
+    name = "sample_signing_entitlements_test",
+    entitlements = "sample",
+    forbidden = [
+        "bitomule",
+        "658YBSK6MG",
+    ],
+    ios_bundle_id = SAMPLE_BUNDLE_ID,
+    live_activity_bundle_id = SAMPLE_BUNDLE_ID + ".Activity",
+    notification_service_bundle_id = SAMPLE_BUNDLE_ID + ".Service",
+    team_id = "SAMPLE0001",
+)

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""The app writes push decryption keys to the Keychain group its Info.plist names, and the
-notification service and Live Activity extensions read the group their own Info.plists name.
-All must be the same group, and every entitlements variant of every target must grant it.
+"""The app writes push decryption keys to the Keychain group the generated Info.plist fragment
+names, and the notification service and Live Activity extensions read the same one. No static
+Info.plist may name a group of its own, and every entitlements variant of every target must grant
+the generated group.
 
-Arguments: the Info.plists, `--`, then the entitlements."""
+Arguments: the generated Info.plist fragment, `--static-plists` and the static Info.plists,
+`--entitlements` and the entitlements."""
 import plistlib
 import sys
 
 APP_IDENTIFIER_PREFIX = "$(AppIdentifierPrefix)"
+KEY = "AlondraPushKeychainAccessGroup"
 
 
 def load(path):
@@ -16,14 +19,15 @@ def load(path):
 
 
 def main(*arguments):
-    separator = arguments.index("--")
-    plists, entitlements = arguments[:separator], arguments[separator + 1:]
-    groups = {path: load(path).get("AlondraPushKeychainAccessGroup") for path in plists}
-    failures = [f"{path} names no AlondraPushKeychainAccessGroup" for path, group in groups.items() if not group]
-    if len(set(groups.values())) != 1:
-        failures.append(f"the app and its extensions read different push Keychain groups: {groups}")
-    group = groups[plists[0]] or ""
-    team, _, suffix = group.partition(".")
+    static_at = arguments.index("--static-plists")
+    entitlements_at = arguments.index("--entitlements")
+    generated = arguments[0]
+    static_plists = arguments[static_at + 1:entitlements_at]
+    entitlements = arguments[entitlements_at + 1:]
+    group = load(generated).get(KEY)
+    failures = [] if group else [f"{generated} names no {KEY}"]
+    failures += [f"{path} names a {KEY} of its own" for path in static_plists if KEY in load(path)]
+    team, _, suffix = (group or "").partition(".")
     for path in entitlements:
         values = load(path)
         granted = values.get("keychain-access-groups", [])

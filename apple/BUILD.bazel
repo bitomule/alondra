@@ -3,9 +3,15 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extensio
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
-load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "LIVE_ACTIVITY_BUNDLE_ID", "LIVE_ACTIVITY_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
+load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "LIVE_ACTIVITY_BUNDLE_ID", "LIVE_ACTIVITY_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE", "TEAM_ID")
+load("//apple:entitlements.bzl", "entitlements_follow_signing_test", "signed_entitlements")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 load("//tools:shared.bzl", "versions")
+
+exports_files(
+    ["entitlements_follow_signing_test.py"],
+    visibility = ["//apple/Testing:__subpackages__"],
+)
 
 exports_files(
     ["iOS/Resources/Localizable.xcstrings", "iOSLiveActivity/Resources/LiveActivity.xcstrings", "macOS/Resources/Localizable.xcstrings"],
@@ -32,28 +38,44 @@ PUSH_KEYCHAIN_PLISTS = [
     "iOSLiveActivity/Info.plist",
 ]
 
-PUSH_KEYCHAIN_ENTITLEMENTS = [
-    "iOS/Alondra.entitlements",
-    "iOS/AppStore.entitlements",
-    "iOSNotificationService/AlondraNotificationService.entitlements",
-    "iOSNotificationService/AppStore.entitlements",
-    "iOSLiveActivity/AlondraLiveActivity.entitlements",
-    "iOSLiveActivity/AppStore.entitlements",
-]
+signed_entitlements(
+    name = "entitlements",
+    ios_bundle_id = IOS_BUNDLE_ID,
+    live_activity_bundle_id = LIVE_ACTIVITY_BUNDLE_ID,
+    notification_service_bundle_id = NOTIFICATION_SERVICE_BUNDLE_ID,
+    team_id = TEAM_ID,
+)
 
-PUSH_KEYCHAIN_FILES = PUSH_KEYCHAIN_PLISTS + PUSH_KEYCHAIN_ENTITLEMENTS
+PUSH_KEYCHAIN_ENTITLEMENTS = [
+    ":entitlements_ios_development",
+    ":entitlements_ios_app_store",
+    ":entitlements_notification_service_development",
+    ":entitlements_notification_service_app_store",
+    ":entitlements_live_activity_development",
+    ":entitlements_live_activity_app_store",
+]
 
 sh_test(
     name = "push_keychain_group_test",
     srcs = ["push_keychain_group_test.py"],
-    args = ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_PLISTS] + ["--"] +
+    args = ["$(rootpath :entitlements_push_keychain_group)", "--static-plists"] +
+           ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_PLISTS] + ["--entitlements"] +
            ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_ENTITLEMENTS],
-    data = PUSH_KEYCHAIN_FILES,
+    data = [":entitlements_push_keychain_group"] + PUSH_KEYCHAIN_PLISTS + PUSH_KEYCHAIN_ENTITLEMENTS,
+)
+
+entitlements_follow_signing_test(
+    name = "entitlements_follow_signing_test",
+    entitlements = "entitlements",
+    ios_bundle_id = IOS_BUNDLE_ID,
+    live_activity_bundle_id = LIVE_ACTIVITY_BUNDLE_ID,
+    notification_service_bundle_id = NOTIFICATION_SERVICE_BUNDLE_ID,
+    team_id = TEAM_ID,
 )
 
 UPDATE_KEEPS_SESSION_FILES = [
-    "iOS/Alondra.entitlements",
-    "iOS/AppStore.entitlements",
+    ":entitlements_ios_development",
+    ":entitlements_ios_app_store",
     "iOS/ViewsShipping/AccountBootstrap.swift",
     "//apple/Data/Account:Sources/Auth/KeychainRefreshTokenStorage.swift",
     "//apple/Data/Account:Sources/Composition/AppStorageLocation.swift",
@@ -63,7 +85,7 @@ UPDATE_KEEPS_SESSION_FILES = [
 sh_test(
     name = "update_keeps_session_test",
     srcs = ["update_keeps_session_test.py"],
-    args = ["$(rootpath %s)" % path for path in UPDATE_KEEPS_SESSION_FILES],
+    args = ["--ios-bundle-id=" + IOS_BUNDLE_ID] + ["$(rootpath %s)" % path for path in UPDATE_KEEPS_SESSION_FILES],
     data = UPDATE_KEEPS_SESSION_FILES,
 )
 
@@ -196,7 +218,7 @@ macos_application(
     bundle_id = IOS_BUNDLE_ID,
     bundle_name = "Alondra",
     infoplists = ["macOS/Info.plist"] + BONJOUR_PLIST,
-    entitlements = select({":distribution": "macOS/AppStore.entitlements", "//conditions:default": None}),
+    entitlements = select({":distribution": ":entitlements_mac_app_store", "//conditions:default": None}),
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_Mac_AppStore.provisionprofile", "//conditions:default": None}),
     minimum_os_version = "26.0",
     resources = glob(["macOS/Resources/*.xcstrings"]) + ["//fixtures/views:all", "//fixtures/views:cards_ios", "//fixtures/views:demo_mac"],
@@ -264,9 +286,9 @@ ios_application(
     bundle_id = IOS_BUNDLE_ID,
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_AppStore.mobileprovision", "//conditions:default": "@alondra_signing//:" + IOS_PROFILE}),
     bundle_name = "Alondra",
-    entitlements = select({":distribution": "iOS/AppStore.entitlements", "//conditions:default": "iOS/Alondra.entitlements"}),
+    entitlements = select({":distribution": ":entitlements_ios_app_store", "//conditions:default": ":entitlements_ios_development"}),
     families = ["iphone"],
-    infoplists = ["iOS/Info.plist"] + BONJOUR_PLIST,
+    infoplists = ["iOS/Info.plist", ":entitlements_push_keychain_group"] + BONJOUR_PLIST,
     minimum_os_version = "26.0",
     resources = glob(["iOS/Resources/*.xcstrings"]) + ["//fixtures/views:cards_ios"],
     version = ":Version",
@@ -309,11 +331,11 @@ swift_library(
 
 ios_extension(
     name = "AlondraNotificationService",
-    entitlements = select({":distribution": "iOSNotificationService/AppStore.entitlements", "//conditions:default": "iOSNotificationService/AlondraNotificationService.entitlements"}),
+    entitlements = select({":distribution": ":entitlements_notification_service_app_store", "//conditions:default": ":entitlements_notification_service_development"}),
     bundle_id = NOTIFICATION_SERVICE_BUNDLE_ID,
     bundle_name = "AlondraNotificationService",
     families = ["iphone"],
-    infoplists = ["iOSNotificationService/Info.plist"],
+    infoplists = ["iOSNotificationService/Info.plist", ":entitlements_push_keychain_group"],
     minimum_os_version = "26.0",
     resources = glob(["iOSNotificationService/Resources/*.xcstrings"]),
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_NotificationService_AppStore.mobileprovision", "//conditions:default": "@alondra_signing//:" + NOTIFICATION_SERVICE_PROFILE}),
@@ -343,11 +365,11 @@ swift_library(
 
 ios_extension(
     name = "AlondraLiveActivity",
-    entitlements = select({":distribution": "iOSLiveActivity/AppStore.entitlements", "//conditions:default": "iOSLiveActivity/AlondraLiveActivity.entitlements"}),
+    entitlements = select({":distribution": ":entitlements_live_activity_app_store", "//conditions:default": ":entitlements_live_activity_development"}),
     bundle_id = LIVE_ACTIVITY_BUNDLE_ID,
     bundle_name = "AlondraLiveActivity",
     families = ["iphone"],
-    infoplists = ["iOSLiveActivity/Info.plist"],
+    infoplists = ["iOSLiveActivity/Info.plist", ":entitlements_push_keychain_group"],
     minimum_os_version = "26.0",
     resources = glob(["iOSLiveActivity/Resources/*.xcstrings"]),
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_LiveActivity_AppStore.mobileprovision", "//conditions:default": "@alondra_signing//:" + LIVE_ACTIVITY_PROFILE}),
