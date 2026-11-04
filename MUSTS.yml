@@ -28,8 +28,6 @@ checks:
       - ".sourcekit-lsp/**"
       - "deploy/brew/**"
       - "deploy/apple/**"
-      - "deploy/pi/**"
-      - "deploy/server/**"
       - "tools/shared.bzl"
       - "tools/e2e-sandbox.sh"
       - "tools/sandbox_accounts.py"
@@ -44,8 +42,6 @@ checks:
       - "tools/tests/test_prose_decisions.py"
       - "tools/rust_test.bzl"
       - "tools/tests/test_low_opt_rust_tests.py"
-      - "tools/rustc_peaks.py"
-      - "tools/tests/test_rustc_peaks.py"
       - "web/app/**"
       - "LICENSE.md"
       - "THIRD_PARTY_NOTICES.md"
@@ -63,7 +59,6 @@ checks:
         - //tools:licenses_test
         - //tools:sandbox_accounts_test
         - //tools:low_opt_rust_tests_test
-        - //tools:rustc_peaks_test
         - //tools/sandbox:alondra-sandbox_test
         - //tests/system/macos:local_daemon_test
         - //tests/system/macos:build_from_source_test
@@ -81,13 +76,6 @@ checks:
         - //deploy/apple:prepare_test
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test
-        - //deploy/pi/iroh-relay:relay_access_test
-        - //deploy/pi/iroh-relay:traffic_test
-        - //deploy/pi:pi_ssh_test
-        - //deploy/pi:backup_sites_test
-        - //deploy/server:cloudflare_test
-        - //deploy/server:deploy_test
-        - //deploy/server:stack_test
 
   sdk-host:
     uses: bazel/test
@@ -179,15 +167,6 @@ checks:
     with:
       targets:
         - //tools:load_bench_test
-
-  bazel-speed:
-    uses: bazel/test
-    paths:
-      - "tools/bazel_speed.py"
-      - "tools/tests/test_bazel_speed.py"
-    with:
-      targets:
-        - //tools:bazel_speed_test
 
   buildbuddy-credential-helper:
     uses: bazel/test
