@@ -2,7 +2,7 @@
 # Usage: tools/tui-sandbox.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
 #        tools/tui-sandbox.sh --stop
 # The TUI to review a change by hand: a fresh one-Mac sandbox with the fakes (tools/e2e-sandbox.sh),
-# seeded with tasks and cards in every state a user meets (alondra-sandbox journey seed), and that
+# seeded with tasks and cards in every state a user meets (alondra-sandbox journey "${WORLD:-seed}"), and that
 # Mac's TUI in the tmux session SESSION (alondra-tui), 160x45, in TUI_LANG (es).
 # The TUI starts from an empty environment with a HOME and ALONDRA_HOME inside the sandbox, so
 # nothing it does reaches the real ~/.alondra or its daemon. --stop ends the session and the sandbox.
@@ -32,7 +32,7 @@ export SANDBOX_DIR="$dir" SANDBOX_PORT="${SANDBOX_PORT:-48210}" MACS=1 FAKES=1
 
 "$repo/tools/e2e-sandbox.sh" "$@" >/dev/null
 trap '"$repo/tools/e2e-sandbox-stop.sh" "$dir" >&2' EXIT
-"$dir/bin/alondra-sandbox" --sandbox "$dir" journey seed
+"$dir/bin/alondra-sandbox" --sandbox "$dir" journey "${WORLD:-seed}"
 
 home=$(cd "$dir/mac-1" && pwd -P)
 port=$(sed -n 's/^export ALONDRA_PORT="\(.*\)"$/\1/p' "$home/env")

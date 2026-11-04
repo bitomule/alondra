@@ -9,38 +9,25 @@ app or the iPhone; the agents carry on.
 
 Your agents run on your Mac; Alondra Cloud connects your devices. Teams are coming soon.
 
-```text
-╭ Tasks ───────────────────────────────────────────────────────────────────────────────────────╮
-│ FOR YOU 7                                                                                    │
-│▌⚡ Choose a name for the CLI flag                    Needs you · alondra · 1 min · 1 min ago │
-│▌  “Pick the name of the new flag”                                                            │
-│ ⚡ Redesign the onboarding screen                    Needs you · alondra · 1 min · 1 min ago │
-│   “Choose the onboarding screen to ship”                                                     │
-│ ⑂ Add a greeting file                               Ready for review · alondra · 1 min · now │
-│   PR #41 · Add greeting.txt                                                                  │
-│ ⑂ Add the onboarding screen                        Ready for review · alondra · <1 min · now │
-│   PR #45 · Add onboarding.txt                                                                │
-│ ⑂ Cache the avatars                                Ready for review · alondra · <1 min · now │
-│   PR #46 · Add avatars.txt                                                                   │
-│ ⑂ Document the config file                         Ready for review · alondra · <1 min · now │
-│   PR #47 · Add config.txt                                                                    │
-│                                                                                              │
-│ IN PROGRESS 6                                                                                │
-│ ◇ Migrate the settings file                                       Working · alondra · <1 min │
-│ ◇ Rename the settings keys                            Resolving conflicts · alondra · <1 min │
-│ ◇ Publish the release once it is merged   Finishing after the merge · alondra · <1 min · now │
-│   release.sh publishes 0.3.0                                                                 │
-│ ◇ Store notes with their version                                  Working · alondra · <1 min │
-│   Sync notes                                                                                 │
-│ ◇ Run the payments test against Stripe                             Working · alondra · 1 min │
-│ ◇ Write the release notes                                In the background · alondra · 1 min │
-│   make test                                                                                  │
-│                                                                                              │
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/tui-tasks-dark.png">
+    <img src="docs/images/tui-tasks-light.png" alt="The terminal app: tasks working, waiting for review and waiting for another task, with the model of the selected one" width="100%">
+  </picture>
+</p>
 
-*The Tasks screen of the terminal app, on a demo sandbox with made-up tasks (an excerpt).*
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/mac-review-dark.png">
+    <img src="docs/images/mac-review-light.png" alt="The Mac app: the changes of a pull request, file by file" width="64%">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/iphone-card-dark.png">
+    <img src="docs/images/iphone-card-light.png" alt="The iPhone app: a question as a card, with its answers as buttons" width="25%">
+  </picture>
+</p>
 
-<!-- Replace this capture with the real TUI, iPhone and Mac images (light) from the demo-captures work. -->
+*The terminal, Mac and iPhone apps on a demo sandbox with made-up projects.*
 
 ## Install
 

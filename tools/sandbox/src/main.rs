@@ -98,7 +98,7 @@ enum Command {
     /// The process of one fake background session.
     #[command(hide = true)]
     FakeNode { short: String },
-    /// Runs scripted end-to-end journeys (FAKES=1): task-cycle, session, local, or all; `seed`
+    /// Runs scripted end-to-end journeys (FAKES=1): task-cycle, session, local, or all; `seed` and `demo`
     /// instead leaves a varied world for a person or the tester agent to explore.
     Journey { names: Vec<String> },
     /// Moves a fake node (FAKES=1): what its session does next.
@@ -240,6 +240,7 @@ fn main() -> Result<()> {
         Command::FakeGh { args } => std::process::exit(fake::gh(&fake::Fakes::open(&dir)?, &args)?),
         Command::FakeNode { short } => fake::node::run(&fake::Fakes::open(&dir)?, &short),
         Command::Journey { names } if names == ["seed"] => journey::seed::run(&sandbox::Sandbox::open(&dir)?),
+        Command::Journey { names } if names == ["demo"] => journey::demo::run(&sandbox::Sandbox::open(&dir)?),
         Command::Journey { names } => journey::run(&sandbox::Sandbox::open(&dir)?, &names),
         Command::Fake { action } => fake::node::command(&fake::Fakes::open(&dir)?, action.into()),
     }

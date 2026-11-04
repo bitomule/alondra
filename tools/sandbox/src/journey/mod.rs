@@ -7,6 +7,7 @@ mod mcp;
 mod reopen;
 mod report;
 mod sdk;
+pub mod demo;
 pub mod seed;
 mod session;
 mod steps;

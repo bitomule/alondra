@@ -44,6 +44,9 @@ pub struct TaskScript {
     /// The priority the orchestrator gives it after creating it, when not normal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    /// The model the orchestrator launches it with; Sonnet when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn yes() -> bool {

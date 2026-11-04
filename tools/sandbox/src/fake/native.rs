@@ -523,7 +523,7 @@ fn worker(fakes: &Fakes, args: &[String]) -> Result<i32> {
         Some(task) => fakes.task_script(task)?,
         None => None,
     };
-    let mut native = Native { fakes, out, session, script, turn: None, own: None, background: None, unheard: None, fresh: history == 0, asked, hooks, servers, dir, log };
+    let mut native = Native { fakes, out, session, script, turn: None, own: None, background: None, unheard: None, fresh: history == 0, asked, hooks, servers, dir, log, model: flag(args, "--model").unwrap_or("sandbox").to_owned() };
     let ended = native.live(inbox);
     let _ = fs::remove_file(&socket);
     if native.session.state == State::Running {
@@ -566,6 +566,8 @@ struct Native<'a> {
     unheard: Option<Vec<String>>,
     /// Its next input is the mission of a session that never ran before.
     fresh: bool,
+    /// The model the host asked for, which the messages name; its token counts stay under `sandbox`.
+    model: String,
     asked: Asked,
     hooks: Hooks,
     servers: Arc<super::oauth::Servers>,
@@ -632,7 +634,7 @@ impl Native<'_> {
         let id = uuid()?;
         self.send_assistant(json!({
             "type": "assistant", "session_id": self.session.session_id, "uuid": id, "parent_tool_use_id": null,
-            "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": "sandbox",
+            "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": self.model,
                 "content": content, "stop_reason": null, "stop_sequence": null,
                 "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
             "user_message_uuid": input, "user_message_uuids": inputs,
@@ -677,7 +679,7 @@ impl Native<'_> {
         if self.turn.is_none() {
             self.send(json!({
                 "type": "system", "subtype": "init", "session_id": self.session.session_id, "uuid": uuid()?,
-                "claude_code_version": VERSION, "model": "sandbox", "cwd": self.session.cwd,
+                "claude_code_version": VERSION, "model": self.model, "cwd": self.session.cwd,
                 "tools": ["Bash", "Read", "Write", "mcp__plugin_alondra_alondra__present_result", "mcp__plugin_alondra_alondra__ask"],
                 "mcp_servers": self.servers.statuses().iter().map(|server| json!({"name": server["name"], "status": server["status"], "source": server["source"]})).collect::<Vec<_>>(),
                 "permissionMode": "default", "slash_commands": [], "output_style": "default", "skills": ["alondra:alondra"],
@@ -955,7 +957,7 @@ impl Native<'_> {
     fn own_message(&mut self, content: Value) -> Result<()> {
         self.send_assistant(json!({
             "type": "assistant", "session_id": self.session.session_id, "uuid": uuid()?, "parent_tool_use_id": null,
-            "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": "sandbox",
+            "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": self.model,
                 "content": content, "stop_reason": null, "stop_sequence": null,
                 "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
         }))
@@ -967,7 +969,7 @@ impl Native<'_> {
         }
         self.send(json!({
             "type": "system", "subtype": "init", "session_id": self.session.session_id, "uuid": uuid()?,
-            "claude_code_version": VERSION, "model": "sandbox", "cwd": self.session.cwd, "tools": ["Bash", "ExitPlanMode"],
+            "claude_code_version": VERSION, "model": self.model, "cwd": self.session.cwd, "tools": ["Bash", "ExitPlanMode"],
             "mcp_servers": [], "permissionMode": "plan", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "apiKeySource": "none",
         }))?;
         self.own = Some(vec![]);

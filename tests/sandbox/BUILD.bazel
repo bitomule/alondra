@@ -191,6 +191,43 @@ sh_test(
     ],
 )
 
+# The demo world the captures show: invented projects only (make demo-captures).
+sh_test(
+    name = "demo_world",
+    timeout = "long",
+    srcs = ["demo.sh"],
+    args = [
+        "$(rootpath //crates/alondrad)",
+        "$(rootpath //crates/alondra)",
+        "$(rootpath //crates/relay:alondra-relay)",
+        "$(rootpath //tools/sandbox:alondra-sandbox)",
+        "$(rootpath //agent-host:pinned_node)",
+        "$(rootpath //agent-host:persistent.cjs)",
+    ],
+    data = [
+        "//:plugin_files",
+        "//agent-host:persistent.cjs",
+        "//agent-host:pinned_node",
+        "//tools:e2e_sdk_backend.py",
+        "//tools:e2e-sandbox.sh",
+        "//tools:sandbox_accounts.py",
+        "//tools:e2e-sandbox-stop.sh",
+        "//crates/alondra",
+        "//crates/alondrad",
+        "//crates/relay:alondra-relay",
+        "//tools/sandbox:alondra-sandbox",
+    ],
+    env_inherit = [
+        "HOME",
+        "PATH",
+    ],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
+)
+
 # Opt-in: a task through the Agent SDK host and the pinned native Claude (make e2e-sdk), its
 # turn-end card answered from the phone. macOS arm64, about 250 MB of native binary, no account.
 sh_test(

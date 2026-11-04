@@ -41,7 +41,7 @@ fn attachments(sandbox: &Sandbox) -> Result<serde_json::Value> {
     Ok(registered.into())
 }
 
-fn outcome_card(report: &mut Report, user: &User, id: &str, what: &str) -> Result<()> {
+pub(super) fn outcome_card(report: &mut Report, user: &User, id: &str, what: &str) -> Result<()> {
     wait(report, what, || {
         let (card, seen) = card_in_inbox(user, id)?;
         Ok((card.filter(|card| card == id).map(drop), seen))
@@ -165,7 +165,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
 
         let task = |id: &str, title: &str, dependencies: &[&str], priority: Option<&str>| TaskScript {
             task_id: id.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true,
-            dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: priority.map(Into::into),
+            dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: priority.map(Into::into), model: None,
         };
         let planned = RequestScript {
             request_id: "req-sync".into(),
