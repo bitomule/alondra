@@ -146,6 +146,8 @@ pub enum RemovalsApplied {
     Through(u64),
     /// The batch does not follow the last held removal, which is this one: nothing was applied.
     Gap(u64),
+    /// The batch ends below the last held removal, which is this one: nothing was applied.
+    Behind(u64),
 }
 
 /// A device or Mac names the iroh endpoint that may use the iroh relay on its behalf. `proof` is
@@ -205,6 +207,8 @@ pub struct Auth {
     verification_time: Mutex<Option<u64>>,
     #[cfg(test)]
     live_route_checks: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    registry_writes: std::sync::atomic::AtomicUsize,
 }
 
 impl Auth {
@@ -448,6 +452,8 @@ impl Auth {
             verification_time: Mutex::new(None),
             #[cfg(test)]
             live_route_checks: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            registry_writes: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -779,6 +785,9 @@ impl Auth {
     pub fn enroll_mac(&self, mac: MacDevice) -> Result<bool> {
         self.ensure_registry_ready()?;
         let mut registry = self.devices.lock().unwrap();
+        if registry.closed_owners.contains(&mac.owner_sub) {
+            bail!(AccountGateError::Denied);
+        }
         if registry.revoked_mac_ids.contains(&mac.mac_id)
             || registry.revoked_ids.contains(&mac.mac_id)
             || registry.devices.contains_key(&mac.mac_id)
@@ -826,7 +835,7 @@ impl Auth {
     pub fn reconcile_device_revocation(&self,owner:&str,kind:&str,id:&str,mac_id:&str)->Result<()> {
         self.ensure_registry_ready()?;
         let mut registry=self.devices.lock().unwrap();let before=registry.clone();
-        remove_device(&mut registry,owner,kind,id,mac_id)?;
+        if remove_device(&mut registry,owner,kind,id,mac_id,true)?==Applied::Refused {bail!(RemovalConflict)}
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
         Ok(())
     }
@@ -842,55 +851,76 @@ impl Auth {
 
     /// The account source's removals numbered after the last one held, in order. Numbers already
     /// held are skipped, so a batch sent again changes nothing; a batch that skips a number is
-    /// refused whole. The registry is written once, with the new number, before this returns.
-    /// Caller holds `device_gate` exclusively.
+    /// refused whole, and one that ends below the held number means the source's numbering went
+    /// back. A removal that would touch another account's device is skipped and logged; the rest
+    /// apply. The registry is written once, with the new number, before this returns. Caller holds
+    /// `device_gate` exclusively.
     pub fn apply_removals(&self, batch: &[(u64, Removal)]) -> Result<RemovalsApplied> {
         self.ensure_registry_ready()?;
         let mut registry = self.devices.lock().unwrap();
         let held = registry.removals_seq;
+        let Some(last) = batch.iter().map(|(seq, _)| *seq).max() else {
+            return Ok(RemovalsApplied::Through(held));
+        };
+        if last < held {
+            return Ok(RemovalsApplied::Behind(held));
+        }
         let pending: Vec<_> = batch.iter().filter(|(seq, _)| *seq > held).collect();
         if pending.iter().enumerate().any(|(i, (seq, _))| *seq != held + 1 + i as u64) {
             return Ok(RemovalsApplied::Gap(held));
         }
-        let Some((last, _)) = pending.last() else {
+        if pending.is_empty() {
             return Ok(RemovalsApplied::Through(held));
-        };
+        }
         let before = registry.clone();
-        for (_, removal) in &pending {
-            if let Err(error) = apply_removal(&mut registry, removal) {
-                *registry = before;
-                return Err(error);
+        for (seq, removal) in &pending {
+            if apply_removal(&mut registry, removal) == Applied::Refused {
+                eprintln!("alondra-relay: removal {seq} names a device another account holds; skipped");
             }
         }
-        registry.removals_seq = *last;
+        registry.removals_seq = last;
         if let Err(error) = self.persist_registry(&registry) {
             *registry = before;
             return Err(error);
         }
-        Ok(RemovalsApplied::Through(*last))
+        Ok(RemovalsApplied::Through(last))
     }
 
-    /// The account source's complete list of removals, current through `seq`. Applying one
-    /// already held changes nothing; nothing the source no longer lists is ever restored.
-    /// Caller holds `device_gate` exclusively.
-    pub fn reconcile_removals(&self, seq: u64, removals: &[Removal]) -> Result<()> {
+    /// The account source's complete list of removals, current through `seq`, which becomes the
+    /// held number even below the one held. Applying one already held changes nothing; nothing
+    /// the source no longer lists is ever restored; a removal that would touch another account's
+    /// device is skipped and logged. Hands back the removals that changed the registry, which is
+    /// written only when something changed. Caller holds `device_gate` exclusively.
+    pub fn reconcile_removals(&self, seq: u64, removals: &[Removal]) -> Result<Vec<Removal>> {
         self.ensure_registry_ready()?;
         let mut registry = self.devices.lock().unwrap();
         let before = registry.clone();
+        let mut changed = Vec::new();
         for removal in removals {
-            if let Err(error) = apply_removal(&mut registry, removal) {
+            match apply_removal(&mut registry, removal) {
+                Applied::Changed => changed.push(removal.clone()),
+                Applied::Unchanged => {}
+                Applied::Refused => eprintln!(
+                    "alondra-relay: the account source lists a removal of a device another account holds; skipped"
+                ),
+            }
+        }
+        if seq < registry.removals_seq {
+            eprintln!(
+                "alondra-relay: the account source's removals went back from {} to {seq}; following it",
+                registry.removals_seq
+            );
+        }
+        if !changed.is_empty() || registry.removals_seq != seq {
+            registry.removals_seq = seq;
+            if let Err(error) = self.persist_registry(&registry) {
                 *registry = before;
                 return Err(error);
             }
         }
-        registry.removals_seq = seq;
-        if let Err(error) = self.persist_registry(&registry) {
-            *registry = before;
-            return Err(error);
-        }
         drop(registry);
         self.removals_pending.store(false, Ordering::Release);
-        Ok(())
+        Ok(changed)
     }
 
     #[cfg(test)]
@@ -1139,6 +1169,8 @@ impl Auth {
     }
 
     fn persist_registry(&self, registry: &DeviceRegistry) -> Result<()> {
+        #[cfg(test)]
+        self.registry_writes.fetch_add(1, Ordering::Relaxed);
         let result = persist_registry_at(&self.config.device_registry_path, registry);
         if result.is_err() {
             // A failure may occur after rename. Do not trust the in-memory rollback
@@ -1353,6 +1385,11 @@ impl Auth {
             bail!(AccountGateError::Denied);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_write_count(&self) -> usize {
+        self.registry_writes.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -1632,20 +1669,34 @@ fn iroh_node_key(node: &str) -> Option<[u8; 32]> {
     Some(key)
 }
 
-fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str,mac_id:&str)->Result<()> {
+#[derive(Debug, PartialEq, Eq)]
+enum Applied { Changed, Unchanged, Refused }
+
+/// `strict` refuses a client the registry pairs with another Mac than `mac_id`; otherwise that
+/// client, being of the same account, is removed all the same. A device of another account, or
+/// an ID the registry holds for the other kind of device, is never touched.
+fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str,mac_id:&str,strict:bool)->Result<Applied> {
+    let other_kind=if kind=="mac" {registry.devices.contains_key(id) || registry.revoked_ids.contains(id)} else {registry.macs.contains_key(id) || registry.revoked_mac_ids.contains(id)};
+    if other_kind {return Ok(Applied::Refused)}
     let clients=if kind=="mac" {
-        if let Some(mac)=registry.macs.get(id) {ensure!(mac.owner_sub==owner,RemovalConflict);}
+        if registry.macs.get(id).is_some_and(|mac|mac.owner_sub!=owner) {return Ok(Applied::Refused)}
         registry.phone_macs.iter().filter(|(_,mac)|mac.as_str()==id).map(|(client,_)|client.clone()).collect::<Vec<_>>()
     } else {vec![id.to_owned()]};
     for client in &clients {
         if let Some(record)=registry.devices.get(client) {
-            ensure!(record.owner_sub==owner && registry.phone_macs.get(client).map(String::as_str)==Some(mac_id),RemovalConflict);
+            if record.owner_sub!=owner {return Ok(Applied::Refused)}
+            ensure!(!strict || registry.phone_macs.get(client).map(String::as_str)==Some(mac_id),RemovalConflict);
         }
     }
-    if kind=="mac" {registry.macs.remove(id);registry.revoked_mac_ids.insert(id.to_owned());}
-    for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.push_ended.insert(client.clone());registry.revoked_ids.insert(client);}
+    let mut changed=false;
+    if kind=="mac" {changed|=registry.macs.remove(id).is_some();changed|=registry.revoked_mac_ids.insert(id.to_owned());}
+    for client in clients {
+        changed|=registry.devices.remove(&client).is_some();registry.phone_macs.remove(&client);registry.push.remove(&client);
+        changed|=registry.push_ended.insert(client.clone());
+        changed|=registry.revoked_ids.insert(client);
+    }
     forget_orphan_iroh_nodes(registry);
-    Ok(())
+    Ok(if changed {Applied::Changed} else {Applied::Unchanged})
 }
 
 /// Whether the owner had any device to remove.
@@ -1661,19 +1712,19 @@ fn remove_owner_devices(registry:&mut DeviceRegistry,owner:&str)->bool {
     true
 }
 
-fn apply_removal(registry: &mut DeviceRegistry, removal: &Removal) -> Result<()> {
-    match removal {
-        Removal::Mac { owner, mac_id } => remove_device(registry, owner, "mac", mac_id, mac_id),
+fn apply_removal(registry: &mut DeviceRegistry, removal: &Removal) -> Applied {
+    let removed = match removal {
+        Removal::Mac { owner, mac_id } => remove_device(registry, owner, "mac", mac_id, mac_id, false),
         Removal::Client { owner, client_id, mac_id } => {
-            remove_device(registry, owner, "client", client_id, mac_id)
+            remove_device(registry, owner, "client", client_id, mac_id, false)
         }
         Removal::Owner { owner } => {
-            ensure!(!owner.is_empty(), RemovalConflict);
-            remove_owner_devices(registry, owner);
-            registry.closed_owners.insert(owner.clone());
-            Ok(())
+            let devices = remove_owner_devices(registry, owner);
+            let closed = registry.closed_owners.insert(owner.clone());
+            return if devices || closed { Applied::Changed } else { Applied::Unchanged };
         }
-    }
+    };
+    removed.unwrap_or(Applied::Refused)
 }
 
 fn forget_orphan_iroh_nodes(registry: &mut DeviceRegistry) {

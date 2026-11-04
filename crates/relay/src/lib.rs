@@ -236,10 +236,13 @@ async fn enroll_mac(
         .authorize_mac_enrollment(&headers, &method, &uri, &body, now_ms(), request)
         .await
         .map_err(authentication_error)?;
-    let created = server
-        .auth
-        .enroll_mac(mac)
-        .map_err(|cause| enrollment_error(cause, "mac_enrollment_failed"))?;
+    let created = server.auth.enroll_mac(mac).map_err(|cause| {
+        if cause.is::<auth::AccountGateError>() {
+            authentication_error(cause)
+        } else {
+            enrollment_error(cause, "mac_enrollment_failed")
+        }
+    })?;
     Ok((
         if created {
             StatusCode::CREATED

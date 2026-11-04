@@ -322,18 +322,113 @@ mod operator_api {
     }
 
     #[tokio::test]
-    async fn a_removal_of_another_accounts_device_is_refused_whole() {
+    async fn a_removal_of_another_accounts_device_is_skipped_and_the_rest_apply() {
         let (world, relay) = World::new().await;
         let node = IrohKey::new(37);
         assert_eq!(world.phone_binds(&relay, &node).await, StatusCode::NO_CONTENT);
         let wrong = json!({"seq": 2, "kind": "client", "owner": "intruder", "client_id": "phone-1", "mac_id": "mac-1"});
-        assert_eq!(world.remove(&relay, json!([{"seq": 1, "kind": "owner", "owner": "x"}, wrong])).await,
-            (StatusCode::CONFLICT, json!({"error": "removal_conflict"})));
-        assert_eq!(relay.server.auth.removals_seq(), 0);
-        assert_eq!(world.access(&relay, &node).await, StatusCode::OK);
-        assert_eq!(world.macs_of(&relay, "x").await, StatusCode::OK, "the batch's earlier removal is not kept");
-        assert_eq!(world.remove(&relay, json!([{"seq": 1, "kind": "mystery", "owner": "x"}])).await.0,
+        let mac_as_client = json!({"seq": 3, "kind": "client", "owner": "owner", "client_id": "mac-1", "mac_id": "mac-1"});
+        assert_eq!(world.remove(&relay, json!([{"seq": 1, "kind": "owner", "owner": "x"}, wrong, mac_as_client])).await,
+            (StatusCode::OK, json!({"applied": 3})));
+        assert_eq!(world.access(&relay, &node).await, StatusCode::OK, "another account's device is never touched");
+        assert_eq!(world.as_mac(&relay, "PUT", "/v1/iroh-node", IrohKey::new(38).binding_for("mac-1")).await,
+            StatusCode::NO_CONTENT, "a Mac named as a client is never touched");
+        assert_eq!(world.macs_of(&relay, "x").await, StatusCode::FORBIDDEN, "the valid removal is applied");
+        assert!(Auth::test(world.config(), include_bytes!("../tests/fixtures/jwks.json")).is_ok(),
+            "the registry stays loadable");
+        assert_eq!(world.remove(&relay, json!([{"seq": 4, "kind": "mystery", "owner": "x"}])).await.0,
             StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn a_client_paired_with_another_mac_than_named_is_still_removed() {
+        let (world, relay) = World::new().await;
+        let node = IrohKey::new(39);
+        assert_eq!(world.phone_binds(&relay, &node).await, StatusCode::NO_CONTENT);
+        let elsewhere = json!({"seq": 1, "kind": "client", "owner": "owner", "client_id": "phone-1", "mac_id": "mac-9"});
+        assert_eq!(world.remove(&relay, json!([elsewhere])).await, (StatusCode::OK, json!({"applied": 1})));
+        assert_eq!(world.access(&relay, &node).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_full_list_with_a_conflicting_entry_clears_the_wait_and_applies_the_rest() {
+        let (world, relay) = World::new().await;
+        let node = IrohKey::new(40);
+        assert_eq!(world.phone_binds(&relay, &node).await, StatusCode::NO_CONTENT);
+        drop(relay);
+        let (url, _source) = source(json!({"seq": 3, "removals": [
+            {"kind": "client", "owner": "intruder", "client_id": "phone-1", "mac_id": "mac-1"},
+            {"kind": "owner", "owner": ""},
+            {"kind": "owner", "owner": "y"}]})).await;
+        let back = world.start(Operator::new(Some(TOKEN.into()), Some(&url)).unwrap()).await;
+        operator::reconcile_from_source(&back.server).await.unwrap();
+        assert_eq!(world.ready(&back).await, StatusCode::OK);
+        assert_eq!(back.server.auth.removals_seq(), 3);
+        assert_eq!(world.macs_of(&back, "y").await, StatusCode::FORBIDDEN);
+        assert_eq!(world.access(&back, &node).await, StatusCode::OK);
+        assert_eq!(world.remove(&back, json!([{"seq": 4, "kind": "owner", "owner": "z"}])).await,
+            (StatusCode::OK, json!({"applied": 4})), "removals go on after the conflicting one");
+    }
+
+    #[tokio::test]
+    async fn a_batch_below_the_held_number_is_refused_as_a_reset() {
+        let (world, relay) = World::new().await;
+        let owners = json!([{"seq": 1, "kind": "owner", "owner": "a"}, {"seq": 2, "kind": "owner", "owner": "b"},
+            {"seq": 3, "kind": "owner", "owner": "c"}]);
+        assert_eq!(world.remove(&relay, owners).await.0, StatusCode::OK);
+        assert_eq!(world.remove(&relay, json!([{"seq": 2, "kind": "owner", "owner": "d"}])).await,
+            (StatusCode::CONFLICT, json!({"error": "removals_behind", "applied": 3})));
+        assert_eq!(world.macs_of(&relay, "d").await, StatusCode::OK, "nothing of it is applied");
+        tokio::time::timeout(Duration::from_secs(5), relay.server.operator.gap.notified())
+            .await
+            .expect("a reset asks the source for its whole list");
+        assert_eq!(world.remove(&relay, json!([{"seq": 3, "kind": "owner", "owner": "c"}])).await,
+            (StatusCode::OK, json!({"applied": 3})), "the last held batch sent again is acknowledged");
+        drop(relay);
+
+        let (url, _source) = source(json!({"seq": 1, "removals": [{"kind": "owner", "owner": "d"}]})).await;
+        let reset = world.start(Operator::new(Some(TOKEN.into()), Some(&url)).unwrap()).await;
+        operator::reconcile_from_source(&reset.server).await.unwrap();
+        assert_eq!(reset.server.auth.removals_seq(), 1, "the source's numbering is followed even when it went back");
+        assert_eq!(world.macs_of(&reset, "a").await, StatusCode::FORBIDDEN, "nothing held is restored");
+        assert_eq!(world.remove(&reset, json!([{"seq": 2, "kind": "owner", "owner": "e"}])).await,
+            (StatusCode::OK, json!({"applied": 2})));
+    }
+
+    #[tokio::test]
+    async fn reading_an_unchanged_list_writes_nothing() {
+        let (world, relay) = World::new().await;
+        drop(relay);
+        let (url, _source) = source(json!({"seq": 1, "removals": [
+            {"kind": "client", "owner": "owner", "client_id": "phone-1", "mac_id": "mac-1"}]})).await;
+        let back = world.start(Operator::new(Some(TOKEN.into()), Some(&url)).unwrap()).await;
+        operator::reconcile_from_source(&back.server).await.unwrap();
+        let writes = back.server.auth.registry_write_count();
+        operator::reconcile_from_source(&back.server).await.unwrap();
+        assert_eq!(back.server.auth.registry_write_count(), writes);
+    }
+
+    #[test]
+    fn a_closed_account_cannot_finish_a_mac_enrollment_it_started() {
+        let directory = crate::test_support::Directory::new();
+        let world = World {
+            directory,
+            mac_key: SigningKey::from_slice(&[121u8; 32]).unwrap(),
+            phone_key: SigningKey::from_slice(&[122u8; 32]).unwrap(),
+            http: reqwest::Client::new(),
+            nonce: AtomicU8::new(0),
+        };
+        let auth = Auth::test(world.config(), include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        auth.apply_removals(&[(1, auth::Removal::Owner { owner: "closing".into() })]).unwrap();
+        let mac = SigningKey::from_slice(&[124u8; 32]).unwrap();
+        let enrolled = auth.enroll_mac(auth::MacDevice {
+            mac_id: "mac-late".into(),
+            owner_sub: "closing".into(),
+            signing_key: key_bytes(&mac),
+            agreement_key: key_bytes(&mac),
+        });
+        assert!(matches!(enrolled.unwrap_err().downcast_ref(), Some(auth::AccountGateError::Denied)));
+        assert!(!auth.is_mac_registered("mac-late"));
     }
 
     #[tokio::test]
