@@ -244,6 +244,9 @@ pub struct Driver {
     untaken: bool,
     /// Earlier replacements in this recovery chain.
     relaunches: usize,
+    /// Hosts in a row, before this one, whose Claude never showed it ran: a session that cannot
+    /// start would otherwise be resumed for ever, each new host taking an input and losing it.
+    silent_hosts: usize,
     /// The node plugin this host was taken over with, which the host that replaces it takes too.
     plugin: Option<PathBuf>,
     /// How long a host handed an input may take to open the Claude session.
@@ -1178,7 +1181,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, plugin: None, opening_timeout, opening_deadline: None, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1633,6 +1636,13 @@ impl Driver {
         adopt(domain, backend, task, plugin)
     }
 
+    /// Whether `RELAUNCH_WAITS` hosts in a row ended without their Claude showing it ran, in a
+    /// session that had opened before: another one would end the same way. A Codex host is bounded
+    /// by its own relaunches.
+    fn gave_up_starting(&self) -> bool {
+        self.worker.provider() == Provider::Claude && self.claude_session.is_none() && self.silent_hosts >= RELAUNCH_WAITS.len() && !self.unopened().unwrap_or(false)
+    }
+
     /// Whether the owner should put a host that resumes the session in place of its own: its host
     /// closed or its connection to it failed, which a host that is dying shows before its exit, or
     /// a step of the owner itself failed. A replacement positively observed dead, or one that
@@ -1641,7 +1651,7 @@ impl Driver {
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     pub fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || (self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && (self.relaunches < RELAUNCH_WAITS.len() || self.unopened().unwrap_or(false))) && !crate::provider_transition::holds_execution(&self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || (self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && (self.relaunches < RELAUNCH_WAITS.len() || self.unopened().unwrap_or(false))) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 
@@ -1785,12 +1795,22 @@ impl Owner {
                     }
                     let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
                     let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {
-                        lost_because = driver.native_account_refusal.clone().or_else(||Some("its new host stopped before it could take the task's next message".to_owned()));
+                        lost_because = driver.native_account_refusal.clone().or_else(|| Some(if driver.gave_up_starting() {
+                            format!("Claude did not start in its session in {} new hosts in a row", driver.silent_hosts + 1)
+                        } else {
+                            "its new host stopped before it could take the task's next message".to_owned()
+                        }));
                         break;
                     };
                     let relaunches = if driver.replacement { driver.relaunches + 1 } else { 0 };
+                    let silent_hosts = if driver.claude_session.is_some() { 0 } else { driver.silent_hosts + 1 };
                     if driver.replacement {
                         driver.domain.seals.pause(RELAUNCH_WAITS[driver.relaunches.min(RELAUNCH_WAITS.len() - 1)], &told);
+                        if told() {
+                            break;
+                        }
+                    } else if driver.silent_hosts > 0 {
+                        driver.domain.seals.pause(RELAUNCH_WAITS[(driver.silent_hosts - 1).min(RELAUNCH_WAITS.len() - 1)], &told);
                         if told() {
                             break;
                         }
@@ -1803,6 +1823,7 @@ impl Owner {
                         Ok(mut next) => {
                             *current.lock_or_recover("the SDK host stop") = next.worker.stopper();
                             next.relaunches = relaunches;
+                            next.silent_hosts = silent_hosts;
                             if relaunches > 0 {
                                 log!("the new SDK host of {task} ended: another host that resumes the same session took its place (attempt {relaunches} of {})", RELAUNCH_WAITS.len());
                             } else if moved {

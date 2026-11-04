@@ -6,7 +6,7 @@ import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
 import { fitValue, framingProblem, hasToolUse, jsonEvidence, MAX_DECISION_BYTES, MAX_DIAGNOSTIC_BYTES, type Decision, type DecisionKind } from './frame.js';
 
 export type { Failure, Observation, DecisionRequest } from './host-session.js';
-import type { Failure, Observation, DecisionRequest, HostConfiguration } from './host-session.js';
+import { InputNotOffered, type Failure, type Observation, type DecisionRequest, type HostConfiguration } from './host-session.js';
 export type Configuration = HostConfiguration & {
   spawn?: (options: SpawnOptions) => SpawnedProcess & Pick<ChildProcess, 'pid'>;
 };
@@ -16,7 +16,7 @@ class Input implements AsyncIterable<SDKUserMessage> {
   private wake?: () => void;
   private closed = false;
   offer(message: SDKUserMessage): void {
-    if (this.closed) throw new Error('Input is closed');
+    if (this.closed) throw new InputNotOffered('native_session_ended');
     if (this.items.length >= 64) throw new Error('Input capacity exceeded');
     if (Buffer.byteLength(JSON.stringify(message)) > 1_048_576) throw new Error('Input is too large');
     this.items.push(message);

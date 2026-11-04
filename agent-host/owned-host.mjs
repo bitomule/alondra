@@ -23,7 +23,7 @@ export function ownedHosts(prefix) {
   const task = wire('start');
   const hosts = [];
 
-  function startHost(name, { fence = task.fence, execution = task.execution, capabilities, profile, nativeEnv = {} } = {}) {
+  function startHost(name, { fence = task.fence, execution = task.execution, capabilities, profile, nativeEnv = {}, cwd } = {}) {
     const state = join(root, name); mkdirSync(state, { mode: 0o700 });
     const home = join(state, 'home'); mkdirSync(home, { mode: 0o700 });
     const capture = join(state, 'capture.json');
@@ -31,7 +31,7 @@ export function ownedHosts(prefix) {
       state_dir: state, ownership_path: join(state, 'host.lock'), socket_path: join(state, 's'),
       host_instance_id: `${prefix}${name}`, control_secret: randomBytes(32).toString('hex'), fence, execution,
       manifest: { mode: 'node_bundle', artifact_path: realpathSync(fixture), host_release: 'controls-fixture', host_sha256: hash(fixture), executable_sha256: hash(executable), sdk_version: SDK_VERSION },
-      native: { session_id: '00000000-0000-4000-8000-000000000010', executable: nativeFixture, cwd: state, env: { HOME: home, PATH: '/usr/bin:/bin', FIXTURE_CAPTURE: capture, ...nativeEnv } },
+      native: { session_id: '00000000-0000-4000-8000-000000000010', executable: nativeFixture, cwd: cwd ?? state, env: { HOME: home, PATH: '/usr/bin:/bin', FIXTURE_CAPTURE: capture, ...nativeEnv } },
       ...(profile ? { orchestrator: profile } : {}),
     };
     writeFileSync(config.ownership_path, JSON.stringify(config), { mode: 0o600 });
@@ -106,5 +106,5 @@ export function ownedHosts(prefix) {
     rmSync(root, { recursive: true, force: true });
   }
 
-  return { wire, startHost, own, lines, cleanup, stderr: () => hosts.map((host) => host.stderr()).join('\n') };
+  return { root, wire, startHost, own, lines, cleanup, stderr: () => hosts.map((host) => host.stderr()).join('\n') };
 }

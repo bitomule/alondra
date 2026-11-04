@@ -111,6 +111,7 @@ checks:
         - //agent-host:reconcile_test
         - //agent-host:sdk_worker_test
         - //agent-host:controls_test
+        - //agent-host:consecutive_inputs_test
         - //agent-host:decisions_test
         - //agent-host:codex_session_test
         - //agent-host:model_probe_test

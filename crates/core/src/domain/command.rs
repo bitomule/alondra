@@ -594,8 +594,8 @@ pub enum Command {
     /// `input`, told `text`, was handed to the Task's SDK host of `generation`, which ended before
     /// it showed the input was read. When a host that resumes the same Claude session takes its
     /// place (`resumes`), the same text goes to it, flagged as possibly received already; otherwise
-    /// a card asks the user to send it again or take it as received. `by_alondra` as in
-    /// `RecordHostEnded`.
+    /// a card asks the user to send it again or take it as received. `by_alondra` is kept for the
+    /// commands already recorded: the doubt no longer depends on it.
     RecordDoubtfulHandoff {
         task_id: TaskId,
         generation: u64,

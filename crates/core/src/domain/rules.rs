@@ -4843,12 +4843,12 @@ impl DomainState {
                 self.task(task_id)?;
                 self.record_host_ended(task_id, *generation, *resumes, *by_alondra, ended_work, effects, lifecycles)?;
             }
-            Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes, by_alondra } => {
+            Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes, .. } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(input)?;
                 nonempty(text)?;
-                self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, *by_alondra, effects, lifecycles)?;
+                self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, effects, lifecycles)?;
             }
             Command::RecordHostLost { task_id, reason } => {
                 system(actor)?;

@@ -45,7 +45,7 @@ try {
   assert.equal(fresh.observations.filter((o) => o.type === 'sdk' && o.kind === 'result').length, 1);
   assert(fresh.observations.some((o) => o.type === 'process_exited'), 'the turn ends the native process without being told to close');
   assert(!fresh.observations.some((o) => o.type === 'sdk' && o.kind === 'diagnostic'), JSON.stringify(fresh.observations));
-  assert.throws(() => fresh.run.offer('00000000-0000-4000-8000-0000000000a2', 'a later batch'), /closed/, 'nothing joins a finished orchestrator turn');
+  assert.throws(() => fresh.run.offer('00000000-0000-4000-8000-0000000000a2', 'a later batch'), { name: 'Error', code: 'native_session_ended' }, 'nothing joins a finished orchestrator turn');
   const args = fresh.args;
   assert.equal(value(args, '--model'), 'opus', args.join(' '));
   assert.equal(value(args, '--tools'), 'Skill,Read,Glob,Grep', args.join(' '));

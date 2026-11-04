@@ -294,7 +294,7 @@ export class PersistentHost {
       }
       if (error instanceof InputNotOffered && (command.action.type === 'start' || command.action.type === 'offer')) {
         this.current(lane);
-        this.receipt(record, { status: 'rejected', code: error.code, message: 'The native account policy refused this input before submission' });
+        this.receipt(record, { status: 'rejected', code: error.code, message: 'The native session refused this input before submission' });
         return;
       }
       // Once SDK handoff may have occurred, keep admission as uncertainty rather than fabricate rejection.

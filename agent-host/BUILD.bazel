@@ -150,6 +150,12 @@ js_test(
     data = [":host_lib", "owned-host.mjs", "controls-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", "//crates/agent-protocol:fixtures/attach-orchestrator.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
 js_test(
+    name = "consecutive_inputs_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "consecutive-inputs.test.mjs",
+    data = [":host_lib", "owned-host.mjs", "controls-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
     name = "decisions_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "decisions.test.mjs",

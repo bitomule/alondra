@@ -1785,8 +1785,9 @@ fn a_resumed_session_that_finished_a_turn_is_resumed_again_without_a_card() {
 // 2026-10-27, a Codex node: the session a restart resumed worked for 8 minutes in one turn, then
 // its host ended because its owner failed on an error of Alondra's own, with a message handed and
 // not read yet. An end Alondra caused says nothing about the session: it resumes and gets the
-// message again, and nobody is asked. A third end in a row with no finished turn asks the user, so
-// an error of Alondra's own that repeats does not resume the session for ever.
+// message again, and nobody is asked, however many of Alondra's own ends come in a row: the message
+// is never asked about (2026-11-03, t-deps-done-still-waiting, whose host lost its connection to the
+// daemon on every resume and left a «send it again?» card each time).
 #[test]
 fn a_resumed_session_alondra_ends_again_goes_on_with_its_message_until_its_ends_repeat() {
     let mut s = world();
@@ -1809,8 +1810,9 @@ fn a_resumed_session_alondra_ends_again_goes_on_with_its_message_until_its_ends_
     assert!(text.ends_with("Keep the journal's old rows"), "{text}");
     ended(&mut s);
     let third = doubted(&mut s, resent);
-    let card = s.interactions.keys().find(|id| id.0.starts_with(HANDOFF_DOUBT_PREFIX)).expect("the third end in a row asks").clone();
-    assert!(third.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
+    assert!(third.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "the message is not asked about");
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(HANDOFF_DOUBT_PREFIX)));
+    assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(), Some(LifecycleRecord::DoubtResent { .. })), "the message goes again");
     assert_aggregate_rules(&s);
 }
 

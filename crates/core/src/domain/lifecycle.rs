@@ -1887,13 +1887,12 @@ impl DomainState {
 
     /// `input`, told `text`, was handed to a host that ended before it showed the input was read.
     /// When a host that resumes the same Claude session takes its place (`resumes`), the same text
-    /// goes to it with a note that its conversation may already have it: Claude reads its own
-    /// transcript, so it sees whether it did. A session that never opened read nothing, so it is
-    /// sent again however many hosts ended before. Otherwise, or when the session keeps closing
-    /// (`keeps_closing`), the task holds on a card that asks the user to send it again or take it
-    /// as received.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, by_alondra: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// always goes to it with a note that its conversation may already have it: Claude reads its own
+    /// transcript, so it sees whether it did, and nobody is asked. A session that keeps ending is
+    /// stopped by the owner, which holds the task on a card when hosts in a row never got Claude to
+    /// run. Otherwise the task holds on a card that asks the user to send it again or take it as
+    /// received.
+    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let moving = self.moving_to(task).is_some();
         let card = handoff_doubt_card_id(task, generation, input);
@@ -1902,12 +1901,11 @@ impl DomainState {
         }
         let launch = self.lifecycle(lifecycles, task)?.resource() == Some(ResourceEvidence::Reserved);
         let journal = &self.lifecycle_journal[task];
-        let before_end = journal.iter().rposition(|record| matches!(record, LifecycleRecord::HostEnded { .. })).unwrap_or(journal.len());
         if moving {
             let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text.into()) };
             return self.decide(lifecycles, task, record);
         }
-        if resumes && (launch || !keeps_closing(journal.iter().take(before_end), by_alondra)) {
+        if resumes {
             let noted = journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { resent, .. } if resent == input));
             let text = if noted { text.to_owned() } else { format!("{RESENT_NOTE}\n\n{text}") };
             let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text) };

@@ -4250,3 +4250,35 @@ fn send_again_on_the_card_of_a_mission_whose_session_never_opened_reaches_claude
     assert_eq!(lifecycle(&restarted).resource(), Some(alondra_domain::ResourceEvidence::Available));
     resumed.stop().unwrap();
 }
+
+// 2026-11-03, t-deps-done-still-waiting: every host the daemon put in place took an input and lost
+// it, because its Claude never started. Offering the input reset the count of replacements, so the
+// task was resumed without end. After RELAUNCH_WAITS hosts in a row whose Claude never ran, the
+// task holds on the card that says Alondra could not resume its session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_that_never_starts_in_its_resumed_session_ends_on_the_lost_host_card_and_not_in_endless_hosts() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    kill_host_and_daemon(driver);
+    std::fs::remove_file(format!("{}.transcript-{session}", slice.capture.display())).unwrap();
+    let restarted = slice.restart();
+    let resumed = slice.take_over(&restarted);
+    let first_generation = u64::try_from(owner_generation(&slice.database)).unwrap();
+    restarted.enable_sdk(slice.backend.clone());
+    let mut changed = restarted.subscribe();
+    let owner = Owner::spawn(resumed);
+    let reader = Arc::clone(&restarted);
+    let database = slice.database.clone();
+    changed.wait_for(|_| {
+        let generation = u64::try_from(owner_generation(&database)).unwrap();
+        assert!(generation <= first_generation + RELAUNCH_WAITS.len() as u64, "hosts keep replacing each other: generation {generation}");
+        open_card(&reader, HOST_LOST_PREFIX).is_some()
+    }).await.unwrap();
+    assert_eq!(u64::try_from(owner_generation(&slice.database)).unwrap(), first_generation + RELAUNCH_WAITS.len() as u64, "{RELAUNCH_WAITS:?} replacements, then the card");
+    let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task holds on the card that says its session could not be resumed");
+    assert!(card.body.contains("Claude did not start in its session"), "{}", card.body);
+    assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none(), "no card asks about a message");
+    drop(owner);
+}
