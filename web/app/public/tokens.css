@@ -1,8 +1,4 @@
-/* Hallmark · route: custom (bespoke) · structure: dark stage hero with the lark's wingspan of real captures → scroll-played score → sticky screen tour → autonomy band → surfaces → privacy → access
- * idea: "the lark conducts: its hinged wings cue every card"
- * paper: oklch(97% 0.012 85) · stage: oklch(20% 0.022 250) · accent: oklch(66% 0.165 50) · display: Archivo (wide) · body: Newsreader · outlier: Martian Mono
- * axes: light / grotesk-sans / warm · gates: all-pass · studied: no
- */
+/* Tokens of the public site. web/DESIGN.md documents them and is normative. */
 @font-face { font-family: 'Archivo Alondra'; src: url('./fonts/archivo-variable.woff2') format('woff2'); font-weight: 100 900; font-stretch: 62% 125%; font-display: swap; }
 @font-face { font-family: 'Newsreader Alondra'; src: url('./fonts/newsreader-variable.woff2') format('woff2'); font-weight: 200 800; font-display: swap; }
 @font-face { font-family: 'Martian Mono Alondra'; src: url('./fonts/martian-mono-variable.woff2') format('woff2'); font-weight: 100 800; font-display: swap; }

@@ -442,21 +442,19 @@ test('finishing the invitation shows no TestFlight link when none is configured'
  await expect(page.getByRole('link', { name: 'Instala la app desde TestFlight' })).toHaveCount(0);
 });
 test('install shows the TestFlight link only to a session that carries one', async ({ page }) => {
- const link = page.getByRole('link', { name: 'Instala la app desde TestFlight' });
+ const link = page.getByRole('link', { name: 'Get the app on TestFlight' });
  await page.route('**/v1/session', route => route.fulfill({ status: 401, json: { error: { code: 'unauthorized' } } }));
  await page.goto('/install');
- await expect(page.getByRole('link', { name: 'entras con tu cuenta' })).toBeVisible();
+ await expect(page.locator('main').getByRole('link', { name: 'join the waitlist' })).toBeVisible();
  await expect(link).toHaveCount(0);
  await page.unroute('**/v1/session');
  await session(page, false);
  await page.reload();
- await expect(page.getByRole('link', { name: 'entras con tu cuenta' })).toBeVisible();
  await expect(link).toHaveCount(0);
  await page.unroute('**/v1/session');
  await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: { ...owner, is_admin: false }, testflight_url: testflight } }));
  await page.reload();
  await expect(link).toHaveAttribute('href', testflight);
- await expect(page.getByRole('link', { name: 'entras con tu cuenta' })).toHaveCount(0);
 });
 test('account shows the TestFlight link from the session', async ({ page }) => {
  await page.route('**/v1/session', route => route.fulfill({ json: { csrf_token: 'synthetic-csrf', account: { ...owner, is_admin: false }, testflight_url: testflight } }));

@@ -1,40 +1,52 @@
 import { useQuery } from '@tanstack/react-query';
-import { Lark } from '../public/Lark';
-import { TestFlightLink } from '../components/testflight';
+import { Link } from 'react-router';
 import { api, type Session } from '../lib/api';
 
-export function meta() { return [{ title: 'Instalar — Alondra' }, { name: 'description', content: 'Instala Alondra en tu Mac con Homebrew, prepáralo con alondra y vincula el iPhone o la app de Mac.' }]; }
-
-const STEPS = [
-  { title: 'Instala Alondra', commands: ['brew install bitomule/tap/alondra'], body: 'Incluye el servicio, la CLI y la TUI. Las apps de iPhone y de Mac se instalan aparte.' },
-  { title: 'Prepara tu Mac', commands: ['alondra'], body: 'La primera vez, el asistente te pregunta la carpeta de proyectos y si activas las notificaciones, arranca el servicio y espera a tu iPhone. Después, alondra abre la TUI con Bandeja, Tareas, Programadas y Flota.' },
-  { title: 'Vincula el iPhone o la app de Mac', commands: [], body: 'Abre la app que te llega por TestFlight en la misma wifi: encuentra tu Mac y los dos muestran el mismo código. Permítelo en el Mac.', testflight: true },
-  { title: 'Si algo falla', commands: ['alondra doctor --fix'], body: 'doctor te dice qué funciona y qué falta; con --fix lo arregla.' },
-];
+export function meta() {
+  return [
+    { title: 'Install Alondra on your Mac' },
+    { name: 'description', content: 'Install the Alondra daemon, CLI and terminal app with Homebrew on an Apple Silicon Mac, then pair the iPhone or Mac app.' },
+    { tagName: 'link', rel: 'canonical', href: 'https://getalondra.com/install' },
+  ];
+}
 
 export default function Install() {
   const session = useQuery({ queryKey: ['session'], queryFn: ({ signal }) => api<Session>('/v1/session', { signal }) });
   const testflightUrl = session.data?.account.status === 'active' ? session.data.testflight_url : undefined;
-  return (
-    <article className="doc">
-      <header className="doc-head">
-        <Lark className="doc-lark"/>
-        <h1 className="doc-title">Empieza por tu Mac.</h1>
-        <p className="doc-lede">Necesitas una invitación, un Mac con macOS y Homebrew, y Claude autorizado en el ordenador donde van a trabajar los agentes.</p>
-      </header>
-      <ol className="doc-steps">
-        {STEPS.map(step => (
-          <li key={step.title} className="doc-step">
-            <h2>{step.title}</h2>
-            {step.commands.map(command => <pre key={command}><code>{command}</code></pre>)}
-            <p>{step.body}</p>
-            {step.testflight && (testflightUrl
-              ? <TestFlightLink url={testflightUrl} className="pub-link doc-testflight"/>
-              : <p>El enlace para instalarla desde TestFlight aparece al terminar el alta y aquí cuando <a className="pub-link" href="/auth/login">entras con tu cuenta</a>.</p>)}
-          </li>
-        ))}
-      </ol>
-      <p className="doc-aside">¿Aún sin invitación? <a className="pub-link" href="/#acceso">Pide acceso a la alpha</a></p>
-    </article>
-  );
+  return <article className="doc wrap">
+    <header className="doc-head">
+      <h1>Install Alondra</h1>
+      <p className="doc-lede">Homebrew installs the daemon and the terminal app. The apps come after.</p>
+    </header>
+
+    <section aria-labelledby="needs-title">
+      <h2 id="needs-title">What you need</h2>
+      <ul className="plain">
+        <li>A Mac with Apple Silicon and macOS 26 or later.</li>
+        <li>Claude Code (version 2.1.287 or later), Codex or both, installed and signed in. Alondra uses the login that those tools already hold and never asks you for it.</li>
+        <li>Homebrew.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="mac-title">
+      <h2 id="mac-title">On your Mac</h2>
+      <pre className="command"><code>brew install bitomule/tap/alondra{'\n'}alondra</code></pre>
+      <p>The first time, <code>alondra</code> asks for the folder with your projects, starts the background service and registers its Claude Code plugin, which loads only in the sessions Alondra starts. Run it again whenever you like: it only changes what is missing. Alondra brings Node and the Agent SDK it needs, and Homebrew installs tuicr, which the terminal app uses to show diffs.</p>
+    </section>
+
+    <section aria-labelledby="apps-title">
+      <h2 id="apps-title">The iPhone and Mac apps</h2>
+      <p>The apps are in alpha and are distributed through TestFlight. They come with access to Alondra Cloud, which opens little by little: <Link className="text-link" to="/#cloud">join the waitlist</Link> and you will get an invitation.</p>
+      <p>To pair an app, open it on the same Wi-Fi as your Mac. It finds the Mac, both screens show the same code, and you allow it in the Mac app, in the terminal app or from the notification. Away from that network, run <code>alondra device invite</code> on the Mac and scan the QR code it prints.</p>
+      {testflightUrl && <p><a className="button" href={testflightUrl} rel="noopener noreferrer">Get the app on TestFlight</a></p>}
+    </section>
+
+    <section aria-labelledby="fail-title">
+      <h2 id="fail-title">If something fails</h2>
+      <pre className="command"><code>alondra doctor{'\n'}alondra doctor --fix</code></pre>
+      <p><code>alondra doctor</code> tells you what works and what is missing, with the command that fixes each thing. With <code>--fix</code> it repairs what it can. <code>alondra update</code> installs the newest release. The daemon writes its log to <code>~/.alondra/alondrad.log</code>.</p>
+    </section>
+
+    <p>Building from source and signing the apps with your own Apple developer account are covered in the <Link className="text-link" to="/docs">documentation</Link>.</p>
+  </article>;
 }

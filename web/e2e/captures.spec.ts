@@ -19,28 +19,13 @@ for (const colorScheme of ['light', 'dark'] as const) {
   test(`capture ${name} ${colorScheme}`, async ({ browser }) => {
    const context = await browser.newContext({ viewport, colorScheme, reducedMotion: 'reduce', deviceScaleFactor: 2 });
    const page = await context.newPage();
-   for (const [path, slug] of [['/', 'home'], ['/privacy', 'privacy'], ['/install', 'install']] as const) {
+   for (const [path, slug] of [['/', 'home'], ['/how-it-works', 'how-it-works'], ['/install', 'install'], ['/docs', 'docs'], ['/security', 'security'], ['/license', 'license']] as const) {
     await page.goto(path);
     await settle(page);
     await page.screenshot({ path: join(out!, `${slug}-${name}-${colorScheme}.png`), fullPage: true });
-    if (path === '/') {
-     await page.screenshot({ path: join(out!, `hero-${name}-${colorScheme}.png`) });
-     await page.locator('.v-harness').scrollIntoViewIfNeeded();
-     await page.screenshot({ path: join(out!, `harness-${name}-${colorScheme}.png`) });
-    }
+    if (path === '/') await page.screenshot({ path: join(out!, `hero-${name}-${colorScheme}.png`) });
    }
    await context.close();
   });
  }
 }
-
-test('capture the landing walkthrough as video', async ({ browser }) => {
- const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, recordVideo: { dir: out! } });
- const page = await context.newPage();
- await page.goto('/');
- for (const selector of ['.p-hero', '.v-harness', '#alpha']) {
-  await page.locator(selector).scrollIntoViewIfNeeded();
-  await page.waitForTimeout(1000);
- }
- await context.close();
-});

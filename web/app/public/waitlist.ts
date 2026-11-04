@@ -41,12 +41,3 @@ export function retryAfter(header: string | null, now = Date.now()): number | nu
   const at = Date.parse(value);
   return Number.isNaN(at) ? null : Math.max(0, Math.ceil((at - now) / 1000));
 }
-
-export function waitPhrase(seconds: number | null): string {
-  if (seconds === null) return 'dentro de un rato';
-  if (seconds < 60) return seconds <= 1 ? 'en un segundo' : `en ${seconds} segundos`;
-  const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return minutes === 1 ? 'en un minuto' : `en ${minutes} minutos`;
-  const hours = Math.ceil(minutes / 60);
-  return hours === 1 ? 'en una hora' : `en ${hours} horas`;
-}

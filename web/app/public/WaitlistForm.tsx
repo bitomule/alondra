@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { joinWaitlist, looksLikeEmail, waitPhrase, type WaitlistResult } from './waitlist';
+import { joinWaitlist, looksLikeEmail, type WaitlistResult } from './waitlist';
 
 type Outcome = WaitlistResult | { kind: 'invalid_local' };
 
@@ -27,31 +27,22 @@ export function useWaitlist() {
   return { email, setEmail, origin, outcome, joined, pending: mutation.isPending, submit, again };
 }
 
-function errorText(outcome: Outcome | null, locale: 'es' | 'en'): string | null {
-  if (locale === 'en') {
-    switch (outcome?.kind) {
-      case 'invalid_local': case 'invalid': return 'Please enter a valid email address.';
-      case 'rate_limited': return outcome.retryAfterSeconds === null ? 'Too many attempts. Please try again later.' : `Too many attempts. Try again in ${outcome.retryAfterSeconds} seconds.`;
-      case 'failed': return 'We could not add you. Your email is still here; please try again shortly.';
-      default: return null;
-    }
-  }
+function errorText(outcome: Outcome | null): string | null {
   switch (outcome?.kind) {
     case 'invalid_local':
-    case 'invalid': return 'Revisa el email: no parece una dirección válida.';
-    case 'rate_limited': return `Demasiados intentos seguidos. Vuelve a probar ${waitPhrase(outcome.retryAfterSeconds)}.`;
-    case 'failed': return 'No hemos podido apuntarte. Tu email sigue aquí: vuelve a intentarlo en un momento.';
+    case 'invalid': return 'Please enter a valid email address.';
+    case 'rate_limited': return outcome.retryAfterSeconds === null ? 'Too many attempts. Please try again later.' : `Too many attempts. Try again in ${outcome.retryAfterSeconds} seconds.`;
+    case 'failed': return 'We could not add you. Your email is still here; please try again shortly.';
     default: return null;
   }
 }
 
-export function WaitlistForm({ waitlist, name, tone = 'paper', locale = 'es', submitLabel }: { waitlist: Waitlist; name: string; tone?: 'paper' | 'stage'; locale?: 'es' | 'en'; submitLabel?: string }) {
-  const en = locale === 'en';
+export function WaitlistForm({ waitlist, name, tone = 'paper', submitLabel = 'Join the waitlist' }: { waitlist: Waitlist; name: string; tone?: 'paper' | 'stage'; submitLabel?: string }) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const doneRef = useRef<HTMLDivElement>(null);
   const mine = waitlist.origin === name;
-  const error = mine ? errorText(waitlist.outcome, locale) : null;
+  const error = mine ? errorText(waitlist.outcome) : null;
   const invalid = mine && (waitlist.outcome?.kind === 'invalid' || waitlist.outcome?.kind === 'invalid_local');
 
   useEffect(() => {
@@ -68,16 +59,16 @@ export function WaitlistForm({ waitlist, name, tone = 'paper', locale = 'es', su
   if (waitlist.joined) {
     return (
       <div className={`waitlist is-done tone-${tone}`} ref={doneRef} tabIndex={-1} role={mine ? 'status' : undefined}>
-        <p className="waitlist-done-title"><span className="waitlist-check" aria-hidden="true"/>{en ? 'You’re on the list.' : 'Estás en la lista.'}</p>
-        <p className="waitlist-done-body">{en ? 'We saved ' : 'Hemos guardado '}<strong>{waitlist.joined}</strong>{en ? '. There is no confirmation email. We send invitations manually, in small batches.' : '. No te enviaremos un correo de confirmación: las invitaciones se hacen a mano, poco a poco.'}</p>
-        <button type="button" className="waitlist-again" onClick={waitlist.again}>{en ? 'Add another email' : 'Apuntar otro email'}</button>
+        <p className="waitlist-done-title"><span className="waitlist-check" aria-hidden="true"/>You’re on the list.</p>
+        <p className="waitlist-done-body">We saved <strong>{waitlist.joined}</strong>. There is no confirmation email. Access opens little by little, and invitations go out in small batches.</p>
+        <button type="button" className="waitlist-again" onClick={waitlist.again}>Add another email</button>
       </div>
     );
   }
 
   return (
     <form className={`waitlist tone-${tone}`} onSubmit={onSubmit} noValidate aria-busy={waitlist.pending && mine}>
-      <label className="waitlist-label" htmlFor={`${id}-email`}>{en ? 'Your email' : 'Tu email'}</label>
+      <label className="waitlist-label" htmlFor={`${id}-email`}>Your email</label>
       <div className="waitlist-row">
         <input
           ref={inputRef}
@@ -89,7 +80,7 @@ export function WaitlistForm({ waitlist, name, tone = 'paper', locale = 'es', su
           inputMode="email"
           autoCapitalize="none"
           spellCheck={false}
-          placeholder={en ? 'you@example.com' : 'tu@correo.dev'}
+          placeholder="you@example.com"
           required
           value={waitlist.email}
           readOnly={waitlist.pending}
@@ -98,11 +89,11 @@ export function WaitlistForm({ waitlist, name, tone = 'paper', locale = 'es', su
           onChange={event => waitlist.setEmail(event.target.value)}
         />
         <button className="waitlist-submit" type="submit" disabled={waitlist.pending}>
-          {waitlist.pending && mine ? <><span className="waitlist-spinner" aria-hidden="true"/>{en ? 'Sending…' : 'Enviando…'}</> : (submitLabel ?? (en ? 'Join the alpha waitlist' : 'Pedir acceso'))}
+          {waitlist.pending && mine ? <><span className="waitlist-spinner" aria-hidden="true"/>Sending…</> : submitLabel}
         </button>
       </div>
-      <p className="waitlist-hint" id={`${id}-hint`}>{en ? 'Just your email, stored so we can invite you.' : 'Solo el email. Lo guarda el servicio para poder invitarte.'}</p>
-      <p className="waitlist-live" role="status">{waitlist.pending && mine ? (en ? 'Sending your email…' : 'Enviando tu email…') : ''}</p>
+      <p className="waitlist-hint" id={`${id}-hint`}>Just your email, stored so we can invite you.</p>
+      <p className="waitlist-live" role="status">{waitlist.pending && mine ? 'Sending your email…' : ''}</p>
       {error && <p className="waitlist-error" id={`${id}-error`} role="alert">{error}</p>}
     </form>
   );
