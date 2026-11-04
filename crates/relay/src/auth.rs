@@ -3,25 +3,18 @@ use anyhow::{ensure, Context, Result, bail};
 use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::VerifyingKey;
-use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Mutex, RwLock,
+        Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
 };
-use tokio::sync::Mutex as AsyncMutex;
 
 const CLOCK_SKEW_MS: u64 = 120_000;
 const MAX_NONCES: usize = 100_000;
-const MAX_JWKS_BYTES: usize = 64 * 1024;
-const JWKS_TIMEOUT: Duration = Duration::from_secs(5);
-const JWKS_MAX_AGE: Duration = Duration::from_secs(60 * 60);
-const UNKNOWN_KID_RETRY: Duration = Duration::from_secs(30);
 const REGISTRY_SCHEMA_VERSION: u32 = 2;
 const REGISTRY_GUARD: &[u8] = b"alondra-relay-device-registry-v2\n";
 const IROH_NODE_PROOF_DOMAIN: &[u8] = b"alondra-iroh-node-v1\0";
@@ -101,6 +94,10 @@ struct DeviceRegistry {
     revoked_mac_ids: HashSet<String>,
     /// Device or Mac ID → its iroh endpoint ID (hex Ed25519 public key).
     iroh_nodes: HashMap<String, String>,
+    /// Accounts the account source closed: their tokens and enrollments are refused.
+    closed_owners: HashSet<String>,
+    /// The last removal of the account source this registry holds.
+    removals_seq: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -123,6 +120,32 @@ struct StoredDeviceRegistry {
     revoked_mac_ids: Vec<String>,
     #[serde(default)]
     iroh_nodes: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    closed_owners: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    removals_seq: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// One removal an account source orders: a Mac with its clients, one client, or a whole account.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Removal {
+    Mac { owner: String, mac_id: String },
+    Client { owner: String, client_id: String, mac_id: String },
+    Owner { owner: String },
+}
+
+/// What applying a batch of numbered removals left.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RemovalsApplied {
+    /// Every removal up to this number is held.
+    Through(u64),
+    /// The batch does not follow the last held removal, which is this one: nothing was applied.
+    Gap(u64),
 }
 
 /// A device or Mac names the iroh endpoint that may use the iroh relay on its behalf. `proof` is
@@ -158,42 +181,10 @@ enum RegistryOnDisk {
 }
 
 #[derive(Deserialize)]
-struct Jwks {
-    keys: Vec<Jwk>,
-}
-#[derive(Deserialize)]
-struct Jwk {
-    kid: String,
-    kty: String,
-    #[serde(rename = "use")]
-    usage: Option<String>,
-    alg: Option<String>,
-    n: String,
-    e: String,
-}
-#[derive(Deserialize)]
-struct JwtHeader {
-    alg: String,
-    kid: String,
-}
-#[derive(Deserialize)]
-struct Claims {
-    iss: String,
-    sub: String,
-    aud: serde_json::Value,
-    exp: u64,
-    nbf: Option<u64>,
-}
-#[derive(Deserialize)]
 struct SessionClaims {
     sid: Option<String>,
     azp: Option<String>,
     scope: Option<String>,
-}
-type RsaJwks = HashMap<String, (Vec<u8>, Vec<u8>)>;
-struct CachedJwks {
-    keys: RsaJwks,
-    refreshed_at: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -205,11 +196,10 @@ pub struct Identity {
 pub struct Auth {
     pub config: Config,
     pub management: Option<crate::management::Management>,
-    jwks: RwLock<CachedJwks>,
-    jwks_refresh: AsyncMutex<()>,
-    last_unknown_refresh: Mutex<Option<Instant>>,
+    pub jwt: crate::jwt::Verifier,
     devices: Mutex<DeviceRegistry>,
     registry_poisoned: AtomicBool,
+    removals_pending: AtomicBool,
     verifier: Mutex<HttpChallengeVerifier>,
     #[cfg(test)]
     verification_time: Mutex<Option<u64>>,
@@ -226,25 +216,18 @@ impl Auth {
         {
             bail!("issuer, audience, owner_sub and mac_id are required");
         }
-        let jwks_url_allowed = config.jwks_url.starts_with("https://")
-            || config.jwks_url.starts_with("http://127.0.0.1:")
-            || (config.allow_internal_http_jwks
-                && config.jwks_url.starts_with("http://keycloak:8080/"));
-        if !jwks_url_allowed {
-            bail!(
-                "JWKS URL must use HTTPS, loopback, or explicitly allowed pilot Keycloak network"
-            );
-        }
         verifying_key(&config.mac_signing_key).context("invalid bootstrap Mac signing key")?;
-        let jwks = fetch_jwks(&config.jwks_url).await?;
-        Self::from_jwks(config, jwks)
+        let jwt = crate::jwt::Verifier::open(
+            config.issuer.clone(),
+            config.audience.clone(),
+            config.jwks_url.clone(),
+            config.allow_internal_http_jwks,
+        )
+        .await?;
+        Self::from_verifier(config, jwt)
     }
 
-    fn from_jwks(config: Config, jwks: Jwks) -> Result<Self> {
-        let jwks = CachedJwks {
-            keys: parse_jwks(jwks)?,
-            refreshed_at: Instant::now(),
-        };
+    fn from_verifier(config: Config, jwt: crate::jwt::Verifier) -> Result<Self> {
         let guard_path = schema_guard_path(&config.device_registry_path);
         let guarded = guard_path.exists();
         if guarded && std::fs::read(&guard_path)? != REGISTRY_GUARD {
@@ -267,6 +250,8 @@ impl Auth {
                 macs,
                 revoked_mac_ids,
                 iroh_nodes,
+                closed_owners,
+                removals_seq,
             ) = match serde_json::from_slice(&raw)? {
                 RegistryOnDisk::Current(StoredDeviceRegistry {
                     schema_version,
@@ -279,6 +264,8 @@ impl Auth {
                     macs,
                     revoked_mac_ids,
                     iroh_nodes,
+                    closed_owners,
+                    removals_seq,
                 }) => (
                     schema_version,
                     devices,
@@ -290,6 +277,8 @@ impl Auth {
                     macs,
                     revoked_mac_ids,
                     iroh_nodes,
+                    closed_owners,
+                    removals_seq,
                 ),
                 RegistryOnDisk::Legacy(devices) => (
                     None,
@@ -302,6 +291,8 @@ impl Auth {
                     Vec::new(),
                     Vec::new(),
                     HashMap::new(),
+                    Vec::new(),
+                    0,
                 ),
             };
             if guarded && schema_version != Some(REGISTRY_SCHEMA_VERSION) {
@@ -388,6 +379,8 @@ impl Auth {
                 macs,
                 revoked_mac_ids,
                 iroh_nodes,
+                closed_owners: closed_owners.into_iter().collect(),
+                removals_seq,
             }
         } else {
             DeviceRegistry::default()
@@ -445,12 +438,11 @@ impl Auth {
             .map_err(|_| anyhow::anyhow!("could not initialize device challenge verifier"))?;
         Ok(Self {
             config,
-            jwks: RwLock::new(jwks),
+            jwt,
             management: None,
-            jwks_refresh: AsyncMutex::new(()),
-            last_unknown_refresh: Mutex::new(None),
             devices: Mutex::new(devices),
             registry_poisoned: AtomicBool::new(false),
+            removals_pending: AtomicBool::new(false),
             verifier: Mutex::new(verifier),
             #[cfg(test)]
             verification_time: Mutex::new(None),
@@ -461,7 +453,13 @@ impl Auth {
 
     #[cfg(test)]
     pub(crate) fn test(config: Config, jwks_json: &[u8]) -> Result<Self> {
-        Self::from_jwks(config, serde_json::from_slice(jwks_json)?)
+        let jwt = crate::jwt::Verifier::from_jwks_json(
+            config.issuer.clone(),
+            config.audience.clone(),
+            config.jwks_url.clone(),
+            jwks_json,
+        )?;
+        Self::from_verifier(config, jwt)
     }
 
     pub fn enroll(&self, mac: &Identity, device: PhoneDevice) -> Result<()> {
@@ -828,18 +826,7 @@ impl Auth {
     pub fn reconcile_device_revocation(&self,owner:&str,kind:&str,id:&str,mac_id:&str)->Result<()> {
         self.ensure_registry_ready()?;
         let mut registry=self.devices.lock().unwrap();let before=registry.clone();
-        let clients=if kind=="mac" {
-            if let Some(mac)=registry.macs.get(id) {ensure!(mac.owner_sub==owner,"revocation owner mismatch");}
-            registry.phone_macs.iter().filter(|(_,mac)|mac.as_str()==id).map(|(client,_)|client.clone()).collect::<Vec<_>>()
-        } else {vec![id.to_owned()]};
-        for client in &clients {
-            if let Some(record)=registry.devices.get(client) {
-                ensure!(record.owner_sub==owner && registry.phone_macs.get(client).map(String::as_str)==Some(mac_id),"revocation binding mismatch");
-            }
-        }
-        if kind=="mac" {registry.macs.remove(id);registry.revoked_mac_ids.insert(id.to_owned());}
-        for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.push_ended.insert(client.clone());registry.revoked_ids.insert(client);}
-        forget_orphan_iroh_nodes(&mut registry);
+        remove_device(&mut registry,owner,kind,id,mac_id)?;
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
         Ok(())
     }
@@ -848,16 +835,77 @@ impl Auth {
         self.ensure_registry_ready()?;
         let mut registry=self.devices.lock().unwrap();
         let before=registry.clone();
-        let phones:Vec<String>=registry.devices.values().filter(|d|d.owner_sub==owner).map(|d|d.device_id.clone()).collect();
-        let macs:Vec<String>=registry.macs.values().filter(|d|d.owner_sub==owner).map(|d|d.mac_id.clone()).collect();
-        if phones.is_empty() && macs.is_empty() {return Ok(())}
-        for id in phones {
-            registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.push_ended.insert(id.clone());registry.revoked_ids.insert(id);
-        }
-        for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
-        forget_orphan_iroh_nodes(&mut registry);
+        if !remove_owner_devices(&mut registry,owner) {return Ok(())}
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
         Ok(())
+    }
+
+    /// The account source's removals numbered after the last one held, in order. Numbers already
+    /// held are skipped, so a batch sent again changes nothing; a batch that skips a number is
+    /// refused whole. The registry is written once, with the new number, before this returns.
+    /// Caller holds `device_gate` exclusively.
+    pub fn apply_removals(&self, batch: &[(u64, Removal)]) -> Result<RemovalsApplied> {
+        self.ensure_registry_ready()?;
+        let mut registry = self.devices.lock().unwrap();
+        let held = registry.removals_seq;
+        let pending: Vec<_> = batch.iter().filter(|(seq, _)| *seq > held).collect();
+        if pending.iter().enumerate().any(|(i, (seq, _))| *seq != held + 1 + i as u64) {
+            return Ok(RemovalsApplied::Gap(held));
+        }
+        let Some((last, _)) = pending.last() else {
+            return Ok(RemovalsApplied::Through(held));
+        };
+        let before = registry.clone();
+        for (_, removal) in &pending {
+            if let Err(error) = apply_removal(&mut registry, removal) {
+                *registry = before;
+                return Err(error);
+            }
+        }
+        registry.removals_seq = *last;
+        if let Err(error) = self.persist_registry(&registry) {
+            *registry = before;
+            return Err(error);
+        }
+        Ok(RemovalsApplied::Through(*last))
+    }
+
+    /// The account source's complete list of removals, current through `seq`. Applying one
+    /// already held changes nothing; nothing the source no longer lists is ever restored.
+    /// Caller holds `device_gate` exclusively.
+    pub fn reconcile_removals(&self, seq: u64, removals: &[Removal]) -> Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry = self.devices.lock().unwrap();
+        let before = registry.clone();
+        for removal in removals {
+            if let Err(error) = apply_removal(&mut registry, removal) {
+                *registry = before;
+                return Err(error);
+            }
+        }
+        registry.removals_seq = seq;
+        if let Err(error) = self.persist_registry(&registry) {
+            *registry = before;
+            return Err(error);
+        }
+        drop(registry);
+        self.removals_pending.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn removals_seq(&self) -> u64 {
+        self.devices.lock().unwrap().removals_seq
+    }
+
+    /// Until the account source's list is first reconciled, routes that check the account
+    /// answer that it cannot be checked.
+    pub fn await_removal_source(&self) {
+        self.removals_pending.store(true, Ordering::Release);
+    }
+
+    pub fn removals_pending(&self) -> bool {
+        self.removals_pending.load(Ordering::Acquire)
     }
 
     pub fn revoke_mac(&self, who: &Identity) -> Result<()> {
@@ -1171,40 +1219,11 @@ impl Auth {
     }
 
     pub fn jwks_ready(&self) -> bool {
-        !self.registry_poisoned.load(Ordering::Acquire)
-            && self.jwks.read().unwrap().refreshed_at.elapsed() <= JWKS_MAX_AGE
+        !self.registry_poisoned.load(Ordering::Acquire) && self.jwt.ready()
     }
 
-    /// Replace the complete key set; removed Keycloak keys stop validating immediately.
     pub async fn refresh_jwks(&self) -> Result<()> {
-        let _guard = self.jwks_refresh.lock().await;
-        let keys = parse_jwks(fetch_jwks(&self.config.jwks_url).await?)?;
-        *self.jwks.write().unwrap() = CachedJwks {
-            keys,
-            refreshed_at: Instant::now(),
-        };
-        Ok(())
-    }
-
-    async fn refresh_for_unknown_kid(&self, kid: &str) -> Result<()> {
-        let _guard = self.jwks_refresh.lock().await;
-        if self.jwks.read().unwrap().keys.contains_key(kid) {
-            return Ok(());
-        }
-        let now = Instant::now();
-        {
-            let mut last = self.last_unknown_refresh.lock().unwrap();
-            if last.is_some_and(|t| now.duration_since(t) < UNKNOWN_KID_RETRY) {
-                bail!("unknown JWT key ID");
-            }
-            *last = Some(now);
-        }
-        let keys = parse_jwks(fetch_jwks(&self.config.jwks_url).await?)?;
-        *self.jwks.write().unwrap() = CachedJwks {
-            keys,
-            refreshed_at: Instant::now(),
-        };
-        Ok(())
+        self.jwt.refresh().await
     }
 
     #[cfg(test)]
@@ -1292,64 +1311,15 @@ impl Auth {
     }
 
     pub(crate) async fn verify_jwt(&self, jwt: &str, now_ms: u64) -> Result<String> {
-        if jwt.len() > 8192 {
-            bail!("JWT too large");
-        }
-        let mut parts = jwt.split('.');
-        let h = parts.next().context("JWT header")?;
-        let p = parts.next().context("JWT payload")?;
-        let s = parts.next().context("JWT signature")?;
-        if parts.next().is_some() {
-            bail!("invalid JWT compact form");
-        }
-        let header: JwtHeader = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(h)?)?;
-        if header.alg != "RS256" {
-            bail!("unsupported JWT algorithm");
-        }
-        if header.kid.is_empty() || header.kid.len() > 128 {
-            bail!("invalid JWT key ID");
-        }
-        if !self.jwks.read().unwrap().keys.contains_key(&header.kid) {
-            self.refresh_for_unknown_kid(&header.kid).await?;
-        }
-        let signature = URL_SAFE_NO_PAD.decode(s)?;
-        {
-            let jwks = self.jwks.read().unwrap();
-            if jwks.refreshed_at.elapsed() > JWKS_MAX_AGE {
-                bail!("JWKS cache expired");
-            }
-            let (n, e) = jwks.keys.get(&header.kid).context("unknown JWT key ID")?;
-            RsaPublicKeyComponents { n, e }
-                .verify(
-                    &RSA_PKCS1_2048_8192_SHA256,
-                    format!("{h}.{p}").as_bytes(),
-                    &signature,
-                )
-                .map_err(|_| anyhow::anyhow!("invalid JWT signature"))?;
-        }
-        let c: Claims = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(p)?)?;
-        let now_s = now_ms / 1000;
-        if c.iss != self.config.issuer
-            || c.sub.is_empty()
-            || c.exp <= now_s
-            || c.nbf.is_some_and(|nbf| nbf > now_s + 120)
-        {
-            bail!("invalid JWT claims");
-        }
-        let audience_ok = c.aud.as_str() == Some(&self.config.audience)
-            || c.aud
-                .as_array()
-                .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(&self.config.audience)));
-        if !audience_ok {
-            bail!("JWT audience mismatch");
-        }
-        self.require_active_owner(&c.sub).await?;
-        Ok(c.sub)
+        let subject = self.jwt.subject(jwt, now_ms).await?;
+        self.require_active_owner(&subject).await?;
+        Ok(subject)
     }
 
     pub async fn require_live_route(&self,subject:&str,mac_id:&str,client_id:Option<&str>)->Result<()> {
         #[cfg(test)]
         self.live_route_checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.require_held_removals(subject)?;
         if let Some(db)=&self.management {
             db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
                 if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {
@@ -1360,6 +1330,7 @@ impl Auth {
         Ok(())
     }
     pub async fn require_active_owner(&self,subject:&str)->Result<()> {
+        self.require_held_removals(subject)?;
         if let Some(management)=&self.management {
             management.active_identity(&self.config.issuer,subject).await.map_err(|error| {
                 if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {
@@ -1368,6 +1339,18 @@ impl Auth {
                     anyhow::anyhow!(AccountGateError::Unavailable)
                 }
             })?;
+        }
+        Ok(())
+    }
+
+    /// Removed devices are already gone from the registry; what is left to refuse is a closed
+    /// account, and anything before the account source's list is read.
+    fn require_held_removals(&self, subject: &str) -> Result<()> {
+        if self.removals_pending() {
+            bail!(AccountGateError::Unavailable);
+        }
+        if self.devices.lock().unwrap().closed_owners.contains(subject) {
+            bail!(AccountGateError::Denied);
         }
         Ok(())
     }
@@ -1590,52 +1573,6 @@ fn printable(value: &str) -> String {
     value.chars().filter(|c| c.is_ascii_graphic()).take(24).collect()
 }
 
-fn parse_jwks(jwks: Jwks) -> Result<RsaJwks> {
-    let mut result = HashMap::new();
-    let mut ids = HashSet::new();
-    for j in jwks.keys {
-        if j.kty != "RSA"
-            || j.usage.as_deref().is_some_and(|v| v != "sig")
-            || j.alg.as_deref().is_some_and(|v| v != "RS256")
-        {
-            continue;
-        }
-        if !ids.insert(j.kid.clone()) {
-            bail!("duplicate JWK key ID");
-        }
-        result.insert(
-            j.kid,
-            (URL_SAFE_NO_PAD.decode(j.n)?, URL_SAFE_NO_PAD.decode(j.e)?),
-        );
-    }
-    if result.is_empty() {
-        bail!("JWKS has no RS256 signing keys");
-    }
-    Ok(result)
-}
-
-async fn fetch_jwks(url: &str) -> Result<Jwks> {
-    let client = reqwest::Client::builder()
-        .timeout(JWKS_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let mut response = client.get(url).send().await?.error_for_status()?;
-    if response
-        .content_length()
-        .is_some_and(|n| n > MAX_JWKS_BYTES as u64)
-    {
-        bail!("JWKS response too large");
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len().saturating_add(chunk.len()) > MAX_JWKS_BYTES {
-            bail!("JWKS response too large");
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(serde_json::from_slice(&body)?)
-}
-
 fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
     let bytes = URL_SAFE_NO_PAD.decode(encoded)?;
     Ok(VerifyingKey::from_sec1_bytes(&bytes)?)
@@ -1695,6 +1632,50 @@ fn iroh_node_key(node: &str) -> Option<[u8; 32]> {
     Some(key)
 }
 
+fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str,mac_id:&str)->Result<()> {
+    let clients=if kind=="mac" {
+        if let Some(mac)=registry.macs.get(id) {ensure!(mac.owner_sub==owner,RemovalConflict);}
+        registry.phone_macs.iter().filter(|(_,mac)|mac.as_str()==id).map(|(client,_)|client.clone()).collect::<Vec<_>>()
+    } else {vec![id.to_owned()]};
+    for client in &clients {
+        if let Some(record)=registry.devices.get(client) {
+            ensure!(record.owner_sub==owner && registry.phone_macs.get(client).map(String::as_str)==Some(mac_id),RemovalConflict);
+        }
+    }
+    if kind=="mac" {registry.macs.remove(id);registry.revoked_mac_ids.insert(id.to_owned());}
+    for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.push_ended.insert(client.clone());registry.revoked_ids.insert(client);}
+    forget_orphan_iroh_nodes(registry);
+    Ok(())
+}
+
+/// Whether the owner had any device to remove.
+fn remove_owner_devices(registry:&mut DeviceRegistry,owner:&str)->bool {
+    let phones:Vec<String>=registry.devices.values().filter(|d|d.owner_sub==owner).map(|d|d.device_id.clone()).collect();
+    let macs:Vec<String>=registry.macs.values().filter(|d|d.owner_sub==owner).map(|d|d.mac_id.clone()).collect();
+    if phones.is_empty() && macs.is_empty() {return false}
+    for id in phones {
+        registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.push_ended.insert(id.clone());registry.revoked_ids.insert(id);
+    }
+    for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
+    forget_orphan_iroh_nodes(registry);
+    true
+}
+
+fn apply_removal(registry: &mut DeviceRegistry, removal: &Removal) -> Result<()> {
+    match removal {
+        Removal::Mac { owner, mac_id } => remove_device(registry, owner, "mac", mac_id, mac_id),
+        Removal::Client { owner, client_id, mac_id } => {
+            remove_device(registry, owner, "client", client_id, mac_id)
+        }
+        Removal::Owner { owner } => {
+            ensure!(!owner.is_empty(), RemovalConflict);
+            remove_owner_devices(registry, owner);
+            registry.closed_owners.insert(owner.clone());
+            Ok(())
+        }
+    }
+}
+
 fn forget_orphan_iroh_nodes(registry: &mut DeviceRegistry) {
     let DeviceRegistry { iroh_nodes, devices, macs, .. } = registry;
     iroh_nodes.retain(|id, _| devices.contains_key(id) || macs.contains_key(id));
@@ -1711,6 +1692,8 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     revoked_mac_ids.sort();
     let mut push_ended: Vec<_> = registry.push_ended.iter().cloned().collect();
     push_ended.sort();
+    let mut closed_owners: Vec<_> = registry.closed_owners.iter().cloned().collect();
+    closed_owners.sort();
     let push_sessions = registry
         .push_sessions
         .iter()
@@ -1730,6 +1713,8 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
             macs,
             revoked_mac_ids,
             iroh_nodes: registry.iroh_nodes.clone(),
+            closed_owners,
+            removals_seq: registry.removals_seq,
         })?,
     )
 }
@@ -1780,6 +1765,14 @@ impl std::fmt::Display for EnrollmentError {
     }
 }
 impl std::error::Error for EnrollmentError {}
+/// A removal names a device of another account or Mac than the one the registry holds.
+#[derive(Debug)]
+pub struct RemovalConflict;
+impl std::fmt::Display for RemovalConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {f.write_str("removal_conflict")}
+}
+impl std::error::Error for RemovalConflict {}
+
 #[derive(Debug)]
 pub struct RegistryUnavailable;
 impl std::fmt::Display for RegistryUnavailable {

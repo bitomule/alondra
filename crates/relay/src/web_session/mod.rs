@@ -770,6 +770,7 @@ mod tests {
             iroh_relay: None,
             report_repo: None,
             testflight_url: None,
+            operator: crate::operator::Operator::default(),
             test_directory: Some(scratch_directory),
         });
         let run = tokio::spawn(async move {
