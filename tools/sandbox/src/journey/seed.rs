@@ -160,29 +160,51 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
             }
         })?;
 
-        request(report, &fakes, &user, &task_script("req-pr-unpresented", "t-pr-unpresented", "Validate the ignored parent folder"), "Validate the ignored parent folder")?;
-        let unpresented = launched(report, &fakes, "t-pr-unpresented")?;
-        state(report, &user, "t-pr-unpresented", WORKING)?;
-        report.step("the orchestrator will close the task once its node keeps stopping", || {
-            let orchestrator = fakes.dir.join("orchestrator");
-            std::fs::create_dir_all(&orchestrator)?;
-            std::fs::write(orchestrator.join("stall.json"), serde_json::json!({"kind": "close", "result": "The fix and its test are in PR #49."}).to_string())?;
-            Ok(())
-        })?;
-        let mut opens = Step::work_checked(49, "ignored-parent.txt", Checks::Mixed);
-        opens.pop();
-        opens.push(Step::Speak { said: "The fix is in PR #49.".into(), behind: None, listed: None });
-        act(report, &fakes, &unpresented, "the node opens PR #49 and stops without presenting it", &opens)?;
-        wait(report, "Alondra wakes the node to present PR #49", || told(&fakes, &unpresented, "#49"))?;
-        act(report, &fakes, &unpresented, "the woken node stops again", &[Step::Speak { said: "Done.".into(), behind: None, listed: None }])?;
-        wait(report, "the orchestrator closes the task and Alondra delivers its open PR #49 instead of cancelling it", || {
-            card_in_inbox(&user, "open-pr-").map(|(card, seen)| (card.map(drop), seen))
-        })?;
-        report.step("PR #49 stays open on GitHub", || {
-            let state = fakes.pr(49)?.map(|pr| pr.state);
-            anyhow::ensure!(state.as_deref() == Some("OPEN"), "PR #49 is {state:?}");
-            Ok(())
-        })?;
+        let unpresented = [
+            ("unpresented", "Validate the ignored parent folder", 49, "ignored-parent.txt", Checks::Mixed, false),
+            ("unpresented-green", "Trim the release notes", 50, "release-notes.txt", Checks::Success, false),
+            ("unpresented-conflicts", "Rename the cache folder", 51, "cache.txt", Checks::Success, true),
+        ];
+        for (slug, title, number, file, checks, conflicts) in unpresented {
+            let task = format!("t-pr-{slug}");
+            request(report, &fakes, &user, &task_script(&format!("req-pr-{slug}"), &task, title), title)?;
+            let node = launched(report, &fakes, &task)?;
+            state(report, &user, &task, WORKING)?;
+            report.step(&format!("the orchestrator will close {task} once its node keeps stopping"), || {
+                let orchestrator = fakes.dir.join("orchestrator");
+                std::fs::create_dir_all(&orchestrator)?;
+                let result = format!("The fix and its test are in PR #{number}.");
+                std::fs::write(orchestrator.join("stall.json"), serde_json::json!({"kind": "close", "result": result}).to_string())?;
+                Ok(())
+            })?;
+            let mut opens = Step::work_checked(number, file, checks);
+            opens.pop();
+            opens.push(Step::Speak { said: format!("The fix is in PR #{number}."), behind: None, listed: None });
+            act(report, &fakes, &node, &format!("the node opens PR #{number} and stops without presenting it"), &opens)?;
+            if conflicts {
+                fakes.update_pr(number, |pr| {
+                    if let Some(pr) = pr {
+                        pr.conflicts = true;
+                    }
+                })?;
+            }
+            wait(report, &format!("Alondra wakes the node to present PR #{number}"), || told(&fakes, &node, &format!("#{number}")))?;
+            act(report, &fakes, &node, "the woken node stops again", &[Step::Speak { said: "Done.".into(), behind: None, listed: None }])?;
+            if conflicts {
+                wait(report, &format!("the orchestrator closes {task}, Alondra delivers PR #{number} and hands it back to its node to resolve the conflicts"), || {
+                    told(&fakes, &node, &format!("/pull/{number} with main"))
+                })?;
+            } else {
+                wait(report, &format!("the orchestrator closes {task} and Alondra delivers its open PR #{number} instead of cancelling it"), || {
+                    card_in_inbox(&user, &format!("open-pr-{task}-")).map(|(card, seen)| (card.map(drop), seen))
+                })?;
+            }
+            report.step(&format!("PR #{number} stays open on GitHub"), || {
+                let state = fakes.pr(number)?.map(|pr| pr.state);
+                anyhow::ensure!(state.as_deref() == Some("OPEN"), "PR #{number} is {state:?}");
+                Ok(())
+            })?;
+        }
 
         let mut done = task_script("req-done", "t-done", "Fix the typo in the README");
         done.summary = Some("The README spells the install command right again: PR #42 merged.".into());
@@ -252,6 +274,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, one waiting for it, question, a card with an image and a video, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), an open PR Alondra delivered when its task was closed, finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, one waiting for it, question, a card with an image and a video, research with documents, secret, reviews (checks passed, failing, running, no CI, conflicts), open PRs Alondra delivered when their tasks were closed (failing checks, green, and one handed back to resolve its conflicts), finished, after-merge and interrupted tasks on Mac 1, an answered request, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

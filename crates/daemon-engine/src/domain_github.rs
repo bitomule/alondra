@@ -357,11 +357,6 @@ pub(crate) async fn reconcile(
 ) -> Result<()> {
     let state = domain.state()?;
     for pr in watched(&state) {
-        if let Some(OpenPrPending::Close { comment }) = pending(&state, &pr)
-            && let Err(reason) = observer.close(&pr.host, &pr.repository, pr.number, comment).await
-        {
-            log!("Alondra could not close {} on GitHub: {reason}", pr_url(&pr.host, &pr.repository, pr.number));
-        }
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) => facts,
             Err(reason) => {
@@ -372,6 +367,20 @@ pub(crate) async fn reconcile(
         failures.recovered(domain, &pr);
         apply(domain, &state, &pr, &facts)?;
         settle(domain, &pr, &facts)?;
+        if facts.state == PrState::Open
+            && let Some(OpenPrPending::Close { comment }) = pending(&state, &pr)
+            && failures.close_due(&pr.id)
+        {
+            match observer.close(&pr.host, &pr.repository, pr.number, comment).await {
+                Ok(()) => {
+                    failures.closed(domain, &pr);
+                    if let Ok(closed) = observer.observe(&pr.host, &pr.repository, pr.number).await {
+                        apply(domain, &*domain.state()?, &pr, &closed)?;
+                    }
+                }
+                Err(reason) => failures.close_failed(domain, &pr, &reason),
+            }
+        }
     }
     Ok(())
 }
@@ -404,12 +413,21 @@ fn pending_prs(state: &DomainState) -> BTreeSet<PrId> {
 }
 
 const OBSERVATION_FAILURES_BEFORE_PROBLEM: u32 = 5;
+const CLOSE_FAILURES_BEFORE_PROBLEM: u32 = 5;
+const CLOSE_WAIT_MAX_ROUNDS: u32 = 32;
 
 /// Consecutive failed reads per PR. The log records each failure up to the
 /// threshold; at the threshold the user gets one Problem and the log stops
-/// repeating itself.
+/// repeating itself. Closes that GitHub refused count apart: each failure
+/// doubles the rounds Alondra lets pass before it tries again.
 #[derive(Default)]
-pub(crate) struct ObservationFailures(BTreeMap<PrId, u32>);
+pub(crate) struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>);
+
+#[derive(Default)]
+struct CloseFailure {
+    count: u32,
+    wait: u32,
+}
 
 impl ObservationFailures {
     fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
@@ -417,6 +435,44 @@ impl ObservationFailures {
         if reported {
             let _ = domain.withdraw_problem(&format!("problem-pr-unreadable-{}", pr.slug()).into());
         }
+    }
+
+    fn close_due(&mut self, pr: &PrId) -> bool {
+        match self.1.get_mut(pr) {
+            Some(failure) if failure.wait > 0 => {
+                failure.wait -= 1;
+                false
+            }
+            _ => true,
+        }
+    }
+
+    fn closed(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
+        if self.1.remove(&pr.id).is_some_and(|failure| failure.count >= CLOSE_FAILURES_BEFORE_PROBLEM) {
+            let _ = domain.withdraw_problem(&format!("problem-pr-close-{}", pr.slug()).into());
+        }
+    }
+
+    fn close_failed(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
+        let failure = self.1.entry(pr.id.clone()).or_default();
+        failure.count += 1;
+        failure.wait = (1 << (failure.count - 1).min(5)).min(CLOSE_WAIT_MAX_ROUNDS);
+        let url = format!("{}/{}#{}", pr.host, pr.repository, pr.number);
+        log!("Alondra could not close {url} on GitHub ({} in a row): {reason}", failure.count);
+        if failure.count != CLOSE_FAILURES_BEFORE_PROBLEM {
+            return;
+        }
+        let need = clip(&format!("Close PR {}#{} on GitHub", pr.repository, pr.number), CardSpec::NEED_MAX);
+        let why = clip(&format!("Its task was cancelled and GitHub refused to close it {} times in a row: {reason}", failure.count), CardSpec::WHY_MAX);
+        let diagnosis = format!(
+            "The task of {url} was cancelled, so Alondra closes its PR, and GitHub refused it {} times in a row. Last error: {reason}. Alondra keeps trying, less and less often; closing the PR on GitHub yourself also ends this.",
+            failure.count);
+        let _ = domain.raise_problem(
+            &format!("problem-pr-close-{}", pr.slug()), None,
+            Some(&format!("pr-close:{}", pr.slug())),
+            Scope::Task { task_id: pr.task_id.clone() },
+            need, why, diagnosis, vec![],
+        );
     }
 
     fn failed(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
@@ -542,11 +598,18 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
-pub(crate) struct FakeObserver(pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>, pub std::sync::Mutex<Vec<(u64, String)>>);
+/// GitHub from memory: the facts of each PR, the closes it took, the ones it was asked for, and
+/// the error it refuses closes with, if any. A close it takes leaves the PR closed.
+pub(crate) struct FakeObserver(
+    pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>,
+    pub std::sync::Mutex<Vec<(u64, String)>>,
+    pub std::sync::Mutex<Option<String>>,
+    pub std::sync::atomic::AtomicUsize,
+);
 #[cfg(any(test, feature = "test-hooks"))]
 impl FakeObserver {
     pub(crate) fn new() -> Self {
-        Self(std::sync::Mutex::new(Default::default()), std::sync::Mutex::new(vec![]))
+        Self(Default::default(), Default::default(), Default::default(), Default::default())
     }
     pub(crate) fn set(&self, number: u64, facts: Result<PrFacts, String>) {
         self.0.lock().unwrap().insert(number, facts);
@@ -560,8 +623,15 @@ impl PrObserver for FakeObserver {
         Box::pin(async move { facts })
     }
     fn close<'a>(&'a self, _: &'a str, _: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        self.1.lock().unwrap().push((number, comment.to_owned()));
-        Box::pin(async { Ok(()) })
+        self.3.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let refused = self.2.lock().unwrap().clone();
+        if refused.is_none() {
+            self.1.lock().unwrap().push((number, comment.to_owned()));
+            if let Some(Ok(facts)) = self.0.lock().unwrap().get_mut(&number) {
+                facts.state = PrState::Closed;
+            }
+        }
+        Box::pin(async move { refused.map_or(Ok(()), Err) })
     }
 }
 
@@ -1007,11 +1077,70 @@ pub mod tests {
         registered(&domain);
         command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
         let observer = FakeObserver::new();
-        observer.set(7, Ok(facts(HEAD, PrState::Closed)));
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
-        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Closed by Alondra: the task “Task” was cancelled.".to_owned())]);
+        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Cancelled in Alondra: Task".to_owned())]);
         let state = domain.state().unwrap();
         assert_eq!((state.pull_requests[&"pr".into()].state, state.tasks[&"t".into()].open_pr.clone()), (PrState::Closed, None));
+    }
+
+    #[tokio::test]
+    async fn a_pr_already_closed_on_github_is_not_closed_again() {
+        let (_fixture, domain) = open("open-pr-closed-already");
+        registered(&domain);
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Closed)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 0, "nothing to close");
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, None);
+    }
+
+    #[tokio::test]
+    async fn a_close_github_keeps_refusing_is_tried_less_and_less_often_and_the_fifth_raises_one_problem() {
+        let (_fixture, domain) = open("open-pr-close-refused");
+        registered(&domain);
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        *observer.2.lock().unwrap() = Some("HTTP 502".into());
+        let mut failures = ObservationFailures::default();
+        let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.values()
+            .filter(|card| card.id.0.starts_with("problem-pr-close-") && !card.withdrawn).count();
+        let mut tried = vec![];
+        for round in 1..=25 {
+            let before = observer.3.load(std::sync::atomic::Ordering::Relaxed);
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+            if observer.3.load(std::sync::atomic::Ordering::Relaxed) > before {
+                tried.push(round);
+            }
+            if round == 19 {
+                assert_eq!(problems(&domain), 0, "four refusals are a bad moment on GitHub");
+            }
+        }
+        assert_eq!(tried, [1, 3, 6, 11, 20], "each refusal doubles the wait");
+        assert_eq!(problems(&domain), 1, "one Problem however long it keeps refusing");
+        *observer.2.lock().unwrap() = None;
+        for _ in 0..17 {
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+        }
+        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Cancelled in Alondra: Task".to_owned())]);
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
+        assert_eq!(problems(&domain), 0, "the close went through");
+    }
+
+    #[tokio::test]
+    async fn gh_closes_a_pr_with_its_comment() {
+        let (fixture, _) = open("gh-close");
+        let program = fixture.0.join("gh");
+        let log = fixture.0.join("calls");
+        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\ncase \"$*\" in *pull/7*) exit 0;; *) echo 'no pull requests found' >&2; exit 1;; esac\n", log.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let gh = GhCli::at(program);
+        gh.close("github.com", "owner/repo", 7, "Cancelled in Alondra: Task").await.unwrap();
+        assert!(gh.close("github.com", "owner/repo", 9, "Cancelled in Alondra: Task").await.unwrap_err().contains("no pull requests found"));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("pr close https://github.com/owner/repo/pull/7 --comment Cancelled in Alondra: Task"), "{calls}");
     }
 
     #[test]

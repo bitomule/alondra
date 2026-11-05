@@ -8,6 +8,7 @@ mod scheduled_launch;
 pub use scheduled_launch::{SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED};
 mod snooze;
 mod open_pr;
+pub use open_pr::cancelled_pr_comment;
 mod stall;
 pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, is_stall_case, stalled_card_id};
 pub(in crate::domain) use stall::stalled_in_place_of;

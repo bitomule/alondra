@@ -8,7 +8,7 @@ use crate::open_pr_delivery::{OPEN_PR_DELIVERY_PREFIX, OpenPrDelivery, PrReadine
 
 /// The comment Alondra closes the PR of a task the user cancelled with.
 pub fn cancelled_pr_comment(title: &str) -> String {
-    format!("Closed by Alondra: the task “{title}” was cancelled.")
+    format!("Cancelled in Alondra: {title}")
 }
 
 impl DomainState {

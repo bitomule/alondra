@@ -176,7 +176,7 @@ fn the_users_cancel_closes_the_pr_with_the_reason_until_github_reports_it_closed
     let mut s = registered();
     must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
     assert_eq!(task(&s).ending, Some(TaskEnding::Cancelling));
-    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Closed by Alondra: the task “{}” was cancelled.", task(&s).title) }));
+    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Cancelled in Alondra: {}", task(&s).title) }));
     must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(),
         state: PrState::Closed, merged_head: None });
     assert_eq!(task(&s).open_pr, None);

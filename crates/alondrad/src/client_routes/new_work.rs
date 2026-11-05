@@ -19,7 +19,8 @@ pub(crate) trait Github: Send + Sync + 'static {
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Answer<'a, Result<Value, String>>;
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>>;
     /// Closes the PR on GitHub without merging it.
-    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<(), String>>;
+    /// Closes the PR on GitHub with `comment`, the way Alondra closes every PR it closes.
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Answer<'a, Result<(), String>>;
     /// Whether GitHub has the PR open, closed or merged now.
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_core::domain::PrState, String>>;
     fn viewed_files<'a>(&'a self, pr: &'a alondra_core::domain::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
@@ -37,14 +38,9 @@ impl Github for Gh {
         Box::pin(crate::prs::Gh::issue_view(&crate::prs::GhCli, repo, number))
     }
 
-    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<(), String>> {
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Answer<'a, Result<(), String>> {
         Box::pin(async move {
-            let url = crate::domain_github::pr_url(host, repository, number);
-            crate::domain_github::GhCli::new()
-                .run(&["pr", "close", &url], None, std::time::Duration::from_secs(60))
-                .await
-                .map(|_| ())
-                .map_err(String::from)
+            crate::domain_github::PrObserver::close(&crate::domain_github::GhCli::new(), host, repository, number, comment).await
         })
     }
 

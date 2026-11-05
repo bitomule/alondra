@@ -534,7 +534,7 @@ async fn execute_external(
             };
             let (task_id, number, mut was_open) = (task.id.clone(), pr.number, pr.state == alondra_core::domain::PrState::Open);
             if was_open {
-                if let Err(detail) = client.github().close_pr(&pr.host, &pr.repository, pr.number).await {
+                if let Err(detail) = client.github().close_pr(&pr.host, &pr.repository, pr.number, &alondra_core::domain::cancelled_pr_comment(&task.title)).await {
                     log!("could not close PR #{number} on GitHub: {detail}");
                     match client.github().pr_state(&pr.host, &pr.repository, pr.number).await {
                         Ok(alondra_core::domain::PrState::Merged) => return Ok(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
@@ -3243,7 +3243,7 @@ for line in sys.stdin:
     impl crate::client_routes::Github for HeldPrClose {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<(), String>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> crate::node_close::Answer<'a, Result<(), String>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.release.acquire().await.unwrap().forget();
@@ -3509,8 +3509,8 @@ for line in sys.stdin:
         assert!(!approved_path("POST", "/actions/"));
     }
 
-    /// Closes PRs, or fails with the error in `.1`; `.3` is the state GitHub then reports, `None` when it does not answer.
-    struct ClosesPrs(std::sync::Mutex<Vec<u64>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>, Option<alondra_core::domain::PrState>);
+    /// Closes PRs with their comment, or fails with the error in `.1`; `.3` is the state GitHub then reports, `None` when it does not answer.
+    struct ClosesPrs(std::sync::Mutex<Vec<(u64, String)>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>, Option<alondra_core::domain::PrState>);
     impl crate::client_routes::Github for ClosesPrs {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
@@ -3518,11 +3518,11 @@ for line in sys.stdin:
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
         }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64) -> crate::node_close::Answer<'a, Result<(), String>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, comment: &'a str) -> crate::node_close::Answer<'a, Result<(), String>> {
             Box::pin(async move {
                 if let Some(error) = self.1 { return Err(error.into()); }
                 if let Some(during) = &self.2 { during(); }
-                self.0.lock().unwrap().push(number);
+                self.0.lock().unwrap().push((number, comment.to_owned()));
                 Ok(())
             })
         }
@@ -3898,7 +3898,7 @@ for line in sys.stdin:
         let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
         let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
-        assert_eq!(*github.0.lock().unwrap(), [7]);
+        assert_eq!(*github.0.lock().unwrap(), [(7, "Cancelled in Alondra: Task".to_owned())], "closed with the reason, as every PR Alondra closes");
         assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
