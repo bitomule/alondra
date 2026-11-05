@@ -161,7 +161,9 @@ impl QuietHours {
     fn apply(&self, payload: &Value, with_sound: bool, now: u32) -> (Value, bool) {
         let quiet = in_quiet_hours(self.start.as_deref(), self.end.as_deref(), now);
         let mut payload = payload.clone();
-        payload["aps"]["interruption-level"] = json!(if quiet { "passive" } else { "active" });
+        if quiet {
+            payload["aps"]["interruption-level"] = json!("passive");
+        }
         if (quiet || !with_sound)
             && let Some(aps) = payload["aps"].as_object_mut()
         {
@@ -3427,7 +3429,7 @@ mod tests {
         assert!(QuietHours::parse_update(Some(&Value::Null), None).is_err());
         assert_eq!(QuietHours::parse_update(None, None).unwrap(), None);
         let quiet = parse(json!("23:00"), json!("08:00")).unwrap().unwrap();
-        let payload = json!({"aps":{"sound":"default", "alert":{"title":"private"}, "badge":3}, "alondra":{"id":9}});
+        let payload = json!({"aps":{"sound":"default", "alert":{"title":"private"}, "badge":3, "interruption-level":"time-sensitive"}, "alondra":{"id":9}});
         for (minute, expected) in [
             (22 * 60 + 59, false),
             (23 * 60, true),
@@ -3439,12 +3441,15 @@ mod tests {
             assert_eq!(sound, !expected);
             assert_eq!(
                 body["aps"]["interruption-level"],
-                if expected { "passive" } else { "active" }
+                if expected { "passive" } else { "time-sensitive" }
             );
             assert_eq!(body["aps"].get("sound").is_none(), expected);
             assert_eq!(body["aps"]["alert"], payload["aps"]["alert"]);
             assert_eq!(body["alondra"], payload["alondra"]);
         }
+        let notice = json!({"aps":{"alert":{"title":"done"}, "interruption-level":"passive"}});
+        assert_eq!(quiet.apply(&notice, true, 12 * 60).0["aps"]["interruption-level"], "passive",
+            "a quiet notice stays quiet outside quiet hours");
         assert!(
             !quiet.apply(&payload, false, 12 * 60).0["aps"]
                 .as_object()

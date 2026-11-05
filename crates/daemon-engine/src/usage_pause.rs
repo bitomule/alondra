@@ -434,7 +434,8 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
     loop {
         if let Some((exhausted, again)) = pause.claim_announcement() {
             let now = now_millis();
-            alerts.tell(move |spanish| out_text(&exhausted, now, spanish), again).await;
+            let passive = again || !exhausted.no_session;
+            alerts.tell(move |spanish| out_text(&exhausted, now, spanish), passive).await;
         }
         let Some(standing) = pause.current().filter(|standing| !standing.no_session) else {
             let _ = changes.changed().await;
@@ -449,7 +450,7 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
                     log!("the usage pause ended: checking each account before resuming");
                     wake_nodes(&domain);
                     if announced {
-                        alerts.tell(back_text, false).await;
+                        alerts.tell(back_text, true).await;
                     }
                 }
             }
@@ -845,6 +846,7 @@ mod tests {
         assert_eq!(told.len(), 2, "one when it started and one when it ended: {told:?}");
         assert!(told[0].0.starts_with("No usage capacity until "), "{told:?}");
         assert_eq!(told[1].0, "Usage capacity is available again");
+        assert!(told.iter().all(|(_, passive)| *passive), "a pause and its end ask nothing of the user: {told:?}");
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -968,6 +970,23 @@ mod tests {
         pause.resume(now_millis());
         settle_pace_cards(&domain, now_millis());
         assert!(the_card(&domain, "pace-resume-").is_none(), "nothing left to resume");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_account_with_a_session_sounds_because_only_the_user_can_fix_it() {
+        let (domain, home) = domain();
+        let told = Arc::new(Told(Mutex::new(vec![])));
+        domain.live.usage_pause.wait_for_session(now_millis());
+        let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
+        for _ in 0..200 {
+            if !told.0.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        watcher.abort();
+        assert_eq!(told.0.lock().unwrap().clone(), [("No provider account is available: check Accounts".to_owned(), false)]);
         std::fs::remove_dir_all(home).unwrap();
     }
 
