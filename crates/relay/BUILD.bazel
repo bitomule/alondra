@@ -26,6 +26,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "alondra_relay_test",
+    size = "small",
     visibility = ["//apple/Data/Feed:__pkg__"],
     compile_data = glob(["tests/fixtures/**"]) + ["//fixtures/push", "//:web/react-router.config.ts"],
     crate = ":alondra_relay_lib",

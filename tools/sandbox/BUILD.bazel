@@ -26,6 +26,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "alondra-sandbox_test",
+    size = "small",
     crate = ":alondra-sandbox",
     edition = "2024",
     deps = ["@crates//:tempfile"],

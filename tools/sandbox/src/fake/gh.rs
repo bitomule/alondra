@@ -89,7 +89,7 @@ impl Fakes {
 pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
     fakes.record("gh", args)?;
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    if let ["api", "--method", method, "-H", _, path, rest @ ..] = words.as_slice() {
+    if let ["api", "--include", "--method", method, "-H", _, path, rest @ ..] = words.as_slice() {
         return super::github_api::api(fakes, method, path, rest == ["--input", "-"]);
     }
     let answer = match words.as_slice() {

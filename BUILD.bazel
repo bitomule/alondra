@@ -28,6 +28,11 @@ exports_files(
 )
 
 exports_files(
+    ["MUSTS.yml"],
+    visibility = ["//tools:__pkg__"],
+)
+
+exports_files(
     ["Makefile"],
     visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__", "//tools:__pkg__"],
 )

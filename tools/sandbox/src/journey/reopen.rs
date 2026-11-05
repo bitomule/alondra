@@ -28,6 +28,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         request(report, fakes, &user, &task_script("req-r2", "t-r2", "Remove the mailbox"), "Remove the mailbox")?;
         let first = launched(report, fakes, "t-r2")?;
         let first_node = node_id(&first)?.to_owned();
+        crate::fake::git(&first.cwd, &["commit", "--allow-empty", "-m", "Work no remote has: cancelling keeps its branch"])?;
         let original_branch = crate::fake::git(&first.cwd, &["branch", "--show-current"])?;
         let original_head = head(&first)?;
         native_snapshot(report, fakes, "native-before-cancel", &first)?;

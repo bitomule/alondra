@@ -15,13 +15,14 @@ sh_test(
         "upgrade-rehearsal.py",
         "//launchd:alondra.plist.in",
     ],
-    size = "small",
+    timeout = "moderate",
     # Runs fake daemons outside Bazel's sandbox; unlike `local`, its result is still cached.
     tags = ["no-sandbox"],
 )
 
 sh_test(
     name = "plugin_payload_test",
+    size = "small",
     srcs = ["plugin_payload_test.py"],
     args = [
         "$(rootpath release.py)",

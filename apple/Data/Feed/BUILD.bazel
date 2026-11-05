@@ -18,6 +18,7 @@ swift_library(
 
 swift_test(
     name = "AlondraFeedTests",
+    size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
     deps = [
@@ -44,6 +45,7 @@ swift_binary(
 
 swift_test(
     name = "ActionJournalProcessTests",
+    size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["ProcessTests/ActionJournalProcessTests.swift", "ProcessFixtures/ProcessProtocol.swift"],
     data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test"],

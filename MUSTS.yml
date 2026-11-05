@@ -6,8 +6,9 @@ version: 1
 # separate `bazel build` check is needed.
 #
 # A check's `paths` are the files its targets read, as Bazel reports them: a change to anything else
-# (prose, images no test loads) reopens nothing. `make musts-scopes` fails when a path is missing and
-# `tools/musts_scopes.py propose <check>` prints the paths Bazel asks for.
+# (prose, images no test loads) reopens nothing. `make musts-scopes` fails when a path is missing or a
+# glob matches nothing the targets read, and `tools/musts_scopes.py propose <check>` prints the paths
+# Bazel asks for.
 # musts-lint: allow glob-star-stops-at-slash
 checks:
   crate-agent-application:
@@ -844,14 +845,11 @@ checks:
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test
 
-  apple-tests:
+  apple-daemon-process:
     uses: bazel/test
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "BUILD.bazel"
-      - "MODULE.bazel"
-      - "Package.resolved"
       - "agent-host/*.ts"
       - "agent-host/BUILD.bazel"
       - "agent-host/bundle.mjs"
@@ -864,33 +862,29 @@ checks:
       - "agent-host/sea.mjs"
       - "agent-host/toolchain.bzl"
       - "agent-host/tsconfig.json"
-      - "apple/*.bzl"
       - "apple/BUILD.bazel"
-      - "apple/Bonjour/**"
-      - "apple/Contract/**"
-      - "apple/Data/**"
-      - "apple/Demo/**"
-      - "apple/Design/**"
-      - "apple/Features/**"
-      - "apple/IconConcepts/Alondra.icon/**"
-      - "apple/Mermaid/BUILD.bazel"
-      - "apple/Mermaid/Fixtures/**"
-      - "apple/Mermaid/Snapshots/**"
-      - "apple/Mermaid/Sources/**"
-      - "apple/Mermaid/Tests/**"
-      - "apple/Testing/**"
-      - "apple/entitlements_follow_signing_test.py"
-      - "apple/iOS/Resources/Localizable.xcstrings"
-      - "apple/iOS/UI/**"
-      - "apple/iOSLiveActivity/Resources/LiveActivity.xcstrings"
-      - "apple/iOSLiveActivity/Views/**"
-      - "apple/macOS/**"
-      - "crates/BUILD.bazel"
+      - "apple/Contract/BUILD.bazel"
+      - "apple/Contract/Sources/**"
+      - "apple/Data/Feed/BUILD.bazel"
+      - "apple/Data/Feed/ProcessFixtures/**"
+      - "apple/Data/Feed/ProcessTests/**"
+      - "apple/Data/Feed/Sources/**"
+      - "apple/Data/Iroh/**"
+      - "apple/Data/Transport/BUILD.bazel"
+      - "apple/Data/Transport/Sources/**"
+      - "apple/swift.bzl"
+      - "apple/Testing/BUILD.bazel"
+      - "apple/Testing/TemporaryFiles.swift"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "clippy.toml"
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
       - "crates/alondra/**"
       - "crates/alondrad/**"
+      - "crates/BUILD.bazel"
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine/**"
@@ -905,15 +899,67 @@ checks:
       - "crates/store/**"
       - "crates/test_support.rs"
       - "fixtures/client-v2/**"
+      - "fixtures/push/**"
+      - "fixtures/views/*.json"
+      - "fixtures/views/BUILD.bazel"
+      - "fixtures/views/cards/**"
+      - "launchd/**"
+      - "MODULE.bazel"
+      - "Package.resolved"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //apple/Data/Feed:ActionJournalProcessTests
+        - //apple/Data/Iroh:AlondraIrohProcessTests
+
+  apple-tests:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "apple/*.bzl"
+      - "apple/Bonjour/**"
+      - "apple/BUILD.bazel"
+      - "apple/Contract/**"
+      - "apple/Data/Account/**"
+      - "apple/Data/Attachments/**"
+      - "apple/Data/Feed/BUILD.bazel"
+      - "apple/Data/Feed/Sources/**"
+      - "apple/Data/Feed/Tests/**"
+      - "apple/Data/Iroh/BUILD.bazel"
+      - "apple/Data/Iroh/Sources/**"
+      - "apple/Data/LiveActivity/**"
+      - "apple/Data/Notifications/**"
+      - "apple/Data/Pairing/**"
+      - "apple/Data/Sync/**"
+      - "apple/Data/Transport/**"
+      - "apple/Demo/**"
+      - "apple/Design/**"
+      - "apple/entitlements_follow_signing_test.py"
+      - "apple/Features/**"
+      - "apple/IconConcepts/Alondra.icon/**"
+      - "apple/iOS/Resources/Localizable.xcstrings"
+      - "apple/iOS/UI/**"
+      - "apple/iOSLiveActivity/Resources/LiveActivity.xcstrings"
+      - "apple/iOSLiveActivity/Views/**"
+      - "apple/macOS/**"
+      - "apple/Mermaid/BUILD.bazel"
+      - "apple/Mermaid/Fixtures/**"
+      - "apple/Mermaid/Snapshots/**"
+      - "apple/Mermaid/Sources/**"
+      - "apple/Mermaid/Tests/**"
+      - "apple/Testing/**"
       - "fixtures/diffs/**"
       - "fixtures/markdown/**"
       - "fixtures/push/**"
       - "fixtures/report/**"
       - "fixtures/views/**"
-      - "launchd/**"
-      - "tools/*.bzl"
+      - "MODULE.bazel"
+      - "Package.resolved"
       - "tools/BUILD.bazel"
-      - "version.bzl"
+      - "tools/shared.bzl"
     with:
       targets:
         - //apple/Contract:AlondraContractTests
@@ -923,8 +969,6 @@ checks:
         - //apple/Data/Notifications:AlondraNotificationsTests
         - //apple/Data/LiveActivity:AlondraLiveActivityTests
         - //apple/Data/Feed:AlondraFeedTests
-        - //apple/Data/Feed:ActionJournalProcessTests
-        - //apple/Data/Iroh:AlondraIrohProcessTests
         - //apple/Data/Attachments:AlondraAttachmentsTests
         - //apple/Demo:AlondraDemoTests
         - //apple/Design:AlondraDesignTests
@@ -935,7 +979,9 @@ checks:
         - //apple/Testing:IssueReportingIntegrationTests
         - //apple/Testing/Entitlements:sample_signing_entitlements_test
         - //apple/Testing/Quality:AlondraQualityTests
-        - //apple/Testing/Snapshots:AlondraSnapshotTests
+        - //apple/Testing/Snapshots:AlondraDetailSnapshotTests
+        - //apple/Testing/Snapshots:AlondraScreenSnapshotTests
+        - //apple/Testing/Snapshots:AlondraTriageSnapshotTests
         - //apple/Testing/TriageTouch:TriageTouchUITests
         - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
@@ -1113,9 +1159,36 @@ checks:
   musts-scopes:
     uses: bazel/test
     paths:
+      - "BUILD.bazel"
+      - "MUSTS.yml"
       - "tools/BUILD.bazel"
       - "tools/musts_scopes.py"
       - "tools/tests/test_musts_scopes.py"
     with:
       targets:
         - //tools:musts_scopes_test
+
+  test-durations:
+    uses: bazel/test
+    paths:
+      - "tools/BUILD.bazel"
+      - "tools/test_durations.py"
+      - "tools/tests/test_test_durations.py"
+    with:
+      targets:
+        - //tools:test_durations_test
+
+  test-limits:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - "**/*.bzl"
+      - "**/BUILD.bazel"
+      - "Makefile"
+      - "tools/BUILD.bazel"
+      - "tools/test_limits.py"
+      - "tools/test_limits_allowlist.tsv"
+      - "tools/tests/test_test_limits.py"
+    with:
+      targets:
+        - //tools:test_limits_test

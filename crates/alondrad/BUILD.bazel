@@ -64,6 +64,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "launcher_test",
+    size = "small",
     srcs = ["tests/launcher.rs", "//crates:test_support.rs"],
     crate_root = "tests/launcher.rs",
     data = [":alondrad-launcher"],
@@ -76,6 +77,7 @@ low_opt_rust_test(
 low_opt_rust_test(
     name = "alondrad_test",
     size = "large",
+    timeout = "moderate",
     visibility = ["//apple/Data/Feed:__pkg__", "//apple/Data/Iroh:__pkg__"],
     compile_data = [
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
@@ -135,18 +137,21 @@ low_opt_rust_test(
 
 rust_inputs_test(
     name = "production_inputs_test",
+    size = "small",
     target_under_test = ":alondrad_lib",
     test_sources = False,
 )
 
 rust_inputs_test(
     name = "alondrad_test_inputs_test",
+    size = "small",
     target_under_test = ":alondrad_test",
     test_sources = True,
 )
 
 low_opt_rust_test(
     name = "lock_policy_test",
+    size = "small",
     srcs = ["tests/lock_policy.rs"],
     data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-support:report_sources"],
     edition = "2024",
@@ -154,6 +159,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "relaunch_test",
+    timeout = "moderate",
     srcs = ["tests/relaunch.rs"],
     data = [":alondrad"],
     edition = "2024",
@@ -164,6 +170,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "info_commands_test",
+    size = "small",
     srcs = ["tests/info_commands.rs", "//crates:test_support.rs"],
     crate_root = "tests/info_commands.rs",
     data = [":alondrad"],

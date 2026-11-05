@@ -26,6 +26,7 @@ genrule(
 # captured through an NSHostingView, so a change to what the Mac shows is seen without launching it.
 swift_test(
     name = "AlondraMacSnapshotTests",
+    timeout = "moderate",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     args = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
     srcs = glob(["Tests/*.swift"]) + [

@@ -92,11 +92,11 @@ pub fn api(fakes: &Fakes, method: &str, path: &str, input: bool) -> Result<i32> 
     write_json(&fakes.reports_path(), &state)?;
     match answer {
         Answer::Ok(value) => {
-            println!("{value}");
+            print!("HTTP/2.0 200 OK\r\n\r\n{value}");
             Ok(0)
         }
         Answer::Http(status, message) => {
-            println!("{}", json!({"message": message}));
+            print!("HTTP/2.0 {status} Refused\r\n\r\n{}", json!({"message": message}));
             eprintln!("gh: {message} (HTTP {status})");
             Ok(1)
         }

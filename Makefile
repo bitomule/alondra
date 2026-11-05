@@ -46,9 +46,13 @@ snapshots-record:
 		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--test_env=SNAPSHOT_ROOT=$(SNAPSHOT_ROOT) \
 		--nocache_test_results --test_output=errors
-	@outputs=$$(find bazel-testlogs/apple/Testing/Snapshots/AlondraSnapshotTests -type d -name test.outputs | head -1); \
-	if [ -n "$$outputs" ] && [ -d "$$outputs/$(SNAPSHOT_ROOT)" ]; then \
-		mkdir -p $(SNAPSHOT_ROOT) && cp -R "$$outputs/$(SNAPSHOT_ROOT)/." $(SNAPSHOT_ROOT)/ && chmod -R u+w $(SNAPSHOT_ROOT); \
+	@copied=; for outputs in $$(find bazel-testlogs/apple/Testing/Snapshots -type d -name test.outputs); do \
+		if [ -d "$$outputs/$(SNAPSHOT_ROOT)" ]; then \
+			mkdir -p $(SNAPSHOT_ROOT) && cp -R "$$outputs/$(SNAPSHOT_ROOT)/." $(SNAPSHOT_ROOT)/ && chmod -R u+w $(SNAPSHOT_ROOT); \
+			copied=yes; \
+		fi; \
+	done; \
+	if [ -n "$$copied" ]; then \
 		echo "Baselines copied to $(SNAPSHOT_ROOT)"; \
 	else \
 		echo "Every baseline still matches its screen: nothing recorded"; \

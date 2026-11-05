@@ -85,30 +85,60 @@ swift_library(
     ],
 )
 
-# `timeout = "long"`: the suite runs in seconds, but iOS 26 simulator teardown can exceed the
-# default budget on a busy host and kill the runner after every test has already passed.
-ios_unit_test(
+DETAIL_SUITES = [
+    "CardDetailSnapshotTests",
+    "MachineBadgeSnapshotTests",
+    "PRChangesSnapshotTests",
+    "PRReviewSnapshotTests",
+]
+
+TRIAGE_SUITE = "TriageSnapshotTests"
+
+# Text on the cards drawn in a process's first seconds comes out a few levels off its baseline, and
+# only under load. Every target draws this suite first, as the baselines were recorded.
+FIRST_SUITE = "AccountSnapshotTests"
+
+# The suites take about 200 seconds in one simulator, so three targets run them side by side, each
+# on its own simulator slot. The last one skips what the others run: a new suite always runs.
+[
+    ios_unit_test(
+        name = name,
+        timeout = "moderate",
+        bundle_id = "com.bitomule.alondra.snapshottests",
+        data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
+            "Fixtures/pairing-native-label.png",
+            "//apple:iOS/Resources/Localizable.xcstrings",
+            "//apple/Testing/Samples:all",
+            "//fixtures/diffs",
+            "//fixtures/views:all",
+            "//fixtures/views:cards",
+            "//fixtures/views:metrics",
+            "//fixtures/views:newer_daemon",
+        ],
+        env = {
+            "KEEP_XCRESULT_ON_SUCCESS": "0",
+            "TEST_HOST_BUNDLE_ID": "com.bitomule.alondra.snapshottesthost",
+            "SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__",
+        },
+        minimum_os_version = "26.0",
+        runner = ":iphone_17_pro_runner",
+        test_filter = test_filter,
+        test_host = ":SnapshotTestHost",
+        deps = [":AlondraSnapshotTestsLib"],
+    )
+    for name, test_filter in {
+        "AlondraDetailSnapshotTests": ",".join([FIRST_SUITE] + DETAIL_SUITES),
+        "AlondraScreenSnapshotTests": ",".join(["-" + suite for suite in DETAIL_SUITES + [TRIAGE_SUITE]]),
+        "AlondraTriageSnapshotTests": ",".join([FIRST_SUITE, TRIAGE_SUITE]),
+    }.items()
+]
+
+test_suite(
     name = "AlondraSnapshotTests",
-    timeout = "long",
-    bundle_id = "com.bitomule.alondra.snapshottests",
-    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
-        "Fixtures/pairing-native-label.png",
-        "//apple:iOS/Resources/Localizable.xcstrings",
-        "//apple/Testing/Samples:all",
-        "//fixtures/diffs",
-        "//fixtures/views:all",
-        "//fixtures/views:cards",
-        "//fixtures/views:metrics",
-        "//fixtures/views:newer_daemon",
+    tests = [
+        ":AlondraDetailSnapshotTests",
+        ":AlondraScreenSnapshotTests",
+        ":AlondraTriageSnapshotTests",
     ],
-    env = {
-        "KEEP_XCRESULT_ON_SUCCESS": "0",
-        "TEST_HOST_BUNDLE_ID": "com.bitomule.alondra.snapshottesthost",
-        "SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__",
-    },
-    minimum_os_version = "26.0",
-    runner = ":iphone_17_pro_runner",
-    test_host = ":SnapshotTestHost",
     visibility = ["//visibility:public"],
-    deps = [":AlondraSnapshotTestsLib"],
 )

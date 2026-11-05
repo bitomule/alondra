@@ -11,6 +11,7 @@ swift_library(
 
 swift_test(
     name = "AlondraContractTests",
+    size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
     data = ["//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon"],

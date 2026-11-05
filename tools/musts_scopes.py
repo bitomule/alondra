@@ -2,7 +2,10 @@
 """Keeps each bazel/test check's `paths` equal to the files its targets read.
 
 `check` asks Bazel for the source, BUILD and .bzl files behind each check's targets and fails when one
-of them is not matched by the check's `paths`, so that change would not reopen the tests that read it.
+of them is not matched by the check's `paths`, so that change would not reopen the tests that read it,
+or when a glob under a directory matches nothing they read, so a change there would reopen tests it
+cannot affect. Root files such as `.bazelrc` are read by Bazel itself and no query names them, and a
+`**/` glob belongs to a test that reads the checkout through its runfiles link.
 `propose CHECK` prints the `paths` Bazel's answer needs. Only `bazel query` runs; nothing is built."""
 import argparse
 import re
@@ -127,6 +130,11 @@ def by_extension(paths, tracked, wanted):
     return sorted(out)
 
 
+def dead_globs(paths, needed):
+    return [glob for glob in paths if "/" in glob and not glob.startswith("**/")
+            and not any(glob_regex(glob).match(path) for path in needed)]
+
+
 def check(manifest, tracked, selected):
     failed = False
     for name, spec in parse_checks(manifest).items():
@@ -135,10 +143,13 @@ def check(manifest, tracked, selected):
         needed = closure(spec["targets"])
         lost = sorted(path for path in needed if not matches(spec["paths"], path))
         unread = sorted(path for path in tracked if matches(spec["paths"], path) and path not in needed)
-        print(f"{name}: reads {len(needed)} files, {len(lost)} missing from paths, {len(unread)} in paths but unread")
+        dead = dead_globs(spec["paths"], needed)
+        print(f"{name}: reads {len(needed)} files, {len(lost)} missing from paths, {len(unread)} in paths but unread, {len(dead)} dead globs")
         for path in lost:
             print(f"  missing  {path}")
-        failed = failed or bool(lost)
+        for glob in dead:
+            print(f"  dead     {glob}")
+        failed = failed or bool(lost) or bool(dead)
     return failed
 
 

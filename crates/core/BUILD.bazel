@@ -18,12 +18,14 @@ exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain/tests.rs"])
 # The lifecycle authority cannot be cloned, deserialized or made from the Task DTO.
 rust_doc_test(
     name = "lifecycle_construction_test",
+    size = "small",
     crate = ":alondra_core",
     deps = ["//crates/domain:domain", "@crates//:serde_json"],
 )
 
 low_opt_rust_test(
     name = "alondra_core_test",
+    timeout = "moderate",
     compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics", "//fixtures/accounts:recorded-rows.json"],
     crate = ":alondra_core",
     deps = all_crate_deps(normal_dev = True),
@@ -42,6 +44,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "read_index_cost_test",
+    size = "small",
     crate_root = "benches/read_index_cost.rs",
     srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
@@ -50,6 +53,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "foundation_contract_test",
+    size = "small",
     crate_root = "tests/foundation.rs",
     srcs = ["tests/foundation.rs"],
     edition = "2024",
@@ -65,6 +69,7 @@ low_opt_rust_test(
 # for the `claude --bg` nodes still handed over to the Agent SDK.
 low_opt_rust_test(
     name = "hook_deduction_boundary_test",
+    size = "small",
     crate_root = "tests/hook_deduction_boundary.rs",
     srcs = ["tests/hook_deduction_boundary.rs"],
     data = glob(["src/domain/**/*.rs", "src/views/**/*.rs"]),
@@ -77,6 +82,7 @@ low_opt_rust_test(
 # It stays at the build's opt-level: the budget is a speed measurement.
 rust_test(
     name = "views_budget_test",
+    size = "small",
     crate_root = "tests/views_budget.rs",
     srcs = ["tests/views_budget.rs"],
     edition = "2024",

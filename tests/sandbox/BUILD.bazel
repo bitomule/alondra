@@ -119,7 +119,7 @@ sh_test(
 # Opt-in too: the scripted journeys (make e2e-journeys) on a fresh sandbox with the fake claude and gh.
 sh_test(
     name = "journeys",
-    timeout = "eternal",
+    timeout = "long",
     srcs = ["journeys.sh"],
     args = [
         "$(rootpath //crates/alondrad)",

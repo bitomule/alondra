@@ -60,7 +60,32 @@ sh_test(
 sh_test(
     name = "musts_scopes_test",
     srcs = ["tests/test_musts_scopes.py"],
-    data = ["musts_scopes.py"],
+    data = [
+        "musts_scopes.py",
+        "//:MUSTS.yml",
+    ],
+    env = {"MUSTS_MANIFEST": "$(rootpath //:MUSTS.yml)"},
+    size = "small",
+)
+
+# Reads the checkout itself through the Makefile's runfiles link, so it is never cached: BUILD files
+# of other packages are no data a glob here can reach.
+sh_test(
+    name = "test_limits_test",
+    srcs = ["tests/test_test_limits.py"],
+    data = [
+        "test_limits.py",
+        "test_limits_allowlist.tsv",
+        "//:Makefile",
+    ],
+    size = "small",
+    tags = ["external", "local"],
+)
+
+sh_test(
+    name = "test_durations_test",
+    srcs = ["tests/test_test_durations.py"],
+    data = ["test_durations.py"],
     size = "small",
 )
 

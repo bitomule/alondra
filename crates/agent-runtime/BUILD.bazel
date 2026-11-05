@@ -14,6 +14,7 @@ rust_library(
 
 low_opt_rust_test(
     name = "readiness_test",
+    size = "small",
     crate = ":agent_runtime",
     edition = "2024",
     deps = all_crate_deps(normal_dev = True),
@@ -30,6 +31,7 @@ rust_binary(
 )
 low_opt_rust_test(
     name = "owned_host_test",
+    size = "small",
     crate_root = "tests/owned_host.rs",
     srcs = ["tests/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
     compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
