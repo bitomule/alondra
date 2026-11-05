@@ -545,6 +545,14 @@ impl Admission {
     }
 }
 
+/// A node the disk paused has work under way: it goes back before anything new, whatever the priority.
+fn disk_returns_first(queue: Vec<Waiting>, pauses: &Pauses) -> Vec<Waiting> {
+    let (returning, rest): (Vec<Waiting>, Vec<Waiting>) = queue.into_iter().partition(|waiting| {
+        matches!(&waiting.key, Key::Resume(session) if pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::Disk))
+    });
+    returning.into_iter().chain(rest).collect()
+}
+
 /// Whether `head` may start now, with everything the gate knows: the disk, the Mac, the limit and
 /// the spacing of starts, which resumes keep too.
 fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> Result<(), Hold> {
@@ -837,6 +845,13 @@ pub(crate) fn working_projects(state: &DomainState) -> BTreeMap<TaskId, Option<S
     projects_of(state, working_tasks(state).iter())
 }
 
+/// Those of `tasks` the disk is reserved for: a paused node reserves nothing, whatever its held turn
+/// still runs, so the nodes the disk stopped never keep each other from coming back.
+pub(crate) fn reserving_tasks<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>) -> BTreeMap<TaskId, Option<String>> {
+    let held: BTreeSet<TaskId> = turns_held_for_disk(state).collect();
+    projects_of(state, tasks.filter(|task| !held.contains(*task)))
+}
+
 fn projects_of<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>) -> BTreeMap<TaskId, Option<String>> {
     tasks.map(|task| (task.clone(), state.tasks.get(task).and_then(|task| task.project.clone()))).collect()
 }
@@ -989,12 +1004,12 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
             all.insert(key.clone(), Waiting { key, priority: priority_of(state, Some(&paused.task)), resuming: true, since: paused.since });
         }
     }
-    let queue = ordered(all.into_values().collect());
+    let queue = disk_returns_first(ordered(all.into_values().collect()), &inner.saved.pauses);
     let mac = domain.live.machine_watch.mac();
     let (setting, limits) = node_limits(domain, &mac);
     let limit = limit_setting(setting, limits, inner.tuning).count();
     let head = queue.first().and_then(|head| task_of(state, &head.key));
-    let reserving = projects_of(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
+    let reserving = reserving_tasks(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
     let project = head.and_then(|task| state.tasks.get(&task)).and_then(|task| task.project.as_deref());
     let disk = domain.live.machine_watch.disk_room(&reserving, project, now);
     let disk_detail = domain.live.machine_watch.disk_detail(&reserving, project, now);

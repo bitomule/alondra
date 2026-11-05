@@ -1079,6 +1079,19 @@ fn a_start_waits_while_the_nodes_at_work_may_still_take_the_disk_and_goes_once_o
     assert_eq!(machine_cards(&domain), 0, "waiting for the disk asks the user nothing");
 }
 
+/// A node the disk paused goes back before a new task of any priority; one the memory paused keeps
+/// its place by priority.
+#[test]
+fn a_node_the_disk_paused_goes_back_before_a_new_high_task() {
+    let paused = |reason| Paused { task: "t".into(), reason, since: 0, cut: None, turn_since: None, cleanup: crate::pauses::Cleanup::Done, released: false };
+    let mut pauses = Pauses::default();
+    pauses.paused.insert("disk".into(), paused(Reason::Disk));
+    pauses.paused.insert("memory".into(), paused(Reason::Memory));
+    let resume = |session: &str, since| Waiting { key: Key::Resume(session.into()), priority: TaskPriority::Normal, resuming: true, since };
+    let queue = ordered(vec![resume("disk", 2), resume("memory", 1), waiting("new", TaskPriority::High, false, 0)]);
+    assert_eq!(keys(&disk_returns_first(queue, &pauses)), ["disk", "new", "memory"]);
+}
+
 /// The disk's floor held a node's next turn and the daemon restarted: the node still waits, shown
 /// in the queue for the disk, and goes on by itself once the disk has room for its build.
 #[test]
