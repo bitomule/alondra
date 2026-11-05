@@ -1,6 +1,6 @@
 //! The launchd upgrade path, end to end with the real binary: preflight, self-relaunch after
 //! the binary at the launch path is replaced, and the crash-loop guard.
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -284,6 +284,34 @@ fn every_daemon_answer_says_its_version_even_a_refusal() {
         let (head, _) = fixture.exchange(path).expect("the daemon answers");
         assert!(head.lines().any(|line| line.trim() == stamp), "{path}: {head}");
     }
+}
+
+#[test]
+fn a_launchd_daemon_waits_for_one_started_by_hand_and_takes_over_when_it_leaves() {
+    let mut fixture = Fixture::new("handover");
+    let mut by_hand = serve(&mut fixture, false);
+    assert!(fixture.get("/daemon").unwrap().contains("\"supervised\":false"));
+
+    let mut launchd = Running(fixture.command(true).spawn().unwrap());
+    let mut log = std::io::BufReader::new(launchd.0.stderr.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("waiting for it to leave") {
+        line.clear();
+        assert_ne!(log.read_line(&mut line).unwrap(), 0, "the daemon of launchd ended instead of waiting");
+    }
+    assert!(by_hand.0.try_wait().unwrap().is_none());
+
+    assert_eq!(unsafe { libc::kill(by_hand.0.id() as i32, libc::SIGUSR1) }, 0);
+    let status = by_hand.0.wait().unwrap();
+    let left = stderr(&mut by_hand.0);
+    assert_eq!(status.code(), Some(75), "{left}");
+    assert!(!left.contains("stopping the SDK hosts"), "it leaves them for the next daemon: {left}");
+
+    let daemon = until(Duration::from_secs(30), "the daemon of launchd to serve", || {
+        assert!(launchd.0.try_wait().unwrap().is_none(), "the daemon of launchd must not exit");
+        fixture.get("/daemon")
+    });
+    assert!(daemon.contains("\"supervised\":true"), "{daemon}");
 }
 
 #[test]

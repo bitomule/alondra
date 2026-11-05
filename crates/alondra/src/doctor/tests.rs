@@ -231,7 +231,7 @@ impl System for Fake {
     fn apply(&self, action: Action) -> Result<()> {
         self.applied.borrow_mut().push(action);
         match action {
-            Action::InstallService | Action::ReplaceOtherService | Action::RestartService => {
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd => {
                 if *self.starts_failing.borrow() > 0 {
                     *self.starts_failing.borrow_mut() -= 1;
                     return Err(anyhow!("Alondra didn't start."));
@@ -322,6 +322,14 @@ fn the_service_check_names_the_repair_for_each_state() {
 #[test]
 fn a_daemon_that_answers_is_running_whatever_launchd_prints() {
     english();
+    let by_hand = service_check(&ServiceView { outside_launchd: true, ..running() });
+    assert_eq!(by_hand.status, Status::Warn, "a daemon launchd did not start is not «running»: {}", by_hand.detail);
+    assert_eq!(by_hand.fix, Some(Fix::Auto(Action::ReturnToLaunchd)));
+    let disabled = service_check(&ServiceView { outside_launchd: true, disabled: true, ..running() });
+    assert_eq!(disabled.fix, Some(Fix::Auto(Action::ReturnToLaunchd)));
+    assert_ne!(disabled.detail, by_hand.detail, "the reason launchd refuses the job is said");
+    let stopped = service_check(&ServiceView { daemon: DaemonState::Stopped, disabled: true, ..running() });
+    assert_ne!(stopped.detail, service_check(&ServiceView { daemon: DaemonState::Stopped, ..running() }).detail);
     let c = service_check(&ServiceView { installed: true, daemon: DaemonState::Answers, ..running() });
     assert_eq!((c.status, c.fix), (Status::Pass, None));
 }

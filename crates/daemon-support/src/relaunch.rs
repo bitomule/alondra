@@ -6,6 +6,7 @@ use crate::locks::Poisonable as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -37,6 +38,35 @@ pub fn identity(path: &Path) -> std::io::Result<Identity> {
 /// launchd names the job in `XPC_SERVICE_NAME`; a daemon started by hand is left alone.
 pub fn supervised(label: &str, env: impl Fn(&str) -> Option<String>) -> bool {
     env("XPC_SERVICE_NAME").is_some_and(|name| !label.is_empty() && name == label)
+}
+
+static UNDER_LAUNCHD: AtomicBool = AtomicBool::new(false);
+
+/// Keeps for `/daemon`, and says in the log, whether launchd runs this daemon: one outside it
+/// hears of no upgrade, and nothing brings it back if it stops.
+pub fn record_supervision(label: &str) {
+    let under_launchd = supervised(label, |key| std::env::var(key).ok());
+    UNDER_LAUNCHD.store(under_launchd, Ordering::Relaxed);
+    if !under_launchd {
+        log!("launchd does not run this daemon: an upgrade will not restart it and nothing brings it back if it stops");
+    }
+}
+
+pub fn under_launchd() -> bool {
+    UNDER_LAUNCHD.load(Ordering::Relaxed)
+}
+
+/// launchd can start this daemon while another still serves the same HOME: `doctor --fix` loads
+/// the job under a daemon started by hand before asking that one to leave. Starting beside it
+/// would take its work for interrupted, so this waits before touching anything.
+pub fn wait_until_free(home: &Path, every: Duration) {
+    let in_use = || alondra_core::home_lock::in_use(home).unwrap_or(false);
+    if in_use() {
+        log!("another daemon holds {}: waiting for it to leave", home.display());
+    }
+    while in_use() {
+        std::thread::sleep(every);
+    }
 }
 
 /// The path launchd ran, as written in the plist: a package manager's stable link, not the

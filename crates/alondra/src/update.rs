@@ -256,6 +256,7 @@ pub enum Waited {
     Rejected(String),
     Unreachable,
     Stale(String),
+    OutsideLaunchd(String),
     RestartFailed(String),
 }
 
@@ -275,6 +276,9 @@ pub fn wait_for_daemon(
             let version = info["version"].as_str().unwrap_or_default().to_string();
             if version == installed {
                 return Waited::Running;
+            }
+            if info["supervised"] == false {
+                return Waited::OutsideLaunchd(version);
             }
             let rejected = info.get("preflight_rejected").is_some_and(|r| r["version"].as_str() == Some(installed));
             if rejected && let Some(restart) = restart.take() {
@@ -301,6 +305,9 @@ pub fn describe(outcome: &Waited, installed: &str) -> String {
         Waited::RestartFailed(reason) => trf!("alondrad was not restarted: {reason}", "alondrad no se reinició: {reason}"),
         Waited::Unreachable => tr!("alondrad does not answer", "alondrad no responde").into(),
         Waited::Stale(version) => trf!("alondrad still runs {version}", "alondrad sigue ejecutando {version}"),
+        Waited::OutsideLaunchd(version) => trf!(
+            "alondrad still runs {version}: it was started by hand, so it cannot restart into {installed}. Run `alondra doctor --fix`",
+            "alondrad sigue ejecutando {version}: se arrancó a mano, así que no puede reiniciarse en {installed}. Ejecuta `alondra doctor --fix`"),
     }
 }
 
@@ -309,6 +316,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn a_daemon_outside_launchd_is_said_at_once_instead_of_waited_for() {
+        let info = || Some(json!({"version": "0.1.0", "update": {}, "supervised": false}));
+        let clock = Instant::now();
+        let waited = wait_for_daemon("0.2.0", info, || clock, |_| panic!("no restart will come"), Duration::from_secs(90), || panic!("launchd holds no job to restart"));
+        assert_eq!(waited, Waited::OutsideLaunchd("0.1.0".into()));
+        assert!(describe(&waited, "0.2.0").contains("alondra doctor --fix"));
+    }
 
     #[test]
     fn the_service_is_repaired_by_the_cli_just_installed_and_nothing_else() {

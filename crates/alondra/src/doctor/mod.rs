@@ -52,6 +52,7 @@ pub enum Action {
     InstallService,
     ReplaceOtherService,
     RestartService,
+    ReturnToLaunchd,
     PrepareIdentity,
     RepairPlugin,
     SetProjects,
@@ -60,7 +61,7 @@ pub enum Action {
 
 impl Action {
     fn starts_service(self) -> bool {
-        matches!(self, Action::InstallService | Action::ReplaceOtherService | Action::RestartService)
+        matches!(self, Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd)
     }
 
     /// A browser sign-in: `--yes` cannot do it for a person who is not there.
@@ -70,7 +71,7 @@ impl Action {
 
     fn progress(self) -> Option<&'static str> {
         match self {
-            Action::InstallService | Action::ReplaceOtherService | Action::RestartService =>
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd =>
                 Some(tr!("Starting the background service…", "Arrancando el servicio en segundo plano…")),
             Action::PrepareIdentity => Some(tr!("Preparing this Mac for your devices…", "Preparando este Mac para tus dispositivos…")),
             Action::RepairPlugin => Some(tr!("Setting up the Claude plugin…", "Configurando el plugin de Claude…")),

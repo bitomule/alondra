@@ -215,8 +215,20 @@ pub fn service_check(view: &ServiceView) -> Outcome {
             trf!("service {label} is not installed", "el servicio {label} no está instalado"), service_repair(view, Action::InstallService));
     }
     match view.daemon {
+        DaemonState::Stopped if view.disabled => outcome("service", "launchd", Group::Service, Status::Warn,
+            trf!("{label} installed but launchd has it disabled, so it does not start", "{label} instalado, pero launchd lo tiene desactivado y no arranca"),
+            service_repair(view, Action::InstallService)),
         DaemonState::Stopped => outcome("service", "launchd", Group::Service, Status::Warn,
             trf!("{label} installed but not running", "{label} instalado pero parado"), service_repair(view, Action::InstallService)),
+        DaemonState::Answers if view.outside_launchd => outcome("service", "launchd", Group::Service, Status::Warn,
+            if view.disabled {
+                trf!("launchd has {label} disabled and the daemon was started by hand: it does not restart into a new version and nothing brings it back if it stops",
+                    "launchd tiene {label} desactivado y el daemon se arrancó a mano: no se reinicia en una versión nueva y nada lo levanta si se para")
+            } else {
+                trf!("{label} is not running the daemon: it was started by hand, so it does not restart into a new version and nothing brings it back if it stops",
+                    "{label} no ejecuta el daemon: se arrancó a mano, así que no se reinicia en una versión nueva y nada lo levanta si se para")
+            },
+            service_repair(view, Action::ReturnToLaunchd)),
         _ if view.pending && !view.dev_over_brew => outcome("service", "launchd", Group::Service, Status::Warn,
             trf!("{label} runs with an outdated service file or config.toml", "{label} funciona con un archivo de servicio o un config.toml desactualizado"),
             service_repair(view, Action::InstallService)),

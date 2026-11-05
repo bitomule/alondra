@@ -909,7 +909,69 @@ fn machine_text(mut answer: Value) -> Result<String> {
 
 /// Sends one typed command. A card carries its own id, so a retry after a timeout is the same
 /// command and the daemon answers it with the first outcome instead of making a second card.
+///
+/// While the daemon is older than this client, as in every upgrade until it restarts, the call
+/// waits and the same command goes again once it matches: the node's turn stays open, so nothing
+/// reads as a node that stopped.
 fn submit(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<String> {
+    let held_until = std::time::Instant::now() + hold_limit();
+    loop {
+        let error = match send_command(client, bearer, name, args) {
+            Ok(notice) => return Ok(notice),
+            Err(error) => error,
+        };
+        let Some(behind) = error.downcast_ref::<crate::client::DaemonBehind>() else { return Err(error) };
+        if !wait_for_daemon_version(client, bearer, held_until) {
+            return Err(anyhow::Error::new(VersionMismatch { client: env!("CARGO_PKG_VERSION"), daemon: behind.daemon.clone() }));
+        }
+    }
+}
+
+/// Below the `tool_timeout_sec` Alondra gives its MCP server, so the node hears the reason.
+const VERSION_HOLD: std::time::Duration = std::time::Duration::from_secs(3600);
+const VERSION_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn hold_limit() -> std::time::Duration {
+    std::env::var("ALONDRA_VERSION_HOLD_SECS").ok().and_then(|secs| secs.parse().ok())
+        .map_or(VERSION_HOLD, std::time::Duration::from_secs)
+}
+
+/// Whether the daemon caught up with this client before `until`. A daemon that is restarting does
+/// not answer for a moment; a session that closed has nobody left to hold the command for.
+fn wait_for_daemon_version(client: &Client, bearer: &str, until: std::time::Instant) -> bool {
+    while std::time::Instant::now() < until && !session_closed() {
+        let running = client.domain_get("/daemon", bearer).ok();
+        if running.as_ref().and_then(|daemon| daemon["version"].as_str())
+            .is_some_and(|daemon| !alondra_core::update::newer(env!("CARGO_PKG_VERSION"), daemon))
+        {
+            return true;
+        }
+        std::thread::sleep(VERSION_POLL);
+    }
+    false
+}
+
+fn session_closed() -> bool {
+    let mut stdin = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+    unsafe { libc::poll(&mut stdin, 1, 0) > 0 && stdin.revents & libc::POLLHUP != 0 }
+}
+
+/// The hold ran out with the daemon still older than this client.
+#[derive(Debug)]
+struct VersionMismatch {
+    client: &'static str,
+    daemon: String,
+}
+
+impl std::fmt::Display for VersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Alondra refused it [version_mismatch]: these tools are {} and the daemon still runs {}, so Alondra is still updating. Nothing was sent. Send the card again with the same interaction_id, and do not treat your work as failed.", self.client, self.daemon)
+    }
+}
+
+impl std::error::Error for VersionMismatch {}
+
+fn send_command(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<String> {
     let capabilities = client.domain_get("/capabilities", bearer)?;
     let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
@@ -959,6 +1021,9 @@ fn command_id(name: &str, args: &Value) -> String {
 /// What a node reads when a call fails: a daemon it could not reach is never a success, and a
 /// refusal says what is wrong, where and how to fix it, and that nothing was granted.
 fn explain(error: &anyhow::Error) -> String {
+    if let Some(behind) = error.downcast_ref::<crate::client::DaemonBehind>() {
+        return explain(&behind.refusal);
+    }
     if let Some(crate::client::Refused(refused)) = error.downcast_ref() {
         let guidance = match refused.code.as_str() {
             "idempotency_conflict" => "That id already carries a different card: send a new interaction_id for a different card, or replaces to correct one that is still open.",
@@ -1819,6 +1884,14 @@ fn mcp_operation_identity(params: &Value, rpc: &Value, instance: &str) -> Result
     Ok(Sha256::digest(serde_json::to_vec(&identity)?).iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+fn refusal_reply(error: &anyhow::Error) -> Value {
+    let mut reply = json!({"content": [{"type": "text", "text": format!("Alondra error: {}", explain(error))}], "isError": true});
+    if let Some(mismatch) = error.downcast_ref::<VersionMismatch>() {
+        reply["structuredContent"] = json!({"kind": "version_mismatch", "client": mismatch.client, "daemon": mismatch.daemon});
+    }
+    reply
+}
+
 fn serve_server(
     server_name: &str,
     instructions: String,
@@ -1860,7 +1933,7 @@ fn serve_server(
                     dispatch(&client.with_mcp_operation(&operation),name,&args)
                 }) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
-                    Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {}", explain(&e))}], "isError": true}),
+                    Err(e) => refusal_reply(&e),
                 })
             }
             _ => Err(json!({"code": -32601, "message": format!("unsupported method: {method}")})),
