@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::accounts::{AccountKey, Provider};
+use crate::metrics::fold::Outcome;
 use crate::metrics::report::{TaskRow, provider_of};
 use crate::model_selection::AccountModelCatalog;
 use crate::model_sheets::sheet_for;
@@ -23,6 +24,7 @@ pub struct AccountRoom {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     pub tasks: i64,
+    pub done: i64,
     pub clean: i64,
     pub cost_micros: i64,
     pub costed: i64,
@@ -31,6 +33,7 @@ pub struct Tally {
 impl Tally {
     fn add(&mut self, task: &TaskRow) {
         self.tasks += 1;
+        self.done += i64::from(task.outcome == Outcome::Done);
         self.clean += i64::from(task.clean);
         if let Some(cost) = task.spend.and_then(|spend| spend.cost_micros) {
             self.cost_micros += cost;
@@ -38,11 +41,17 @@ impl Tally {
         }
     }
 
+    /// The share is of the tasks that were done, as the Metrics screen counts it: a cancelled task
+    /// says nothing about how well the model worked.
     fn text(&self) -> String {
-        let first_time = (self.clean * 100 + self.tasks / 2) / self.tasks.max(1);
+        let count = if self.done < self.tasks { format!("{} ({} done)", self.tasks, self.done) } else { self.tasks.to_string() };
+        let first_time = match self.done {
+            0 => "no task done yet".to_owned(),
+            done => format!("{}%", (self.clean * 100 + done / 2) / done),
+        };
         match self.costed {
-            0 => format!("{first_time}%"),
-            costed => format!("{first_time}% ${:.2}", self.cost_micros as f64 / costed as f64 / 1_000_000.0),
+            0 => format!("{count}: {first_time}"),
+            costed => format!("{count}: {first_time} ${:.2}", self.cost_micros as f64 / costed as f64 / 1_000_000.0),
         }
     }
 }
@@ -116,7 +125,7 @@ pub fn available_models(catalogs: &[AccountModelCatalog], accounts: &[AccountRoo
         return None;
     }
     let measured = results(tasks);
-    let mut out = String::from("Available models: model | efforts | account margin | sheet: cost, good for, caution | measured: tasks, % done first time, mean cost; kinds with 3+\n");
+    let mut out = String::from("Available models: model | efforts | account margin | sheet: cost, good for, caution | measured: tasks (done, when some were cancelled), % of the done ones without rework, mean cost; kinds with 3+\n");
     for row in rows {
         let mut parts = vec![format!("{}/{}", row.provider.as_str(), row.model)];
         if !row.efforts.is_empty() { parts.push(row.efforts.join(",")); }
@@ -129,9 +138,9 @@ pub fn available_models(catalogs: &[AccountModelCatalog], accounts: &[AccountRoo
             Some(results) => {
                 let mut kinds: Vec<_> = results.by_kind.iter().filter(|(_, tally)| tally.tasks >= KIND_SAMPLE).collect();
                 kinds.sort_by(|a, b| b.1.tasks.cmp(&a.1.tasks).then_with(|| a.0.cmp(b.0)));
-                let mut text = format!("{}: {}", results.overall.tasks, results.overall.text());
+                let mut text = results.overall.text();
                 for (kind, tally) in kinds.into_iter().take(KINDS_SHOWN) {
-                    text.push_str(&format!("; {kind} {}: {}", tally.tasks, tally.text()));
+                    text.push_str(&format!("; {kind} {}", tally.text()));
                 }
                 text
             }
@@ -147,7 +156,6 @@ pub fn available_models(catalogs: &[AccountModelCatalog], accounts: &[AccountRoo
 mod tests {
     use super::*;
     use crate::accounts::AccountId;
-    use crate::metrics::fold::Outcome;
     use crate::metrics::report::{Spend, Tokens};
     use crate::model_selection::CatalogModel;
 
@@ -202,6 +210,30 @@ mod tests {
         assert_eq!(lines[3], "codex/gpt-6.1-sol | high | Codex 90% | medium cost, fix/tests/migration/refactor/review/docs, Below the Claude Code runs on TB4 (58.2%) | 1: 100% $1.92");
         assert_eq!(lines[4], "codex/o9 | Codex 90% | no sheet | not measured");
         assert!(!table.contains("secret") && !table.contains("astra"), "hidden models and disabled accounts stay out");
+    }
+
+    #[test]
+    fn cancelled_tasks_do_not_lower_the_share_of_a_model_done_without_rework() {
+        let codex = catalog(&AccountKey::native(Provider::Codex), vec![model("gpt-6.1-sol", &["high"], false)]);
+        let sonnet = catalog(&AccountKey::native(Provider::Claude), vec![model("sonnet", &["medium"], false)]);
+        let cancelled = |model: &str| TaskRow { outcome: Outcome::Cancelled, ..task(model, None, Some("fix"), false, None) };
+        let mut tasks: Vec<TaskRow> = (0..19).map(|_| task("codex/gpt-6.1-sol", Some("codex"), Some("fix"), true, None)).collect();
+        tasks.extend((0..21).map(|_| cancelled("codex/gpt-6.1-sol")));
+        tasks.extend((0..32).map(|_| task("sonnet", None, Some("fix"), true, Some(2_400_000))));
+        tasks.push(task("sonnet", None, Some("fix"), false, Some(2_400_000)));
+        tasks.extend((0..4).map(|_| cancelled("sonnet")));
+        let table = available_models(&[sonnet, codex], &rooms(), &tasks).unwrap();
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[1].ends_with("| 37 (33 done): 97% $2.40; fix 37 (33 done): 97% $2.40"), "{table}");
+        assert!(lines[2].ends_with("| 40 (19 done): 100%; fix 40 (19 done): 100%"), "{table}");
+    }
+
+    #[test]
+    fn a_model_with_only_cancelled_tasks_has_no_share() {
+        let codex = catalog(&AccountKey::native(Provider::Codex), vec![model("gpt-6.1-sol", &["high"], false)]);
+        let tasks: Vec<TaskRow> = (0..3).map(|_| TaskRow { outcome: Outcome::Cancelled, ..task("codex/gpt-6.1-sol", Some("codex"), Some("fix"), false, None) }).collect();
+        let table = available_models(&[codex], &rooms(), &tasks).unwrap();
+        assert!(table.lines().nth(1).unwrap().ends_with("| 3 (0 done): no task done yet; fix 3 (0 done): no task done yet"), "{table}");
     }
 
     #[test]
