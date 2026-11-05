@@ -165,4 +165,27 @@ struct LinkAccountFromSettingsTests {
         #expect(requests.count == 1)
         #expect(owner.store.phase == .approved)
     }
+
+    @Test func aMacPairedThroughTheAccountCanBeForgottenFromThisDevice() async throws {
+        let nonce = LoginNonce()
+        let auth = AuthSession(transport: KeycloakDouble(nonce: nonce), browser: SigningInBrowser(nonce: nonce),
+                               storage: MemoryCredential(nil))
+        let owner = AccountSession(auth: auth, displayName: "iPhone", storageDirectory: try TestFiles.directory(),
+            didReconcile: { _ in {} }, pairingStore: try MemoryPairings([homeOnThisNetwork()]),
+            pairingTransport: RelayDouble(), localNetwork: MemoryLocalNetworkAccess().access,
+            browse: { AsyncStream { $0.finish() } })
+        try TestFiles.beforeRemoval { try await owner.stop() }
+        await owner.store.send(.appeared).finish()
+        let settings = owner.additionalMacPairing
+        try await settings.login()
+        _ = try await settings.begin(try RelayDouble.invitation())
+        try await settings.approve()
+        let linked = try #require(owner.macs.first)
+        #expect(!linked.local)
+        #expect(linked.forgettable)
+
+        try await owner.forgetMac(choice: linked.id)
+
+        #expect(owner.macs.isEmpty)
+    }
 }

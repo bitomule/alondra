@@ -53,6 +53,42 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
     }
 
+    private func paired(status: MacStatus, loaded: Bool) -> StoreOf<MacSettingsFeature> {
+        var state = MacSettingsFeature.State(id: UUID(), macName: "MacBook Pro de Alice", client: client, status: status, canForget: true)
+        if loaded {
+            state.settings = MacSettings(projectsRoot: "/Users/david/Projects",
+                                         candidates: [.init(path: "/Users/david/Projects", repos: 63)], relay: .init(on: true))
+        } else {
+            state.problem = .unexpected
+        }
+        return Store(initialState: state) { EmptyReducer<MacSettingsFeature.State, MacSettingsFeature.Action>() }
+    }
+
+    func test_pairedMac_connectedWithForget() {
+        let store = paired(status: .route(.direct), loaded: true)
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
+    }
+
+    func test_pairedMac_connectedWithForget_spanish() {
+        let store = paired(status: .route(.direct), loaded: true)
+        assertScreen([.light, .dark], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
+    }
+
+    func test_pairedMac_disconnectedWithForget() {
+        let store = paired(status: .problem(.macNotAnswering), loaded: false)
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
+    }
+
+    func test_pairedMac_disconnectedWithForget_spanish() {
+        let store = paired(status: .problem(.macNotAnswering), loaded: false)
+        assertScreen([.light, .dark], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
+    }
+
+    func test_pairedMac_settingsUnreadableWhileConnectedStillOffersForget() {
+        let store = paired(status: .route(.direct), loaded: false)
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
+    }
+
     private func direct(_ direct: DirectConnection) -> some View {
         NavigationStack {
             Form { DirectConnectionSection(direct: direct) }

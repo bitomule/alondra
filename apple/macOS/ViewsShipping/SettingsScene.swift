@@ -65,12 +65,11 @@ struct MacServiceSettingsScene: View {
         }
         client.forgetMac = { id in try await account.forgetMac(choice: id) }
         client.macSettings = { id in
-            await MainActor.run {
-                if id == workspace.thisMacChoiceID {
-                    return workspace.thisMac?.macSettingsClient(pickLocalFolder: { await LocalFolderPanel.choose() })
-                }
-                return account.session(choice: id)?.macSettingsClient()
-            }
+            let thisMac = await MainActor.run { workspace.thisMacChoiceID == id ? workspace.thisMac : nil }
+            if let thisMac { return thisMac.macSettingsClient(pickLocalFolder: { await LocalFolderPanel.choose() }) }
+            let paired: @Sendable () async -> MacSettingsClient? = { await MainActor.run { account.session(choice: id)?.macSettingsClient() } }
+            guard let first = await paired() else { return nil }
+            return .following(first, resolve: paired)
         }
         if let thisMac = workspace.thisMac {
             client.devices = { try await thisMac.trustedDevices() }

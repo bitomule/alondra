@@ -41,7 +41,10 @@ extension NotificationRuntime {
         }
         client.macStatuses = { await owner.macStatuses() }
         client.forgetMac = { id in try await owner.forgetMac(choice: id) }
-        client.macSettings = { id in await owner.session(choice: id)?.macSettingsClient() }
+        client.macSettings = { id in
+            guard let first = await owner.session(choice: id)?.macSettingsClient() else { return nil }
+            return .following(first) { await owner.session(choice: id)?.macSettingsClient() }
+        }
         client.problem = { services.connectionProblem(for: $0) }
         return client
     }

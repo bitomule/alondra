@@ -65,15 +65,47 @@ public struct MacSettingsClient: Sendable {
     /// How often the open screen reads the settings again, so what the Mac diagnoses by itself
     /// (its direct connection, macOS's Local Network permission) stays current.
     public var refresh: Duration?
+    /// The Mac's live connection state, the one every other screen reads: the current one first, then each change.
+    public var statuses: @Sendable () -> AsyncStream<MacStatus>
 
     public init(load: @escaping @Sendable () async throws -> MacSettings,
                 save: @escaping @Sendable (String) async throws -> MacSettings,
                 folders: @escaping @Sendable (String?) async throws -> FolderListing,
                 pickLocalFolder: (@Sendable () async -> String?)? = nil,
                 problem: @escaping @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected },
-                refresh: Duration? = nil) {
+                refresh: Duration? = nil,
+                statuses: @escaping @Sendable () -> AsyncStream<MacStatus> = { AsyncStream { $0.finish() } }) {
         self.load = load; self.save = save; self.folders = folders
-        self.pickLocalFolder = pickLocalFolder; self.problem = problem; self.refresh = refresh
+        self.pickLocalFolder = pickLocalFolder; self.problem = problem; self.refresh = refresh; self.statuses = statuses
+    }
+
+    /// Reads and writes through whichever session answers for the Mac at that moment, so a session
+    /// replaced while the screen is open is never the one it keeps asking.
+    public static func following(_ first: MacSettingsClient,
+                                 resolve: @escaping @Sendable () async -> MacSettingsClient?) -> MacSettingsClient {
+        @Sendable func live() async throws -> MacSettingsClient {
+            guard let client = await resolve() else { throw CancellationError() }
+            return client
+        }
+        return MacSettingsClient(
+            load: { try await live().load() },
+            save: { try await live().save($0) },
+            folders: { try await live().folders($0) },
+            pickLocalFolder: first.pickLocalFolder,
+            problem: first.problem,
+            refresh: first.refresh,
+            statuses: {
+                AsyncStream { continuation in
+                    let following = Task {
+                        while !Task.isCancelled, let client = await resolve() {
+                            for await status in client.statuses() { continuation.yield(status) }
+                            try? await Task.sleep(for: .seconds(1))
+                        }
+                        continuation.finish()
+                    }
+                    continuation.onTermination = { _ in following.cancel() }
+                }
+            })
     }
 
     /// The daemon's translated reason for refusing a folder, or a generic one.

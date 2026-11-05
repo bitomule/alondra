@@ -205,4 +205,67 @@ final class MacSettingsFeatureTests: XCTestCase {
         XCTAssertEqual(FolderPath.display("/Users/d"), "~")
         XCTAssertEqual(FolderPath.display("/Volumes/Work/Code"), "/Volumes/Work/Code")
     }
+
+    private func detail(canForget: Bool = true, load: @escaping @Sendable () async throws -> MacSettings,
+                        statuses: @escaping @Sendable () -> AsyncStream<MacStatus> = { AsyncStream { $0.finish() } }) -> TestStoreOf<MacSettingsFeature> {
+        let client = MacSettingsClient(load: load, save: { _ in throw CancellationError() }, folders: { _ in throw CancellationError() },
+                                       statuses: statuses)
+        let store = TestStore(initialState: MacSettingsFeature.State(id: UUID(), macName: "Mac", client: client, canForget: canForget)) {
+            MacSettingsFeature()
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAFailedReadWithTheMacConnectedKeepsTheConnectionTheRestOfTheAppShows() async {
+        struct Unreadable: Error {}
+        let store = detail(load: { throw Unreadable() }, statuses: { AsyncStream { $0.yield(.route(.direct)); $0.finish() } })
+        await store.send(.task).finish()
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.status, .route(.direct))
+        XCTAssertNotNil(store.state.problem)
+    }
+
+    func testASessionReplacedWhileTheScreenIsOpenIsNotAProblem() async {
+        let store = detail(load: { throw CancellationError() }, statuses: { AsyncStream { $0.yield(.connecting); $0.finish() } })
+        await store.send(.task).finish()
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.status, .connecting)
+        XCTAssertNil(store.state.problem)
+    }
+
+    func testForgettingAMacAsksFirstAndHandsTheDecisionToSettings() async {
+        let store = detail(load: { throw CancellationError() })
+        await store.send(.forgetTapped)
+        XCTAssertTrue(store.state.confirmForget)
+        await store.send(.cancelForget)
+        XCTAssertFalse(store.state.confirmForget)
+        await store.send(.forgetTapped)
+        await store.send(.confirmForget)
+        await store.receive(\.delegate)
+        XCTAssertFalse(store.state.confirmForget)
+    }
+
+    func testTheMacsOwnDaemonCannotBeForgotten() async {
+        let store = detail(canForget: false, load: { throw CancellationError() })
+        await store.send(.forgetTapped)
+        XCTAssertFalse(store.state.confirmForget)
+    }
+
+    func testFollowingReadsThroughTheSessionThatAnswersNow() async throws {
+        let first = MacSettingsClient(load: { MacSettings(projectsRoot: "/old", candidates: [], relay: .init(on: true)) },
+                                      save: { _ in throw CancellationError() }, folders: { _ in throw CancellationError() })
+        let current = LockIsolated<MacSettingsClient?>(first)
+        let following = MacSettingsClient.following(first) { current.value }
+        let before = try await following.load().projectsRoot
+        XCTAssertEqual(before, "/old")
+
+        current.setValue(MacSettingsClient(load: { MacSettings(projectsRoot: "/new", candidates: [], relay: .init(on: true)) },
+                                           save: { _ in throw CancellationError() }, folders: { _ in throw CancellationError() }))
+        let after = try await following.load().projectsRoot
+        XCTAssertEqual(after, "/new")
+
+        current.setValue(nil)
+        do { _ = try await following.load(); XCTFail("a Mac with no session has nothing to read") } catch is CancellationError {}
+    }
 }

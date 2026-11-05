@@ -27,10 +27,12 @@ public struct MacChoice: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let macID: String
     public let name: String?
-    /// Paired on the local network, without an account: it can be forgotten from here.
+    /// Paired on the local network, without an account.
     public let local: Bool
-    public init(id: UUID, macID: String, name: String? = nil, local: Bool = false) {
-        self.id = id; self.macID = macID; self.name = name; self.local = local
+    /// Every paired Mac can be forgotten from here; the Mac's own daemon is not a pairing.
+    public let forgettable: Bool
+    public init(id: UUID, macID: String, name: String? = nil, local: Bool = false, forgettable: Bool = true) {
+        self.id = id; self.macID = macID; self.name = name; self.local = local; self.forgettable = forgettable
     }
 }
 
@@ -203,7 +205,7 @@ public extension DependencyValues {
                 state.macStatuses = statuses
                 return .none
             case .forgetMacTapped(let id):
-                guard state.macs.contains(where: { $0.id == id && $0.local }), state.forgettingMacID == nil else { return .none }
+                guard state.macs.contains(where: { $0.id == id && $0.forgettable }), state.forgettingMacID == nil else { return .none }
                 state.confirmForgetMacID = id
                 return .none
             case .cancelForgetMac:
@@ -393,8 +395,13 @@ public extension DependencyValues {
                 }
             case .macSettingsReady(let id, let settings):
                 guard let mac = state.macs.first(where: { $0.id == id }) else { return .none }
-                state.macSettings = MacSettingsFeature.State(id: id, macName: mac.displayName, client: settings)
+                state.macSettings = MacSettingsFeature.State(id: id, macName: mac.displayName, client: settings,
+                                                             canForget: mac.forgettable)
                 return .none
+            case .macSettings(.presented(.delegate(.forget))):
+                guard let id = state.macSettings?.id else { return .none }
+                state.macSettings = nil
+                return .concatenate(.send(.forgetMacTapped(id)), .send(.confirmForgetMac))
             case .macSettings: return .none
             case .logoutTapped: state.confirmLogout = true; return .none
             case .cancelLogout: state.confirmLogout = false; return .none

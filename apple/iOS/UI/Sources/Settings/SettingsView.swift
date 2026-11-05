@@ -119,7 +119,7 @@ public struct SettingsView: View {
                     .accessibilityIdentifier("settings.macSettings")
                 }
                 .swipeActions {
-                    if mac.local {
+                    if mac.forgettable {
                         Button("Forget", systemImage: "trash", role: .destructive) { store.send(.forgetMacTapped(mac.id)) }
                     }
                 }

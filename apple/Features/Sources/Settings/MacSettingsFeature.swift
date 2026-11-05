@@ -9,19 +9,26 @@ import Foundation
         public let id: UUID
         public let macName: String
         public var settings: MacSettings?
+        public var status: MacStatus?
         public var problem: ConnectionProblem?
+        /// Every paired Mac can be forgotten from here; the Mac's own daemon cannot.
+        public var canForget: Bool
+        public var confirmForget = false
         public var chosen: MacSettings.Candidate?
         public var revision: UInt64 = 0
         public var error: String?
         @Presents public var browser: FolderBrowserFeature.State?
         @ObservationStateIgnored public var client: MacSettingsClient
 
-        public init(id: UUID, macName: String, client: MacSettingsClient, settings: MacSettings? = nil) {
+        public init(id: UUID, macName: String, client: MacSettingsClient, settings: MacSettings? = nil,
+                    status: MacStatus? = nil, canForget: Bool = false) {
             self.id = id; self.macName = macName; self.client = client; self.settings = settings
+            self.status = status; self.canForget = canForget
         }
 
         public static func == (lhs: Self, rhs: Self) -> Bool {
-            lhs.id == rhs.id && lhs.macName == rhs.macName && lhs.settings == rhs.settings && lhs.problem == rhs.problem
+            lhs.id == rhs.id && lhs.macName == rhs.macName && lhs.settings == rhs.settings && lhs.status == rhs.status
+                && lhs.canForget == rhs.canForget && lhs.confirmForget == rhs.confirmForget && lhs.problem == rhs.problem
                 && lhs.chosen == rhs.chosen && lhs.revision == rhs.revision && lhs.error == rhs.error && lhs.browser == rhs.browser
         }
 
@@ -46,6 +53,11 @@ import Foundation
         case other
         case pickedLocalFolder(String?)
         case browser(PresentationAction<FolderBrowserFeature.Action>)
+        case statusChanged(MacStatus)
+        case forgetTapped, cancelForget, confirmForget
+        case delegate(Delegate)
+
+        public enum Delegate: Equatable { case forget }
     }
 
     public init() {}
@@ -54,21 +66,40 @@ import Foundation
         Reduce { state, action in
             switch action {
             case .task:
-                return .run { [client = state.client] send in
-                    do { await send(.loaded(try await client.load())) }
-                    catch { await send(.loadFailed(client.problem(error))) }
-                    guard let every = client.refresh else { return }
-                    while true {
-                        try await Task.sleep(for: every)
-                        if let settings = try? await client.load() { await send(.loaded(settings)) }
-                    }
-                }
+                return .merge(
+                    .run { [client = state.client] send in
+                        for await status in client.statuses() { await send(.statusChanged(status)) }
+                    },
+                    .run { [client = state.client] send in
+                        do { await send(.loaded(try await client.load())) }
+                        catch is CancellationError {}
+                        catch { await send(.loadFailed(client.problem(error))) }
+                        guard let every = client.refresh else { return }
+                        while true {
+                            try await Task.sleep(for: every)
+                            if let settings = try? await client.load() { await send(.loaded(settings)) }
+                        }
+                    })
             case .loaded(let settings):
                 state.settings = settings
                 state.problem = nil
                 return .none
             case .loadFailed(let problem):
                 state.problem = problem
+                return .none
+            case .statusChanged(let status):
+                state.status = status
+                return .none
+            case .forgetTapped:
+                state.confirmForget = state.canForget
+                return .none
+            case .cancelForget:
+                state.confirmForget = false
+                return .none
+            case .confirmForget:
+                state.confirmForget = false
+                return .send(.delegate(.forget))
+            case .delegate:
                 return .none
             case .choose(let candidate):
                 guard candidate.path != state.projectsRoot else { return .none }
