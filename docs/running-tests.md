@@ -34,7 +34,7 @@ does not. A test that passes its limit fails as `TIMEOUT`. `.bazelrc` sets the l
 | `short` (`size = "small"`) | 60 | anything that takes up to 20 seconds under load |
 | `moderate` | 300 | up to 100 seconds, and every test that needs a simulator |
 | `long` | 600 | `manual` tests, or an entry in `tools/test_limits_allowlist.tsv` with its reason |
-| `eternal` | 900 | `manual` tests only |
+| `eternal` | 900 | no test uses it |
 
 Take the limit from a run on a busy machine and leave at least three times the time measured, so
 load never fails a good test. `python3 tools/test_durations.py .musts/bep.json` prints what each

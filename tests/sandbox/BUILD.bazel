@@ -117,10 +117,9 @@ sh_test(
 )
 
 # Opt-in too: the scripted journeys (make e2e-journeys) on a fresh sandbox with the fake claude and gh.
-# They take about 500 seconds; `.bazelrc` caps `eternal` at 900.
 sh_test(
     name = "journeys",
-    timeout = "eternal",
+    timeout = "long",
     srcs = ["journeys.sh"],
     args = [
         "$(rootpath //crates/alondrad)",

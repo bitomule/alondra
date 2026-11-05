@@ -3876,3 +3876,4 @@ satisfied:
 - {check: "root/sourcekit-lsp-workspace", scope_hash: "fc00b7f25a17328452c03572e7f0f15e37b5362f49d98fbbfaf543c2e1f786c5"}
 - {check: "root/test-durations", scope_hash: "690692cd7a6f27cf03e3319d27ccabfb4b013e628d6d55f86a845c28d7d64c33"}
 - {check: "root/test-limits", scope_hash: "33582a5817052b28da265210a9662b2b3eec9fb99ab0e6772e43ce4b7478598a"}
+- {check: "root/test-limits", scope_hash: "a9b6852a21eadec41dd56c8b0f3b83aeee3c6a57e31e1d623f09aeab685729e7"}
