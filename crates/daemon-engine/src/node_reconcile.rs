@@ -417,7 +417,7 @@ pub mod tests {
         assert_eq!(moves.len(), 1, "the same session moves to the SDK, conversation and all: {moves:?}");
         assert_eq!(moves[0].session, NODE);
         assert_eq!(Some(moves[0].cwd.as_str()), worktree.to_str(), "in the same worktree");
-        assert!(moves[0].input.ends_with("Your usage limit has reset. Carry on with what you were doing and run again what was cut."), "{}", moves[0].input);
+        assert!(moves[0].input.ends_with("Your usage limit has reset. Carry on with what you were doing."), "{}", moves[0].input);
         assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "its pause is over");
         assert_eq!(std::fs::read_to_string(worktree.join("staged.rs")).unwrap(), "uncommitted work");
     }

@@ -1351,43 +1351,27 @@ async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_tu
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
 }
 
-// 8 of the 8 pauses for the disk in the journals took turns of their own, 26 in all: the gate held
-// a next turn that Claude took by itself. A pause Alondra holds stops the node as the user's does.
+// Only a pause by the user cuts what a node runs. A build that uses a lot of the disk or the Mac
+// would only run again, and the usage limit stops Claude's turns, never its commands.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pause_for_the_disk_stops_the_node_and_it_goes_on_once_the_pause_ends() {
-    const GB: u64 = 1_000_000_000;
-    let slice = Slice::new();
-    let (agent, session, commands, host) = node_with_a_background_group(&slice);
-    let gate = &slice.domain.live.gate;
-    slice.domain.live.machine_watch.measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
-    assert!(gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::Disk, alondra_core::now_millis()));
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    slice.domain.join_retakes();
-    assert_stopped_whole(&slice, &agent, &commands, &host);
-
-    slice.domain.live.machine_watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
-    slice.domain.stop_sdk_owners();
-    assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {:?}", slice.starts());
+async fn no_pause_but_the_users_kills_what_the_node_runs() {
+    use crate::pauses::Reason;
+    for reason in [Reason::Disk, Reason::Declared { reason: "Waiting for a full machine".into() }, Reason::Usage] {
+        let slice = Slice::new();
+        let (agent, _, commands, host) = node_with_a_background_group(&slice);
+        slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
+        assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, reason.clone(), alondra_core::now_millis()));
+        crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+        slice.domain.join_retakes();
+        assert_eq!(commands.running().len(), 2, "{reason:?}: the background command and its child go on");
+        assert_eq!(survivors(&host).len(), host.len(), "{reason:?}: the host and its Claude go on");
+        assert_eq!(slice.starts().len(), 1, "{reason:?}: the same Claude goes on");
+        slice.domain.stop_sdk_owners();
+    }
 }
 
-// A node's wait for the machine holds as any pause does, and the gate stops it at its next look.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_declared_wait_stops_the_node_at_the_gates_next_look() {
-    let slice = Slice::new();
-    let (agent, _, commands, host) = node_with_a_background_group(&slice);
-    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
-    assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::Declared { reason: "Waiting for a full machine".into() }, alondra_core::now_millis()));
-    assert_eq!(commands.running().len(), 2, "the gate has not looked yet");
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    slice.domain.join_retakes();
-    assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
-    assert_eq!(survivors(&host), Vec::<String>::new());
-    slice.domain.stop_sdk_owners();
-}
-
-// A daemon that restarts with a node paused adopts its live host: the gate stops it at its next look.
+// A daemon that restarts with a node paused by the user adopts its live host: the gate stops it at
+// its next look.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_next_look() {
     let slice = Slice::new();
@@ -1396,7 +1380,7 @@ async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_n
     let commands = BackgroundCommands::of(&slice);
     let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
     let agent = driver.agent().clone();
-    assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::Disk, alondra_core::now_millis()));
+    assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::ByUser, alondra_core::now_millis()));
     drop(driver);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());

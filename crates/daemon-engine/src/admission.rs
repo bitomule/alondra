@@ -836,9 +836,9 @@ fn projects_of<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>)
     tasks.map(|task| (task.clone(), state.tasks.get(task).and_then(|task| task.project.clone()))).collect()
 }
 
-/// The disk fell under its floor: every node at work but the one that took least stops until there
-/// is room, with no card, and comes back through the queue. A node of `claude --bg`, whose next
-/// turn cannot wait, goes on.
+/// The disk fell under its floor: the next turn of every node at work but the one that took least
+/// waits for room, with no card, and comes back through the queue. The turns they run go on, and a
+/// node of `claude --bg`, whose next turn cannot wait, goes on too.
 pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     let Ok(state) = domain.state() else { return };
     let gate = &domain.live.gate;
@@ -854,7 +854,7 @@ pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     }).collect();
     for task in crate::disk_peaks::to_hold(&at_work) {
         let Some(session) = crate::pauses::session_of(&state, &task) else { continue };
-        log!("the disk is under its floor: {session} ({task}) stops until there is room");
+        log!("the disk is under its floor: the next turn of {session} ({task}) waits for room");
         gate.hold_back(domain, &session, Reason::Disk, now);
     }
 }

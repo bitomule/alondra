@@ -1,11 +1,11 @@
 //! Paused nodes and bringing them back through the gate. Memory never pauses a working node: it
 //! only holds new starts, since cutting a build that uses a lot of memory only makes it run again.
-//! A node is paused by the user, by its own wait for the machine, for the disk, for Claude usage
-//! or after an API error. Whatever the reason, a node of the Agent SDK stops whole: its host ends
-//! with its turn and every process under it, since a command left running would wake Claude, which
-//! takes that turn by itself, with no input a pause could hold. A node of `claude --bg` paused by
-//! the user is interrupted and then what its shells left running stops; a turn it starts by itself
-//! while held is cut again. Paused nodes wait in the
+//! A node is paused by the user, by its own wait for the machine, for Claude usage or after an API
+//! error. A pause by the user stops it whole. A node of the Agent SDK ends its host, with its turn
+//! and every process under it, since a command left running would wake Claude, which takes that
+//! turn by itself, with no input a pause could hold. A node of `claude --bg` is interrupted, then
+//! what its shells left running stops, and a turn it starts by itself while held is cut again. No
+//! other pause cuts what a node runs. Paused nodes wait in the
 //! gate's queue ahead of new starts of their priority and come back as starts do, one a minute,
 //! when there is a slot and room. A pause an older daemon made for memory returns at once and
 //! comes back the same way.
@@ -29,7 +29,7 @@ pub enum Reason {
     Usage,
     ByUser,
     ApiError(ApiRetry),
-    /// The disk fell under its floor while it built: it stops, and goes on when there is room.
+    /// The disk fell under its floor while it built: its next turn waits for room.
     Disk,
 }
 
@@ -115,9 +115,9 @@ pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
     let cut = paused.cut.as_ref().map(|cut| format!(", in the middle of `{cut}`")).unwrap_or_default();
     match &paused.reason {
         Reason::Memory => format!("Alondra stopped you at {at} because the Mac ran out of memory{cut}. The Mac has room again: carry on with your task and run again what was cut."),
-        Reason::Declared { .. } => format!("You waited for the machine since {at}. The Mac is fine again: carry on with your task and run again what was cut; if it still cannot go on, call wait_for_machine again with the reason."),
-        Reason::Usage => "Your usage limit has reset. Carry on with what you were doing and run again what was cut.".into(),
-        Reason::Disk => format!("Alondra stopped you at {at} while the disk was nearly full. There is room again: carry on with your task and run again what was cut."),
+        Reason::Declared { .. } => format!("You waited for the machine since {at}. The Mac is fine again: carry on with your task; if it still cannot go on, call wait_for_machine again with the reason."),
+        Reason::Usage => "Your usage limit has reset. Carry on with what you were doing.".into(),
+        Reason::Disk => format!("Alondra held your next turn at {at} while the disk was nearly full. There is room again: carry on with your task."),
         Reason::ApiError(retry) => crate::api_failures::resume_text(&retry.error, retry.detail.as_deref()),
         Reason::ByUser => format!("{} resumed you; you were paused at {at}{cut}. Carry on with your task and run again what was cut.", crate::domain_messages::user_name()),
     }
@@ -185,11 +185,11 @@ fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
     }
 }
 
-/// The paused nodes of the Agent SDK whose host still runs what it ran when the pause came: one a
-/// new pause reached, or one a daemon that restarted adopted.
+/// The nodes of the Agent SDK a pause that stops them holds, whose host still runs what it ran when
+/// the pause came: one a new pause reached, or one a daemon that restarted adopted.
 pub(crate) fn to_halt(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<(String, Paused)> {
     pauses.paused.iter()
-        .filter(|(session, paused)| !paused.released && through_sdk(domain, session) && !state.host_ended_since_pause(&paused.task)
+        .filter(|(session, paused)| paused.reason.holds() && through_sdk(domain, session) && !state.host_ended_since_pause(&paused.task)
             && domain.owns_sdk_host(&alondra_core::domain::AgentId((*session).clone())))
         .map(|(session, paused)| (session.clone(), paused.clone())).collect()
 }

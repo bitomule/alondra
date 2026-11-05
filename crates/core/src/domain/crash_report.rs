@@ -31,14 +31,14 @@ impl ReportedFailure {
 }
 
 impl DomainState {
-    /// The last failure of `task` a crash report explains, if it had one. A pause stops the host,
-    /// so its end during one is no failure.
+    /// The last failure of `task` a crash report explains, if it had one. A pause by the user stops
+    /// the host, so its end during one is no failure.
     pub fn task_failure(&self, task: &TaskId) -> Option<ReportedFailure> {
         let mut paused = false;
         let mut failure = None;
         for record in self.lifecycle_journal.get(task)? {
             match record {
-                LifecycleRecord::Paused { card, .. } if self.node_pause_card(card) => paused = true,
+                LifecycleRecord::Paused { card, .. } if self.interactions.get(card).is_some_and(|card| matches!(card.system_card, Some(SystemCard::NodePause { pause: NodePauseKind::User, .. }))) => paused = true,
                 LifecycleRecord::Resumed { .. } | LifecycleRecord::PauseEnded { .. } => paused = false,
                 LifecycleRecord::HostEnded { .. } if paused => continue,
                 _ => {}

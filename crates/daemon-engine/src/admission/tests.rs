@@ -1113,8 +1113,8 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     assert_eq!(machine_cards(&domain), 0);
 }
 
-/// Under the disk's floor every node at work but the one that took least stops; one already held
-/// stays as it is.
+/// Under the disk's floor the next turn of every node at work but the one that took least waits;
+/// one already held stays as it is.
 #[test]
 fn under_the_floor_every_node_but_the_lightest_is_held() {
     use crate::disk_peaks::{AtWork, to_hold};

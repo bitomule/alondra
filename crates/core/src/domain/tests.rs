@@ -5303,7 +5303,12 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
     exec(&mut paused, Actor::System, Command::MoveNode { agent_id: "s".into(), at: 1, event: NodeEvent::Paused { pause: Pause {
         reason: PauseReason::ByUser, since: 1, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } }).unwrap();
     exec(&mut paused, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: true }).unwrap();
-    assert_eq!(offered(&paused), None, "a pause stops the host: that is no failure");
+    assert_eq!(offered(&paused), None, "a pause by the user stops the host: that is no failure");
+    let mut held = sdk.clone();
+    exec(&mut held, Actor::System, Command::MoveNode { agent_id: "s".into(), at: 1, event: NodeEvent::Paused { pause: Pause {
+        reason: PauseReason::Disk, since: 1, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } }).unwrap();
+    exec(&mut held, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: false }).unwrap();
+    assert_eq!(offered(&held), Some(ReportedFailure::SessionEnded), "no other pause stops the host: its end is a failure");
     let mut lost = sdk.clone();
     exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
     assert_eq!(offered(&lost), Some(ReportedFailure::NotResumed));

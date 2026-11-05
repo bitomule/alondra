@@ -41,7 +41,7 @@ fn phase_fields(row: &mut Value, phase: &NodePhase) {
             PauseReason::Memory => "memory".to_owned(),
             PauseReason::Declared { reason } => format!("it waits for the machine: {reason}"),
             PauseReason::Usage => "the usage limit".to_owned(),
-            PauseReason::Disk => "the disk fell under its floor; it stopped until there is room".to_owned(),
+            PauseReason::Disk => "the disk fell under its floor; its next turn waits for room".to_owned(),
             PauseReason::ByUser => "by the user".to_owned(),
             PauseReason::ApiError(retry) => format!("a Claude API error, {}", retry.error),
         }, since(pause.since)),

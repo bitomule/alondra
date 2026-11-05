@@ -914,12 +914,12 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
 }
 
-/// The disk fell under its floor while two nodes built. The heavier one is told what it goes on
-/// with; what it is told waits, with no card, shown in the queue for the disk, and once the disk
-/// has room it gets it. The lighter one, of `claude --bg`, goes on. `sdk_owner`'s tests stop a real
-/// host: this node's owner is driven by hand, so only its turn ends.
+/// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and
+/// still counts as working; once it ends, what the node is told waits, with no card, shown in the
+/// queue for the disk; once the disk has room it gets it, and is never told it was held. The
+/// lighter one, of `claude --bg`, goes on.
 #[tokio::test]
-async fn under_the_disks_floor_the_heavier_node_is_told_how_it_goes_on_and_waits_for_room() {
+async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_without_cutting_the_one_it_runs() {
     const GB: u64 = 1_000_000_000;
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
@@ -946,10 +946,12 @@ async fn under_the_disks_floor_the_heavier_node_is_told_how_it_goes_on_and_waits
     let held = domain.live.gate.paused(&domain, &node.agent()).expect("the heavier node is held");
     assert_eq!(held.reason, Reason::Disk);
     assert!(domain.live.gate.paused(&domain, "agent-light").is_none(), "the lightest goes on");
-    node.gate_look().await;
-    assert_eq!(node.pending_inputs(), 1, "what it goes on with is told before it stops");
+    node.step();
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Working, "the turn it runs is not cut");
+    assert_eq!(node.prompts(), ["consume-and-hold"]);
     assert!(crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "it counts as working until its turn ends");
 
+    interrupt_sdk_node(&domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     crate::domain_messages::tell_sdk_node(&domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-held", false).unwrap();
     node.gate_look().await;
@@ -966,6 +968,6 @@ async fn under_the_disks_floor_the_heavier_node_is_told_how_it_goes_on_and_waits
     watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
     node.until_told("Use the short changelog format");
-    assert!(node.prompts().iter().any(|prompt| prompt.contains("Alondra stopped you at")), "{:?}", node.prompts());
+    assert!(node.prompts().iter().all(|prompt| !prompt.contains("held your next turn")), "{:?}", node.prompts());
     assert!(domain.live.gate.paused(&domain, &node.agent()).is_none());
 }
