@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "vfd6bdbd43e4b97e2",
+  "version": "v027ac3b90311572b",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
@@ -927,7 +927,7 @@
           "id": "claude-policy",
           "icon": "node",
           "title": "Most room first",
-          "subtitle": "Each new task starts on the account with the most room left, weighed by its plan",
+          "subtitle": "Each new Claude task starts on the Claude account with the most room left, weighed by its plan",
           "depth": 0,
           "struck": false,
           "actions": [

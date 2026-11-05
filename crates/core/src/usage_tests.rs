@@ -83,7 +83,9 @@ fn a_native_limit_without_reset_requires_fresh_positive_account_capacity_to_clea
     let has_marker = |usage: &AccountUsage| usage.windows.iter().any(|window| window.reading.kind.is_native_limit_marker());
     let account_windows = vec![window(WindowKind::Other("codex:account:primary:90".into()), 0.1, 10_000), window(WindowKind::Other("codex:account:secondary:1200".into()), 0.2, 20_000)];
     assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: true, windows: vec![] }, 101, TODAY)), "unknown capacity never releases the marker");
-    assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: vec![account_windows[0].clone()] }, 101, TODAY)), "one partial dimension is not positive account-wide evidence");
+    let mut secondary_out = account_windows.clone();
+    secondary_out[1].exhausted = true;
+    assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: secondary_out }, 101, TODAY)), "one exhausted dimension keeps the account held");
     assert!(has_marker(&record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: account_windows.clone() }, 99, TODAY)), "a response older than the limit cannot release it");
     let cleared = record(Some(&held), provider, &account, &UsageReading { plan: None, complete: false, windows: account_windows }, 101, TODAY);
     assert!(!has_marker(&cleared));
@@ -450,4 +452,56 @@ fn an_account_not_checked_yet_is_listed_but_stands_nowhere() {
     let unchecked = status("default", AccountState::Unchecked, AccountBilling::Subscription { plan: None, weight: None });
     let measured_unchecked = providers(&[unchecked], &[measured("default")], default_reserve(), NOW, TODAY);
     assert_eq!(measured_unchecked[0].accounts[0].state, None);
+}
+
+// A plan that reports only its week (Codex «prolite») clears the marker with that window alone,
+// as measured on 5 Nov: a marker of 2 Nov without a reset against a week at 1 %.
+#[test]
+fn a_native_limit_clears_with_the_only_window_the_plan_reports() {
+    let provider = Provider::Codex; let account = AccountId::default_account();
+    let marker = UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other("codex:account:limit".into()), used: Share::NONE, resets_at: None, exhausted: true }] };
+    let held = record(None, provider, &account, &marker, 100, TODAY);
+    let codex = AccountStatus { provider, ..status("default", AccountState::SignedIn, AccountBilling::Subscription { plan: None, weight: None }) };
+    assert!(!can_work(&codex, Some(&held), 200), "the marker holds the account");
+    let week = UsageReading { plan: None, complete: false, windows: vec![
+        window(WindowKind::Other("codex:account:primary:10080".into()), 0.01, 10_000),
+        window(WindowKind::Other("codex:limit:codex:primary:10080".into()), 0.01, 10_000),
+    ] };
+    let read = record(Some(&held), provider, &account, &week, 200, TODAY);
+    assert!(!read.windows.iter().any(|window| window.reading.kind.is_native_limit_marker()));
+    assert!(can_work(&codex, Some(&read), 200));
+}
+
+// A Codex turn that ended well proves the provider takes work: it clears an earlier marker, not a
+// later one, and leaves no window of its own.
+#[test]
+fn a_codex_turn_that_worked_clears_an_earlier_limit_only() {
+    let provider = Provider::Codex; let account = AccountId::default_account();
+    let marker = UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other("codex:account:limit".into()), used: Share::NONE, resets_at: None, exhausted: true }] };
+    let held = record(None, provider, &account, &marker, 100, TODAY);
+    let worked = record(Some(&held), provider, &account, &native_turn_worked(), 200, TODAY);
+    assert!(worked.windows.is_empty(), "{:?}", worked.windows);
+    let later = record(Some(&held), provider, &account, &native_turn_worked(), 50, TODAY);
+    assert!(later.windows.iter().any(|window| window.reading.kind.is_native_limit_marker() && window.reading.exhausted), "a limit after the turn still holds");
+}
+
+// By margin, the Claude account with the most room takes the place of the first Claude account,
+// also with Codex in the list; Codex keeps its own place. An account never measured counts as usable.
+#[test]
+fn by_margin_the_roomiest_claude_account_leads_the_claude_accounts_with_codex_in_the_list() {
+    let subscription = || AccountBilling::Subscription { plan: None, weight: None };
+    let codex = AccountStatus { provider: Provider::Codex, ..status("default", AccountState::SignedIn, subscription()) };
+    let accounts = vec![status("default", AccountState::SignedIn, subscription()), status("claude-2", AccountState::SignedIn, subscription()), codex];
+    let key = |provider, text: &str| AccountKey::new(provider, id(text));
+    let listed = vec![key(Provider::Claude, "default"), key(Provider::Claude, "claude-2"), key(Provider::Codex, "default")];
+    let busy = record(None, Provider::Claude, &id("default"), &reading(0.66, 0.20), NOW, TODAY);
+    let idle = record(None, Provider::Claude, &id("claude-2"), &reading(0.0, 0.0), NOW, TODAY);
+    let usage = vec![busy.clone(), idle];
+    let ranked = ranked_for_launch(Policy::Margin, &listed, &accounts, &usage, default_reserve(), NOW, TODAY);
+    assert_eq!(ranked, [key(Provider::Claude, "claude-2"), key(Provider::Claude, "default"), key(Provider::Codex, "default")]);
+    assert_eq!(ranked_for_launch(Policy::Margin, &listed, &accounts, &[busy], default_reserve(), NOW, TODAY)[0], key(Provider::Claude, "claude-2"), "never measured");
+    assert_eq!(ranked_for_launch(Policy::Chain, &listed, &accounts, &usage, default_reserve(), NOW, TODAY), listed);
+    let codex_first = vec![key(Provider::Codex, "default"), key(Provider::Claude, "default"), key(Provider::Claude, "claude-2")];
+    assert_eq!(ranked_for_launch(Policy::Margin, &codex_first, &accounts, &usage, default_reserve(), NOW, TODAY),
+        [key(Provider::Codex, "default"), key(Provider::Claude, "claude-2"), key(Provider::Claude, "default")]);
 }

@@ -208,10 +208,10 @@ fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<
 /// none has; when one can again before that, the wait ends.
 fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::accounts::AccountKey> {
     let mut eligible = alondra_core::usage::eligible_account_keys(&state.account_order, &state.accounts, &state.account_usage, now);
-    if state.account_policy == Policy::Margin && !state.accounts.is_empty() && state.accounts.iter().all(|account| account.provider == Provider::Claude) {
+    if state.account_policy == Policy::Margin {
         let day = crate::node_reports::local_day(now);
         let chosen = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
-        eligible.retain(|key| chosen.as_ref() == Some(&key.account));
+        eligible.retain(|key| key.provider != Provider::Claude || chosen.as_ref() == Some(&key.account));
     }
     // Paid accounts are considered only for readiness. Launch selection still requires the user's explicit grant.
     for account in &state.accounts {
@@ -302,9 +302,23 @@ pub(crate) fn due(accounts: &[AccountId], usage: &[AccountUsage], probed: &HashM
 struct ProbeSchedule {
     probed: HashMap<AccountId, Millis>,
     retries: HashMap<AccountId, (crate::native_probe::Backoff, Millis)>,
+    sessions: HashMap<AccountId, (u64, bool)>,
 }
 
 impl ProbeSchedule {
+    /// The accounts signed in since they were last seen: a new sign-in is measured at once, not at
+    /// the next round. The first sighting of an account only remembers it.
+    fn signed_in_again(&mut self, accounts: &[&AccountStatus]) -> Vec<AccountId> {
+        let mut again = vec![];
+        for account in accounts {
+            let now = (account.sign_ins, account.state == AccountState::SignedIn);
+            if let Some(before) = self.sessions.insert(account.id.clone(), now)
+                && now.1 && (now.0 > before.0 || !before.1) { again.push(account.id.clone()); }
+        }
+        self.sessions.retain(|id, _| accounts.iter().any(|account| account.id == *id));
+        again
+    }
+
     fn due(&self, accounts: &[AccountId], usage: &[AccountUsage], now: Millis) -> (Vec<AccountId>, Option<Millis>) {
         let ordinary: Vec<_> = accounts.iter().filter(|account| !self.retries.contains_key(*account)).cloned().collect();
         let (mut ready, mut next) = due(&ordinary, usage, &self.probed, now);
@@ -375,6 +389,9 @@ pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
         let state = read.state();
         let accounts: Vec<AccountId> = probed_accounts(state).into_iter().map(|account| account.id.clone()).collect();
         let (mut ready, _) = schedule.due(&accounts, &state.account_usage, now);
+        for account in schedule.signed_in_again(&probed_accounts(state)) {
+            if !ready.contains(&account) { ready.push(account); }
+        }
         drop(read);
         // A `claude --bg` node's hook paused the Mac: measure the default account, the one they run on.
         let nodes = AccountId::default_account();

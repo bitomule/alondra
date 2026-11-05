@@ -66,6 +66,21 @@ fn an_account_is_probed_at_start_every_15_minutes_while_quiet_and_right_after_a_
     assert!(due(&accounts, &refused, &probed_after, NOW).0.is_empty(), "and once probed it waits again");
 }
 
+// Signing an account in is measured at once, not 15 minutes later: a new sign-in (or an account
+// that comes back signed in) is due, an account first seen or unchanged is not.
+#[test]
+fn a_new_sign_in_is_measured_at_once() {
+    let claude = |state, sign_ins| AccountStatus { provider: Provider::Claude, id: id("claude-2"), name: "Claude 2".into(), state, native_identity: None,
+        email: None, plan: None, billing: AccountBilling::default(), sign_ins, profile: None };
+    let mut schedule = ProbeSchedule::default();
+    assert!(schedule.signed_in_again(&[&claude(AccountState::SignedOut, 0)]).is_empty(), "first seen");
+    assert_eq!(schedule.signed_in_again(&[&claude(AccountState::SignedIn, 1)]), [id("claude-2")]);
+    assert!(schedule.signed_in_again(&[&claude(AccountState::SignedIn, 1)]).is_empty(), "measured once per sign-in");
+    assert_eq!(schedule.signed_in_again(&[&claude(AccountState::SignedIn, 2)]), [id("claude-2")], "signed in again");
+    assert!(schedule.signed_in_again(&[&claude(AccountState::SignedOut, 2)]).is_empty());
+    assert_eq!(schedule.signed_in_again(&[&claude(AccountState::SignedIn, 2)]), [id("claude-2")], "back with its session");
+}
+
 #[test]
 fn stale_usage_retries_keep_their_deadline_without_blocking_other_accounts() {
     use crate::native_probe::Outcome;
@@ -412,4 +427,43 @@ fn an_unknown_native_quota_marker_never_fabricates_a_future_reset() {
     assert!(pause.no_session, "availability awaits native metadata; no reset is known");
     assert_eq!(pause.until, NOW);
     assert!(alondra_core::usage::eligible_account_keys(&[], &domain.read().state().accounts, &domain.read().state().account_usage, NOW).is_empty(), "the real quota marker still fences automatic launches");
+}
+
+// The account rows 0.3.17 wrote on 5 Nov load through this version's store: margin readies only
+// the roomiest Claude account (Claude 2), and Codex, held by its marker of 2 Nov, is freed by its
+// next reading with the only window its plan reports.
+#[test]
+fn the_account_rows_recorded_before_the_margin_fix_load_and_spread_work_to_claude_2() {
+    let rows: serde_json::Value = serde_json::from_str(include_str!("../../../fixtures/accounts/recorded-rows.json")).unwrap();
+    let home = Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    drop(DomainRuntime::open(&home).unwrap());
+    {
+        let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
+        connection.execute("INSERT INTO accounts(singleton,accounts,reserve) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET accounts=excluded.accounts, reserve=excluded.reserve",
+            rusqlite::params![rows["accounts"]["accounts"].to_string(), rows["accounts"]["reserve"].as_i64().unwrap()]).unwrap();
+        for row in rows["account_usage"].as_array().unwrap() {
+            connection.execute("INSERT INTO account_usage(provider,account,usage) VALUES(?1,?2,?3)",
+                rusqlite::params![row["provider"].as_str().unwrap(), row["account"].as_str().unwrap(), row["usage"].to_string()]).unwrap();
+        }
+        connection.execute("INSERT INTO account_configuration(singleton,account_order,config_version) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET account_order=excluded.account_order, config_version=excluded.config_version",
+            rusqlite::params![rows["account_configuration"]["account_order"].to_string(), rows["account_configuration"]["config_version"].as_str().unwrap()]).unwrap();
+        connection.execute("INSERT INTO account_distribution(singleton,policy,move_when_exhausted) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET policy=excluded.policy, move_when_exhausted=excluded.move_when_exhausted",
+            rusqlite::params![rows["account_distribution"]["policy"].as_str().unwrap(), rows["account_distribution"]["move_when_exhausted"].as_i64().unwrap()]).unwrap();
+    }
+    let domain = DomainRuntime::open(&home).unwrap();
+    let now = domain.read().state().account_usage.iter().filter_map(AccountUsage::measured_at).max().unwrap();
+    assert_eq!(domain.read().state().account_policy, Policy::Margin);
+    let ready = available_accounts(domain.read().state(), now);
+    let claude_2 = alondra_core::accounts::AccountKey::new(Provider::Claude, id("claude-2"));
+    let codex = alondra_core::accounts::AccountKey::new(Provider::Codex, AccountId::default_account());
+    assert_eq!(ready, [claude_2.clone()], "only the roomiest Claude account, and Codex held by its marker");
+
+    let week = UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other("codex:account:primary:10080".into()), used: Share::of(0.01), resets_at: Some(now + 86_400_000), exhausted: false }] };
+    let read = domain.read();
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: "codex-week".into(),
+        expected_revision: read.state().revision, command: DomainCommand::RecordAccountUsage { provider: Provider::Codex, account: AccountId::default_account(), reading: week, at: now + 60_000, day: "2026-11-05".into() } };
+    drop(read);
+    domain.execute_as_system(envelope).unwrap();
+    assert_eq!(available_accounts(domain.read().state(), now + 60_000), [claude_2, codex]);
 }

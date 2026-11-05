@@ -996,6 +996,22 @@ fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorizati
     driver.stop().unwrap();
 }
 
+// A Codex turn that ends well proves the provider takes work again: the limit marker it left
+// earlier, without a reset, no longer holds the account.
+#[test]
+fn a_codex_turn_that_ends_well_clears_an_earlier_limit_marker(){
+    let slice=Slice::new();configured(&slice,"complete");let mut driver=launch(&slice);slice.settle(&mut driver);
+    slice.run(&system(),"earlier-native-limit",Command::RecordAccountUsage{provider:Provider::Codex,account:AccountId::default_account(),at:1,day:"2026-11-02".into(),
+        reading:alondra_core::usage::UsageReading{plan:None,complete:false,windows:vec![alondra_core::usage::WindowReading{
+            kind:alondra_core::usage::WindowKind::Other("codex:account:limit".into()),used:alondra_core::usage::Share::NONE,exhausted:true,resets_at:None}]}});
+    let limited=|slice:&Slice|slice.domain.state().unwrap().account_usage.iter().any(|usage|usage.provider==Provider::Codex&&usage.account.is_default()
+        &&usage.windows.iter().any(|window|window.reading.kind.is_native_limit_marker()&&window.reading.exhausted));
+    assert!(limited(&slice));
+    instruct(&slice.domain,"Go on");slice.settle(&mut driver);
+    assert!(!limited(&slice),"{:?}",slice.domain.state().unwrap().account_usage);
+    driver.stop().unwrap();
+}
+
 #[test]
 fn same_cached_managed_session_still_reports_quota_and_authentication_after_same_identity_reauthentication(){
     use alondra_core::accounts::AccountState;

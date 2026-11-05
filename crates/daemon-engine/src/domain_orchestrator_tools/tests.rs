@@ -1675,6 +1675,37 @@ async fn a_launch_starts_on_the_account_with_the_most_margin() {
     assert_eq!(task.account.as_ref().map(|account| account.as_str()), Some("work"), "the task keeps the account its execution runs on");
 }
 
+// With Codex connected too, margin still spreads new Claude work: the account with more room takes
+// it, its folder is the host's configuration and the task keeps the account.
+#[tokio::test]
+async fn with_codex_connected_a_launch_still_starts_on_the_claude_account_with_the_most_margin() {
+    use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
+    let f = world();
+    let folder = with_work_account(&f);
+    std::fs::write(alondra_core::options::path_in(&f.home),
+        "[accounts]\nconnected = [\"claude\", \"codex\"]\n\n[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n\n[[accounts.codex]]\nid = \"default\"\nname = \"Default\"\n").unwrap();
+    let status = |provider, id: &str| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
+    let accounts = vec![status(Provider::Claude, "default"), status(Provider::Claude, "work"), status(Provider::Codex, "default")];
+    command(&f.domain, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+    let model = |name: &str| alondra_core::model_selection::CatalogModel { model: name.into(), display_name: name.into(), reasoning_efforts: vec!["medium".into()],
+        default_reasoning_effort: Some("medium".into()), context_window: None, input_modalities: vec!["text".into()], is_default: false, hidden: false };
+    for (provider, id, models) in [(Provider::Claude, "default", vec![model("sonnet")]), (Provider::Claude, "work", vec![model("sonnet")]), (Provider::Codex, "default", vec![model("gpt-6")])] {
+        let account = alondra_core::accounts::AccountKey::new(provider, AccountId::parse(id).unwrap());
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog: alondra_core::model_selection::AccountModelCatalog { account, revision: "fixture".into(), native_default: None, measured_at: 100, models } });
+    }
+    week_used(&f, "default", 0.21);
+    week_used(&f, "work", 0.0);
+    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "Claude runs with the work account's folder");
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    assert_eq!(task.account.as_ref().map(|account| account.as_str()), Some("work"), "the task keeps the account its execution runs on");
+    let stored: String = rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.home)).unwrap()
+        .query_row("SELECT account FROM task_accounts WHERE task_id='t'", [], |row| row.get(0)).unwrap();
+    assert_eq!(stored, "work");
+}
+
 // No account can work: the launch waits for capacity, a state of its task the gate holds, never a
 // task in nobody's hands; once an account resets it goes ahead there.
 #[tokio::test]

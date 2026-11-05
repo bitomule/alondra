@@ -47,7 +47,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     view.sections.push(list_style(common::section("providers", Some(t!(lang, "Providers", "Proveedores").into()), provider_rows)));
     if accounts.len() > 1 {
         let mut policy = vec![policy_row(context)];
-        if legacy_margin_available(context) { policy.push(moves_row(context)); }
+        if has_claude_accounts(context) { policy.push(moves_row(context)); }
         view.sections.push(list_style(common::section("policy", Some(t!(lang, "New work", "Trabajo nuevo").into()), policy)));
     }
     let profiles = super::model_controls::profile_rows(context);
@@ -152,15 +152,15 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&crate
     let lang = context.lang;
     let shown = name(account, lang);
     let measured_plan = measured.and_then(|usage| usage.plan.as_deref());
-    let legacy_weight = (legacy_margin_available(context) && context.index.account_policy() == Policy::Margin).then(|| weight_text(account, measured_plan, lang)).flatten();
-    let about = [Some(provider_name(account.provider).into()), account.email.clone(), billing(account, lang), legacy_weight].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let margin_weight = spread_by_margin(account, context).then(|| weight_text(account, measured_plan, lang)).flatten();
+    let about = [Some(provider_name(account.provider).into()), account.email.clone(), billing(account, lang), margin_weight].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let subtitle = [Some(about), usage_line(account, measured, context)].into_iter().flatten().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n");
     let id = format!("{}-{}", account.provider.as_str(), account.id);
     let mut row = common::row(&id, KEY, Icon::Machine, shown.clone(), (!subtitle.is_empty()).then_some(subtitle));
     row.link = None;
     row.account = Some(account_presentation(account, position, measured, context));
     row.badges.push(state_badge(account.state, lang));
-    if legacy_margin_available(context) && context.index.account_policy() == Policy::Margin { row.actions.extend(weight_action(account, measured_plan, context)); }
+    if spread_by_margin(account, context) { row.actions.extend(weight_action(account, measured_plan, context)); }
     let up = AccountChange::MoveUp { account: account.id.clone() };
     row.actions.extend(change_action(Verb::AccountUp, account, up, t!(lang, "Move up", "Subir"), Style::Secondary, context));
     let down = AccountChange::MoveDown { account: account.id.clone() };
@@ -263,8 +263,8 @@ fn connect_row(provider: Provider, context: &RenderContext<'_>) -> Item {
 fn policy_text(policy: Policy, lang: Lang) -> (&'static str, &'static str) {
     match policy {
         Policy::Margin => (t!(lang, "Most room first", "Primero la de más margen"),
-            t!(lang, "Each new task starts on the account with the most room left, weighed by its plan",
-                "Cada tarea nueva empieza en la cuenta con más margen, según su plan")),
+            t!(lang, "Each new Claude task starts on the Claude account with the most room left, weighed by its plan",
+                "Cada tarea nueva de Claude empieza en la cuenta de Claude con más margen, según su plan")),
         Policy::Chain => (t!(lang, "In list order", "En el orden de la lista"),
             t!(lang, "Each new task starts on the first account in the list that has room left",
                 "Cada tarea nueva empieza en la primera cuenta de la lista que tenga margen")),
@@ -301,12 +301,14 @@ fn moves_row(context: &RenderContext<'_>) -> Item {
     Item::Row(row)
 }
 
-fn legacy_margin_available(context: &RenderContext<'_>) -> bool { !context.index.accounts().is_empty() && context.index.accounts().iter().all(|account| account.provider == Provider::Claude) }
+fn has_claude_accounts(context: &RenderContext<'_>) -> bool { context.index.accounts().iter().any(|account| account.provider == Provider::Claude) }
+
+/// Margin spreads new work over the Claude accounts only, weighed by their plans.
+fn spread_by_margin(account: &AccountStatus, context: &RenderContext<'_>) -> bool { account.provider == Provider::Claude && context.index.account_policy() == Policy::Margin }
 
 fn policy_row(context: &RenderContext<'_>) -> Item {
     let lang = context.lang;
-    let legacy = legacy_margin_available(context);
-    let policy = if legacy { context.index.account_policy() } else { Policy::Chain };
+    let policy = context.index.account_policy();
     let (title, about) = policy_text(policy, lang);
     let mut row = common::row("claude-policy", KEY, Icon::Node, title.into(), Some(about.into()));
     row.link = None;
@@ -314,7 +316,7 @@ fn policy_row(context: &RenderContext<'_>) -> Item {
         Policy::Margin => Policy::Chain,
         Policy::Chain => Policy::Margin,
     };
-    if legacy && allowed(context, Provider::Claude, AccountChange::SetPolicy { policy: other }).is_ok()
+    if has_claude_accounts(context) && allowed(context, Provider::Claude, AccountChange::SetPolicy { policy: other }).is_ok()
         && let Some(mut change) = common::action(Verb::AccountPolicy, "policy", context.domain.revision, t!(lang, "Change", "Cambiar"), Style::Secondary)
     {
         let (label, description) = policy_text(other, lang);

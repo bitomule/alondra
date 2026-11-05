@@ -342,6 +342,18 @@ impl<'connection> OwnerTransaction<'connection> {
                         let resets_at=failure.resets_at.and_then(|seconds|i64::try_from(seconds).ok()?.checked_mul(1000)).filter(|reset|*reset>at);
                         commands.push(Command::RecordAccountUsage{provider,account:account.account,at,day:crate::node_reports::local_day(at),reading:UsageReading{plan:None,complete:false,windows:vec![WindowReading{kind,used:Share::NONE,exhausted:true,resets_at}]}});
                     }
+                    if matches!(outcome,TurnOutcome::Completed)
+                        && account_fresh
+                        && alondra_core::accounts::Provider::from_driver(binding.driver())==Some(alondra_core::accounts::Provider::Codex)
+                    {
+                        let account=self.draft.state.tasks.get(&task_id).ok_or_else(||DomainError::new("not_found","Task missing"))?.account_key();
+                        let limited=self.draft.state.account_usage.iter().any(|usage|usage.provider==account.provider&&usage.account==account.account
+                            &&usage.windows.iter().any(|window|window.reading.kind.is_native_limit_marker()&&window.reading.exhausted));
+                        if account.provider==alondra_core::accounts::Provider::Codex && limited {
+                            let at=alondra_core::now_millis();
+                            commands.push(Command::RecordAccountUsage{provider:account.provider,account:account.account,at,day:crate::node_reports::local_day(at),reading:alondra_core::usage::native_turn_worked()});
+                        }
+                    }
                     let (failure, failed) = match outcome {
                         TurnOutcome::Completed => (None, None),
                         TurnOutcome::ApiFailed(_) if !account_fresh => (None,Some("stale_native_account_observation".into())),

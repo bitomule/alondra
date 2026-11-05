@@ -1,0 +1,157 @@
+{
+ "about": "The account rows Alondra 0.3.17 wrote on 2026-11-05 on a Mac with two Claude accounts and Codex connected, while every task ran on the default Claude account and Codex stayed held by a limit marker of 2 Nov without a reset. Emails replaced, native identities removed.",
+ "accounts": {
+  "accounts": [
+   {
+    "provider": "claude",
+    "id": "default",
+    "name": "Default",
+    "state": "signed_in",
+    "email": "claude-default@example.invalid",
+    "plan": "max",
+    "billing": {
+     "kind": "subscription"
+    }
+   },
+   {
+    "provider": "claude",
+    "id": "claude-2",
+    "name": "Claude 2",
+    "state": "signed_in",
+    "email": "claude-claude-2@example.invalid",
+    "plan": "max",
+    "billing": {
+     "kind": "subscription"
+    },
+    "sign_ins": 1,
+    "profile": "~/.alondra/accounts/claude-2"
+   },
+   {
+    "provider": "codex",
+    "id": "default",
+    "name": "Default",
+    "state": "signed_in",
+    "email": "codex-default@example.invalid",
+    "plan": "prolite",
+    "billing": {
+     "kind": "subscription"
+    },
+    "sign_ins": 1
+   }
+  ],
+  "reserve": 9000
+ },
+ "account_usage": [
+  {
+   "provider": "claude",
+   "account": "claude-2",
+   "usage": {
+    "provider": "claude",
+    "account": "claude-2",
+    "windows": [
+     {
+      "kind": "session",
+      "used": 0,
+      "measured_at": 1793835294232
+     },
+     {
+      "kind": "weekly",
+      "used": 0,
+      "resets_at": 1794139199719,
+      "measured_at": 1793835294232
+     }
+    ],
+    "plan": "Claude Max",
+    "day_start": {
+     "day": "2026-11-05",
+     "weekly": 0,
+     "week_resets_at": 1794139199864
+    }
+   }
+  },
+  {
+   "provider": "claude",
+   "account": "default",
+   "usage": {
+    "provider": "claude",
+    "account": "default",
+    "windows": [
+     {
+      "kind": "session",
+      "used": 1400,
+      "resets_at": 1793850599911,
+      "measured_at": 1793835014891
+     },
+     {
+      "kind": "weekly",
+      "used": 2200,
+      "resets_at": 1794182399911,
+      "measured_at": 1793835014891
+     },
+     {
+      "kind": "iguana_necktie",
+      "used": 143,
+      "resets_at": 1793865540000,
+      "measured_at": 1793835014891
+     }
+    ],
+    "plan": "Claude Ultra",
+    "day_start": {
+     "day": "2026-11-05",
+     "weekly": 2100,
+     "week_resets_at": 1794182399841
+    }
+   }
+  },
+  {
+   "provider": "codex",
+   "account": "default",
+   "usage": {
+    "provider": "codex",
+    "account": "default",
+    "windows": [
+     {
+      "kind": "codex:account:limit",
+      "used": 0,
+      "exhausted": true,
+      "measured_at": 1793628399053
+     },
+     {
+      "kind": "codex:account:primary:10080",
+      "used": 100,
+      "resets_at": 1794380708000,
+      "measured_at": 1793835029267
+     },
+     {
+      "kind": "codex:limit:codex:primary:10080",
+      "used": 100,
+      "resets_at": 1794380708000,
+      "measured_at": 1793835029267
+     }
+    ],
+    "plan": "prolite"
+   }
+  }
+ ],
+ "account_configuration": {
+  "account_order": [
+   {
+    "provider": "claude",
+    "account": "default"
+   },
+   {
+    "provider": "claude",
+    "account": "claude-2"
+   },
+   {
+    "provider": "codex",
+    "account": "default"
+   }
+  ],
+  "config_version": "3c96c5ca0cb33cbd"
+ },
+ "account_distribution": {
+  "policy": "margin",
+  "move_when_exhausted": 0
+ }
+}
