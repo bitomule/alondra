@@ -51,7 +51,10 @@ build from a clean Mac is in [`docs/building-from-source.md`](docs/building-from
 ## Pull request flow
 
 1. Fork, branch from `main`, keep the change small and focused.
-2. Make `make build` and `make test` pass; run `musts validate` if you have `musts` installed.
+2. Make `make build` and `make test` pass; run `musts validate` if you have `musts` installed. It asks
+   only for the checks whose files your change touches, and a change to prose or images no test
+   loads asks for nothing. Adding a test or fixture? Run `make musts-scopes` to keep the check's
+   `paths` complete.
 3. Open the pull request with the template filled in.
 4. A maintainer reviews it. Nothing under `.github/workflows` is ever added: releases run on the
    maintainer's Mac, not on hosted runners.

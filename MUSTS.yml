@@ -2,85 +2,998 @@ version: 1
 
 # Brew, `make build/install/test/e2e-sandbox` and the tests all use the Bazel build. Every
 # bazel/test check below joins one `bazel test` command, which waits once for the build;
-# without --build_tests_only it also builds every non-test target of //crates/..., so no
+# without --build_tests_only it also builds every non-test target of its packages, so no
 # separate `bazel build` check is needed.
+#
+# A check's `paths` are the files its targets read, as Bazel reports them: a change to anything else
+# (prose, images no test loads) reopens nothing. `make musts-scopes` fails when a path is missing and
+# `tools/musts_scopes.py propose <check>` prints the paths Bazel asks for.
+# musts-lint: allow glob-star-stops-at-slash
 checks:
-  bazel-test:
+  crate-agent-application:
     uses: bazel/test
     paths:
-      - "crates/**"
-      - "fixtures/**"
-      - "launchd/**"
-      - "**/*.bazel"
-      - "MODULE.bazel"
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.toml"
+      - "BUILD.bazel"
       - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
       - "clippy.toml"
-      - "Makefile"
-      - "apple/**"
-      - "plugin/**"
-      - "tools/plugin-mod-test.sh"
-      - "tools/tests/test_sourcekit_lsp_workspace.py"
-      - "Package.swift"
-      - ".bsp/skbsp.json"
-      - ".sourcekit-lsp/**"
-      - "deploy/brew/**"
-      - "deploy/apple/**"
-      - "tools/shared.bzl"
-      - "tools/e2e-sandbox.sh"
-      - "tools/sandbox_accounts.py"
-      - "tools/sandbox/**"
-      - "tools/tests/test_sandbox_accounts.py"
-      - "tests/sandbox/journeys.sh"
-      - "tests/sandbox/seed.sh"
-      - "tests/system/macos/**"
-      - "tools/prose_decisions.py"
-      - "tools/prose_decisions_allowlist.tsv"
-      - "tools/testdata/prose_decisions_corpus.tsv"
-      - "tools/tests/test_prose_decisions.py"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/alondrad/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
-      - "tools/tests/test_low_opt_rust_tests.py"
-      - "web/app/**"
-      - "LICENSE.md"
-      - "THIRD_PARTY_NOTICES.md"
-      - "Package.resolved"
-      - "web/package.json"
-      - "web/package-lock.json"
-      - "agent-host/package.json"
-      - "agent-host/pnpm-lock.yaml"
-      - "tools/third_party_notices.py"
-      - "tools/tests/test_licenses.py"
+      - "version.bzl"
     with:
       targets:
-        - //crates/...
-        - //tools:prose_decisions_test
+        - //crates/agent-application/...
+
+  crate-agent-protocol:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/agent-protocol/**"
+      - "crates/foundation/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/agent-protocol/...
+
+  crate-agent-runtime:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-runtime/**"
+      - "crates/alondrad/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/agent-runtime/...
+
+  crate-alondra:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "Makefile"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondra/**"
+      - "crates/alondrad/**"
+      - "crates/core/**"
+      - "crates/daemon-engine/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "fixtures/cli/**"
+      - "fixtures/client-v2/**"
+      - "fixtures/diffs/**"
+      - "fixtures/domain-v2/BUILD.bazel"
+      - "fixtures/domain-v2/text-completion.commands.json"
+      - "fixtures/markdown/**"
+      - "fixtures/report/**"
+      - "fixtures/views/*.json"
+      - "fixtures/views/BUILD.bazel"
+      - "fixtures/views/cards/**"
+      - "fixtures/views/metrics/**"
+      - "fixtures/views/newer-daemon/**"
+      - "launchd/**"
+      - "plugin-orchestrator/skills/**"
+      - "plugin/skills/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/alondra/...
+
+  crate-alondrad:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "agent-host/*.ts"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/bundle.mjs"
+      - "agent-host/codex-model-double.py"
+      - "agent-host/fake-codex-mcp.py"
+      - "agent-host/fake-codex.py"
+      - "agent-host/host-entitlements.plist"
+      - "agent-host/orchestrator-fake-claude.py"
+      - "agent-host/persistent-fake-claude.py"
+      - "agent-host/sea.mjs"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/tsconfig.json"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondra/**"
+      - "crates/alondrad/**"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "fixtures/client-v2/**"
+      - "fixtures/push/**"
+      - "fixtures/views/*.json"
+      - "fixtures/views/BUILD.bazel"
+      - "fixtures/views/cards/**"
+      - "launchd/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/alondrad/...
+
+  crate-codex-protocol:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/agent-protocol/**"
+      - "crates/codex-protocol/**"
+      - "crates/foundation/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/codex-protocol/...
+
+  crate-core:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/core/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/test_support.rs"
+      - "fixtures/views/*.json"
+      - "fixtures/views/BUILD.bazel"
+      - "fixtures/views/cards/**"
+      - "fixtures/views/metrics/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/core/...
+
+  crate-daemon-engine:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "agent-host/*.ts"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/bundle.mjs"
+      - "agent-host/codex-model-double.py"
+      - "agent-host/fake-codex-mcp.py"
+      - "agent-host/fake-codex.py"
+      - "agent-host/host-entitlements.plist"
+      - "agent-host/orchestrator-fake-claude.py"
+      - "agent-host/persistent-fake-claude.py"
+      - "agent-host/sea.mjs"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/tsconfig.json"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondra/**"
+      - "crates/alondrad/**"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "fixtures/client-v2/**"
+      - "fixtures/domain-v2/BUILD.bazel"
+      - "fixtures/domain-v2/acceptance.json"
+      - "launchd/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/daemon-engine/...
+
+  crate-daemon-support:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondrad/**"
+      - "crates/core/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "fixtures/workflow/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/daemon-support/...
+
+  crate-domain:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/domain/...
+
+  crate-e2e:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/e2e/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/e2e/...
+
+  # One check per crate: `bazel test //crates/<crate>/...` also builds and lints every target of the
+  # crate, and its paths are the crate directories it depends on, so a change reopens exactly the
+  # crates that link it.
+  crate-foundation:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/foundation/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/foundation/...
+
+  crate-process-group:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/process-group/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/process-group/...
+
+  crate-provider-claude:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "agent-host/*.ts"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/bundle.mjs"
+      - "agent-host/persistent-fake-claude.py"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/tsconfig.json"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondrad/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/provider-claude/...
+
+  crate-provider-codex:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/codex-protocol/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/provider-codex/...
+
+  crate-provider-contract:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/foundation/**"
+      - "crates/provider-contract/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates/provider-contract/...
+
+  crate-relay:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/e2e/**"
+      - "crates/relay/**"
+      - "crates/test_support.rs"
+      - "fixtures/push/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "web/react-router.config.ts"
+    with:
+      targets:
+        - //crates/relay/...
+
+  crate-store:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/alondrad/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/store/...
+
+  crates-root:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/*.rs"
+      - "crates/BUILD.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+    with:
+      targets:
+        - //crates:test_directory_test
+
+  licenses:
+    uses: bazel/test
+    paths:
+      - "*.bazel"
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "LICENSE.md"
+      - "MODULE.bazel"
+      - "Package.resolved"
+      - "THIRD_PARTY_NOTICES.md"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/package.json"
+      - "agent-host/pnpm-lock.yaml"
+      - "agent-host/toolchain.bzl"
+      - "apple/BUILD.bazel"
+      - "apple/Features/BUILD.bazel"
+      - "apple/Features/Sources/Settings/Licenses/AppLicenses.swift"
+      - "apple/swift.bzl"
+      - "deploy/brew/BUILD.bazel"
+      - "deploy/brew/alondra.rb.in"
+      - "deploy/brew/node/**"
+      - "tools/BUILD.bazel"
+      - "tools/tests/test_licenses.py"
+      - "tools/third_party_notices.py"
+      - "web/app/public/fonts/*.txt"
+      - "web/package-lock.json"
+      - "web/package.json"
+    with:
+      targets:
         - //tools:licenses_test
+
+  prose-decisions:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Makefile"
+      - "tools/BUILD.bazel"
+      - "tools/prose_decisions.py"
+      - "tools/prose_decisions_allowlist.tsv"
+      - "tools/testdata/**"
+      - "tools/tests/test_prose_decisions.py"
+    with:
+      targets:
+        - //tools:prose_decisions_test
+
+  sandbox-accounts:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/sandbox_accounts.py"
+      - "tools/tests/test_sandbox_accounts.py"
+    with:
+      targets:
         - //tools:sandbox_accounts_test
+
+  low-opt-rust-tests:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Makefile"
+      - "tools/BUILD.bazel"
+      - "tools/tests/test_low_opt_rust_tests.py"
+    with:
+      targets:
         - //tools:low_opt_rust_tests_test
+
+  sandbox-tool:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "crates/BUILD.bazel"
+      - "crates/e2e/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "tools/sandbox/BUILD.bazel"
+      - "tools/sandbox/fixtures/**"
+      - "tools/sandbox/src/**"
+    with:
+      targets:
         - //tools/sandbox:alondra-sandbox_test
+
+  local-daemon:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondra/**"
+      - "crates/alondrad/**"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "launchd/**"
+      - "tests/system/macos/BUILD.bazel"
+      - "tests/system/macos/cli.py"
+      - "tests/system/macos/local_daemon_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
         - //tests/system/macos:local_daemon_test
+
+  build-from-source:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "tests/system/macos/BUILD.bazel"
+      - "tests/system/macos/build_from_source.sh"
+      - "tests/system/macos/build_from_source_test.py"
+    with:
+      targets:
         - //tests/system/macos:build_from_source_test
+
+  apple-scripts:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "apple/*.bzl"
+      - "apple/*.sh"
+      - "apple/BUILD.bazel"
+      - "apple/Bonjour/Bonjour.plist"
+      - "apple/Data/Account/BUILD.bazel"
+      - "apple/Data/Account/Sources/Auth/KeychainRefreshTokenStorage.swift"
+      - "apple/Data/Account/Sources/Composition/AppStorageLocation.swift"
+      - "apple/Data/Pairing/BUILD.bazel"
+      - "apple/Data/Pairing/Sources/PairingStore.swift"
+      - "apple/Design/BUILD.bazel"
+      - "apple/Design/Resources/**"
+      - "apple/entitlements_follow_signing_test.py"
+      - "apple/iOS/Info.plist"
+      - "apple/iOS/Resources/Localizable.xcstrings"
+      - "apple/iOS/ViewsShipping/AccountBootstrap.swift"
+      - "apple/iOSLiveActivity/Info.plist"
+      - "apple/iOSNotificationService/Info.plist"
+      - "apple/macOS/Info.plist"
+      - "apple/macOS/Resources/Localizable.xcstrings"
+      - "apple/push_keychain_group_test.py"
+      - "apple/update_keeps_session_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/shared.bzl"
+    with:
+      targets:
         - //apple:no_sleep_wording_test
         - //apple:release_bonjour_test
-        - //apple:spanish_catalog_test
-        - //apple:unused_catalog_strings_test
         - //apple:entitlements_follow_signing_test
         - //apple:push_keychain_group_test
         - //apple:update_keeps_session_test
+
+  apple-catalogs:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "apple/*.bzl"
+      - "apple/BUILD.bazel"
+      - "apple/Contract/BUILD.bazel"
+      - "apple/Contract/Sources/**"
+      - "apple/Data/Account/BUILD.bazel"
+      - "apple/Data/Account/Sources/**"
+      - "apple/Data/Attachments/BUILD.bazel"
+      - "apple/Data/Attachments/Sources/**"
+      - "apple/Data/Feed/BUILD.bazel"
+      - "apple/Data/Feed/Sources/**"
+      - "apple/Data/Iroh/BUILD.bazel"
+      - "apple/Data/Iroh/Sources/**"
+      - "apple/Data/LiveActivity/BUILD.bazel"
+      - "apple/Data/LiveActivity/Sources/**"
+      - "apple/Data/Notifications/BUILD.bazel"
+      - "apple/Data/Notifications/Sources/**"
+      - "apple/Data/Pairing/BUILD.bazel"
+      - "apple/Data/Pairing/Sources/**"
+      - "apple/Data/Sync/**"
+      - "apple/Data/Transport/BUILD.bazel"
+      - "apple/Data/Transport/Sources/**"
+      - "apple/Demo/BUILD.bazel"
+      - "apple/Demo/Sources/**"
+      - "apple/Design/BUILD.bazel"
+      - "apple/Design/Resources/**"
+      - "apple/Design/Sources/**"
+      - "apple/Features/BUILD.bazel"
+      - "apple/Features/Sources/**"
+      - "apple/Mermaid/BUILD.bazel"
+      - "apple/Mermaid/Sources/**"
+      - "apple/iOS/Resources/Localizable.xcstrings"
+      - "apple/iOS/UI/**"
+      - "apple/iOS/ViewsShipping/**"
+      - "apple/iOSLiveActivity/Resources/LiveActivity.xcstrings"
+      - "apple/iOSLiveActivity/Sources/**"
+      - "apple/iOSLiveActivity/Views/**"
+      - "apple/macOS/Resources/Localizable.xcstrings"
+      - "apple/macOS/ViewsShipping/**"
+      - "apple/macOS/Workspace/**"
+      - "apple/spanish_catalog_test.py"
+      - "apple/unused_catalog_strings_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/shared.bzl"
+    with:
+      targets:
+        - //apple:spanish_catalog_test
+        - //apple:unused_catalog_strings_test
+
+  plugin-mod:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "plugin/.claude-plugin/**"
+      - "plugin/.mcp.json"
+      - "plugin/bin/**"
+      - "plugin/hooks/**"
+      - "plugin/skills/**"
+      - "plugin/tests/**"
+      - "tools/BUILD.bazel"
+      - "tools/plugin-mod-test.sh"
+    with:
+      targets:
         - //:plugin_mod_test
+
+  sourcekit-lsp-workspace:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - ".bsp/skbsp.json"
+      - ".sourcekit-lsp/**"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Package.resolved"
+      - "Package.swift"
+      - "tools/BUILD.bazel"
+      - "tools/tests/test_sourcekit_lsp_workspace.py"
+    with:
+      targets:
         - //:sourcekit_lsp_workspace_test
+
+  deploy-brew:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - ".claude-plugin/**"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "deploy/brew/BUILD.bazel"
+      - "deploy/brew/plugin_payload_test.py"
+      - "deploy/brew/release.py"
+      - "deploy/brew/tests/test_upgrade_rehearsal.py"
+      - "deploy/brew/upgrade-rehearsal.py"
+      - "launchd/**"
+      - "plugin-orchestrator/.claude-plugin/**"
+      - "plugin-orchestrator/.mcp.json"
+      - "plugin-orchestrator/skills/**"
+      - "plugin/.claude-plugin/**"
+      - "plugin/.mcp.json"
+      - "plugin/bin/**"
+      - "plugin/hooks/**"
+      - "plugin/skills/**"
+      - "plugin/tests/**"
+    with:
+      targets:
         - //deploy/brew:plugin_payload_test
         - //deploy/brew:upgrade_rehearsal_test
+
+  deploy-apple:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Makefile"
+      - "deploy/apple/*.py"
+      - "deploy/apple/BUILD.bazel"
+      - "deploy/apple/increment_version_test.sh"
+      - "tools/BUILD.bazel"
+      - "tools/shared.bzl"
+    with:
+      targets:
         - //deploy/apple:prepare_test
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test
 
+  apple-tests:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Package.resolved"
+      - "agent-host/*.ts"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/bundle.mjs"
+      - "agent-host/codex-model-double.py"
+      - "agent-host/fake-codex-mcp.py"
+      - "agent-host/fake-codex.py"
+      - "agent-host/host-entitlements.plist"
+      - "agent-host/orchestrator-fake-claude.py"
+      - "agent-host/persistent-fake-claude.py"
+      - "agent-host/sea.mjs"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/tsconfig.json"
+      - "apple/*.bzl"
+      - "apple/BUILD.bazel"
+      - "apple/Bonjour/**"
+      - "apple/Contract/**"
+      - "apple/Data/**"
+      - "apple/Demo/**"
+      - "apple/Design/**"
+      - "apple/Features/**"
+      - "apple/IconConcepts/Alondra.icon/**"
+      - "apple/Mermaid/BUILD.bazel"
+      - "apple/Mermaid/Fixtures/**"
+      - "apple/Mermaid/Snapshots/**"
+      - "apple/Mermaid/Sources/**"
+      - "apple/Mermaid/Tests/**"
+      - "apple/Testing/**"
+      - "apple/entitlements_follow_signing_test.py"
+      - "apple/iOS/Resources/Localizable.xcstrings"
+      - "apple/iOS/UI/**"
+      - "apple/iOSLiveActivity/Resources/LiveActivity.xcstrings"
+      - "apple/iOSLiveActivity/Views/**"
+      - "apple/macOS/**"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondra/**"
+      - "crates/alondrad/**"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "fixtures/client-v2/**"
+      - "fixtures/diffs/**"
+      - "fixtures/markdown/**"
+      - "fixtures/push/**"
+      - "fixtures/report/**"
+      - "fixtures/views/**"
+      - "launchd/**"
+      - "tools/*.bzl"
+      - "tools/BUILD.bazel"
+      - "version.bzl"
+    with:
+      targets:
+        - //apple/Contract:AlondraContractTests
+        - //apple/Data/Transport:AlondraTransportTests
+        - //apple/Data/Account:AlondraAccountTests
+        - //apple/Data/Pairing:AlondraPairingTests
+        - //apple/Data/Notifications:AlondraNotificationsTests
+        - //apple/Data/LiveActivity:AlondraLiveActivityTests
+        - //apple/Data/Feed:AlondraFeedTests
+        - //apple/Data/Feed:ActionJournalProcessTests
+        - //apple/Data/Iroh:AlondraIrohProcessTests
+        - //apple/Data/Attachments:AlondraAttachmentsTests
+        - //apple/Demo:AlondraDemoTests
+        - //apple/Design:AlondraDesignTests
+        - //apple/Mermaid:AlondraMermaidTests
+        - //apple/Mermaid:AlondraMermaidSnapshotTests
+        - //apple/Features:AlondraFeaturesTests
+        - //apple/Testing:TemporaryFilesTests
+        - //apple/Testing:IssueReportingIntegrationTests
+        - //apple/Testing/Entitlements:sample_signing_entitlements_test
+        - //apple/Testing/Quality:AlondraQualityTests
+        - //apple/Testing/Snapshots:AlondraSnapshotTests
+        - //apple/Testing/TriageTouch:TriageTouchUITests
+        - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
+        - //apple:AlondraMacServiceNavigationTests
+        - //apple:AlondraMacWorkspaceOwnerTests
+        - //apple:mac_app_build_test
+
   sdk-host:
     uses: bazel/test
     paths:
-      - "agent-host/**"
+      - "BUILD.bazel"
+      - "Makefile"
+      - "agent-host/*.ts"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/bundle.mjs"
+      - "agent-host/channel.test.mjs"
+      - "agent-host/codex-ack-progress-fixture.mjs"
+      - "agent-host/codex-exit-fixture.mjs"
+      - "agent-host/codex-failed-cleanup-fixture.mjs"
+      - "agent-host/codex-host-failure.mjs"
+      - "agent-host/codex-session.test.mjs"
+      - "agent-host/consecutive-inputs.test.mjs"
+      - "agent-host/controls-fixture.mjs"
+      - "agent-host/controls.test.mjs"
+      - "agent-host/decisions.test.mjs"
+      - "agent-host/descendant-fake-claude.py"
+      - "agent-host/fake-claude.mjs"
+      - "agent-host/fake-claude.py"
+      - "agent-host/fake-codex.py"
+      - "agent-host/fake-model-catalog.mjs"
+      - "agent-host/flush-fixture.mjs"
+      - "agent-host/flush.test.mjs"
+      - "agent-host/frame.test.mjs"
+      - "agent-host/host-entitlements.plist"
+      - "agent-host/host-stop-fixture.mjs"
+      - "agent-host/host-stop.test.mjs"
+      - "agent-host/journal-compaction.test.mjs"
+      - "agent-host/journal.test.mjs"
+      - "agent-host/model-probe.test.mjs"
+      - "agent-host/owned-host.mjs"
+      - "agent-host/ownership.test.mjs"
+      - "agent-host/persistent-fake-claude.py"
+      - "agent-host/probe.test.mjs"
+      - "agent-host/reconcile-fixture.mjs"
+      - "agent-host/reconcile.test.mjs"
+      - "agent-host/sea.mjs"
+      - "agent-host/sea.test.mjs"
+      - "agent-host/session-cleanup.test.mjs"
+      - "agent-host/session-descendant.test.mjs"
+      - "agent-host/session-orchestrator.test.mjs"
+      - "agent-host/session-retry.test.mjs"
+      - "agent-host/session-worker.test.mjs"
+      - "agent-host/session.test.mjs"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/tsconfig.json"
+      - "agent-host/umask.test.mjs"
+      - "crates/agent-protocol/**"
+      - "tools/BUILD.bazel"
+      - "tools/prose_decisions.py"
+      - "tools/prose_decisions_allowlist.tsv"
+      - "tools/rust_test.bzl"
+      - "tools/testdata/**"
+      - "tools/tests/test_prose_decisions.py"
     with:
       targets:
         - //tools:prose_decisions_test
@@ -113,55 +1026,23 @@ checks:
   cargo-bazel-deps:
     uses: bazel/test
     paths:
+      - "BUILD.bazel"
       - "Cargo.toml"
-      - "crates/**/Cargo.toml"
+      - "crates/**/*.bzl"
       - "crates/**/BUILD.bazel"
+      - "crates/**/Cargo.toml"
       - "crates/cargo_bazel_deps_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
     with:
       targets:
         - //crates:cargo_bazel_deps_test
 
-  apple-tests:
-    uses: bazel/test
-    paths:
-      - "apple/**"
-      - "fixtures/views/**"
-      - "fixtures/push/**"
-      - "**/*.bazel"
-      - "MODULE.bazel"
-      - ".bazelrc"
-      - ".bazelversion"
-    with:
-      targets:
-        - //apple/Contract:AlondraContractTests
-        - //apple/Data/Transport:AlondraTransportTests
-        - //apple/Data/Account:AlondraAccountTests
-        - //apple/Data/Pairing:AlondraPairingTests
-        - //apple/Data/Notifications:AlondraNotificationsTests
-        - //apple/Data/LiveActivity:AlondraLiveActivityTests
-        - //apple/Data/Feed:AlondraFeedTests
-        - //apple/Data/Feed:ActionJournalProcessTests
-        - //apple/Data/Iroh:AlondraIrohProcessTests
-        - //apple/Data/Attachments:AlondraAttachmentsTests
-        - //apple/Demo:AlondraDemoTests
-        - //apple/Design:AlondraDesignTests
-        - //apple/Mermaid:AlondraMermaidTests
-        - //apple/Mermaid:AlondraMermaidSnapshotTests
-        - //apple/Features:AlondraFeaturesTests
-        - //apple/Testing:TemporaryFilesTests
-        - //apple/Testing:IssueReportingIntegrationTests
-        - //apple/Testing/Entitlements:sample_signing_entitlements_test
-        - //apple/Testing/Quality:AlondraQualityTests
-        - //apple/Testing/Snapshots:AlondraSnapshotTests
-        - //apple/Testing/TriageTouch:TriageTouchUITests
-        - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
-        - //apple:AlondraMacServiceNavigationTests
-        - //apple:AlondraMacWorkspaceOwnerTests
-        - //apple:mac_app_build_test
-
   load-bench-oracles:
     uses: bazel/test
     paths:
+      - "tools/BUILD.bazel"
       - "tools/load_bench.py"
       - "tools/tests/test_load_bench.py"
     with:
@@ -171,6 +1052,7 @@ checks:
   buildbuddy-credential-helper:
     uses: bazel/test
     paths:
+      - "tools/BUILD.bazel"
       - "tools/buildbuddy-credential-helper.sh"
       - "tools/tests/test_buildbuddy_credential_helper.py"
     with:
@@ -181,8 +1063,10 @@ checks:
     uses: bazel/test
     paths:
       - ".bazelrc"
+      - "BUILD.bazel"
       - "Makefile"
       - "signing/**"
+      - "tools/BUILD.bazel"
       - "tools/tests/test_public_build_inputs.py"
     with:
       targets:
@@ -191,6 +1075,7 @@ checks:
   bazel-test-tmpdir:
     uses: bazel/test
     paths:
+      - "tools/BUILD.bazel"
       - "tools/test-tmpdir.sh"
       - "tools/tests/test_bazel_test_tmpdir.py"
     with:
@@ -200,10 +1085,23 @@ checks:
   native-fixture-lifecycle:
     uses: bazel/test
     paths:
-      - "tests/native/**"
-      - "agent-host/descendant-fake-claude.py"
       - "agent-host/BUILD.bazel"
-      - "MODULE.bazel"
+      - "agent-host/descendant-fake-claude.py"
+      - "agent-host/toolchain.bzl"
+      - "tests/native/claude/BUILD.bazel"
+      - "tests/native/claude/lifecycle_test.py"
+      - "tests/native/claude/run.py"
+      - "tests/native/claude/run.sh"
     with:
       targets:
         - //tests/native/claude:client_lifecycle_test
+
+  musts-scopes:
+    uses: bazel/test
+    paths:
+      - "tools/BUILD.bazel"
+      - "tools/musts_scopes.py"
+      - "tools/tests/test_musts_scopes.py"
+    with:
+      targets:
+        - //tools:musts_scopes_test
