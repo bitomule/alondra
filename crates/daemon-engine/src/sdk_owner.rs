@@ -1014,24 +1014,51 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
     }
+    retakes.push((task.clone(), std::thread::spawn(move || take_again(&runtime, &backend, &task, explicit_account_retry))));
+}
+
+fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId, explicit_account_retry: bool) {
+    if runtime.state().ok().and_then(|state| state.tasks.get(task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
+        return;
+    }
+    let plugin = crate::plugins::node_in(runtime.home());
+    let taken = if host_started(backend, runtime, task) {
+        if explicit_account_retry{take_host(Arc::clone(runtime),backend,task.clone(),plugin.as_deref(),true,true,true).and_then(|driver|driver.ok_or_else(||Failed::new("The ended host was not replaced".into())))}else{adopt(Arc::clone(runtime), backend, task.clone(), plugin.as_deref())}
+    } else {
+        plugin.as_deref().ok_or_else(|| Failed::new("Alondra's node plugin, which its host loads, was not found".into()))
+            .and_then(|plugin| launch_admitted(Arc::clone(runtime), backend, task.clone(), plugin))
+    };
+    match taken {
+        Ok(driver) => {
+            runtime.add_sdk_owner(Owner::spawn(driver));
+            log!("the SDK execution of {task} was taken over again: the same Claude session goes on");
+        }
+        Err(failed) => not_taken(runtime, task, failed),
+    }
+}
+
+/// Stops, on a thread of its own, the host of the paused node `agent` and every process under it,
+/// and puts in its place a host whose Claude opens only on its next input, which the pause holds:
+/// with no Claude running nothing wakes a turn, and the end of the host settles what the task's
+/// lifecycle waited for. A task an owner of this daemon does not hold has nothing to stop.
+pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
+    if !domain.owns_sdk_host(&agent) || crate::provider_transition::holds_execution(domain, &task) || crate::account_move::holds_execution(domain, &task) {
+        return;
+    }
+    let Some((backend, runtime)) = domain.sdk() else { return };
+    let backend = backend.clone();
+    let mut retakes = domain.retakes.lock_or_recover("the retakes");
+    retakes.retain(|(_, retake)| !retake.is_finished());
+    if retakes.iter().any(|(taking, _)| *taking == task) {
+        return;
+    }
     retakes.push((task.clone(), std::thread::spawn(move || {
-        if runtime.state().ok().and_then(|state| state.tasks.get(&task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
-            return;
+        match runtime.halt_sdk_host(&agent) {
+            None => return,
+            Some(Ok(())) => log!("the SDK host of {task} and every process under it stopped for its pause"),
+            Some(Err(failed)) => log!("the SDK host of {task} did not stop cleanly for its pause: {failed}"),
         }
-        let plugin = crate::plugins::node_in(runtime.home());
-        let taken = if host_started(&backend, &runtime, &task) {
-            if explicit_account_retry{take_host(Arc::clone(&runtime),&backend,task.clone(),plugin.as_deref(),true,true,true).and_then(|driver|driver.ok_or_else(||Failed::new("The ended host was not replaced".into())))}else{adopt(Arc::clone(&runtime), &backend, task.clone(), plugin.as_deref())}
-        } else {
-            plugin.as_deref().ok_or_else(|| Failed::new("Alondra's node plugin, which its host loads, was not found".into()))
-                .and_then(|plugin| launch_admitted(Arc::clone(&runtime), &backend, task.clone(), plugin))
-        };
-        match taken {
-            Ok(driver) => {
-                runtime.add_sdk_owner(Owner::spawn(driver));
-                log!("the SDK execution of {task} was taken over again: the same Claude session goes on");
-            }
-            Err(failed) => not_taken(&runtime, &task, failed),
-        }
+        take_again(&runtime, &backend, &task, false);
     })));
 }
 
@@ -1671,6 +1698,7 @@ fn feed(provider: Provider, domain: &DomainRuntime, agent: &AgentId, batch: &Ord
 /// one of a session that keeps closing; the folder, and the mark with it, is archived when a new
 /// host takes its place. A mark that cannot be written leaves the end counted as the session's.
 const STOPPED_BY_ALONDRA: &str = "stopped-by-alondra";
+const HALT_GRACE: Duration = Duration::from_secs(10);
 fn mark_stopped_by_alondra(state_directory: &std::path::Path) {
     if let Err(error) = std::fs::write(state_directory.join(STOPPED_BY_ALONDRA), b"") {
         log!("could not mark the stop of the SDK host in {} as Alondra's own: {error}", state_directory.display());
@@ -1893,6 +1921,16 @@ impl Owner {
     pub(crate) fn close(&mut self) -> Result<(), Failed> {
         self.interrupt.store(true, Ordering::SeqCst);
         self.end()
+    }
+
+    /// Stops the host as `close` does and ends every process under it. Each command Claude runs
+    /// has a group of its own, so the end of the host's group leaves those running.
+    pub(crate) fn halt(&mut self) -> Result<(), Failed> {
+        let tree = self.host_group().map_or(Ok(vec![]), alondra_process_group::tree);
+        let closed = self.close();
+        let ended = tree.and_then(|tree| alondra_process_group::end_tree(&tree, HALT_GRACE));
+        closed?;
+        ended.map_err(|error| Failed::new(format!("the processes of the SDK host of {} did not end: {error}", self.agent)))
     }
 
     fn end(&mut self) -> Result<(), Failed> {

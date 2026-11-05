@@ -1108,6 +1108,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         domain.store.lock_or_exit("the domain store").dequeue_launch(&row.task_id)?;
     }
     let gate = &domain.live.gate;
+    let to_halt;
     let head = {
         let queued = queued_launches(domain, &state, now);
         let mut inner = gate.lock_with(domain);
@@ -1128,7 +1129,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 log!("{line}{detail}");
             }
         }
-        match (snapshot.queue.first(), snapshot.hold) {
+        let head = match (snapshot.queue.first(), snapshot.hold) {
             (Some(head), None) if inner.asking.contains_key(&head.key) => {
                 gate.turn.send_modify(|turn| *turn += 1);
                 None
@@ -1147,8 +1148,13 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 Some(key)
             }
             _ => None,
-        }
+        };
+        to_halt = crate::pauses::to_halt(domain, &state, &inner.saved.pauses);
+        head
     };
+    for (session, paused) in to_halt {
+        crate::pauses::hold_sdk_turn(domain, &session, &paused);
+    }
     let Some(Key::Task(task)) = head else { return Ok(()) };
     let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());

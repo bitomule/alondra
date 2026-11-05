@@ -1281,6 +1281,119 @@ pub fn assert_told_the_work_ended(slice: &Slice, domain: &Arc<DomainRuntime>, mu
     driver.stop().unwrap();
 }
 
+/// Ends what a test's background commands left, on success and on failure alike.
+struct BackgroundCommands(Vec<alondra_process_group::Member>);
+
+impl BackgroundCommands {
+    fn of(slice: &Slice) -> Self {
+        Self(background_commands(slice).into_iter().filter_map(|pid| alondra_process_group::process(pid).unwrap()).collect())
+    }
+    fn running(&self) -> Vec<String> {
+        survivors(&self.0)
+    }
+}
+
+impl Drop for BackgroundCommands {
+    fn drop(&mut self) {
+        alondra_process_group::end_tree(&self.0, std::time::Duration::from_secs(5)).unwrap();
+    }
+}
+
+/// A node with a background command in a group of its own, a shell with a child of its own, under
+/// an owner that runs by itself, as a daemon's are.
+fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, BackgroundCommands, Vec<alondra_process_group::Member>) {
+    slice.domain.enable_sdk(slice.backend.clone());
+    slice.domain.live.gate.ignore_mac();
+    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
+    let mut driver = slice.launch_with("background-group");
+    until_own_work(slice, &mut driver);
+    let commands = BackgroundCommands::of(slice);
+    assert_eq!(commands.running().len(), 2, "the shell and its child run");
+    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let agent = driver.agent().clone();
+    let session = slice.starts().last().unwrap()["session"].as_str().unwrap().to_owned();
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    (agent, session, commands, host)
+}
+
+fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCommands, host: &[alondra_process_group::Member]) {
+    assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
+    assert_eq!(survivors(host), Vec::<String>::new(), "the host and its Claude ended");
+    assert_eq!(slice.starts().len(), 1, "no Claude runs: nothing can wake a turn");
+    assert_ne!(lifecycle(&slice.domain).activity(), ActivityView::OwnWork, "nothing waits for the work that ended");
+    assert!(slice.domain.owns_sdk_host(agent), "a host waits with no Claude for what the pause holds");
+    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+}
+
+// 5 November, t-flaky-daemon-engine-under-load: paused at 00:00:37 with a stress script running in
+// the background. The script's end woke Claude, a turn no input of Alondra's opens, and it ran the
+// script again, three times, until its process ended 13 minutes later. Of 161 pauses by the user
+// in the journals, 60 went on like that. A pause stops the host, so nothing is left to wake.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_turn_until_it_resumes() {
+    let slice = Slice::new();
+    let (agent, session, commands, host) = node_with_a_background_group(&slice);
+    let gate = &slice.domain.live.gate;
+    gate.pause_by_user(&slice.domain, &agent.0, alondra_core::now_millis()).unwrap();
+    slice.domain.join_retakes();
+    assert_stopped_whole(&slice, &agent, &commands, &host);
+    assert!(slice.domain.state().unwrap().host_ended_since_pause(&TASK.into()));
+    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    slice.domain.join_retakes();
+    assert!(gate.paused(&slice.domain, &agent.0).is_some(), "only the user ends it");
+    assert_eq!(slice.starts().len(), 1, "a later look at the pauses starts nothing");
+
+    assert!(gate.resume_now(&slice.domain, &agent.0, alondra_core::now_millis()));
+    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
+    slice.domain.stop_sdk_owners();
+    assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {:?}", slice.starts());
+    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+}
+
+// Only a pause by the user cuts what a node runs. A build that uses a lot of the disk or the Mac
+// would only run again, and the usage limit stops Claude's turns, never its commands.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_pause_but_the_users_kills_what_the_node_runs() {
+    use crate::pauses::Reason;
+    for reason in [Reason::Disk, Reason::Declared { reason: "Waiting for a full machine".into() }, Reason::Usage] {
+        let slice = Slice::new();
+        let (agent, _, commands, host) = node_with_a_background_group(&slice);
+        slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
+        assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, reason.clone(), alondra_core::now_millis()));
+        crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+        slice.domain.join_retakes();
+        assert_eq!(commands.running().len(), 2, "{reason:?}: the background command and its child go on");
+        assert_eq!(survivors(&host).len(), host.len(), "{reason:?}: the host and its Claude go on");
+        assert_eq!(slice.starts().len(), 1, "{reason:?}: the same Claude goes on");
+        slice.domain.stop_sdk_owners();
+    }
+}
+
+// A daemon that restarts with a node paused by the user adopts its live host: the gate stops it at
+// its next look.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_next_look() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("background-group");
+    until_own_work(&slice, &mut driver);
+    let commands = BackgroundCommands::of(&slice);
+    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let agent = driver.agent().clone();
+    assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::ByUser, alondra_core::now_millis()));
+    drop(driver);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    restarted.live.gate.ignore_mac();
+    adopt_all(&restarted, &slice.backend);
+    assert_eq!(commands.running().len(), 2, "the adopted host still runs them");
+    crate::admission::pass_at(&restarted, &slice._home, alondra_core::now_millis()).await.unwrap();
+    restarted.join_retakes();
+    assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
+    assert_eq!(survivors(&host), Vec::<String>::new());
+    restarted.stop_sdk_owners();
+}
+
 // t-parcel-open-issues-widget, 22 October: the session ended its turn on «I go on when it ends»
 // with `bazel test` running in the background, and the 0.3.5 daemon ended its 0.3.4 host, which
 // it would not adopt, and the command with it. A host's end is a fact: the resumed session is told

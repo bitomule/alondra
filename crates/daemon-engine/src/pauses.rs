@@ -1,8 +1,11 @@
 //! Paused nodes and bringing them back through the gate. Memory never pauses a working node: it
 //! only holds new starts, since cutting a build that uses a lot of memory only makes it run again.
 //! A node is paused by the user, by its own wait for the machine, for Claude usage or after an API
-//! error. A pause by the user interrupts the node's turn and then stops what its shells left
-//! running; a turn the node starts by itself while held is cut again. Paused nodes wait in the
+//! error. A pause by the user stops it whole. A node of the Agent SDK ends its host, with its turn
+//! and every process under it, since a command left running would wake Claude, which takes that
+//! turn by itself, with no input a pause could hold. A node of `claude --bg` is interrupted, then
+//! what its shells left running stops, and a turn it starts by itself while held is cut again. No
+//! other pause cuts what a node runs. Paused nodes wait in the
 //! gate's queue ahead of new starts of their priority and come back as starts do, one a minute,
 //! when there is a slot and room. A pause an older daemon made for memory returns at once and
 //! comes back the same way.
@@ -154,9 +157,10 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
     pauses.paused.insert(session.to_owned(), Paused { task, reason, since: now, cut, turn_since, cleanup: Cleanup::Pending, released: false });
 }
 
-/// Stops the turn of a node of the Agent SDK the node machine holds paused. What it goes on with
-/// when the pause ends is told first, and its owner holds it until then: the interrupted turn
-/// ends with its next step known, and no card asks the user how it goes on.
+/// Stops a node of the Agent SDK the node machine holds paused: its turn, its host and every
+/// process under it. What it goes on with when the pause ends is told first, and its owner holds
+/// it until then: the interrupted turn ends with its next step known, and no card asks the user
+/// how it goes on.
 pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paused) {
     let text = resume_text(paused, paused.since);
     let command = format!("pause-{session}-{}", paused.since);
@@ -164,6 +168,7 @@ pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paus
         log!("pausing {session}: what it goes on with was not recorded ({error:?})");
     }
     interrupt_sdk_node(domain, session);
+    crate::sdk_owner::halt(domain, paused.task.clone(), alondra_core::domain::AgentId(session.to_owned()));
 }
 
 fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
@@ -178,6 +183,15 @@ fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("pausing {session}: its turn was not interrupted ({error:?}); what it is told waits all the same");
     }
+}
+
+/// The nodes of the Agent SDK a pause that stops them holds, whose host still runs what it ran when
+/// the pause came: one a new pause reached, or one a daemon that restarted adopted.
+pub(crate) fn to_halt(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<(String, Paused)> {
+    pauses.paused.iter()
+        .filter(|(session, paused)| paused.reason.holds() && through_sdk(domain, session) && !state.host_ended_since_pause(&paused.task)
+            && domain.owns_sdk_host(&alondra_core::domain::AgentId((*session).clone())))
+        .map(|(session, paused)| (session.clone(), paused.clone())).collect()
 }
 
 /// One look at the pauses: forgets the nodes that went on or ended, stops again a node paused by

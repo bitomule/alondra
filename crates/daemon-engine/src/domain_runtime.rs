@@ -331,6 +331,11 @@ impl DomainRuntime {
     pub(crate) fn close_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
         self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.close())
     }
+    /// Stops the host of a paused node as `close_sdk_host` does, and every process under it. `None`
+    /// when this daemon owns no host for it.
+    pub(crate) fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), crate::sdk_owner::Failed>> {
+        self.take_sdk_owner(agent).map(|mut owner| owner.halt())
+    }
     fn take_sdk_owner(&self, agent: &AgentId) -> Option<crate::sdk_owner::Owner> {
         let mut owners = self.sdk_owners.lock_or_recover("the SDK owners");
         owners.iter().position(|owner| owner.agent() == agent && !owner.ended())

@@ -9,6 +9,8 @@ use std::mem::{MaybeUninit, size_of};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
+const TREE_ROUNDS: usize = 8;
+
 /// One process of a group, named by its PID and the moment it started: a PID alone can be reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Member {
@@ -163,6 +165,88 @@ pub fn table() -> io::Result<Vec<Entry>> {
         }
     }
     Ok(entries)
+}
+
+/// The processes under `root` right now, by parentage and whatever their group: a command its
+/// parent moved to a group of its own is one of them. `root` is not.
+pub fn tree(root: i32) -> io::Result<Vec<Member>> {
+    under(&BTreeSet::from([root]))
+}
+
+fn under(roots: &BTreeSet<i32>) -> io::Result<Vec<Member>> {
+    let mut parents = Vec::new();
+    for pid in all_pids()? {
+        if let Some((parent, _)) = lineage(pid)? {
+            parents.push((pid, parent));
+        }
+    }
+    let mut found = roots.clone();
+    loop {
+        let children: Vec<i32> = parents.iter().filter(|(pid, parent)| found.contains(parent) && !found.contains(pid)).map(|(pid, _)| *pid).collect();
+        if children.is_empty() {
+            break;
+        }
+        found.extend(children);
+    }
+    let mut members = Vec::new();
+    for pid in found.difference(roots) {
+        members.extend(process(*pid)?);
+    }
+    Ok(members)
+}
+
+/// Ends `members` and what they start meanwhile: SIGTERM, then SIGKILL for what outlasts `grace`,
+/// round after round until none is left. A PID that names another process by now is left alone.
+pub fn end_tree(members: &[Member], grace: Duration) -> io::Result<()> {
+    let mut members = members.to_vec();
+    for _ in 0..TREE_ROUNDS {
+        let live = with_children(&members)?;
+        if live.is_empty() {
+            return Ok(());
+        }
+        let mut exits = Exits::new()?;
+        for member in &live {
+            exits.watch(member)?;
+        }
+        send(&live, libc::SIGTERM)?;
+        if !exits.wait_for(grace)? {
+            send(&live, libc::SIGKILL)?;
+            exits.wait_for(grace)?;
+        }
+        members = live;
+    }
+    let left = with_children(&members)?;
+    if left.is_empty() {
+        return Ok(());
+    }
+    let names = left.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    Err(io::Error::other(format!("{names} still run after {TREE_ROUNDS} rounds")))
+}
+
+fn with_children(members: &[Member]) -> io::Result<Vec<Member>> {
+    let mut live = BTreeSet::new();
+    for member in members {
+        if alive(member)? {
+            live.insert(*member);
+        }
+    }
+    let pids = live.iter().map(|member| member.pid).collect();
+    for member in under(&pids)? {
+        if !member.zombie {
+            live.insert(member);
+        }
+    }
+    Ok(live.into_iter().collect())
+}
+
+fn send(members: &[Member], signal: c_int) -> io::Result<()> {
+    for member in members {
+        if alive(member)? {
+            // SAFETY: kill takes two integers and touches no memory of ours.
+            unsafe { libc::kill(member.pid, signal) };
+        }
+    }
+    Ok(())
 }
 
 fn lineage(pid: i32) -> io::Result<Option<(i32, i32)>> {
@@ -439,6 +523,64 @@ mod tests {
         child.wait().unwrap();
         let me = i32::try_from(std::process::id()).unwrap();
         assert_eq!(row, Some(Entry { pid, parent: me, group: pid, argv: vec!["/bin/sleep".into(), "600".into()] }));
+    }
+
+    struct Spawned(std::process::Child);
+    impl Spawned {
+        fn pid(&self) -> i32 {
+            i32::try_from(self.0.id()).unwrap()
+        }
+    }
+    impl Drop for Spawned {
+        fn drop(&mut self) {
+            kill_child(self.pid());
+            self.0.wait().unwrap();
+        }
+    }
+
+    /// A shell whose job, a `sleep` of a group of its own, has its PID read back.
+    fn shell_with_job(script: &str) -> (Spawned, i32) {
+        use std::io::BufRead;
+        let mut shell = Command::new("/bin/sh").args(["-c", script]).process_group(0).stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap();
+        let stdout = shell.stdout.take().unwrap();
+        let shell = Spawned(shell);
+        let mut line = String::new();
+        std::io::BufReader::new(stdout).read_line(&mut line).unwrap();
+        (shell, line.trim().parse().unwrap())
+    }
+
+    #[test]
+    fn a_tree_ends_whole_with_a_job_in_a_group_of_its_own_and_leaves_what_is_not_under_it() {
+        let (shell, job) = shell_with_job("set -m; /bin/sleep 600 & echo $!; wait");
+        let outsider = Spawned(Command::new("/bin/sleep").arg("600").stdin(Stdio::null()).spawn().unwrap());
+        assert_ne!(group(job).unwrap(), group(shell.pid()).unwrap(), "the job has a group of its own");
+        let tree = tree(shell.pid()).unwrap();
+        assert_eq!(tree.iter().map(|member| member.pid).collect::<Vec<_>>(), [job]);
+        end_tree(&tree, Duration::from_secs(30)).unwrap();
+        assert!(!alive(&tree[0]).unwrap(), "the job ended");
+        assert!(process(outsider.pid()).unwrap().is_some_and(|member| !member.zombie), "what is not under the shell goes on");
+    }
+
+    #[test]
+    fn what_ignores_the_terminate_signal_is_killed_after_the_grace() {
+        let (shell, job) = shell_with_job("trap '' TERM; set -m; /bin/sleep 600 & echo $!; wait");
+        let tree = tree(shell.pid()).unwrap();
+        assert_eq!(tree.iter().map(|member| member.pid).collect::<Vec<_>>(), [job]);
+        end_tree(&tree, Duration::from_millis(50)).unwrap();
+        assert!(!alive(&tree[0]).unwrap(), "the job ended");
+    }
+
+    #[test]
+    fn a_member_whose_pid_names_another_process_by_now_is_left_alone() {
+        let mut child = Command::new("/bin/sleep").arg("600").stdin(Stdio::null()).spawn().unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        let mut stale = process(pid).unwrap().unwrap();
+        stale.started.1 += 1;
+        end_tree(&[stale], Duration::from_millis(50)).unwrap();
+        let running = process(pid).unwrap().is_some_and(|member| !member.zombie);
+        kill_child(pid);
+        child.wait().unwrap();
+        assert!(running, "that process was never signalled");
     }
 
     #[test]
