@@ -97,6 +97,12 @@ mod operator_api {
 
         async fn signed(&self, relay: &Relay, key: &SigningKey, id: &str, owner: Option<&str>,
             method: &str, path: &str, body: Vec<u8>) -> StatusCode {
+            self.signed_response(relay, key, id, owner, method, path, body).await.status()
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn signed_response(&self, relay: &Relay, key: &SigningKey, id: &str, owner: Option<&str>,
+            method: &str, path: &str, body: Vec<u8>) -> reqwest::Response {
             let nonce = self.nonce.fetch_add(1, Ordering::Relaxed) + 1;
             let mut builder = self.http.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
                 format!("{}{path}", relay.url));
@@ -104,7 +110,31 @@ mod operator_api {
                 builder = builder.bearer_auth(jwt(owner, now_ms()));
             }
             sign(&relay.server.auth.server_epoch(), builder.body(body.clone()), key, id, method,
-                path, &body, nonce).send().await.unwrap().status()
+                path, &body, nonce).send().await.unwrap()
+        }
+
+        /// The Mac's signed bootstrap, which brings what its account removed from it.
+        async fn mac_bootstrap(&self, relay: &Relay, key: &SigningKey) -> (StatusCode, Value) {
+            let response = self.signed_response(relay, key, "mac-1", None, "GET", "/v1/bootstrap", Vec::new()).await;
+            let status = response.status();
+            (status, response.json().await.unwrap_or(Value::Null))
+        }
+
+        async fn mac_removals(&self, relay: &Relay) -> Value {
+            let (status, body) = self.mac_bootstrap(relay, &self.mac_key).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert!(body["epoch"].is_string(), "{body}");
+            body["removals"].clone()
+        }
+
+        async fn enroll_second_phone(&self, relay: &Relay) {
+            let body = serde_json::to_vec(&PhoneDevice {
+                device_id: "phone-2".into(),
+                owner_sub: "owner".into(),
+                signing_key: key_bytes(&SigningKey::from_slice(&[123u8; 32]).unwrap()),
+            })
+            .unwrap();
+            assert_eq!(self.as_mac(relay, "POST", "/v1/devices", body).await, StatusCode::CREATED);
         }
 
         async fn as_mac(&self, relay: &Relay, method: &str, path: &str, body: Vec<u8>) -> StatusCode {
@@ -453,5 +483,63 @@ mod operator_api {
         assert_eq!(ended("s1").await.unwrap().status(), StatusCode::NO_CONTENT);
         assert!(relay.server.auth.push_registration("phone-1").is_none());
         assert!(relay.server.auth.push_ended("phone-1"));
+    }
+
+    fn removed_clients(read: &Value) -> Vec<&str> {
+        read["clients"].as_array().unwrap().iter().map(|client| {
+            assert!(client["removed_at_ms"].as_u64().unwrap() > 0);
+            client["client_id"].as_str().unwrap()
+        }).collect()
+    }
+
+    #[tokio::test]
+    async fn the_mac_reads_the_clients_its_account_removed_and_no_other_even_after_a_restart() {
+        let (world, relay) = World::new().await;
+        world.enroll_second_phone(&relay).await;
+        assert_eq!(world.mac_removals(&relay).await, json!({"mac_removed": false, "clients": []}));
+
+        assert_eq!(world.remove(&relay, json!([phone_removal(1)])).await.0, StatusCode::OK);
+        let read = world.mac_removals(&relay).await;
+        assert_eq!(read["mac_removed"], false);
+        assert_eq!(removed_clients(&read), ["phone-1"], "only the client the account removed is listed");
+        drop(relay);
+
+        let restarted = world.start(Operator::new(Some(TOKEN.into()), None).unwrap()).await;
+        assert_eq!(world.mac_removals(&restarted).await, read,
+            "a Mac that was away reads the same once it is back");
+    }
+
+    #[tokio::test]
+    async fn a_mac_the_account_removed_reads_that_it_was_with_the_clients_it_had() {
+        for removal in [json!({"seq": 1, "kind": "mac", "owner": "owner", "mac_id": "mac-1"}),
+            json!({"seq": 1, "kind": "owner", "owner": "owner"})] {
+            let (world, relay) = World::new().await;
+            world.enroll_second_phone(&relay).await;
+            assert_eq!(world.remove(&relay, json!([removal])).await.0, StatusCode::OK);
+            assert_eq!(world.as_mac(&relay, "DELETE", "/v1/devices/phone-2", Vec::new()).await, StatusCode::UNAUTHORIZED,
+                "{removal}: the removed Mac can do nothing else");
+            let read = world.mac_removals(&relay).await;
+            assert_eq!(read["mac_removed"], true, "{removal}");
+            assert_eq!(removed_clients(&read), ["phone-1", "phone-2"], "{removal}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mac_reads_its_removals_in_its_bootstrap_only_once_the_source_list_is_read_and_with_its_own_key() {
+        let (world, relay) = World::new().await;
+        drop(relay);
+        let (url, _source) = source(json!({"seq": 1, "removals": [
+            {"kind": "client", "owner": "owner", "client_id": "phone-1", "mac_id": "mac-1"}]})).await;
+        let back = world.start(Operator::new(Some(TOKEN.into()), Some(&url)).unwrap()).await;
+        assert_eq!(world.mac_bootstrap(&back, &world.mac_key).await,
+            (StatusCode::SERVICE_UNAVAILABLE, json!({"error": "account_access_unavailable"})));
+
+        operator::reconcile_from_source(&back.server).await.unwrap();
+        assert_eq!(removed_clients(&world.mac_removals(&back).await), ["phone-1"]);
+        let (status, forged) = world.mac_bootstrap(&back, &world.phone_key).await;
+        assert_eq!(status, StatusCode::OK, "a signature that does not hold still gets the public bootstrap");
+        assert!(forged["epoch"].is_string() && forged.get("removals").is_none(), "only the Mac's own key reads its removals: {forged}");
+        let public: Value = world.http.get(format!("{}/v1/bootstrap", back.url)).send().await.unwrap().json().await.unwrap();
+        assert!(public.get("removals").is_none(), "an unsigned bootstrap carries no removals: {public}");
     }
 }

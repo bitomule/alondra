@@ -123,6 +123,7 @@ pub fn device_lines(v: &Value, now: i64) -> Vec<String> {
         let when = ago(e["expired_at_ms"].as_i64().unwrap_or(now), now);
         let why = match e["reason"].as_str() {
             Some("relay_forgot") => tr!("the relay no longer has its notifications", "el relay ya no tiene sus notificaciones").to_string(),
+            Some("account_removed") => tr!("removed from your account", "retirado de tu cuenta").to_string(),
             _ => {
                 let days = e["days"].as_f64().unwrap_or(0.0);
                 trf!("unused for {days} days", "sin uso en {days} días")
@@ -522,7 +523,8 @@ mod tests {
             ],
             "expired": [
                 {"id": "phone-c", "name": "Old iPhone", "reason": "unused", "days": 30.0, "expired_at_ms": NOW - 3 * DAY},
-                {"id": "phone-d", "name": "iPad", "reason": "relay_forgot", "days": null, "expired_at_ms": NOW - 2 * 3_600_000}
+                {"id": "phone-d", "name": "iPad", "reason": "relay_forgot", "days": null, "expired_at_ms": NOW - 2 * 3_600_000},
+                {"id": "phone-e", "name": "Lost iPhone", "reason": "account_removed", "days": null, "expired_at_ms": NOW - 2 * 3_600_000}
             ]
         });
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
@@ -532,6 +534,7 @@ mod tests {
             "Unpaired on their own (open the app on the device, or run alondra mac connect on it, to pair it again):",
             "  Old iPhone — unpaired on its own 3 days ago: unused for 30 days",
             "  iPad — unpaired on its own 2 h ago: the relay no longer has its notifications",
+            "  Lost iPhone — unpaired on its own 2 h ago: removed from your account",
         ]);
         crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
         assert_eq!(device_lines(&listing, NOW), [
@@ -540,6 +543,7 @@ mod tests {
             "Desvinculados solos (abre la app en el dispositivo, o ejecuta alondra mac connect en él, para volver a vincularlo):",
             "  Old iPhone — desvinculado solo hace 3 días: sin uso en 30 días",
             "  iPad — desvinculado solo hace 2 h: el relay ya no tiene sus notificaciones",
+            "  Lost iPhone — desvinculado solo hace 2 h: retirado de tu cuenta",
         ]);
         let pending = json!({"pending": [{"id": "req-1", "name": "iPhone", "code": "482 913"}]});
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
