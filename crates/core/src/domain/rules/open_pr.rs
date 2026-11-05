@@ -62,9 +62,6 @@ impl DomainState {
             self.apply(actor, &Command::ObservePrState { pr_id: pr.id.clone(), head: status.head.clone(), base: status.base.clone(),
                 state: status.state, merged_head }, effects, created, lifecycles)?;
         }
-        if status.settling() {
-            return Ok(());
-        }
         self.tasks.get_mut(task).expect("found above").open_pr = None;
         if status.state == PrState::Closed {
             if let Some(result) = result {

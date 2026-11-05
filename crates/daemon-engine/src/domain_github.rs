@@ -311,14 +311,14 @@ fn mergeable(value: &Value) -> PrMergeable {
 /// then any still running.
 fn checks(value: &Value) -> PrChecks {
     let entries = value["statusCheckRollup"].as_array().map(|rollup| alondra_daemon_support::prs::latest_entries(rollup)).unwrap_or_default();
-    let (mut failed, mut approval, mut running, mut any) = (vec![], vec![], false, false);
+    let (mut failed, mut approval, mut running, mut any) = (vec![], vec![], vec![], false);
     for entry in entries {
         let Some(check) = alondra_daemon_support::prs::check(entry) else { continue };
         any = true;
         match check.state {
             _ if entry["conclusion"].as_str() == Some("ACTION_REQUIRED") => approval.push(check.name),
             CheckState::Failed => failed.push(check.name),
-            CheckState::Running => running = true,
+            CheckState::Running => running.push(check.name),
             CheckState::Passed | CheckState::Other => (),
         }
     }
@@ -326,8 +326,8 @@ fn checks(value: &Value) -> PrChecks {
         PrChecks::Failed { names: failed }
     } else if !approval.is_empty() {
         PrChecks::ActionRequired { names: approval }
-    } else if running {
-        PrChecks::Pending
+    } else if !running.is_empty() {
+        PrChecks::Pending { names: running }
     } else if any {
         PrChecks::Passed
     } else {
@@ -464,12 +464,12 @@ fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPen
     })
 }
 
-/// Hands what GitHub reported to the task closed while its PR was open, once GitHub has worked
-/// out its checks and whether it merges.
+/// Hands what GitHub reported to the task closed while its PR was open, without waiting for its
+/// checks: only the merge depends on them.
 fn settle(domain: &DomainRuntime, pr: &PullRequest, facts: &PrFacts) -> Result<()> {
     let state = domain.state()?;
     let status = facts.status();
-    if !matches!(pending(&state, pr), Some(OpenPrPending::Deliver { .. })) || status.settling() {
+    if !matches!(pending(&state, pr), Some(OpenPrPending::Deliver { .. })) {
         return Ok(());
     }
     match execute_system(domain, Command::SettleOpenPr { task_id: pr.task_id.clone(), status }) {
@@ -1198,7 +1198,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn the_open_pr_of_a_task_the_orchestrator_cancelled_reaches_the_user_once_github_has_worked_it_out() {
+    async fn the_open_pr_of_a_task_the_orchestrator_cancelled_reaches_the_user_without_waiting_for_its_checks() {
         let (fixture, domain) = open("open-pr-deliver");
         registered(&domain);
         command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
@@ -1207,20 +1207,34 @@ pub mod tests {
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }), "it outlives a restart");
         let observer = FakeObserver::new();
         let mut github = facts(HEAD, PrState::Open);
-        github.checks = PrChecks::Pending;
+        github.checks = PrChecks::Pending { names: vec!["lint".into()] };
         github.mergeable = PrMergeable::Clean;
-        observer.set(7, Ok(github.clone()));
-        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
-        assert!(domain.state().unwrap().tasks[&"t".into()].final_presentation.is_none(), "the checks still run");
-        github.checks = PrChecks::Failed { names: vec!["test".into()] };
         observer.set(7, Ok(github));
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         let state = domain.state().unwrap();
         let t = &state.tasks[&"t".into()];
-        assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None));
+        assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None), "the first read delivers it");
+        let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
+        assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["lint".into()] });
+        assert!(card.text(alondra_core::views::Lang::En).1.contains("lint"));
+        assert!(observer.1.lock().unwrap().is_empty(), "Alondra closes no PR it delivers");
+    }
+
+    #[tokio::test]
+    async fn the_open_pr_of_a_task_with_failing_checks_reaches_the_user_saying_which() {
+        let (_fixture, domain) = open("open-pr-failed");
+        registered(&domain);
+        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let observer = FakeObserver::new();
+        let mut github = facts(HEAD, PrState::Open);
+        github.checks = PrChecks::Failed { names: vec!["test".into()] };
+        github.mergeable = PrMergeable::Clean;
+        observer.set(7, Ok(github));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        let state = domain.state().unwrap();
+        let t = &state.tasks[&"t".into()];
         let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
         assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::ChecksFailed { names: vec!["test".into()] });
-        assert!(observer.1.lock().unwrap().is_empty(), "Alondra closes no PR it delivers");
     }
 
     #[tokio::test]
@@ -1307,7 +1321,11 @@ pub mod tests {
         assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": []})),
             (PrMergeable::Clean, PrChecks::None));
         assert_eq!(read(serde_json::json!({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY",
-            "statusCheckRollup": [run("test", "COMPLETED", "SUCCESS"), run("lint", "IN_PROGRESS", "")]})), (PrMergeable::Conflicting, PrChecks::Pending));
+            "statusCheckRollup": [run("test", "COMPLETED", "SUCCESS"), run("lint", "IN_PROGRESS", "")]})), (PrMergeable::Conflicting, PrChecks::Pending { names: vec!["lint".into()] }));
+        assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [run("lint", "IN_PROGRESS", ""), serde_json::json!({"context": "ci/legacy", "state": "PENDING"}), run("test", "COMPLETED", "SUCCESS")]})),
+            (PrMergeable::Clean, PrChecks::Pending { names: vec!["lint".into(), "ci/legacy".into()] }));
+        assert_eq!(serde_json::from_str::<PrChecks>(r#"{"kind":"pending"}"#).unwrap(), PrChecks::Pending { names: vec![] });
         assert_eq!(read(serde_json::json!({"mergeable": "UNKNOWN", "statusCheckRollup": [run("test", "COMPLETED", "FAILURE"), run("lint", "IN_PROGRESS", "")]})),
             (PrMergeable::Computing, PrChecks::Failed { names: vec!["test".into()] }));
         assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",

@@ -39,6 +39,9 @@ fn settle_case(s: &mut DomainState, actor: Actor, outcome: StallOutcome) {
 fn status(state: PrState, mergeable: PrMergeable, checks: PrChecks) -> OpenPrStatus {
     OpenPrStatus { state, head: PUSHED.into(), base: "main".into(), mergeable, checks }
 }
+fn running(names: &[&str]) -> PrChecks {
+    PrChecks::Pending { names: names.iter().map(|name| (*name).to_owned()).collect() }
+}
 fn settle_pr(s: &mut DomainState, status: OpenPrStatus) -> Result<CommandOutcome, DomainError> {
     exec(s, Actor::System, Command::SettleOpenPr { task_id: "t".into(), status })
 }
@@ -122,13 +125,19 @@ fn a_pr_with_conflicts_or_failing_checks_reaches_the_user_saying_what_keeps_it_f
 }
 
 #[test]
-fn alondra_reads_the_pr_again_while_github_still_works_out_its_checks() {
-    let mut s = stalled_with_open_pr();
-    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Done".into() });
-    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Pending)).unwrap();
-    settle_pr(&mut s, status(PrState::Open, PrMergeable::Computing, PrChecks::Passed)).unwrap();
-    assert!(task(&s).final_presentation.is_none());
-    assert!(matches!(task(&s).open_pr, Some(OpenPrPending::Deliver { .. })));
+fn the_pr_is_delivered_at_once_whatever_its_checks_and_merge_state_still_do() {
+    for (mergeable, checks, readiness) in [
+        (PrMergeable::Clean, running(&["e2e"]), PrReadiness::ChecksRunning { names: vec!["e2e".into()] }),
+        (PrMergeable::Computing, running(&["e2e"]), PrReadiness::ChecksRunning { names: vec!["e2e".into()] }),
+        (PrMergeable::Computing, PrChecks::Passed, PrReadiness::Unconfirmed),
+    ] {
+        let mut s = stalled_with_open_pr();
+        settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Done".into() });
+        settle_pr(&mut s, status(PrState::Open, mergeable, checks)).unwrap();
+        assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, readiness);
+        assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
+        assert_aggregate_rules(&s);
+    }
 }
 
 #[test]
@@ -250,7 +259,7 @@ proptest! {
         closer in prop_oneof![Just(Closer::SettleClose), Just(Closer::SettleUnsettled), Just(Closer::OrchestratorCancel), Just(Closer::UserCancel)],
         state in prop_oneof![Just(PrState::Open), Just(PrState::Closed), Just(PrState::Merged)],
         mergeable in prop_oneof![Just(PrMergeable::Clean), Just(PrMergeable::Conflicting), Just(PrMergeable::Computing), Just(PrMergeable::Other)],
-        checks in prop_oneof![Just(PrChecks::None), Just(PrChecks::Pending), Just(PrChecks::Passed), Just(PrChecks::Failed { names: vec!["test".into()] })],
+        checks in prop_oneof![Just(PrChecks::None), Just(running(&["lint"])), Just(PrChecks::Passed), Just(PrChecks::Failed { names: vec!["test".into()] })],
     ) {
         let mut s = stalled_with_open_pr();
         let case = open_case(&s);

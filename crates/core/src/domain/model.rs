@@ -265,16 +265,13 @@ pub enum PrMergeable {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PrChecks {
     None,
-    Pending,
+    Pending {
+        #[serde(default)]
+        names: Vec<String>,
+    },
     Passed,
     Failed { names: Vec<String> },
     ActionRequired { names: Vec<String> },
-}
-impl OpenPrStatus {
-    /// GitHub still works out the checks or whether it merges: Alondra reads it again later.
-    pub fn settling(&self) -> bool {
-        self.state == PrState::Open && (self.checks == PrChecks::Pending || self.mergeable == PrMergeable::Computing)
-    }
 }
 fn is_zero_stalls(stalls: &u32) -> bool {
     *stalls == 0

@@ -3715,10 +3715,11 @@ for line in sys.stdin:
         presented_pr(&domain);
         let github = crate::domain_merges::FakeGithub::new();
         github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Pending);
+        github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
         let accept = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();
         act(&home, &domain, &client, FIRST, accept, None, None).await;
         let mut merger = crate::domain_merges::Merger::with(std::time::Duration::from_secs(3600), std::time::Duration::from_secs(3600));
-        assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: it waits");
+        assert!(merger.merge_due(&domain, &github).await.unwrap(), "the required check is pending: it waits");
         github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Passed);
         assert!(merger.merge_due(&domain, &github).await.unwrap(), "and keeps waiting out its poll");
         let merge = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();

@@ -493,10 +493,17 @@ impl Merger {
                 self.ask_action(domain, pr, names);
                 return Ok(Step::Wait);
             }
-            Checks::Pending => return Ok(Step::Wait),
             Checks::None if status.merge_state == MergeState::Computing => return Ok(Step::Wait),
             Checks::None if status.merge_state != MergeState::Clean => match github.required_checks(pr, &status.base).await {
                 Ok(required) if !required.is_empty() => return Ok(Step::Wait),
+                Ok(_) => self.clear_action(domain, pr),
+                Err(reason) => {
+                    log!("cannot read the checks {} requires of {}: {reason}", status.base, pr.id);
+                    return Ok(Step::Wait);
+                }
+            },
+            Checks::Pending => match github.required_checks(pr, &status.base).await {
+                Ok(required) if required.iter().any(|check| !status.passed.contains(check)) => return Ok(Step::Wait),
                 Ok(_) => self.clear_action(domain, pr),
                 Err(reason) => {
                     log!("cannot read the checks {} requires of {}: {reason}", status.base, pr.id);
@@ -573,9 +580,6 @@ impl Merger {
         }
         if github.in_queue(pr).await == Ok(true) {
             self.queued.insert(pr.id.clone());
-            return Ok(Step::Wait);
-        }
-        if status.checks == Checks::Pending {
             return Ok(Step::Wait);
         }
         if status.merge_state == MergeState::Other && !matches!(status.checks, Checks::Failed(_) | Checks::ActionRequired(_)) {
