@@ -20,6 +20,7 @@ __pycache__/
 .musts/state.sqlite-*
 .musts/.lock
 .musts/evidence/
+.musts/bep.json
 
 /.bazel-test-tmp/
 
