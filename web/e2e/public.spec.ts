@@ -76,6 +76,38 @@ test('the compact menu opens and lists every page', async ({ page }) => {
  for (const name of ['How it works', 'Install', 'Documentation', 'Security and privacy', 'License']) await expect(page.getByRole('navigation', { name: 'Main, compact' }).getByRole('link', { name })).toBeVisible();
 });
 
+for (const colorScheme of ['light', 'dark'] as const) {
+ for (const path of ['/', '/install']) {
+  test(`on an iPhone the compact menu links are legible on ${path} (${colorScheme})`, async ({ page }) => {
+   await page.emulateMedia({ colorScheme });
+   await page.setViewportSize({ width: 390, height: 844 });
+   await page.goto(path);
+   await page.getByText('Menu', { exact: true }).click();
+   const menu = page.getByRole('navigation', { name: 'Main, compact' });
+   const ratios = await menu.evaluate(nav => {
+    const rgb = (css: string) => {
+     const context = document.createElement('canvas').getContext('2d')!;
+     context.fillStyle = css;
+     context.fillRect(0, 0, 1, 1);
+     return Array.from(context.getImageData(0, 0, 1, 1).data.slice(0, 3));
+    };
+    const luminance = (css: string) => {
+     const [r, g, b] = rgb(css).map(channel => { const value = channel / 255; return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; });
+     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const background = getComputedStyle(nav).backgroundColor;
+    return Array.from(nav.querySelectorAll('a')).map(link => {
+     const [light, dark] = [luminance(getComputedStyle(link).color), luminance(background)].sort((a, b) => b - a);
+     return { name: link.textContent, ratio: (light + 0.05) / (dark + 0.05) };
+    });
+   });
+   expect(ratios.map(item => item.name)).toEqual(['How it works', 'Install', 'Documentation', 'Security and privacy', 'License', 'Sign in']);
+   for (const { name, ratio } of ratios) expect(ratio, `${name} contrast`).toBeGreaterThanOrEqual(4.5);
+   for (const link of await menu.getByRole('link').all()) await expect(link).toBeVisible();
+  });
+ }
+}
+
 test('the security copy says what the service sees and what it never receives, and promises nothing more', async ({ page }) => {
  await page.goto('/security');
  const text = (await page.locator('main').innerText()).toLowerCase();

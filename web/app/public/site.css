@@ -41,7 +41,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visibl
 .menu { display: none; margin-left: auto; position: relative; }
 .menu summary { list-style: none; cursor: pointer; font-family: var(--font-display); font-weight: 500; font-size: var(--text-sm); padding: var(--space-xs) var(--space-sm); border: 1px solid var(--color-rule); border-radius: var(--radius-sm); min-height: 2.75rem; display: inline-flex; align-items: center; }
 .menu summary::-webkit-details-marker { display: none; }
-.menu nav { position: absolute; right: 0; top: calc(100% + 0.5rem); z-index: 20; display: flex; flex-direction: column; min-width: 15rem; padding: var(--space-xs) var(--space-md); background: var(--color-card); border: 1px solid var(--color-rule); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-sm); }
+.menu nav { position: absolute; right: 0; top: calc(100% + 0.5rem); z-index: 20; display: flex; flex-direction: column; min-width: 15rem; padding: var(--space-xs) var(--space-md); background: var(--color-card); color: var(--color-ink); border: 1px solid var(--color-rule); border-radius: var(--radius-md); font-family: var(--font-display); font-size: var(--text-sm); }
 .menu nav a { padding: 0.8rem 0; border-bottom: 1px solid var(--color-rule); }
 .menu nav a:last-child { border-bottom: 0; }
 
@@ -75,6 +75,9 @@ p .text-link, li .text-link { font-family: inherit; font-size: inherit; font-wei
 .site-home .site-header .nav-wide a:hover { border-bottom-color: var(--color-stage-rule); }
 .site-home .site-header .nav-wide a[aria-current='page'] { border-bottom-color: var(--color-stage-accent); }
 .site-home .site-header .menu summary { border-color: var(--color-stage-rule); color: var(--color-on-stage); }
+.site-home .site-header .menu nav { background: var(--color-stage-2); border-color: var(--color-stage-rule); color: var(--color-on-stage); }
+.site-home .site-header .menu nav a { border-bottom-color: var(--color-stage-rule); }
+.site-home .site-header .menu nav a:last-child { border-bottom: 0; }
 .site-home .site-header a:focus-visible, .site-home .site-header summary:focus-visible { outline-color: var(--color-stage-accent); }
 .capture img { display: block; width: 100%; height: auto; border: 1px solid var(--color-rule); border-radius: var(--radius-md); box-shadow: 0 1.5rem 3rem -1.5rem var(--color-shadow); background: var(--color-paper-2); }
 
