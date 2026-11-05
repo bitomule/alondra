@@ -21,6 +21,8 @@ final class NotificationRuntime {
     @ObservationIgnored var prepareSession: (@MainActor () async throws -> Void)?
     /// A push came from the Mac: it is reachable, so answers still waiting for it go now.
     @ObservationIgnored var macReached: (@MainActor () async -> Void)?
+    /// The relay pairings of the account now; none means it ended.
+    @ObservationIgnored var pairingsChanged: (@MainActor ([NotificationClient], [NotificationDecryptionContext]) -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
         do { try await prepareSession?() }
@@ -80,7 +82,7 @@ final class NotificationRuntime {
             let routes = zip(clients, contexts).map { NotificationRoutingCoordinator.Entry(client: $0.0, context: $0.1) }
             // Validate the routing snapshot before the atomic vault/publication commit.
             try NotificationRoutingCoordinator().install(routes, selected: selected)
-            return { [self, routes, selected, contexts, destinations] in
+            return { [self, routes, selected, contexts, destinations, clients] in
                 guard current == generation, !Task.isCancelled else { throw CancellationError() }
                 // Keychain mutation and platform/session publication are one synchronous
                 // MainActor commit. A stale preparation cannot repopulate keys after logout.
@@ -93,6 +95,7 @@ final class NotificationRuntime {
                 }
                 error = nil
                 activate()
+                pairingsChanged?(clients, contexts)
             }
         } catch {
             if current == generation { self.error = String(localized: "Alerts for this Mac couldn’t be set up. Alondra tries again when you reopen the app.") }
@@ -113,6 +116,7 @@ final class NotificationRuntime {
     func requestAlerts() async { await push.activate() }
 
     func deactivate() async throws {
+        pairingsChanged?([], [])
         activation.cancel()
         generation += 1
         let current = generation
@@ -134,6 +138,7 @@ final class NotificationRuntime {
 
     /// The account session ended without a sign-out: its bindings stop receiving pushes.
     func retireBindings() {
+        pairingsChanged?([], [])
         activation.cancel()
         bindings.retire(into: unregistrar.ledger)
         drainUnregistrations()

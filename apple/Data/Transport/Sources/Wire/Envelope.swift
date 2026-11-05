@@ -62,7 +62,7 @@ public enum RelayHTTPChallenge {
     }
 }
 
-public struct Envelope: Codable, Sendable, Equatable {
+public struct Envelope: Codable, Sendable, Hashable {
     public let v: UInt8
     public let route: String
     public let sender: String
@@ -89,7 +89,7 @@ public struct Envelope: Codable, Sendable, Equatable {
     }
 
     public func authenticatedHeader() throws -> Data {
-        guard v == 1, ["request", "response", "push", "pairing"].contains(kind), expiresAtMilliseconds > 0,
+        guard v == 1, ["request", "response", "push", "pairing", "activity"].contains(kind), expiresAtMilliseconds > 0,
               [route, sender, recipient].allSatisfy(RelayHTTPChallenge.validText),
               !requestID.isEmpty, requestID.utf8.count <= 128,
               requestID.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 })

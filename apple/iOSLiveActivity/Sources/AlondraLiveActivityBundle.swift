@@ -10,12 +10,20 @@ struct AlondraLiveActivityBundle: WidgetBundle {
 }
 
 struct AlondraActivityWidget: Widget {
+    private static let keys = ActivityKeyFile()
+
+    private static func summary(_ context: ActivityViewContext<AlondraActivityAttributes>) -> ActivitySummary {
+        ActivitySummary(context.state, opened: keys?.opened(context.state) ?? [], now: .now, stale: context.isStale)
+    }
+
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: AlondraActivityAttributes.self) { context in
-            ActivityFamilyContent(summary: ActivitySummary(context.state, now: .now, stale: context.isStale))
+            ActivityFamilyContent(summary: Self.summary(context))
+                .activityBackgroundTint(ActivityPalette.lockScreenBackground)
+                .activitySystemActionForegroundColor(ActivityPalette.accent)
                 .widgetURL(AlondraLink.inbox.url)
         } dynamicIsland: { context in
-            let summary = ActivitySummary(context.state, now: .now, stale: context.isStale)
+            let summary = Self.summary(context)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Link(destination: AlondraLink.inbox.url) { ActivityExpandedLeading(summary: summary) }

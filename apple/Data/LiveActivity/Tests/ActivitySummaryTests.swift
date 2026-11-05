@@ -1,4 +1,5 @@
 import AlondraLiveActivity
+import AlondraTransport
 import Foundation
 import Testing
 
@@ -7,6 +8,47 @@ import Testing
 
     private func report(_ mac: String, _ counts: ActivityCounts, minutesAgo: Double) -> ActivityReport {
         ActivityReport(macID: mac, macName: mac, counts: counts, measuredAt: now - minutesAgo * 60)
+    }
+
+    @Test func withNothingOpenedTheNumbersAreUnknown() {
+        let sealed = Envelope(route: "mac", sender: "mac", recipient: "phone", requestID: "request", kind: "activity",
+                              expiresAtMilliseconds: 1, ephemeralKey: "key", nonce: "nonce", ciphertext: "text", signature: "signature")
+        let summary = ActivitySummary(ActivityContentState(macs: [sealed]), now: now, stale: true)
+        #expect(summary.notice == .openTheApp)
+        #expect(!summary.isKnown)
+    }
+
+    @Test func macsLeftOutOfThePushAreSaid() {
+        let state = ActivityContentState(reports: [report("Mac mini", ActivityCounts(inbox: 1, waiting: 0, working: 0), minutesAgo: 1)], omitted: 3)
+        #expect(ActivitySummary(state, now: now, stale: false).notice == .macsNotCounted(2), "the app counts one of them itself")
+    }
+
+    @Test func aMacTheAppCountsIsNotOneOfThoseLeftOut() {
+        let state = ActivityContentState(reports: [report("Mac mini", ActivityCounts(inbox: 1, waiting: 0, working: 0), minutesAgo: 1)], omitted: 1)
+        #expect(ActivitySummary(state, now: now, stale: false).notice == nil)
+    }
+
+    @Test func theOldestSealedReportsLeaveWhenTheyWouldNotFit() {
+        let sealed = (0..<4).map { index in
+            Envelope(route: "mac", sender: "mac-\(index)", recipient: "phone", requestID: "request", kind: "activity", expiresAtMilliseconds: 1,
+                     ephemeralKey: "key", nonce: "nonce", ciphertext: String(repeating: "c", count: 800), signature: "signature")
+        }
+        let fitted = ActivityContentState(macs: sealed).fitted(toBytes: 2_000)
+        #expect(fitted.macs == Array(sealed.prefix(fitted.macs.count)))
+        #expect(fitted.macs.count < 4)
+        #expect(fitted.omitted == 4 - fitted.macs.count)
+    }
+
+    @Test func outdatedNumbersSayIt() {
+        let state = ActivityContentState(reports: [report("Mac mini", ActivityCounts(inbox: 1, waiting: 0, working: 0), minutesAgo: 1)])
+        #expect(ActivitySummary(state, now: now, stale: true).isOutdated)
+        #expect(!ActivitySummary(state, now: now, stale: false).isOutdated)
+    }
+
+    @Test func aMacOpenedFromThePushCountsBesideTheAppsOwn() {
+        let state = ActivityContentState(reports: [report("Mac mini", ActivityCounts(inbox: 1, waiting: 0, working: 0), minutesAgo: 1)])
+        let opened = [report("MacBook Pro", ActivityCounts(inbox: 2, waiting: 1, working: 3), minutesAgo: 1)]
+        #expect(ActivitySummary(state, opened: opened, now: now, stale: false).totals == ActivityCounts(inbox: 3, waiting: 1, working: 3))
     }
 
     @Test func contentStateSurvivesActivityKitsDefaultCoders() throws {

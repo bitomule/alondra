@@ -31,6 +31,31 @@ public struct RelayMac: Decodable, Sendable, Equatable {
     }
 }
 
+/// What a phone tells the relay about its Live Activity, through each of its pairings.
+public struct RelayActivityRegistration: Encodable, Equatable, Sendable {
+    public let phoneID: String
+    public let startToken: String?
+    public let updateToken: String?
+    public let activityID: String?
+    public let startedAtMs: UInt64?
+    public let environment: String
+    public let frequentUpdates: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case environment
+        case phoneID = "phone_id", startToken = "start_token", updateToken = "update_token"
+        case activityID = "activity_id", startedAtMs = "started_at_ms", frequentUpdates = "frequent_updates"
+    }
+
+    public init(phoneID: String, startToken: String?, updateToken: String?, activityID: String?, startedAtMs: UInt64?,
+                environment: String, frequentUpdates: Bool) throws {
+        guard (16...64).contains(phoneID.utf8.count), ["sandbox", "production"].contains(environment),
+              (updateToken != nil) || (activityID == nil && startedAtMs == nil) else { throw RelayWireError.invalidField }
+        self.phoneID = phoneID; self.startToken = startToken; self.updateToken = updateToken; self.activityID = activityID
+        self.startedAtMs = startedAtMs; self.environment = environment; self.frequentUpdates = frequentUpdates
+    }
+}
+
 public struct RelayPushRegistration: Encodable, Sendable {
     public let token: String
     public let environment: String

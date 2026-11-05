@@ -144,6 +144,16 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         try await account.registerServicePush(token: token, environment: environment, binding: binding)
     }
 
+    public func registerActivity(_ registration: RelayActivityRegistration) async throws {
+        guard let account else { throw OperationError.invalidConfiguration }
+        try await account.registerActivity(registration)
+    }
+
+    public func unregisterActivity(phoneID: String) async throws {
+        guard let account else { throw OperationError.invalidConfiguration }
+        try await account.unregisterActivity(phoneID: phoneID)
+    }
+
     /// Addresses learned from the Mac's sealed `/routes` or from Bonjour.
     public func offer(_ endpoints: [DirectEndpoint], from source: DirectRouter.Source) async {
         await router?.offer(endpoints, from: source)

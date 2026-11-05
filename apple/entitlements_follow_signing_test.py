@@ -35,6 +35,7 @@ def main(*arguments):
     }
     team = options["team_id"]
     push_group = bundle_ids["ios"] + ".push"
+    app_group = "group." + bundle_ids["ios"]
     failures = []
 
     def expect(path, key, expected, values):
@@ -51,6 +52,7 @@ def main(*arguments):
         values = plistlib.loads(raw)
         if role == "push_keychain_group":
             expect(path, "AlondraPushKeychainAccessGroup", f"{team}.{push_group}", values)
+            expect(path, "AlondraActivityAppGroup", app_group, values)
         elif role == "mac_app_store":
             expect(path, "com.apple.application-identifier", APP_IDENTIFIER_PREFIX + bundle_ids["ios"], values)
             expect(path, "com.apple.developer.team-identifier", team, values)
@@ -62,6 +64,8 @@ def main(*arguments):
             expect(path, "com.apple.developer.team-identifier", team if app_store else None, values)
             push_environment = ("production" if app_store else "development") if target == "ios" else None
             expect(path, "aps-environment", push_environment, values)
+            shares_files = target in ("ios", "live_activity")
+            expect(path, "com.apple.security.application-groups", [app_group] if shares_files else None, values)
     for failure in failures:
         print(failure, file=sys.stderr)
     return 1 if failures else 0

@@ -167,4 +167,14 @@ extension MonitoredOperations: PushRegistrationAPI {
         guard let push = inner as? any PushRegistrationAPI else { throw OperationError.invalidConfiguration }
         try await push.registerServicePush(token: token, environment: environment, binding: binding)
     }
+
+    public func registerActivity(_ registration: RelayActivityRegistration) async throws {
+        guard let push = inner as? any PushRegistrationAPI else { throw OperationError.invalidConfiguration }
+        try await push.registerActivity(registration)
+    }
+
+    public func unregisterActivity(phoneID: String) async throws {
+        guard let push = inner as? any PushRegistrationAPI else { throw OperationError.invalidConfiguration }
+        try await push.unregisterActivity(phoneID: phoneID)
+    }
 }

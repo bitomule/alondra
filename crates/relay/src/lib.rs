@@ -786,10 +786,13 @@ async fn register_activity(
         .auth
         .paired_mac_for_phone(&who.device_id, &who.owner_sub)
         .map_err(authentication_error)?;
-    server
+    let phone_id = server
         .activity
         .register(&who.owner_sub, &who.device_id, &mac_id, registration)
         .map_err(activity_store_error)?;
+    if server.activity.owes(&phone_id) {
+        activity::push(&server, &phone_id).await;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -995,6 +998,7 @@ pub async fn run() -> anyhow::Result<()> {
         tokio::spawn(operator::follow_source(server.clone()));
     }
     if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
+    tokio::spawn(activity::retry_owed(server.clone()));
     if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
     if server.management_keycloak.is_some() && server.apns.is_some() {
         let sweeping = server.clone();
@@ -3759,6 +3763,8 @@ fn authentication_error(error_value:anyhow::Error)->(StatusCode,Json<Value>) {
                 if let Some(epoch)=&rejection.current_epoch {
                     return (StatusCode::UNAUTHORIZED,Json(json!({"error":"relay_epoch_changed","epoch":epoch})));
                 }
+            } else {
+                eprintln!("alondra-relay: request refused: {error_value:#}");
             }
             unauthorized()
         }

@@ -64,8 +64,9 @@ async fn a_restarted_relay_is_followed_to_its_new_epoch_without_enrolling_again(
 
 #[tokio::test]
 async fn the_live_activity_report_goes_signed_to_its_route_sealed_for_the_phone_with_its_flags() {
-    let (_directory, mut service, phone_agreement) = push_fixture();
+    let (_directory, mut service, _) = push_fixture();
     activate_push(&service);
+    let activity_key = SecretKey::from_slice(&[9u8; 32]).unwrap();
     let bodies = Arc::new(Mutex::new(Vec::new()));
     let answer = Arc::new(std::sync::atomic::AtomicU16::new(202));
     let relay = Router::new().fallback({
@@ -92,9 +93,11 @@ async fn the_live_activity_report_goes_signed_to_its_route_sealed_for_the_phone_
     service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
 
+    assert!(service.activity_phones().unwrap().is_empty(), "nothing could open a report without its key");
+    service.journal.set_activity_key("phone-1", &URL_SAFE_NO_PAD.encode(activity_key.public_key().to_sec1_bytes())).unwrap();
     let phones = service.activity_phones().unwrap();
-    assert_eq!(phones, vec![("phone-1".to_owned(), URL_SAFE_NO_PAD.encode([4u8; 32]))]);
-    let (phone, binding) = &phones[0];
+    assert_eq!(phones[0].1, URL_SAFE_NO_PAD.encode([4u8; 32]));
+    let (phone, binding, _) = &phones[0];
     let payload = json!({"inbox": 3, "waiting": 1, "working": 2, "mac_name": "Mac mini", "measured_at_ms": 1, "seq": 2});
     let flags = crate::activity_push::Flags { active: true, may_start: true, urgent: false };
     let mut epoch = None;
@@ -109,7 +112,7 @@ async fn the_live_activity_report_goes_signed_to_its_route_sealed_for_the_phone_
         (json!("phone-1"), json!(true), json!(true), json!(false)));
     let envelope: alondra_e2e::Envelope = serde_json::from_value(sent["envelope"].clone()).unwrap();
     let signing = SigningKey::from_slice(&[1u8; 32]).unwrap();
-    let opened: Value = serde_json::from_slice(&envelope.open(signing.verifying_key(), &phone_agreement, "mac-1", "phone-1", "mac-1", envelope.expires_at_ms).unwrap()).unwrap();
+    let opened: Value = serde_json::from_slice(&envelope.open(signing.verifying_key(), &activity_key, "mac-1", "phone-1", "mac-1", envelope.expires_at_ms).unwrap()).unwrap();
     assert_eq!(opened, json!({"push_binding": binding, "payload": payload}));
     server.abort();
 }

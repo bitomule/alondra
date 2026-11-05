@@ -8,7 +8,7 @@ import json
 import re
 import sys
 
-KEPT = {}
+KEPT = {"Work in progress": "the alert of the relay's push-to-start names it by its loc-key"}
 
 FORMAT = re.compile(r"%(?:\d+\$)?[-+ #0']*\d*(?:\.\d+)?(?:hh|h|ll|l|q|z|t|j)?[@dDuUxXoOfeEgGcCsSpaAi]")
 PLACEHOLDER = "\x00"

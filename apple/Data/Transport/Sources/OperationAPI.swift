@@ -117,7 +117,7 @@ public struct APIRequest: Sendable, Equatable {
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),
-             (.post, ["device", "push-binding", "remove"]),
+             (.post, ["device", "push-binding", "remove"]), (.post, ["device", "activity-key"]),
              (.get, ["settings"]), (.put, ["settings"]), (.get, ["settings", "folders"]):
             return true
         case (.get, let rest) where rest.count == 2 && rest[0] == "views":

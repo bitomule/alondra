@@ -18,6 +18,8 @@ public enum ActivityDismissal: Hashable, Sendable {
 public protocol ActivityHost: AnyObject {
     var activitiesEnabled: Bool { get }
     func running() -> [RunningActivity]
+    /// What the activity shows now, whoever wrote it last: a push may have changed it.
+    func content(of id: String) -> ActivityContentState?
     func request(_ state: ActivityContentState, startedAt: Date, staleDate: Date) throws -> RunningActivity
     func update(_ id: String, to state: ActivityContentState, staleDate: Date) async
     func end(_ id: String, with state: ActivityContentState?, dismissal: ActivityDismissal) async
@@ -29,6 +31,9 @@ public protocol ActivityHost: AnyObject {
 /// `grace` after all three reach zero, so the Live Activity does not leave and come back between
 /// one task and the next. It shows while any Mac is active. iOS only lets the app start one in
 /// the foreground; it can update and end it from the background too.
+///
+/// The app rarely knows every Mac, so it writes over what the relay pushed only for the Macs it
+/// has newer word of: the other Macs' sealed reports stay, and they keep it showing.
 @MainActor
 public final class LiveActivityController {
     public static let grace: TimeInterval = 15 * 60
@@ -46,6 +51,7 @@ public final class LiveActivityController {
     private let host: any ActivityHost
     private let now: () -> Date
     private let wake: (Date) -> Void
+    private let open: (ActivityContentState) -> [ActivityReport]
     private var macs: [String: Mac] = [:]
     /// Until a Mac reports or the paired Macs are known, an activity already running is left alone:
     /// the app has just launched and has not loaded anything yet.
@@ -54,9 +60,11 @@ public final class LiveActivityController {
     private var published: [String: ActivityContentState] = [:]
     private var tail: Task<Void, Never>?
 
-    /// `wake` asks to be reconciled again at that date, when a Mac's grace runs out.
-    public init(host: any ActivityHost, now: @escaping () -> Date = Date.init, wake: @escaping (Date) -> Void) {
-        self.host = host; self.now = now; self.wake = wake
+    /// `wake` asks to be reconciled again at that date, when a Mac's grace runs out; `open` reads
+    /// the sealed reports a push left in the activity.
+    public init(host: any ActivityHost, now: @escaping () -> Date = Date.init,
+                open: @escaping (ActivityContentState) -> [ActivityReport] = { _ in [] }, wake: @escaping (Date) -> Void) {
+        self.host = host; self.now = now; self.open = open; self.wake = wake
     }
 
     /// The counts of one Mac as the app last loaded them; `live` while its connection answers.
@@ -113,10 +121,19 @@ public final class LiveActivityController {
             await host.end(duplicate.id, with: nil, dismissal: .immediate)
             published[duplicate.id] = nil
         }
-        let state = ActivityContentState(reports: macs.keys.sorted().compactMap { id in
-            macs[id].map { ActivityReport(macID: id, macName: $0.name, counts: $0.counts, measuredAt: $0.heardAt) }
-        })
-        let busy = macs.values.contains { !$0.counts.isZero }
+        let pushed = running.first.flatMap { host.content(of: $0.id) } ?? ActivityContentState()
+        let opened = open(pushed)
+        let sealed = Set(opened.map(\.macID))
+        // Numbers saved from before a Mac that does not answer are no match for a sealed report.
+        let known = macs.filter { $0.value.live || !sealed.contains($0.key) }
+        let reports = known.keys.sorted().compactMap { id in
+            known[id].map { ActivityReport(macID: id, macName: $0.name, counts: $0.counts, measuredAt: $0.heardAt) }
+        }
+        let outdated = Set(opened.filter { report in known[report.macID].map { report.measuredAt <= $0.heardAt } ?? false }.map(\.macID))
+        let state = ActivityContentState(reports: reports, macs: pushed.macs.filter { !outdated.contains($0.sender) },
+                                         omitted: pushed.omitted).fitted()
+        let busy = known.values.contains { !$0.counts.isZero }
+            || opened.contains { !outdated.contains($0.macID) && !$0.counts.isZero }
         let graceEnds = macs.values.compactMap { $0.zeroSince?.addingTimeInterval(Self.grace) }.filter { $0 > at }.max()
         guard busy || graceEnds != nil else {
             if knowsMacs, let current = running.first {

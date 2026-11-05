@@ -1,3 +1,4 @@
+import AlondraTransport
 import Foundation
 
 /// The three numbers the Live Activity shows, for one Mac or summed over all of them.
@@ -41,10 +42,45 @@ public struct ActivityReport: Codable, Hashable, Sendable {
     }
 }
 
-/// The Live Activity's content. ActivityKit encodes and decodes it with a default `JSONEncoder`
-/// and `JSONDecoder`, so every field is a plain number or string.
+/// The Live Activity's content, from the app or from a push of the relay. ActivityKit encodes and
+/// decodes it with a default `JSONEncoder` and `JSONDecoder`, and a push leaves out what only the
+/// app writes, so every field may be missing.
 public struct ActivityContentState: Codable, Hashable, Sendable {
+    /// What the app measured itself, in the clear because it never leaves the phone.
     public var reports: [ActivityReport]
+    /// Each Mac's latest report as the relay holds it, sealed for this phone.
+    public var macs: [Envelope]
+    /// The Macs that did not fit in the push.
+    public var omitted: Int
 
-    public init(reports: [ActivityReport]) { self.reports = reports }
+    public init(reports: [ActivityReport] = [], macs: [Envelope] = [], omitted: Int = 0) {
+        self.reports = reports; self.macs = macs; self.omitted = omitted
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        reports = try values.decodeIfPresent([ActivityReport].self, forKey: .reports) ?? []
+        macs = try values.decodeIfPresent([Envelope].self, forKey: .macs) ?? []
+        omitted = try values.decodeIfPresent(Int.self, forKey: .omitted) ?? 0
+    }
+
+    /// The state that fits what ActivityKit takes, leaving out the oldest sealed reports: the
+    /// relay sends the newest first. The attributes share the 4 KB.
+    public func fitted(toBytes limit: Int = 3_800) -> Self {
+        var fitted = self
+        while !fitted.macs.isEmpty, (try? JSONEncoder().encode(fitted).count) ?? .max > limit {
+            fitted.macs.removeLast()
+            fitted.omitted += 1
+        }
+        return fitted
+    }
+
+    /// The newest word of every Mac, from the app's reports and the ones opened from `macs`.
+    public func merged(with opened: [ActivityReport]) -> [ActivityReport] {
+        var newest: [String: ActivityReport] = [:]
+        for report in reports + opened where newest[report.macID].map({ $0.measuredAtMs < report.measuredAtMs }) ?? true {
+            newest[report.macID] = report
+        }
+        return newest.keys.sorted().compactMap { newest[$0] }
+    }
 }

@@ -342,6 +342,8 @@ def verify_bundle(bundle, bundle_id, destination, version, build, identity, prof
     require(ent.get("application-identifier", ent.get("com.apple.application-identifier")) == TEAM + "." + bundle_id, "Signed application identifier mismatch")
     if destination == "ios":
         require(set(ent.get("keychain-access-groups", [])) == {TEAM + "." + bundle_id, TEAM + "." + IOS + ".push"}, "Signed shared Keychain groups mismatch")
+        if bundle_id in (IOS, LIVE_ACTIVITY):
+            require(ent.get("com.apple.security.application-groups") == ["group." + IOS], "Signed App Group mismatch")
         if bundle_id == IOS:
             require(ent.get("aps-environment") == "production", "Signed APNs environment must be production")
     else:

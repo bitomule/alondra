@@ -181,7 +181,7 @@ final class PushCenter: PushAuthorizing {
     /// Simulators and development-signed builds talk to the APNs sandbox; the embedded
     /// provisioning profile says which one a device build was signed for, and App Store
     /// builds carry none. `#if DEBUG` can't tell, because .bazelrc builds with `-c opt`.
-    private static let environment: PushRegistration.Environment = {
+    static let environment: PushRegistration.Environment = {
         #if targetEnvironment(simulator)
         return .sandbox
         #else
