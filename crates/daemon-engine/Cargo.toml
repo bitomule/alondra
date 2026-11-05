@@ -34,6 +34,7 @@ sha2 = "0.11.0"
 sysinfo.workspace = true
 tempfile = { workspace = true, optional = true }
 tokio.workspace = true
+toml.workspace = true
 url = "2.5"
 
 [dev-dependencies]

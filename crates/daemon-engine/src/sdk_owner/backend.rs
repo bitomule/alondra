@@ -23,9 +23,24 @@ const DEFAULT_PROFILE: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"];
 /// The host's socket is `<state root>/<execution UUID>/s`, and a Unix socket path holds 103 bytes.
 const SOCKET_PATH_LIMIT: usize = 103;
 const EXECUTION_FOLDER: usize = "/00000000-0000-0000-0000-000000000000/s".len();
-/// What the daemon's environment carries for Alondra, or inherited from a Claude session it was
-/// started in: never the user's Claude's. The SDK sets its own session variables.
-const PRIVATE: [&str; 5] = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_SDK_READS_SESSION_STATE"];
+/// The only variables of the daemon's environment a node's Claude Code or Codex receives, and so
+/// the only ones the host's `host.lock` stores. Anything else, a Claude session's tokens or a
+/// service key the daemon was started with, stays behind: a node's agent runs commands that read
+/// its environment, and the lock outlives the run. Credentials come from the user's own sign-in.
+const NATIVE_ENVIRONMENT: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TMPDIR", "TERM", "COLORTERM", "NO_COLOR", "TZ",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "SSH_AUTH_SOCK", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_EXEC_PATH",
+    "GH_HOST", "GH_CONFIG_DIR", "GH_ENTERPRISE_HOST",
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "CODEX_HOME", "OPENAI_BASE_URL", "BROWSER", "EDITOR", "DEVELOPER_DIR", "JAVA_HOME",
+];
+
+fn is_native_variable(key: &str) -> bool {
+    NATIVE_ENVIRONMENT.contains(&key) || key.starts_with("LC_")
+}
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -77,7 +92,7 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
     let host = installed_host(daemon);
     ensure!(host.is_file(), "this release's Agent SDK host is missing at {}: reinstall Alondra (`brew reinstall alondra`)", host.display());
     let mut native_environment: BTreeMap<String, String> = environment.iter()
-        .filter(|(key, _)| !DEFAULT_PROFILE.contains(&key.as_str()) && !PRIVATE.contains(&key.as_str()) && !key.starts_with("ALONDRA_"))
+        .filter(|(key, _)| is_native_variable(key) && !DEFAULT_PROFILE.contains(&key.as_str()))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     native_environment.insert("HOME".into(), user_home.display().to_string());
@@ -395,6 +410,10 @@ mod tests {
         let environment = BTreeMap::from([
             ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display())), ("LANG".to_owned(), "es_ES.UTF-8".to_owned()),
             ("ALONDRA_PORT".to_owned(), "7777".to_owned()), ("CLAUDECODE".to_owned(), "1".to_owned()),
+            ("DEVELOPER_DIR".to_owned(), "/Applications/Xcode.app".to_owned()), ("JAVA_HOME".to_owned(), "/jdk".to_owned()),
+            ("LC_ALL".to_owned(), "es_ES.UTF-8".to_owned()), ("HTTPS_PROXY".to_owned(), "http://proxy:3128".to_owned()),
+            ("FIRECRAWL_API_KEY".to_owned(), "secret-a".to_owned()), ("REVENUECAT_MCP_BEARER_TOKEN".to_owned(), "secret-b".to_owned()),
+            ("CLAUDE_CODE_MESSAGING_TOKEN".to_owned(), "secret-c".to_owned()), ("ANTHROPIC_API_KEY".to_owned(), "secret-d".to_owned()),
         ]);
         let backend = resolve(&home, false, &user, &daemon, &environment).expect("a release runs the host it installed");
         let host = root.join("opt/alondra/libexec/alondra/sdk").join(HOST);
@@ -408,9 +427,13 @@ mod tests {
         assert_eq!(started.native_sha256, digest(&tools.join("claude")).unwrap());
         assert_eq!(started.native_environment.get("HOME").map(String::as_str), Some(user.to_str().unwrap()));
         assert_eq!(started.native_environment.get("LANG").map(String::as_str), Some("es_ES.UTF-8"), "the user's environment");
-        for private in ["ALONDRA_PORT", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CLAUDECODE"] {
+        for kept in ["LC_ALL", "HTTPS_PROXY", "DEVELOPER_DIR", "JAVA_HOME"] {
+            assert!(started.native_environment.contains_key(kept), "{kept} is on the allowlist");
+        }
+        for private in ["ALONDRA_PORT", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CLAUDECODE", "FIRECRAWL_API_KEY", "REVENUECAT_MCP_BEARER_TOKEN", "CLAUDE_CODE_MESSAGING_TOKEN", "ANTHROPIC_API_KEY"] {
             assert!(!started.native_environment.contains_key(private), "{private} is not the user's Claude's");
         }
+        assert!(!serde_json::to_string(&started.native_environment).unwrap().contains("secret-"), "no secret reaches what the host stores");
         claude_code(&tools, "2.1.301");
         let updated = backend.for_start().unwrap();
         assert_ne!(updated.native_sha256, started.native_sha256, "Claude Code updated itself: the next host takes the new one");

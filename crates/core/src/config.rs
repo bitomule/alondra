@@ -58,6 +58,9 @@ pub struct FileConfig {
     pub auto_update: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<ReportFile>,
+    /// Names of daemon environment variables every node receives besides the built-in ones.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_environment: Option<Vec<String>>,
 }
 
 /// `[report]` in `config.toml`.
@@ -67,6 +70,18 @@ pub struct ReportFile {
     /// The GitHub `owner/repo` crash reports go to, instead of the one the relay announces.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+}
+
+/// A shell variable name.
+pub fn is_variable_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Variable names separated by commas, as `config set node_environment` takes them.
+pub fn parse_variable_names(value: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = value.split(',').map(|name| name.trim().to_owned()).collect();
+    names.iter().all(|name| is_variable_name(name)).then_some(names)
 }
 
 /// A GitHub `owner/repo`.
@@ -93,6 +108,9 @@ impl FileConfig {
         if file.report.as_ref().and_then(|r| r.repo.as_deref()).is_some_and(|repo| !is_github_repo(repo)) {
             return Err("report.repo: a GitHub owner/repo".into());
         }
+        if file.node_environment.as_ref().is_some_and(|names| !names.iter().all(|name| is_variable_name(name))) {
+            return Err("node_environment: variable names".into());
+        }
         Ok(file)
     }
 
@@ -105,7 +123,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update, report);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update, report, node_environment);
         self
     }
 }
@@ -169,6 +187,8 @@ pub struct Config {
     /// Where crash reports go when this Mac chose one (`report.repo`, `ALONDRA_REPORT_REPO`);
     /// otherwise the relay announces it.
     pub report_repo: Option<String>,
+    /// Daemon environment variables every node receives besides the built-in ones (`node_environment`).
+    pub node_environment: Vec<String>,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -264,6 +284,7 @@ impl Config {
             report_repo: var("ALONDRA_REPORT_REPO")
                 .filter(|repo| is_github_repo(repo))
                 .or_else(|| file.report.as_ref().and_then(|r| r.repo.clone())),
+            node_environment: file.node_environment.clone().unwrap_or_default(),
             home,
         }
     }
@@ -287,6 +308,7 @@ pub const SETTABLE: &[(&str, bool)] = &[
     ("retention_hours", true),
     ("service_label", true),
     ("report.repo", false),
+    ("node_environment", false),
 ];
 
 pub fn restarts_daemon(key: &str) -> bool {
@@ -315,6 +337,8 @@ fn typed(key: &str, value: &str) -> Result<toml::Value, SetError> {
         "wake" => value.parse::<bool>().map(toml::Value::Boolean).map_err(|_| SetError::Invalid),
         "retention_hours" => value.parse::<f64>().ok().filter(|h| h.is_finite() && *h > 0.0).map(toml::Value::Float).ok_or(SetError::Invalid),
         "report.repo" => is_github_repo(value).then(text).unwrap_or(Err(SetError::Invalid)),
+        "node_environment" => parse_variable_names(value)
+            .map(|names| toml::Value::Array(names.into_iter().map(toml::Value::String).collect())).ok_or(SetError::Invalid),
         _ => Err(SetError::UnknownKey),
     }
 }
@@ -362,6 +386,20 @@ pub fn set_key(home: &Path, key: &str, value: Option<&str>) -> Result<(), SetErr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn node_environment_takes_variable_names_only_and_defaults_to_none() {
+        let dir = crate::test_support::Directory::new();
+        assert!(resolve(&FileConfig::default(), &[]).node_environment.is_empty());
+        set_key(&dir, "node_environment", Some("JAVA_HOME, GOPATH")).unwrap();
+        let file = FileConfig::parse(&std::fs::read_to_string(path_in(&dir)).unwrap()).unwrap();
+        assert_eq!(resolve(&file, &[]).node_environment, ["JAVA_HOME", "GOPATH"]);
+        for bad in ["", "A B", "1X", "A=b", "A,,B"] {
+            assert_eq!(set_key(&dir, "node_environment", Some(bad)), Err(SetError::Invalid), "{bad}");
+        }
+        set_key(&dir, "node_environment", None).unwrap();
+        assert!(FileConfig::parse(&std::fs::read_to_string(path_in(&dir)).unwrap()).unwrap().node_environment.is_none());
+    }
+
     #[test]
     fn report_repo_is_a_table_key_the_environment_beats() {
         let dir = crate::test_support::Directory::new();
