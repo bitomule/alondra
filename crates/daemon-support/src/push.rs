@@ -103,18 +103,11 @@ impl Push {
             attempted += 1;
             let mut body = payload_for_registration(payload, &reg);
             let quiet = in_quiet_hours(reg.quiet_start.as_deref(), reg.quiet_end.as_deref(), local_minutes());
-            let level = if quiet { "passive" } else { "active" };
-            body["aps"]["interruption-level"] = json!(level);
-            if (quiet || !with_sound)
-                && let Some(aps) = body["aps"].as_object_mut()
-            {
-                aps.remove("sound");
-            }
-            let priority = if quiet { 5 } else { 10 };
+            let (body, priority) = for_device(body, quiet, with_sound);
             match apns.send(&reg.token, &reg.environment, &body, priority).await {
                 Ok((200, _)) => { accepted += 1; }
-                Ok((410, _)) | Ok((400, _)) => {
-                    log!("APNs rejects a token, forgetting it");
+                Ok((status, text)) if token_is_dead(status, &text) => {
+                    log!("APNs says the token is gone (HTTP {status}: {text}), forgetting it");
                     self.forget_token(&reg.token);
                 }
                 Ok((status, text)) => log!("APNs {status}: {text}"),
@@ -123,6 +116,29 @@ impl Push {
         }
         (attempted, accepted)
     }
+}
+
+/// The card's own level, passive in the phone's quiet hours, and the APNs priority it asks for:
+/// only what interrupts goes at once.
+fn for_device(mut body: Value, quiet: bool, with_sound: bool) -> (Value, u8) {
+    if quiet {
+        body["aps"]["interruption-level"] = json!("passive");
+    }
+    if (quiet || !with_sound)
+        && let Some(aps) = body["aps"].as_object_mut()
+    {
+        aps.remove("sound");
+    }
+    let priority = if body["aps"]["interruption-level"] == "passive" { 5 } else { 10 };
+    (body, priority)
+}
+
+/// APNs answers that this token will never take a push again: 410, or a 400 whose documented
+/// `reason` names a token that is not this app's on this environment. Any other 400 is about the
+/// request, and the token stays.
+fn token_is_dead(status: u16, body: &str) -> bool {
+    let reason = serde_json::from_str::<Value>(body).ok().and_then(|body| body["reason"].as_str().map(str::to_owned));
+    status == 410 || (status == 400 && matches!(reason.as_deref(), Some("BadDeviceToken" | "DeviceTokenNotForTopic")))
 }
 
 fn payload_for_registration(payload: &Value, reg: &Registration) -> Value {
@@ -216,6 +232,29 @@ mod tests {
             "token":"ab", "environment":"sandbox", "updated_at":0
         })).unwrap();
         assert!(old.push_binding.is_none(), "old push.json registrations remain readable");
+    }
+
+    #[test]
+    fn a_device_gets_the_cards_level_and_only_what_interrupts_goes_at_once() {
+        let card = |level: &str| json!({"aps": {"alert": {"title": "t"}, "sound": "default", "interruption-level": level}});
+        let (body, priority) = for_device(card("time-sensitive"), false, true);
+        assert_eq!((body["aps"]["interruption-level"].as_str(), body["aps"]["sound"].as_str(), priority), (Some("time-sensitive"), Some("default"), 10));
+        let (body, priority) = for_device(card("passive"), false, true);
+        assert_eq!((body["aps"]["interruption-level"].as_str(), priority), (Some("passive"), 5), "a notice stays quiet outside quiet hours");
+        let (body, priority) = for_device(card("active"), true, true);
+        assert_eq!((body["aps"]["interruption-level"].as_str(), body["aps"].get("sound"), priority), (Some("passive"), None, 5));
+    }
+
+    #[test]
+    fn only_a_gone_token_is_forgotten() {
+        assert!(token_is_dead(410, r#"{"reason":"Unregistered","timestamp":1}"#));
+        assert!(token_is_dead(400, r#"{"reason":"BadDeviceToken"}"#));
+        assert!(token_is_dead(400, r#"{"reason":"DeviceTokenNotForTopic"}"#));
+        for reason in ["BadCollapseId", "PayloadTooLarge", "BadPriority", "InvalidPushType"] {
+            assert!(!token_is_dead(400, &format!(r#"{{"reason":"{reason}"}}"#)), "{reason} is about the request");
+        }
+        assert!(!token_is_dead(400, "not json"));
+        assert!(!token_is_dead(429, r#"{"reason":"TooManyRequests"}"#));
     }
 
     #[test]

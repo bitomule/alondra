@@ -219,15 +219,21 @@ async fn deliver_user_runtime(
     }
     let read = domain.read();
     let interaction_id = message.interaction_id.as_deref();
+    let quieted = quieted_by(domain, &read, message, alondra_core::now_millis())
+        .map_err(|_| (State::Retryable, "domain_read_failed"))?;
     let english = std::sync::OnceLock::new();
     let spanish = std::sync::OnceLock::new();
     let payload = |lang| match lang {
         Lang::En => &english,
         Lang::Es => &spanish,
-    }.get_or_init(|| user_push_payload(&read, interaction_id, lang)).clone();
+    }.get_or_init(|| {
+        let payload = user_push_payload(&read, interaction_id, lang);
+        if quieted.is_some() { quiet(payload) } else { payload }
+    }).clone();
+    let with_sound = payload(Lang::En)["aps"].get("sound").is_some();
     if let Some(service) = service {
         let (attempted, accepted) = service
-            .broadcast_push_report_for_device(true, |device| {
+            .broadcast_push_report_for_device(with_sound, |device| {
                 payload(client.map_or(Lang::En, |client| client.language_for_device(device)))
             })
             .await
@@ -238,12 +244,72 @@ async fn deliver_user_runtime(
     } else if home.join("service.toml").exists() {
         return Err((State::Retryable, "encrypted_service_unavailable"));
     } else if push.enabled() {
-        let (attempted, accepted) = push.broadcast_report(&payload(Lang::En), true).await;
+        let (attempted, accepted) = push.broadcast_report(&payload(Lang::En), with_sound).await;
         if attempted != accepted {
             return Err((State::Uncertain, "push_partial_or_unknown"));
         }
     }
+    let level = payload(Lang::En)["aps"]["interruption-level"].as_str().unwrap_or("active").to_owned();
+    log!("push for card {}: {level}{}", interaction_id.unwrap_or("-"),
+        quieted.map_or(String::new(), |reason| format!(", quieted: {}", reason.as_str())));
     Ok(())
+}
+
+/// The clients that mean the user sits at the Mac: while one was used this recently, the phone
+/// stays quiet and the Mac tells.
+pub(crate) const AT_DESK_CLIENTS: [&str; 2] = ["mac", "tui"];
+const AT_DESK_FOR_MS: i64 = 120_000;
+
+/// Why a notice that would sound reaches the phones silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Quieted {
+    /// The phones were already told about this card and it did not come back from a snooze.
+    Repeat,
+    /// Another card of the same change and Task already sounded.
+    Group,
+    /// The user is at the Mac.
+    AtDesk,
+}
+
+impl Quieted {
+    fn as_str(self) -> &'static str {
+        match self {
+            Quieted::Repeat => "repeat",
+            Quieted::Group => "group",
+            Quieted::AtDesk => "at_mac",
+        }
+    }
+}
+
+fn quieted_by(domain: &DomainRuntime, read: &ReadSnapshot, message: &OutboxMessage, now: i64) -> Result<Option<Quieted>> {
+    let history = domain.store.lock_or_exit("the domain store").user_push_history(message.id)?;
+    let resurfaced_at = message.interaction_id.as_deref()
+        .and_then(|id| read.state().interactions.get(&InteractionId::from(id)))
+        .and_then(|card| card.resurfaced_at_revision);
+    let at_desk = domain.live.touched_since(&AT_DESK_CLIENTS, now - AT_DESK_FOR_MS);
+    Ok(quiet_reason(history, resurfaced_at, at_desk))
+}
+
+fn quiet_reason(history: crate::domain_store::UserPushHistory, resurfaced_at: Option<u64>, at_desk: bool) -> Option<Quieted> {
+    let reminder = resurfaced_at.is_some_and(|returned| history.card_pushed_at.is_none_or(|told| returned > told));
+    if history.card_pushed_at.is_some() && !reminder {
+        Some(Quieted::Repeat)
+    } else if history.sibling_pushed {
+        Some(Quieted::Group)
+    } else if at_desk {
+        Some(Quieted::AtDesk)
+    } else {
+        None
+    }
+}
+
+/// The same notice, without banner or sound: it waits in Notification Center.
+fn quiet(mut payload: Value) -> Value {
+    if let Some(aps) = payload["aps"].as_object_mut() {
+        aps.insert("interruption-level".into(), json!("passive"));
+        aps.remove("sound");
+    }
+    payload
 }
 
 pub(crate) fn user_push_payload(read: &ReadSnapshot, interaction_id: Option<&str>, lang: Lang) -> Value {
@@ -1048,6 +1114,102 @@ mod tests {
         deliver_from_runtime(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
         assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
             .iter().any(|item| item.message_id == user[0].id && item.state == "handed"));
+    }
+
+    #[test]
+    fn a_card_sounds_once_unless_it_returns_from_a_snooze_and_the_mac_tells_when_the_user_is_there() {
+        use crate::domain_store::UserPushHistory;
+        let never = UserPushHistory::default();
+        let told_at = |revision| UserPushHistory { card_pushed_at: Some(revision), sibling_pushed: false };
+        assert_eq!(quiet_reason(never, None, false), None);
+        assert_eq!(quiet_reason(told_at(4), None, false), Some(Quieted::Repeat), "the same card again");
+        assert_eq!(quiet_reason(told_at(4), Some(4), false), Some(Quieted::Repeat), "told again after it came back");
+        assert_eq!(quiet_reason(told_at(4), Some(7), false), None, "back from a snooze: the reminder sounds");
+        assert_eq!(quiet_reason(UserPushHistory { card_pushed_at: None, sibling_pushed: true }, None, false), Some(Quieted::Group));
+        assert_eq!(quiet_reason(never, None, true), Some(Quieted::AtDesk));
+        let notice = json!({"aps": {"alert": {"title": "t"}, "sound": "default", "interruption-level": "time-sensitive", "badge": 2}});
+        let quieted = quiet(notice.clone());
+        assert_eq!(quieted["aps"]["interruption-level"], "passive");
+        assert!(quieted["aps"].get("sound").is_none());
+        assert_eq!((&quieted["aps"]["alert"], &quieted["aps"]["badge"]), (&notice["aps"]["alert"], &notice["aps"]["badge"]));
+    }
+
+    fn quiet_fixture(name: &str) -> (crate::test_support::Directory, std::path::PathBuf, Arc<DomainRuntime>) {
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-{name}-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+            task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
+            review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        (scratch_directory, home, domain)
+    }
+
+    fn user_message(domain: &DomainRuntime, card: &str) -> OutboxMessage {
+        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some(card) && message.recipient_kind == "user")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_group_of_questions_sounds_once_and_a_snoozed_one_sounds_again_when_it_returns() {
+        let (_scratch, home, domain) = quiet_fixture("quiet-group");
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let question = |need: &str| GroupQuestion { title: Some("Release".into()), need: need.into(), why: "The release needs it".into(),
+            recommended: None, options: ["Yes", "No"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).into() };
+        apply_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "questions", Command::AskQuestions {
+            interaction_id: "g".into(), scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User, blocking: true,
+            why: "Two things".into(), questions: vec![question("Which name?"), question("Ship it today?")] });
+        let now = alondra_core::now_millis();
+        let deliver = |message: OutboxMessage| {
+            let (domain, home, client) = (domain.clone(), home.clone(), &client);
+            async move { deliver_from_runtime(&domain, &home, &Push::open(&home).unwrap(), None, client, message, Duration::ZERO).await.unwrap() }
+        };
+        let quieted = |message: &OutboxMessage| quieted_by(&domain, &domain.read(), message, now).unwrap();
+
+        let first = user_message(&domain, "g-q1");
+        let second = user_message(&domain, "g-q2");
+        assert_eq!(quieted(&first), None, "the first question of the group sounds");
+        deliver(first).await;
+        assert_eq!(quieted(&second), Some(Quieted::Group), "the rest of the group arrives quietly");
+        deliver(second).await;
+
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "snooze", Command::SnoozeCard { interaction_id: "g-q1".into(), until: now + 1, now });
+        apply_command(&domain, Actor::System, "return", Command::ResurfaceDueCards { now: now + 1 });
+        let returned = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .filter(|message| message.interaction_id.as_deref() == Some("g-q1") && message.recipient_kind == "user")
+            .max_by_key(|message| message.id).unwrap();
+        assert_eq!(quieted(&returned), None, "the reminder the user asked for sounds");
+        drop(client);
+        drop(domain);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_phone_stays_quiet_while_the_user_was_at_the_mac_in_the_last_two_minutes() {
+        let (_scratch, home, domain) = quiet_fixture("quiet-desk");
+        apply_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
+            recipient: Recipient::User, body: "Choose".into(), blocking: true,
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }],
+            card: CardSpec::derived(CardKind::Provide, "Answer the question"),
+        });
+        let message = user_message(&domain, "question-a");
+        let quieted = |at| quieted_by(&domain, &domain.read(), &message, at).unwrap();
+        let now = alondra_core::now_millis();
+        domain.live.touch("ios");
+        assert_eq!(quieted(now), None, "the phone itself is not the Mac");
+        domain.live.touch("tui");
+        assert_eq!(quieted(now + 90_000), Some(Quieted::AtDesk), "used 90 s ago");
+        assert_eq!(quieted(now + 150_000), None, "away for 150 s: the phone sounds again");
+        domain.live.touch("mac");
+        assert_eq!(quieted(now + 60_000), Some(Quieted::AtDesk));
+        drop(domain);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]

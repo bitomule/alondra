@@ -280,6 +280,12 @@ impl Live {
         self.presence.lock_or_recover("the client presence").insert(client.to_owned(), now_millis());
     }
 
+    /// Whether the user was at any of these clients at or after `since`.
+    pub fn touched_since(&self, clients: &[&str], since: i64) -> bool {
+        let presence = self.presence.lock_or_recover("the client presence");
+        clients.iter().any(|client| presence.get(*client).is_some_and(|at| *at >= since))
+    }
+
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn last_touched(&self, client: &str) -> Option<i64> {
         self.presence.lock_or_recover("the client presence").get(client).copied()

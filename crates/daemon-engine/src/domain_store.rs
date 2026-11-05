@@ -1025,6 +1025,11 @@ pub struct OutboxMessage {
     pub message: String,
     pub state: String,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UserPushHistory {
+    pub card_pushed_at: Option<u64>,
+    pub sibling_pushed: bool,
+}
 /// The host the domain names an orchestrator batch's SDK run by: never a task's.
 const BATCH_HOST: &str = "alondra-sdk-orchestrator";
 
@@ -1594,6 +1599,20 @@ impl DomainStore {
             }
         }
         Ok(false)
+    }
+    /// What phones were already told before this user notice: the revision of the latest earlier
+    /// push of the same card, and whether a notice of another card from the same change and
+    /// Task already went out.
+    pub fn user_push_history(&self, message_id: i64) -> Result<UserPushHistory> {
+        let card_pushed_at = self.conn.query_row("SELECT MAX(e.revision) FROM domain_messages m JOIN domain_messages e
+            ON e.interaction_id=m.interaction_id AND e.id<>m.id JOIN domain_message_user_targets u ON u.message_id=e.id
+            JOIN domain_outbox o ON o.message_id=e.id WHERE m.id=?1 AND o.state IN('handed','uncertain')",
+            [message_id], |row| row.get::<_, Option<i64>>(0))?;
+        let sibling_pushed = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM domain_messages m JOIN domain_messages e
+            ON e.revision=m.revision AND e.ordinal<m.ordinal AND e.task_id IS m.task_id AND e.interaction_id IS NOT m.interaction_id
+            JOIN domain_message_user_targets u ON u.message_id=e.id JOIN domain_outbox o ON o.message_id=e.id
+            WHERE m.id=?1 AND o.state IN('handed','uncertain'))", [message_id], |row| row.get(0))?;
+        Ok(UserPushHistory { card_pushed_at: card_pushed_at.map(|revision| revision as u64), sibling_pushed })
     }
     /// The latest user notice the push gate let through for each card, by its message id: what a
     /// phone was told about that card, and what the Mac app tells the user while it is not in front.
