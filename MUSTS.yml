@@ -1086,6 +1086,16 @@ checks:
       targets:
         - //tools:bazel_test_tmpdir_test
 
+  reap-test-hosts:
+    uses: bazel/test
+    paths:
+      - "tools/BUILD.bazel"
+      - "tools/reap-test-hosts.py"
+      - "tools/tests/test_reap_test_hosts.py"
+    with:
+      targets:
+        - //tools:reap_test_hosts_test
+
   native-fixture-lifecycle:
     uses: bazel/test
     paths:

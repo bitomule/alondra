@@ -10,8 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { Channel } from './channel.js';
 import { parsePayload, PROTOCOL_VERSION, SDK_VERSION } from './frame.js';
 import { ownerProof } from './ownership.js';
+import { socketRoot } from './owned-host.mjs';
 
-const root = mkdtempSync(join(realpathSync('/tmp'), 'rc-'));
+const root = mkdtempSync(join(socketRoot(), 'rc-'));
 chmodSync(root, 0o700);
 const home = join(root, 'home'); mkdirSync(home, { mode: 0o700 });
 const fixture = fileURLToPath(new URL('./reconcile-fixture.mjs', import.meta.url));

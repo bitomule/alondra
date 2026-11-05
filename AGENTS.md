@@ -46,6 +46,8 @@
 - No flaky tests: no wall-clock assertions, no sleeps racing other work, no retries to hide failures.
 - Tests never touch the real `~/.alondra`, launchd job, Keychain, Homebrew install or provider
   logins. Use temporary `HOME` fixtures, removed on success and failure.
+- A test that starts a host owns it: its folder comes from `Directory::for_unix_socket` or
+  `socketRoot()`, inside the test's TMPDIR, and `make reap-test-hosts` ends what an older cut left.
 - A change to what the user sees is tried in the real TUI inside tmux against a sandbox daemon
   (`make tui-sandbox SESSION=<name>`, `make tui-sandbox-stop SESSION=<name>`), and its captures go
   in the pull request.

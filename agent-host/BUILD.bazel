@@ -141,7 +141,7 @@ js_test(
     name = "host_stop_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "host-stop.test.mjs",
-    data = [":host_lib", "host-stop-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+    data = [":host_lib", "owned-host.mjs", "host-stop-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
 js_test(
     name = "controls_test",
@@ -171,7 +171,7 @@ js_test(
     name = "reconcile_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "reconcile.test.mjs",
-    data = [":host_lib", "reconcile-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+    data = [":host_lib", "owned-host.mjs", "reconcile-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
 
 pinned_node(
@@ -189,7 +189,7 @@ js_test(
     name = "host_flush_test",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "flush.test.mjs",
-    data = [":host_lib", "flush-fixture.mjs", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+    data = [":host_lib", "owned-host.mjs", "flush-fixture.mjs", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
 )
 
 js_test(
