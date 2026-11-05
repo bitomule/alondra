@@ -573,7 +573,10 @@ async fn prepare_workers(
     if let Some(backend) = backend {
         domain.enable_sdk(backend.clone());
         let adopting = domain.clone();
-        tokio::task::spawn_blocking(move || sdk_owner::adopt_all(&adopting, &backend)).await.ok();
+        tokio::task::spawn_blocking(move || {
+            accounts::check_if_crossed(&adopting);
+            sdk_owner::adopt_all(&adopting, &backend);
+        }).await.ok();
     }
     node_reconcile::once(&domain, sessions).await;
     if config.fast_timing {

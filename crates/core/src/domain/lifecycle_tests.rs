@@ -1964,13 +1964,26 @@ fn a_mission_whose_session_never_opened_goes_again_after_every_host_that_ends() 
     assert_aggregate_rules(&s);
 }
 
+#[test]
+fn a_quiet_host_loss_opens_its_card_without_a_push() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the account changed".into(), quiet: true });
+    assert!(s.interactions.keys().any(|id| id.0.starts_with(HOST_LOST_PREFIX)), "the card opens");
+    assert!(!lost.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyUser { .. })), "and no push goes out");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_aggregate_rules(&s);
+    let stored: Command = serde_json::from_value(serde_json::json!({"kind": "record_host_lost", "task_id": "t", "reason": "before quiet existed"})).unwrap();
+    assert!(matches!(stored, Command::RecordHostLost { quiet: false, .. }), "a stored command without it tells the user");
+}
+
 // An execution no host runs, because the daemon could not take it over, holds on a card that says
 // why. «Try again» lets it go on, told to carry on; «Cancel the task» ends it.
 #[test]
 fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user_retries_or_cancels() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host refused to be taken over and did not stop: pid 7 is still alive".into() });
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host refused to be taken over and did not stop: pid 7 is still alive".into(), quiet: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(HOST_LOST_PREFIX)).expect("the task has a card").clone();
     let shown = &s.interactions[&card];
     assert_eq!(shown.card.effective_title(), "“Task t” stopped: Alondra could not resume its session");
@@ -1978,7 +1991,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     assert_eq!(options(&s, &card), [RETAKE, CANCEL_TASK]);
     assert!(lost.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "again".into() });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "again".into(), quiet: false });
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(HOST_LOST_PREFIX)).count(), 1, "one card while it waits");
     answer(&mut s, &card, RETAKE);
     assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(),
@@ -1990,7 +2003,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
     let asked = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the task asks how to go on").clone();
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "launching the host that resumes the session failed".into() });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "launching the host that resumes the session failed".into(), quiet: false });
     let open: Vec<&InteractionId> = s.interactions.values().filter(|i| s.open(i)).map(|i| &i.id).collect();
     assert_eq!(open, [&asked], "the card it waited on becomes the one that says it could not resume: one card for the task");
     assert_eq!(options(&s, &asked), [RETAKE, CANCEL_TASK]);
@@ -2002,7 +2015,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
 
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the node plugin was not found".into() });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the node plugin was not found".into(), quiet: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(HOST_LOST_PREFIX)).unwrap().clone();
     answer(&mut s, &card, CANCEL_TASK);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Closing, "it ends, closing its execution first");

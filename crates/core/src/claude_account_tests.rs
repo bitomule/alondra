@@ -182,6 +182,19 @@ fn the_profile_an_environment_names_is_claude_config_dir_else_claude_home_else_n
 }
 
 #[test]
+fn the_folder_of_an_added_account_is_never_the_default_profile() {
+    let of = |pairs: &[(&str, &str)]| {
+        let pairs: Vec<(String, String)> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        configured_profile(&|key: &str| pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()))
+    };
+    assert_eq!(of(&[("HOME", "/u"), ("CLAUDE_CONFIG_DIR", "/u/.alondra/accounts/work"), ("CLAUDE_HOME", "/u/.alondra/accounts/work")]), None);
+    assert_eq!(of(&[("HOME", "/u"), ("CLAUDE_HOME", "/u/.alondra/accounts/work/")]), None);
+    assert_eq!(of(&[("ALONDRA_HOME", "/s"), ("CLAUDE_CONFIG_DIR", "/s/accounts/work")]), None);
+    assert_eq!(of(&[("ALONDRA_HOME", "/s"), ("HOME", "/u"), ("CLAUDE_CONFIG_DIR", "/u/.alondra/accounts/work")]), Some(PathBuf::from("/u/.alondra/accounts/work")), "another home's folder is no account of this one");
+    assert_eq!(of(&[("HOME", "/u"), ("CLAUDE_CONFIG_DIR", "/u/.alondra/accounts-old")]), Some(PathBuf::from("/u/.alondra/accounts-old")));
+}
+
+#[test]
 fn the_default_account_runs_with_the_configured_profile_and_an_added_one_with_its_own_folder() {
     let home = Path::new("/u/.alondra");
     let user_home = Path::new("/u");

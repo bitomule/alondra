@@ -2376,6 +2376,87 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
 }
 
+// A session whose account changed identity could not be taken over, and each «Try again» opened a
+// card with its own push. An outage tells the user once, however many times it is tried, and a
+// takeover that works ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_execution_that_stays_lost_has_one_open_card_and_one_push_however_many_times_it_is_retried() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    strand_host(&slice, driver);
+    let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&restarted, &slice.backend);
+    let pushes = |domain: &DomainRuntime| domain.store.lock().unwrap().conn.query_row(
+        "SELECT COUNT(*) FROM domain_message_user_targets t JOIN domain_messages m ON m.id=t.message_id WHERE m.interaction_id LIKE 'host-lost-%'", [], |row| row.get::<_, i64>(0)).unwrap();
+    let try_again = |attempt: u32| {
+        let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has a card");
+        let state = restarted.state().unwrap();
+        let answer = Command::AnswerQuestion { interaction_id: card.id, option_id: RETAKE.into(), inputs: BTreeMap::new(), attachments: vec![] };
+        assert!(restarted.execute_with(&user(), &envelope(&state, &format!("try-again-{attempt}"), answer), None, None, || Ok(())).unwrap().changed);
+        restarted.join_retakes();
+    };
+    assert_eq!(pushes(&restarted), 1, "the first failure tells the user");
+    for attempt in 0..3 {
+        try_again(attempt);
+        let state = restarted.state().unwrap();
+        let open = state.interactions.values().filter(|card| card.id.0.starts_with(HOST_LOST_PREFIX) && !card.withdrawn
+            && matches!(&card.payload, InteractionPayload::Question { answer: None, .. })).count();
+        assert_eq!(open, 1, "attempt {attempt} leaves one card open");
+        assert_eq!(pushes(&restarted), 1, "attempt {attempt} tells nobody again");
+    }
+    refuse(false);
+    try_again(3);
+    let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again");
+    assert!(restarted.host_losses_told.lock().unwrap().is_empty(), "the next outage is another one, and tells the user");
+    restarted.stop_sdk_owners();
+}
+
+// The service named an added account's folder, so sessions of the default account ran on it and
+// recorded its email. Once the default account answers for itself, those sessions take its email
+// and its guard lets them go on; a session of any other account stays as it was.
+#[test]
+fn sessions_that_recorded_the_account_their_host_really_ran_on_go_on_under_their_own() {
+    let slice = Slice::new();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver = slice.launch();
+    let instance = lifecycle(&slice.domain).execution().unwrap().instance().as_str().to_owned();
+    let folder = slice.backend.state_root.join(instance);
+    let account = |id: AccountId, email: &str| AccountStatus { provider: Provider::Claude, id, name: "Account".into(), state: AccountState::SignedIn, native_identity: None,
+        email: Some(email.into()), plan: None, billing: alondra_core::accounts::AccountBilling::default(), sign_ins: 0, profile: None };
+    let (default, added) = (AccountId::default_account(), AccountId::parse("added").unwrap());
+    let accounts = |own: &str, other: &str| vec![account(default.clone(), own), account(added.clone(), other)];
+    let record = |key: &str, accounts: Vec<AccountStatus>| {
+        let state = slice.domain.state().unwrap();
+        slice.domain.execute_as_system(envelope(&state, key, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() })).unwrap();
+    };
+    let shared = "added@example.test";
+    let _ = std::fs::remove_file(folder.join("native-account.json"));
+    NativeAccountIdentity::save(&folder, Some(&account(default.clone(), shared))).unwrap();
+    let change = |domain: &DomainRuntime| {
+        let read = domain.read();
+        let status = read.state().accounts.iter().find(|status| status.id.is_default()).unwrap().clone();
+        NativeAccountIdentity::load(&folder).unwrap().unwrap().change(&status)
+    };
+
+    let before = accounts("own@example.test", shared);
+    record("added-crossed", accounts("own@example.test", "third@example.test"));
+    crate::accounts::correct_crossed_sessions(&slice.domain, &before);
+    assert_eq!(change(&slice.domain), Some("identity"), "another account's change is no crossing of this one");
+
+    record("crossed", accounts(shared, shared));
+    let before = accounts(shared, shared);
+    record("own-identity", accounts("own@example.test", shared));
+    assert_eq!(change(&slice.domain), Some("identity"), "the guard would refuse it");
+    crate::accounts::correct_crossed_sessions(&slice.domain, &before);
+    assert_eq!(change(&slice.domain), None, "the session goes on under the account's own identity");
+    driver.stop().unwrap();
+}
+
 // Refusing a turn-end reaction must not discard the actual end or replace its running host.
 #[test]
 fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {

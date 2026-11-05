@@ -96,7 +96,8 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     native_environment.insert("HOME".into(), user_home.display().to_string());
-    if let Some(profile) = alondra_core::claude_account::configured_profile(&|key: &str| environment.get(key).cloned()) {
+    let daemon_environment = |key: &str| if key == "ALONDRA_HOME" { Some(home.display().to_string()) } else { environment.get(key).cloned() };
+    if let Some(profile) = alondra_core::claude_account::configured_profile(&daemon_environment) {
         for key in DEFAULT_PROFILE {
             native_environment.insert(key.into(), profile.display().to_string());
         }
@@ -471,6 +472,26 @@ mod tests {
         let other = explicit.for_account(&home, &account, &registered).unwrap();
         for key in DEFAULT_PROFILE {
             assert_eq!(other.native_environment.get(key).map(String::as_str), home.join("accounts/other").to_str(), "an added account runs only on its folder");
+        }
+    }
+
+    #[test]
+    fn a_daemon_started_with_an_added_accounts_folder_runs_each_account_on_its_own_profile() {
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        let folder = home.join("accounts/other");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (daemon, tools) = release(&root, "2.1.300");
+        let path = ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()));
+        let added = folder.display().to_string();
+        let crossed = BTreeMap::from([path, ("CLAUDE_CONFIG_DIR".to_owned(), added.clone()), ("CLAUDE_HOME".to_owned(), added.clone())]);
+        let backend = resolve(&home, false, &root.join("user"), &daemon, &crossed).unwrap();
+        let (account, registered) = (AccountId::parse("other").unwrap(), [AccountId::default_account(), AccountId::parse("other").unwrap()]);
+        let default = backend.for_account(&home, &AccountId::default_account(), &registered).unwrap();
+        let other = backend.for_account(&home, &account, &registered).unwrap();
+        for key in DEFAULT_PROFILE {
+            assert!(!default.native_environment.contains_key(key), "the default account is the user's own profile, without {key}");
+            assert_eq!(other.native_environment.get(key), Some(&added), "an added account runs on its folder");
         }
     }
 

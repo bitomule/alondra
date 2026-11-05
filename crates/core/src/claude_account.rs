@@ -28,8 +28,12 @@ pub fn default_folder(user_home: &Path) -> PathBuf {
 /// The Claude profile an environment names: `CLAUDE_CONFIG_DIR`, else `CLAUDE_HOME`; `None` is
 /// Claude's own default profile. The daemon's environment names the default account's profile:
 /// the one the user set Alondra up with, which nodes, setup, doctor, trust and the watcher share.
+/// A folder of Alondra's accounts is never it: a node on an added account has that folder in its
+/// environment, and whatever it runs must not make that account the default one too.
 pub fn configured_profile(env: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let added = accounts::folders(&crate::config::alondra_home(env));
     ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"].into_iter().find_map(|key| env(key).filter(|value| !value.trim().is_empty())).map(PathBuf::from)
+        .filter(|profile| !profile.starts_with(&added))
 }
 
 /// The `CLAUDE_CONFIG_DIR` Claude runs with for `account`: the folder Alondra keeps for an added
@@ -165,9 +169,10 @@ pub fn effective_username() -> Option<String> {
 pub fn command(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Command {
     let mut command = Command::new(executable);
     command.env_clear().envs(environment).env("HOME", user_home).env("PATH", path).env("USER", username).env("LOGNAME", username).current_dir(user_home);
-    if let Some(folder) = folder {
-        command.env("CLAUDE_CONFIG_DIR", folder).env("CLAUDE_HOME", folder);
-    }
+    match folder {
+        Some(folder) => command.env("CLAUDE_CONFIG_DIR", folder).env("CLAUDE_HOME", folder),
+        None => command.env_remove("CLAUDE_CONFIG_DIR").env_remove("CLAUDE_HOME"),
+    };
     command
 }
 

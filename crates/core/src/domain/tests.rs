@@ -3388,7 +3388,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
         (Command::RecordStranded { task_id: ids.task.into() }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
-        (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
+        (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into(), quiet: false }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::RecordDroppedInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::InterruptTurn { agent_id: ids.agent.into() }, false),
@@ -4698,7 +4698,7 @@ fn guards_refuse_what_the_commands_refuse() {
     let mut ended = sdk.clone();
     exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }).unwrap();
     let mut lost = sdk.clone();
-    exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
+    exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into(), quiet: false }).unwrap();
     let mut resting = sdk.clone();
     exec(&mut resting, Actor::System, Command::RecordTurnBoundary { task_id: "sdk".into(), generation: 1, turn: "turn".into(), failure: None, failed: None }).unwrap();
     let mut accepted = sdk.clone();
@@ -5319,7 +5319,7 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
     exec(&mut held, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: false }).unwrap();
     assert_eq!(offered(&held), Some(ReportedFailure::SessionEnded), "no other pause stops the host: its end is a failure");
     let mut lost = sdk.clone();
-    exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
+    exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into(), quiet: false }).unwrap();
     assert_eq!(offered(&lost), Some(ReportedFailure::NotResumed));
     assert_eq!(offered(&fixture()), None, "the fixture's task never ran through a host");
     let refused = lost.guard(&agent(), &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: lost.data_epoch.clone(),

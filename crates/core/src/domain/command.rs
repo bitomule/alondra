@@ -641,10 +641,13 @@ pub enum Command {
         by_alondra: bool,
     },
     /// The Task's SDK execution could not be taken over and has no host to run on: `reason` says
-    /// why. Its card offers to try again or to cancel the Task.
+    /// why. Its card offers to try again or to cancel the Task. `quiet`: the user was already told
+    /// of this outage, so the card opens without a push.
     RecordHostLost {
         task_id: TaskId,
         reason: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
     },
     /// Claude will never read `input`, told `text`, handed to the Task's SDK host of `generation`:
     /// it leaves what the Task waits on and a card asks the user whether to send it again.

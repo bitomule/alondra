@@ -72,6 +72,8 @@ pub struct DomainRuntime {
     /// measures space, never given up for it.
     /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
     pub(crate) waiting_for_space: Mutex<std::collections::BTreeSet<TaskId>>,
+    /// The tasks whose lost host the user already heard of, until a takeover works again.
+    pub(crate) host_losses_told: Mutex<std::collections::BTreeSet<TaskId>>,
     /// Makes every write of the capability registry fail as on a full disk.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) full_disk: std::sync::atomic::AtomicBool,
@@ -170,6 +172,7 @@ impl DomainRuntime {
             retakes: Default::default(),
             in_hand: Default::default(),
             waiting_for_space: Default::default(),
+            host_losses_told: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             full_disk: Default::default(),
             handovers: Default::default(),

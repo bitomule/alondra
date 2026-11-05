@@ -112,9 +112,14 @@ fn xml_escape(value: &str) -> String {
 }
 
 fn claude_context(paths: &Paths, label: &str) -> crate::claude_auth::ContextEnv {
-    let mut context = crate::claude_auth::ContextEnv::for_setup(&paths.home, &paths.bin);
+    claude_context_in(paths, label, &|key| std::env::var(key).ok())
+}
+
+fn claude_context_in(paths: &Paths, label: &str, env: &impl Fn(&str) -> Option<String>) -> crate::claude_auth::ContextEnv {
+    let env = |key: &str| if key == "ALONDRA_HOME" { Some(paths.alondra_home.display().to_string()) } else { env(key) };
+    let mut context = crate::claude_auth::ContextEnv::for_setup(&paths.home, &paths.bin, &env);
     // A setup retry from another shell must not silently switch an installed Claude profile.
-    if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() && std::env::var_os("CLAUDE_HOME").is_none() {
+    if context.config_dir.is_none() {
         context.config_dir = read_plist(&paths.plist(label)).ok()
             .and_then(|v| crate::claude_auth::job_profile(&v)).map(|p| p.to_string_lossy().into_owned());
     }
@@ -955,6 +960,28 @@ esac
         execute(&Step::Run { program: "claude".into(), args: vec!["plugin".into(), "marketplace".into(), "add".into(), "/assets".into()] }, &context).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("plugin-profile")).unwrap(), profile);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn setup_from_a_node_on_an_added_account_keeps_its_folder_out_of_the_service() {
+        let scratch = crate::test_support::Directory::new();
+        let mut paths = paths();
+        paths.home = scratch.join("user");
+        paths.alondra_home = paths.home.join(".alondra");
+        paths.bin = paths.home.join("bin");
+        let added = paths.alondra_home.join("accounts/work").display().to_string();
+        let node = |key: &str| matches!(key, "CLAUDE_CONFIG_DIR" | "CLAUDE_HOME").then(|| added.clone());
+        let context = claude_context_in(&paths, "test-profile", &node);
+        assert_eq!(context.config_dir, None);
+        assert!(!render_plist_with_context("test-profile", &paths, &context).unwrap().contains("CLAUDE_CONFIG_DIR"));
+        let plist = paths.plist("test-profile");
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        let job = |profile: &str| format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict><key>HOME</key><string>{}</string><key>CLAUDE_CONFIG_DIR</key><string>{profile}</string></dict></dict></plist>", paths.home.display());
+        let own = paths.home.join(".claude-work").display().to_string();
+        std::fs::write(&plist, job(&own)).unwrap();
+        assert_eq!(claude_context_in(&paths, "test-profile", &node).config_dir.as_deref(), Some(own.as_str()), "the profile the user set up stays");
+        std::fs::write(&plist, job(&added)).unwrap();
+        assert_eq!(claude_context_in(&paths, "test-profile", &|_| None).config_dir, None, "a service that holds the folder loses it");
     }
 
     #[test]

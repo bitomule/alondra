@@ -4998,11 +4998,11 @@ impl DomainState {
                 nonempty(text)?;
                 self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, effects, lifecycles)?;
             }
-            Command::RecordHostLost { task_id, reason } => {
+            Command::RecordHostLost { task_id, reason, quiet } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(reason)?;
-                self.record_host_lost(task_id, reason, effects, lifecycles)?;
+                self.record_host_lost(task_id, reason, *quiet, effects, lifecycles)?;
             }
             Command::ResendUntakenInput { task_id, generation, input, text } => {
                 system(actor)?;
