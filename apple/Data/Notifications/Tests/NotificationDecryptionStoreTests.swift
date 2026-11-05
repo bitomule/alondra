@@ -22,6 +22,13 @@ private final class MemoryDecryptionItem: NotificationDecryptionItemStorage {
     var bytes: Data? { state.withLock { $0.bytes } }
 }
 
+@Test func thePhoneKeepsOneIdentityOnceMade() throws {
+    let item = MemoryDecryptionItem()
+    let made = try ActivityPhoneIdentity(item: item).id()
+    #expect((16...64).contains(made.utf8.count))
+    #expect(try ActivityPhoneIdentity(item: item).id() == made)
+}
+
 private struct PushFixture {
     let signer: P256.Signing.PrivateKey
     let recipient: P256.KeyAgreement.PrivateKey

@@ -27,14 +27,19 @@ use std::time::Duration;
 pub const START_SPACING_MS: u64 = 10 * 60_000;
 /// iOS keeps a Live Activity in the Dynamic Island for 8 h; a new one replaces it before then.
 pub const ROTATE_AFTER_MS: u64 = (7 * 60 + 45) * 60_000;
-/// Priority 10 counts against Apple's hourly budget: at most one a minute.
-pub const URGENT_SPACING_MS: u64 = 60_000;
+/// Priority 10 spends a budget Apple keeps per device and never publishes: only a growing Inbox
+/// uses it, and at most this often.
+pub const URGENT_SPACING_MS: u64 = 5 * 60_000;
 /// Without news for this long the Live Activity says so. Macs repeat their state every 15 min.
 pub const STALE_AFTER_MS: u64 = 30 * 60_000;
-/// Reports that arrive this close together go out as one push.
+/// A start, an end or a priority 10 update waits this long, so reports that arrive together go
+/// out as one push.
 pub const GROUP_WINDOW_MS: u64 = 2_000;
-/// The newest Macs that fit in one push; more than that would not fit in Apple's 4 KB.
-pub const MAX_MACS: usize = 8;
+/// A priority 5 update goes out at most this often per phone, however many Macs report: Apple
+/// does not limit them, so this only folds a burst of changes into one wake of the phone.
+pub const UPDATE_SPACING_MS: u64 = 60_000;
+/// A real envelope takes about 800 bytes, so this many fit in Apple's 4 KB.
+pub const MAX_MACS: usize = 4;
 const APNS_MAX_BYTES: usize = 4096;
 /// The `ActivityAttributes` type of the iOS app, which iOS decodes a push-to-start into.
 pub const ATTRIBUTES_TYPE: &str = "AlondraActivityAttributes";
@@ -161,6 +166,9 @@ pub struct Phone {
     /// A Mac said `urgent` since the last push.
     #[serde(default)]
     pub urgent_pending: bool,
+    /// Something changed that no push carried yet.
+    #[serde(default)]
+    pub unsent: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -196,7 +204,8 @@ pub enum Outcome {
     Delivered,
     /// Apple will never take this token again.
     DeadToken,
-    /// Throttled or failing: the next report or the Mac's 15 minute repeat sends it again.
+    /// Throttled or failing: the next report or the Mac's 15 minute repeat sends it again, and
+    /// an end that no report will follow is tried again by [`retry_owed`].
     Failed,
 }
 
@@ -240,9 +249,18 @@ impl Phone {
             && self.last_start_ms.is_none_or(|at| now_ms.saturating_sub(at) >= START_SPACING_MS)
     }
 
+    /// Quiet hours are no time to spend the budget: the update waits for iOS like any other.
     fn update_priority(&self, now_ms: u64) -> u8 {
         let urgent_allowed = self.last_urgent_ms.is_none_or(|at| now_ms.saturating_sub(at) >= URGENT_SPACING_MS);
-        if self.urgent_pending && self.frequent_updates && urgent_allowed { 10 } else { 5 }
+        if self.urgent_pending && self.frequent_updates && self.may_start() && urgent_allowed { 10 } else { 5 }
+    }
+
+    /// How long after the last push the next one may go out.
+    fn spacing(&self, now_ms: u64) -> u64 {
+        match self.plan(now_ms).as_slice() {
+            [Send::Update { priority: 5 }] => UPDATE_SPACING_MS,
+            _ => GROUP_WINDOW_MS,
+        }
     }
 
     /// The pushes the phone's state calls for now.
@@ -259,26 +277,28 @@ impl Phone {
         }
     }
 
-    /// The state after the pushes of [`Phone::plan`] go out, before APNs answers.
+    /// The state after the pushes of [`Phone::plan`] go out, before APNs answers. An activity
+    /// stays known until APNs takes its end. One with no update token cannot be ended, as when
+    /// iOS started it for an app closed by force: it stays too, so nothing starts on top of it.
     fn apply(&mut self, pushes: &[Send], now_ms: u64) {
-        if !self.active() {
-            self.live = None;
-        }
         for push in pushes {
             match push {
                 Send::Start => {
                     self.live = Some(Live { started_at_ms: now_ms, update_token: None, activity_id: None });
                     self.last_start_ms = Some(now_ms);
                 }
-                Send::End => self.live = None,
                 Send::Update { priority: 10 } => self.last_urgent_ms = Some(now_ms),
-                Send::Update { .. } => {}
+                Send::End | Send::Update { .. } => {}
             }
         }
         if !pushes.is_empty() {
             self.urgent_pending = false;
             self.last_sent_ms = Some(now_ms);
         }
+    }
+
+    fn can_only_end(&self) -> bool {
+        !self.active() && self.live.as_ref().is_some_and(|live| live.update_token.is_some())
     }
 
     /// The newest Macs first, as many as fit in one push, and how many were left out.
@@ -310,7 +330,7 @@ pub fn payload(push: &Send, content_state: &Value, now_ms: u64) -> Value {
             "content-state": content_state,
             "stale-date": stale_s,
             "attributes-type": ATTRIBUTES_TYPE,
-            "attributes": {},
+            "attributes": {"started_at_ms": now_ms},
             "input-push-token": 1,
             "alert": {"title": {"loc-key": START_TITLE_KEY}, "body": {"loc-key": START_BODY_KEY}},
         }}),
@@ -400,7 +420,8 @@ impl Store {
         Ok(result)
     }
 
-    pub fn register(&self, owner_sub: &str, device_id: &str, mac_id: &str, registration: Registration) -> Result<()> {
+    /// Returns the phone, which owes its Live Activity a push when [`Store::owes`] says so.
+    pub fn register(&self, owner_sub: &str, device_id: &str, mac_id: &str, registration: Registration) -> Result<String> {
         let now = self.now_ms();
         self.change(|state| {
             if state.phones.get(&registration.phone_id).is_some_and(|phone| phone.owner_sub != owner_sub) {
@@ -424,6 +445,7 @@ impl Store {
                 last_urgent_ms: None,
                 last_sent_ms: None,
                 urgent_pending: false,
+                unsent: false,
             });
             phone.environment = registration.environment;
             phone.frequent_updates = registration.frequent_updates;
@@ -434,10 +456,12 @@ impl Store {
                 activity_id: registration.activity_id,
             });
             phone.pairings.insert(device_id.to_owned(), mac_id.to_owned());
-            if let Some((held_mac, report)) = state.held.remove(device_id) {
+            let held = state.held.remove(device_id);
+            phone.unsent |= held.is_some() || phone.can_only_end();
+            if let Some((held_mac, report)) = held {
                 phone.reports.insert(held_mac, report);
             }
-            Ok(())
+            Ok(registration.phone_id)
         })
     }
 
@@ -475,19 +499,30 @@ impl Store {
                 return Ok(Recorded::Held);
             };
             phone.urgent_pending |= report.urgent;
+            phone.unsent = true;
             phone.reports.insert(mac_id.to_owned(), report);
             Ok(Recorded::Stored { phone_id: phone_id.clone() })
         })
     }
 
-    /// When the phone's next push may go out: `None` for now, or the end of the grouping window
-    /// of the last one.
+    /// When the phone's next push may go out: `None` for now, or the end of the wait after the
+    /// last one.
     pub fn due_at(&self, phone_id: &str) -> Option<u64> {
         let now = self.now_ms();
         let state = self.state.lock().unwrap();
-        let last = state.phones.get(phone_id)?.last_sent_ms?;
-        let due = last.saturating_add(GROUP_WINDOW_MS);
+        let phone = state.phones.get(phone_id)?;
+        let due = phone.last_sent_ms?.saturating_add(phone.spacing(now));
         (now < due).then_some(due)
+    }
+
+    pub fn owes(&self, phone_id: &str) -> bool {
+        self.state.lock().unwrap().phones.get(phone_id).is_some_and(|phone| phone.unsent)
+    }
+
+    /// The phones with a change no push carried, or an activity whose end APNs has not taken.
+    fn owing(&self) -> Vec<String> {
+        let state = self.state.lock().unwrap();
+        state.phones.iter().filter(|(_, phone)| phone.unsent || phone.can_only_end()).map(|(id, _)| id.clone()).collect()
     }
 
     /// Forgets the reports and pairings that no longer reach their Mac. Returns the phones that
@@ -500,6 +535,7 @@ impl Store {
                 phone.pairings.retain(|device_id, mac_id| pairing_is_live(device_id, mac_id));
                 phone.reports.retain(|mac_id, report| pairing_is_live(&report.device_id, mac_id));
                 if (phone.pairings.len(), phone.reports.len()) != before {
+                    phone.unsent = true;
                     changed.push(phone_id.clone());
                 }
             }
@@ -508,11 +544,15 @@ impl Store {
         })
     }
 
-    /// The pushes due for a phone now, recorded as sent.
+    /// The pushes due for a phone now, recorded as sent. Reports of two Macs that arrive together
+    /// both ask: the wait after a push is checked here, where only one of them can pass.
     pub fn take(&self, phone_id: &str) -> Result<Option<Outgoing>> {
         let now = self.now_ms();
         self.change(|state| {
             let Some(phone) = state.phones.get_mut(phone_id) else { return Ok(None) };
+            if phone.last_sent_ms.is_some_and(|last| now < last.saturating_add(phone.spacing(now))) {
+                return Ok(None);
+            }
             let plan = phone.plan(now);
             let mut pushes = Vec::new();
             for push in &plan {
@@ -525,6 +565,7 @@ impl Store {
                 pushes.push((push.clone(), token, payload(push, &content_state, now)));
             }
             phone.apply(&plan, now);
+            phone.unsent = false;
             let outgoing = (!pushes.is_empty())
                 .then(|| Outgoing { environment: phone.environment.clone(), pushes });
             if phone.pairings.is_empty() && phone.live.is_none() {
@@ -534,12 +575,11 @@ impl Store {
         })
     }
 
-    /// Takes in what APNs answered. True when the phone owes another push now: its update token
-    /// died while a Mac is still active, so a new Live Activity may start.
-    pub fn settle(&self, phone_id: &str, answers: &[(Send, String, Outcome)]) -> Result<bool> {
+    /// Takes in what APNs answered. A dead update token while a Mac is still active leaves the
+    /// phone owing a push, so a new Live Activity may start.
+    pub fn settle(&self, phone_id: &str, answers: &[(Send, String, Outcome)]) -> Result<()> {
         self.change(|state| {
-            let Some(phone) = state.phones.get_mut(phone_id) else { return Ok(false) };
-            let mut again = false;
+            let Some(phone) = state.phones.get_mut(phone_id) else { return Ok(()) };
             for (push, token, outcome) in answers {
                 match (push, outcome) {
                     (Send::Start, Outcome::DeadToken) => {
@@ -554,13 +594,25 @@ impl Store {
                     (Send::Update { .. } | Send::End, Outcome::DeadToken) => {
                         if phone.live.as_ref().and_then(|live| live.update_token.as_ref()) == Some(token) {
                             phone.live = None;
-                            again = phone.active();
+                            phone.unsent |= phone.active();
                         }
+                    }
+                    (Send::End, Outcome::Delivered) => {
+                        if phone.live.as_ref().and_then(|live| live.update_token.as_ref()) == Some(token) {
+                            phone.live = None;
+                        }
+                    }
+                    (Send::Update { priority: 10 }, Outcome::Failed) => {
+                        phone.urgent_pending = true;
+                        phone.last_urgent_ms = None;
                     }
                     _ => {}
                 }
             }
-            Ok(again)
+            if phone.pairings.is_empty() && phone.live.is_none() {
+                state.phones.remove(phone_id);
+            }
+            Ok(())
         })
     }
 
@@ -569,8 +621,9 @@ impl Store {
         self.scheduled.lock().unwrap().insert(phone_id.to_owned())
     }
 
-    fn unschedule(&self, phone_id: &str) {
-        self.scheduled.lock().unwrap().remove(phone_id);
+    /// False when a push that could not wait already took the place of the grouped one.
+    fn unschedule(&self, phone_id: &str) -> bool {
+        self.scheduled.lock().unwrap().remove(phone_id)
     }
 }
 
@@ -583,58 +636,65 @@ impl std::fmt::Display for Conflict {
 }
 impl std::error::Error for Conflict {}
 
-/// Sends the phone what its Live Activity needs now, or once the grouping window of the last
-/// push ends.
+/// Sends the phone what its Live Activity needs now, or once the wait after the last push ends.
+/// The wait is looked at again every grouping window, because a push that cannot wait may arrive
+/// behind a long one.
 pub async fn push(server: &Arc<Server>, phone_id: &str) {
-    match server.activity.due_at(phone_id) {
-        None => flush(server, phone_id).await,
-        Some(due) => {
-            if !server.activity.schedule(phone_id) {
-                return;
-            }
-            let server = server.clone();
-            let phone_id = phone_id.to_owned();
-            let wait = due.saturating_sub(server.activity.now_ms());
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(wait)).await;
-                server.activity.unschedule(&phone_id);
-                let _gate = server.device_gate.read().await;
-                flush(&server, &phone_id).await;
-            });
+    if server.activity.due_at(phone_id).is_none() {
+        server.activity.unschedule(phone_id);
+        flush(server, phone_id).await;
+    }
+    if !server.activity.owes(phone_id) || !server.activity.schedule(phone_id) {
+        return;
+    }
+    let server = server.clone();
+    let phone_id = phone_id.to_owned();
+    tokio::spawn(async move {
+        while let Some(due) = server.activity.due_at(&phone_id) {
+            let left = due.saturating_sub(server.activity.now_ms());
+            tokio::time::sleep(Duration::from_millis(left.min(GROUP_WINDOW_MS))).await;
         }
+        if server.activity.unschedule(&phone_id) {
+            let _gate = server.device_gate.read().await;
+            flush(&server, &phone_id).await;
+        }
+    });
+}
+
+/// Picks up what no report will: a push lost to a restart, or an end APNs did not take.
+pub async fn retry_owed(server: Arc<Server>) {
+    loop {
+        for phone_id in server.activity.owing() {
+            let _gate = server.device_gate.read().await;
+            push(&server, &phone_id).await;
+        }
+        tokio::time::sleep(Duration::from_millis(UPDATE_SPACING_MS)).await;
     }
 }
 
-/// APNs failures are never retried here: the next report or the Mac's 15 minute repeat sends
-/// the state of then.
+/// APNs failures are never retried here: the next report, the Mac's 15 minute repeat or
+/// [`retry_owed`] sends the state of then.
 async fn flush(server: &Server, phone_id: &str) {
     let Some(apns) = &server.apns else { return };
-    for _ in 0..2 {
-        let outgoing = match server.activity.take(phone_id) {
-            Ok(Some(outgoing)) => outgoing,
-            Ok(None) => return,
-            Err(failure) => {
-                eprintln!("alondra-relay: could not record a Live Activity push: {failure:#}");
-                return;
-            }
-        };
-        let mut answers = Vec::new();
-        for (push, token, payload) in outgoing.pushes {
-            let expires_s = (server.activity.now_ms() + STALE_AFTER_MS) / 1000;
-            let result = apns.send_live_activity(&token, &outgoing.environment, &payload, priority(&push), expires_s).await;
-            if let Err(failure) = &result {
-                eprintln!("alondra-relay: Live Activity {push:?} push failed: {failure:#}");
-            }
-            answers.push((push, token, Outcome::of(&result)));
+    let outgoing = match server.activity.take(phone_id) {
+        Ok(Some(outgoing)) => outgoing,
+        Ok(None) => return,
+        Err(failure) => {
+            eprintln!("alondra-relay: could not record a Live Activity push: {failure:#}");
+            return;
         }
-        match server.activity.settle(phone_id, &answers) {
-            Ok(true) => continue,
-            Ok(false) => return,
-            Err(failure) => {
-                eprintln!("alondra-relay: could not record what APNs answered: {failure:#}");
-                return;
-            }
+    };
+    let mut answers = Vec::new();
+    for (push, token, payload) in outgoing.pushes {
+        let expires_s = (server.activity.now_ms() + STALE_AFTER_MS) / 1000;
+        let result = apns.send_live_activity(&token, &outgoing.environment, &payload, priority(&push), expires_s).await;
+        if let Err(failure) = &result {
+            eprintln!("alondra-relay: Live Activity {push:?} push failed: {failure:#}");
         }
+        answers.push((push, token, Outcome::of(&result)));
+    }
+    if let Err(failure) = server.activity.settle(phone_id, &answers) {
+        eprintln!("alondra-relay: could not record what APNs answered: {failure:#}");
     }
 }
 
@@ -689,6 +749,7 @@ mod tests {
             last_urgent_ms: None,
             last_sent_ms: None,
             urgent_pending: false,
+            unsent: false,
         }
     }
 
@@ -734,21 +795,28 @@ mod tests {
     }
 
     #[test]
-    fn ends_when_no_mac_is_active_and_forgets_one_it_cannot_reach() {
+    fn ends_when_no_mac_is_active_and_stays_known_until_apns_takes_the_end() {
         let mut p = phone(&[report("mac-a", false, true, T), report("mac-b", false, true, T)]);
         p.live = Some(Live { started_at_ms: T, update_token: Some("cd".repeat(40)), activity_id: None });
         assert_eq!(p.plan(T), vec![Send::End]);
         p.apply(&[Send::End], T);
-        assert_eq!(p.live, None);
-        let mut unreachable = phone(&[report("mac-a", false, true, T)]);
-        unreachable.live = Some(Live { started_at_ms: T, update_token: None, activity_id: None });
-        assert_eq!(unreachable.plan(T), vec![]);
-        unreachable.apply(&[], T);
-        assert_eq!(unreachable.live, None, "the next active report may start a new one");
+        assert!(p.live.is_some(), "until APNs takes the end");
     }
 
     #[test]
-    fn priority_ten_only_for_urgent_reports_with_frequent_updates_once_a_minute() {
+    fn an_activity_with_no_token_is_never_started_over_until_it_rotates() {
+        let mut p = phone(&[report("mac-a", false, true, T)]);
+        p.live = Some(Live { started_at_ms: T, update_token: None, activity_id: None });
+        assert_eq!(p.plan(T), vec![]);
+        p.apply(&[], T);
+        assert!(p.live.is_some());
+        p.reports.get_mut("mac-a").unwrap().active = true;
+        assert_eq!(p.plan(T + START_SPACING_MS), vec![], "a second one could not be ended either");
+        assert_eq!(p.plan(T + ROTATE_AFTER_MS), vec![Send::Start]);
+    }
+
+    #[test]
+    fn priority_ten_only_for_urgent_reports_with_frequent_updates_every_five_minutes() {
         let mut p = phone(&[report("mac-a", true, true, T)]);
         p.live = Some(Live { started_at_ms: T, update_token: Some("cd".repeat(40)), activity_id: None });
         assert_eq!(p.plan(T), vec![Send::Update { priority: 5 }]);
@@ -767,6 +835,30 @@ mod tests {
     }
 
     #[test]
+    fn quiet_hours_never_spend_priority_ten() {
+        let mut p = phone(&[report("mac-a", true, false, T)]);
+        p.live = Some(Live { started_at_ms: T, update_token: Some("cd".repeat(40)), activity_id: None });
+        p.urgent_pending = true;
+        assert_eq!(p.plan(T), vec![Send::Update { priority: 5 }]);
+    }
+
+    #[test]
+    fn only_a_priority_five_update_waits_the_long_spacing() {
+        let mut p = phone(&[report("mac-a", true, true, T)]);
+        p.live = Some(Live { started_at_ms: T, update_token: Some("cd".repeat(40)), activity_id: None });
+        assert_eq!(p.spacing(T), UPDATE_SPACING_MS);
+        p.urgent_pending = true;
+        assert_eq!(p.spacing(T), GROUP_WINDOW_MS, "a growing Inbox goes out at once");
+        p.last_urgent_ms = Some(T);
+        assert_eq!(p.spacing(T + 1), UPDATE_SPACING_MS, "without budget it travels as any other update");
+        p.reports.get_mut("mac-a").unwrap().active = false;
+        assert_eq!(p.spacing(T + 1), GROUP_WINDOW_MS, "ending never waits");
+        let mut stopped = phone(&[report("mac-a", true, true, T)]);
+        stopped.live = None;
+        assert_eq!(stopped.spacing(T), GROUP_WINDOW_MS, "starting never waits");
+    }
+
+    #[test]
     fn payloads_are_what_activitykit_decodes() {
         let state = json!({"macs": []});
         assert_eq!(
@@ -774,7 +866,7 @@ mod tests {
             json!({"aps": {
                 "timestamp": T / 1000, "event": "start", "content-state": {"macs": []},
                 "stale-date": (T + STALE_AFTER_MS) / 1000,
-                "attributes-type": "AlondraActivityAttributes", "attributes": {}, "input-push-token": 1,
+                "attributes-type": "AlondraActivityAttributes", "attributes": {"started_at_ms": T + 999}, "input-push-token": 1,
                 "alert": {"title": {"loc-key": "Alondra"}, "body": {"loc-key": "Work in progress"}},
             }})
         );
@@ -795,8 +887,8 @@ mod tests {
         let p = phone(&reports);
         let all = p.content_state(|_| true);
         let senders: Vec<&str> = all["macs"].as_array().unwrap().iter().map(|e| e["sender"].as_str().unwrap()).collect();
-        assert_eq!(senders, ["mac-9", "mac-8", "mac-7", "mac-6", "mac-5", "mac-4", "mac-3", "mac-2"]);
-        assert_eq!(all["omitted"], 2);
+        assert_eq!(senders, ["mac-9", "mac-8", "mac-7", "mac-6"]);
+        assert_eq!(all["omitted"], 6);
         let small = p.content_state(|state| state["macs"].as_array().unwrap().len() <= 3);
         assert_eq!(small["macs"].as_array().unwrap().len(), 3);
         assert_eq!(small["macs"][0]["sender"], "mac-9");
@@ -830,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn a_report_inside_the_grouping_window_waits_for_its_end() {
+    fn a_start_groups_the_reports_of_the_next_seconds_and_an_update_waits_its_spacing() {
         let directory = crate::test_support::Directory::new();
         let store = Store::open(&directory.join("device-registry.json")).unwrap();
         store.set_clock(T);
@@ -851,9 +943,95 @@ mod tests {
             .record("mac-a", ReportRequest { device_id: "client-a".into(), envelope: envelope("mac-a"), active: true, may_start: true, urgent: false })
             .unwrap();
         assert!(store.take(phone_id).unwrap().is_some());
-        store.set_clock(T + GROUP_WINDOW_MS - 1);
-        assert_eq!(store.due_at(phone_id), Some(T + GROUP_WINDOW_MS));
-        store.set_clock(T + GROUP_WINDOW_MS);
+        store
+            .register("owner", "client-a", "mac-a", Registration {
+                phone_id: phone_id.into(),
+                start_token: None,
+                update_token: Some("cd".repeat(40)),
+                activity_id: None,
+                started_at_ms: Some(T),
+                environment: "sandbox".into(),
+                frequent_updates: true,
+            })
+            .unwrap();
+        store.set_clock(T + UPDATE_SPACING_MS - 1);
+        assert_eq!(store.due_at(phone_id), Some(T + UPDATE_SPACING_MS));
+        assert!(store.take(phone_id).unwrap().is_none(), "two reports at once send one push");
+        store.set_clock(T + UPDATE_SPACING_MS);
         assert_eq!(store.due_at(phone_id), None);
+    }
+
+    fn live_store(directory: &crate::test_support::Directory) -> (Store, &'static str) {
+        let store = Store::open(&directory.join("device-registry.json")).unwrap();
+        store.set_clock(T);
+        let phone_id = "0123456789abcdef";
+        store
+            .register("owner", "client-a", "mac-a", Registration {
+                phone_id: phone_id.into(),
+                start_token: None,
+                update_token: Some("cd".repeat(40)),
+                activity_id: None,
+                started_at_ms: Some(T),
+                environment: "sandbox".into(),
+                frequent_updates: true,
+            })
+            .unwrap();
+        (store, phone_id)
+    }
+
+    fn mac_says(store: &Store, active: bool, urgent: bool) {
+        store
+            .record("mac-a", ReportRequest { device_id: "client-a".into(), envelope: envelope("mac-a"), active, may_start: true, urgent })
+            .unwrap();
+    }
+
+    #[test]
+    fn an_end_apns_did_not_take_is_owed_until_it_does() {
+        let directory = crate::test_support::Directory::new();
+        let (store, phone_id) = live_store(&directory);
+        mac_says(&store, false, false);
+        let token = "cd".repeat(40);
+        assert!(store.take(phone_id).unwrap().is_some());
+        store.settle(phone_id, &[(Send::End, token.clone(), Outcome::Failed)]).unwrap();
+        assert_eq!(store.owing(), [phone_id], "no report will follow");
+        store.set_clock(T + GROUP_WINDOW_MS);
+        assert!(store.take(phone_id).unwrap().is_some());
+        store.settle(phone_id, &[(Send::End, token, Outcome::Delivered)]).unwrap();
+        assert!(store.owing().is_empty());
+        assert_eq!(store.phone(phone_id).unwrap().live, None);
+    }
+
+    #[test]
+    fn a_priority_ten_that_failed_keeps_its_budget() {
+        let directory = crate::test_support::Directory::new();
+        let (store, phone_id) = live_store(&directory);
+        mac_says(&store, true, true);
+        assert!(store.take(phone_id).unwrap().is_some());
+        store.settle(phone_id, &[(Send::Update { priority: 10 }, "cd".repeat(40), Outcome::Failed)]).unwrap();
+        let phone = store.phone(phone_id).unwrap();
+        assert_eq!(phone.plan(T + GROUP_WINDOW_MS), vec![Send::Update { priority: 10 }]);
+    }
+
+    #[test]
+    fn a_report_held_for_a_phone_is_owed_when_it_registers() {
+        let directory = crate::test_support::Directory::new();
+        let store = Store::open(&directory.join("device-registry.json")).unwrap();
+        store.set_clock(T);
+        assert_eq!(
+            store.record("mac-a", ReportRequest { device_id: "client-a".into(), envelope: envelope("mac-a"), active: true, may_start: true, urgent: false }).unwrap(),
+            Recorded::Held
+        );
+        let phone_id = store
+            .register("owner", "client-a", "mac-a", Registration {
+                phone_id: "0123456789abcdef".into(),
+                start_token: Some("ab".repeat(40)),
+                update_token: None,
+                activity_id: None,
+                started_at_ms: None,
+                environment: "sandbox".into(),
+                frequent_updates: true,
+            })
+            .unwrap();
+        assert!(store.owes(&phone_id));
     }
 }

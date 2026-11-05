@@ -74,6 +74,11 @@ public struct NotificationDecryptionStore: Sendable {
         try Self.transaction.withLock { _ in try read().context(for: binding) }
     }
 
+    /// Every pairing's keys, for a reader that goes by the Mac a message came from.
+    public func contexts() throws -> [NotificationDecryptionContext] {
+        try Self.transaction.withLock { _ in try read().contexts }
+    }
+
     public func save(_ context: NotificationDecryptionContext) throws {
         try Self.transaction.withLock { _ in
             var collection = try read()
@@ -116,6 +121,24 @@ public struct NotificationDecryptionStore: Sendable {
         guard let bytes = try item.read() else { return NotificationDecryptionCollection() }
         return try JSONDecoder().decode(NotificationDecryptionCollection.self, from: bytes)
     }
+}
+
+/// The id this phone's pairings share at the relay, so it knows they feed one Live Activity. It is
+/// made once and stays in the Keychain, beside the keys it travels with.
+public struct ActivityPhoneIdentity: Sendable {
+    private let item: any NotificationDecryptionItemStorage
+
+    public init(accessGroup: String) { item = KeychainNotificationDecryptionItem(accessGroup: accessGroup, account: "live-activity-phone") }
+    init(item: any NotificationDecryptionItemStorage) { self.item = item }
+
+    public func id() throws -> String {
+        if let saved = try item.read() { return String(decoding: saved, as: UTF8.self) }
+        let made = UUID().uuidString
+        try item.write(Data(made.utf8))
+        return made
+    }
+
+    public func forget() throws { try item.clear() }
 }
 
 protocol NotificationDecryptionItemStorage: Sendable {

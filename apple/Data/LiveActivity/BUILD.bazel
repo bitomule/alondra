@@ -10,6 +10,10 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraLiveActivity",
     visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Data/Notifications:AlondraNotifications",
+        "//apple/Data/Transport:AlondraTransport",
+    ],
 )
 
 swift_test(
@@ -17,7 +21,12 @@ swift_test(
     size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraLiveActivity"],
+    data = ["//fixtures/push"],
+    deps = [
+        ":AlondraLiveActivity",
+        "//apple/Data/Notifications:AlondraNotifications",
+        "//apple/Data/Transport:AlondraTransport",
+    ],
 )
 
 filegroup(

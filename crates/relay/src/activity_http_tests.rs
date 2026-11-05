@@ -288,6 +288,7 @@ mod activity_http_tests {
         assert_eq!(header(start, "apns-priority"), "5");
         assert_eq!(start.body["aps"]["event"], "start");
         assert_eq!(start.body["aps"]["attributes-type"], "AlondraActivityAttributes");
+        assert_eq!(start.body["aps"]["attributes"], json!({"started_at_ms": T + 10_000}));
         assert_eq!(start.body["aps"]["timestamp"], (T + 10_000) / 1000);
         assert_eq!(start.body["aps"]["stale-date"], (T + 10_000 + 30 * 60_000) / 1000);
         assert_eq!(start.body["aps"]["alert"], json!({"title": {"loc-key": "Alondra"}, "body": {"loc-key": "Work in progress"}}));
@@ -309,8 +310,11 @@ mod activity_http_tests {
         assert_eq!(macs(&pushed[0]), ["mac-2", "mac-1"], "every Mac's latest envelope, newest first");
 
         f.at(4 * 60_000 + 30_000);
+        assert_eq!(f.report("mac-1", "client-a", true, true, false).await, StatusCode::ACCEPTED);
+        assert!(f.take_pushed().is_empty(), "an update waits a minute after the last push");
+        f.at(5 * 60_000);
         assert_eq!(f.report("mac-2", "client-b", true, true, true).await, StatusCode::ACCEPTED);
-        assert_eq!(header(&f.take_pushed()[0], "apns-priority"), "5", "one priority 10 a minute at most");
+        assert_eq!(header(&f.take_pushed()[0], "apns-priority"), "5", "one priority 10 every five minutes at most");
         f.at(6 * 60_000);
         assert_eq!(f.report("mac-1", "client-a", true, true, false).await, StatusCode::ACCEPTED);
         assert_eq!(header(&f.take_pushed()[0], "apns-priority"), "5");
@@ -388,6 +392,7 @@ mod activity_http_tests {
             last_urgent_ms: None,
             last_sent_ms: None,
             urgent_pending: false,
+            unsent: false,
         };
         for push in [activity::Send::Start, activity::Send::Update { priority: 10 }, activity::Send::End] {
             let size = |state: &Value| serde_json::to_vec(&activity::payload(&push, state, T)).unwrap().len();

@@ -8,6 +8,8 @@ public protocol Transport: Sendable {
     func bootstrapIfNeeded() async throws -> RelayBootstrap
     func health() async throws -> Bool
     func registerPush(_ registration: RelayPushRegistration) async throws
+    func registerActivity(_ registration: RelayActivityRegistration) async throws
+    func unregisterActivity(phoneID: String) async throws
     func pairingRequest(method: String, target: String, body: Data) async throws -> HTTPReply
     func bindIrohNode(_ binding: Data) async throws
     func macs() async throws -> [RelayMac]
@@ -15,6 +17,8 @@ public protocol Transport: Sendable {
 
 public extension Transport {
     func bootstrapIfNeeded() async throws -> RelayBootstrap { try await bootstrap() }
+    func registerActivity(_ registration: RelayActivityRegistration) async throws { throw RelayWireError.invalidEndpoint }
+    func unregisterActivity(phoneID: String) async throws { throw RelayWireError.invalidEndpoint }
     func bindIrohNode(_ binding: Data) async throws { throw RelayWireError.invalidEndpoint }
     func macs() async throws -> [RelayMac] { throw RelayWireError.invalidEndpoint }
 }

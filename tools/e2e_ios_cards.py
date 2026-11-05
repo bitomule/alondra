@@ -96,7 +96,9 @@ class Simulator:
 
 def pair(simulator, sandbox):
     """Pairs the app with the sandbox Mac found on Bonjour, as a person would, until the queue shows."""
-    simulator.until(lambda ids: "findMac.allow" in ids or "findMac.mac" in ids, "the app never showed pairing", 60)
+    simulator.until(lambda ids: "choosePath.localNetwork" in ids, "the app never showed pairing", 60)
+    simulator.tap("choosePath.localNetwork")
+    simulator.until(lambda ids: "findMac.allow" in ids or "findMac.mac" in ids, "the app never looked for the Mac", 60)
     if "findMac.allow" in simulator.ids():
         simulator.tap("findMac.allow")
     simulator.until(lambda ids: "findMac.mac" in ids, "the sandbox Mac never appeared on Bonjour", 60)

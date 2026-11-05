@@ -1,5 +1,6 @@
 import AlondraLiveActivity
 import AlondraLiveActivityUI
+import AlondraTransport
 import SwiftUI
 import XCTest
 
@@ -52,6 +53,25 @@ final class LiveActivitySnapshotTests: XCTestCase {
         }
     }
 
+    func test_nothingOpened() {
+        assertBothLanguages {
+            ActivityBoard(summary: ActivitySummary(ActivityContentState(macs: [sealed]), now: now, stale: false))
+        }
+    }
+
+    func test_macsNotCounted() {
+        assertBothLanguages {
+            ActivityBoard(summary: ActivitySummary(ActivityContentState(reports: [
+                ActivityReport(macID: "Mac mini", macName: "Mac mini", counts: ActivityCounts(inbox: 2, waiting: 1, working: 3), measuredAt: now),
+            ], omitted: 2), now: now, stale: false))
+        }
+    }
+
+    private var sealed: Envelope {
+        Envelope(route: "mac", sender: "mac", recipient: "phone", requestID: "request", kind: "activity", expiresAtMilliseconds: 1,
+                 ephemeralKey: "key", nonce: "nonce", ciphertext: "ciphertext", signature: "signature")
+    }
+
     private func assertBothLanguages<Content: View>(testName: String = #function, line: UInt = #line,
                                                     @ViewBuilder _ content: () -> Content) {
         assertVariants(language: .english, testName: testName, line: line, content)
@@ -67,7 +87,7 @@ private struct ActivityBoard: View {
         VStack(alignment: .leading, spacing: 16) {
             caption("Lock screen")
             ActivityLockScreenView(summary: summary)
-                .background(RoundedRectangle(cornerRadius: 24).fill(Color(.secondarySystemBackground)))
+                .background(RoundedRectangle(cornerRadius: 24).fill(ActivityPalette.lockScreenBackground))
             caption("Compact · minimal · limited width")
             HStack(spacing: 12) {
                 HStack {
@@ -102,7 +122,7 @@ private struct ActivityBoard: View {
             .environment(\.colorScheme, .dark)
             caption("CarPlay and Apple Watch")
             ActivitySmallView(summary: summary)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemBackground)))
+                .background(RoundedRectangle(cornerRadius: 16).fill(ActivityPalette.lockScreenBackground))
         }
         .padding()
         .background(Color(.systemBackground))

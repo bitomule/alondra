@@ -1,6 +1,16 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "+%lld Macs not counted": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld Macs sin contar"
+          }
+        }
+      }
+    },
     "All caught up": {
       "localizations": {
         "es": {
@@ -57,6 +67,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sin noticias de tus Macs desde %@"
+          }
+        }
+      }
+    },
+    "Open Alondra to see your activity": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre Alondra para ver tu actividad"
           }
         }
       }

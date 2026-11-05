@@ -4,6 +4,7 @@
     "Its settings can’t be read right now. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no se pueden leer sus ajustes. Alondra lo sigue intentando."}}}},
     "Licenses": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencias"}}}},
     "Alondra": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra"}}}},
+    "Work in progress": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Trabajo en marcha"}}}},
     "Elastic License 2.0": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elastic License 2.0"}}}},
     "You can use, copy, modify and share Alondra. You can’t offer it to others as a hosted service.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes usar, copiar, modificar y compartir Alondra. No puedes ofrecerla a otros como servicio gestionado."}}}},
     "The Alondra name and logo are not licensed.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El nombre y el logotipo de Alondra no tienen licencia."}}}},

@@ -306,6 +306,12 @@ public actor Connection {
                 guard (try? await self.checkActive()) != nil else { return .failed(String(localized: "Service is no longer active")) }
                 return .uncertain
             }
+        }, registerActivity: { registration in
+            try await self.checkActive()
+            try await self.api.registerActivity(registration)
+        }, unregisterActivity: { phoneID in
+            try await self.checkActive()
+            try await self.api.unregisterActivity(phoneID: phoneID)
         })
     }
 }

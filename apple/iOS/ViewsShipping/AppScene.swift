@@ -44,7 +44,7 @@ struct AppScene: View {
         .onChange(of: phase, initial: true) { _, phase in
             switch phase {
             case .active:
-                liveActivity.controller.enteredForeground()
+                liveActivity.enteredForeground()
                 Task { await owner.goLive() }
             case .background:
                 liveActivity.controller.enteredBackground()

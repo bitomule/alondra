@@ -10,6 +10,8 @@ import AppKit
 /// ActivityKit. The strings live in the `LiveActivity` table, bundled by the widget extension.
 public enum ActivityPalette {
     public static let accent = Color(light: 0xC2410C, dark: 0xFF7A45)
+    public static let lockScreenBackground = Color(light: 0xF6F3EE, dark: 0x1C1C1E)
+    static let outdatedOpacity = 0.55
     static let inboxSymbol = "tray.full.fill"
     static let waitingSymbol = "hourglass"
     static let workingSymbol = "gearshape.2.fill"
@@ -24,14 +26,15 @@ public struct ActivityLockScreenView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: "circle.inset.filled").foregroundStyle(ActivityPalette.accent)
+                Image(systemName: "sunrise.fill").foregroundStyle(ActivityPalette.accent)
                 Text(verbatim: "Alondra").font(.subheadline.weight(.semibold))
             }
             HStack(alignment: .firstTextBaseline) {
-                CountColumn(value: summary.totals.inbox, label: Text("Inbox", tableName: "LiveActivity"))
-                CountColumn(value: summary.totals.waiting, label: Text("Waiting", tableName: "LiveActivity"))
-                CountColumn(value: summary.totals.working, label: Text("Working", tableName: "LiveActivity"))
+                CountColumn(value: summary.shown(\.inbox), label: Text("Inbox", tableName: "LiveActivity"))
+                CountColumn(value: summary.shown(\.waiting), label: Text("Waiting", tableName: "LiveActivity"))
+                CountColumn(value: summary.shown(\.working), label: Text("Working", tableName: "LiveActivity"))
             }
+            .opacity(summary.isOutdated ? ActivityPalette.outdatedOpacity : 1)
             if let notice = summary.notice {
                 NoticeLine(notice: notice).font(.caption).foregroundStyle(.secondary)
             }
@@ -40,14 +43,40 @@ public struct ActivityLockScreenView: View {
     }
 }
 
+/// A count, or a dash while none is known.
+private struct CountText: View {
+    let value: Int?
+
+    var body: some View {
+        if let value {
+            Text(value, format: .number).monospacedDigit().contentTransition(.numericText(value: Double(value)))
+        } else {
+            Text(verbatim: "–")
+        }
+    }
+}
+
+private extension ActivitySummary {
+    func shown(_ count: KeyPath<ActivityCounts, Int>) -> Int? { isKnown ? totals[keyPath: count] : nil }
+
+    var inboxLabel: Text {
+        isKnown ? Text("Inbox \(totals.inbox)", tableName: "LiveActivity") : Text("Inbox", tableName: "LiveActivity")
+    }
+    var waitingLabel: Text {
+        isKnown ? Text("Waiting \(totals.waiting)", tableName: "LiveActivity") : Text("Waiting", tableName: "LiveActivity")
+    }
+    var workingLabel: Text {
+        isKnown ? Text("Working \(totals.working)", tableName: "LiveActivity") : Text("Working", tableName: "LiveActivity")
+    }
+}
+
 private struct CountColumn: View {
-    let value: Int
+    let value: Int?
     let label: Text
 
     var body: some View {
         VStack(spacing: 2) {
-            Text(value, format: .number).font(.title.weight(.semibold)).monospacedDigit()
-                .contentTransition(.numericText(value: Double(value)))
+            CountText(value: value).font(.title.weight(.semibold))
             label.font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -69,6 +98,10 @@ public struct NoticeLine: View {
             Text("No news from \(name) since \(since, format: .dateTime.hour().minute())", tableName: "LiveActivity")
         case .noNewsFromMac(nil, let since):
             Text("No news from a Mac since \(since, format: .dateTime.hour().minute())", tableName: "LiveActivity")
+        case .openTheApp:
+            Text("Open Alondra to see your activity", tableName: "LiveActivity")
+        case .macsNotCounted(let count):
+            Text("+\(count) Macs not counted", tableName: "LiveActivity")
         case .allCaughtUp:
             Text("All caught up", tableName: "LiveActivity")
         }
@@ -82,8 +115,8 @@ public struct ActivityCompactLeading: View {
     public init(summary: ActivitySummary) { self.summary = summary }
 
     public var body: some View {
-        SymbolCount(symbol: ActivityPalette.inboxSymbol, value: summary.totals.inbox)
-            .accessibilityLabel(Text("Inbox \(summary.totals.inbox)", tableName: "LiveActivity"))
+        SymbolCount(symbol: ActivityPalette.inboxSymbol, value: summary.shown(\.inbox))
+            .accessibilityLabel(summary.inboxLabel)
     }
 }
 
@@ -94,8 +127,8 @@ public struct ActivityCompactTrailing: View {
     public init(summary: ActivitySummary) { self.summary = summary }
 
     public var body: some View {
-        SymbolCount(symbol: ActivityPalette.workingSymbol, value: summary.totals.working)
-            .accessibilityLabel(Text("Working \(summary.totals.working)", tableName: "LiveActivity"))
+        SymbolCount(symbol: ActivityPalette.workingSymbol, value: summary.shown(\.working))
+            .accessibilityLabel(summary.workingLabel)
     }
 }
 
@@ -108,12 +141,13 @@ public struct ActivityMinimalView: View {
     public var body: some View {
         if summary.totals.inbox > 0 {
             Text(summary.totals.inbox, format: .number).font(.footnote.weight(.semibold)).monospacedDigit()
+                .contentTransition(.numericText(value: Double(summary.totals.inbox)))
                 .foregroundStyle(ActivityPalette.accent)
-                .accessibilityLabel(Text("Inbox \(summary.totals.inbox)", tableName: "LiveActivity"))
+                .accessibilityLabel(summary.inboxLabel)
         } else {
-            SymbolCount(symbol: ActivityPalette.workingSymbol, value: summary.totals.working, spacing: 1)
+            SymbolCount(symbol: ActivityPalette.workingSymbol, value: summary.shown(\.working), spacing: 1)
                 .font(.caption2.weight(.semibold))
-                .accessibilityLabel(Text("Working \(summary.totals.working)", tableName: "LiveActivity"))
+                .accessibilityLabel(summary.workingLabel)
         }
     }
 }
@@ -125,12 +159,12 @@ public struct ActivityLimitedWidthView: View {
     public init(summary: ActivitySummary) { self.summary = summary }
 
     public var body: some View {
-        Text(summary.totals.inbox, format: .number).font(.caption.weight(.bold)).monospacedDigit()
+        CountText(value: summary.shown(\.inbox)).font(.caption.weight(.bold))
             .minimumScaleFactor(0.6)
             .foregroundStyle(.black)
             .frame(width: 28, height: 28)
             .background(Circle().fill(ActivityPalette.accent))
-            .accessibilityLabel(Text("Inbox \(summary.totals.inbox)", tableName: "LiveActivity"))
+            .accessibilityLabel(summary.inboxLabel)
     }
 }
 
@@ -140,7 +174,7 @@ public struct ActivityExpandedLeading: View {
     public init(summary: ActivitySummary) { self.summary = summary }
 
     public var body: some View {
-        ExpandedCount(symbol: ActivityPalette.inboxSymbol, value: summary.totals.inbox,
+        ExpandedCount(symbol: ActivityPalette.inboxSymbol, value: summary.shown(\.inbox),
                       label: Text("Inbox", tableName: "LiveActivity"))
     }
 }
@@ -151,7 +185,7 @@ public struct ActivityExpandedTrailing: View {
     public init(summary: ActivitySummary) { self.summary = summary }
 
     public var body: some View {
-        ExpandedCount(symbol: ActivityPalette.workingSymbol, value: summary.totals.working,
+        ExpandedCount(symbol: ActivityPalette.workingSymbol, value: summary.shown(\.working),
                       label: Text("Working", tableName: "LiveActivity"), alignment: .trailing)
     }
 }
@@ -197,12 +231,12 @@ public struct ActivitySmallView: View {
 
     public var body: some View {
         HStack(spacing: 10) {
-            SymbolCount(symbol: ActivityPalette.inboxSymbol, value: summary.totals.inbox)
-                .accessibilityLabel(Text("Inbox \(summary.totals.inbox)", tableName: "LiveActivity"))
-            SymbolCount(symbol: ActivityPalette.waitingSymbol, value: summary.totals.waiting)
-                .accessibilityLabel(Text("Waiting \(summary.totals.waiting)", tableName: "LiveActivity"))
-            SymbolCount(symbol: ActivityPalette.workingSymbol, value: summary.totals.working)
-                .accessibilityLabel(Text("Working \(summary.totals.working)", tableName: "LiveActivity"))
+            SymbolCount(symbol: ActivityPalette.inboxSymbol, value: summary.shown(\.inbox))
+                .accessibilityLabel(summary.inboxLabel)
+            SymbolCount(symbol: ActivityPalette.waitingSymbol, value: summary.shown(\.waiting))
+                .accessibilityLabel(summary.waitingLabel)
+            SymbolCount(symbol: ActivityPalette.workingSymbol, value: summary.shown(\.working))
+                .accessibilityLabel(summary.workingLabel)
         }
         .font(.headline)
         .padding(10)
@@ -211,27 +245,28 @@ public struct ActivitySmallView: View {
 
 private struct SymbolCount: View {
     let symbol: String
-    let value: Int
+    let value: Int?
     var spacing: CGFloat = 4
 
     var body: some View {
         HStack(spacing: spacing) {
             Image(systemName: symbol).foregroundStyle(ActivityPalette.accent)
-            Text(value, format: .number).monospacedDigit()
+            CountText(value: value)
         }
     }
 }
 
 private struct ExpandedCount: View {
     let symbol: String
-    let value: Int
+    let value: Int?
     let label: Text
     var alignment = HorizontalAlignment.leading
 
     var body: some View {
         VStack(alignment: alignment, spacing: 2) {
             Image(systemName: symbol).font(.caption).foregroundStyle(ActivityPalette.accent)
-            Text(value, format: .number).font(.title2.weight(.semibold)).monospacedDigit()
+                .frame(height: 16)
+            CountText(value: value).font(.title2.weight(.semibold))
             label.font(.caption2).foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)

@@ -63,6 +63,20 @@ public actor RelayAccount: PushRegistrationAPI {
         try checkActive()
     }
 
+    public func registerActivity(_ registration: RelayActivityRegistration) async throws {
+        try checkActive()
+        _ = try await client.bootstrapIfNeeded()
+        try checkActive()
+        try await client.registerActivity(registration)
+    }
+
+    public func unregisterActivity(phoneID: String) async throws {
+        try checkActive()
+        _ = try await client.bootstrapIfNeeded()
+        try checkActive()
+        try await client.unregisterActivity(phoneID: phoneID)
+    }
+
     public func deactivate() async {
         active = false
         if let concrete = client as? RelayTransport { await concrete.cancelBootstrap() }

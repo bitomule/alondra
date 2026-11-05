@@ -167,6 +167,18 @@ actor RelayTransport: Transport {
         guard response.status == 204 else { throw Self.error(response.status) }
     }
 
+    public func registerActivity(_ registration: RelayActivityRegistration) async throws {
+        let response = try await send("POST", target: "/v1/activity/register",
+                                      body: Self.encoder.encode(registration), signed: true)
+        guard response.status == 204 else { throw Self.error(response.status) }
+    }
+
+    public func unregisterActivity(phoneID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["phone_id": phoneID])
+        let response = try await send("POST", target: "/v1/activity/unregister", body: body, signed: true)
+        guard response.status == 204 else { throw Self.error(response.status) }
+    }
+
     /// Lets this device's iroh endpoint through the iroh relay: the endpoint signs the device ID
     /// it speaks for, and the request itself is signed as this device.
     func bindIrohNode(_ binding: Data) async throws {

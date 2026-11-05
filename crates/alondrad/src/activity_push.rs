@@ -12,7 +12,8 @@
 //! the state of that moment. A relay that fails is tried again with the backoff of the push
 //! registration; one without the route (404) puts the reports to sleep for [`DORMANT`], so this
 //! daemon can ship before the relay; and a phone the relay no longer has a registration for (410)
-//! hears nothing more until it sends this Mac a new push binding.
+//! is asked again after [`DORMANT`], or at once with a new push binding: turning Live Activities
+//! back on registers the same phone with the same binding.
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
 use alondra_core::domain::ActivityCounts;
@@ -30,7 +31,7 @@ const GRACE: Duration = Duration::from_secs(15 * 60);
 /// While active, the last state goes out again this often, so the Live Activity never looks
 /// stale while nothing changes.
 const REPEAT: Duration = Duration::from_secs(15 * 60);
-/// A relay without the route is asked again this often.
+/// A relay without the route, or without the phone's registration, is asked again this often.
 const DORMANT: Duration = Duration::from_secs(60 * 60);
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const MAC_NAME_LIMIT: usize = 64;
@@ -88,12 +89,12 @@ struct Phone {
     told_at: Option<Instant>,
     failures: u32,
     retry_at: Option<Instant>,
-    gone: bool,
+    gone_until: Option<Instant>,
 }
 
 impl Phone {
     fn new(binding: String) -> Self {
-        Phone { binding, told: None, told_at: None, failures: 0, retry_at: None, gone: false }
+        Phone { binding, told: None, told_at: None, failures: 0, retry_at: None, gone_until: None }
     }
 }
 
@@ -152,8 +153,8 @@ impl Schedule {
     }
 
     fn due_at(&self, phone: &Phone, now: Instant) -> Option<Instant> {
-        if phone.gone {
-            return None;
+        if phone.gone_until.is_some() {
+            return phone.gone_until;
         }
         let report = self.report(now);
         let at = if let Some(retry) = phone.retry_at {
@@ -209,6 +210,7 @@ impl Schedule {
                 phone.told_at = Some(now);
                 phone.failures = 0;
                 phone.retry_at = None;
+                phone.gone_until = None;
             }
             Sent::Retry => {
                 phone.retry_at = Some(now + backoff(phone.failures));
@@ -220,7 +222,7 @@ impl Schedule {
                 return false;
             }
             Sent::Gone => {
-                phone.gone = true;
+                phone.gone_until = Some(now + DORMANT);
                 phone.retry_at = None;
             }
         }
@@ -293,7 +295,7 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
             match outcome {
                 Sent::Accepted if failing => log!("the relay takes the Live Activity counts again"),
                 Sent::Missing => log!("the relay has no Live Activity route yet; asking again in an hour"),
-                Sent::Gone => log!("the relay has no Live Activity for {}; not sending until it pairs again", due.phone),
+                Sent::Gone => log!("the relay has no Live Activity for {}; asking again in an hour", due.phone),
                 _ => {}
             }
             failing = outcome == Sent::Retry;
@@ -463,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gone_registration_stops_that_phone_until_it_sends_a_new_binding() {
+    fn a_gone_registration_stops_that_phone_for_an_hour_or_until_it_sends_a_new_binding() {
         let start = Instant::now();
         let mut schedule = Schedule::new(counts(1, 0, 0), start);
         schedule.phones(vec![("a".into(), "binding-a".into()), ("b".into(), "binding-b".into())]);
@@ -477,11 +479,25 @@ mod tests {
         assert!(tick(&mut schedule, at + SETTLE + REPEAT, Sent::Accepted).iter().all(|due| due.phone == "b"));
 
         schedule.phones(vec![("a".into(), "binding-a".into()), ("b".into(), "binding-b".into())]);
-        assert!(schedule.phones["a"].gone, "the same binding is the same ended registration");
+        assert!(schedule.phones["a"].gone_until.is_some(), "the same binding is the same ended registration");
         schedule.phones(vec![("a".into(), "binding-a2".into()), ("b".into(), "binding-b".into())]);
         let later = at + SETTLE + REPEAT + Duration::from_secs(1);
         let due = tick(&mut schedule, later, Sent::Accepted);
         assert_eq!(due.iter().map(|due| due.phone.as_str()).collect::<Vec<_>>(), vec!["a"], "a new binding starts again");
+    }
+
+    #[test]
+    fn a_phone_that_comes_back_with_the_same_binding_hears_again_within_the_hour() {
+        let start = Instant::now();
+        let mut schedule = Schedule::new(counts(1, 0, 0), start);
+        schedule.phones(vec![("a".into(), "binding-a".into())]);
+        let due = schedule.take(start + SETTLE);
+        schedule.record(&due[0], Sent::Gone, start + SETTLE);
+        assert!(schedule.take(start + SETTLE + DORMANT - Duration::from_secs(1)).is_empty());
+        let back = start + SETTLE + DORMANT;
+        let due = tick(&mut schedule, back, Sent::Accepted);
+        assert_eq!(due.iter().map(|due| due.phone.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(schedule.phones["a"].gone_until, None);
     }
 
     #[test]

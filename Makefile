@@ -16,7 +16,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: action-outcomes connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
+.PHONY: action-outcomes connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -378,6 +378,14 @@ e2e-ios-offline:
 	bazelisk build $(E2E_IOS_APP) //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
 	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); \
 	python3 tools/e2e_ios_offline.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) \
+		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
+
+# The real Live Activity in a pooled simulator (tools/e2e_ios_live_activity.py): the Lock Screen,
+# light and dark, English and Spanish, in E2E_CAPTURES (.e2e-captures by default).
+e2e-ios-live-activity:
+	bazelisk build $(E2E_IOS_APP) //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); \
+	python3 tools/e2e_ios_live_activity.py --captures $(or $(E2E_CAPTURES),$(CURDIR)/.e2e-captures) \
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 # Scripted journeys on a fresh sandbox with the fake claude and gh (tools/sandbox/src/journey);

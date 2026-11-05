@@ -1,4 +1,5 @@
 import AlondraLiveActivity
+import AlondraTransport
 import Foundation
 import Testing
 
@@ -13,9 +14,12 @@ private final class FakeHost: ActivityHost {
     var activitiesEnabled = true
     var activities: [RunningActivity] = []
     var calls: [Call] = []
+    var contents: [String: ActivityContentState] = [:]
     private var next = 0
 
     func running() -> [RunningActivity] { activities }
+
+    func content(of id: String) -> ActivityContentState? { contents[id] }
 
     func request(_ state: ActivityContentState, startedAt: Date, staleDate: Date) throws -> RunningActivity {
         next += 1
@@ -43,7 +47,9 @@ private final class Harness {
     let host = FakeHost()
     var now = Date(timeIntervalSince1970: 1_800_000_000)
     var wakes: [Date] = []
-    lazy var controller = LiveActivityController(host: host, now: { [unowned self] in now }, wake: { [unowned self] in wakes.append($0) })
+    var opened: [ActivityReport] = []
+    lazy var controller = LiveActivityController(host: host, now: { [unowned self] in now }, open: { [unowned self] _ in opened },
+                                                 wake: { [unowned self] in wakes.append($0) })
 
     func report(_ inbox: Int, _ waiting: Int = 0, _ working: Int = 0, mac: String = "mac-a", live: Bool = true) async {
         controller.report(macID: mac, name: "Mac mini", counts: ActivityCounts(inbox: inbox, waiting: waiting, working: working), live: live)
@@ -73,6 +79,58 @@ private final class Harness {
         #expect(harness.host.calls.first == .request(ActivityContentState(reports: [
             ActivityReport(macID: "mac-a", macName: "Mac mini", counts: ActivityCounts(inbox: 2, waiting: 1, working: 3), measuredAt: harness.now),
         ])))
+    }
+
+    private func envelope(from mac: String) -> Envelope {
+        Envelope(route: mac, sender: mac, recipient: "phone", requestID: "request", kind: "activity", expiresAtMilliseconds: 1,
+                 ephemeralKey: "key", nonce: "nonce", ciphertext: "ciphertext", signature: "signature")
+    }
+
+    private func runningWithPush(_ harness: Harness, macs: [String]) {
+        harness.host.activities = [RunningActivity(id: "pushed", startedAt: harness.now)]
+        harness.host.contents["pushed"] = ActivityContentState(macs: macs.map(envelope(from:)), omitted: 2)
+    }
+
+    @Test func anUpdateFromTheAppKeepsTheOtherMacsOfThePush() async throws {
+        let harness = Harness()
+        runningWithPush(harness, macs: ["mac-b"])
+        harness.opened = [ActivityReport(macID: "mac-b", macName: nil, counts: ActivityCounts(inbox: 1, waiting: 0, working: 0), measuredAt: harness.now)]
+        await harness.foreground()
+        await harness.report(2)
+        guard case .update(_, let state) = try #require(harness.host.calls.last) else { Issue.record("no update"); return }
+        #expect(state.macs == [envelope(from: "mac-b")])
+        #expect(state.omitted == 2)
+        #expect(state.reports.map(\.macID) == ["mac-a"])
+    }
+
+    @Test func aMacTheAppKnowsBetterLeavesThePush() async throws {
+        let harness = Harness()
+        runningWithPush(harness, macs: ["mac-a"])
+        harness.opened = [ActivityReport(macID: "mac-a", macName: nil, counts: ActivityCounts(inbox: 9, waiting: 0, working: 0),
+                                         measuredAt: harness.now.addingTimeInterval(-60))]
+        await harness.foreground()
+        await harness.report(2)
+        guard case .update(_, let state) = try #require(harness.host.calls.last) else { Issue.record("no update"); return }
+        #expect(state.macs.isEmpty)
+    }
+
+    @Test func anotherMacStillBusyKeepsItShowingWhenTheAppsMacIsDone() async {
+        let harness = Harness()
+        runningWithPush(harness, macs: ["mac-b"])
+        harness.opened = [ActivityReport(macID: "mac-b", macName: nil, counts: ActivityCounts(inbox: 0, waiting: 0, working: 1), measuredAt: harness.now)]
+        await harness.foreground()
+        await harness.report(0)
+        #expect(harness.host.ends.isEmpty)
+    }
+
+    @Test func numbersSavedFromBeforeNeverEndWhatASealedReportSaysIsBusy() async {
+        let harness = Harness()
+        runningWithPush(harness, macs: ["mac-a"])
+        harness.opened = [ActivityReport(macID: "mac-a", macName: nil, counts: ActivityCounts(inbox: 0, waiting: 0, working: 2),
+                                         measuredAt: harness.now.addingTimeInterval(-60))]
+        await harness.foreground()
+        await harness.report(0, live: false)
+        #expect(harness.host.ends.isEmpty)
     }
 
     @Test func neverStartsWithLiveActivitiesTurnedOff() async {
