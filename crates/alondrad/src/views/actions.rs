@@ -89,13 +89,15 @@ pub(crate) async fn local(
     let external = ActionId::parse(&request.action_id).is_ok_and(|action| is_external(action.verb));
     let work = if external { domain.external_work.clone() } else { domain.command_work.clone() };
     let runtime = tokio::runtime::Handle::current();
+    let (action_id, client, started) = (request.action_id.clone(), request.client.clone(), std::time::Instant::now());
     match work.run(move || runtime.block_on(async move {
-        let client = state.client();
-        super::action_results::execute_recorded(&domain, &client, &home, &device, &body, request, || {
+        let client_routes = state.client();
+        let response = super::action_results::execute_recorded(&domain, &client_routes, &home, &device, &body, request, || {
             crate::domain_bootstrap::signed_device(&home, &signed)
                 .map(|_| ())
                 .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
-        }).await
+        }).await;
+        logged(&action_id, &client, started, response).await
     })).await {
         Ok(response) => response,
         Err(error) => {
@@ -103,6 +105,42 @@ pub(crate) async fn local(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// Logs how `response` ended the action, inside the work that runs it: a client that stopped
+/// waiting does not cut the line.
+async fn logged(action_id: &str, client: &str, started: std::time::Instant, response: Response) -> Response {
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, crate::service::MAX_LOCAL_RESPONSE).await else {
+        log_result(action_id, client, parts.status.as_u16(), &Value::Null, started.elapsed());
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    log_result(action_id, client, parts.status.as_u16(), &serde_json::from_slice(&bytes).unwrap_or(Value::Null), started.elapsed());
+    Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// One line in the daemon's log per action answered: which action, from which client, how it
+/// ended and how long it took.
+pub(crate) fn log_result(action_id: &str, client: &str, status: u16, body: &Value, elapsed: std::time::Duration) {
+    log!("{}", result_line(action_id, client, status, body, elapsed));
+}
+
+fn result_line(action_id: &str, client: &str, status: u16, body: &Value, elapsed: std::time::Duration) -> String {
+    use alondra_core::views::action_outcome::Pending;
+    let verb = ActionId::parse(action_id).map_or("unknown_action", |action| action.verb.as_str());
+    let client = match client { "ios" | "mac" | "tui" => client, _ => "other" };
+    let outcome = match Pending::of(body) {
+        Some(Pending::InProgress) => "in_progress".to_owned(),
+        Some(Pending::Unknown(reason)) => format!("unknown ({})", reason.as_str()),
+        None => match (body["outcome"].as_str(), body["result"]["kind"].as_str(), body["code"].as_str().or(body["error"].as_str())) {
+            (Some(outcome), Some(kind), _) => format!("{outcome} ({kind})"),
+            (Some(outcome), None, _) => outcome.to_owned(),
+            (None, Some(kind), _) => kind.to_owned(),
+            (None, None, Some(code)) => format!("error ({code})"),
+            (None, None, None) => "error".to_owned(),
+        },
+    };
+    format!("action result: {verb} from {client} → {outcome}, HTTP {status}, in {} ms", elapsed.as_millis())
 }
 
 pub(crate) async fn relay(
@@ -121,7 +159,9 @@ pub(crate) async fn relay(
     }
     // Relay request receipts already deduplicate the transport command. Domain receipts still
     // bind the submitted command_id to the semantic action and actor.
+    let (action_id, client_name, started) = (request.action_id.clone(), request.client.clone(), std::time::Instant::now());
     let response = execute_action(&client.domain, client, client.home(), sender, request, Some(identity), authorize).await?;
+    log_result(&action_id, &client_name, 200, &response, started.elapsed());
     Ok(json!({"status":200,"body":response}))
 }
 
@@ -2027,6 +2067,21 @@ mod tests {
             "Crea otro nodo para usar otra cuenta o proveedor");
         assert_eq!(rejected_field(Lang::Es, "reasoning_effort", "Choose reasoning effort when creating another node")["message"],
             "Elige el esfuerzo de razonamiento al crear otro nodo");
+    }
+
+    #[test]
+    fn each_action_result_logs_its_action_client_outcome_and_time() {
+        use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+        let add = ActionId::new(Verb::AccountAdd, "claude", 3, None).unwrap().to_string();
+        let took = std::time::Duration::from_millis(12_034);
+        assert_eq!(result_line(&add, "tui", 409, &unknown_body(UnknownReason::Interrupted), took),
+            "action result: account_add from tui → unknown (interrupted), HTTP 409, in 12034 ms");
+        assert_eq!(result_line(&add, "ios", 503, &in_progress_body(), took),
+            "action result: account_add from ios → in_progress, HTTP 503, in 12034 ms");
+        assert_eq!(result_line(&add, "mac", 200, &json!({"outcome": "applied", "result": {"kind": "done"}}), took),
+            "action result: account_add from mac → applied (done), HTTP 200, in 12034 ms");
+        assert_eq!(result_line("nonsense", "curl", 422, &json!({"code": "invalid_input"}), took),
+            "action result: unknown_action from other → error (invalid_input), HTTP 422, in 12034 ms");
     }
 
     #[test]

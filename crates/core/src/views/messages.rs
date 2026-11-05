@@ -165,6 +165,36 @@ pub fn transport_failure(lang: Lang) -> Outcome {
     }
 }
 
+/// The text a client shows when its Mac cannot tell whether an action happened: what happened and
+/// what to do, the same in all three.
+pub fn unknown_outcome(reason: super::action_outcome::UnknownReason, lang: Lang) -> Outcome {
+    use super::action_outcome::UnknownReason;
+    let body = match reason {
+        UnknownReason::Interrupted => t!(lang,
+            "Alondra restarted on your Mac while doing it. Check whether the change is there; if not, do it again.",
+            "Alondra se reinició en tu Mac mientras lo hacía. Mira si el cambio está; si no, vuelve a hacerlo."),
+        UnknownReason::DataReset => t!(lang,
+            "Alondra's data on your Mac was reset while this was on its way. Check whether the change is there; if not, do it again.",
+            "Los datos de Alondra en tu Mac se restablecieron mientras esto llegaba. Mira si el cambio está; si no, vuelve a hacerlo."),
+        UnknownReason::Expired | UnknownReason::NotFound => t!(lang,
+            "Your Mac no longer keeps the answer to this. Check whether the change is there; if not, do it again.",
+            "Tu Mac ya no guarda la respuesta a esto. Mira si el cambio está; si no, vuelve a hacerlo."),
+        UnknownReason::ApprovalChanged => t!(lang,
+            "This device's approval changed while your Mac was doing it. Check whether the change is there; if not, do it again.",
+            "La aprobación de este dispositivo cambió mientras tu Mac lo hacía. Mira si el cambio está; si no, vuelve a hacerlo."),
+        UnknownReason::Unrecorded | UnknownReason::Changed | UnknownReason::Unavailable
+        | UnknownReason::Invalid | UnknownReason::Other => t!(lang,
+            "Your Mac could not confirm whether it was done. Check whether the change is there; if not, do it again.",
+            "Tu Mac no pudo confirmar si se hizo. Mira si el cambio está; si no, vuelve a hacerlo."),
+    };
+    Outcome {
+        kind: OutcomeKind::Failed,
+        title: t!(lang, "Your Mac doesn't know if it was done.", "Tu Mac no sabe si se hizo.").into(),
+        body: Some(body.into()),
+        next: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

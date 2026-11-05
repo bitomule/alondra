@@ -2349,10 +2349,11 @@ impl App {
         let command = request["command_id"].as_str().unwrap_or_default();
         let outcome = match result {
             Ok(ViewActionReply::Outcome(outcome)) => outcome,
-            Err(Delivery::Unsent | Delivery::Unanswered) => {
+            Err(Delivery::Unsent | Delivery::Unanswered | Delivery::Running) => {
                 self.optimistic.failed(command, now_millis());
                 return;
             }
+            Err(Delivery::Unknown(reason)) => alondra_core::views::unknown_outcome(reason, crate::i18n::lang()),
             Err(Delivery::Answered(message)) => Outcome {
                 kind: OutcomeKind::Failed,
                 title: tr!("Your Mac couldn't do it.", "Tu Mac no pudo hacerlo.").to_owned(),

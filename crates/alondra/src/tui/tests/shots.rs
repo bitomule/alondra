@@ -123,6 +123,9 @@ fn tui_shots() {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();
         }
+        let unknown = alondra_core::views::unknown_outcome(alondra_core::views::action_outcome::UnknownReason::Interrupted, view_lang);
+        let html = page(&mut answered(lang, unknown));
+        std::fs::write(out.join(format!("8-outcome-unknown-{name}.html")), html).unwrap();
     }
 }
 

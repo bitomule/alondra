@@ -1,4 +1,6 @@
 use super::actions::{ActionRequest, execute};
+use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+use alondra_daemon_engine::local_actions::RunningAction;
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
 use anyhow::{Context, Result};
@@ -184,9 +186,10 @@ fn journal_scope(signed: &Signed, binding: &str, epoch: &str) -> crate::operatio
 }
 
 enum Admission {
-    Execute,
+    Execute(RunningAction),
     Completed(Vec<u8>),
-    Unknown,
+    Running,
+    Unknown(UnknownReason),
     Capacity,
     Retired,
 }
@@ -201,21 +204,22 @@ pub(super) async fn execute_recorded(
     authorize: impl Fn() -> Result<()> + Sync,
 ) -> Response {
     if !alondra_core::operation_id::valid_action_id(&request.command_id) {
-        return unknown(StatusCode::UNPROCESSABLE_ENTITY);
+        return unknown(StatusCode::UNPROCESSABLE_ENTITY, UnknownReason::Invalid);
     }
     let epoch = request.data_epoch.clone();
     if !domain
         .state()
         .is_ok_and(|state| state.data_epoch.0 == epoch)
     {
-        return unknown(StatusCode::CONFLICT);
+        return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
     let Ok(original_actor) = actor(home, signed) else {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     };
     let digest: [u8; 32] = Sha256::digest(raw_body).into();
     let (id, expected_epoch) = (request.command_id.clone(), epoch.clone());
     let operation_device = signed.clone();
+    let running = domain.local_actions.running.clone();
     let admitted = journal(domain, home.to_owned(), signed.clone(), move |c, actor| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let scope = journal_scope(&operation_device,actor,&expected_epoch);
@@ -228,9 +232,12 @@ pub(super) async fn execute_recorded(
         let prior: Option<(Vec<u8>,String,Option<Vec<u8>>)> = tx.query_row(
             "SELECT digest,state,response FROM action_results WHERE actor=?1 AND command_id=?2 AND data_epoch=?3",
             params![actor,id,expected_epoch], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+        let key = (actor.to_owned(),id.clone(),expected_epoch.clone());
         let decision = match prior {
             Some((previous,state,Some(body))) if previous==digest && state=="completed" => Admission::Completed(body),
-            Some(_) => Admission::Unknown,
+            Some((previous,_,_)) if previous!=digest => Admission::Unknown(UnknownReason::Changed),
+            Some((_,state,_)) if state=="executing" && running.runs(&key) => Admission::Running,
+            Some((_,state,_)) => Admission::Unknown(unfinished(&state)),
             None => {
                 if identity.is_none() && crate::operation_journal::opted_in(&tx,&scope)? {
                     let count:i64 = tx.query_row("SELECT count(*) FROM action_results WHERE actor=?1 AND journal_issuer IS NULL",params![actor],|row|row.get(0))?;
@@ -242,13 +249,13 @@ pub(super) async fn execute_recorded(
                     tx.execute("UPDATE action_results SET journal_issuer=?4,journal_generation=?5,journal_sequence=?6 WHERE actor=?1 AND command_id=?2 AND data_epoch=?3",
                         params![actor,id,expected_epoch,scope.issuer,crate::operation_journal::sql_counter(identity.generation)?,crate::operation_journal::sql_counter(identity.sequence)?])?;
                 }
-                Admission::Execute
+                Admission::Execute(running.start(key))
             },
         };
         tx.commit()?;
         Ok(decision)
     }).await;
-    match admitted {
+    let _running = match admitted {
         Ok(Admission::Completed(bytes)) => {
             if authorize().is_err()
                 || actor(home, signed).ok().as_ref() != Some(&original_actor)
@@ -256,7 +263,7 @@ pub(super) async fn execute_recorded(
                     .state()
                     .is_ok_and(|state| state.data_epoch.0 == epoch)
             {
-                return unknown(StatusCode::FORBIDDEN);
+                return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
             }
             return (
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -264,9 +271,10 @@ pub(super) async fn execute_recorded(
             )
                 .into_response();
         }
-        Ok(Admission::Execute) => {}
-        Ok(Admission::Retired) => return unknown(StatusCode::GONE),
-        Ok(Admission::Unknown) => return unknown(StatusCode::CONFLICT),
+        Ok(Admission::Execute(claim)) => claim,
+        Ok(Admission::Running) => return in_progress(),
+        Ok(Admission::Retired) => return unknown(StatusCode::GONE, UnknownReason::Expired),
+        Ok(Admission::Unknown(reason)) => return unknown(StatusCode::CONFLICT, reason),
         Ok(Admission::Capacity) => {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -274,15 +282,15 @@ pub(super) async fn execute_recorded(
             )
                 .into_response();
         }
-        Err(_) => return unknown(StatusCode::SERVICE_UNAVAILABLE),
-    }
+        Err(_) => return unknown(StatusCode::SERVICE_UNAVAILABLE, UnknownReason::Unavailable),
+    };
     if authorize().is_err()
         || actor(home, signed).ok().as_ref() != Some(&original_actor)
         || !domain
             .state()
             .is_ok_and(|state| state.data_epoch.0 == epoch)
     {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     }
     let response = execute(
         domain,
@@ -298,7 +306,7 @@ pub(super) async fn execute_recorded(
     let Ok(bytes) =
         axum::body::to_bytes(response.into_body(), crate::service::MAX_LOCAL_RESPONSE).await
     else {
-        return unknown(StatusCode::INTERNAL_SERVER_ERROR);
+        return unknown(StatusCode::INTERNAL_SERVER_ERROR, UnknownReason::Unrecorded);
     };
     if status != StatusCode::OK {
         return (status, bytes).into_response();
@@ -331,7 +339,7 @@ pub(super) async fn execute_recorded(
             .state()
             .is_ok_and(|state| state.data_epoch.0 == expected_epoch)
     {
-        return unknown(StatusCode::SERVICE_UNAVAILABLE);
+        return unknown(StatusCode::SERVICE_UNAVAILABLE, UnknownReason::Unrecorded);
     }
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -340,8 +348,32 @@ pub(super) async fn execute_recorded(
         .into_response()
 }
 
-fn unknown(status: StatusCode) -> Response {
-    (status, Json(json!({"error":"outcome_unknown","kind":"outcome_unknown"}))).into_response()
+enum Recorded {
+    Reply(Vec<u8>),
+    Running,
+    Unknown(UnknownReason),
+}
+
+/// A row the journal holds without a reply, and no attempt of this process runs it.
+fn unfinished(state: &str) -> UnknownReason {
+    match state {
+        "interrupted" => UnknownReason::Interrupted,
+        "retired" => UnknownReason::Expired,
+        _ => UnknownReason::Unrecorded,
+    }
+}
+
+fn unknown(status: StatusCode, reason: UnknownReason) -> Response {
+    (status, Json(unknown_body(reason))).into_response()
+}
+
+fn in_progress() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::RETRY_AFTER, "1")],
+        Json(in_progress_body()),
+    )
+        .into_response()
 }
 
 pub(super) async fn read(
@@ -351,49 +383,67 @@ pub(super) async fn read(
 ) -> Response {
     let home = crate::domain_api::DomainHost::home(&*state).to_owned();
     let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     };
     let target = uri
         .path_and_query()
         .map_or(uri.path(), |value| value.as_str());
     let Some(lookup) = crate::service::operation_results::lookup(target) else {
-        return unknown(StatusCode::UNPROCESSABLE_ENTITY);
+        return unknown(StatusCode::UNPROCESSABLE_ENTITY, UnknownReason::Invalid);
     };
     if lookup.offset.is_some() {
-        return unknown(StatusCode::UNPROCESSABLE_ENTITY);
+        return unknown(StatusCode::UNPROCESSABLE_ENTITY, UnknownReason::Invalid);
     }
     let domain = state.domain();
     let Ok(original_actor) = actor(&home, &device) else {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     };
     if !domain
         .state()
         .is_ok_and(|current| current.data_epoch.0 == lookup.data_epoch)
     {
-        return unknown(StatusCode::CONFLICT);
+        return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
     let (id, epoch, digest) = (lookup.id.clone(), lookup.data_epoch.clone(), lookup.digest);
+    let running = domain.local_actions.running.clone();
     let result = journal(&domain,home.clone(),device.clone(),move |c,actor| {
-        let result: Option<Vec<u8>> = c.query_row("SELECT response FROM action_results WHERE actor=?1 AND command_id=?2 AND data_epoch=?3 AND digest=?4 AND state='completed'",
-            params![actor,id,epoch,digest.as_slice()],|row|row.get(0)).optional()?;
-        Ok(result)
+        let row: Option<(String,Option<Vec<u8>>)> = c.query_row("SELECT state,response FROM action_results WHERE actor=?1 AND command_id=?2 AND data_epoch=?3 AND digest=?4",
+            params![actor,id,epoch,digest.as_slice()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        Ok(match row {
+            Some((state,Some(bytes))) if state=="completed" => Recorded::Reply(bytes),
+            Some((state,_)) if state=="executing" && running.runs(&(actor.to_owned(),id.clone(),epoch.clone())) => Recorded::Running,
+            Some((state,_)) => Recorded::Unknown(unfinished(&state)),
+            None => Recorded::Unknown(UnknownReason::NotFound),
+        })
     }).await;
     if crate::domain_bootstrap::signed_device(&home, &signed).is_none()
         || actor(&home, &device).ok().as_ref() != Some(&original_actor)
     {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     }
     if !domain
         .state()
         .is_ok_and(|current| current.data_epoch.0 == lookup.data_epoch)
     {
-        return unknown(StatusCode::CONFLICT);
+        return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
-    let Ok(Some(bytes)) = result else {
-        return unknown(StatusCode::NOT_FOUND);
+    let bytes = match result {
+        Ok(Recorded::Reply(bytes)) => bytes,
+        Ok(Recorded::Running) => {
+            log!("action result lookup → in_progress");
+            return in_progress();
+        }
+        Ok(Recorded::Unknown(reason)) => {
+            log!("action result lookup → unknown ({})", reason.as_str());
+            return unknown(StatusCode::NOT_FOUND, reason);
+        }
+        Err(_) => {
+            log!("action result lookup → unknown (unavailable)");
+            return unknown(StatusCode::NOT_FOUND, UnknownReason::Unavailable);
+        }
     };
     let Ok(response) = serde_json::from_slice::<Value>(&bytes) else {
-        return unknown(StatusCode::INTERNAL_SERVER_ERROR);
+        return unknown(StatusCode::INTERNAL_SERVER_ERROR, UnknownReason::Unavailable);
     };
     Json(json!({"request_id":lookup.id,"digest":lookup.digest_text,"data_epoch":lookup.data_epoch,"response":response})).into_response()
 }
@@ -840,6 +890,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retry_while_the_first_attempt_still_runs_is_told_it_runs_and_then_gets_the_applied_reply() {
+        let home = Arc::new(crate::test_support::Directory::new());
+        std::fs::create_dir_all(&**home).unwrap();
+        let peer = Arc::new(Peer::new(&home));
+        let (state, base, server) = serve(home.clone()).await;
+        let (_, body, path) = action(&state);
+        let resource = state.domain().local_actions.resource(
+            alondra_daemon_engine::local_actions::LocalActionResource::NodeLimitSettings,
+        );
+        let held = resource.clone().write_owned().await;
+        let first = tokio::spawn({
+            let (peer, base, body) = (peer.clone(), base.clone(), body.clone());
+            async move { peer.request(&base, "POST", "/actions", &body).await }
+        });
+        // Held here, by the write guard, and by the first attempt waiting for it.
+        while Arc::strong_count(&resource) < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let (status, retry) = peer.request(&base, "POST", "/actions", &body).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{}", String::from_utf8_lossy(&retry));
+        assert_eq!(serde_json::from_slice::<Value>(&retry).unwrap(), in_progress_body());
+        let (status, read) = peer.request(&base, "GET", &path, &[]).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{}", String::from_utf8_lossy(&read));
+        assert_eq!(serde_json::from_slice::<Value>(&read).unwrap(), in_progress_body());
+        drop(held);
+        let (status, applied) = first.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&applied).unwrap()["outcome"], "applied");
+        let (status, again) = peer.request(&base, "POST", "/actions", &body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(again, applied);
+        server.stop().await;
+        drop(state);
+    }
+
+    #[tokio::test]
     async fn a_crash_between_the_local_effect_and_receipt_write_remains_unknown_after_restart() {
         let home = Arc::new(crate::test_support::Directory::new());
         std::fs::create_dir_all(&**home).unwrap();
@@ -864,17 +950,24 @@ mod tests {
             .unwrap()
             .replace("max_working_nodes = 4", "max_working_nodes = 5");
         std::fs::write(&options, &changed).unwrap();
+        let (status, answer) = peer.request(&base, "POST", "/actions", &body).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(serde_json::from_slice::<Value>(&answer).unwrap(), unknown_body(UnknownReason::Unrecorded));
         server.stop().await;
         drop(state);
+        assert_eq!(recover_interrupted(&home).unwrap(), 1);
         let (restarted, base, server) = serve(home.clone()).await;
-        assert_eq!(
-            peer.request(&base, "GET", &path, &[]).await.0,
-            StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            peer.request(&base, "POST", "/actions", &body).await.0,
-            StatusCode::CONFLICT
-        );
+        let (status, answer) = peer.request(&base, "GET", &path, &[]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(serde_json::from_slice::<Value>(&answer).unwrap(), unknown_body(UnknownReason::Interrupted));
+        let (status, answer) = peer.request(&base, "POST", "/actions", &body).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(serde_json::from_slice::<Value>(&answer).unwrap(), unknown_body(UnknownReason::Interrupted));
+        let mut changed_body: Value = serde_json::from_slice(&body).unwrap();
+        changed_body["option_id"] = json!("5");
+        let (status, answer) = peer.request(&base, "POST", "/actions", &serde_json::to_vec(&changed_body).unwrap()).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(serde_json::from_slice::<Value>(&answer).unwrap(), unknown_body(UnknownReason::Changed));
         assert_eq!(std::fs::read_to_string(&options).unwrap(), changed);
         server.stop().await;
         drop(restarted);
@@ -924,18 +1017,18 @@ async fn control(
 ) -> Response {
     let home = crate::domain_api::DomainHost::home(&*state).to_owned();
     let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     };
     let domain = state.domain();
     if !domain
         .state()
         .is_ok_and(|state| state.data_epoch.0 == epoch)
     {
-        return unknown(StatusCode::CONFLICT);
+        return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
     let original_binding = match actor(&home, &device) {
         Ok(binding) => binding,
-        Err(_) => return unknown(StatusCode::FORBIDDEN),
+        Err(_) => return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged),
     };
     let operation_device = device.clone();
     let operation_epoch = epoch.clone();
@@ -964,17 +1057,17 @@ async fn control(
     if crate::domain_bootstrap::signed_device(&home, &signed).is_none()
         || actor(&home, &device).ok().as_ref() != Some(&original_binding)
     {
-        return unknown(StatusCode::FORBIDDEN);
+        return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     }
     if !domain
         .state()
         .is_ok_and(|state| state.data_epoch.0 == epoch)
     {
-        return unknown(StatusCode::CONFLICT);
+        return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
     match result {
         Ok(result) => Json(result).into_response(),
-        Err(_) => unknown(StatusCode::CONFLICT),
+        Err(_) => unknown(StatusCode::CONFLICT, UnknownReason::Unavailable),
     }
 }
 pub(super) async fn descriptor(
@@ -986,7 +1079,7 @@ pub(super) async fn descriptor(
         .path_and_query()
         .map_or(uri.path(), |value| value.as_str());
     let Some(epoch) = crate::operation_journal::query_epoch(target) else {
-        return unknown(StatusCode::UNPROCESSABLE_ENTITY);
+        return unknown(StatusCode::UNPROCESSABLE_ENTITY, UnknownReason::Invalid);
     };
     control(state, signed, epoch, None).await
 }
@@ -996,7 +1089,7 @@ pub(super) async fn acknowledge(
     body: axum::body::Bytes,
 ) -> Response {
     let Ok(ack) = serde_json::from_slice::<crate::operation_journal::Ack>(&body) else {
-        return unknown(StatusCode::UNPROCESSABLE_ENTITY);
+        return unknown(StatusCode::UNPROCESSABLE_ENTITY, UnknownReason::Invalid);
     };
     control(state, signed, ack.data_epoch.clone(), Some(ack)).await
 }

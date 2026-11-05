@@ -1,4 +1,5 @@
 use super::*;
+use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
 use p256::elliptic_curve::sec1::ToSec1Point;
 
 pub(crate) struct Lookup {
@@ -90,6 +91,12 @@ pub(super) fn digest(envelope: &Envelope) -> Result<[u8; 32]> {
     Ok(Sha256::digest(bytes).into())
 }
 
+enum Stored {
+    Reply(Vec<u8>),
+    Running,
+    Unknown(UnknownReason),
+}
+
 #[derive(Clone)]
 pub(super) struct RecoveryScope {
     pub digest: [u8; 32],
@@ -164,7 +171,7 @@ impl Service {
                 .map(str::to_owned)
         };
         if expected.as_deref() != Some(epoch.as_str()) {
-            return Ok(json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+            return Ok(json!({"status":409,"body":unknown_body(UnknownReason::DataReset)}));
         }
         let scope = self.operation_journal_scope(sender, &device, transport, &epoch)?;
         let original_binding = scope.binding.clone();
@@ -253,7 +260,7 @@ impl Service {
         );
         Ok(match result {
             Some(result) => json!({"status":200,"body":result}),
-            None => json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}),
+            None => json!({"status":409,"body":unknown_body(UnknownReason::Unavailable)}),
         })
     }
 
@@ -318,31 +325,48 @@ impl Service {
             .as_ref()
             .context("operation results require the domain store")?;
         if domain.state()?.data_epoch.0 != request.data_epoch {
-            return Ok(json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+            return Ok(json!({"status":409,"body":unknown_body(UnknownReason::DataReset)}));
         }
         let binding = self.operation_binding(sender, &device, transport, &request.data_epoch)?;
         let (sender_owned, id, digest) = (sender.to_owned(), request.id.clone(), request.digest);
+        let inflight = self.inflight.clone();
         let physical = self.journal.accept_jobs.clone().acquire_owned().await?;
         let result = self.journal.off_runtime(move |journal| {
             let _physical = physical;
             let c = journal.db()?;
             let stored: Option<(String, Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> = c.query_row(
-                "SELECT state,response,recovery_digest,recovery_binding FROM service_receipts WHERE sender=?1 AND request_id=?2 AND length(response)<=?3",
+                "SELECT state,response,recovery_digest,recovery_binding FROM service_receipts WHERE sender=?1 AND request_id=?2 AND (response IS NULL OR length(response)<=?3)",
                 params![sender_owned,id,i64::try_from(MAX_RELAY_RESPONSE)?], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+            let running = || inflight.lock_or_recover("the work in flight").contains_key(&(sender_owned.clone(), id.clone()));
             Ok(match stored {
                 Some((state, Some(bytes), Some(prior_digest), Some(prior_binding)))
-                    if state == "completed" && prior_digest == digest && prior_binding == binding => Some(bytes),
-                _ => None,
+                    if state == "completed" && prior_digest == digest && prior_binding == binding => Stored::Reply(bytes),
+                Some((state, _, Some(prior_digest), Some(prior_binding)))
+                    if matches!(state.as_str(), "accepted" | "executing") && prior_digest == digest && prior_binding == binding && running() => Stored::Running,
+                Some((state, _, Some(prior_digest), Some(prior_binding))) if prior_digest == digest && prior_binding == binding => Stored::Unknown(match state.as_str() {
+                    "interrupted" | "executing" | "accepted" => UnknownReason::Interrupted,
+                    "retired" => UnknownReason::Expired,
+                    _ => UnknownReason::Unrecorded,
+                }),
+                _ => Stored::Unknown(UnknownReason::NotFound),
             })
         }).await?;
         approved.recheck()?;
         if domain.state()?.data_epoch.0 != request.data_epoch
             || self.operation_binding(sender, &device, transport, &request.data_epoch)? != binding
         {
-            return Ok(json!({"status":409,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+            return Ok(json!({"status":409,"body":unknown_body(UnknownReason::DataReset)}));
         }
-        let Some(bytes) = result else {
-            return Ok(json!({"status":404,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+        let bytes = match result {
+            Stored::Reply(bytes) => bytes,
+            Stored::Running => {
+                log!("action result lookup → in_progress");
+                return Ok(json!({"status":503,"body":in_progress_body()}));
+            }
+            Stored::Unknown(reason) => {
+                log!("action result lookup → unknown ({})", reason.as_str());
+                return Ok(json!({"status":404,"body":unknown_body(reason)}));
+            }
         };
         let response: Envelope = serde_json::from_slice(&bytes)?;
         if response.kind != "response"
@@ -351,19 +375,19 @@ impl Service {
             || response.recipient != sender
             || response.route != self.mac_id
         {
-            return Ok(json!({"status":404,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+            return Ok(json!({"status":404,"body":unknown_body(UnknownReason::NotFound)}));
         }
         let complete = json!({"status":200,"body":{"request_id":request.id,"digest":request.digest_text,
             "data_epoch":request.data_epoch,"response":response}});
         let offset = request.offset.unwrap_or(0);
         if serde_json::to_vec(&complete)?.len() <= MAX_LOCAL_RESPONSE {
             if offset != 0 {
-                return Ok(json!({"status":422,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+                return Ok(json!({"status":422,"body":unknown_body(UnknownReason::Invalid)}));
             }
             return Ok(complete);
         }
         if offset >= bytes.len() {
-            return Ok(json!({"status":422,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}));
+            return Ok(json!({"status":422,"body":unknown_body(UnknownReason::Invalid)}));
         }
         let end = offset.saturating_add(RESULT_CHUNK_BYTES).min(bytes.len());
         let chunk = base64::engine::general_purpose::STANDARD.encode(&bytes[offset..end]);

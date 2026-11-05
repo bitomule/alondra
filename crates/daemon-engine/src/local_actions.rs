@@ -45,6 +45,44 @@ pub struct LocalActions {
     resources: std::sync::Mutex<std::collections::HashMap<LocalActionResource, std::sync::Weak<tokio::sync::RwLock<()>>>>,
     pub journal_admissions: std::sync::Arc<tokio::sync::Semaphore>,
     pub journal_worker: std::sync::Arc<tokio::sync::Semaphore>,
+    /// The journaled actions this process is running, with the token of the attempt that runs each.
+    /// A journal row still executing without an entry here was cut short.
+    pub running: RunningActions,
+}
+
+/// Actor, command id and data epoch of a journaled action.
+pub type RunningKey = (String, String, String);
+
+#[derive(Clone, Default)]
+pub struct RunningActions(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<RunningKey, u64>>>);
+
+/// One attempt's claim on a running action; dropping it, panics included, ends the claim.
+pub struct RunningAction {
+    running: RunningActions,
+    key: RunningKey,
+    token: u64,
+}
+
+impl RunningActions {
+    pub fn start(&self, key: RunningKey) -> RunningAction {
+        static TOKENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let token = TOKENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.0.lock_or_recover("the running local actions").insert(key.clone(), token);
+        RunningAction { running: self.clone(), key, token }
+    }
+
+    pub fn runs(&self, key: &RunningKey) -> bool {
+        self.0.lock_or_recover("the running local actions").contains_key(key)
+    }
+}
+
+impl Drop for RunningAction {
+    fn drop(&mut self) {
+        let mut running = self.running.0.lock_or_recover("the running local actions");
+        if running.get(&self.key) == Some(&self.token) {
+            running.remove(&self.key);
+        }
+    }
 }
 impl Default for LocalActions {
     fn default() -> Self {
@@ -54,6 +92,7 @@ impl Default for LocalActions {
             workers: tokio::sync::Semaphore::new(2), resources: Default::default(),
             journal_admissions: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
             journal_worker: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            running: RunningActions::default(),
         }
     }
 }
@@ -89,5 +128,22 @@ impl LocalActions {
         let receipt = std::sync::Arc::new(receipt);
         receipts.insert(key, receipt.clone());
         receipt
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_older_attempt_ending_never_ends_a_newer_attempt_of_the_same_action() {
+        let running = RunningActions::default();
+        let key = ("actor".to_owned(), "command".to_owned(), "epoch".to_owned());
+        let older = running.start(key.clone());
+        let newer = running.start(key.clone());
+        drop(older);
+        assert!(running.runs(&key), "the newer attempt still runs");
+        drop(newer);
+        assert!(!running.runs(&key));
     }
 }
