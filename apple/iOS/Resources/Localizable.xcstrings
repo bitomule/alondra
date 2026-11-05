@@ -1,6 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Its settings can’t be read right now. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no se pueden leer sus ajustes. Alondra lo sigue intentando."}}}},
     "Licenses": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencias"}}}},
     "Alondra": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra"}}}},
     "Elastic License 2.0": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elastic License 2.0"}}}},

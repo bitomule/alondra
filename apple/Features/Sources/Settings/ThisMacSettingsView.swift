@@ -10,29 +10,55 @@ public struct ThisMacSettingsView: View {
 
     public var body: some View {
         Form {
+            connection
             if let settings = store.settings {
                 projects
                 relay(settings.relay)
                 if let direct = settings.directConnection {
                     DirectConnectionSection(direct: direct)
                 }
-            } else if let problem = store.problem {
+            } else if store.problem != nil {
                 Section {
-                    Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
+                    Text("Its settings can’t be read right now. Alondra keeps trying.")
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("macSettings.problem")
                 }
             } else {
                 Section { ProgressView().frame(maxWidth: .infinity) }
             }
+            if store.canForget { forget }
         }
         .formStyle(.grouped)
         .navigationTitle(Text(verbatim: store.macName))
         .sheet(item: $store.scope(state: \.browser, action: \.browser)) { browser in
             NavigationStack { FolderBrowserView(store: browser) }
         }
+        .confirmationDialog("Forget this Mac?", isPresented: Binding(get: { store.confirmForget }, set: { if !$0 { store.send(.cancelForget) } }),
+                            titleVisibility: .visible) {
+            Button("Forget Mac", role: .destructive) { store.send(.confirmForget) }
+            Button("Cancel", role: .cancel) { store.send(.cancelForget) }
+        } message: {
+            Text("This Mac deletes its keys for the other Mac. To use it again, find it and pair it again.")
+        }
         .task { await store.send(.task).finish() }
         .accessibilityIdentifier("macSettings")
+    }
+
+    @ViewBuilder private var connection: some View {
+        if let status = store.status {
+            Section {
+                MacStatusLabel(status: status)
+            } header: {
+                Text("Connection")
+            }
+        }
+    }
+
+    private var forget: some View {
+        Section {
+            Button("Forget This Mac", systemImage: "trash", role: .destructive) { store.send(.forgetTapped) }
+                .accessibilityIdentifier("macSettings.forget")
+        }
     }
 
     private var projects: some View {

@@ -29,12 +29,24 @@ extension Connection {
         return try await api.send(.json(.get, path: ["settings", "folders"], query: path.map { [("path", $0)] } ?? []))
     }
 
+    private nonisolated func statuses() -> AsyncStream<MacStatus> {
+        let monitor = monitor
+        return AsyncStream { continuation in
+            let following = Task {
+                for await state in await monitor.states() { continuation.yield(MacStatus(state)) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in following.cancel() }
+        }
+    }
+
     public nonisolated func macSettingsClient(pickLocalFolder: (@Sendable () async -> String?)? = nil) -> MacSettingsClient {
         MacSettingsClient(load: { try await self.macSettings() },
                           save: { try await self.setProjectsRoot($0) },
                           folders: { try await self.folders(at: $0) },
                           pickLocalFolder: pickLocalFolder,
                           problem: { self.connectionProblem(for: $0) },
-                          refresh: .seconds(10))
+                          refresh: .seconds(10),
+                          statuses: { self.statuses() })
     }
 }

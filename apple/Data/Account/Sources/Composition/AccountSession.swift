@@ -266,12 +266,10 @@ public final class AccountSession {
         await directPairing.discard(directAttempt)
     }
 
-    /// Forgets a Mac paired on the local network. Its keys leave this device; the Mac keeps
-    /// listing the device until someone revokes it there.
+    /// Forgets a paired Mac, whether it was paired on the local network or through the account. Its
+    /// keys leave this device; the Mac keeps listing the device until someone revokes it there.
     public func forgetMac(choice id: UUID) async throws {
-        guard let pairingID = choiceIDs.first(where: { $0.value == id })?.key, pairingID.ownerSub == nil else {
-            throw CancellationError()
-        }
+        guard let pairingID = choiceIDs.first(where: { $0.value == id })?.key else { throw CancellationError() }
         let current = generation
         try await pairing.removePairing(pairingID)
         let collection = try await pairing.approvedPairings()

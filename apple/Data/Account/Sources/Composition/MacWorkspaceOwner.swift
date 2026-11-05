@@ -63,7 +63,7 @@ public final class MacWorkspaceOwner {
     /// The Settings list on the local route: this Mac first, then every paired Mac.
     public var macChoices: [MacChoice] {
         guard route == .local else { return account.macs }
-        return [MacChoice(id: thisMacChoiceID, macID: "this-mac", name: String(localized: "This Mac"))] + account.macs
+        return [MacChoice(id: thisMacChoiceID, macID: "this-mac", name: String(localized: "This Mac"), forgettable: false)] + account.macs
     }
 
     public var selectedChoiceID: UUID? {

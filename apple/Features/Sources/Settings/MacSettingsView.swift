@@ -153,7 +153,7 @@ public struct MacSettingsView<PairingContent: View>: View {
                 }
                 .contextMenu {
                     Button("This Mac’s Settings…") { store.send(.openMacSettings(mac.id)) }
-                    if mac.local { Button("Forget This Mac", role: .destructive) { store.send(.forgetMacTapped(mac.id)) } }
+                    if mac.forgettable { Button("Forget This Mac", role: .destructive) { store.send(.forgetMacTapped(mac.id)) } }
                 }
             }
             if let problem = store.macError {
