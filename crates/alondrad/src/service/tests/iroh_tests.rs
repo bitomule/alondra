@@ -435,6 +435,16 @@ fn the_daemon_status_carries_the_direct_connection_diagnosis() {
     assert_eq!(status["reachability"]["confirmed"], true);
 }
 
+#[test]
+fn a_failed_handshake_is_told_apart_by_iroh_s_error_type() {
+    use iroh::endpoint::{ConnectingError, ConnectionError};
+    use iroh_endpoint::{HandshakeFailure, handshake_failure};
+    let failed = |source: ConnectionError| handshake_failure(&ConnectingError::from(source));
+    assert_eq!(failed(ConnectionError::TimedOut), HandshakeFailure::TimedOut);
+    assert_eq!(failed(ConnectionError::Reset), HandshakeFailure::ClosedByPeer);
+    assert_eq!(failed(ConnectionError::LocallyClosed), HandshakeFailure::Other);
+}
+
 #[tokio::test]
 async fn the_default_port_falls_back_to_a_free_one_and_says_it_is_not_fixed() {
     let key = iroh::SecretKey::from_bytes(&[61; 32]);

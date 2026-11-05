@@ -9,7 +9,9 @@ use crate::service::{DirectRefusal, Service};
 use alondra_e2e::Envelope;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use iroh::endpoint::{Connection, PortmapperConfig, QuicTransportConfig, RecvStream, SendStream, VarInt, presets};
+use iroh::endpoint::{
+    Connection, ConnectingError, ConnectionError, IncomingAddr, PortmapperConfig, QuicTransportConfig, RecvStream, SendStream, VarInt, presets,
+};
 use iroh::{Endpoint, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, Watcher};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Deserialize;
@@ -62,6 +64,11 @@ impl Default for IrohConfig {
 }
 
 impl IrohConfig {
+    /// `auto` learns its relay after the endpoint starts, so not knowing it yet is not being off.
+    pub(crate) fn relay_configured(&self) -> bool {
+        self.relay != "off"
+    }
+
     pub(crate) fn fixed_relay(&self) -> Result<Option<RelayUrl>> {
         match self.relay.as_str() {
             "auto" | "off" => Ok(None),
@@ -110,8 +117,17 @@ pub(crate) fn load_or_create_key(dir: &Path) -> Result<SecretKey> {
 struct Status {
     endpoint: Option<String>,
     relay: Option<String>,
+    relay_configured: bool,
     relay_connected: bool,
     relay_refusal: Option<String>,
+}
+
+/// The iroh relay in use, whether this Mac means to have one, and whether it is connected to it.
+#[derive(Default)]
+pub(crate) struct RelayState {
+    pub(crate) url: Option<String>,
+    pub(crate) configured: bool,
+    pub(crate) connected: bool,
 }
 
 /// A holder that panics leaves it whole, so it is recovered: plain fields set one by one.
@@ -136,11 +152,14 @@ pub(crate) fn status() -> serde_json::Value {
     }
 }
 
-/// The iroh relay in use and whether this Mac is connected to it.
-pub(crate) fn relay_state() -> (Option<String>, bool) {
+pub(crate) fn relay_state() -> RelayState {
     match &*STATUS.lock_or_recover("the iroh status") {
-        Some(status) => (status.relay.clone(), status.relay_connected),
-        None => (None, false),
+        Some(status) => RelayState {
+            url: status.relay.clone(),
+            configured: status.relay_configured,
+            connected: status.relay_connected,
+        },
+        None => RelayState::default(),
     }
 }
 
@@ -175,7 +194,10 @@ pub(crate) async fn run(service: Arc<Service>) {
         tokio::time::sleep(RETRY).await;
     };
     log!("iroh endpoint {} on {:?}", endpoint.id(), endpoint.bound_sockets());
-    update(|status| status.endpoint = Some(endpoint.id().to_string()));
+    update(|status| {
+        status.endpoint = Some(endpoint.id().to_string());
+        status.relay_configured = config.relay_configured();
+    });
     let portmapper = if config.portmapper { PortmapperConfig::default() } else { PortmapperConfig::Disabled };
     tokio::spawn(follow_relay(endpoint.clone(), service.clone(), config));
     tokio::spawn(report_relay(endpoint.clone()));
@@ -212,9 +234,10 @@ pub(crate) async fn serve(endpoint: Endpoint, service: Arc<Service>) {
         let permit = permits.clone().try_acquire_owned();
         let service = service.clone();
         tokio::spawn(async move {
+            let arrived = incoming.remote_addr();
             let connection = match incoming.await {
                 Ok(connection) => connection,
-                Err(error) => return log!("iroh connection failed: {error}"),
+                Err(error) => return log_refused_handshake(&arrived, &error),
             };
             let Ok(_permit) = permit else {
                 return connection.close(VarInt::from_u32(close::BUSY), b"busy");
@@ -222,6 +245,36 @@ pub(crate) async fn serve(endpoint: Endpoint, service: Arc<Service>) {
             serve_connection(&service, connection).await;
         });
     }
+}
+
+/// Why a connection never finished its handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HandshakeFailure {
+    TimedOut,
+    ClosedByPeer,
+    Transport,
+    Other,
+}
+
+pub(crate) fn handshake_failure(error: &ConnectingError) -> HandshakeFailure {
+    match error {
+        ConnectingError::ConnectionError { source: ConnectionError::TimedOut, .. } => HandshakeFailure::TimedOut,
+        ConnectingError::ConnectionError {
+            source: ConnectionError::ConnectionClosed(_) | ConnectionError::ApplicationClosed(_) | ConnectionError::Reset,
+            ..
+        } => HandshakeFailure::ClosedByPeer,
+        ConnectingError::ConnectionError { source: ConnectionError::TransportError(_), .. } => HandshakeFailure::Transport,
+        _ => HandshakeFailure::Other,
+    }
+}
+
+fn log_refused_handshake(arrived: &IncomingAddr, error: &ConnectingError) {
+    let path = crate::reachability::path_kind(&arrived.clone().into());
+    let peer = match arrived {
+        IncomingAddr::Relay { endpoint_id, .. } => endpoint_id.fmt_short().to_string(),
+        _ => "unknown".to_owned(),
+    };
+    log!("iroh connection failed: {:?} over {path:?} from {peer}: {error}", handshake_failure(error));
 }
 
 #[derive(Deserialize)]
