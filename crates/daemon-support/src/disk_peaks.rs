@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const GB: u64 = 1_000_000_000;
-/// A project measured fewer than `TRUSTED_STRETCHES` times reserves at least this: an iOS build
-/// with a simulator and Bazel's test outputs.
+/// What a project measured fewer than `TRUSTED_STRETCHES` times reserves at least while no project
+/// was measured enough to go by.
 pub(crate) const UNMEASURED_PEAK_BYTES: u64 = 8 * GB;
 /// What a project measured enough reserves at the least.
 pub(crate) const MEASURED_PEAK_FLOOR_BYTES: u64 = GB;
@@ -54,9 +54,11 @@ pub struct Measured {
 pub struct Estimates(BTreeMap<String, Measured>);
 
 impl Estimates {
-    /// The space a node of `project` takes at its peak on the Mac's own disk.
+    /// The space a node of `project` takes at its peak on the Mac's own disk: one not measured
+    /// enough reserves what the heaviest measured enough takes.
     pub fn estimate(&self, project: Option<&str>) -> u64 {
-        self.estimate_or(project, UNMEASURED_PEAK_BYTES)
+        let heaviest = self.0.values().filter(|measured| measured.peaks.len() >= TRUSTED_STRETCHES).map(second_highest).max();
+        self.estimate_or(project, heaviest.map_or(UNMEASURED_PEAK_BYTES, |peak| peak.max(MEASURED_PEAK_FLOOR_BYTES)))
     }
 
     /// The space a node of `project` takes at its peak on another volume builds write to.
@@ -353,6 +355,13 @@ mod tests {
         assert_eq!(Estimates::default().estimate(Some("new")), UNMEASURED_PEAK_BYTES);
         assert_eq!(Estimates::default().estimate(None), UNMEASURED_PEAK_BYTES, "a task without a project");
         assert_eq!(measured(&[2 * GB, 3 * GB]).estimate(Some("app")), UNMEASURED_PEAK_BYTES);
+        let mut heaviest = measured(&[GB, 4 * GB, 4 * GB]);
+        heaviest.keep("web", 2 * GB, 3);
+        assert_eq!(heaviest.estimate(Some("new")), 4 * GB, "a project never seen reserves what the heaviest measured enough takes");
+        assert_eq!(heaviest.estimate(Some("web")), 4 * GB, "and so does one seen too few times");
+        heaviest.keep("web", 6 * GB, 4);
+        assert_eq!(heaviest.estimate(Some("web")), 4 * GB, "two stretches are still too few, whatever the highest");
+        assert_eq!(measured(&[0, 0, 0]).estimate(Some("new")), MEASURED_PEAK_FLOOR_BYTES, "never under the floor of a project measured enough");
         assert_eq!(measured(&[12 * GB]).estimate(Some("app")), 12 * GB, "measured over the default");
         assert_eq!(measured(&[2 * GB, 3 * GB, 2 * GB]).estimate(Some("app")), 2 * GB);
         assert_eq!(measured(&[0, 0, 0]).estimate(Some("app")), MEASURED_PEAK_FLOOR_BYTES);
