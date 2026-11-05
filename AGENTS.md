@@ -18,6 +18,15 @@
   - A new integration test needs a Bazel target, or it does not run.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing, when `musts` is installed.
+- `musts validate` asks only for the checks whose `paths` a change touches, and a check's `paths` are
+  the files its targets read (`MUSTS.yml`). Iterate with `bazelisk test <target>`; when the change is
+  done, run `musts run` once, not after a `bazelisk test` of the same tree, and do not rerun it when
+  nothing changed (read the failing log first). A change that only touches prose or images no test
+  loads must leave `musts validate` empty: if it does not, a `paths` entry is wrong, so fix
+  `MUSTS.yml` instead of running the tests.
+- A new test, fixture or `BUILD.bazel` change keeps each check's `paths` equal to what its targets
+  read: `make musts-scopes` fails on a missing path, and
+  `python3 tools/musts_scopes.py propose <check>` prints the paths Bazel asks for.
 
 ## Tests
 
