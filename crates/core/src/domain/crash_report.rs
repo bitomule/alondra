@@ -31,9 +31,21 @@ impl ReportedFailure {
 }
 
 impl DomainState {
-    /// The last failure of `task` a crash report explains, if it had one.
+    /// The last failure of `task` a crash report explains, if it had one. A pause stops the host,
+    /// so its end during one is no failure.
     pub fn task_failure(&self, task: &TaskId) -> Option<ReportedFailure> {
-        self.lifecycle_journal.get(task)?.iter().rev().find_map(|record| ReportedFailure::of(record, &self.interactions))
+        let mut paused = false;
+        let mut failure = None;
+        for record in self.lifecycle_journal.get(task)? {
+            match record {
+                LifecycleRecord::Paused { card, .. } if self.node_pause_card(card) => paused = true,
+                LifecycleRecord::Resumed { .. } | LifecycleRecord::PauseEnded { .. } => paused = false,
+                LifecycleRecord::HostEnded { .. } if paused => continue,
+                _ => {}
+            }
+            failure = ReportedFailure::of(record, &self.interactions).or(failure);
+        }
+        failure
     }
 
     /// The “Send crash report” button of `task`, judged by the guard of its command.

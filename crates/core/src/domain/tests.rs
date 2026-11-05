@@ -5299,6 +5299,11 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
     let mut ended = sdk.clone();
     exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }).unwrap();
     assert_eq!(offered(&ended), Some(ReportedFailure::SessionEnded));
+    let mut paused = sdk.clone();
+    exec(&mut paused, Actor::System, Command::MoveNode { agent_id: "s".into(), at: 1, event: NodeEvent::Paused { pause: Pause {
+        reason: PauseReason::ByUser, since: 1, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } }).unwrap();
+    exec(&mut paused, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: true }).unwrap();
+    assert_eq!(offered(&paused), None, "a pause stops the host: that is no failure");
     let mut lost = sdk.clone();
     exec(&mut lost, Actor::System, Command::RecordHostLost { task_id: "sdk".into(), reason: "the host did not answer".into() }).unwrap();
     assert_eq!(offered(&lost), Some(ReportedFailure::NotResumed));

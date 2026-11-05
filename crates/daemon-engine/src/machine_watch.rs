@@ -6,8 +6,8 @@
 //! limit (`pauses`). A disk below `disk::low_lines()` opens an incident before any node fails,
 //! and while it is open no node starts; nor while the disk has no room for the next node's build
 //! on top of what the nodes at work may still take (`disk_room`, sized by `disk_peaks`). Under the
-//! disk's floor with nodes at work, the next turn of all but the lightest waits for room, with no
-//! card (`admission::hold_for_disk`). The disk watched is the Mac's own and every volume a node
+//! disk's floor with nodes at work, all but the lightest stop until there is room, with no card
+//! (`admission::hold_for_disk`). The disk watched is the Mac's own and every volume a node
 //! was launched on, so a repository on an external disk is watched too.
 //!
 //! Memory opens no incident: the user can do nothing about it that Alondra does not do already.

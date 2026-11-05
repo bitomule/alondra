@@ -555,6 +555,22 @@ for raw in sys.stdin:
                       message=dict(role='user', content=[dict(type='tool_result', tool_use_id='toolu_fixture_huge', content=output)]),
                       tool_use_result=dict(stdout=output, stderr='', interrupted=False)))
             result(message)
+        elif text.endswith('background-group'):
+            # Like the native Claude 2.1.300 with a background Bash: a shell in a group of its own,
+            # with a child of its own, that outlives this process unless something ends it.
+            consume(message, dict(type='tool_use', id='toolu_fixture_background_group', name='Bash',
+                                  input=dict(command='stress.sh', run_in_background=True)))
+            shell = subprocess.Popen(['/bin/sh', '-c', '/bin/sleep 600 & echo $!; wait'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, start_new_session=True)
+            child = shell.stdout.readline().strip().decode()
+            with open(capture + '.background', 'a') as stream:
+                stream.write(str(shell.pid) + '\n' + child + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            serial += 1
+            send(dict(type='system', subtype='task_started', task_id='bfixture2', tool_use_id='toolu_fixture_background_group',
+                      description='stress.sh', task_type='local_bash', is_backgrounded=True,
+                      uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
+            result(message)
         elif text.endswith('background-shell') or 'background-shell\n' in text:
             # Like the native Claude running a Bash call with run_in_background: the command runs as
             # its child, the task starts, and the turn ends saying it goes on once the command ends.

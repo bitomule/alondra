@@ -1149,6 +1149,12 @@ impl DomainState {
     pub(super) fn next_input(&self, task: &TaskId) -> String {
         format!("input:{task}:{}", self.revision + 1)
     }
+    /// Whether the host of `task` ended since its last pause: nothing of what it ran is left to stop.
+    pub fn host_ended_since_pause(&self, task: &TaskId) -> bool {
+        self.lifecycle_journal.get(task).is_some_and(|journal| journal.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Paused { .. }))
+            .any(|record| matches!(record, LifecycleRecord::HostEnded { .. })))
+    }
     /// Whether the node of `task` was told something, since its last delivery, by a command at or
     /// after `revision`: each input carries the revision that made it (`next_input`).
     pub(super) fn told_since(&self, task: &TaskId, revision: u64) -> bool {

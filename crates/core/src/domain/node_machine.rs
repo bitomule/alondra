@@ -245,7 +245,7 @@ pub enum PauseReason {
     ByUser,
     /// A Claude API error ended its turn: Alondra sends it back to its task at the retry's time.
     ApiError(ApiRetry),
-    /// The disk fell under its floor while it built: its next turn waits for room.
+    /// The disk fell under its floor while it built: it stops, and goes on when there is room.
     Disk,
 }
 

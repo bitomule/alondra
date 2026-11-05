@@ -1,4 +1,4 @@
-use alondra_domain::{ActivityView, Event, InputId, Refusal, WaitReason};
+use alondra_domain::{ActivityView, Event, InputId, Refusal, RuntimeFact, Trigger, WaitReason};
 use alondra_foundation::{InteractionId, TaskId};
 use alondra_store::{AuthorityScope, LifecycleTransaction, read_journal};
 use rusqlite::{Connection, TransactionBehavior};
@@ -63,4 +63,28 @@ fn the_journal_of_a_node_that_rested_through_a_disk_pause_ends_its_pause_by_tell
     assert!(resumed.cards().is_empty());
     assert_eq!(resumed.pending_inputs(), [&carry_on]);
     assert_eq!(resumed.execution(), task.lifecycle.execution(), "the same session takes it");
+}
+
+/// 2026-11-05, t-flaky-daemon-engine-under-load: the user paused the node at revision 56 and Claude
+/// went on by itself, three turns the end of a background command woke, until its host ended. That
+/// journal, recorded before a pause stopped the host, loads as it was: the pause holds, what the
+/// node was told waits, and the pause ends with the same execution taking it.
+#[test]
+fn the_journal_of_a_node_that_took_turns_of_its_own_while_paused_loads_and_its_pause_ends() {
+    let directory = test_support::Directory::new();
+    let connection = recorded(&directory, include_str!("../fixtures/user-pause-own-turns.sql"));
+    let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
+    let journal = read_journal(&connection, &scope, |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap();
+    let task = &journal[&TaskId::from("t-flaky-daemon-engine-under-load")];
+    assert_eq!(task.lifecycle.revision(), 73);
+    let own_turn = |event: &&Event| matches!(event, Event::Runtime { fact: RuntimeFact::TurnStarted { trigger: Trigger::OwnedContinuation(_), .. }, .. });
+    let turns = |events: &[Event]| events.iter().filter(own_turn).count();
+    assert_eq!(turns(&task.entries[56..]), 3, "the turns it took while paused");
+    let card = InteractionId::from("node-pause-user-1793833237789-t-flaky-daemon-engine-under-load");
+    assert_eq!(task.lifecycle.cards(), [(&card, WaitReason::Pause)], "the pause is all it waits on");
+    assert_eq!(task.lifecycle.pending_inputs().len(), 1, "what it was told when paused waits for it");
+
+    let ended = task.lifecycle.advanced(73, Event::EndPause { card }).unwrap();
+    assert!(ended.cards().is_empty());
+    assert_eq!(ended.execution(), task.lifecycle.execution(), "the same session takes it");
 }

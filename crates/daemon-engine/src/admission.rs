@@ -836,9 +836,9 @@ fn projects_of<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>)
     tasks.map(|task| (task.clone(), state.tasks.get(task).and_then(|task| task.project.clone()))).collect()
 }
 
-/// The disk fell under its floor: the next turn of every node at work but the one that took least
-/// waits for room, with no card, and comes back through the queue. The turns they run go on, and a
-/// node of `claude --bg`, whose next turn cannot wait, goes on too.
+/// The disk fell under its floor: every node at work but the one that took least stops until there
+/// is room, with no card, and comes back through the queue. A node of `claude --bg`, whose next
+/// turn cannot wait, goes on.
 pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     let Ok(state) = domain.state() else { return };
     let gate = &domain.live.gate;
@@ -854,7 +854,7 @@ pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     }).collect();
     for task in crate::disk_peaks::to_hold(&at_work) {
         let Some(session) = crate::pauses::session_of(&state, &task) else { continue };
-        log!("the disk is under its floor: the next turn of {session} ({task}) waits for room");
+        log!("the disk is under its floor: {session} ({task}) stops until there is room");
         gate.hold_back(domain, &session, Reason::Disk, now);
     }
 }
@@ -1108,6 +1108,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         domain.store.lock_or_exit("the domain store").dequeue_launch(&row.task_id)?;
     }
     let gate = &domain.live.gate;
+    let to_halt;
     let head = {
         let queued = queued_launches(domain, &state, now);
         let mut inner = gate.lock_with(domain);
@@ -1128,7 +1129,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 log!("{line}{detail}");
             }
         }
-        match (snapshot.queue.first(), snapshot.hold) {
+        let head = match (snapshot.queue.first(), snapshot.hold) {
             (Some(head), None) if inner.asking.contains_key(&head.key) => {
                 gate.turn.send_modify(|turn| *turn += 1);
                 None
@@ -1147,8 +1148,13 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 Some(key)
             }
             _ => None,
-        }
+        };
+        to_halt = crate::pauses::to_halt(domain, &state, &inner.saved.pauses);
+        head
     };
+    for (session, paused) in to_halt {
+        crate::pauses::hold_sdk_turn(domain, &session, &paused);
+    }
     let Some(Key::Task(task)) = head else { return Ok(()) };
     let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());
