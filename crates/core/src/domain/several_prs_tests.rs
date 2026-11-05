@@ -248,6 +248,39 @@ fn a_pr_registered_after_the_delivery_holds_the_task_open_and_tells_the_node() {
 }
 
 #[test]
+fn a_pr_merged_by_hand_on_github_counts_as_merged_wherever_the_task_is() {
+    let mut delivered = two_open_prs();
+    merged(&mut delivered, CLOUD, CLOUD_HEAD);
+    assert_eq!(card_actions(&delivered, "final").len(), 1, "only the PR still open offers its merge");
+    merged(&mut delivered, PUBLIC, FIRST_HEAD);
+    assert!(delivered.finished(&delivered.tasks[&TASK.into()]), "nobody pressed anything in Alondra");
+
+    let mut undelivered = at_work();
+    register(&mut undelivered, "bitomule/alondra-cloud", 6, CLOUD_HEAD);
+    merged(&mut undelivered, CLOUD, CLOUD_HEAD);
+    must(&mut undelivered, node(), result("final", text(), true));
+
+    let mut unread = at_work();
+    opened(&mut unread);
+    must(&mut unread, Actor::System, Command::RecordOpenedPr {
+        task_id: TASK.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6,
+        head: CLOUD_HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(CLOUD_HEAD.into()), allowed_methods: vec![MergeMethod::Squash],
+    });
+    must(&mut unread, node(), result("final", text(), true));
+    assert_eq!(unread.merged_pr(&unread.tasks[&TASK.into()]).map(|pr| pr.number), Some(6));
+
+    let mut after_delivery = at_work();
+    register(&mut after_delivery, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut after_delivery, node(), result("result-1", vec![pr(PUBLIC, "")], true));
+    merged(&mut after_delivery, PUBLIC, FIRST_HEAD);
+    opened(&mut after_delivery);
+    read(&mut after_delivery);
+    assert!(!after_delivery.finished(&after_delivery.tasks[&TASK.into()]), "the PR is still open");
+    merged(&mut after_delivery, CLOUD, CLOUD_HEAD);
+    assert!(after_delivery.finished(&after_delivery.tasks[&TASK.into()]), "merged by hand, it never needed a delivery");
+}
+
+#[test]
 fn a_noted_pr_is_read_once_and_a_pr_of_another_task_stays_there() {
     let mut s = at_work();
     opened(&mut s);

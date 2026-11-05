@@ -389,8 +389,8 @@ Pick the tool by what you need:
   is at, or give that full commit sha. A PR you opened after an earlier delivery goes in a new
   final result the same way. The user sees every PR on the card, each with its own merge, so never
   ask about merging, to authorize a merge, or to merge one by hand. When a PR is merged Alondra
-  tells you how many are left, and once they all are it asks you to clean up; a PR merged on GitHub
-  counts too. Never merge a PR yourself.
+  tells you how many are left, and once they all are it asks you to clean up; a PR someone merged on
+  GitHub counts the same, and Alondra sees it by itself. Never merge a PR yourself.
 - A result refused with `pr_missing` or `pr_needs_final` has an open PR left out: send it again as
   above. `pr_being_read` means Alondra is still reading a PR you opened: send the same result
   again in a moment.
