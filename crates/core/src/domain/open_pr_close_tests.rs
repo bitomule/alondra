@@ -209,6 +209,19 @@ fn a_task_closed_with_two_prs_open_delivers_both_and_a_cancel_closes_both() {
 }
 
 #[test]
+fn cancelling_on_a_start_problem_closes_the_pr_like_any_other_cancel_of_the_user() {
+    for problem in [StartProblem::ApiFailed { error: "server_error".into(), detail: None, attempts: 4 }, StartProblem::NodeClosed] {
+        let mut s = registered();
+        must(&mut s, Actor::System, Command::RaiseStartProblem { task_id: "t".into(), problem });
+        let card = s.open_start_problem(&"t".into()).map(|i| i.id.clone()).expect("the card");
+        must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: START_CANCEL.into(), inputs: Default::default() });
+        assert_eq!(task(&s).ending, Some(TaskEnding::Cancelling));
+        assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Cancelled in Alondra: {}", task(&s).title) }));
+        assert_aggregate_rules(&s);
+    }
+}
+
+#[test]
 fn only_alondra_settles_an_open_pr_and_only_one_it_holds() {
     let mut s = registered();
     let refused = settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap_err();
