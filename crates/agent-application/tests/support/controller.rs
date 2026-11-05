@@ -29,6 +29,8 @@ pub fn record_facts(
             ObservedFact::ModelAnswered
             | ObservedFact::Worktree { .. }
             | ObservedFact::SubagentWorktree { .. }
+            | ObservedFact::PullRequestOpened(_)
+            | ObservedFact::PullRequestNotNamed
             | ObservedFact::McpServers { .. }
             | ObservedFact::McpSignIn { .. }
             | ObservedFact::McpToolFailed

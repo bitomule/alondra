@@ -1096,6 +1096,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ReopenTask { task_id }
         | Command::ConfirmCleanup { task_id, .. }
         | Command::RecordTaskWorktree { task_id, .. }
+        | Command::NotePrOpened { task_id, .. }
+        | Command::RecordOpenedPr { task_id, .. }
+        | Command::AskToRegisterPr { task_id }
         | Command::ReleaseTaskWorktree { task_id, .. }
         | Command::DeclarePostMergeWork { task_id, .. }
         | Command::RecordNodeEnd { task_id, .. }

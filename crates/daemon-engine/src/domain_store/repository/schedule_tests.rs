@@ -279,6 +279,8 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
             review_prs: false,
             final_presentation: None,
             pr_id: None,
+            later_prs: vec![],
+            opened_prs: Default::default(),
             dependencies: BTreeSet::new(),
             stack: None,
             documents: BTreeMap::new(),

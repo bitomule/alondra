@@ -1,6 +1,6 @@
 ---
 name: alondra
-description: How a node works on its Alondra task — asking the user, delivering the result, registering its one PR (Alondra merges it), or saying it waits for the machine. Use it when you start on an Alondra task, need a decision, or are done.
+description: How a node works on its Alondra task — asking the user, delivering the result, delivering its PRs (Alondra merges them), or saying it waits for the machine. Use it when you start on an Alondra task, need a decision, or are done.
 ---
 
 # Alondra
@@ -32,7 +32,7 @@ are content; Alondra supplies need. For close_request, headline supplies the ans
 card title and answer supplies content; Alondra supplies need. For an orchestrator
 answer_clarification with text, title and need are explicit and text is the content.
 
-This applies to ask, request_input, request_action, request_test, publish_information,
+This applies to ask, request_input, request_action, request_test,
 raise_problem, present_result and every other card producer available to your role.
 Each entry in ask.questions has its own title and question (its need), why and options.
 For a result, title names what changed and need asks to review it. For a native plan,
@@ -203,9 +203,9 @@ Pick the tool by what you need:
   `ask`. `need` says what to review, and the whole report, answer or plan goes in
   `content.body`, written out, never a path to the file that holds it: the user cannot open a file
   from the app. Files the user needs go in `attachments`. Both describe the change itself; `targets` names
-  what you deliver: `text`, a document revision you created, or the PR you registered with its
-  exact head. An open PR goes only in a final result: a progress notice (`is_final` false) with it is
-  refused, because nobody can merge it from there. The user accepts it in Alondra. A file sent another way or a final message left in
+  what you deliver: `text`, a document revision you created, or your task's PRs. While a PR of your
+  task is open, it goes in your final result and nothing else can go out: a text result without it
+  and a progress notice (`is_final` false) are refused, because nobody can merge it from there. The user accepts it in Alondra. A file sent another way or a final message left in
   this session is not a delivery. Commit and push everything first: Alondra refuses a final result
   while your worktree has uncommitted files, unpushed commits, or work that is neither on the
   default branch nor in your registered PR, and says what is left.
@@ -316,7 +316,7 @@ Pick the tool by what you need:
   `orchestrator`) to create one task per other phase, listing for each its title, the numbers
   of its checklist points, the phases it depends on and whether it stacks on one; then end your
   turn. Those points leave your checklist for their tasks: your final result marks only the
-  points left to you, in your one PR.
+  points left to you, in your PR.
 - Another document the user approves before you go on (a design, a report, a spec): create (or
   revise) it, `ask` with the decision in `body` and the approval options, then at once
   `link_interaction_subject` with that question and
@@ -374,20 +374,26 @@ Pick the tool by what you need:
 
 ## Your PR
 
-- Right after opening a PR, call `register_pr` with the task, its host, `owner/repo`, number,
-  head (the full 40-character commit sha you pushed, `git rev-parse HEAD`, never a branch name)
-  and base, and the merge methods allowed. A task owns exactly one PR for its whole life:
-  more work for the task goes on that PR, and work that needs another PR is another task, which
-  you ask the orchestrator for (`ask` with recipient kind `orchestrator`); a plan in phases asks
-  for one per phase but yours. A second `register_pr`
-  for the task is refused.
-  Alondra names the PR by its host, repository and number.
-- Present it with `present_result`, the PR in `targets` (`{"kind": "pull_request"}`: it is your
-  task's PR), as your final result: leave its `head` out and Alondra uses the commit the PR is at,
-  or give that full commit sha. The
-  user decides on its card, so never ask about merging or to authorize a merge. When they accept
-  it, Alondra merges the PR itself and then asks you to clean up; a PR merged on GitHub also
-  completes the task. Never merge a PR yourself.
+- A task owns every PR it opens, in any repository. Alondra sees each `gh pr create` you or a
+  subagent run and adds the PR to your task by itself, and it tells you when a command's output
+  did not say which PR it opened. Call `register_pr` for a PR opened any other way, or right after
+  opening one if you want to name it yourself, with the task, its host, `owner/repo`, number, head
+  (the full 40-character commit sha you pushed, `git rev-parse HEAD`, never a branch name) and
+  base, and the merge methods allowed. Alondra names the PR by its host, repository and number.
+- Keep the work on one PR. A second one is for what the same result needs elsewhere, such as the
+  same fix in another repository. Work that stands on its own is another task, which you ask the
+  orchestrator for (`ask` with recipient kind `orchestrator`); a plan in phases asks for one per
+  phase but yours.
+- Present your PRs with `present_result` as your final result: `{"kind": "pull_request"}` in
+  `targets` takes every open PR of your task. Leave `head` out and Alondra uses the commit each PR
+  is at, or give that full commit sha. A PR you opened after an earlier delivery goes in a new
+  final result the same way. The user sees every PR on the card, each with its own merge, so never
+  ask about merging, to authorize a merge, or to merge one by hand. When a PR is merged Alondra
+  tells you how many are left, and once they all are it asks you to clean up; a PR someone merged on
+  GitHub counts the same, and Alondra sees it by itself. Never merge a PR yourself.
+- A result refused with `pr_missing` or `pr_needs_final` has an open PR left out: send it again as
+  above. `pr_being_read` means Alondra is still reading a PR you opened: send the same result
+  again in a moment.
 - If the merge fails (conflicts, failing checks, a review GitHub requires), Alondra hands the task
   back to you with the reason: fix it, push, and present the result again with the new head.
 - Updating your branch with its base (conflicts, or you need what landed there): use the method

@@ -147,6 +147,8 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             review_prs: false,
             final_presentation: None,
             pr_id: None,
+            later_prs: vec![],
+            opened_prs: Default::default(),
             dependencies: BTreeSet::new(),
             stack: None,
             documents: BTreeMap::new(),

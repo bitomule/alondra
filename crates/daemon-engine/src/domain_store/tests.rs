@@ -360,7 +360,7 @@ fn two_connections_compete_by_revision_and_domain_rejection_writes_nothing() {
 }
 
 #[test]
-fn lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets() {
+fn lifetime_pr_sql_constraints_reject_a_repeated_pr_reparent_delete_and_bad_targets() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
@@ -401,7 +401,7 @@ fn lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets(
             )
             .is_err()
     );
-    assert!(store.conn.execute("INSERT INTO pull_requests SELECT 'pr-2',task_id,host,repository,2,head,base,state,merged_head,allowed_methods FROM pull_requests WHERE id='pr-1'",[]).is_err());
+    assert!(store.conn.execute("INSERT INTO pull_requests SELECT 'pr-2',task_id,host,repository,number,head,base,state,merged_head,allowed_methods FROM pull_requests WHERE id='pr-1'",[]).is_err());
     assert!(
         store
             .conn

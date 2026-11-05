@@ -325,12 +325,12 @@ impl super::Client {
     /// A node presenting a PR that GitHub says conflicts is told to resolve it first: the card and
     /// its push would only reach the user to be handed back a minute later.
     pub(crate) async fn verify_presentation(&self, command: &Command) -> Result<(), DomainError> {
-        let Command::PresentResult { targets, interaction_id, .. } = command else { return Ok(()) };
+        let Command::PresentResult { task_id, targets, interaction_id, .. } = command else { return Ok(()) };
         let Ok(state) = self.domain.state() else { return Ok(()) };
         if state.interactions.contains_key(interaction_id) {
             return Ok(());
         }
-        for target in targets {
+        for target in &state.with_open_prs(task_id, targets) {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open) else { continue };
             let head = if head.is_empty() { &pr.head } else { head };
@@ -346,6 +346,17 @@ impl super::Client {
             }
         }
         Ok(())
+    }
+
+    /// A node presenting a result is judged on every PR of its task, the ones it just opened too.
+    pub(crate) async fn catch_up_task(&self, command: &Command) {
+        let Command::PresentResult { task_id, interaction_id, is_final, .. } = command else { return };
+        if self.domain.state().is_ok_and(|state| state.interactions.contains_key(interaction_id)) {
+            return;
+        }
+        if let Err(error) = crate::domain_github::catch_up_task(&self.domain, &crate::domain_github::GhCli::new(), task_id, *is_final).await {
+            log!("could not read the PRs of {task_id} from GitHub: {error:#}");
+        }
     }
 
     /// A node presenting a head Alondra has not seen has usually just pushed it, before the

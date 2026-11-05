@@ -32,6 +32,7 @@ pub fn tool_of(step: &Step) -> Option<(String, Value)> {
         Step::Commit { file, .. } => bash(&format!("git add -A && git commit -m 'Add {file}'")),
         Step::Dirty { file } => Some(("Write".into(), json!({"file_path": file}))),
         Step::Push => bash("git push -u origin HEAD"),
+        Step::Branch { name } => bash(&format!("git checkout -b {name}")),
         Step::OpenPr { .. } => bash("gh pr create --fill"),
         Step::RegisterPr { .. } => mcp("register_pr"),
         Step::Deliver { .. } => mcp("present_result"),
@@ -69,7 +70,8 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
         })(),
         Step::Dirty { file } => fs::write(dir.join(file), "left behind\n").map(|()| done(file.clone())).map_err(Into::into),
         Step::Push => git(dir, &["push", "-u", "origin", "HEAD"]).map(done),
-        Step::OpenPr { number, draft, checks } => gh::open(fakes, dir, *number, *draft, *checks).map(|pr| done(format!("PR {} on {}", pr.number, pr.branch))),
+        Step::Branch { name } => git(dir, &["checkout", "-q", "-b", name]).map(done),
+        Step::OpenPr { number, draft, checks } => gh::open(fakes, dir, *number, *draft, *checks).map(|pr| done(format!("https://github.com/{}/pull/{}", pr.repository, pr.number))),
         Step::RegisterPr { number } => (|| -> Result<mcp::Reply> {
             let head = git(dir, &["rev-parse", "HEAD"])?;
             worker.tool(fakes, "register_pr", json!({

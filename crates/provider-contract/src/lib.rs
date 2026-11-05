@@ -213,6 +213,10 @@ pub enum Observation {
     SubagentWorktree {
         agent: String,
     },
+    /// A command of the node or a subagent opened this pull request with `gh pr create`.
+    PullRequestOpened(OpenedPullRequest),
+    /// A command ran `gh pr create` and finished well, and its output named no pull request.
+    PullRequestNotNamed,
     /// The request at `epoch` is over: `answered` when a decision resolved it, otherwise it was
     /// aborted, closed or its decision could not be delivered. `continued` when the root turn that
     /// asked is still open, so an answered request lets that same turn go on.
@@ -362,4 +366,68 @@ pub trait Adapter {
     ) -> Result<Handoff, AdapterError>;
     fn next(&mut self) -> Result<Option<OrderedObservation>, AdapterError>;
     fn acknowledge(&mut self, execution: &ExecutionStamp, cursor: u64) -> Result<(), AdapterError>;
+}
+
+/// Where a pull request `gh pr create` printed lives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenedPullRequest {
+    pub host: String,
+    pub repository: String,
+    pub number: u64,
+}
+
+/// Whether a shell command line runs `gh pr create`, also inside `sh -c '...'`. It only says that
+/// the output deserves a look: the pull request itself is what GitHub says of the address printed.
+pub fn runs_gh_pr_create(command: &str) -> bool {
+    let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || "'\"`()".contains(c)).filter(|word| !word.is_empty()).collect();
+    words.iter().enumerate().filter(|(_, word)| **word == "gh").any(|(at, _)| {
+        let call: Vec<&str> = words[at + 1..].iter().copied().take_while(|word| !word.contains([';', '|', '&'])).collect();
+        call.windows(2).any(|pair| pair == ["pr", "create"])
+    })
+}
+
+/// The pull requests a command's output names by their address, each once, in order.
+pub fn pull_requests_named(output: &str) -> Vec<OpenedPullRequest> {
+    let mut found: Vec<OpenedPullRequest> = Vec::new();
+    for word in output.split(|c: char| c.is_whitespace() || "()<>[]\"'`".contains(c)) {
+        if let Some(pr) = pull_request_at(word.trim_end_matches(['.', ',', ';', ':'])).filter(|pr| !found.contains(pr)) {
+            found.push(pr);
+        }
+    }
+    found
+}
+
+fn pull_request_at(address: &str) -> Option<OpenedPullRequest> {
+    let (host, path) = address.strip_prefix("https://")?.split_once('/')?;
+    let parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+    let [owner, name, "pull", number] = parts.as_slice() else { return None };
+    let plain = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    if !host.contains('.') || !plain(host) || !plain(owner) || !plain(name) {
+        return None;
+    }
+    Some(OpenedPullRequest { host: host.to_owned(), repository: format!("{owner}/{name}"), number: number.parse().ok().filter(|number| *number > 0)? })
+}
+
+#[cfg(test)]
+mod pull_request_tests {
+    use super::*;
+
+    #[test]
+    fn a_command_line_runs_gh_pr_create_however_it_is_written() {
+        for command in ["gh pr create --title x", "cd ../cloud && gh pr create -t x | tail -1", "bash -lc 'gh pr create --fill'", "gh --repo o/r pr create --fill"] {
+            assert!(runs_gh_pr_create(command), "{command}");
+        }
+        for command in ["gh pr view 12", "gh pr list; git create", "gh issue create", "echo pr create"] {
+            assert!(!runs_gh_pr_create(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn only_a_pull_request_address_is_named_and_each_once() {
+        let output = "Creating pull request\nhttps://github.com/bitomule/alondra-cloud/pull/6\nsee https://github.com/bitomule/alondra-cloud/pull/6.\nhttps://github.com/o/r/issues/2 https://example/o/r/pull/3 https://ghe.corp.io/O/R/pull/4/";
+        assert_eq!(pull_requests_named(output), vec![
+            OpenedPullRequest { host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6 },
+            OpenedPullRequest { host: "ghe.corp.io".into(), repository: "O/R".into(), number: 4 },
+        ]);
+    }
 }

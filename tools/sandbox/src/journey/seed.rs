@@ -134,6 +134,20 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         }) };
         act(report, &fakes, &secret, "the node asks for a secret that goes to .env", &[ask_secret])?;
 
+        request(report, &fakes, &user, &task_script("req-two-prs", "t-two-prs", "Fix the phone menu on the site"), "Fix the phone menu on the site")?;
+        let fixing = launched(report, &fakes, "t-two-prs")?;
+        state(report, &user, "t-two-prs", WORKING)?;
+        act(report, &fakes, &fixing, "the node opens two PRs, registers neither and delivers", &[
+            Step::Commit { file: "menu.css".into(), text: "nav { background: #111; }\n".into() },
+            Step::Push,
+            Step::OpenPr { number: 51, draft: false, checks: Checks::Success },
+            Step::Branch { name: "site-menu".into() },
+            Step::Commit { file: "site-menu.css".into(), text: "nav a { color: #fff; }\n".into() },
+            Step::Push,
+            Step::OpenPr { number: 52, draft: false, checks: Checks::Success },
+            Step::Deliver { need: "Review the phone menu fix".into(), pr: Some(52), is_final: true },
+        ])?;
+
         request(report, &fakes, &user, &reworking("req-review", "t-review", "Add a greeting file", 41, "greeting.txt"), "Add a greeting file")?;
         let reviewing = launched(report, &fakes, "t-review")?;
         state(report, &user, "t-review", WORKING)?;

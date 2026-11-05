@@ -478,6 +478,14 @@ impl<'connection> OwnerTransaction<'connection> {
                     };
                     commands.push(Command::RecordMcpSignIn { task_id: task_id.clone(), generation, server: server.clone(), sign_in });
                 }
+                ObservedFact::PullRequestOpened(pr) => {
+                    flush(&mut commands, &mut technical);
+                    commands.push(Command::NotePrOpened { task_id: task_id.clone(), host: pr.host.clone(), repository: pr.repository.clone(), number: pr.number });
+                }
+                ObservedFact::PullRequestNotNamed => {
+                    flush(&mut commands, &mut technical);
+                    commands.push(Command::AskToRegisterPr { task_id: task_id.clone() });
+                }
                 ObservedFact::McpToolFailed => {
                     flush(&mut commands, &mut technical);
                     if binding.permits(Capability::McpStatus) {

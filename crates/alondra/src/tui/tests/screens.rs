@@ -69,6 +69,8 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
         review_prs: false,
         final_presentation: None,
         pr_id: None,
+        later_prs: vec![],
+        opened_prs: Default::default(),
         dependencies: BTreeSet::new(),
         stack: None,
         documents: BTreeMap::new(),

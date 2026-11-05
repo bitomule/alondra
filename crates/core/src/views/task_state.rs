@@ -579,7 +579,7 @@ fn pr_title(id: &str, context: &RenderContext<'_>) -> Option<String> {
 
 fn review_fact(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
-    if let Some(pr) = task.pr_id.as_ref().and_then(|id| context.domain.pull_requests.get(id)) {
+    if let Some(pr) = context.domain.main_pr(task) {
         let number = pr.number;
         return Some(match pr_title(&pr.id.0, context) {
             Some(title) => tf!(lang, "PR #{number} · {title}", "PR #{number} · {title}"),
@@ -592,7 +592,7 @@ fn review_fact(task: &Task, context: &RenderContext<'_>) -> Option<String> {
 
 fn done_fact(task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
-    if let Some(pr) = task.pr_id.as_ref().and_then(|id| context.domain.pull_requests.get(id)).filter(|pr| pr.state == PrState::Merged) {
+    if let Some(pr) = context.domain.merged_pr(task) {
         let number = pr.number;
         return tf!(lang, "PR #{number} merged", "PR #{number} mergeada");
     }

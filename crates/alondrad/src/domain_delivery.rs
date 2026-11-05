@@ -908,6 +908,8 @@ mod tests {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
             started: true, review_prs: false, final_presentation: None, pr_id: None,
+            later_prs: vec![],
+            opened_prs: Default::default(),
             dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
         });
         let options = vec![

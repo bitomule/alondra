@@ -108,7 +108,9 @@ const TASK_RELATIONS: &str = "CREATE TABLE IF NOT EXISTS task_relations(\
  delivered_dependencies TEXT NOT NULL CHECK(json_valid(delivered_dependencies)),\
  blocks TEXT NOT NULL CHECK(json_valid(blocks)),\
  verdict TEXT CHECK(verdict IS NULL OR json_valid(verdict)),\
- review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255));";
+ review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255),\
+ later_prs TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(later_prs)),\
+ opened_prs TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(opened_prs)));";
 /// The Requests sent as maintenance messages, kept beside them; created on every open like
 /// task_relations.
 const ORCHESTRATOR_SESSION: &str = "CREATE TABLE IF NOT EXISTS orchestrator_session(\
@@ -683,6 +685,8 @@ impl DomainStore {
         tx.execute_batch(ALLOWED_RULES)?;
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
+        repository::add_task_pr_columns(&tx)?;
+        repository::allow_several_prs_per_task(&tx)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
         tx.execute_batch(CLEARED_REQUESTS)?;
         tx.execute_batch(REQUEST_ORIGINS)?;
