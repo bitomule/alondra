@@ -124,13 +124,10 @@ impl NativeTurn {
                         report.public_result = stream.note.clone();
                     }
                     Some("mcpToolCall") => {
-                        let failed = item["status"] == "failed" || item.pointer("/result/isError").and_then(Value::as_bool) == Some(true);
-                        if failed {
-                            let detail = bounded_public(&item.to_string(),16384).to_lowercase();
-                            if detail.contains("forbidden") || detail.contains("permission_denied") || detail.contains("permission denied") || detail.contains("user denied") {
-                                stream.denied = true;
-                                stream.error = Some("Alondra refused a required permission; another provider cannot bypass that decision".into());
-                            }
+                        let stopped_before_alondra = item["status"] == "failed" && !item["error"].is_null() && item["result"].is_null();
+                        if stopped_before_alondra {
+                            stream.denied = true;
+                            stream.error = Some("Alondra refused a required permission; another provider cannot bypass that decision".into());
                         }
                         let tool = item["tool"].as_str().unwrap_or("unknown");
                         if alondra_core::orchestrator_batch::changes_something(tool) {
@@ -407,10 +404,23 @@ mod tests {
         ready(&mut native,&mut stream);
         let reasoning = native.fold(&json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn","item":{"type":"reasoning","text":"private reasoning"}}}),"input","batch",&mut stream).unwrap();
         assert!(reasoning.public_result.is_none()); assert!(stream.note.is_none());
-        native.fold(&json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn","item":{"type":"mcpToolCall","tool":"launch","status":"failed","error":{"message":"forbidden: user denied"}}}}),"input","batch",&mut stream).unwrap();
+        native.fold(&json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn","item":{"type":"mcpToolCall","tool":"launch","status":"failed","error":{"message":"stopped before reaching the server"}}}}),"input","batch",&mut stream).unwrap();
         assert!(stream.denied);
         native.fold(&json!({"method":"error","params":{"threadId":"native","error":{"codexErrorInfo":"usageLimitExceeded","message":"Quota exhausted"}}}),"input","batch",&mut stream).unwrap();
         assert!(stream.limited && stream.denied);
+    }
+    #[test]
+    fn a_tool_call_alondra_answered_is_never_a_denial_and_the_batch_ends_handled() {
+        for arguments in [json!({"interaction_id":"card"}), json!({"reason":"forbidden: permission denied, user denied"})] {
+            let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
+            ready(&mut native,&mut stream);
+            native.fold(&json!({"method":"item/started","params":{"threadId":"native","turnId":"turn","item":{"type":"userMessage","clientId":"input"}}}),"input","batch",&mut stream).unwrap();
+            let refusal = json!({"content":[{"type":"text","text":"Alondra error: Alondra refused it [forbidden]: Only a card's author withdraws it"}],"isError":true});
+            native.fold(&json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn","item":{"type":"mcpToolCall","tool":"withdraw","status":"failed","arguments":arguments,"result":refusal,"error":null}}}),"input","batch",&mut stream).unwrap();
+            assert!(!stream.denied && stream.error.is_none(), "Alondra answered the call: {:?}", stream.error);
+            native.fold(&json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"completed"}}}),"input","batch",&mut stream).unwrap();
+            assert!(matches!(stream.end(true,""), crate::orchestrator_process::BatchEnd::Handled));
+        }
     }
     #[test]
     fn native_request_and_context_rejections_do_not_exhaust_a_batch_account() {
