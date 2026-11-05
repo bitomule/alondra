@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import re
+import select
 import shutil
 import signal
 import socket
@@ -749,6 +750,13 @@ class CaseDaemon:
         os.kill(self.pid, signal.SIGKILL)
         self.supervisor.exited(self.pid, 30)
 
+    def leave(self):
+        """What `alondra doctor --fix` sends once launchd holds the job. A release older than the
+        signal ends on it; either way its SDK hosts stay."""
+        os.kill(self.pid, signal.SIGUSR1)
+        if self.supervisor.exited(self.pid, EXIT_WITHIN) is None:
+            raise Failed(f'the daemon started by hand did not leave within {EXIT_WITHIN} s')
+
     def stop(self):
         if self.supervisor.exited(self.pid, 0) is None:
             os.kill(self.pid, signal.SIGTERM)
@@ -834,7 +842,17 @@ class HandoverWorld:
         (self.home / 'config.toml').write_text(f'port = {self.port}\n')
 
     def start(self, version):
-        self.daemon = CaseDaemon(self.supervisor, self.root / 'opt/alondra/bin/alondrad', self.env(), self.port, self.log)
+        self.launch()
+        self.daemon.wait_for_version(version, SERVE_WITHIN)
+
+    def launch(self, env=None):
+        self.daemon = CaseDaemon(self.supervisor, self.root / 'opt/alondra/bin/alondrad', env or self.env(), self.port, self.log)
+
+    def start_by_hand(self, version):
+        """The daemon of a person's shell: launchd's name for the job is not in its environment."""
+        env = self.env()
+        del env['XPC_SERVICE_NAME']
+        self.launch(env)
         self.daemon.wait_for_version(version, SERVE_WITHIN)
 
     def crash(self):
@@ -1180,6 +1198,14 @@ def check_moved(world, task, session, first_input):
 
 
 UPGRADE_CASE = 'sdk-upgrade'
+LAUNCHD_CASE = 'to-launchd'
+SKEW_CASE = 'skew-card'
+# The last release that cannot read a card's title, which is what an upgraded CLI sends it.
+SKEW_FROM = '0.3.17'
+SKEW_CARD = 'held-card'
+# Long enough for the card to reach the daemon, be refused and start to wait.
+HOLD_SEEN = 5
+WAITS_FOR_HOME = 'waiting for it to leave'
 # The tasks the previous release leaves with a command running in the background: the node that
 # moves to a host of the new release once it rests, and the one that moves too while the new daemon
 # dies before and after its move.
@@ -1457,13 +1483,127 @@ def run_upgrade(world, old, new):
             'crashed_after': crashed}
 
 
+def to_launchd(rehearsal, old, new, sdk):
+    """A daemon started by hand, with a node at work, gives way to the one launchd starts: that
+    one waits for the HOME, takes the node's host, and the node goes on."""
+    world = HandoverWorld(rehearsal, rehearsal.work / LAUNCHD_CASE, sdk)
+    world.root.mkdir()
+    try:
+        return run_to_launchd(world, old, new)
+    except Failed as error:
+        raise Failed(f'{error}\n{log_tail(world.log)}') from None
+    finally:
+        world.stop_everything()
+
+
+def run_to_launchd(world, old, new):
+    world.lay_out(old, new['keg'], new['make_keg'])
+    install_router(world)
+    fresh_previous(world.rehearsal, world.home, old)
+    world.provision()
+    world.start_by_hand(old['version'])
+    world.connect_claude_where_asked()
+    world.tool('phone', '--mac', '1', 'pair', '--direct')
+    session, command = background_node(world, KEEPS, UPGRADE_SEEDED[KEEPS], old['version'], ())
+    before = host_facts(world, session, command)
+    link(world.root / 'opt/alondra', new['keg'])
+    by_hand = world.daemon
+    world.launch()
+    until('the daemon of launchd waits for the one started by hand',
+          lambda: (WAITS_FOR_HOME in world.log.read_text(errors='replace'), None))
+    if by_hand.supervisor.exited(by_hand.pid, 0) is not None:
+        raise Failed('the daemon started by hand ended before it was asked to leave')
+    by_hand.leave()
+    world.daemon.wait_for_version(new['version'], SERVE_WITHIN)
+    if world.daemon.status().get('supervised') is not True:
+        raise Failed(f'the daemon that took over does not say it runs under launchd: {world.daemon.status()}')
+    check_kept(world, {KEEPS: session}, {KEEPS: command}, {KEEPS: before}, 'the move under launchd')
+    host = move_at_rest(world, KEEPS, session, command, before)
+    resume_after_move(world, KEEPS, session, host)
+    return {'task': KEEPS, 'session': session, 'host_release': before['release']}
+
+
+def skew_card(rehearsal, old, new, sdk):
+    """The refusal of 2026-11-05 on the real release: an upgraded CLI sends a card the running
+    daemon cannot read. The card waits, reaches the new daemon once, and the task goes on."""
+    world = HandoverWorld(rehearsal, rehearsal.work / SKEW_CASE, sdk)
+    world.root.mkdir()
+    try:
+        return run_skew_card(world, old, new)
+    except Failed as error:
+        raise Failed(f'{error}\n{log_tail(world.log)}') from None
+    finally:
+        world.stop_everything()
+
+
+def node_result(task, card):
+    return {'task_id': task, 'interaction_id': card, 'is_final': True, 'title': 'Weekly result', 'need': 'Read the weekly result',
+            'content': {'kind': 'report', 'body': 'Nothing to change this week'},
+            'targets': [{'kind': 'text', 'text': 'Nothing to change this week'}]}
+
+
+def mcp_call(arguments):
+    return json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'present_result', 'arguments': arguments}}) + '\n'
+
+
+def node_tools(world, cli, session, hold=None):
+    """The MCP server a node of `session` runs: `cli` with the environment its host gave it."""
+    live, _ = session_hosts(world.home / 'sdk', session)
+    environment = bootstrap(live)['native']['env']
+    env = world.env()
+    env.update({key: value for key, value in environment.items() if key.startswith('ALONDRA_')})
+    env.update({} if hold is None else {'ALONDRA_VERSION_HOLD_SECS': str(hold)})
+    return subprocess.Popen([cli, 'mcp-node'], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+
+def run_skew_card(world, old, new):
+    world.lay_out(old, new['keg'], new['make_keg'])
+    install_router(world)
+    fresh_previous(world.rehearsal, world.home, old)
+    world.provision()
+    world.start(old['version'])
+    world.connect_claude_where_asked()
+    world.tool('phone', '--mac', '1', 'pair', '--direct')
+    session, _ = background_node(world, KEEPS, UPGRADE_SEEDED[KEEPS], old['version'], ())
+    cli = new['keg'] / 'bin/alondra'
+
+    impatient = node_tools(world, cli, session, hold=0)
+    answer, _ = impatient.communicate(mcp_call(node_result(KEEPS, 'refused')), timeout=PATIENCE)
+    refusal = json.loads(answer.splitlines()[0])['result']
+    if (refusal.get('structuredContent') or {}).get('daemon') != old['version']:
+        raise Failed(f'{old["version"]} did not refuse the card of the new CLI as a version mismatch: {refusal}')
+
+    held = node_tools(world, cli, session)
+    held.stdin.write(mcp_call(node_result(KEEPS, SKEW_CARD)))
+    held.stdin.flush()
+    if select.select([held.stdout], [], [], HOLD_SEEN)[0]:
+        raise Failed(f'the card did not wait for the daemon: {held.stdout.readline()}')
+    restart_into(world, old, new)
+    world.start(new['version'])
+    ready = select.select([held.stdout], [], [], PATIENCE)[0]
+    reply = json.loads(held.stdout.readline())['result'] if ready else None
+    held.stdin.close()
+    held.wait(PATIENCE)
+    if reply is None or reply.get('isError'):
+        raise Failed(f'the held card did not reach {new["version"]}: {reply}')
+    cards = [row for row in rows(world.home, 'interactions') if SKEW_CARD in json.dumps(row)]
+    if len(cards) != 1:
+        raise Failed(f'the held card should exist once, it exists {len(cards)} times')
+    state = world.task_state(KEEPS)
+    if state in ('cancelled', None):
+        raise Failed(f'the task of the held card ended up {state}')
+    return {'task': KEEPS, 'state': state, 'refused_by': old['version']}
+
+
 def sdk_cases(previous):
     """A release before the Agent SDK leaves claude --bg nodes to move; one after it, SDK hosts to
     keep. Every release also installs fresh."""
-    return (UPGRADE_CASE if has_sdk_backend(previous) else SDK_CASE, FRESH_SDK_CASE)
+    if not has_sdk_backend(previous):
+        return (SDK_CASE, FRESH_SDK_CASE)
+    return (UPGRADE_CASE, LAUNCHD_CASE, *((SKEW_CASE,) if previous == SKEW_FROM else ()), FRESH_SDK_CASE)
 
 
-ALL_CASES = (*CASES, SDK_CASE, UPGRADE_CASE, FRESH_SDK_CASE)
+ALL_CASES = (*CASES, SDK_CASE, UPGRADE_CASE, LAUNCHD_CASE, SKEW_CASE, FRESH_SDK_CASE)
 
 
 def chosen_cases(previous, sdk, only=None):
@@ -1550,6 +1690,20 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         print(f'{UPGRADE_CASE}: {len(kept_running["tasks"])} commands in the background outlived the update on the hosts of '
               f'{old_version}; each node moved to a host of {new["version"]} once it rested, resuming its session, '
               f'the daemon killed after {", ".join(kept_running["crashed_after"])}')
+    if LAUNCHD_CASE in chosen:
+        keg = work / LAUNCHD_CASE / 'Cellar/alondra' / new['version']
+        try:
+            result['cases'][LAUNCHD_CASE] = to_launchd(rehearsal, old, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
+        except Failed as error:
+            raise Failed(f'case {LAUNCHD_CASE}: {error}') from None
+        print(f'{LAUNCHD_CASE}: a daemon of {old_version} started by hand gave way to the one launchd starts, and its node went on')
+    if SKEW_CASE in chosen:
+        keg = work / SKEW_CASE / 'Cellar/alondra' / new['version']
+        try:
+            result['cases'][SKEW_CASE] = skew_card(rehearsal, old, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
+        except Failed as error:
+            raise Failed(f'case {SKEW_CASE}: {error}') from None
+        print(f'{SKEW_CASE}: a card {old_version} refused waited for {new["version"]} and arrived once; the task stayed {result["cases"][SKEW_CASE]["state"]}')
     if FRESH_SDK_CASE in chosen:
         keg = work / FRESH_SDK_CASE / 'Cellar/alondra' / new['version']
         try:

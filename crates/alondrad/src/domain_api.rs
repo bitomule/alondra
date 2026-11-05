@@ -729,9 +729,21 @@ async fn resource_command<H: DomainHost>(
         }
     }
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
-        return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));
+        return domain_error(unknown_operation(&headers));
     };
     execute_command(host, peer, signed, headers, envelope).await
+}
+
+/// A client newer than this daemon may send what only its release knows: during an upgrade that
+/// says the daemon is behind, not that the client is wrong.
+fn unknown_operation(headers: &HeaderMap) -> DomainError {
+    let daemon = env!("CARGO_PKG_VERSION");
+    match headers.get("x-alondra-client-version").and_then(|value| value.to_str().ok())
+        .filter(|client| alondra_core::update::newer(client, daemon))
+    {
+        Some(client) => DomainError::new("version_mismatch", format!("this client is {client} and the daemon still runs {daemon}")),
+        None => DomainError::new("invalid_input", "unsupported resource operation"),
+    }
 }
 
 /// A new Task's launch plan, read on its own so a malformed one is refused saying what is wrong
@@ -1910,6 +1922,37 @@ mod tests {
         drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
+    #[tokio::test]
+    async fn an_operation_this_daemon_does_not_know_says_its_client_is_newer() {
+        let (_home, host) = fixture();
+        let _directory = host.test_directory.clone();
+        let (base, server, _, _) = server(host.clone()).await;
+        let token = host.domain.issue(Principal::Agent {
+            session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
+        }).unwrap();
+        let state = host.domain.state().unwrap();
+        let send = |client: &'static str| {
+            reqwest::Client::new().post(format!("{base}/questions"))
+                .bearer_auth(token.expose_for_child_environment())
+                .header("x-alondra-client-version", client)
+                .json(&json!({"data_epoch":state.data_epoch,"command_id":"card","expected_revision":state.revision,"interaction_id":"card",
+                    "scope":{"kind":"task","task_id":"task-a"},"recipient":{"kind":"user"},"body":"x","blocking":false,
+                    "card":{"kind":"decide","need":"Need","a_field_of_a_later_release":true}}))
+                .send()
+        };
+        let newer = send("999.0.0").await.unwrap();
+        assert_eq!(newer.status(), reqwest::StatusCode::CONFLICT);
+        let refusal: Value = newer.json().await.unwrap();
+        assert_eq!(refusal["code"], "version_mismatch", "{refusal}");
+        let text = refusal["message"].as_str().unwrap();
+        assert!(text.contains("999.0.0") && text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+
+        let same = send(env!("CARGO_PKG_VERSION")).await.unwrap();
+        assert_eq!(same.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(same.json::<Value>().await.unwrap()["code"], "invalid_input");
+        server.abort();
+    }
+
     #[tokio::test]
     async fn card_title_contract_accepts_a_live_legacy_mcp_producer() {
         let (home, host) = fixture();

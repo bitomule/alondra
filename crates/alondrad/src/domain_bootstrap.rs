@@ -470,7 +470,8 @@ async fn daemon(
         "home": state.home, "sandbox": state.domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed),
         "views_protocol": crate::views::this_service().views_protocol,
         "update":crate::updates::status(&state.home),
-        "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
+        "preflight_rejected": crate::relaunch::rejected(), "supervised": crate::relaunch::under_launchd(),
+        "machine": machine, "usage": usage,
         "claude": crate::claude_check::status(),
         "direct": state.service.get().filter(|_| state.direct.get().is_some()).map(|service| json!({
             "port": service.direct_config().port, "bonjour": crate::direct::bonjour::status()})),

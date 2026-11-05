@@ -544,12 +544,18 @@ impl Client {
             .method(method)
             .uri(url)
             .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {bearer}"));
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-alondra-client-version", env!("CARGO_PKG_VERSION"));
         if let Some(operation) = self.operation_id() {
             request = request.header("x-alondra-mcp-operation", operation);
         }
         let response = self.agent.run(request.body(bytes)?)?;
-        answer(response)
+        let status = response.status().as_u16();
+        let daemon = response.headers().get("x-alondra-version").and_then(|v| v.to_str().ok()).map(str::to_owned);
+        answer(response).map_err(|refusal| match daemon.filter(|daemon| refused_for_being_behind(status, daemon)) {
+            Some(daemon) => anyhow::Error::new(DaemonBehind { daemon, refusal }),
+            None => refusal,
+        })
     }
 
     /// A refusal is the daemon's typed answer; anything else leaves the outcome unknown.
@@ -705,6 +711,27 @@ fn answer(mut resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
     }
     Ok(value)
 }
+
+/// A daemon older than this client may refuse a command only because it does not know it yet, as
+/// in every upgrade until the daemon restarts. Being refused access says nothing about that.
+fn refused_for_being_behind(status: u16, daemon: &str) -> bool {
+    (400..500).contains(&status) && !matches!(status, 401 | 403) && alondra_core::update::newer(env!("CARGO_PKG_VERSION"), daemon)
+}
+
+/// A refusal from a daemon older than this client: nothing was written.
+#[derive(Debug)]
+pub struct DaemonBehind {
+    pub daemon: String,
+    pub refusal: anyhow::Error,
+}
+
+impl std::fmt::Display for DaemonBehind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.refusal.fmt(f)
+    }
+}
+
+impl std::error::Error for DaemonBehind {}
 
 /// alondrad's typed no: nothing was written. It reads as `refusal` to the user.
 #[derive(Debug)]

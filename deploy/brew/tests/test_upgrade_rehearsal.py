@@ -316,11 +316,16 @@ class HandoverCaseTests(unittest.TestCase):
 class UpgradeCaseTests(Fixture):
     def test_a_release_with_the_agent_sdk_leaves_hosts_to_keep_and_one_before_it_claude_bg_nodes_to_move(self):
         self.assertEqual(u.sdk_cases('0.2.91'), (u.SDK_CASE, u.FRESH_SDK_CASE))
-        self.assertEqual(u.sdk_cases('0.3.5'), (u.UPGRADE_CASE, u.FRESH_SDK_CASE))
+        self.assertEqual(u.sdk_cases('0.3.5'), (u.UPGRADE_CASE, u.LAUNCHD_CASE, u.FRESH_SDK_CASE))
+
+    def test_the_card_of_the_incident_is_rehearsed_from_the_release_that_could_not_read_it(self):
+        self.assertIn(u.SKEW_CASE, u.sdk_cases(u.SKEW_FROM))
+        self.assertNotIn(u.SKEW_CASE, u.sdk_cases('0.3.18'))
+        self.assertIn('title', u.node_result('t', 'c'), 'the field 0.3.17 refuses')
 
     def test_only_the_named_cases_run_and_one_that_cannot_run_from_the_previous_release_is_refused(self):
         sdk = object()
-        self.assertEqual(u.chosen_cases('0.3.5', sdk), [*u.CASES, u.UPGRADE_CASE, u.FRESH_SDK_CASE])
+        self.assertEqual(u.chosen_cases('0.3.5', sdk), [*u.CASES, u.UPGRADE_CASE, u.LAUNCHD_CASE, u.FRESH_SDK_CASE])
         self.assertEqual(u.chosen_cases('0.3.5', None), list(u.CASES))
         self.assertEqual(u.chosen_cases('0.3.5', sdk, [u.UPGRADE_CASE]), [u.UPGRADE_CASE])
         with self.assertRaisesRegex(u.Failed, f'{u.SDK_CASE} does not run when upgrading from 0.3.5'):

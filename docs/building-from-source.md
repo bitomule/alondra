@@ -279,7 +279,7 @@ command that fixes it. It exits with 1 when any check is ✗.
 | `config` | `~/.alondra/config.toml` missing (! defaults) or invalid (✗) | `alondra doctor --fix`; or fix/remove the file |
 | `alondrad` | ✗ the daemon does not answer on the port. ! it answers with other settings than `config.toml` | `alondra doctor --fix`, `tail ~/.alondra/alondrad.log`; ! → `launchctl kickstart -k gui/$(id -u)/dev.alondra.alondrad` |
 | `hooks` | the port is not 47800, so the plugin's hooks miss the daemon | remove `port` from `config.toml` and `ALONDRA_PORT` |
-| `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start) | `alondra doctor --fix`; read `~/.alondra/alondrad.log` |
+| `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start), disabled in launchd, or the daemon was started by hand | `alondra doctor --fix`; read `~/.alondra/alondrad.log` |
 | `claude` | Claude Code is not on `PATH` | install Claude Code |
 | `plugin` | ✗ the marketplace is not registered, so alondrad cannot load the plugin into its nodes; ! the plugin is enabled for every Claude session | ✗ → run from the repo: `claude plugin marketplace add "$PWD"`; ! → `alondra doctor --fix` (or the `claude plugin disable … --scope …` doctor prints) |
 | `tmux` | tmux missing: stopped nodes cannot be woken | `brew install tmux` |
@@ -300,7 +300,15 @@ first runs `alondrad --preflight`, which loads the configuration and replays the
 on a private copy of `~/.alondra`, changing nothing. Only if that passes does the daemon release
 the hooks it holds and exit, and launchd starts the new version. A binary that fails preflight
 is not started: the old daemon keeps running and `alondra doctor` shows why. A daemon started
-by hand, outside launchd, is never restarted.
+by hand, outside launchd, is never restarted, and nothing brings it back if it stops: `alondra
+doctor` warns about it. `alondra doctor --fix` puts it back under launchd with its nodes running:
+it enables the job and loads it, the daemon launchd starts waits for the HOME, and only then the
+daemon started by hand leaves. If launchd refuses the job, that daemon keeps running and doctor
+shows the error.
+
+While the daemon is older than the CLI, as in every upgrade until it restarts, a card a node sends
+that the daemon refuses waits up to an hour and goes again, as the same command, once the daemon
+runs the same version. After that the node hears `version_mismatch` with both versions.
 
 ### Staying up to date
 

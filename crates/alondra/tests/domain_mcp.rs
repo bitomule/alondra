@@ -3,7 +3,7 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
 
@@ -244,6 +244,16 @@ fn mcp_without_a_producer_capability_fails_closed() {
 /// One MCP session whose tool calls reach a daemon that answers each request with `reply`;
 /// returns every reply to a tool call and the commands the daemon received.
 fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + Send + 'static) -> (Vec<Value>, Vec<(String, Value)>) {
+    mcp_session_with(calls, &[], move |path| { let (status, body) = reply(path); (status, body, None) })
+}
+
+/// The session of `mcp_session` against a daemon that may say its version, with `environment` on
+/// the MCP server. Standard input stays open until every call has its reply, as in a live session.
+fn mcp_session_with(
+    calls: &[(&str, Value)],
+    environment: &[(&str, &str)],
+    reply: impl Fn(&str) -> (u16, Value, Option<String>) + Send + 'static,
+) -> (Vec<Value>, Vec<(String, Value)>) {
     let scratch_directory = crate::test_support::Directory::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -260,11 +270,12 @@ fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + S
             stream.set_nonblocking(false).unwrap();
             let (line, body) = request_body(&stream);
             let path = line.split_whitespace().nth(1).unwrap().to_owned();
-            let (status, answer) = reply(&path);
+            let (status, answer, version) = reply(&path);
             let bytes = answer.to_string();
+            let version = version.map(|version| format!("x-alondra-version: {version}\r\n")).unwrap_or_default();
             let mut stream = stream;
-            write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bytes}", bytes.len()).unwrap();
-            if path != "/capabilities" {
+            write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{version}Content-Length: {}\r\nConnection: close\r\n\r\n{bytes}", bytes.len()).unwrap();
+            if path != "/capabilities" && path != "/daemon" {
                 received.push((path, body));
             }
         }
@@ -275,15 +286,18 @@ fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + S
         .env("ALONDRA_HOME", scratch_directory.parent().unwrap().join(format!("alondra-domain-mcp-session-{}-{port}", std::process::id())))
         .env("ALONDRA_PORT", port.to_string())
         .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
+        .envs(environment.iter().copied())
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let stdin = child.stdin.as_mut().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
     for (index, (tool, arguments)) in calls.iter().enumerate() {
         writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":index + 1,"method":"tools/call","params":{"name":tool,"arguments":arguments}})).unwrap();
     }
-    let output = child.wait_with_output().unwrap();
+    let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let replies: Vec<Value> = stdout.lines().take(calls.len())
+        .map(|line| serde_json::from_str::<Value>(&line.unwrap()).unwrap()["result"].clone()).collect();
+    drop(stdin);
+    child.wait().unwrap();
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    let replies = output.stdout.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice::<Value>(line).unwrap()["result"].clone()).collect();
     (replies, server.join().unwrap())
 }
 
@@ -355,6 +369,92 @@ fn a_refused_card_tells_the_node_the_field_and_the_fix_and_grants_nothing() {
     assert!(text.contains("invalid_input") && text.contains("card.need") && text.contains("what you need from the user"), "{text}");
     assert!(text.contains("never an answer or a permission"), "{text}");
     assert_eq!(received[0].1["card"]["need"], "", "the missing need is refused by the daemon, not invented by the producer");
+}
+
+/// A daemon of a release before this client: what it refuses it only does not know.
+const OLD_DAEMON: &str = "0.0.1";
+const UPDATED_DAEMON: &str = "99.0.0";
+
+fn unknown_operation() -> Value {
+    json!({"code":"invalid_input", "message":"unsupported resource operation", "current_revision":null, "subject":null})
+}
+
+fn accepted() -> Value {
+    json!({"revision":2,"changed":true,"effects":[],"created_ids":[]})
+}
+
+#[test]
+fn a_card_an_older_daemon_refuses_waits_and_goes_again_once_the_daemon_matches() {
+    let updated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (replies, received) = mcp_session_with(&[("ask", needy_ask("card-1"))], &[], move |path| {
+        let running = if updated.load(std::sync::atomic::Ordering::SeqCst) { UPDATED_DAEMON } else { OLD_DAEMON };
+        match path {
+            "/capabilities" => (200, json!({"data_epoch":"epoch"}), Some(running.into())),
+            "/daemon" => {
+                updated.store(true, std::sync::atomic::Ordering::SeqCst);
+                (200, json!({"version":running}), Some(running.into()))
+            }
+            _ if running == OLD_DAEMON => (422, unknown_operation(), Some(running.into())),
+            _ => (200, accepted(), Some(running.into())),
+        }
+    });
+    assert_ne!(replies[0]["isError"], true, "{}", replies[0]);
+    assert_eq!(received.len(), 2, "refused once, sent once more");
+    assert_eq!(received[0].1["command_id"], received[1].1["command_id"], "the same card, never a second one");
+}
+
+#[test]
+fn a_refusal_of_a_daemon_that_matches_is_not_held() {
+    let (replies, received) = mcp_session_with(&[("ask", needy_ask("card-1"))], &[], |path| match path {
+        "/capabilities" => (200, json!({"data_epoch":"epoch"}), Some(UPDATED_DAEMON.into())),
+        _ => (422, unknown_operation(), Some(UPDATED_DAEMON.into())),
+    });
+    assert_eq!(replies[0]["isError"], true);
+    assert!(replies[0]["content"][0]["text"].as_str().unwrap().contains("invalid_input"), "{}", replies[0]);
+    assert_eq!(received.len(), 1);
+}
+
+#[test]
+fn a_real_refusal_still_reaches_the_node_after_the_daemon_matches() {
+    let updated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (replies, received) = mcp_session_with(&[("ask", needy_ask("card-1"))], &[], move |path| {
+        let running = if updated.load(std::sync::atomic::Ordering::SeqCst) { UPDATED_DAEMON } else { OLD_DAEMON };
+        if path == "/daemon" { updated.store(true, std::sync::atomic::Ordering::SeqCst); }
+        match path {
+            "/capabilities" => (200, json!({"data_epoch":"epoch"}), Some(running.into())),
+            "/daemon" => (200, json!({"version":running}), Some(running.into())),
+            _ => (422, json!({"code":"invalid_input", "message":"card.need: say what you need", "current_revision":null, "subject":"card.need"}), Some(running.into())),
+        }
+    });
+    assert_eq!(replies[0]["isError"], true);
+    assert!(replies[0]["content"][0]["text"].as_str().unwrap().contains("card.need"), "{}", replies[0]);
+    assert_eq!(received.len(), 2);
+}
+
+#[test]
+fn a_hold_that_runs_out_says_both_versions_and_that_nothing_was_sent() {
+    let (replies, received) = mcp_session_with(&[("ask", needy_ask("card-1"))], &[("ALONDRA_VERSION_HOLD_SECS", "0")], |path| match path {
+        "/capabilities" => (200, json!({"data_epoch":"epoch"}), Some(OLD_DAEMON.into())),
+        "/daemon" => (200, json!({"version":OLD_DAEMON}), Some(OLD_DAEMON.into())),
+        _ => (422, unknown_operation(), Some(OLD_DAEMON.into())),
+    });
+    assert_eq!(replies[0]["isError"], true);
+    assert_eq!(replies[0]["structuredContent"]["kind"], "version_mismatch");
+    assert_eq!(replies[0]["structuredContent"]["daemon"], OLD_DAEMON);
+    assert!(replies[0]["structuredContent"]["client"].is_string());
+    let text = replies[0]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains(OLD_DAEMON) && text.contains("Nothing was sent") && text.contains("same interaction_id"), "{text}");
+    assert_eq!(received.len(), 1);
+}
+
+#[test]
+fn a_denied_call_is_never_held() {
+    let (replies, received) = mcp_session_with(&[("ask", needy_ask("card-1"))], &[], |path| match path {
+        "/capabilities" => (200, json!({"data_epoch":"epoch"}), Some(OLD_DAEMON.into())),
+        _ => (403, json!({"code":"forbidden", "message":"not your task", "current_revision":null, "subject":null}), Some(OLD_DAEMON.into())),
+    });
+    assert_eq!(replies[0]["isError"], true);
+    assert_eq!(received.len(), 1, "no wait, and nothing goes again");
 }
 
 #[test]

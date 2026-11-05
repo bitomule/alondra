@@ -279,6 +279,7 @@ fn plan_with_context(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, path
             if seen.daemon_running || seen.plist.is_some() {
                 steps.push(Step::Unload { target: target.clone(), home: paths.alondra_home.clone() });
             }
+            steps.push(run(&["enable", &target]));
             steps.push(run(&["bootstrap", &domain, &plist_path.display().to_string()]));
         } else if seen.binaries && restart {
             steps.push(run(&["kickstart", "-k", &target]));
@@ -479,10 +480,46 @@ fn bootstrap_then_record(
     record()
 }
 
+/// `launchctl print-disabled` lists one `"label" => state` line per job; older macOS says `true`.
+fn disabled_in(listing: &str, label: &str) -> bool {
+    let entry = format!("\"{label}\" => ");
+    listing.lines().filter_map(|line| line.trim().strip_prefix(&entry)).any(|state| matches!(state, "disabled" | "true"))
+}
+
+/// The job is loaded first, and the daemon it starts waits for this HOME: a job launchd refuses
+/// leaves the running daemon untouched.
+fn hand_over_to_launchd(loaded: bool, load: impl FnOnce() -> Result<()>, leave: impl FnOnce() -> Result<()>) -> Result<()> {
+    if !loaded {
+        load()?;
+    }
+    leave()
+}
+
+fn listening_process(port: u16) -> Result<i32> {
+    let out = Command::new("/usr/sbin/lsof").args(["-nP", "-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"]).output().context("lsof")?;
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|line| line.trim().parse().ok())
+        .ok_or_else(|| anyhow::anyhow!(trf!("nothing listens on port {port}", "nada escucha en el puerto {port}")))
+}
+
+/// SIGUSR1 makes a daemon leave its SDK hosts running for the next one. A release older than that
+/// signal ends on it at once, which leaves them running too.
+fn leave_for_launchd(daemon: i32, interval: Duration) -> Result<()> {
+    if unsafe { libc::kill(daemon, libc::SIGUSR1) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("kill");
+    }
+    for _ in 0..LEAVE_POLLS {
+        if unsafe { libc::kill(daemon, 0) } != 0 {
+            return Ok(());
+        }
+        std::thread::sleep(interval);
+    }
+    bail!(tr!("the daemon started by hand did not leave", "el daemon arrancado a mano no se ha ido"))
+}
+
 fn is_launchd_lifecycle_step(step: &Step) -> bool {
     matches!(step, Step::Unload { .. })
         || matches!(step, Step::Run { program, args } if program == "launchctl"
-            && matches!(args.first().map(String::as_str), Some("bootout" | "bootstrap" | "kickstart")))
+            && matches!(args.first().map(String::as_str), Some("bootout" | "enable" | "bootstrap" | "kickstart")))
 }
 
 fn claude_output(context: &crate::claude_auth::ContextEnv, args: &[&str]) -> Option<String> {
@@ -575,6 +612,7 @@ fn launcher_outdated(paths: &Paths) -> bool {
     bundled.is_some() && bundled != alondra_core::launcher::version(&installed)
 }
 
+const LEAVE_POLLS: usize = 150;
 const BREW_PREFIXES: [&str; 2] = ["/opt/homebrew/opt/alondra", "/usr/local/opt/alondra"];
 
 fn dev_setup_over_brew(running_from_brew: bool, brew_installed: bool, forced: bool) -> bool {
@@ -698,26 +736,68 @@ impl Installation {
     /// Writes the files while sharing HOME, then hands HOME back before launchd starts the
     /// daemon, which needs it. Returns whether launchd was asked to start it.
     pub(crate) fn install_service(&self) -> Result<bool> {
-        let lock = alondra_core::home_lock::HomeLock::shared(&self.paths.alondra_home)?;
-        alondra_core::home_lock::ensure_ready(&self.paths.alondra_home)?;
-        let steps: Vec<&Step> = self.plan.steps.iter().filter(|s| self.is_service_step(s)).collect();
-        for step in steps.iter().filter(|s| !is_launchd_lifecycle_step(s)) {
-            execute(step, &self.context)?;
-        }
-        drop(lock);
+        self.write_service_files()?;
         let mut started = false;
-        for step in steps.iter().filter(|s| is_launchd_lifecycle_step(s)) {
+        for step in self.service_steps().filter(|s| is_launchd_lifecycle_step(s)) {
             execute(step, &self.context)?;
             started = true;
         }
-        if let Some(executable) = &self.brew_executable {
-            execute(&Step::Write {
-                path: self.paths.alondra_home.join("brew-keg-path"),
-                contents: executable.to_string_lossy().into_owned(),
-                private: true,
-            }, &self.context)?;
-        }
+        self.record_brew_keg()?;
         Ok(started)
+    }
+
+    fn service_steps(&self) -> impl Iterator<Item = &Step> {
+        self.plan.steps.iter().filter(|s| self.is_service_step(s))
+    }
+
+    fn write_service_files(&self) -> Result<()> {
+        let _lock = alondra_core::home_lock::HomeLock::shared(&self.paths.alondra_home)?;
+        alondra_core::home_lock::ensure_ready(&self.paths.alondra_home)?;
+        for step in self.service_steps().filter(|s| !is_launchd_lifecycle_step(s)) {
+            execute(step, &self.context)?;
+        }
+        Ok(())
+    }
+
+    fn record_brew_keg(&self) -> Result<()> {
+        let Some(executable) = &self.brew_executable else { return Ok(()) };
+        execute(&Step::Write {
+            path: self.paths.alondra_home.join("brew-keg-path"),
+            contents: executable.to_string_lossy().into_owned(),
+            private: true,
+        }, &self.context)
+    }
+
+    fn job_target(&self) -> String {
+        format!("gui/{}/{}", self.paths.uid, self.label)
+    }
+
+    /// launchd's exit status says whether it holds the job; what it prints is never read.
+    pub(crate) fn job_loaded(&self) -> bool {
+        launchctl(&["print", &self.job_target()]).is_ok_and(|out| out.status.success())
+    }
+
+    /// A disabled job cannot be bootstrapped: launchd answers with an I/O error that does not say so.
+    pub(crate) fn job_disabled(&self) -> bool {
+        launchctl(&["print-disabled", &format!("gui/{}", self.paths.uid)])
+            .is_ok_and(|out| disabled_in(&String::from_utf8_lossy(&out.stdout), &self.label))
+    }
+
+    /// Puts under launchd the daemon listening on `port`, started by hand, with its SDK hosts alive.
+    pub(crate) fn return_to_launchd(&self, port: u16) -> Result<()> {
+        self.write_service_files()?;
+        let daemon = listening_process(port)?;
+        let plist = self.paths.plist(&self.label).display().to_string();
+        hand_over_to_launchd(
+            self.job_loaded(),
+            || {
+                let launchctl = |args: Vec<String>| Step::Run { program: "launchctl".into(), args };
+                execute(&launchctl(vec!["enable".into(), self.job_target()]), &self.context)?;
+                execute(&launchctl(vec!["bootstrap".into(), format!("gui/{}", self.paths.uid), plist]), &self.context)
+            },
+            || leave_for_launchd(daemon, Duration::from_millis(200)),
+        )?;
+        self.record_brew_keg()
     }
 
     pub(crate) fn repair_plugin(&self) -> Result<()> {
@@ -741,7 +821,7 @@ impl Installation {
     pub(crate) fn restart_service(&self) -> Result<()> {
         execute(&Step::Run {
             program: "launchctl".into(),
-            args: vec!["kickstart".into(), "-k".into(), format!("gui/{}/{}", self.paths.uid, self.label)],
+            args: vec!["kickstart".into(), "-k".into(), self.job_target()],
         }, &self.context)
     }
 }
@@ -936,7 +1016,7 @@ esac
         let p = plan(&FileConfig::default(), None, &Args::default(), &paths(), &seen);
         assert_eq!(
             runs(&p),
-            vec!["launchctl bootout gui/501/dev.alondra.alondrad", "launchctl bootstrap gui/501 /Users/ana/Library/LaunchAgents/dev.alondra.alondrad.plist"]
+            vec!["launchctl bootout gui/501/dev.alondra.alondrad", "launchctl enable gui/501/dev.alondra.alondrad", "launchctl bootstrap gui/501 /Users/ana/Library/LaunchAgents/dev.alondra.alondrad.plist"]
         );
         assert!(p.steps.iter().filter(|s| matches!(s, Step::Unload { .. })).all(is_launchd_lifecycle_step));
     }
@@ -969,6 +1049,7 @@ esac
         assert_eq!(
             runs(&p),
             vec![
+                "launchctl enable gui/501/dev.alondra.alondrad",
                 "launchctl bootstrap gui/501 /Users/ana/Library/LaunchAgents/dev.alondra.alondrad.plist",
                 "claude plugin marketplace add /src/alondra",
             ],
@@ -1042,7 +1123,7 @@ esac
         let p = plan(&FileConfig::default(), None, &Args::default(), &paths(), &seen);
         assert_eq!(
             runs(&p),
-            vec!["launchctl bootout gui/501/dev.alondra.alondrad", "launchctl bootstrap gui/501 /Users/ana/Library/LaunchAgents/dev.alondra.alondrad.plist"]
+            vec!["launchctl bootout gui/501/dev.alondra.alondrad", "launchctl enable gui/501/dev.alondra.alondrad", "launchctl bootstrap gui/501 /Users/ana/Library/LaunchAgents/dev.alondra.alondrad.plist"]
         );
     }
 
@@ -1250,6 +1331,33 @@ mod brew_upgrade_tests {
     }
 
     #[test]
+    fn a_job_launchd_refuses_leaves_the_running_daemon_alone() {
+        let left = std::cell::Cell::new(false);
+        let refused = hand_over_to_launchd(false, || anyhow::bail!("Bootstrap failed: 5"), || { left.set(true); Ok(()) });
+        assert!(refused.is_err());
+        assert!(!left.get(), "the daemon started by hand keeps running when launchd refuses the job");
+    }
+
+    #[test]
+    fn the_daemon_leaves_only_once_the_job_is_loaded() {
+        let order = std::cell::RefCell::new(vec![]);
+        hand_over_to_launchd(false, || { order.borrow_mut().push("load"); Ok(()) }, || { order.borrow_mut().push("leave"); Ok(()) }).unwrap();
+        assert_eq!(*order.borrow(), ["load", "leave"]);
+        order.borrow_mut().clear();
+        hand_over_to_launchd(true, || { order.borrow_mut().push("load"); Ok(()) }, || { order.borrow_mut().push("leave"); Ok(()) }).unwrap();
+        assert_eq!(*order.borrow(), ["leave"], "a job launchd already holds is not loaded twice");
+    }
+
+    #[test]
+    fn a_disabled_job_is_read_from_launchds_listing() {
+        let listing = "disabled services = {\n\t\"com.example.alondra\" => disabled\n\t\"com.example.alondra.other\" => enabled\n\t\"com.old\" => true\n}\n";
+        assert!(disabled_in(listing, "com.example.alondra"));
+        assert!(!disabled_in(listing, "com.example.alondra.other"));
+        assert!(disabled_in(listing, "com.old"));
+        assert!(!disabled_in(listing, "com.example"));
+    }
+
+    #[test]
     fn unloading_asks_launchd_once_and_trusts_only_the_home_lock() {
         let home = fixture_home();
         for bootout in [0, 113] {
@@ -1272,7 +1380,7 @@ mod brew_upgrade_tests {
 
     #[test]
     fn deferred_lifecycle_steps_are_only_launchd_service_changes() {
-        for verb in ["bootout", "bootstrap", "kickstart"] {
+        for verb in ["bootout", "enable", "bootstrap", "kickstart"] {
             assert!(is_launchd_lifecycle_step(&Step::Run {
                 program: "launchctl".into(),
                 args: vec![verb.into()],

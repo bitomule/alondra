@@ -40,6 +40,10 @@ pub struct ServiceView {
     pub installed: bool,
     pub daemon: DaemonState,
     pub pending: bool,
+    /// A daemon answers, but launchd did not start it.
+    pub outside_launchd: bool,
+    /// launchd has the job disabled, so it refuses to load it.
+    pub disabled: bool,
     pub others: Vec<PathBuf>,
     pub binaries: bool,
     pub bin: PathBuf,
@@ -284,6 +288,7 @@ impl Real {
                 .and_then(|_| setup::inspect().install_service())
                 .and_then(|started| self.wait_if(started)),
             Action::RestartService => install.restart_service().and_then(|_| self.wait_for_daemon()),
+            Action::ReturnToLaunchd => install.return_to_launchd(self.config().port).and_then(|_| self.wait_for_daemon()),
             _ => install.install_service().and_then(|started| self.wait_if(started)),
         }
     }
@@ -428,9 +433,14 @@ impl System for Real {
         } else {
             DaemonState::Stopped
         };
+        let installed = install.seen.plist.is_some();
         ServiceView {
             label,
-            installed: install.seen.plist.is_some(),
+            installed,
+            outside_launchd: installed && daemon == DaemonState::Answers && self.health().is_ok_and(|health| {
+                health.get("supervised").and_then(Value::as_bool).map_or_else(|| !install.job_loaded(), |supervised| !supervised)
+            }),
+            disabled: installed && install.job_disabled(),
             daemon,
             pending: install.service_pending(),
             others: install.seen.other_services.clone(),
@@ -532,7 +542,7 @@ impl System for Real {
 
     fn apply(&self, action: Action) -> Result<()> {
         let result = match action {
-            Action::InstallService | Action::ReplaceOtherService | Action::RestartService => self.start_service(action),
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd => self.start_service(action),
             Action::PrepareIdentity => crate::service_setup::prepare_local_quietly(&self.home).map(|_| ()),
             Action::RepairPlugin if self.sandbox.is_some() => Ok(()),
             Action::RepairPlugin => self.install().repair_plugin(),

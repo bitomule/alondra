@@ -176,10 +176,11 @@ pub fn main() -> Result<()> {
     let label = Config::load()
         .map(|c| c.service_label)
         .unwrap_or_else(|_| Config::defaults().service_label);
-    start_guard::begin(
-        alondra_core::config::alondra_home(&env),
-        relaunch::supervised(&label, env),
-    );
+    let supervised = relaunch::supervised(&label, env);
+    if supervised {
+        relaunch::wait_until_free(&alondra_core::config::alondra_home(&env), std::time::Duration::from_millis(500));
+    }
+    start_guard::begin(alondra_core::config::alondra_home(&env), supervised);
     let error = match run(diagnostic) {
         Ok(()) => return Ok(()),
         Err(error) => error,
@@ -212,6 +213,7 @@ pub fn main() -> Result<()> {
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     log::rotate_when_full(&config.home);
+    relaunch::record_supervision(&config.service_label);
     home_renames::apply(&config.home)?;
     domain_cutover::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =
@@ -721,6 +723,9 @@ async fn serve_domain(
             }
         }, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
         () = replaced(config) => relaunch_now(),
+        () = handed_over() => exit::now(relaunch::RELAUNCH, || log!(
+            "leaving the SDK hosts to the daemon launchd started"
+        )),
         signal = terminated() => {
             log!("{signal} received: stopping the SDK hosts, then exiting");
             stop_sdk_owners(owners).await;
@@ -761,6 +766,15 @@ async fn terminated() -> &'static str {
     tokio::select! {
         _ = term.recv() => "SIGTERM",
         _ = interrupt.recv() => "SIGINT",
+    }
+}
+
+/// `alondra doctor --fix` sends SIGUSR1 to a daemon started by hand once launchd holds its job.
+async fn handed_over() {
+    use tokio::signal::unix::{SignalKind, signal};
+    match signal(SignalKind::user_defined1()) {
+        Ok(mut handover) => { handover.recv().await; }
+        Err(_) => std::future::pending().await,
     }
 }
 
