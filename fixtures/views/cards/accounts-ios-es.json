@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "vc4c9f0a23e032e9c",
+  "version": "vac403320e227b090",
   "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
@@ -927,7 +927,7 @@
           "id": "claude-policy",
           "icon": "node",
           "title": "Primero la de más margen",
-          "subtitle": "Cada tarea nueva empieza en la cuenta con más margen, según su plan",
+          "subtitle": "Cada tarea nueva de Claude empieza en la cuenta de Claude con más margen, según su plan",
           "depth": 0,
           "struck": false,
           "actions": [

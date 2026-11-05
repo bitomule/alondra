@@ -77,6 +77,9 @@ pub fn is_default_reserve(reserve: &Share) -> bool {
 }
 
 /// Which window a reading is about: the provider's short one, its week, or another it names.
+/// The window Codex usage carries when the provider refused work for its usage.
+pub const NATIVE_LIMIT_MARKER: &str = "codex:account:limit";
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WindowKind {
     Session,
@@ -85,7 +88,7 @@ pub enum WindowKind {
 }
 
 impl WindowKind {
-    pub fn is_native_limit_marker(&self) -> bool { matches!(self, Self::Other(name) if name == "codex:account:limit") }
+    pub fn is_native_limit_marker(&self) -> bool { matches!(self, Self::Other(name) if name == NATIVE_LIMIT_MARKER) }
     pub fn duration_minutes(&self) -> Option<u64> {
         match self { Self::Other(name) if name.starts_with("codex:") => name.rsplit(':').next()?.parse().ok(), _ => None }
     }
@@ -308,22 +311,30 @@ impl AccountUsage {
     }
 }
 
+/// Whether Codex `windows`, read at `at`, show the account can work again: the provider let a turn
+/// through (its limit marker, not exhausted), or every account-wide window it reported has room.
+pub fn clears_native_limit(windows: &[WindowReading], at: Millis) -> bool {
+    if windows.iter().any(|window| window.kind.is_native_limit_marker() && !window.exhausted) { return true; }
+    let mut plan = windows.iter().filter(|window| window.kind.account_wide(Provider::Codex) && !window.kind.is_native_limit_marker()).peekable();
+    plan.peek().is_some() && plan.all(|window| !window.exhausted && window.used < Share::FULL && window.resets_at.is_none_or(|reset| reset > at))
+}
+
+/// The reading a Codex turn that ended well leaves: the provider took work, so an earlier limit no longer holds.
+pub fn native_turn_worked() -> UsageReading {
+    UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other(NATIVE_LIMIT_MARKER.into()), used: Share::NONE, resets_at: None, exhausted: false }] }
+}
+
 /// `usage` after `reading` came for `account` at `at`, on the local `day`. The week's share at the
 /// day's first reading of the week anchors today's slice; a new day or a new week moves it.
 pub fn record(usage: Option<&AccountUsage>, provider: Provider, account: &AccountId, reading: &UsageReading, at: Millis, day: &str) -> AccountUsage {
     let mut next = usage.cloned().unwrap_or_else(|| AccountUsage { provider, account: account.clone(), windows: vec![], plan: None, day_start: None });
-    if provider == Provider::Codex {
-        let primary = reading.windows.iter().find(|window| matches!(&window.kind, WindowKind::Other(name) if name.starts_with("codex:account:primary:")));
-        let secondary = reading.windows.iter().find(|window| matches!(&window.kind, WindowKind::Other(name) if name.starts_with("codex:account:secondary:")));
-        let positive = |window: &WindowReading| !window.exhausted && window.used < Share::FULL && window.resets_at.is_none_or(|reset| reset > at);
-        if primary.is_some_and(positive) && secondary.is_some_and(positive) {
-            next.windows.retain(|window| !window.reading.kind.is_native_limit_marker() || window.measured_at >= at);
-        }
+    if provider == Provider::Codex && clears_native_limit(&reading.windows, at) {
+        next.windows.retain(|window| !window.reading.kind.is_native_limit_marker() || window.measured_at >= at);
     }
     if reading.complete {
         next.windows.retain(|window| window.reading.kind.is_native_limit_marker() || reading.windows.iter().any(|read| read.kind.same_dimension(&window.reading.kind, provider)));
     }
-    for read in &reading.windows {
+    for read in reading.windows.iter().filter(|read| !(read.kind.is_native_limit_marker() && !read.exhausted)) {
         let kept = UsageWindow { reading: read.clone(), measured_at: at };
         match next.windows.iter_mut().find(|window| window.reading.kind.same_dimension(&read.kind, provider)) {
             Some(window) => *window = kept,
@@ -555,6 +566,20 @@ pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountSta
         Policy::Chain => candidates.iter().find(|(_, absolute, _)| *absolute > 0.0).or(candidates.first()),
     };
     chosen.map(|(account, _, _)| account.id.clone())
+}
+
+/// `eligible` as `policy` ranks it for a new launch. By margin, the Claude account with the most
+/// room left takes the place of the first Claude account in the list; other providers keep theirs.
+pub fn ranked_for_launch(policy: Policy, eligible: &[AccountKey], accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Vec<AccountKey> {
+    let mut ranked = eligible.to_vec();
+    if policy != Policy::Margin { return ranked; }
+    let Some(first) = ranked.iter().position(|key| key.provider == Provider::Claude) else { return ranked };
+    let Some(chosen) = choose_account(Policy::Margin, Provider::Claude, accounts, usage, reserve, now, today) else { return ranked };
+    if let Some(at) = ranked.iter().position(|key| key.provider == Provider::Claude && key.account == chosen) {
+        let key = ranked.remove(at);
+        ranked.insert(first, key);
+    }
+    ranked
 }
 
 /// When some account of `provider` can work again by itself, while none can: the soonest moment

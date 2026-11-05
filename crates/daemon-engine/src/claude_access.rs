@@ -114,10 +114,8 @@ pub(crate) fn native_capacity_for_existing(state: &alondra_core::domain::DomainS
     if key.provider != Provider::Codex { return false; }
     let Some(usage) = state.account_usage.iter().find(|usage| usage.provider == key.provider && usage.account == key.account) else { return false; };
     if usage.plan_exhausted_until(since).is_some() { return false; }
-    let positive = |prefix: &str| usage.windows.iter().any(|window| window.measured_at >= since
-        && matches!(&window.reading.kind, alondra_core::usage::WindowKind::Other(name) if name.starts_with(prefix))
-        && !window.reading.exhausted && window.reading.used < alondra_core::usage::Share::FULL && window.reading.resets_at.is_none_or(|reset| reset > since));
-    positive("codex:account:primary:") && positive("codex:account:secondary:")
+    let fresh: Vec<_> = usage.windows.iter().filter(|window| window.measured_at >= since && !window.reading.kind.is_native_limit_marker()).map(|window| window.reading.clone()).collect();
+    alondra_core::usage::clears_native_limit(&fresh, since)
 }
 
 pub(crate) fn probe_for(domain: &DomainRuntime, provider: Provider, hold: ClaudeHold, account: Option<AccountId>) {
@@ -202,7 +200,10 @@ mod tests {
         assert!(!native_capacity_ready(&state,&key,100));
         let window=|name:&str|UsageWindow {measured_at:100,reading:WindowReading {kind:WindowKind::Other(format!("codex:account:{name}:300")),used:Share::NONE,resets_at:Some(200),exhausted:false}};
         state.account_usage.push(AccountUsage {provider:key.provider,account:key.account.clone(),plan:None,day_start:None,windows:vec![window("primary")]});
-        assert!(!native_capacity_ready(&state,&key,100)); state.account_usage[0].windows.push(window("secondary"));
+        assert!(native_capacity_ready(&state,&key,100),"a plan that reports only one window proves capacity with it");
+        state.account_usage[0].windows.push(UsageWindow {reading:WindowReading {exhausted:true,..window("secondary").reading},..window("secondary")});
+        assert!(!native_capacity_ready(&state,&key,100),"one exhausted account-wide window holds the account");
+        state.account_usage[0].windows[1]=window("secondary");
         assert!(native_capacity_ready(&state,&key,100)); assert!(!native_capacity_ready(&state,&key,101),"old capacity is not a new metadata proof");
         state.account_usage[0].windows.push(UsageWindow {measured_at:100,reading:WindowReading {kind:WindowKind::Other("codex:account:limit".into()),used:Share::NONE,resets_at:None,exhausted:true}});
         assert!(!native_capacity_ready(&state,&key,100),"an unknown-reset limit remains authoritative until recovery cleared it");

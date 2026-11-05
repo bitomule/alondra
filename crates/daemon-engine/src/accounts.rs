@@ -258,13 +258,8 @@ pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, in
     let effective_denied = !denied_tools.is_empty() || intent.native_tool_denials.as_ref().is_some_and(|tools| !tools.is_empty());
     eligible.retain(|key| config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
         && provider.is_none_or(|provider| key.provider == provider) && (!effective_denied || key.provider != Provider::Codex));
-    let legacy_margin = config.distribution.policy == Policy::Margin && config.connected_providers() == [Provider::Claude];
-    let legacy_preferred = legacy_margin.then(|| {
-        let provider = config.connected_providers()[0];
-        alondra_core::usage::choose_account(Policy::Margin, provider, &state.accounts, &state.account_usage, state.account_reserve, now, &crate::node_reports::local_day(now))
-            .map(|account| AccountKey::new(provider, account))
-    }).flatten();
-    if let Some(preferred) = preferred_account.or(legacy_preferred.as_ref())
+    let mut eligible = alondra_core::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, &crate::node_reports::local_day(now));
+    if let Some(preferred) = preferred_account
         && let Some(at) = eligible.iter().position(|key| key == preferred) { let first = eligible.remove(at); eligible.insert(0, first); }
     if eligible.is_empty() { return Err(DomainError::new("account_unavailable", "No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it")); }
     alondra_core::model_selection::resolve_selection(intent, &state.model_profiles, &state.model_catalogs, &eligible)

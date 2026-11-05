@@ -8675,6 +8675,38 @@ fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_revie
 }
 
 
+/// The account rows 0.3.17 wrote on 5 Nov, replayed through this version: the view says the
+/// stored margin policy, a new task goes to Claude 2, and Codex's next reading frees it.
+#[test]
+fn the_accounts_recorded_before_the_margin_fix_spread_work_to_the_roomiest_claude_account() {
+    use crate::accounts::{AccountKey, AccountStatus, Policy, Provider};
+    use crate::usage::{AccountUsage, Share, UsageReading, WindowKind, WindowReading};
+    let rows: serde_json::Value = serde_json::from_str(include_str!("../../../../fixtures/accounts/recorded-rows.json")).unwrap();
+    let mut state = DomainState::new("epoch");
+    state.accounts = serde_json::from_value::<Vec<AccountStatus>>(rows["accounts"]["accounts"].clone()).unwrap();
+    state.account_usage = rows["account_usage"].as_array().unwrap().iter().map(|row| serde_json::from_value::<AccountUsage>(row["usage"].clone()).unwrap()).collect();
+    state.account_order = serde_json::from_value(rows["account_configuration"]["account_order"].clone()).unwrap();
+    state.account_policy = match rows["account_distribution"]["policy"].as_str().unwrap() { "margin" => Policy::Margin, _ => Policy::Chain };
+    let now = state.account_usage.iter().filter_map(AccountUsage::measured_at).max().unwrap();
+    let today = "2026-11-05";
+
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "accounts", "");
+    let policy = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.id == "claude-policy" => Some(row), _ => None }).unwrap();
+    assert_eq!(policy.title, "Primero la de más margen");
+
+    let eligible = crate::usage::eligible_account_keys(&state.account_order, &state.accounts, &state.account_usage, now);
+    let codex = AccountKey::new(Provider::Codex, crate::accounts::AccountId::default_account());
+    assert!(!eligible.contains(&codex), "the marker of 2 Nov held Codex");
+    let ranked = crate::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, today);
+    assert_eq!(ranked[0], AccountKey::new(Provider::Claude, crate::accounts::AccountId::parse("claude-2").unwrap()));
+
+    let held = state.account_usage.iter().find(|usage| usage.provider == Provider::Codex).unwrap().clone();
+    let week = UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other("codex:account:primary:10080".into()), used: Share::of(0.01), resets_at: Some(now + 86_400_000), exhausted: false }] };
+    let read = crate::usage::record(Some(&held), Provider::Codex, &held.account, &week, now + 60_000, today);
+    *state.account_usage.iter_mut().find(|usage| usage.provider == Provider::Codex).unwrap() = read;
+    assert!(crate::usage::eligible_account_keys(&state.account_order, &state.accounts, &state.account_usage, now + 60_000).contains(&codex), "Codex can work again");
+}
+
 #[test]
 fn provider_accounts_share_one_order_without_aliasing_same_slugs_or_native_windows() {
     use crate::accounts::{AccountKey, Provider};
@@ -8703,7 +8735,15 @@ fn provider_accounts_share_one_order_without_aliasing_same_slugs_or_native_windo
     assert!(!codex.subtitle.as_ref().unwrap().contains("weight"));
     assert!(!codex.actions.iter().any(|action| action.id.starts_with("account_weight:")));
     let policy = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.id == "claude-policy" => Some(row), _ => None }).unwrap();
-    assert_eq!(policy.title, "In list order"); assert!(policy.actions.is_empty());
+    assert_eq!(state.account_policy, crate::accounts::Policy::Margin);
+    assert_eq!(policy.title, "Most room first", "the view says the policy the domain stores, also with Codex in the list");
+    assert!(policy.actions.iter().any(|action| action.id.starts_with("account_policy")), "{:?}", policy.actions);
+    assert!(claude.actions.iter().any(|action| action.id.starts_with("account_weight:")), "a Claude account keeps its weight under margin");
+    state.account_policy = crate::accounts::Policy::Chain;
+    let chain = render(&state, &live, Client::Ios, Lang::En, "accounts", "");
+    let policy = chain.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.id == "claude-policy" => Some(row), _ => None }).unwrap();
+    assert_eq!(policy.title, "In list order");
+    state.account_policy = crate::accounts::Policy::Margin;
     let window = &codex.account.as_ref().unwrap().windows[0];
     assert_eq!((window.used_percent, window.measured_at, window.resets_at, window.stale), (42, 10, Some(1_000), true));
     assert!(window.kind.starts_with("codex:account:"));

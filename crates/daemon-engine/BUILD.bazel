@@ -69,6 +69,7 @@ low_opt_rust_test(
         "//crates/core:src/domain/tests.rs",
         "//crates/daemon-support:report_sources",
         "//fixtures/client-v2",
+        "//fixtures/accounts:recorded-rows.json",
         "//fixtures/domain-v2:acceptance.json",
     ],
     crate_name = "alondra_daemon_engine",
