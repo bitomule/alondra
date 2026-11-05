@@ -35,6 +35,7 @@ pub struct DeviceUse {
 pub enum ExpiryReason {
     Unused,
     RelayForgot,
+    AccountRemoved,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

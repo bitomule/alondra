@@ -111,8 +111,27 @@ async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
         )
     }
 }
-async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
-    (StatusCode::OK, Json(bootstrap_body(&server.epoch, server.iroh_relay.as_deref(), server.report_repo.as_deref(), server.identity.as_ref())))
+/// Anyone may read the bootstrap. A Mac that signs it also reads what its account removed from it;
+/// a signature that does not hold, such as one over an epoch the relay no longer has, only gets
+/// the public answer, so that the Mac can always learn the current epoch.
+async fn bootstrap(State(server): State<Arc<Server>>, headers: HeaderMap, method: Method, uri: Uri) -> ApiResult {
+    let mut body = bootstrap_body(&server.epoch, server.iroh_relay.as_deref(), server.report_repo.as_deref(), server.identity.as_ref());
+    if headers.contains_key("x-device-id") {
+        let _gate = server.device_gate.read().await;
+        match server.auth.mac_removals(&headers, &method, &uri, now_ms()) {
+            Ok(removals) => {
+                let clients: Vec<_> = removals.clients.into_iter()
+                    .map(|(client_id, removed_at_ms)| json!({"client_id": client_id, "removed_at_ms": removed_at_ms}))
+                    .collect();
+                body["removals"] = json!({"mac_removed": removals.signing_key.is_some(), "clients": clients});
+            }
+            Err(failure) if failure.downcast_ref::<auth::AccountGateError>().is_some() => {
+                return Err(authentication_error(failure));
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(Json(body).into_response())
 }
 
 fn bootstrap_body(epoch: &str, iroh_relay: Option<&str>, report_repo: Option<&str>, identity: Option<&Identity>) -> Value {

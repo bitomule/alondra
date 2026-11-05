@@ -86,6 +86,33 @@ is not written again. It reads the list:
 A failed read is retried, from 2 s and doubling up to 60 s. `ALONDRA_ACCOUNT_SOURCE_URL` must be
 `https`, or `http` to loopback or to a single-label host of a private container network.
 
+## What a Mac reads of its removals
+
+A removal that takes clients away also tells the Mac they were paired with, so that the Mac unpairs
+them too and they lose access on the local network and over a direct path, not only through the
+relay. For each Mac the registry holds the clients the account removed from it, each with when, and,
+once the account removed the Mac itself, the Mac's signing key, so that the removed Mac can still
+read this. A removal the Mac made itself (`DELETE /v1/devices/{id}`, `DELETE /v1/macs/{id}`) is not
+held: the Mac already knows it.
+
+The Mac reads it in the bootstrap it already asks for once a minute. `GET /v1/bootstrap` stays
+public; a Mac that signs it, with its usual headers over the epoch it last knew, gets one more field:
+
+```json
+{"protocol": 1, "epoch": "…", "removals": {"mac_removed": false, "clients": [{"client_id": "…", "removed_at_ms": 1767225600000}]}}
+```
+
+- `503 account_access_unavailable` to a signed bootstrap until the complete list is first read.
+- A signature that does not hold, such as one over an epoch the relay no longer has, gets the
+  public answer without `removals`, so that the Mac always learns the current epoch and signs the
+  next bootstrap with it.
+
+The daemon signs every bootstrap once it knows an epoch, also the first one after a failure, so a
+Mac that was off reads its removals in its first request back (its second, if the relay restarted
+meanwhile). It unpairs each listed client it approved before `removed_at_ms`, as revoking it in the
+Mac app does: a client paired again after its removal stays. A relay that predates this field
+never sends it, and a daemon that predates it ignores it.
+
 ## An account's devices
 
 `GET /v1/operator/owners/{owner}/devices`:

@@ -6,6 +6,7 @@ use super::{
     Device, EnrollmentDecision, PushDelivery, Service, Transport,
     decoded, now_ms, registration_ended, relay_error_code, without_relay_extensions,
 };
+use crate::device_usage::{Expired, ExpiryReason};
 use crate::push::local_minutes;
 use alondra_e2e::sign_http_challenge;
 use anyhow::{Result, anyhow, bail};
@@ -22,6 +23,17 @@ use std::{
     },
     time::Duration,
 };
+
+#[derive(Deserialize)]
+struct AccountRemovals {
+    clients: Vec<RemovedClient>,
+}
+
+#[derive(Deserialize)]
+struct RemovedClient {
+    client_id: String,
+    removed_at_ms: i64,
+}
 
 /// The connector checks devices, revocations and bindings this often.
 #[cfg(not(test))]
@@ -47,6 +59,9 @@ pub(crate) struct RelayConnector {
     /// one and reset with the next.
     devices_bound: std::sync::Mutex<DevicesBound>,
     wake: tokio::sync::Notify,
+    /// The epoch the relay last gave, kept across failures, so that the first bootstrap after
+    /// one is already signed and brings what the account removed meanwhile.
+    known_epoch: std::sync::Mutex<Option<[u8; 16]>>,
 }
 
 #[derive(Default)]
@@ -61,6 +76,9 @@ struct Bootstrap {
     epoch: String,
     #[serde(default)]
     iroh_relay: Option<String>,
+    /// Only in the answer to a bootstrap this Mac signed, from a relay that holds removals.
+    #[serde(default)]
+    removals: Option<AccountRemovals>,
 }
 
 /// The iroh relay admits this Mac's endpoint only once the Alondra relay holds the binding,
@@ -90,6 +108,7 @@ impl RelayConnector {
         Self {
             url, owner_sub, resync: AtomicBool::new(false), iroh_bound: std::sync::Mutex::new(None),
             devices_bound: std::sync::Mutex::default(), wake: tokio::sync::Notify::new(),
+            known_epoch: std::sync::Mutex::default(),
         }
     }
 
@@ -138,18 +157,27 @@ impl Service {
         Ok(self.relay()?.url.join(path.trim_start_matches('/'))?)
     }
 
+    /// The relay's epoch. Signed with the epoch known from before, the answer also brings what the
+    /// account removed from this Mac, which is unpaired here before this returns.
     pub(super) async fn bootstrap(&self) -> Result<[u8; 16]> {
-        let response = self
-            .client
-            .get(self.endpoint("/v1/bootstrap")?)
-            .send()
-            .await?
-            .error_for_status()?;
-        let boot: Bootstrap = response.json().await?;
+        let relay = self.relay()?;
+        let known = *relay.known_epoch.lock_or_recover("the known relay epoch");
+        let request = match known {
+            Some(epoch) => self.signed_request(Method::GET, "/v1/bootstrap", Vec::new(), &epoch)?,
+            None => self.client.get(self.endpoint("/v1/bootstrap")?),
+        };
+        let boot: Bootstrap = request.send().await?.error_for_status()?.json().await?;
         self.announce_iroh_relay(boot.iroh_relay);
-        decoded(&boot.epoch)?
+        let epoch: [u8; 16] = decoded(&boot.epoch)?
             .try_into()
-            .map_err(|_| anyhow!("invalid relay epoch"))
+            .map_err(|_| anyhow!("invalid relay epoch"))?;
+        *relay.known_epoch.lock_or_recover("the known relay epoch") = Some(epoch);
+        if let Some(removals) = boot.removals
+            && let Err(error) = self.unpair_account_removals(removals).await
+        {
+            log!("account removals not applied: {error:#}");
+        }
+        Ok(epoch)
     }
 
     pub(super) async fn signed(
@@ -159,6 +187,16 @@ impl Service {
         body: Vec<u8>,
         epoch: &[u8; 16],
     ) -> Result<reqwest::Response> {
+        Ok(self.signed_request(method, path, body, epoch)?.send().await?)
+    }
+
+    fn signed_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+        epoch: &[u8; 16],
+    ) -> Result<reqwest::RequestBuilder> {
         let mut nonce = [0u8; 16];
         SystemRandom::new()
             .fill(&mut nonce)
@@ -184,9 +222,7 @@ impl Service {
             .header("x-device-signature", signature)
             .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
             .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?)
+            .body(body))
     }
 
     pub(super) async fn enroll(&self, epoch: &[u8; 16]) -> Result<()> {
@@ -319,6 +355,38 @@ impl Service {
         }
     }
 
+    /// Unpairs, as revoking it in the Mac app does, every client the account removed from this
+    /// Mac after it was paired here.
+    async fn unpair_account_removals(&self, removals: AccountRemovals) -> Result<()> {
+        let mut unpaired = false;
+        for removed in removals.clients {
+            let Some(device) = self.auth.list().into_iter().find(|device| device.id == removed.client_id) else {
+                continue;
+            };
+            if device.created_at >= removed.removed_at_ms {
+                continue;
+            }
+            let (auth, id) = (self.auth.clone(), device.id.clone());
+            if !tokio::task::spawn_blocking(move || auth.revoke(&id)).await?? {
+                continue;
+            }
+            self.remember_revoked(&device.id);
+            log!("unpaired device {} ({}): its account removed it", device.id, device.name);
+            self.auth.usage().expire(Expired {
+                id: device.id,
+                name: device.name,
+                reason: ExpiryReason::AccountRemoved,
+                days: None,
+                expired_at_ms: now_ms() as i64,
+            });
+            unpaired = true;
+        }
+        if unpaired {
+            self.reload_devices()?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn sync_revocations(
         &self,
         epoch: &[u8; 16],
@@ -372,7 +440,7 @@ impl Service {
 
     /// One check: a new relay epoch (a restarted relay) re-enrolls every approved device, and
     /// any failure forces a fresh epoch next time.
-    pub(super) async fn keep_registered(
+    pub(crate) async fn keep_registered(
         &self,
         enrolled_epoch: &mut Option<[u8; 16]>,
         revoked_this_epoch: &mut HashSet<String>,

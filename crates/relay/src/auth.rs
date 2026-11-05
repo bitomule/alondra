@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -98,6 +98,8 @@ struct DeviceRegistry {
     closed_owners: HashSet<String>,
     /// The last removal of the account source this registry holds.
     removals_seq: u64,
+    /// Mac ID → what the account removed from it, which the Mac reads to unpair those clients.
+    account_removals: BTreeMap<String, MacRemovals>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,6 +126,18 @@ struct StoredDeviceRegistry {
     closed_owners: Vec<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
     removals_seq: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    account_removals: BTreeMap<String, MacRemovals>,
+}
+
+/// What the account removed from one Mac: the clients paired with it, each with when, and the Mac
+/// itself once `signing_key` is held, kept so that the removed Mac can still read this.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MacRemovals {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    #[serde(default)]
+    pub clients: BTreeMap<String, u64>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -256,6 +270,7 @@ impl Auth {
                 iroh_nodes,
                 closed_owners,
                 removals_seq,
+                account_removals,
             ) = match serde_json::from_slice(&raw)? {
                 RegistryOnDisk::Current(StoredDeviceRegistry {
                     schema_version,
@@ -270,6 +285,7 @@ impl Auth {
                     iroh_nodes,
                     closed_owners,
                     removals_seq,
+                    account_removals,
                 }) => (
                     schema_version,
                     devices,
@@ -283,6 +299,7 @@ impl Auth {
                     iroh_nodes,
                     closed_owners,
                     removals_seq,
+                    account_removals,
                 ),
                 RegistryOnDisk::Legacy(devices) => (
                     None,
@@ -297,6 +314,7 @@ impl Auth {
                     HashMap::new(),
                     Vec::new(),
                     0,
+                    BTreeMap::new(),
                 ),
             };
             if guarded && schema_version != Some(REGISTRY_SCHEMA_VERSION) {
@@ -385,6 +403,7 @@ impl Auth {
                 iroh_nodes,
                 closed_owners: closed_owners.into_iter().collect(),
                 removals_seq,
+                account_removals,
             }
         } else {
             DeviceRegistry::default()
@@ -1192,6 +1211,31 @@ impl Auth {
         self.devices.lock().unwrap().macs.contains_key(mac_id)
     }
 
+    /// What the account removed from the Mac that signs this request. A Mac the account removed
+    /// still signs with the key it had, so that it learns it and unpairs its clients.
+    pub fn mac_removals(
+        &self,
+        headers: &HeaderMap,
+        method: &Method,
+        uri: &Uri,
+        now_ms: u64,
+    ) -> Result<MacRemovals> {
+        self.ensure_registry_ready()?;
+        if self.removals_pending() {
+            bail!(AccountGateError::Unavailable);
+        }
+        let rejected = |reason| anyhow::Error::new(DeviceRejection::new(reason, headers, method, uri, None, None, None));
+        let id = header(headers, "x-device-id").map_err(|_| rejected(Rejection::MalformedHeaders))?;
+        let (key, removals) = {
+            let registry = self.devices.lock().unwrap();
+            let removals = registry.account_removals.get(id).cloned().unwrap_or_default();
+            let key = registry.macs.get(id).map(|mac| mac.signing_key.clone()).or_else(|| removals.signing_key.clone());
+            (key.ok_or_else(|| rejected(Rejection::UnknownDevice))?, removals)
+        };
+        self.verify_device(headers, method, uri, &[], now_ms, id, &key)?;
+        Ok(removals)
+    }
+
     pub async fn authenticate_mac(
         &self,
         headers: &HeaderMap,
@@ -1689,8 +1733,13 @@ fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str,mac_i
         }
     }
     let mut changed=false;
-    if kind=="mac" {changed|=registry.macs.remove(id).is_some();changed|=registry.revoked_mac_ids.insert(id.to_owned());}
+    let now=crate::now_ms();
+    if kind=="mac" {
+        if let Some(mac)=registry.macs.remove(id) {note_mac_removed(registry,mac);changed=true;}
+        changed|=registry.revoked_mac_ids.insert(id.to_owned());
+    }
     for client in clients {
+        note_client_removed(registry,&client,now);
         changed|=registry.devices.remove(&client).is_some();registry.phone_macs.remove(&client);registry.push.remove(&client);
         changed|=registry.push_ended.insert(client.clone());
         changed|=registry.revoked_ids.insert(client);
@@ -1704,12 +1753,27 @@ fn remove_owner_devices(registry:&mut DeviceRegistry,owner:&str)->bool {
     let phones:Vec<String>=registry.devices.values().filter(|d|d.owner_sub==owner).map(|d|d.device_id.clone()).collect();
     let macs:Vec<String>=registry.macs.values().filter(|d|d.owner_sub==owner).map(|d|d.mac_id.clone()).collect();
     if phones.is_empty() && macs.is_empty() {return false}
+    let now=crate::now_ms();
     for id in phones {
+        note_client_removed(registry,&id,now);
         registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.push_ended.insert(id.clone());registry.revoked_ids.insert(id);
     }
-    for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
+    for id in macs {
+        if let Some(mac)=registry.macs.remove(&id) {note_mac_removed(registry,mac);}
+        registry.revoked_mac_ids.insert(id);
+    }
     forget_orphan_iroh_nodes(registry);
     true
+}
+
+fn note_client_removed(registry: &mut DeviceRegistry, client: &str, now_ms: u64) {
+    if let Some(mac) = registry.phone_macs.get(client) {
+        registry.account_removals.entry(mac.clone()).or_default().clients.entry(client.to_owned()).or_insert(now_ms);
+    }
+}
+
+fn note_mac_removed(registry: &mut DeviceRegistry, mac: MacDevice) {
+    registry.account_removals.entry(mac.mac_id).or_default().signing_key = Some(mac.signing_key);
 }
 
 fn apply_removal(registry: &mut DeviceRegistry, removal: &Removal) -> Applied {
@@ -1766,6 +1830,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
             iroh_nodes: registry.iroh_nodes.clone(),
             closed_owners,
             removals_seq: registry.removals_seq,
+            account_removals: registry.account_removals.clone(),
         })?,
     )
 }

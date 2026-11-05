@@ -466,3 +466,81 @@ async fn an_unused_device_is_unpaired_on_its_own_and_told_so_while_the_one_in_us
     assert_eq!((answer["status"].as_u64(), answer["error"].as_str()), (Some(403), Some("device_revoked")));
     assert_eq!(send(&f.base, "/direct/request", &in_use.request("op-3", routes::PATH)).await.0, 200);
 }
+
+/// A relay that is `DOWN`, an `OLD` one whose bootstrap knows nothing of removals, or a `CURRENT`
+/// one whose bootstrap, when the Mac signs it, lists what the account removed from this Mac.
+async fn account_relay(mode: Arc<std::sync::atomic::AtomicU8>, removals: serde_json::Value) -> (String, tokio::task::JoinHandle<()>) {
+    let relay = Router::new().fallback(move |request: Request<Body>| {
+        let (mode, removals) = (mode.clone(), removals.clone());
+        async move {
+            match (mode.load(std::sync::atomic::Ordering::SeqCst), request.uri().path()) {
+                (DOWN, _) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                (relay, "/v1/bootstrap") => {
+                    let mut boot = json!({"epoch": URL_SAFE_NO_PAD.encode([7u8; 16])});
+                    if relay == CURRENT && request.headers().contains_key("x-device-signature") {
+                        boot["removals"] = removals;
+                    }
+                    Json(boot).into_response()
+                }
+                _ => StatusCode::OK.into_response(),
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    (url, tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() }))
+}
+
+const DOWN: u8 = 0;
+const OLD: u8 = 1;
+const CURRENT: u8 = 2;
+
+#[tokio::test]
+async fn a_client_the_account_removed_is_unpaired_once_the_mac_reaches_the_relay_and_the_others_stay() {
+    let removed = Phone::new("client-a", 50);
+    let kept = Phone::new("client-b", 60);
+    let paired_again = Phone::new("client-c", 70);
+    let now = alondra_core::now_millis();
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(DOWN));
+    let (relay, relay_task) = account_relay(mode.clone(), json!({"mac_removed": false, "clients": [
+        {"client_id": "client-a", "removed_at_ms": now},
+        {"client_id": "client-c", "removed_at_ms": now - 60_000}]})).await;
+    let home = home_with(&[&removed, &kept, &paired_again], Some(&relay));
+    let mut approved: serde_json::Value = serde_json::from_slice(&std::fs::read(home.join("devices.json")).unwrap()).unwrap();
+    approved[2]["created_at"] = json!(now - 1_000);
+    std::fs::write(home.join("devices.json"), serde_json::to_vec(&approved).unwrap()).unwrap();
+    let auth = Arc::new(Auth::open(&home).unwrap());
+    let service = Arc::new(Service::open(&home, 0, auth.clone()).unwrap().unwrap());
+    let f = serve(home, service.clone(), auth.clone()).await;
+    let (mut epoch, mut revoked) = (None, std::collections::HashSet::new());
+    let paired = || Auth::open(&f.home).unwrap().list().into_iter().map(|device| device.id).collect::<Vec<_>>();
+
+    mode.store(OLD, std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..2 {
+        service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
+    }
+    assert_eq!(paired(), ["client-a", "client-b", "client-c"], "a relay that sends no removals changes nothing");
+    assert_eq!(send(&f.base, "/direct/request", &removed.request("op-1", routes::PATH)).await.0, 200);
+
+    mode.store(DOWN, std::sync::atomic::Ordering::SeqCst);
+    assert!(service.keep_registered(&mut epoch, &mut revoked).await.is_err(), "the Mac cannot reach the relay");
+    assert_eq!(paired(), ["client-a", "client-b", "client-c"]);
+    mode.store(CURRENT, std::sync::atomic::Ordering::SeqCst);
+    service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
+    assert_eq!(paired(), ["client-b", "client-c"],
+        "back online, the first bootstrap brings the removal: the removed client goes; the one kept and the one paired again after its removal stay");
+    let gone = auth.usage().snapshot(now).expired;
+    assert_eq!(gone.iter().map(|expired| (expired.id.as_str(), expired.reason)).collect::<Vec<_>>(),
+        [("client-a", crate::device_usage::ExpiryReason::AccountRemoved)]);
+
+    let (status, body) = send(&f.base, "/direct/request", &removed.request("op-2", routes::PATH)).await;
+    assert_eq!(status, 200, "the removed client gets an answer it can open");
+    let answer = removed.open(&body);
+    assert_eq!((answer["status"].as_u64(), answer["error"].as_str()), (Some(403), Some("device_revoked")));
+    assert_eq!(send(&f.base, "/direct/request", &kept.request("op-3", routes::PATH)).await.0, 200);
+    assert_eq!(send(&f.base, "/direct/request", &paired_again.request("op-4", routes::PATH)).await.0, 200);
+
+    service.keep_registered(&mut epoch, &mut revoked).await.unwrap();
+    assert_eq!(auth.usage().snapshot(now).expired.len(), 1, "reading the same list again changes nothing");
+    relay_task.abort();
+}
