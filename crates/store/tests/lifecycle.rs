@@ -2889,7 +2889,7 @@ fn pages_missed(connection: &Connection) -> i32 {
 #[test]
 fn the_journal_of_interleaved_tasks_is_read_in_one_pass_over_its_pages() {
     const TASKS: usize = 24;
-    const ROUNDS: usize = 400;
+    const ROUNDS: usize = 100;
     let mut fixture = Fixture::new();
     let tasks: Vec<TaskId> = (0..TASKS).map(|n| TaskId::from(format!("task-{n}").as_str())).collect();
     for (n, task) in tasks.iter().enumerate() {

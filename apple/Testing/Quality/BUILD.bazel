@@ -3,6 +3,7 @@ load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_test(
     name = "AlondraQualityTests",
+    size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["ClientConcurrencyTests.swift"] + ["//apple/Testing/Fixtures:sources"],
     data = ["//apple/Testing/Samples:all", "//fixtures/views:all", "//fixtures/views:cards"],

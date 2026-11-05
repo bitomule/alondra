@@ -239,6 +239,19 @@ fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str
     }
 }
 
+/// A launch that waits for usage: the task says so and the gate tries it again once there is some.
+fn usage_refusal(domain: &DomainRuntime, task: &TaskId, exhausted: &crate::usage_pause::Exhausted) -> DomainError {
+    remember_refusal(domain, task, Some(("usage_exhausted", None)));
+    if exhausted.no_session {
+        return DomainError::new("usage_exhausted", format!(
+            "No Claude account on this Mac has a session: {task} stays as it is and starts once one is signed in"));
+    }
+    let why = if exhausted.by_user { "The user paused Claude work" } else { "No Claude account on this Mac has usage left" };
+    DomainError::new("usage_exhausted", format!(
+        "{why} until {}: {task} stays as it is and can be launched after that",
+        crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false)))
+}
+
 /// The right to launch a task's node, given back however the launch ends, a panic included.
 pub(crate) struct Launching<'a> {
     domain: &'a DomainRuntime,
@@ -503,7 +516,11 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if prior_native && (requested.account_key().is_some_and(|account|account!=task.account_key()) || body.provider.is_some_and(|provider|provider!=task.provider)) {
         return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
     }
-    let native = native_launch(domain, home, task, &requested, &file, &body, prior_native, reopening.is_some())?;
+    let native = native_launch(domain, home, task, &requested, &file, &body, prior_native, reopening.is_some())
+        .map_err(|error| match domain.live.usage_pause.current() {
+            Some(exhausted) if error.code == "account_unavailable" => usage_refusal(domain, &task.id, &exhausted),
+            _ => error,
+        })?;
     let provider = native.as_ref().map_or(alondra_core::accounts::Provider::Claude, |(_, account, _)| account.provider);
     let pinned = choices.as_ref().and_then(|choices| pinned_account(home, &choices.options));
     let account = match (&native, &pinned) {
@@ -516,15 +533,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
     }
     if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| exhausted.by_user || (native.is_none() && pinned.is_none())) {
-        remember_refusal(domain, &task.id, Some(("usage_exhausted", None)));
-        if exhausted.no_session {
-            return Err(DomainError::new("usage_exhausted", format!(
-                "No Claude account on this Mac has a session: {} stays as it is and starts once one is signed in", body.task)));
-        }
-        let why = if exhausted.by_user { "The user paused Claude work" } else { "No Claude account on this Mac has usage left" };
-        return Err(DomainError::new("usage_exhausted", format!(
-            "{why} until {}: {} stays as it is and can be launched after that",
-            crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false), body.task)));
+        return Err(usage_refusal(domain, &task.id, &exhausted));
     }
     if reopening.is_none() && !Path::new(&cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));

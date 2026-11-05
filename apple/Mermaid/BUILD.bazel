@@ -15,6 +15,7 @@ swift_library(
 
 swift_test(
     name = "AlondraMermaidTests",
+    size = "small",
     srcs = glob(["Tests/*.swift"]),
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     data = glob(["Fixtures/**"]),
@@ -25,6 +26,7 @@ swift_test(
 # numbers for the PR and asserts nothing about time, so it only runs when asked for.
 swift_test(
     name = "AlondraMermaidSignposts",
+    timeout = "moderate",
     srcs = ["Measurements/LayoutSignpostTests.swift"],
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     tags = ["manual"],
@@ -43,11 +45,10 @@ swift_library(
     ],
 )
 
-# `timeout = "long"` and the shared host and runner for the reasons given in
-# //apple/Testing/Snapshots:AlondraSnapshotTests.
+# The shared host and runner for the reasons given in //apple/Testing/Snapshots:AlondraSnapshotTests.
 ios_unit_test(
     name = "AlondraMermaidSnapshotTests",
-    timeout = "long",
+    timeout = "moderate",
     bundle_id = "com.bitomule.alondra.mermaidsnapshottests",
     data = glob(["Fixtures/**"]) + glob(["Snapshots/__Snapshots__/**"], allow_empty = True),
     env = {

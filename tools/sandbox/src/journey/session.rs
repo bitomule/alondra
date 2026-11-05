@@ -150,10 +150,11 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             })
         })?;
         act(report, fakes, &node, "Claude's own turn ends and the message that waited runs", &[Step::EndOwnTurn])?;
-        wait(report, "the turn of the message ends with one card", || {
+        state(report, &user, "t-s5", "In the background")?;
+        report.step("the turn of the message ends on its research too: nobody is asked", || {
             let inbox = user.inbox()?;
-            let cards = inbox.iter().filter(|id| id.starts_with("turn-ended-t-s5-")).count();
-            Ok(((cards == 1 && !inbox.iter().any(|id| id.starts_with("host-lost-t-s5-"))).then_some(()), format!("{inbox:?}")))
+            anyhow::ensure!(!inbox.iter().any(|id| ["turn-ended-t-s5-", "stalled-t-s5-", "host-lost-t-s5-"].iter().any(|card| id.starts_with(card))), "{inbox:?}");
+            Ok(())
         })?;
         report.snapshot("task-after-plan", &user.view("task:t-s5")?)
     });

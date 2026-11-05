@@ -53,6 +53,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "alondra_test",
+    size = "small",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra",
     crate_root = "src/lib.rs",
@@ -72,6 +73,7 @@ low_opt_rust_test(
 # workspace root inside runfiles.
 [low_opt_rust_test(
     name = name + "_test",
+    timeout = "moderate",
     srcs = ["tests/" + name + ".rs", "//crates:test_support.rs"],
     crate_root = "tests/" + name + ".rs",
     data = [":alondra"],
@@ -88,6 +90,7 @@ low_opt_rust_test(
 
 [low_opt_rust_test(
     name = name + "_test",
+    timeout = "moderate",
     srcs = ["tests/" + name + ".rs"],
     data = glob(["src/**/*.rs"]),
     edition = "2024",
@@ -102,6 +105,7 @@ low_opt_rust_test(
 # Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
 low_opt_rust_test(
     name = "no_old_commands_test",
+    size = "small",
     srcs = ["tests/no_old_commands.rs"],
     data = ["//:Makefile"],
     edition = "2024",

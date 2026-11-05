@@ -14,6 +14,7 @@ rust_library(
 
 low_opt_rust_test(
     name = "foundation_test",
+    size = "small",
     crate_root = "tests/wire.rs",
     srcs = ["tests/wire.rs"],
     edition = "2024",
@@ -23,6 +24,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "execution_identity_test",
+    size = "small",
     crate_root = "tests/execution.rs",
     srcs = ["tests/execution.rs"],
     edition = "2024",
@@ -31,6 +33,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "message_uuid_test",
+    size = "small",
     crate_root = "tests/message_uuid.rs",
     srcs = ["tests/message_uuid.rs"],
     edition = "2024",

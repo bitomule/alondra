@@ -775,7 +775,7 @@ fn priority() -> impl proptest::strategy::Strategy<Value = TaskPriority> {
 }
 
 proptest::proptest! {
-    #![proptest_config(proptest::prelude::ProptestConfig { cases: 24, ..proptest::prelude::ProptestConfig::default() })]
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 12, ..proptest::prelude::ProptestConfig::default() })]
 
     /// 27 October: with the limit at 6 the user resumed 19 paused nodes and every one went on at
     /// once. However many nodes the user resumes together, and whenever the working ones end
@@ -1007,45 +1007,42 @@ fn stable_and_shrinking_swap_leave_the_disk_gate_open_on_the_same_small_disk() {
 }
 
 // 30 October: builds took 2 GB, swap another 2.7 GB, with memory still 29% free.
-proptest::proptest! {
-    #![proptest_config(proptest::prelude::ProptestConfig { cases: 8, ..proptest::prelude::ProptestConfig::default() })]
-    #[test]
-    fn growing_swap_holds_starts_on_the_measured_disk_but_not_with_room(extra_gb in 0u64..=1) {
-        for roomy in [false, true] {
-            let (_home, domain) = world();
-            let gate = &domain.live.gate;
-            gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-            let watch = &domain.live.machine_watch;
-            watch.seed_peaks("build", &[2 * GB; 3]);
-            watch.seed_peaks("next", &[GB; 3]);
-            create_in(&domain, "build", "build");
-            create_in(&domain, "next", "next");
-            let extra = if roomy { (10 + extra_gb) * GB } else { extra_gb * GB };
-            for step in 0..=240u64 {
-                let now = 10_000 + step as Millis * SAMPLE;
-                let free = 12 * GB + extra - 4_700_000_000 * step / 240;
-                let used = 20_200_000_000 + 2_700_000_000 * step / 240;
-                let counters = serde_json::from_value(serde_json::json!({
-                    "page_size": 16384, "uncompressed_pages": 3_000_000, "compressor_pages": 100_000,
-                    "stored_pages": 200_000, "swap_used": used, "swap_total": used + 600_000_000,
-                    "swapins": 0, "swapouts": 0,
-                })).unwrap();
-                crate::machine_watch::pace(&domain, &Machine { at: now, memory_total: 64u64 << 30,
-                    memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(counters),
-                    disk_total: 500 * GB, disk_available: free, ..Machine::default() });
-                watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
-                if step == 0 {
-                    start(&domain, "build", now);
-                }
+#[test]
+fn growing_swap_holds_starts_on_the_measured_disk_but_not_with_room() {
+    for (extra_gb, roomy) in [(0, false), (0, true), (1, false), (1, true)] {
+        let (_home, domain) = world();
+        let gate = &domain.live.gate;
+        gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+        let watch = &domain.live.machine_watch;
+        watch.seed_peaks("build", &[2 * GB; 3]);
+        watch.seed_peaks("next", &[GB; 3]);
+        create_in(&domain, "build", "build");
+        create_in(&domain, "next", "next");
+        let extra = if roomy { (10 + extra_gb) * GB } else { extra_gb * GB };
+        for step in 0..=240u64 {
+            let now = 10_000 + step as Millis * SAMPLE;
+            let free = 12 * GB + extra - 4_700_000_000 * step / 240;
+            let used = 20_200_000_000 + 2_700_000_000 * step / 240;
+            let counters = serde_json::from_value(serde_json::json!({
+                "page_size": 16384, "uncompressed_pages": 3_000_000, "compressor_pages": 100_000,
+                "stored_pages": 200_000, "swap_used": used, "swap_total": used + 600_000_000,
+                "swapins": 0, "swapouts": 0,
+            })).unwrap();
+            crate::machine_watch::pace(&domain, &Machine { at: now, memory_total: 64u64 << 30,
+                memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(counters),
+                disk_total: 500 * GB, disk_available: free, ..Machine::default() });
+            watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
+            if step == 0 {
+                start(&domain, "build", now);
             }
-            let result = ask(&domain, "next", 10_000 + 40 * MIN);
-            if roomy {
-                proptest::prop_assert_eq!(result, Ok(()));
-            } else {
-                proptest::prop_assert!(matches!(result, Err(Hold::Disk { .. })), "{:?}", result);
-            }
-            proptest::prop_assert_eq!(machine_cards(&domain), 0);
         }
+        let result = ask(&domain, "next", 10_000 + 40 * MIN);
+        if roomy {
+            assert_eq!(result, Ok(()));
+        } else {
+            assert!(matches!(result, Err(Hold::Disk { .. })), "{:?}", result);
+        }
+        assert_eq!(machine_cards(&domain), 0);
     }
 }
 

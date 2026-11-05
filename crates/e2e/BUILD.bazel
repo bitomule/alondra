@@ -14,6 +14,7 @@ rust_library(
 
 low_opt_rust_test(
     name = "alondra_e2e_test",
+    size = "small",
     crate = ":alondra_e2e",
     deps = all_crate_deps(normal_dev = True),
     edition = "2024",

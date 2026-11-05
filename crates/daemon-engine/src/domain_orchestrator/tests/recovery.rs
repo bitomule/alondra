@@ -61,44 +61,32 @@ fn task_on_next_spawn(f: &Fixture, requests: &[&str]) -> (faults::SpawnHook, Arc
 }
 
 #[tokio::test]
-async fn every_batch_write_failure_recovers_without_a_daemon_restart() {
-    for (point, occurrence) in [
-        ("claim", 1),
-        ("claim_commit", 1),
-        ("runtime_write", 1),
-        ("runtime_write", 2),
-        ("runtime_write", 3),
-        ("runtime_rename", 1),
-        ("runtime_rename", 2),
-        ("runtime_rename", 3),
-        ("capability", 1),
-        ("capability_create", 1),
-        ("capability_write", 1),
-        ("capability_sync", 1),
-        ("capability_rename", 1),
-        ("capability_directory_sync", 1),
-        ("capability", 2),
-        ("capability_create", 2),
-        ("capability_write", 2),
-        ("capability_sync", 2),
-        ("capability_rename", 2),
-        ("capability_directory_sync", 2),
-        ("owner_create", 1),
-        ("owner_write", 1),
-        ("owner_sync", 1),
-        ("owner_rename", 1),
-        ("owner_directory_sync", 1),
-        ("report", 1),
-        ("report", 3),
-        ("report_commit", 1),
-        ("ack", 1),
-        ("ack", 3),
-        ("delivery_finish", 1),
-        ("delivery_finish", 2),
-        ("delivery_commit", 1),
-        ("finish_batch", 1),
-        ("finish_batch_commit", 1),
-    ] {
+async fn a_write_failure_claiming_a_batch_and_writing_its_runtime_recovers_without_a_daemon_restart() {
+    a_write_failure_recovers_without_a_daemon_restart(&[("claim", 1), ("claim_commit", 1), ("runtime_write", 1), ("runtime_write", 2), ("runtime_write", 3), ("runtime_rename", 1), ("runtime_rename", 2), ("runtime_rename", 3)]).await;
+}
+
+#[tokio::test]
+async fn a_write_failure_its_first_capability_recovers_without_a_daemon_restart() {
+    a_write_failure_recovers_without_a_daemon_restart(&[("capability", 1), ("capability_create", 1), ("capability_write", 1), ("capability_sync", 1), ("capability_rename", 1), ("capability_directory_sync", 1)]).await;
+}
+
+#[tokio::test]
+async fn a_write_failure_its_second_capability_recovers_without_a_daemon_restart() {
+    a_write_failure_recovers_without_a_daemon_restart(&[("capability", 2), ("capability_create", 2), ("capability_write", 2), ("capability_sync", 2), ("capability_rename", 2), ("capability_directory_sync", 2)]).await;
+}
+
+#[tokio::test]
+async fn a_write_failure_its_owner_recovers_without_a_daemon_restart() {
+    a_write_failure_recovers_without_a_daemon_restart(&[("owner_create", 1), ("owner_write", 1), ("owner_sync", 1), ("owner_rename", 1), ("owner_directory_sync", 1)]).await;
+}
+
+#[tokio::test]
+async fn a_write_failure_reporting_and_finishing_a_batch_recovers_without_a_daemon_restart() {
+    a_write_failure_recovers_without_a_daemon_restart(&[("report", 1), ("report", 3), ("report_commit", 1), ("ack", 1), ("ack", 3), ("delivery_finish", 1), ("delivery_finish", 2), ("delivery_commit", 1), ("finish_batch", 1), ("finish_batch_commit", 1)]).await;
+}
+
+async fn a_write_failure_recovers_without_a_daemon_restart(points: &[(&'static str, usize)]) {
+    for &(point, occurrence) in points {
         let f = fixture();
         request(&f, "first");
         let (first_hook, _) = task_on_next_spawn(&f, &["first"]);

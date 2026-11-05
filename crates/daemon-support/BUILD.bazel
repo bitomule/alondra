@@ -39,6 +39,7 @@ rust_library(
 
 low_opt_rust_test(
     name = "daemon_support_test",
+    timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//fixtures/workflow"],
     crate_name = "alondra_daemon_support",
@@ -52,6 +53,7 @@ low_opt_rust_test(
 
 rust_inputs_test(
     name = "production_inputs_test",
+    size = "small",
     required_sources = ["crates/daemon-support/src/lib.rs"],
     source_dir = "crates/daemon-support/src/",
     target_under_test = ":daemon_support",
@@ -61,6 +63,7 @@ rust_inputs_test(
 
 rust_inputs_test(
     name = "test_hooks_inputs_test",
+    size = "small",
     required_sources = ["crates/daemon-support/src/lib.rs"],
     source_dir = "crates/daemon-support/src/",
     target_under_test = ":daemon_support_test_hooks",

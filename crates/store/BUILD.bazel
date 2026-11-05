@@ -15,6 +15,7 @@ rust_library(
 
 low_opt_rust_test(
     name = "store_test",
+    size = "small",
     crate_root = "tests/lifecycle.rs",
     srcs = ["tests/lifecycle.rs", "//crates:test_support.rs"],
     compile_data = ["src/controls.sql", "src/controls_before_mcp.sql", "src/controls_before_force_stop.sql", "src/controls_before_clear_auth.sql", "src/cards_before_orchestrator.sql", "//crates/alondrad:src/domain_store/schema.sql", "//crates/alondrad:src/domain_store/schedule_launch_transition.sql"],
@@ -25,6 +26,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "codec_test",
+    size = "small",
     crate = ":store",
     edition = "2024",
     deps = all_crate_deps(normal_dev = True),
@@ -32,12 +34,14 @@ low_opt_rust_test(
 
 rust_doc_test(
     name = "dispatch_authority_test",
+    size = "small",
     crate = ":store",
 )
 
 
 low_opt_rust_test(
     name = "journal_format_test",
+    size = "small",
     crate_root = "tests/journal_format.rs",
     srcs = ["tests/journal_format.rs", "//crates:test_support.rs"],
     compile_data = ["fixtures/legacy-journal.sql", "src/controls.sql", "src/observations_before_retention.sql", "src/inputs_and_commands_before_compaction.sql", "src/schema.sql", "//crates/alondrad:src/domain_store/schema.sql"],
@@ -48,6 +52,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "recorded_journal_test",
+    size = "small",
     crate_root = "tests/recorded_journal.rs",
     srcs = ["tests/recorded_journal.rs", "//crates:test_support.rs"],
     compile_data = ["fixtures/disk-pause-resting-node.sql", "fixtures/sdk-host-disconnect-loop.sql", "fixtures/user-pause-own-turns.sql", "//crates/alondrad:src/domain_store/schema.sql"],

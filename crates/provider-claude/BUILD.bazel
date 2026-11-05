@@ -33,6 +33,7 @@ rust_library(
 
 low_opt_rust_test(
     name = "provider_claude_test",
+    size = "small",
     crate_root = "src/lib.rs",
     srcs = _PROVIDER_TEST_SOURCES,
     crate_name = "alondra_provider_claude",
@@ -45,6 +46,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "sdk_worker_test",
+    size = "small",
     crate_root = "src/lib.rs",
     srcs = _PROVIDER_TEST_SOURCES + ["src/sdk_tests.rs"],
     crate_name = "alondra_provider_claude",
@@ -71,23 +73,27 @@ low_opt_rust_test(
 
 rust_doc_test(
     name = "owner_facade_test",
+    size = "small",
     crate = ":provider_claude",
 )
 
 rust_inputs_test(
     name = "production_inputs_test",
+    size = "small",
     target_under_test = ":provider_claude",
     test_kind = "production",
 )
 
 rust_inputs_test(
     name = "component_inputs_test",
+    size = "small",
     target_under_test = ":provider_claude_test",
     test_kind = "component",
 )
 
 rust_inputs_test(
     name = "sdk_inputs_test",
+    size = "small",
     target_under_test = ":sdk_worker_test",
     test_kind = "sdk",
 )

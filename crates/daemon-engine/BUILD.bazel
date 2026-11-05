@@ -113,6 +113,7 @@ low_opt_rust_test(
 
 rust_inputs_test(
     name = "production_inputs_test",
+    size = "small",
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_store/owner.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine",
@@ -122,6 +123,7 @@ rust_inputs_test(
 
 rust_inputs_test(
     name = "test_hooks_inputs_test",
+    size = "small",
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_store/owner.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine_test_hooks",

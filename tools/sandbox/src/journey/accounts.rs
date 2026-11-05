@@ -1,8 +1,8 @@
 //! Two Claude accounts on one Mac: its own profile, the default account, and Trabajo, one the
 //! user added. New work starts on the account with the most margin; a task whose account ran out
 //! or lost its sign-in waits on that account's card while new work starts on the other; the whole
-//! Mac waits only while no account can work, and goes on on the first that can again. With
-//! moving on, a task whose account ran out goes on with the other one in the same session.
+//! Mac waits only while no account can work, and goes on on the first that can again. A started
+//! task never changes account: it waits on its own, even with moving on.
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
@@ -110,14 +110,14 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         report.snapshot("usage-exhausted", &paused)?;
         let task = user.view("task:t-acc3")?;
         press(report, &user, &task, "reopen:", None, None, "the user reopens t-acc3")?;
-        let waiting = wait(report, "the reopened task waits to start because Claude usage ran out, and no node starts for it", || {
+        let waiting = wait(report, "the reopened task waits to start because usage ran out, and no node starts for it", || {
             let view = user.view("task:t-acc3")?;
             let seen = state_line(&view);
             let started = fakes.session_of("t-acc3")?.filter(|session| session.short != third.short);
             if let Some(session) = started {
                 bail!("node {} started on {} while no account can work", session.short, session.account);
             }
-            Ok(((seen == "Didn't start · Claude usage ran out").then_some(view), seen))
+            Ok(((seen == "Didn't start · Usage limit reached").then_some(view), seen))
         })?;
         report.snapshot("task-t-acc3-waiting", &waiting)?;
         request(report, fakes, &user, &task_script("req-acc4", "t-acc4", "Rename the module"), "Rename the module")?;
@@ -146,11 +146,13 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             let inbox = user.inbox()?;
             Ok(((!inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc1-"))).then_some(()), format!("{inbox:?}")))
         })?;
-        report.step("the default account's task still waits on its card and Alondra sent it nothing", || {
+        wait(report, "the default account's task waits on its card again after the end of the pause probed it", || {
             let inbox = user.inbox()?;
-            ensure!(inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc2-")), "its card left Inbox: {inbox:?}");
+            Ok((inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc2-")).then_some(()), format!("{inbox:?}")))
+        })?;
+        report.step("that probe is all Alondra sent it", || {
             let now = fakes.received(&session(fakes, "t-acc2")?.short)?.len();
-            ensure!(now == told, "t-acc2 took {} more inputs", now - told);
+            ensure!(now <= told + 1, "t-acc2 took {} more inputs", now - told);
             Ok(())
         })
     });
@@ -192,10 +194,12 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok(())
         })
     });
-    report.case("A5", "With moving on, a task whose account runs out goes on with Trabajo in the same Claude session, told to go on, and its card leaves Inbox", |report| {
+    report.case("A5", "Even with moving on, a task whose account runs out keeps its Claude session on that account and waits on its card", |report| {
         mac.refuse(WORK, None)?;
         let fourth = user.view("task:t-acc4")?;
         press(report, &user, &fourth, "cancel:", None, None, "the user cancels t-acc4, which waited for Trabajo's sign-in")?;
+        let second = user.view("task:t-acc2")?;
+        press(report, &user, &second, "cancel:", None, None, "the user cancels t-acc2, whose turn on the default account still runs")?;
         report.step("Trabajo signs in to Claude again", || mac.claude(WORK, &["auth", "login"]))?;
         wait(report, "the daemon sees Trabajo signed in", || {
             let listing = mac.exchange("POST", CHECK, None)?;
@@ -219,23 +223,12 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         mac.write_usage(DEFAULT, 100.0, 30.0, now_ms() + HOUR)?;
         mac.refuse(DEFAULT, Some("rate_limit"))?;
         message(report, &user, "t-acc5", "Also check the alt texts")?;
-        let resumed = wait(report, "t-acc5's session goes on with Trabajo, resumed with its transcript", || {
-            let start = fakes.starts(&fifth.short)?.pop();
-            Ok((start.filter(|start| start.resume.as_deref() == Some(fifth.session_id.as_str()) && start.account == WORK && start.history > 0), format!("{:?}", fakes.starts(&fifth.short)?)))
-        })?;
-        report.step("in the folder it worked in", || {
-            ensure!(resumed.cwd == fifth.cwd, "it resumed in {}", resumed.cwd.display());
+        hold_card(report, &user, USAGE_CARD, "t-acc5", "Claude's usage limit is reached: a task waits")?;
+        report.step("its session started once and stays on the default account", || {
+            ensure!(fakes.starts(&fifth.short)?.len() == 1, "it started again: {:?}", fakes.starts(&fifth.short)?);
             Ok(())
         })?;
-        wait(report, "the session is told to go on", || {
-            let received = fakes.received(&fifth.short)?;
-            Ok((received.last().filter(|input| input.text.contains("go on with your task from where it stopped")).map(drop), format!("{:?}", received.last())))
-        })?;
-        wait(report, "t-acc5's usage card leaves Inbox", || {
-            let inbox = user.inbox()?;
-            Ok(((!inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc5-"))).then_some(()), format!("{inbox:?}")))
-        })?;
-        on_account(report, &session(fakes, "t-acc5")?, "t-acc5", WORK)
+        on_account(report, &session(fakes, "t-acc5")?, "t-acc5", DEFAULT)
     });
     report.setup("After accounts: every task is cancelled, Trabajo is removed and the API refuses nothing", |report| {
         super::cancel_open_tasks(report, sandbox, fakes)?;

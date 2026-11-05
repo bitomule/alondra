@@ -3,6 +3,7 @@ load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_test(
     name = "IssueReportingIntegrationTests",
+    size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["IssueReportingIntegrationTests.swift"],
     deps = [
@@ -23,6 +24,7 @@ swift_library(
 
 swift_test(
     name = "TemporaryFilesTests",
+    size = "small",
     srcs = ["TemporaryFilesTests.swift"],
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     deps = [":AlondraTestSupport"],

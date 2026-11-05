@@ -23,6 +23,7 @@ rust_library(
 )
 low_opt_rust_test(
     name = "provider_codex_test",
+    size = "small",
     crate_root = "src/lib.rs",
     srcs = glob(["src/*.rs"]),
     crate_name = "alondra_provider_codex",

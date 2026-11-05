@@ -20,6 +20,7 @@ exports_files(
 
 sh_test(
     name = "no_sleep_wording_test",
+    size = "small",
     srcs = ["no_sleep_wording_test.sh"],
     args = ["$(rootpaths :localization_catalogs)"],
     data = [":localization_catalogs"],
@@ -27,6 +28,7 @@ sh_test(
 
 sh_test(
     name = "release_bonjour_test",
+    size = "small",
     srcs = ["release_bonjour_test.sh"],
     args = ["$(rootpath Bonjour/Bonjour.plist)", "$(rootpath iOS/Info.plist)", "$(rootpath macOS/Info.plist)"],
     data = ["Bonjour/Bonjour.plist", "iOS/Info.plist", "macOS/Info.plist"],
@@ -57,6 +59,7 @@ PUSH_KEYCHAIN_ENTITLEMENTS = [
 
 sh_test(
     name = "push_keychain_group_test",
+    size = "small",
     srcs = ["push_keychain_group_test.py"],
     args = ["$(rootpath :entitlements_push_keychain_group)", "--static-plists"] +
            ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_PLISTS] + ["--entitlements"] +
@@ -66,6 +69,7 @@ sh_test(
 
 entitlements_follow_signing_test(
     name = "entitlements_follow_signing_test",
+    size = "small",
     entitlements = "entitlements",
     ios_bundle_id = IOS_BUNDLE_ID,
     live_activity_bundle_id = LIVE_ACTIVITY_BUNDLE_ID,
@@ -84,6 +88,7 @@ UPDATE_KEEPS_SESSION_FILES = [
 
 sh_test(
     name = "update_keeps_session_test",
+    size = "small",
     srcs = ["update_keeps_session_test.py"],
     args = ["--ios-bundle-id=" + IOS_BUNDLE_ID] + ["$(rootpath %s)" % path for path in UPDATE_KEEPS_SESSION_FILES],
     data = UPDATE_KEEPS_SESSION_FILES,
@@ -91,6 +96,7 @@ sh_test(
 
 sh_test(
     name = "spanish_catalog_test",
+    size = "small",
     srcs = ["spanish_catalog_test.py"],
     args = [
         "$(rootpath //apple/Design:Resources/AlondraDesign.xcstrings)",
@@ -138,6 +144,7 @@ APP_SOURCES = [
 
 sh_test(
     name = "unused_catalog_strings_test",
+    size = "small",
     srcs = ["unused_catalog_strings_test.py"],
     args = [
         "$(rootpath //apple/Design:Resources/AlondraDesign.xcstrings)",
@@ -167,6 +174,7 @@ swift_test(
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraMacWorkspaceOwnerTests",
+    size = "small",
     srcs = ["macOS/Tests/MacWorkspaceOwnerTests.swift"],
     deps = [
         "//apple/Testing:AlondraTestSupport",
@@ -182,6 +190,7 @@ swift_test(
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraMacServiceNavigationTests",
+    size = "small",
     srcs = ["macOS/Tests/MacServiceNavigationTests.swift"],
     data = ["//fixtures/views:cards"],
     deps = [
@@ -231,6 +240,7 @@ macos_application(
 # breaks the app breaks the checks before it reaches main.
 build_test(
     name = "mac_app_build_test",
+    size = "small",
     targets = [":AlondraMac"],
 )
 

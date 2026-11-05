@@ -3,6 +3,7 @@
 from contextlib import redirect_stdout
 import importlib.util
 import io
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -95,8 +96,24 @@ class MustsScopesTests(unittest.TestCase):
         self.assertTrue(failed)
         self.assertIn("missing  fixtures/views/d.json", output)
 
+    def test_check_fails_naming_a_glob_its_targets_never_read(self):
+        failed, output = self.run_check(MANIFEST, {"crates/relay/src/lib.rs", "Cargo.lock"})
+        self.assertTrue(failed)
+        self.assertIn("dead     fixtures/push/*.json", output)
+
+    def test_a_root_file_no_query_names_is_never_a_dead_glob(self):
+        self.assertEqual(scopes.dead_globs([".bazelrc", "crates/relay/**"], {"crates/relay/src/lib.rs"}), [])
+
+    def test_a_glob_over_the_whole_checkout_is_never_a_dead_glob(self):
+        self.assertEqual(scopes.dead_globs(["**/*.bzl"], {"crates/relay/src/lib.rs"}), [])
+
+    def test_a_crate_change_reopens_no_screen_check(self):
+        checks = scopes.parse_checks(Path(os.environ["MUSTS_MANIFEST"]).read_text())
+        self.assertFalse(scopes.matches(checks["apple-tests"]["paths"], "crates/core/src/usage.rs"))
+        self.assertTrue(scopes.matches(checks["apple-daemon-process"]["paths"], "crates/core/src/usage.rs"))
+
     def test_check_fails_once_a_path_is_taken_out(self):
-        read = {"crates/relay/src/lib.rs", "Cargo.lock"}
+        read = {"crates/relay/src/lib.rs", "fixtures/push/a.json", "Cargo.lock"}
         self.assertFalse(self.run_check(MANIFEST, read)[0])
         self.assertTrue(self.run_check(MANIFEST.replace('      - "Cargo.lock"\n', ""), read)[0])
 

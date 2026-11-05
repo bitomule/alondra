@@ -14,6 +14,7 @@ swift_library(
 
 swift_test(
     name = "AlondraLiveActivityTests",
+    size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
     deps = [":AlondraLiveActivity"],

@@ -1,0 +1,3 @@
+# Tests that keep a generous limit and run in every validation: target, a tab, and why.
+//apple/Testing/TriageTouch:TriageTouchUITests	Creates and boots a simulator of its own every run, about 140 seconds, because the shared pool cannot install the UI test runner with Xcode 27.
+//crates/daemon-engine:daemon_engine_test	1326 tests in about 200 seconds under load; to come down once the work on its failures under load lands.

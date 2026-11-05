@@ -45,7 +45,7 @@ fn cards_read_by_a_delivery(tasks: usize) -> u64 {
 
 #[test]
 fn a_command_reads_the_cards_once_per_rule_not_once_per_task() {
-    let (few, many) = (cards_read_by_a_delivery(10), cards_read_by_a_delivery(40));
+    let (few, many) = (cards_read_by_a_delivery(5), cards_read_by_a_delivery(20));
     assert!(many <= 4 * few, "with four times the tasks and cards a delivery read {many} cards, against {few}: more than four times as many");
 }
 

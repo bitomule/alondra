@@ -35,6 +35,12 @@ common:ci --bes_results_url=https://app.buildbuddy.io/invocation/
 common:warming --config=upload
 common:warming --remote_download_minimal
 
+# A full disk makes `java.log` fail while another thread holds the console, and Bazel 8.4.2 deadlocks
+# between the two: the server stops forever with no test running, and no test timeout can end it.
+common --logging=0
+
+# Short, moderate, long and eternal, in seconds. `tools/test_limits.py` keeps a limit on every test.
+test --test_timeout=60,300,600,900
 test --keep_going
 # Every test gets its own short TMPDIR under /tmp, removed when it ends: macOS caps a unix socket
 # path at 104 bytes, and the default one under /var/folders is too long for the daemon's sockets.

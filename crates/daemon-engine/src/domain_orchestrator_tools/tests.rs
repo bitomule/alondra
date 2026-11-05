@@ -531,6 +531,21 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
 
+/// A task with a model selection finds no account while every one is out: it waits for usage too,
+/// and says so, instead of failing as a start that went wrong.
+#[tokio::test]
+async fn a_launch_that_finds_no_account_while_usage_is_exhausted_waits_for_usage() {
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    let f = world();
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
+    command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: TaskSelection::automatic(ModelProfile::Implementation), pending: None });
+    let now = alondra_core::now_millis();
+    f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "claude/sonnet"})), |_| None).await.unwrap_err();
+    assert_eq!(refused.code, "usage_exhausted", "{refused:?}");
+    assert!(f.sdk().starts().is_empty());
+}
+
 /// 25 October: the disk filled. A launch while the disk is nearly full waits in the queue for room
 /// instead of being refused for the orchestrator to try again, and starts by itself once there is.
 #[tokio::test]

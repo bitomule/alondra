@@ -44,6 +44,8 @@
 - Every behavior change ships with a test that fails without the change and passes with it. Show it
   in the pull request: remove the fix, see the test fail, put it back, see it pass.
 - No flaky tests: no wall-clock assertions, no sleeps racing other work, no retries to hide failures.
+- Every test target declares `size` or `timeout`, at least three times what it takes under load
+  (`docs/running-tests.md`). `//tools:test_limits_test` fails on one that does not.
 - Tests never touch the real `~/.alondra`, launchd job, Keychain, Homebrew install or provider
   logins. Use temporary `HOME` fixtures, removed on success and failure.
 - A test that starts a host owns it: its folder comes from `Directory::for_unix_socket` or

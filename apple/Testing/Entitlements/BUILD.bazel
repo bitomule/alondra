@@ -12,6 +12,7 @@ signed_entitlements(
 
 entitlements_follow_signing_test(
     name = "sample_signing_entitlements_test",
+    size = "small",
     entitlements = "sample",
     forbidden = [
         "bitomule",
