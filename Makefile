@@ -16,7 +16,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements musts-scopes version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
+.PHONY: action-outcomes connection-measurements musts-scopes version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -62,7 +62,7 @@ CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 
 # The PR card flow (merge method, merging, refused, changed) and the usage sheet drawn by the TUI, in es and en.
 tui-shots:
-	bazelisk test //crates/alondra:alondra_test --test_arg=--ignored --test_arg=tui_shots \
+	bazelisk test //crates/alondra:alondra_test --test_arg=--ignored --test_arg=tui_shots --test_env=RUST_MIN_STACK=268435456 \
 		--nocache_test_results --zip_undeclared_test_outputs=false --test_output=errors
 	@mkdir -p $(TUI_SHOTS)
 	@for page in bazel-testlogs/crates/alondra/alondra_test/test.outputs/*.html; do \
@@ -125,6 +125,12 @@ mermaid-fixtures-record:
 MEASUREMENTS ?= $(HOME)/Library/Containers/com.bitomule.alondra.mac/Data/Library/Application Support/com.bitomule.alondra.mac/CommandJournal/connection-measurements.jsonl
 connection-measurements:
 	python3 tools/connection_measurements.py "$(MEASUREMENTS)" $(ARGS)
+
+# How actions ended, per action and outcome, from the daemon's log: `make action-outcomes`, or
+# `make action-outcomes ACTION_LOG=<file>` for another log.
+ACTION_LOG ?= $(HOME)/.alondra/alondrad.log
+action-outcomes:
+	python3 tools/action_outcomes.py "$(ACTION_LOG)"
 
 mac-snapshots-verify:
 	bazelisk test $(MAC_SNAPSHOT_TARGET) --test_output=errors

@@ -743,6 +743,11 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
         let service = serde_json::from_value(body["service"].clone()).ok();
         return anyhow::Error::new(Incompatible { service });
     }
+    match alondra_core::views::action_outcome::Pending::of(body) {
+        Some(alondra_core::views::action_outcome::Pending::InProgress) => return anyhow::Error::new(Running),
+        Some(alondra_core::views::action_outcome::Pending::Unknown(reason)) => return anyhow::Error::new(OutcomeUnknown(reason)),
+        None => {}
+    }
     if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
         return anyhow::Error::new(Refused(error));
     }
@@ -794,6 +799,31 @@ impl std::fmt::Display for Answered {
 
 impl std::error::Error for Answered {}
 
+/// alondrad is still running this action: sent again later, it answers with how it ended.
+#[derive(Debug)]
+pub struct Running;
+
+impl std::fmt::Display for Running {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(tr!("your Mac is still doing it", "tu Mac todavía lo está haciendo"))
+    }
+}
+
+impl std::error::Error for Running {}
+
+/// alondrad cannot tell whether this action happened, and says why.
+#[derive(Debug)]
+pub struct OutcomeUnknown(pub alondra_core::views::action_outcome::UnknownReason);
+
+impl std::fmt::Display for OutcomeUnknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let outcome = alondra_core::views::unknown_outcome(self.0, crate::i18n::lang());
+        write!(f, "{} {}", outcome.title, outcome.body.unwrap_or_default())
+    }
+}
+
+impl std::error::Error for OutcomeUnknown {}
+
 /// The request left and no answer came back: it may have run.
 #[derive(Debug)]
 pub struct Unanswered(pub String);
@@ -823,6 +853,10 @@ impl std::error::Error for Unsent {}
 pub enum Delivery {
     Unsent,
     Unanswered,
+    /// The daemon is still running it: asked again, it answers how it ended.
+    Running,
+    /// The daemon cannot tell whether it happened.
+    Unknown(alondra_core::views::action_outcome::UnknownReason),
     /// The daemon answered; its words, when it gave any.
     Answered(Option<String>),
 }
@@ -831,6 +865,12 @@ pub fn delivery(error: &anyhow::Error) -> Delivery {
     for cause in error.chain() {
         if let Some(refused) = cause.downcast_ref::<Refused>() {
             return Delivery::Answered(Some(refusal(&refused.0)));
+        }
+        if cause.is::<Running>() {
+            return Delivery::Running;
+        }
+        if let Some(unknown) = cause.downcast_ref::<OutcomeUnknown>() {
+            return Delivery::Unknown(unknown.0);
         }
         if let Some(answered) = cause.downcast_ref::<Answered>() {
             return Delivery::Answered(Some(answered.message.clone()).filter(|message| !message.is_empty()));
@@ -1255,6 +1295,15 @@ mod wire_tests {
         let error = post_to(base, Duration::from_secs(2));
         assert_eq!(delivery(&error), Delivery::Answered(Some("disk full".into())), "{error:#}");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn still_running_and_unknown_outcomes_are_read_from_their_kind_never_shown_as_their_code() {
+        use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+        assert_eq!(delivery(&failure(503, &in_progress_body())), Delivery::Running);
+        assert_eq!(delivery(&failure(409, &unknown_body(UnknownReason::Interrupted))), Delivery::Unknown(UnknownReason::Interrupted));
+        let older = serde_json::json!({"error": "outcome_unknown", "kind": "outcome_unknown"});
+        assert_eq!(delivery(&failure(409, &older)), Delivery::Unknown(UnknownReason::Other));
     }
 
     #[test]

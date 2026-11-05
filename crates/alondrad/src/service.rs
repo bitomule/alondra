@@ -1179,7 +1179,7 @@ impl Service {
             Err(error) if error.is::<crate::operation_journal::Retired>()=>{
                 accepted().await?;
                 self.require_device_approval(&e.sender,&device,transport)?;
-                let response=self.encode_response(e,&device,&json!({"status":410,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}),&request)?;
+                let response=self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?;
                 return Ok((response,device,guard));
             },
             Err(error)=>return Err(error),
@@ -1200,7 +1200,7 @@ impl Service {
             && request.method == "GET"
             && request.body.is_none();
         let response = match disposition {
-            Disposition::Retired => self.encode_response(e,&device,&json!({"status":410,"body":{"error":"outcome_unknown","kind":"outcome_unknown"}}),&request)?,
+            Disposition::Retired => self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?,
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
                 self.execute_atomic_local(e, &device, &request, &digest, transport, receipt.clone())

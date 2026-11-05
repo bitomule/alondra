@@ -136,6 +136,28 @@ async fn a_conflict_whose_outcome_is_unknown_names_its_kind() {
     assert_eq!((answer["status"].as_u64(), answer["body"]["kind"].as_str()), (Some(409), Some("outcome_unknown")), "{answer}");
 }
 
+/// An iPhone asking how an action ended while the Mac still runs it is told it still runs, never
+/// that the Mac has no record of it: read as absent, an expired seal sent it again under a new id.
+#[tokio::test]
+async fn a_lookup_while_the_action_still_runs_says_so_and_once_cut_short_says_why_it_is_unknown() {
+    use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+    let f = Fixture::new();
+    let original = f.action();
+    let lookup = operation_results::lookup(&f.path(&original)).unwrap();
+    let device = f.service.devices.get("phone-1").unwrap();
+    let request: LocalRequest = serde_json::from_slice(&original.open(&device.signing, &f.service.agreement,
+        "phone-1","mac-1","mac-1",1_000).unwrap()).unwrap();
+    let scope = f.service.operation_scope(&original, &request, &device, Transport::Direct).unwrap().unwrap();
+    f.service.journal.accept_scoped("phone-1", &original.request_id, &[1;32], Some(&scope)).unwrap();
+    f.service.journal.executing("phone-1", &original.request_id, &[1;32]).unwrap();
+    f.service.inflight.lock().unwrap().insert(("phone-1".into(), original.request_id.clone()), ([1;32], false));
+    let answer = f.service.operation_result("phone-1", &lookup, Transport::Direct).await.unwrap();
+    assert_eq!((answer["status"].as_u64(), &answer["body"]), (Some(503), &in_progress_body()), "{answer}");
+    f.service.inflight.lock().unwrap().clear();
+    let answer = f.service.operation_result("phone-1", &lookup, Transport::Direct).await.unwrap();
+    assert_eq!((answer["status"].as_u64(), &answer["body"]), (Some(404), &unknown_body(UnknownReason::Interrupted)), "{answer}");
+}
+
 #[test]
 fn the_historical_route_grammar_and_digest_are_bounded_and_json_order_independent() {
     let f = Fixture::new();

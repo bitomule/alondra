@@ -276,6 +276,46 @@ fn an_answer_that_does_not_reach_the_mac_is_tried_again_in_silence_with_the_same
     assert!(sent.iter().all(|(_, body)| *body == request), "the very same request, so the daemon does it once");
 }
 
+/// 5 November: adding an account from the TUI took longer than one attempt; the retry found the
+/// first attempt still running and the TUI said «Tu Mac no pudo hacerlo · outcome_unknown» while the
+/// account was being added. Still running is retried in silence until the real reply arrives.
+#[test]
+fn an_action_the_mac_is_still_running_is_retried_in_silence_and_ends_with_its_real_reply() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (pr_id, _) = served_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    let request = posted(&app)[0].1.clone();
+    let shown = flash(&app).to_owned();
+    app.on_msg(Msg::ViewAction { request: request.clone(), result: Err(Delivery::Running) });
+    assert!(app.optimistic.hides(&Key(pr_id.clone())), "the card stays out while the Mac works on it");
+    assert_eq!(flash(&app), shown, "nothing says it failed");
+    app.tick_answers(now_millis() + 20_000);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 2, "asked again");
+    assert_eq!(sent[1].1, request, "with the same command, so the Mac answers how the first one ended");
+    let done = Outcome { kind: OutcomeKind::Done, title: "Merged".into(), body: None, next: None };
+    app.on_msg(Msg::ViewAction { request, result: Ok(ViewActionReply::Outcome(done)) });
+    assert_eq!(flash(&app), "Merged");
+}
+
+#[test]
+fn an_action_whose_outcome_the_mac_cannot_tell_says_what_happened_and_what_to_do_without_codes() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    served_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    let request = posted(&app)[0].1.clone();
+    let reason = alondra_core::views::action_outcome::UnknownReason::Interrupted;
+    app.on_msg(Msg::ViewAction { request, result: Err(Delivery::Unknown(reason)) });
+    let notice = flash(&app).to_owned();
+    assert_eq!(notice, "Tu Mac no sabe si se hizo.\nAlondra se reinició en tu Mac mientras lo hacía. Mira si el cambio está; si no, vuelve a hacerlo.");
+    assert!(!notice.contains("outcome_unknown"));
+    assert_eq!(posted(&app).len(), 1, "not sent again: asking again gives the same answer");
+}
+
 #[test]
 fn flash_kinds_draw_with_their_own_mark() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
