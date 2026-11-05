@@ -22,7 +22,7 @@ final class NotificationRuntime {
     /// A push came from the Mac: it is reachable, so answers still waiting for it go now.
     @ObservationIgnored var macReached: (@MainActor () async -> Void)?
     /// The relay pairings of the account now; none means it ended.
-    @ObservationIgnored var pairingsChanged: (@MainActor ([NotificationClient]) -> Void)?
+    @ObservationIgnored var pairingsChanged: (@MainActor ([NotificationClient], [NotificationDecryptionContext]) -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
         do { try await prepareSession?() }
@@ -95,7 +95,7 @@ final class NotificationRuntime {
                 }
                 error = nil
                 activate()
-                pairingsChanged?(clients)
+                pairingsChanged?(clients, contexts)
             }
         } catch {
             if current == generation { self.error = String(localized: "Alerts for this Mac couldn’t be set up. Alondra tries again when you reopen the app.") }
@@ -116,7 +116,7 @@ final class NotificationRuntime {
     func requestAlerts() async { await push.activate() }
 
     func deactivate() async throws {
-        pairingsChanged?([])
+        pairingsChanged?([], [])
         activation.cancel()
         generation += 1
         let current = generation
@@ -138,6 +138,7 @@ final class NotificationRuntime {
 
     /// The account session ended without a sign-out: its bindings stop receiving pushes.
     func retireBindings() {
+        pairingsChanged?([], [])
         activation.cancel()
         bindings.retire(into: unregistrar.ledger)
         drainUnregistrations()

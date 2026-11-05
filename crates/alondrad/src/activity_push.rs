@@ -85,6 +85,7 @@ struct Due {
 #[derive(Debug)]
 struct Phone {
     binding: String,
+    key: String,
     told: Option<Report>,
     told_at: Option<Instant>,
     failures: u32,
@@ -93,8 +94,8 @@ struct Phone {
 }
 
 impl Phone {
-    fn new(binding: String) -> Self {
-        Phone { binding, told: None, told_at: None, failures: 0, retry_at: None, gone_until: None }
+    fn new(binding: String, key: String) -> Self {
+        Phone { binding, key, told: None, told_at: None, failures: 0, retry_at: None, gone_until: None }
     }
 }
 
@@ -137,16 +138,17 @@ impl Schedule {
         Report { counts: self.counts, active: self.active(now) }
     }
 
-    /// The phones that may hear from this Mac now, by id with their push binding. A new binding
-    /// is a new start for its phone, one the relay had ended included.
-    fn phones(&mut self, phones: Vec<(String, String)>) {
-        let phones: BTreeMap<String, String> = phones.into_iter().collect();
+    /// The phones that may hear from this Mac now, by id with their push binding and Live
+    /// Activity key. A new binding or key is a new start for its phone, one the relay had ended
+    /// included: what it was told before it could not open.
+    fn phones(&mut self, phones: Vec<(String, String, String)>) {
+        let phones: BTreeMap<String, (String, String)> = phones.into_iter().map(|(id, binding, key)| (id, (binding, key))).collect();
         self.phones.retain(|id, _| phones.contains_key(id));
-        for (id, binding) in phones {
+        for (id, (binding, key)) in phones {
             match self.phones.get(&id) {
-                Some(phone) if phone.binding == binding => {}
+                Some(phone) if phone.binding == binding && phone.key == key => {}
                 _ => {
-                    self.phones.insert(id, Phone::new(binding));
+                    self.phones.insert(id, Phone::new(binding, key));
                 }
             }
         }
@@ -308,6 +310,7 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
             .min(REPEAT);
         tokio::select! {
             result = changed.changed() => if result.is_err() { return },
+            _ = service.activity_key_given() => {},
             _ = tokio::time::sleep(wait) => {},
         }
     }
@@ -321,8 +324,8 @@ mod tests {
         ActivityCounts { inbox, waiting, working }
     }
 
-    fn phone() -> Vec<(String, String)> {
-        vec![("phone".into(), "binding".into())]
+    fn phone() -> Vec<(String, String, String)> {
+        vec![("phone".into(), "binding".into(), "key".into())]
     }
 
     /// Takes what is due at `at` and answers each with `answer`.
@@ -451,7 +454,7 @@ mod tests {
     fn a_relay_without_the_route_puts_the_reports_to_sleep_and_is_asked_again_in_an_hour() {
         let start = Instant::now();
         let mut schedule = Schedule::new(counts(1, 0, 0), start);
-        schedule.phones(vec![("a".into(), "binding-a".into()), ("b".into(), "binding-b".into())]);
+        schedule.phones(vec![("a".into(), "binding-a".into(), "key".into()), ("b".into(), "binding-b".into(), "key".into())]);
         let due = tick(&mut schedule, start + SETTLE, Sent::Missing);
         assert_eq!(due.len(), 2);
         assert!(schedule.phones.values().all(|phone| phone.told.is_none()), "the first 404 stops the round");
@@ -468,7 +471,7 @@ mod tests {
     fn a_gone_registration_stops_that_phone_for_an_hour_or_until_it_sends_a_new_binding() {
         let start = Instant::now();
         let mut schedule = Schedule::new(counts(1, 0, 0), start);
-        schedule.phones(vec![("a".into(), "binding-a".into()), ("b".into(), "binding-b".into())]);
+        schedule.phones(vec![("a".into(), "binding-a".into(), "key".into()), ("b".into(), "binding-b".into(), "key".into())]);
         let due = schedule.take(start + SETTLE);
         schedule.record(&due[0], Sent::Gone, start + SETTLE);
         schedule.record(&due[1], Sent::Accepted, start + SETTLE);
@@ -478,19 +481,31 @@ mod tests {
         assert_eq!(due.iter().map(|due| due.phone.as_str()).collect::<Vec<_>>(), vec!["b"]);
         assert!(tick(&mut schedule, at + SETTLE + REPEAT, Sent::Accepted).iter().all(|due| due.phone == "b"));
 
-        schedule.phones(vec![("a".into(), "binding-a".into()), ("b".into(), "binding-b".into())]);
+        schedule.phones(vec![("a".into(), "binding-a".into(), "key".into()), ("b".into(), "binding-b".into(), "key".into())]);
         assert!(schedule.phones["a"].gone_until.is_some(), "the same binding is the same ended registration");
-        schedule.phones(vec![("a".into(), "binding-a2".into()), ("b".into(), "binding-b".into())]);
+        schedule.phones(vec![("a".into(), "binding-a2".into(), "key".into()), ("b".into(), "binding-b".into(), "key".into())]);
         let later = at + SETTLE + REPEAT + Duration::from_secs(1);
         let due = tick(&mut schedule, later, Sent::Accepted);
         assert_eq!(due.iter().map(|due| due.phone.as_str()).collect::<Vec<_>>(), vec!["a"], "a new binding starts again");
     }
 
     #[test]
+    fn a_new_key_starts_its_phone_over_with_the_same_binding() {
+        let start = Instant::now();
+        let mut schedule = Schedule::new(counts(1, 0, 0), start);
+        schedule.phones(vec![("a".into(), "binding-a".into(), "key".into())]);
+        tick(&mut schedule, start + SETTLE, Sent::Accepted);
+        let later = start + SETTLE + Duration::from_secs(1);
+        assert!(schedule.take(later).is_empty(), "the phone was told");
+        schedule.phones(vec![("a".into(), "binding-a".into(), "rotated".into())]);
+        assert_eq!(schedule.take(later).len(), 1, "what it was told before it can no longer open");
+    }
+
+    #[test]
     fn a_phone_that_comes_back_with_the_same_binding_hears_again_within_the_hour() {
         let start = Instant::now();
         let mut schedule = Schedule::new(counts(1, 0, 0), start);
-        schedule.phones(vec![("a".into(), "binding-a".into())]);
+        schedule.phones(vec![("a".into(), "binding-a".into(), "key".into())]);
         let due = schedule.take(start + SETTLE);
         schedule.record(&due[0], Sent::Gone, start + SETTLE);
         assert!(schedule.take(start + SETTLE + DORMANT - Duration::from_secs(1)).is_empty());

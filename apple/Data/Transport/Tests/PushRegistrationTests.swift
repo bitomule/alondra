@@ -60,6 +60,18 @@ import Testing
         #expect(body == ["push_binding": binding])
     }
 
+    @Test func theLiveActivityKeyGoesToTheMacThroughItsOwnRoute() async throws {
+        let transport = PushTransport()
+        let api = AlondraAPIClient(serviceURL: URL(string: "https://example.test")!, deviceID: "client-1", operations: transport)
+        try await api.giveActivityKey("public")
+        let request = try #require(await transport.request)
+        #expect(request.method == "POST")
+        #expect(request.path == "/device/activity-key")
+        let data = try #require(request.body)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: String])
+        #expect(body == ["public_key": "public"])
+    }
+
     @Test func authenticatedStalePreferenceResponseExposesRevisionForRecovery() async throws {
         let transport = PushTransport(response: .completed(status: 409,
             body: Data(#"{"kind":"stale_push_preferences","current_revision":77}"#.utf8)))

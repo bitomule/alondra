@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         liveActivity.start()
-        notifications.pairingsChanged = { [liveActivity] clients in liveActivity.relayPairings(clients) }
+        notifications.pairingsChanged = { [liveActivity] clients, contexts in liveActivity.relayPairings(clients, contexts) }
         let owner = cloudPairing
         notifications.prepareSession = { [weak owner] in try await owner?.prepareNotificationSession() }
         notifications.selectSession = { [weak owner] id in

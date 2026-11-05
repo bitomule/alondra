@@ -10,10 +10,10 @@ struct AlondraLiveActivityBundle: WidgetBundle {
 }
 
 struct AlondraActivityWidget: Widget {
-    private static let keychain = ActivityKeychain()
+    private static let keys = ActivityKeyFile()
 
     private static func summary(_ context: ActivityViewContext<AlondraActivityAttributes>) -> ActivitySummary {
-        ActivitySummary(context.state, opened: keychain?.opened(context.state) ?? [], now: .now, stale: context.isStale)
+        ActivitySummary(context.state, opened: keys?.opened(context.state) ?? [], now: .now, stale: context.isStale)
     }
 
     var body: some WidgetConfiguration {

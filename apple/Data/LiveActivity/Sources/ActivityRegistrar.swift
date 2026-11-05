@@ -19,10 +19,14 @@ public struct ActivityRelayPairing: Sendable {
     public let id: String
     public let register: @Sendable (RelayActivityRegistration) async throws -> Void
     public let unregister: @Sendable (String) async throws -> Void
+    /// The public half of this pairing's key, and how the Mac hears it.
+    public let publicKey: String?
+    public let giveKey: @Sendable (String) async throws -> Void
 
     public init(id: String, register: @escaping @Sendable (RelayActivityRegistration) async throws -> Void,
-                unregister: @escaping @Sendable (String) async throws -> Void) {
-        self.id = id; self.register = register; self.unregister = unregister
+                unregister: @escaping @Sendable (String) async throws -> Void, publicKey: String? = nil,
+                giveKey: @escaping @Sendable (String) async throws -> Void = { _ in }) {
+        self.id = id; self.register = register; self.unregister = unregister; self.publicKey = publicKey; self.giveKey = giveKey
     }
 }
 
@@ -42,6 +46,7 @@ public final class ActivityRegistrar {
     private let environment: String
     private var pairings: [ActivityRelayPairing] = []
     private var told: [String: RelayActivityRegistration] = [:]
+    private var keysGiven: [String: String] = [:]
     private var startToken: String?
     private var updates: [String: Update] = [:]
     private var ready = false
@@ -49,6 +54,7 @@ public final class ActivityRegistrar {
     private var frequentUpdates = true
     private var saidGone = false
     private var tail: Task<Void, Never>?
+    private var keyTail: Task<Void, Never>?
 
     /// `forgetPhoneID` runs when the account ends: the relay keeps a phone to the account that
     /// registered it, so the next account needs another id.
@@ -83,6 +89,7 @@ public final class ActivityRegistrar {
         }
         self.pairings = pairings
         told = told.filter { id, _ in pairings.contains { $0.id == id } }
+        keysGiven = keysGiven.filter { id, _ in pairings.contains { $0.id == id } }
         saidGone = false
         sync()
     }
@@ -92,6 +99,7 @@ public final class ActivityRegistrar {
         let leaving = pairings
         pairings = []
         told = [:]
+        keysGiven = [:]
         enqueue { [self] in
             await unregister(through: leaving)
             forgetPhoneID()
@@ -102,9 +110,13 @@ public final class ActivityRegistrar {
     public func retry() { sync() }
 
     /// Waits until every change made so far has reached the relay.
-    public func settled() async { await tail?.value }
+    public func settled() async {
+        await tail?.value
+        await keyTail?.value
+    }
 
     private func sync() {
+        giveKeys()
         enqueue { [self] in
             guard ready else { return }
             if enabled { await register() } else { await unregister(through: pairings) }
@@ -116,6 +128,18 @@ public final class ActivityRegistrar {
         tail = Task {
             await previous?.value
             await work()
+        }
+    }
+
+    /// A Mac asleep takes minutes to answer: its key never holds back the relay's registration.
+    private func giveKeys() {
+        let previous = keyTail
+        keyTail = Task { [self] in
+            await previous?.value
+            for pairing in pairings {
+                guard let key = pairing.publicKey, keysGiven[pairing.id] != key else { continue }
+                if (try? await pairing.giveKey(key)) != nil { keysGiven[pairing.id] = key }
+            }
         }
     }
 

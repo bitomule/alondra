@@ -3763,6 +3763,8 @@ fn authentication_error(error_value:anyhow::Error)->(StatusCode,Json<Value>) {
                 if let Some(epoch)=&rejection.current_epoch {
                     return (StatusCode::UNAUTHORIZED,Json(json!({"error":"relay_epoch_changed","epoch":epoch})));
                 }
+            } else {
+                eprintln!("alondra-relay: request refused: {error_value:#}");
             }
             unauthorized()
         }

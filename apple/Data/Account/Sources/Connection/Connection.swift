@@ -312,6 +312,9 @@ public actor Connection {
         }, unregisterActivity: { phoneID in
             try await self.checkActive()
             try await self.api.unregisterActivity(phoneID: phoneID)
+        }, giveActivityKey: { publicKey in
+            try await self.checkActive()
+            try await self.api.giveActivityKey(publicKey)
         })
     }
 }

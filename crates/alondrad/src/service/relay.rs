@@ -542,7 +542,9 @@ impl Service {
     ) -> Result<(reqwest::StatusCode, String)> {
         let device = self.devices.get(id).ok_or_else(|| anyhow!("device is not configured for the service"))?;
         self.require_device_approval(id, &device, Transport::Relay)?;
-        let body = super::seal_activity(&self.mac_id, &self.signing, id, &device.agreement, binding, payload, flags)?;
+        let key = self.journal.activity_key(id)?.ok_or_else(|| anyhow!("the phone gave no Live Activity key"))?;
+        let key = p256::PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&key)?)?;
+        let body = super::seal_activity(&self.mac_id, &self.signing, id, &key, binding, payload, flags)?;
         let current_epoch = match *epoch {
             Some(epoch) => epoch,
             None => *epoch.insert(self.bootstrap().await?),

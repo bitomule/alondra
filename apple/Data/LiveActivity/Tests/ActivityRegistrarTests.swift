@@ -124,6 +124,24 @@ private final class Forgetful: Sendable {
         #expect(relay.sent(to: "a").last?.updateToken == updateToken)
     }
 
+    @Test func theMacHearsEachKeyOnceAndAgainAfterItFailed() async {
+        let given = Mutex<[String]>([])
+        let failing = Mutex(true)
+        let pairing = ActivityRelayPairing(id: "a", register: { _ in }, unregister: { _ in }, publicKey: "public") { key in
+            if failing.withLock({ $0 }) { throw URLError(.notConnectedToInternet) }
+            given.withLock { $0.append(key) }
+        }
+        registrar.set([pairing])
+        await registrar.settled()
+        #expect(given.withLock { $0 }.isEmpty)
+        failing.withLock { $0 = false }
+        registrar.retry()
+        await registrar.settled()
+        registrar.retry()
+        await registrar.settled()
+        #expect(given.withLock { $0 } == ["public"])
+    }
+
     @Test func theLastPairingGoingLeavesTheRelayThroughIt() async {
         registrar.set([relay.pairing("a")])
         await registrar.settled()

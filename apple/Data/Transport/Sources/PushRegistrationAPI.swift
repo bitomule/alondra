@@ -53,6 +53,19 @@ public extension AlondraAPIClient {
         try await push.unregisterActivity(phoneID: phoneID)
     }
 
+    /// The key the Mac seals this phone's Live Activity reports for. A Mac from before this route
+    /// answers an error, and the phone tells it again at its next launch.
+    func giveActivityKey(_ publicKey: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["public_key": publicKey])
+        let endpoint = Endpoint<Data>.data(.post, path: ["device", "activity-key"], body: body, contentType: "application/json")
+        let request = try APIRequest(endpoint: endpoint, operationID: UUID().uuidString)
+        switch try await operations.perform(request) {
+        case .unknown: throw OperationError.outcomeUnknown
+        case .completed(let status, let response):
+            guard (200..<300).contains(status) else { throw APIError.from(status: status, body: response) }
+        }
+    }
+
     /// Sign-out tells the Mac to stop pushing to this device before its session is gone.
     /// It names the binding so a Mac re-paired since keeps the newer one.
     func removeServicePushBinding(_ binding: String) async throws {

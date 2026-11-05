@@ -14,10 +14,9 @@ while something waits or works: Inbox, Waiting and Working. Neither Apple nor th
 - **The phone** registers its ActivityKit tokens at the relay once per pairing, under one
   `phone_id`, so the relay knows which pairings feed the same Live Activity. Tokens go to the relay
   only, never to a Mac.
-- **The widget extension** opens the envelopes when it draws and adds them up. It reads the
-  pairings' keys from the Keychain group it shares with the app and the notification service
-  extension (`AlondraPushKeychainAccessGroup`), stored as
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
+- **The widget extension** opens the envelopes when it draws and adds them up. It reads the key
+  from a file in the App Group it shares with the app, because the process that draws a Live
+  Activity has no Keychain (see below).
 - **The app** writes the Macs it is connected to in the clear, as `reports`. It keeps the sealed
   reports of every other Mac, so a foreground update never loses their counts.
 
@@ -26,6 +25,20 @@ what no report will: a push lost to a restart, or a failed end. One started for 
 force has no update token, so it cannot be ended; nothing starts on top of it until it rotates. A
 Mac told a phone is gone asks again after an hour: Live Activities turned back on register the same
 phone with the same binding.
+
+## The key
+
+Each pairing has a key used for nothing else, made by the phone and kept in
+`live-activity-keys.json` in the App Group. A stolen file reveals the counts and the Mac's name at
+most, never the content of a card. It is readable after the first unlock, stays out of backups and
+leaves with the account. The phone gives the public half to the Mac through `/device/activity-key`,
+and a Mac without it sends that phone no reports.
+
+Measured on an iPhone, in the process that draws the Live Activity (`AlondraLiveActivity`), with the
+`keychain-access-groups` entitlement in the binary: reading the shared item, reading with no group
+and adding to its own group all return `errSecNotAvailable` (-25291), locked and unlocked. The app
+reads the same item with status 0, saved as `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
+That process reads an App Group file on a locked phone.
 
 ## The push
 
@@ -72,11 +85,7 @@ three an hour.
 
 The simulator cannot answer these; each needs a signed build on an iPhone.
 
-- Whether the extension reads the Keychain while it draws on a locked phone. An earlier probe got
-  `errSecNotAvailable` (-25291), also unlocked. The deciding test reads the real item from the
-  extension after the first unlock with the phone locked, with the same read in the notification
-  service extension as the control: `-34018` or `-25308` is a configuration fault to fix, and
-  `-25291` with the entitlement in the installed binary and a passing control means this process
-  has no Keychain. The extension logs the status under the `keychain` category.
 - The delay of priority 5 updates, and whether a late repeat shows "No news" with no reason.
 - The battery cost.
+- The real Dynamic Island: the simulator widens it for the activity, but `simctl io screenshot`
+  leaves what it shows out of the image.

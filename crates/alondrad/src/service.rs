@@ -362,6 +362,20 @@ fn approval_bound_read_digest(envelope: &[u8], binding: &str) -> [u8; 32] {
 /// Where a domain client registers its push preferences; the older route serves the legacy daemon.
 const PUSH_BINDING_ROUTE: &str = "/device/push-binding";
 const PUSH_BINDING_REMOVE_ROUTE: &str = "/device/push-binding/remove";
+/// Where a phone gives this Mac the key its Live Activity reports are sealed for.
+const ACTIVITY_KEY_ROUTE: &str = "/device/activity-key";
+
+/// The public half of the key the Live Activity opens reports with. The process that draws it has
+/// no Keychain, so that key lives in a file and is never the pairing's own agreement key.
+fn parse_activity_key(request: &LocalRequest) -> Result<String> {
+    let map = request.body.as_ref().and_then(Value::as_object).context("activity key body required")?;
+    if map.keys().any(|key| key != "public_key") {
+        bail!("unknown activity key field");
+    }
+    let key = map.get("public_key").and_then(Value::as_str).context("activity key required")?;
+    PublicKey::from_sec1_bytes(&decoded(key)?)?;
+    Ok(key.to_owned())
+}
 
 fn parse_push_binding_removal(request: &LocalRequest) -> Result<String> {
     let map = request
@@ -544,6 +558,7 @@ impl Service {
                 || request.method == "POST"
                     && (request.path == PUSH_BINDING_ROUTE
                         || request.path == PUSH_BINDING_REMOVE_ROUTE
+                        || request.path == ACTIVITY_KEY_ROUTE
                         || crate::client_routes::atomic_write_path(&request.path)
                         || agent_message(&request.path).is_some()
                         || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -575,6 +590,20 @@ impl Service {
                     json!({"status":204})
                 }
                 Err(_) => json!({"status":422,"body":{"error":"invalid push binding removal"}}),
+            };
+            let bytes = self.encode_response(envelope, device, &result, request)?;
+            let bytes = self.journal
+                .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
+            return Ok(bytes);
+        }
+        if self.domain.is_some() && request.path == ACTIVITY_KEY_ROUTE {
+            let result = match parse_activity_key(request) {
+                Ok(key) if self.journal.set_activity_key(&envelope.sender, &key)? => {
+                    self.journal.activity_keys.notify_one();
+                    json!({"status":204})
+                }
+                Ok(_) => json!({"status":409,"body":{"error":"device not enrolled"}}),
+                Err(_) => json!({"status":422,"body":{"error":"invalid activity key"}}),
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
             let bytes = self.journal
@@ -1064,6 +1093,7 @@ impl Service {
                     || crate::domain_orchestrator::decision_route(&request.path).is_some()
                     || request.path == PUSH_BINDING_ROUTE
                     || request.path == PUSH_BINDING_REMOVE_ROUTE
+                    || request.path == ACTIVITY_KEY_ROUTE
                     || request.path == crate::direct::routes::PATH
                     || crate::views::routes::approved_read_path(&request.path)
                     || crate::views::actions::approved_path(&request.method, &request.path))
@@ -1690,7 +1720,13 @@ impl Service {
 
     /// The phones a Live Activity report goes to, with their push binding: every approved phone
     /// actively enrolled with the relay that sent this Mac one.
-    pub(crate) fn activity_phones(&self) -> Result<Vec<(String, String)>> {
+    /// Resolves when a phone gives its Live Activity key: it may hear this Mac's report now.
+    pub(crate) async fn activity_key_given(&self) {
+        self.journal.activity_keys.notified().await;
+    }
+
+    /// Each phone that can open a report, by id with its push binding and Live Activity key.
+    pub(crate) fn activity_phones(&self) -> Result<Vec<(String, String, String)>> {
         if self.relay.is_none() {
             return Ok(Vec::new());
         }
@@ -1699,8 +1735,8 @@ impl Service {
             if !self.auth.approved_key_matches(id, &device.signing) || !self.journal.enrollment_active(id)? {
                 continue;
             }
-            if let Some(binding) = self.journal.push_binding(id)? {
-                phones.push((id.clone(), binding));
+            if let (Some(binding), Some(key)) = (self.journal.push_binding(id)?, self.journal.activity_key(id)?) {
+                phones.push((id.clone(), binding, key));
             }
         }
         Ok(phones)
@@ -1952,7 +1988,7 @@ fn seal_to_device(
 
 /// The `/v1/mac/activity` body: the relay keeps the latest `envelope` of each Mac for the phone
 /// and hands them all, unopened, to its Live Activity, whose widget extension opens each with the
-/// pairing's agreement key and adds them up. Only the three flags travel in the clear.
+/// key the phone gave for it and adds them up. Only the three flags travel in the clear.
 pub(crate) fn seal_activity(
     mac_id: &str,
     signing: &SigningKey,
@@ -2166,6 +2202,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
         && request.body.is_some()
         && (request.path == PUSH_BINDING_ROUTE
             || request.path == PUSH_BINDING_REMOVE_ROUTE
+            || request.path == ACTIVITY_KEY_ROUTE
             || crate::client_routes::upload_step(&request.path).is_some()
             || agent_message(&request.path).is_some()
             || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -2342,6 +2379,7 @@ struct Journal {
     receipt_admissions: Arc<tokio::sync::Semaphore>,
     accept_admissions: Arc<tokio::sync::Semaphore>,
     accept_jobs: Arc<tokio::sync::Semaphore>,
+    activity_keys: Arc<tokio::sync::Notify>,
     #[cfg(test)]
     before_write: Option<Arc<ReceiptWriteHook>>,
     #[cfg(test)]
@@ -2468,6 +2506,8 @@ impl Journal {
               state TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS service_push_bindings (
               device_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS service_activity_keys (
+              device_id TEXT PRIMARY KEY, public_key TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS service_push_preferences (
               device_id TEXT PRIMARY KEY, quiet_start TEXT, quiet_end TEXT);
             CREATE TABLE IF NOT EXISTS service_push_preference_revisions (
@@ -2499,6 +2539,7 @@ impl Journal {
             receipt_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_RECEIPTS)),
             accept_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_ACCEPTS)),
             accept_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+            activity_keys: Arc::default(),
             #[cfg(test)]
             before_write: None,
             #[cfg(test)]
@@ -2587,6 +2628,10 @@ impl Journal {
             params![id],
         )?;
         tx.execute(
+            "DELETE FROM service_activity_keys WHERE device_id=?1",
+            params![id],
+        )?;
+        tx.execute(
             "DELETE FROM service_push_preferences WHERE device_id=?1",
             params![id],
         )?;
@@ -2600,10 +2645,13 @@ impl Journal {
     /// The phone, or the relay on its behalf, said this binding gets no more pushes. One the
     /// phone registered since, after pairing again, stays.
     fn forget_push_binding(&self, id: &str, binding: &str) -> Result<()> {
-        self.db()?.execute(
+        let c = self.db()?;
+        if c.execute(
             "DELETE FROM service_push_bindings WHERE device_id=?1 AND binding=?2",
             params![id, binding],
-        )?;
+        )? > 0 {
+            c.execute("DELETE FROM service_activity_keys WHERE device_id=?1", params![id])?;
+        }
         Ok(())
     }
     #[cfg(test)]
@@ -2744,6 +2792,19 @@ impl Journal {
             "SELECT p.quiet_start,p.quiet_end FROM service_push_preferences p JOIN service_enrollments e USING(device_id) WHERE p.device_id=?1 AND e.state='active'",
             params![id], |row| Ok(QuietHours { start: row.get(0)?, end: row.get(1)? }),
         ).optional()?.unwrap_or_default())
+    }
+    /// False when the device has no active enrollment here, so nothing was kept.
+    fn set_activity_key(&self, id: &str, key: &str) -> Result<bool> {
+        Ok(self.db()?.execute(
+            "INSERT INTO service_activity_keys(device_id,public_key) SELECT device_id,?2 FROM service_enrollments WHERE device_id=?1 AND state='active' ON CONFLICT(device_id) DO UPDATE SET public_key=excluded.public_key",
+            params![id, key],
+        )? > 0)
+    }
+    fn activity_key(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.db()?.query_row(
+            "SELECT public_key FROM service_activity_keys WHERE device_id=?1",
+            params![id], |row| row.get(0),
+        ).optional()?)
     }
     fn push_binding(&self, id: &str) -> Result<Option<String>> {
         let c = self.db()?;
@@ -3361,6 +3422,39 @@ mod tests {
             0o644
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn an_activity_key_must_be_a_public_key_and_nothing_else() {
+        let key = URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[9u8; 32]).unwrap().public_key().to_sec1_bytes());
+        let request = |body: Value| LocalRequest { method: "POST".into(), path: ACTIVITY_KEY_ROUTE.into(), body: Some(body) };
+        assert_eq!(parse_activity_key(&request(json!({"public_key": key}))).unwrap(), key);
+        assert!(parse_activity_key(&request(json!({"public_key": "not-a-key"}))).is_err());
+        assert!(parse_activity_key(&request(json!({"public_key": key, "other": 1}))).is_err());
+    }
+
+    #[test]
+    fn an_activity_key_needs_an_active_enrollment_and_leaves_with_its_revocation() {
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*directory).unwrap();
+        let journal = Journal::open(directory.join("journal.sqlite")).unwrap();
+        let signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        journal.reserve_enrollment("phone", &signing.verifying_key().to_sec1_bytes()).unwrap();
+        assert!(!journal.set_activity_key("phone", "key").unwrap(), "a pending enrollment keeps no key");
+        assert_eq!(journal.activity_key("phone").unwrap(), None);
+        journal.activate_enrollment("phone").unwrap();
+        journal.set_activity_key("phone", "key").unwrap();
+        journal.set_activity_key("phone", "rotated").unwrap();
+        assert_eq!(journal.activity_key("phone").unwrap().as_deref(), Some("rotated"));
+        let binding = URL_SAFE_NO_PAD.encode([1u8; 32]);
+        journal.set_push_binding("phone", &binding).unwrap();
+        journal.forget_push_binding("phone", &URL_SAFE_NO_PAD.encode([2u8; 32])).unwrap();
+        assert!(journal.activity_key("phone").unwrap().is_some(), "another binding says nothing of this one");
+        journal.forget_push_binding("phone", &binding).unwrap();
+        assert_eq!(journal.activity_key("phone").unwrap(), None, "the next binding brings its own key");
+        journal.set_activity_key("phone", "again").unwrap();
+        journal.revoke_enrollment("phone").unwrap();
+        assert_eq!(journal.activity_key("phone").unwrap(), None);
     }
 
     #[test]
@@ -4633,6 +4727,12 @@ agreement_key = "{}"
         );
         let again = send("remove-again", PUSH_BINDING_REMOVE_ROUTE, json!({"push_binding": binding})).await;
         assert_eq!(again["status"], 204, "{again}");
+        let activity_key = URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[9u8; 32]).unwrap().public_key().to_sec1_bytes());
+        let given = send("activity-key", ACTIVITY_KEY_ROUTE, json!({"public_key": activity_key})).await;
+        assert_eq!(given["status"], 204, "{given}");
+        assert_eq!(service.journal.activity_key("phone-1").unwrap(), Some(activity_key));
+        let refused = send("activity-key-bad", ACTIVITY_KEY_ROUTE, json!({"public_key": "not-a-key"})).await;
+        assert_eq!(refused["status"], 422, "{refused}");
         assert!(
             approved_method(&LocalRequest {
                 method: "POST".into(),

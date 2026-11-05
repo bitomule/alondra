@@ -31,7 +31,7 @@ def _keychain_groups(*identifiers):
 def _plist_file(name, out, entries, **kwargs):
     write_file(name = name, out = out, content = [_plist(entries)], **kwargs)
 
-def _target_entitlements(name, target, bundle_id, push_group, team_id, aps_environments, **kwargs):
+def _target_entitlements(name, target, bundle_id, push_group, team_id, aps_environments, app_group = None, **kwargs):
     groups = _keychain_groups(bundle_id, push_group)
     for variant in ["development", "app_store"]:
         entries = {}
@@ -40,6 +40,8 @@ def _target_entitlements(name, target, bundle_id, push_group, team_id, aps_envir
         if variant in aps_environments:
             entries["aps-environment"] = aps_environments[variant]
         entries["keychain-access-groups"] = groups
+        if app_group:
+            entries["com.apple.security.application-groups"] = [app_group]
         _plist_file(
             name = "%s_%s_%s" % (name, target, variant),
             out = "%s_%s_%s.entitlements" % (name, target, variant),
@@ -57,12 +59,13 @@ def signed_entitlements(name, ios_bundle_id, notification_service_bundle_id, liv
     Declares `<name>_<target>_<variant>` entitlements for the iOS app, the notification service
     and the Live Activity (`development` and `app_store`), `<name>_mac_app_store`, and
     `<name>_push_keychain_group`, an Info.plist fragment that names the group the app and its
-    extensions share.
+    extensions share, and the App Group the app shares with the Live Activity, which has no Keychain.
     """
     push_group = ios_bundle_id + ".push"
-    _target_entitlements(name, "ios", ios_bundle_id, push_group, team_id, {"development": "development", "app_store": "production"}, **kwargs)
+    app_group = "group." + ios_bundle_id
+    _target_entitlements(name, "ios", ios_bundle_id, push_group, team_id, {"development": "development", "app_store": "production"}, app_group = app_group, **kwargs)
     _target_entitlements(name, "notification_service", notification_service_bundle_id, push_group, team_id, {}, **kwargs)
-    _target_entitlements(name, "live_activity", live_activity_bundle_id, push_group, team_id, {}, **kwargs)
+    _target_entitlements(name, "live_activity", live_activity_bundle_id, push_group, team_id, {}, app_group = app_group, **kwargs)
     _plist_file(
         name = name + "_mac_app_store",
         out = name + "_mac_app_store.entitlements",
@@ -79,7 +82,7 @@ def signed_entitlements(name, ios_bundle_id, notification_service_bundle_id, liv
     _plist_file(
         name = name + "_push_keychain_group",
         out = name + "_push_keychain_group.plist",
-        entries = {"AlondraPushKeychainAccessGroup": "%s.%s" % (team_id, push_group)},
+        entries = {"AlondraPushKeychainAccessGroup": "%s.%s" % (team_id, push_group), "AlondraActivityAppGroup": app_group},
         **kwargs
     )
 
