@@ -24,6 +24,17 @@
   nothing changed (read the failing log first). A change that only touches prose or images no test
   loads must leave `musts validate` empty: if it does not, a `paths` entry is wrong, so fix
   `MUSTS.yml` instead of running the tests.
+- **Tests already run? Record them.** After a `bazelisk test` that covers every target of the
+  `bazel-test` check, record it with `musts record bazel-test-root` instead of `musts run`, which
+  would run the same tests again. It reads `.musts/bep.json`, which every `bazelisk test` writes
+  here, and records the check only if every target passed and nothing in its scope changed since the
+  run. When it answers "Not recorded", the reason says what is missing:
+  - edited after testing, or a test that did not pass: fix it and test again;
+  - a target missing from the run, or a pattern not covered: run all the check's targets, or use
+    `musts run bazel-test-root`;
+  - no musts stamp: `musts` is not installed or too old (`musts record` needs 0.9.0 or later).
+
+  Never pass `--test_filter` or test tag/size filters to a run you mean to record.
 - A new test, fixture or `BUILD.bazel` change keeps each check's `paths` equal to what its targets
   read: `make musts-scopes` fails on a missing path, and
   `python3 tools/musts_scopes.py propose <check>` prints the paths Bazel asks for.
