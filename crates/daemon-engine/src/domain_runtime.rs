@@ -1104,6 +1104,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordRuntimeFacts { task_id, .. }
         | Command::RecordTurnBoundary { task_id, .. }
         | Command::RecordHostEnded { task_id, .. }
+        | Command::RecordStranded { task_id }
         | Command::RecordInterruptAccepted { task_id, .. }
         | Command::RecordDoubtfulHandoff { task_id, .. }
         | Command::RecordHostLost { task_id, .. }

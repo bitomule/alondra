@@ -3236,9 +3236,10 @@ fn variant_index(c: &Command) -> usize {
         Command::AcknowledgeRequestTasks => 123,
         Command::MoveTask { .. } => 124,
         Command::SettleOpenPr { .. } => 125,
+        Command::RecordStranded { .. } => 126,
     }
 }
-const COMMAND_KINDS: usize = 126;
+const COMMAND_KINDS: usize = 127;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3382,6 +3383,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
+        (Command::RecordStranded { task_id: ids.task.into() }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into() }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),

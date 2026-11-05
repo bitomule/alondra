@@ -2479,6 +2479,7 @@ impl DomainState {
             | Command::RecordRuntimeFacts { task_id, .. }
             | Command::RecordTurnBoundary { task_id, .. }
             | Command::RecordHostEnded { task_id, .. }
+            | Command::RecordStranded { task_id }
             | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::RecordHostLost { task_id, .. }
@@ -4883,6 +4884,11 @@ impl DomainState {
                 system(actor)?;
                 self.task(task_id)?;
                 self.record_host_ended(task_id, *generation, *resumes, *by_alondra, ended_work, effects, lifecycles)?;
+            }
+            Command::RecordStranded { task_id } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.record_stranded(task_id, effects, lifecycles)?;
             }
             Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes, .. } => {
                 system(actor)?;

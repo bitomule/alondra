@@ -1642,10 +1642,8 @@ impl DomainState {
         if lifecycle.phase() != TaskPhase::Delivered || lifecycle.activity() != ActivityView::Resting {
             return None;
         }
-        let since: Vec<&LifecycleRecord> = self.lifecycle_journal.get(task)?.iter().rev()
-            .take_while(|record| !matches!(record, LifecycleRecord::Presented { .. }))
-            .collect();
-        if since.iter().any(|record| matches!(record, LifecycleRecord::Answered { card, .. } if self.left_unsettled(card))) {
+        let since = self.since_delivery(task)?;
+        if self.delivery_left_to_the_user(&since) {
             return None;
         }
         self.unacted_answer(task, &since).or_else(|| {
@@ -1653,6 +1651,66 @@ impl DomainState {
             let reason = self.work_after_merge(task, lifecycle).filter(|_| ran)?;
             Some(EmptyTurn::AfterMerge { reason })
         })
+    }
+
+    /// What the journal of `task` holds since its last delivery, newest first.
+    fn since_delivery(&self, task: &TaskId) -> Option<Vec<&LifecycleRecord>> {
+        Some(self.lifecycle_journal.get(task)?.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Presented { .. }))
+            .collect())
+    }
+
+    /// Whether Alondra left the case of a rest unsettled in `since`: the delivery waits for the user.
+    fn delivery_left_to_the_user(&self, since: &[&LifecycleRecord]) -> bool {
+        since.iter().any(|record| matches!(record, LifecycleRecord::Answered { card, .. } if self.left_unsettled(card)))
+    }
+
+    /// Whether the node of `task`, as `lifecycle` has it, owes work on what the user sent back of
+    /// its delivery and nothing will start a turn: it runs nothing, nothing waits to reach it, it
+    /// waits for nobody and no card holds it. A task only waits for capacity or the user, so this
+    /// state never lasts.
+    pub fn stranded(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> bool {
+        lifecycle.phase() == TaskPhase::Delivered
+            && lifecycle.activity() == ActivityView::Resting
+            && lifecycle.resource() == Some(ResourceEvidence::Available)
+            && lifecycle.awaits().is_none()
+            && lifecycle.pending_inputs().is_empty()
+            && lifecycle.cards().is_empty()
+            && self.turn_await(task).is_none()
+            && self.owes_what_was_sent_back(task)
+            && self.since_delivery(task).is_some_and(|since| !self.delivery_left_to_the_user(&since))
+    }
+
+    /// The user's hand-back of the delivery of `task` still stands, or their reply has no answer.
+    fn owes_what_was_sent_back(&self, task: &TaskId) -> bool {
+        let delivery = self.tasks.get(task).and_then(|t| t.final_presentation.as_ref()).and_then(|delivery| self.interactions.get(delivery));
+        self.task_handed_back(task).is_some() || delivery.is_some_and(|delivery| self.open_reply(delivery))
+    }
+
+    /// The open tasks that are `stranded`.
+    pub fn stranded_tasks(&self) -> Vec<TaskId> {
+        self.tasks.values().filter(|t| !t.over() && !t.archived && t.final_presentation.is_some())
+            .filter(|t| self.lifecycle_of(&t.id).is_ok_and(|lifecycle| self.stranded(&t.id, &lifecycle)))
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
+    /// `task` is stranded: its node is told to go on, and if it stops again the orchestrator gets
+    /// the case. Nothing changes for a task that left that state.
+    pub(super) fn record_stranded(&mut self, task: &TaskId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        if !self.stranded(task, lifecycle) {
+            return Ok(());
+        }
+        let card = stalled_card_id(task, lifecycle.generation(), &format!("stranded-{}", self.revision + 1));
+        let unfinished = |wake: Option<String>| LifecycleRecord::Unfinished { unheard_card: card.clone(), text: wake.as_ref().map(|_| STRANDED_INSTRUCTION.to_owned()), wake };
+        if self.stalled_before(task) || self.decide(lifecycles, task, unfinished(Some(self.next_input(task)))).is_err() {
+            self.decide(lifecycles, task, unfinished(None))?;
+        }
+        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
+            self.open_stall(task, card, effects);
+        }
+        Ok(())
     }
 
     /// The answer to its own card the node of `task` was told last, newest first in `since`, when
@@ -2585,6 +2643,7 @@ impl EmptyTurn {
     }
 }
 /// What a node is told when its turn ended empty: the first time, Alondra wakes it with this.
+pub const STRANDED_INSTRUCTION: &str = "Nothing is running for your task, and the user still waits for what they sent back on your delivery. Check where you were and go on with it, then present your result again. Whatever you ran in the background ended and will not report back: run again what you still need.";
 pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it.";
 
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";

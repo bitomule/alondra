@@ -61,9 +61,17 @@ fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alond
     Some((InteractionId(format!("{NODE_PAUSE_PREFIX}{kind}-{}-{task}", pause.since)), owner, system))
 }
 
-/// The pause a card of `node_pause_card` stands for.
+/// Added to what a node is told when its host ended during a pause whose text says nothing of what
+/// was cut.
+const HOST_ENDED_IN_PAUSE: &str = "\n\nYour host ended during the pause: whatever you ran in the background ended with it and will not report back. Run again what you still need and wait for its result.";
+
 /// What a node of the Agent SDK that rested through the gate's pause is told once it ends.
-fn go_on_after(kind: NodePauseKind) -> &'static str {
+fn go_on_after(kind: NodePauseKind, host_ended: bool) -> String {
+    let cut = host_ended && matches!(kind, NodePauseKind::Disk | NodePauseKind::Usage);
+    go_on_text(kind).to_owned() + if cut { HOST_ENDED_IN_PAUSE } else { "" }
+}
+
+fn go_on_text(kind: NodePauseKind) -> &'static str {
     match kind {
         NodePauseKind::Disk => "Alondra held your next turn while the disk was nearly full. There is room again: carry on with your task.",
         NodePauseKind::Machine => "Alondra paused you while the Mac lacked room. The Mac is fine again: carry on with your task and run again what was cut.",
@@ -72,6 +80,7 @@ fn go_on_after(kind: NodePauseKind) -> &'static str {
     }
 }
 
+/// The pause a card of `node_pause_card` stands for.
 fn pause_of_card(card: &Interaction) -> Option<Pause> {
     let Some(SystemCard::NodePause { pause, since }) = &card.system_card else { return None };
     let reason = match pause {
@@ -967,17 +976,18 @@ impl DomainState {
 
     /// How the gate's pause `card` of `task` ends: with nothing new when what the task goes on with
     /// already waits for its node, or, when its node rested through the pause with nothing left to
-    /// do (its turn ended, or its host did), told to carry on in the same session.
+    /// do (its turn ended, or its host did), told to carry on in the same session. A delivery takes
+    /// the end of a pause with nothing to go on with, so one its node still owes work on is told too.
     fn end_of_pause(&self, task: &TaskId, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<super::LifecycleRecord> {
         let lifecycle = self.lifecycle(lifecycles, task)?;
-        if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card: card.clone() }).is_ok() {
+        if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card: card.clone() }).is_ok_and(|ended| !self.stranded(task, &ended)) {
             return Ok(super::LifecycleRecord::PauseEnded { card: card.clone() });
         }
         let kind = match self.interactions.get(card).and_then(|card| card.system_card.as_ref()) {
             Some(SystemCard::NodePause { pause, .. }) => *pause,
             _ => NodePauseKind::User,
         };
-        Ok(super::LifecycleRecord::Resumed { card: card.clone(), input: self.next_input(task), text: Some(go_on_after(kind).into()) })
+        Ok(super::LifecycleRecord::Resumed { card: card.clone(), input: self.next_input(task), text: Some(go_on_after(kind, self.host_ended_since_pause(task))) })
     }
 
     /// A node of the Agent SDK an older daemon moved through its phase takes `ThroughSdk`, and a

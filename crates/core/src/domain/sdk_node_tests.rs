@@ -89,6 +89,8 @@ enum Act {
     ResumeAlone,
     HostEnded,
     Interrupt,
+    /// The user sends the delivery back.
+    SendBack,
 }
 
 fn act() -> impl Strategy<Value = Act> {
@@ -100,6 +102,7 @@ fn act() -> impl Strategy<Value = Act> {
         1 => Just(Act::ResumeAlone),
         1 => Just(Act::HostEnded),
         1 => Just(Act::Interrupt),
+        1 => Just(Act::SendBack),
     ]
 }
 
@@ -124,6 +127,11 @@ fn perform(s: &mut DomainState, act: &Act, n: usize) {
             exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop)
         }
         Act::ResumeAlone => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop),
+        Act::SendBack => {
+            let Some(delivery) = s.tasks[&TaskId::from(SDK)].final_presentation.clone() else { return };
+            exec(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: delivery,
+                targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Do it again".into(), instruction: Instruction::Changes }).map(drop)
+        }
         Act::HostEnded => {
             let Ok(generation) = s.lifecycle_of(&SDK.into()).map(|lifecycle| lifecycle.generation()) else { return };
             exec(s, Actor::System, Command::RecordHostEnded { task_id: SDK.into(), generation, resumes: false, by_alondra: false, ended_work: vec![] }).map(drop)
@@ -193,6 +201,8 @@ proptest! {
             prop_assert_eq!(agree(&s), Ok(()), "after {:?} in {:?}", act, acts);
             if paused && matches!(act, Act::Resume | Act::ResumeAlone) {
                 prop_assert_eq!(s.node_pause(&NODE.into()), None, "the gate's resume always ends its pause: {:?}", acts);
+                let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
+                prop_assert!(!s.stranded(&SDK.into(), &lifecycle), "the end of a pause leaves the node something to go on with: {:?}", acts);
             }
         }
     }
