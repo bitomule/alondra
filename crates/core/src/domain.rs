@@ -47,6 +47,8 @@ mod node_machine_tests;
 #[cfg(test)]
 mod merged_close_tests;
 #[cfg(test)]
+pub(crate) mod several_prs_tests;
+#[cfg(test)]
 mod post_merge_tests;
 #[cfg(test)]
 mod post_merge_wait_tests;

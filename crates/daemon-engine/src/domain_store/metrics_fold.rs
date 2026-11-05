@@ -238,7 +238,7 @@ fn fold(tx: &Transaction<'_>, task: &str) -> rusqlite::Result<bool> {
     let Some(m) = fold_task(&facts) else { return Ok(false) };
     let (project, role, pr_merged): (Option<String>, Option<String>, bool) = tx.query_row(
         "SELECT COALESCE(lower(trim(l.project)),lower(replace(p.repository,rtrim(p.repository,replace(p.repository,'/','')),''))),
-          (SELECT role FROM task_launch_plans WHERE task_id=t.id),COALESCE(p.state='merged',0)
+          (SELECT role FROM task_launch_plans WHERE task_id=t.id),COALESCE((SELECT min(state='merged') FROM pull_requests WHERE task_id=t.id),0)
          FROM tasks t LEFT JOIN request_launch l ON l.request_id=t.request_id LEFT JOIN pull_requests p ON p.task_id=t.id WHERE t.id=?1",
         [task],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),

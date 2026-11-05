@@ -274,6 +274,8 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         review_prs: false,
         final_presentation: None,
         pr_id: None,
+        later_prs: vec![],
+        opened_prs: Default::default(),
         dependencies: BTreeSet::new(),
         stack: None,
         documents: BTreeMap::new(),

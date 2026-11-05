@@ -351,10 +351,9 @@ fn merge_waits_for_what_blocks_it() {
 #[test]
 fn blocks_never_form_a_cycle() {
     let mut s = fixture();
+    ok(&mut s, agent(), present("d1", text(), false, CardSpec::new(CardKind::Know, "Read the progress")));
     register_pr(&mut s);
-    let mut progress = CardSpec::new(CardKind::Know, "Read the progress");
-    progress.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
-    ok(&mut s, agent(), present("d1", text(), false, progress));
+    s.interactions.get_mut(&"d1".into()).unwrap().card.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
     let mut back = review();
     back.blocks = vec![CardTarget::Delivery { interaction_id: "d1".into() }];
     assert_eq!(refused(&mut s, agent(), present("d2", pr_target(), true, back)),

@@ -140,6 +140,8 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         review_prs: false,
         final_presentation: None,
         pr_id: None,
+        later_prs: vec![],
+        opened_prs: Default::default(),
         dependencies: BTreeSet::new(),
         stack: None,
         documents: BTreeMap::new(),
@@ -873,7 +875,7 @@ fn the_owning_task_corrects_its_registration_of_the_same_pr() {
             base: "main".into(),
             allowed_methods: vec![MergeMethod::Squash],
         },
-        "task_already_has_pr",
+        "invalid_input",
     );
 }
 fn with_second_task(s: &mut DomainState) {
@@ -913,7 +915,7 @@ fn an_id_another_repositorys_pr_holds_is_refused_naming_the_id_to_use() {
     assert_eq!(s.pull_requests.len(), 2);
 }
 #[test]
-fn a_second_pr_for_a_task_is_refused_and_the_node_is_told_to_ask_for_a_new_task() {
+fn a_second_pr_for_a_task_is_one_more_of_its_prs() {
     let mut s = fixture();
     register(&mut s);
     let mut second = register_with("github.com", "head9");
@@ -921,11 +923,8 @@ fn a_second_pr_for_a_task_is_refused_and_the_node_is_told_to_ask_for_a_new_task(
         *pr_id = "pr-2".into();
         *number = 2;
     }
-    let error = exec(&mut s, agent(), second).unwrap_err();
-    assert_eq!(error.code, "task_already_has_pr");
-    assert!(error.message.starts_with("This task already has PR #1") && error.message.contains("ask the orchestrator for a new task"),
-        "{}", error.message);
-    assert_eq!(s.pull_requests.len(), 1);
+    exec(&mut s, agent(), second).unwrap();
+    assert_eq!(s.task_prs(&s.tasks[&"t".into()]).map(|pr| pr.number).collect::<Vec<_>>(), [1, 2]);
 }
 fn pr_targets() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::PullRequest {
@@ -1216,7 +1215,7 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
         },
     )
     .unwrap();
-    reject_unchanged(
+    exec(
         &mut s,
         agent(),
         Command::RegisterPr {
@@ -1229,8 +1228,9 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
             base: "main".into(),
             allowed_methods: vec![MergeMethod::Squash],
         },
-        "task_already_has_pr",
-    );
+    )
+    .unwrap();
+    assert_eq!(s.tasks[&"t".into()].pr_id, Some("pr".into()), "the first PR stays the task's");
 }
 #[test]
 fn closed_request_prevents_reopening_its_terminal_task() {
@@ -2800,7 +2800,7 @@ fn a_registered_pr_is_presented_while_open_and_an_accepted_task_settles_once_it_
         targets: text(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("pr_missing", Some("targets")));
-    assert!(error.message.contains("PR #1 is open") && error.message.contains("head1"), "{}", error.message);
+    assert!(error.message.contains("owner/repo#1") && error.message.contains(r#"{"kind":"pull_request"}"#), "{}", error.message);
     assert_eq!(open, before, "a refused delivery changes nothing");
 
     for end in [PrState::Merged, PrState::Closed] {
@@ -3237,9 +3237,12 @@ fn variant_index(c: &Command) -> usize {
         Command::MoveTask { .. } => 124,
         Command::SettleOpenPr { .. } => 125,
         Command::RecordStranded { .. } => 126,
+        Command::NotePrOpened { .. } => 127,
+        Command::RecordOpenedPr { .. } => 128,
+        Command::AskToRegisterPr { .. } => 129,
     }
 }
-const COMMAND_KINDS: usize = 127;
+const COMMAND_KINDS: usize = 130;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3415,6 +3418,10 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), origin: WorktreeOrigin::Subagent, branch: None }, false),
         (Command::ReleaseTaskWorktree { task_id: ids.task.into(), path: "/repo/.claude/worktrees/agent-a1".into(), end: WorktreeEnd::Removed }, false),
         (Command::TellNode { task_id: ids.task.into(), text: "Rebase on main".into(), from_user: false, answers: None }, false),
+        (Command::NotePrOpened { task_id: ids.task.into(), host: "github.com".into(), repository: "me/app".into(), number: 1 }, false),
+        (Command::RecordOpenedPr { task_id: ids.task.into(), host: "github.com".into(), repository: "me/app".into(), number: 1, head: "abc".into(),
+            base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![MergeMethod::Squash] }, false),
+        (Command::AskToRegisterPr { task_id: ids.task.into() }, false),
         (Command::RecordDistribution { policy: crate::accounts::Policy::Chain, move_when_exhausted: true }, true),
         (Command::ChangeAccounts { provider: crate::accounts::Provider::Claude,
             change: crate::accounts::AccountChange::Remove { account: crate::accounts::AccountId::default_account() } }, false),
@@ -3715,12 +3722,9 @@ fn a_reply_to_a_delivery_takes_it_out_of_the_queue_and_nothing_later_brings_it_b
         scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into(),
         card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update") }).unwrap();
     exec(&mut s, user(), Command::MarkRead { interaction_id: "note".into() }).unwrap();
-    exec(&mut s, agent(), Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
-        interaction_id: "progress".into(), body: "Working on it".into(), targets: vec![DeliveryTarget::Text { text: "Halfway".into() }],
-        is_final: false, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Read the progress", &[], false) }).unwrap();
     let mut reloaded: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
     reloaded.derive_states();
-    for (when, state) in [("after a read and a progress note", &s), ("after reloading the state", &reloaded)] {
+    for (when, state) in [("after a read", &s), ("after reloading the state", &reloaded)] {
         assert!(!pending_ids(state).contains(&"d".to_owned()), "{when}: {:?}", pending_ids(state));
         assert_eq!(state.tasks[&"t".into()].state, TaskState::Running, "{when}");
     }

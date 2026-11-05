@@ -305,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "stalls", "stall_closing", "open_pr", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "ending", "stalls", "stall_closing", "open_pr", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -316,15 +316,17 @@ fn task_row(t: &Task) -> Result<Map<String, Value>> {
 fn save_relations(c: &Connection, t: &Task) -> Result<()> {
     exec(
         c,
-        "INSERT INTO task_relations(task_id,delivered_dependencies,blocks,verdict,review_rounds) VALUES(?1,?2,?3,?4,?5) \
+        "INSERT INTO task_relations(task_id,delivered_dependencies,blocks,verdict,review_rounds,later_prs,opened_prs) VALUES(?1,?2,?3,?4,?5,?6,?7) \
          ON CONFLICT(task_id) DO UPDATE SET delivered_dependencies=excluded.delivered_dependencies,blocks=excluded.blocks,\
-         verdict=excluded.verdict,review_rounds=excluded.review_rounds",
+         verdict=excluded.verdict,review_rounds=excluded.review_rounds,later_prs=excluded.later_prs,opened_prs=excluded.opened_prs",
         params![
             t.id.0,
             serde_json::to_string(&t.delivered_dependencies)?,
             serde_json::to_string(&t.blocks)?,
             t.verdict.as_ref().map(serde_json::to_string).transpose()?,
-            t.review_rounds as i64
+            t.review_rounds as i64,
+            serde_json::to_string(&t.later_prs)?,
+            serde_json::to_string(&t.opened_prs)?
         ],
     )?;
     Ok(())
@@ -827,8 +829,10 @@ pub(super) fn save_changes(
             save_grants(c, x)?;
         }
         if prior.map_or(
-            !x.delivered_dependencies.is_empty() || !x.blocks.is_empty() || x.verdict.is_some() || x.review_rounds != 0,
-            |p| (&p.delivered_dependencies, &p.blocks, &p.verdict, p.review_rounds) != (&x.delivered_dependencies, &x.blocks, &x.verdict, x.review_rounds),
+            !x.delivered_dependencies.is_empty() || !x.blocks.is_empty() || x.verdict.is_some() || x.review_rounds != 0
+                || !x.later_prs.is_empty() || !x.opened_prs.is_empty(),
+            |p| (&p.delivered_dependencies, &p.blocks, &p.verdict, p.review_rounds, &p.later_prs, &p.opened_prs)
+                != (&x.delivered_dependencies, &x.blocks, &x.verdict, x.review_rounds, &x.later_prs, &x.opened_prs),
         ) {
             save_relations(c, x)?;
         }
@@ -1427,7 +1431,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         task.open_pr = Some(serde_json::from_str(&row.get::<_, String>(1)?)?);
     }
     drop(stored);
-    let mut relations = c.prepare("SELECT task_id, delivered_dependencies, blocks, verdict, review_rounds FROM task_relations")?;
+    let mut relations = c.prepare("SELECT task_id, delivered_dependencies, blocks, verdict, review_rounds, later_prs, opened_prs FROM task_relations")?;
     let mut stored = relations.query([])?;
     while let Some(row) = stored.next()? {
         let id: String = row.get(0)?;
@@ -1436,6 +1440,8 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         task.blocks = serde_json::from_str(&row.get::<_, String>(2)?)?;
         task.verdict = row.get::<_, Option<String>>(3)?.map(|v| serde_json::from_str(&v)).transpose()?;
         task.review_rounds = row.get::<_, i64>(4)? as u8;
+        task.later_prs = serde_json::from_str(&row.get::<_, String>(5)?)?;
+        task.opened_prs = serde_json::from_str(&row.get::<_, String>(6)?)?;
     }
     drop(stored);
     for mut row in rows(c, "task_stacks", &[], &[])? {
@@ -1516,6 +1522,31 @@ pub(super) fn allow_handed_over_worktrees(tx: &rusqlite::Transaction<'_>, schema
     tx.execute_batch(schema)?;
     tx.execute_batch("INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) \
         SELECT task_id,path,origin,branch,discard,end FROM task_worktree_records_old; DROP TABLE task_worktree_records_old;")
+}
+pub(super) fn add_task_pr_columns(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    for column in ["later_prs", "opened_prs"] {
+        let present = tx.query_row("SELECT count(*) FROM pragma_table_info('task_relations') WHERE name=?1", [column], |row| row.get::<_, i64>(0))? == 1;
+        if !present {
+            tx.execute_batch(&format!("ALTER TABLE task_relations ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]' CHECK(json_valid({column}))"))?;
+        }
+    }
+    Ok(())
+}
+/// A task may own several PRs. SQLite keeps a column's UNIQUE for good, so the table is made again
+/// with its rows, its triggers and its indexes; the other tables' references to it wait for the
+/// rows to be back, at the end of this transaction.
+pub(super) fn allow_several_prs_per_task(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    const ONE_PR: &str = "task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id)";
+    let table: String = tx.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='pull_requests'", [], |row| row.get(0))?;
+    if !table.contains(ONE_PR) {
+        return Ok(());
+    }
+    let attached = tx.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='pull_requests' AND type IN('trigger','index') AND sql IS NOT NULL")?
+        .query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.execute_batch("PRAGMA defer_foreign_keys=ON; CREATE TABLE pull_requests_copy AS SELECT * FROM pull_requests; DROP TABLE pull_requests;")?;
+    tx.execute_batch(&table.replace(ONE_PR, "task_id TEXT NOT NULL REFERENCES tasks(id)"))?;
+    tx.execute_batch("INSERT INTO pull_requests SELECT * FROM pull_requests_copy; DROP TABLE pull_requests_copy;")?;
+    attached.iter().try_for_each(|sql| tx.execute_batch(sql))
 }
 pub(super) fn add_shortened_column(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     let present = tx.query_row("SELECT count(*) FROM pragma_table_info('interactions') WHERE name='shortened'", [], |row| row.get::<_, i64>(0))? == 1;

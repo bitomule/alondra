@@ -5,7 +5,14 @@ use crate::domain::{DeliveryTarget, DomainState, Interaction, InteractionId, Int
 /// moment it is sent when this is true, and leave it in place otherwise: they never work it out
 /// from the action's name. The daemon decides what a message becomes with the same rule.
 pub fn resolves_card(domain: &DomainState, action: &ActionId) -> bool {
-    always_resolves(action.verb) || (handed_back(domain, action) && !reply_nobody_attends(domain, action))
+    (always_resolves(action.verb) && !leaves_another_merge(domain, action)) || (handed_back(domain, action) && !reply_nobody_attends(domain, action))
+}
+
+/// The merge of one of several open PRs names that PR, and its card stays for the others.
+fn leaves_another_merge(domain: &DomainState, action: &ActionId) -> bool {
+    action.verb == Verb::Merge && domain.pull_requests.get(&PrId(action.subject.clone()))
+        .and_then(|pr| domain.tasks.get(&pr.task_id))
+        .is_some_and(|task| domain.open_prs(task).nth(1).is_some())
 }
 
 /// A reply to a delivery takes it away while its node acts on it, and the delivery comes back once

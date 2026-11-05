@@ -3,7 +3,7 @@
 //! a second repository reaches #163. Alondra gives the id when the PR is registered, and a node
 //! that later names "its PR" always gets the one its task owns, whatever id it writes.
 
-use alondra_core::domain::{hosted_pr_id, normalize_pr_host, normalize_pr_repository, DomainError, DomainState, InteractionId, PrId, Scope, TaskId};
+use alondra_core::domain::{hosted_pr_id, normalize_pr_host, normalize_pr_repository, DomainError, DomainState, InteractionId, PrId, PullRequest, Scope, TaskId};
 use serde_json::Value;
 
 pub fn assign(state: &DomainState, method: &str, path: &str, id: Option<&str>, body: &mut Value) -> Result<(), DomainError> {
@@ -11,20 +11,25 @@ pub fn assign(state: &DomainState, method: &str, path: &str, id: Option<&str>, b
     match method {
         "POST" if path.ends_with("/pull-requests") && path.starts_with("/tasks/") => register(body),
         "POST" if path.ends_with("/results") && path.starts_with("/tasks/") => {
-            let Some(own) = owned(state, &TaskId(id.into())) else {
+            let task = TaskId(id.into());
+            let Some(own) = presented(state, &task) else {
                 if array(body, "targets").any(|t| t["kind"] == "pull_request") {
-                    let mut error = DomainError::new("pr_mismatch", "targets: your task has no PR yet: call register_pr first, then present it");
+                    let reading = state.tasks.get(&task).is_some_and(|task| !task.opened_prs.is_empty());
+                    let mut error = DomainError::new("pr_mismatch", if reading {
+                        "targets: Alondra is still reading the PR you opened from GitHub: send the same result again in a moment"
+                    } else {
+                        "targets: your task has no PR yet: call register_pr first, then present it"
+                    });
                     error.subject = Some("targets".into());
                     return Err(error);
                 }
                 return Ok(());
             };
-            for target in array(body, "targets").filter(|t| t["kind"] == "pull_request") {
-                target["pr_id"] = Value::String(own.0.clone());
-            }
+            name_targets(body, &open_prs(state, &task), &own);
             for mark in array(body, "checklist") {
                 for evidence in mark.get_mut("evidence").and_then(Value::as_array_mut).into_iter().flatten() {
-                    if evidence["kind"] == "pr" {
+                    let named = evidence["value"].as_str().is_some_and(|value| state.pull_requests.get(&PrId(value.to_owned())).is_some_and(|pr| pr.task_id == task));
+                    if evidence["kind"] == "pr" && !named {
                         evidence["value"] = Value::String(own.0.clone());
                     }
                 }
@@ -66,6 +71,29 @@ fn owned(state: &DomainState, task: &TaskId) -> Option<PrId> {
     state.tasks.get(task)?.pr_id.clone()
 }
 
+/// The PR a delivery of the task means when it says "my PR": an open one, else its first.
+fn presented(state: &DomainState, task: &TaskId) -> Option<PrId> {
+    state.main_pr(state.tasks.get(task)?).map(|pr| pr.id.clone())
+}
+
+fn open_prs<'a>(state: &'a DomainState, task: &TaskId) -> Vec<&'a PullRequest> {
+    state.tasks.get(task).map_or_else(Vec::new, |task| state.open_prs(task).collect())
+}
+
+/// Which PR of the task each PR target means: the open one at the head it gives, else the one a
+/// delivery means by "my PR". With several open a head none is at is left out: the domain presents
+/// the commit each is at, and it adds the open PRs no target names.
+fn name_targets(body: &mut Value, open: &[&PullRequest], own: &PrId) {
+    for target in array(body, "targets").filter(|t| t["kind"] == "pull_request") {
+        let head = target.get("head").and_then(Value::as_str).map(str::to_owned);
+        let at = open.iter().find(|pr| head.as_deref() == Some(pr.head.as_str()));
+        target["pr_id"] = Value::String(at.map_or(&own.0, |pr| &pr.id.0).clone());
+        if at.is_none() && open.len() > 1 {
+            target.as_object_mut().map(|target| target.remove("head"));
+        }
+    }
+}
+
 fn array<'a>(body: &'a mut Value, key: &str) -> impl Iterator<Item = &'a mut Value> {
     body.get_mut(key).and_then(Value::as_array_mut).into_iter().flatten()
 }
@@ -91,6 +119,36 @@ mod tests {
             assert_eq!(body["pr_id"], "github.com/acmecorp-private/parcel#65", "{repository}");
             assert_eq!(body["repository"], "acmecorp-private/parcel", "{repository}");
         }
+    }
+
+    fn task_with_two_open_prs() -> DomainState {
+        let pr = |repository: &str, number: u64, head: &str| alondra_core::domain::PullRequest {
+            id: hosted_pr_id("github.com", repository, number), task_id: "t".into(), host: "github.com".into(), repository: repository.into(), number,
+            head: head.into(), base: "main".into(), state: alondra_core::domain::PrState::Open, merged_head: None, allowed_methods: vec![], review: None,
+        };
+        let mut state: DomainState = serde_json::from_value(serde_json::to_value(DomainState::new("epoch")).unwrap()).unwrap();
+        let (first, second) = (pr("me/app", 1, "aaa"), pr("me/site", 2, "bbb"));
+        let mut task: alondra_core::domain::Task = serde_json::from_value(json!({
+            "id":"t","request_id":"r","agent_id":null,"title":"T","state":"running","revision":1,"started":true,"review_prs":false,
+            "final_presentation":null,"pr_id":first.id.0,"later_prs":[second.id.0],"dependencies":[],"documents":{},"archived":false,
+        })).unwrap();
+        task.opened_prs.clear();
+        state.tasks.insert("t".into(), task);
+        state.pull_requests.insert(first.id.clone(), first);
+        state.pull_requests.insert(second.id.clone(), second);
+        state
+    }
+
+    #[test]
+    fn a_pr_target_means_the_open_pr_at_its_head_and_a_head_none_is_at_is_left_out() {
+        let state = task_with_two_open_prs();
+        let mut body = json!({"targets":[{"kind":"pull_request","head":"bbb"}]});
+        assign(&state, "POST", "/tasks/t/results", Some("t"), &mut body).unwrap();
+        assert_eq!(body["targets"][0], json!({"kind":"pull_request","pr_id":"github.com/me/site#2","head":"bbb"}));
+
+        let mut body = json!({"targets":[{"kind":"pull_request","head":"ccc"}]});
+        assign(&state, "POST", "/tasks/t/results", Some("t"), &mut body).unwrap();
+        assert_eq!(body["targets"][0], json!({"kind":"pull_request","pr_id":"github.com/me/app#1"}));
     }
 
     #[test]

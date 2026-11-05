@@ -404,9 +404,20 @@ for it: do not commit, push, register a pull request or deliver anything. Before
 turn, delete what you generated for it that git does not track (build outputs, caches, temporary \
 files) with the project's own tools. Alondra then closes this session.")
 }
-fn one_pr_per_task(number: u64) -> String {
-    format!("This task already has PR #{number}, and a task owns one PR: nothing was registered. Put more work for this task on PR #{number}; for work that needs another PR, ask the orchestrator for a new task (ask with recipient orchestrator).")
+fn pr_not_open(number: u64) -> String {
+    format!("PR #{number} is no longer open: nothing was registered. Open a new pull request for this work; Alondra adds it to this task.")
 }
+fn prs_missing_from_delivery(prs: &[&PullRequest]) -> String {
+    let names = prs.iter().map(|pr| format!("{}#{}", pr.repository, pr.number)).collect::<Vec<_>>().join(", ");
+    format!("{names} open in this task: a text result cannot be merged. Present them in the final delivery with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task, so the user merges each from its card")
+}
+fn opened_pr_unread(pr: &OpenedPr) -> String {
+    format!("Alondra is still reading {}#{} from GitHub, which this task opened: nothing was presented. Send the same result again in a moment", pr.repository, pr.number)
+}
+fn opened_pr_after_delivery(repository: &str, number: u64) -> String {
+    format!("{repository}#{number} is now part of this task. Your last delivery does not carry it: present the final result again with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task.")
+}
+const OPENED_PR_NOT_NAMED: &str = "You ran gh pr create and its output named no pull request, so Alondra does not know which it is. If it opened one, register it with register_pr.";
 pub fn merged_notice(number: u64, left: usize) -> String {
     match left {
         0 => format!("Pull request #{number} is merged; no pull request of this task is left to merge."),
@@ -604,7 +615,7 @@ impl DomainState {
                     EvidenceKind::Screenshot if !attachments.iter().any(|a| a.id == value) => {
                         return refuse("evidence_unknown_attachment", "checklist", &format!("point {point}: screenshot {value} is not one of this result's attachments: attach it and cite its id"));
                     }
-                    EvidenceKind::Pr if self.task(task_id)?.pr_id.as_ref().is_none_or(|pr| pr.0 != value) => {
+                    EvidenceKind::Pr if !self.task(task_id)?.pr_ids().any(|pr| pr.0 == value) => {
                         return refuse("evidence_unknown_pr", "checklist", &format!("point {point}: {value} is not this task's registered PR: cite its pr_id"));
                     }
                     _ => {}
@@ -669,7 +680,7 @@ impl DomainState {
                         .pull_requests
                         .get(pr_id)
                         .ok_or_else(|| DomainError::new("not_found", "PR missing"))?;
-                    if &p.task_id != task || t.pr_id.as_ref() != Some(pr_id) {
+                    if &p.task_id != task {
                         return fail("forbidden", "PR belongs to another Task");
                     };
                     if &p.head != expected {
@@ -1158,15 +1169,26 @@ impl DomainState {
         }
         Ok(())
     }
+    /// The PR is the task's from now on: its first one, or one more, in any repository.
+    fn adopt_pr(&mut self, mut pr: PullRequest) -> Result<()> {
+        pr.review = self.task(&pr.task_id)?.review_prs.then(|| PullRequestReview { decisions: vec![] });
+        let task = self.tasks.get_mut(&pr.task_id).unwrap();
+        if task.pr_id.is_none() {
+            task.pr_id = Some(pr.id.clone());
+        } else {
+            task.later_prs.push(pr.id.clone());
+        }
+        self.pull_requests.insert(pr.id.clone(), pr);
+        Ok(())
+    }
     /// R12: a delivery shows the current head of its own Task's registered PR.
     fn current_pr_targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
-        let owned = self.task(task)?.pr_id.clone();
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let Some(pr) = self.pull_requests.get(pr_id) else {
                 return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} is not registered: call register_pr first"));
             };
-            if &pr.task_id != task || owned.as_ref() != Some(pr_id) {
+            if &pr.task_id != task {
                 return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} belongs to another Task: present only your own Task's PR"));
             }
             if &pr.head != head {
@@ -1174,6 +1196,19 @@ impl DomainState {
             }
         }
         Ok(())
+    }
+    /// A delivery of a PR carries every open PR of its task.
+    pub fn with_open_prs(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Vec<DeliveryTarget> {
+        let mut all = self.with_current_heads(targets);
+        let carried = |all: &[DeliveryTarget], pr: &PullRequest| all.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. } if *pr_id == pr.id));
+        if let (true, Some(t)) = (all.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { .. })), self.tasks.get(task)) {
+            for pr in self.open_prs(t) {
+                if !carried(&all, pr) {
+                    all.push(DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() });
+                }
+            }
+        }
+        all
     }
     /// A pull request target presented without a head shows the commit its PR is at in this same
     /// state, the one R12 checks it against.
@@ -1740,11 +1775,32 @@ impl DomainState {
     /// What a Task waited on is in: it is done, or its PR merged with no work left after the merge.
     pub fn landed(&self, dep: &Task) -> bool {
         dep.state == TaskState::Done
-            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.merged_pr(dep).is_some())
+            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.merged_pr(dep).is_some() && self.open_prs(dep).next().is_none())
     }
-    /// The Task's PR, once it merged.
+    /// The Task's latest merged PR.
     pub fn merged_pr(&self, t: &Task) -> Option<&PullRequest> {
-        t.pr_id.as_ref().and_then(|pr| self.pull_requests.get(pr)).filter(|pr| pr.state == PrState::Merged)
+        self.task_prs(t).filter(|pr| pr.state == PrState::Merged).last()
+    }
+    /// Every PR of the task, in any repository, the first one first.
+    pub fn task_prs<'a>(&'a self, t: &Task) -> impl Iterator<Item = &'a PullRequest> {
+        t.pr_ids().filter_map(|id| self.pull_requests.get(id))
+    }
+    pub fn open_prs<'a>(&'a self, t: &Task) -> impl Iterator<Item = &'a PullRequest> {
+        self.task_prs(t).filter(|pr| pr.state == PrState::Open)
+    }
+    /// The PR a person reads about the task: an open one, else its first.
+    pub fn main_pr(&self, t: &Task) -> Option<&PullRequest> {
+        let first = self.task_prs(t).next();
+        self.open_prs(t).next().or(first)
+    }
+    /// An open PR of the task its standing final delivery does not carry.
+    pub fn undelivered_pr(&self, t: &Task) -> Option<&PullRequest> {
+        let delivered = t.final_presentation.as_ref().and_then(|id| self.interactions.get(id)).map(|i| &i.payload);
+        let targets: &[DeliveryTarget] = match delivered {
+            Some(InteractionPayload::Delivery { targets, .. }) => targets,
+            _ => &[],
+        };
+        self.open_prs(t).find(|pr| !targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, .. } if *pr_id == pr.id)))
     }
     pub(super) fn waits_are_over(&self, t: &Task) -> Result<()> {
         for dep in &t.dependencies {
@@ -2080,7 +2136,7 @@ impl DomainState {
             && !self.out_of_sight(i)
     }
     pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {
-        self.merged_delivery(p)
+        (self.merged_delivery(p) && self.open_prs(t).next().is_none())
             || (self.accepted(p)
                 && matches!(&p.payload, InteractionPayload::Delivery { targets, .. }
                     if self.completable(t, targets, true).is_ok()))
@@ -2293,7 +2349,7 @@ impl DomainState {
                 // observation itself never grants that conformity.
             }
         }
-        if t.pr_id.as_ref().is_some_and(|pr_id| self.pull_requests[pr_id].state == PrState::Open) {
+        if self.open_prs(t).next().is_some() {
             return fail(
                 "merge_not_confirmed",
                 "The Task's registered PR is still open",
@@ -2471,6 +2527,9 @@ impl DomainState {
             | Command::ReopenTask { task_id }
             | Command::ConfirmCleanup { task_id, .. }
             | Command::RecordTaskWorktree { task_id, .. }
+            | Command::NotePrOpened { task_id, .. }
+            | Command::RecordOpenedPr { task_id, .. }
+            | Command::AskToRegisterPr { task_id }
             | Command::ReleaseTaskWorktree { task_id, .. }
             | Command::DeclarePostMergeWork { task_id, .. }
             | Command::RecordNodeEnd { task_id, .. }
@@ -3263,6 +3322,8 @@ impl DomainState {
                         review_prs: *review_prs,
                         final_presentation: None,
                         pr_id: None,
+                        later_prs: vec![],
+                        opened_prs: BTreeSet::new(),
                         dependencies: dependencies.clone(),
                         stack: stack.clone(),
                         documents: BTreeMap::new(),
@@ -4211,10 +4272,13 @@ impl DomainState {
                 if allowed_methods.is_empty() {
                     return fail("invalid_input", "Merge methods required");
                 };
-                if let Some(existing) = self.task(task_id)?.pr_id.clone() {
-                    let p = &self.pull_requests[&existing];
-                    if p.host != *host || p.repository != *repository || p.number != *number {
-                        return fail("task_already_has_pr", &one_pr_per_task(p.number));
+                let opened = OpenedPr { host: host.clone(), repository: repository.clone(), number: *number };
+                self.task(task_id)?;
+                self.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
+                let known = self.pull_requests.values().find(|p| p.host == *host && p.repository == *repository && p.number == *number);
+                if let Some(p) = known {
+                    if p.task_id != *task_id {
+                        return fail("pr_owned_by_other_task", "PR is already registered");
                     }
                     if p.head == *sha
                         && p.base == *base
@@ -4223,18 +4287,14 @@ impl DomainState {
                         return Ok(());
                     }
                     if p.state != PrState::Open {
-                        return fail("task_already_has_pr", &one_pr_per_task(p.number));
+                        return fail("pr_not_open", &pr_not_open(p.number));
                     }
+                    let existing = p.id.clone();
                     let corrected = self.pull_requests.get_mut(&existing).unwrap();
                     corrected.head = sha.clone();
                     corrected.base = base.clone();
                     corrected.allowed_methods = allowed_methods.clone();
                     return Ok(());
-                };
-                if self.pull_requests.values().any(|p| {
-                    p.host == *host && p.repository == *repository && p.number == *number
-                }) {
-                    return fail("pr_owned_by_other_task", "PR is already registered");
                 };
                 if self.pull_requests.contains_key(pr_id) {
                     return refuse(
@@ -4247,28 +4307,70 @@ impl DomainState {
                         ),
                     );
                 }
-                let review = self
-                    .task(task_id)?
-                    .review_prs
-                    .then(|| PullRequestReview { decisions: vec![] });
-                self.pull_requests.insert(
-                    pr_id.clone(),
-                    PullRequest {
-                        id: pr_id.clone(),
-                        task_id: task_id.clone(),
-                        host: host.clone(),
-                        repository: repository.clone(),
-                        number: *number,
-                        head: sha.clone(),
-                        base: base.clone(),
-                        state: PrState::Open,
-                        merged_head: None,
-                        allowed_methods: allowed_methods.clone(),
-                        review,
-                    },
-                );
-                self.tasks.get_mut(task_id).unwrap().pr_id = Some(pr_id.clone());
+                self.adopt_pr(PullRequest {
+                    id: pr_id.clone(),
+                    task_id: task_id.clone(),
+                    host: host.clone(),
+                    repository: repository.clone(),
+                    number: *number,
+                    head: sha.clone(),
+                    base: base.clone(),
+                    state: PrState::Open,
+                    merged_head: None,
+                    allowed_methods: allowed_methods.clone(),
+                    review: None,
+                })?;
                 created.push(pr_id.0.clone());
+            }
+            Command::NotePrOpened { task_id, host, repository, number } => {
+                system(actor)?;
+                let (host, repository) = (normalize_pr_host(host), normalize_pr_repository(repository));
+                canonical_pr(&host, &repository, *number)?;
+                let known = self.pull_requests.values().any(|p| p.host == host && p.repository == repository && p.number == *number);
+                if !known && !self.task(task_id)?.state.terminal() {
+                    self.tasks.get_mut(task_id).unwrap().opened_prs.insert(OpenedPr { host, repository, number: *number });
+                }
+            }
+            Command::RecordOpenedPr { task_id, host, repository, number, head: sha, base, state, merged_head, allowed_methods } => {
+                system(actor)?;
+                let opened = OpenedPr { host: host.clone(), repository: repository.clone(), number: *number };
+                if !self.task(task_id)?.opened_prs.contains(&opened) {
+                    return Ok(());
+                }
+                self.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
+                if self.pull_requests.values().any(|p| p.host == *host && p.repository == *repository && p.number == *number) {
+                    return Ok(());
+                }
+                head(sha)?;
+                nonempty(base)?;
+                if allowed_methods.is_empty() {
+                    return fail("invalid_input", "Merge methods required");
+                }
+                let id = hosted_pr_id(host, repository, *number);
+                self.adopt_pr(PullRequest {
+                    id: id.clone(),
+                    task_id: task_id.clone(),
+                    host: host.clone(),
+                    repository: repository.clone(),
+                    number: *number,
+                    head: sha.clone(),
+                    base: base.clone(),
+                    state: *state,
+                    merged_head: merged_head.clone(),
+                    allowed_methods: allowed_methods.clone(),
+                    review: None,
+                })?;
+                created.push(id.0.clone());
+                if *state == PrState::Open && self.task(task_id)?.final_presentation.is_some() && self.active(task_id).is_ok() {
+                    self.notify(task_id, None, &opened_pr_after_delivery(repository, *number), effects)?;
+                }
+            }
+            Command::AskToRegisterPr { task_id } => {
+                system(actor)?;
+                self.task(task_id)?;
+                if self.active(task_id).is_ok() {
+                    self.notify(task_id, None, OPENED_PR_NOT_NAMED, effects)?;
+                }
             }
             Command::LinkInteractionSubject {
                 interaction_id,
@@ -4309,19 +4411,18 @@ impl DomainState {
                 card,
             } => {
                 self.assigned(actor, task_id)?;
-                let targets = &self.with_current_heads(targets);
+                let targets = &self.with_open_prs(task_id, targets);
                 if *nothing_to_review && (!*is_final || targets.iter().any(|t| !matches!(t, DeliveryTarget::Text { .. }))) {
                     return refuse("invalid_input", "nothing_to_review",
                         "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
                 }
                 self.current_pr_targets(task_id, targets)?;
                 self.targets(task_id, targets)?;
-                if !*is_final
-                    && let Some(pr) = targets.iter().find_map(|t| match t {
-                        DeliveryTarget::PullRequest { pr_id, .. } => self.pull_requests.get(pr_id).filter(|p| p.state == PrState::Open),
-                        _ => None,
-                    })
-                {
+                let task = self.task(task_id)?;
+                if let Some(opened) = task.opened_prs.first() {
+                    return refuse("pr_being_read", "targets", &opened_pr_unread(opened));
+                }
+                if !*is_final && let Some(pr) = self.open_prs(task).next() {
                     return refuse("pr_needs_final", "is_final", &format!(
                         "PR #{} is open: present it with is_final true so the user can accept it and Alondra merges it. A progress notice cannot be merged. If work follows the merge (publish, deploy), declare it with post_merge_work first", pr.number));
                 }
@@ -4331,13 +4432,11 @@ impl DomainState {
                         .map(|i| i.id.0.clone()).collect::<Vec<_>>().join(", ");
                     return refuse("blocking_open", "is_final", &format!("Card {open} still waits on the user: wait for its answer or withdraw it before the final delivery"));
                 }
-                if let Some(pr) = self.task(task_id)?.pr_id.as_ref().map(|id| &self.pull_requests[id])
-                    && *is_final
-                    && pr.state == PrState::Open
-                    && !targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. } if *pr_id == pr.id))
-                {
-                    return refuse("pr_missing", "targets", &format!(
-                        "Your PR #{} is open: present it in the final delivery with its head {} so it is merged when the user accepts", pr.number, pr.head));
+                let missing: Vec<&PullRequest> = self.open_prs(task)
+                    .filter(|pr| !targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. } if *pr_id == pr.id)))
+                    .collect();
+                if !missing.is_empty() {
+                    return refuse("pr_missing", "targets", &prs_missing_from_delivery(&missing));
                 }
                 self.checklist_marks_cover_the_plan(task_id, *is_final, checklist, attachments)?;
                 if let Some(plan) = &card.plan {
@@ -4348,9 +4447,11 @@ impl DomainState {
                     plan_checklist(plan)?;
                 }
                 let mut card = card.clone();
-                if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. }
-                    if self.pull_requests.get(pr_id).is_some_and(|p| p.state != PrState::Open)))
-                {
+                let mut presented = targets.iter().filter_map(|t| match t {
+                    DeliveryTarget::PullRequest { pr_id, .. } => self.pull_requests.get(pr_id),
+                    _ => None,
+                }).peekable();
+                if presented.peek().is_some() && presented.all(|p| p.state != PrState::Open) {
                     card.kind = CardKind::Know;
                 }
                 self.insert_interaction(
@@ -4596,7 +4697,7 @@ impl DomainState {
                 p.base = base.clone();
                 p.state = *state;
                 p.merged_head = merged_head.clone();
-                if *state != PrState::Open
+                if *state != PrState::Open && self.open_pr_of(&task).is_none()
                     && let Some(t) = self.tasks.get_mut(&task).filter(|t| matches!(t.open_pr, Some(OpenPrPending::Close { .. })))
                 {
                     t.open_pr = None;
@@ -5287,7 +5388,10 @@ impl DomainState {
                     return fail("not_found", "Linked document missing");
                 }
             }
-            if let Some(p) = &t.pr_id {
+            if t.pr_id.is_none() && !t.later_prs.is_empty() {
+                return fail("invalid_input", "Task PR ownership mismatch");
+            }
+            for p in t.pr_ids() {
                 if !self.pull_requests.get(p).is_some_and(|p| &p.task_id == k) {
                     return fail("invalid_input", "Task PR ownership mismatch");
                 }
@@ -5379,7 +5483,6 @@ impl DomainState {
             }
         }
         let mut identities = BTreeSet::new();
-        let mut owners = BTreeSet::new();
         for (k, p) in &self.pull_requests {
             id(&k.0)?;
             canonical_pr(&p.host, &p.repository, p.number)?;
@@ -5387,8 +5490,7 @@ impl DomainState {
             nonempty(&p.base)?;
             let t = self.task(&p.task_id)?;
             if k != &p.id
-                || t.pr_id.as_ref() != Some(k)
-                || !owners.insert(p.task_id.clone())
+                || !t.pr_ids().any(|id| id == k)
                 || !identities.insert((&p.host, &p.repository, p.number))
                 || p.review.is_some() != t.review_prs
                 || p.allowed_methods.is_empty()

@@ -199,7 +199,11 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 vec![Item::Markdown(body)],
             ));
         }
-        let actions: Vec<super::Action> = card.actions.into_iter().chain(card.reply).chain(card.more).map(Into::into).collect();
+        let another_merge = |action: &super::Action| super::action_id::ActionId::parse(&action.id).is_ok_and(|id| {
+            id.verb == super::action_id::Verb::Merge && id.subject != pr.id.0 && context.domain.pull_requests.contains_key(&PrId(id.subject.clone()))
+        });
+        let actions: Vec<super::Action> = card.actions.into_iter().chain(card.reply).chain(card.more).map(Into::into)
+            .filter(|action| !another_merge(action)).collect();
         if !actions.is_empty() {
             view.sections.push(common::section(
                 "actions",

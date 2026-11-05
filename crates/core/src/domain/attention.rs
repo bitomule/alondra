@@ -161,7 +161,7 @@ impl DomainState {
             });
         }
         if let Some(instruction) = self.handed_back(p) {
-            let pr = t.pr_id.as_ref().and_then(|id| self.pull_requests.get(id)).map_or(0, |pr| pr.number);
+            let pr = self.main_pr(t).map_or(0, |pr| pr.number);
             let node = t.agent_id.as_ref().and_then(|id| self.agents.get(id)).map_or_else(|| t.title.clone(), |agent| agent.name.clone());
             return match instruction {
                 Instruction::Conflicts => Attention::Wait(WaitReason::NodeFixing { node, pr }),

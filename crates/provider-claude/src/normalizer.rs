@@ -6,6 +6,7 @@ use alondra_agent_protocol::{
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{
+    pull_requests_named, runs_gh_pr_create,
     AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome, UsageReport, UsageWindow,
     UsageWindowKind,
 };
@@ -54,6 +55,9 @@ struct Checkpoint {
     /// oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     isolated: Vec<String>,
+    /// The commands running `gh pr create` whose result is still to come, by tool use id.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pr_commands: BTreeSet<String>,
     /// Work that ended after its turn, oldest first: its notification wakes a root turn of
     /// Claude's own, which takes up every notification waiting, and whose result comes from a
     /// notification, naming the run it took up when the work had one.
@@ -581,11 +585,13 @@ fn fold(
     }
     if kind == "assistant" {
         note_isolated_agents(payload, state);
+        note_pr_commands(payload, state);
         note_mcp_calls(payload, state);
     }
     if kind == "user" {
         let failed = mcp_call_failed(payload, state);
         let mut facts = worktree_facts(payload, state);
+        facts.extend(pull_request_facts(payload, state));
         if failed {
             facts.push(Observation::McpToolFailed);
         }
@@ -851,6 +857,42 @@ fn note_isolated_agents(payload: &Value, state: &mut Checkpoint) {
         }
         state.isolated.push(id.to_owned());
     }
+}
+/// Most `gh pr create` commands that can wait on their result at once.
+const MAX_PR_COMMANDS: usize = 64;
+/// Remembers each shell command, of the node or of a subagent, that runs `gh pr create`.
+fn note_pr_commands(payload: &Value, state: &mut Checkpoint) {
+    for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
+        let is_shell = block.get("type").and_then(Value::as_str) == Some("tool_use") && block.get("name").and_then(Value::as_str) == Some("Bash");
+        let creates = block.pointer("/input/command").and_then(Value::as_str).is_some_and(runs_gh_pr_create);
+        if let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| is_shell && creates && id.len() <= 256) {
+            if state.pr_commands.len() < MAX_PR_COMMANDS {
+                state.pr_commands.insert(id.to_owned());
+            }
+        }
+    }
+}
+/// What the result of a remembered `gh pr create` says: the pull requests its output names.
+fn pull_request_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observation> {
+    let mut facts = Vec::new();
+    for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
+        let is_result = block.get("type").and_then(Value::as_str) == Some("tool_result");
+        let Some(id) = block.get("tool_use_id").and_then(Value::as_str).filter(|_| is_result) else { continue };
+        if !state.pr_commands.remove(id) || block.get("is_error").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let output = match block.get("content") {
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Array(parts)) => parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+            _ => String::new(),
+        };
+        let named = pull_requests_named(&output);
+        if named.is_empty() {
+            facts.push(Observation::PullRequestNotNamed);
+        }
+        facts.extend(named.into_iter().map(Observation::PullRequestOpened));
+    }
+    facts
 }
 /// What a tool result says about a worktree: EnterWorktree's and a kept isolated subagent's
 /// `worktreePath`, or the id of an isolated subagent that went on in the background, whose
@@ -1135,6 +1177,33 @@ mod tests {
         event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,
             "message":{"role":"assistant","content":[{"type":"tool_use","id":id,"name":"Agent","input":input}]}}))
     }
+    fn shell_call(id: &str, command: &str) -> Event {
+        event(json!({"type":"assistant","uuid":SECOND,"message":{"content":[{"type":"tool_use","id":id,"name":"Bash","input":{"command":command}}]}}))
+    }
+    fn shell_result(id: &str, output: &str, is_error: bool) -> Event {
+        event(json!({"type":"user","uuid":THIRD,"message":{"content":[{"type":"tool_result","tool_use_id":id,"content":output,"is_error":is_error}]}}))
+    }
+
+    #[test]
+    fn a_pr_a_command_opened_is_a_fact_of_its_task_in_any_repository() {
+        let mut state = state();
+        fold(&shell_call("toolu_pr", "cd ../cloud && gh pr create --base main --head fix --title Fix | tail -1"), &session(), &mut state, input).unwrap();
+        let facts = fold(&shell_result("toolu_pr", "https://github.com/bitomule/alondra-cloud/pull/6\n", false), &session(), &mut state, input).unwrap();
+        assert_eq!(facts, vec![Observation::PullRequestOpened(alondra_provider_contract::OpenedPullRequest { host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6 })]);
+        assert!(state.pr_commands.is_empty(), "the call is settled");
+
+        fold(&shell_call("toolu_hidden", "gh pr create --fill > /dev/null"), &session(), &mut state, input).unwrap();
+        assert_eq!(fold(&shell_result("toolu_hidden", "", false), &session(), &mut state, input).unwrap(), vec![Observation::PullRequestNotNamed]);
+
+        fold(&shell_call("toolu_failed", "gh pr create --fill"), &session(), &mut state, input).unwrap();
+        let failed = fold(&shell_result("toolu_failed", "a pull request already exists: https://github.com/o/r/pull/1", true), &session(), &mut state, input).unwrap();
+        assert_eq!(failed, vec![], "a command that failed opened nothing");
+
+        fold(&shell_call("toolu_view", "gh pr view 12 --json url"), &session(), &mut state, input).unwrap();
+        let viewed = fold(&shell_result("toolu_view", "https://github.com/o/r/pull/12", false), &session(), &mut state, input).unwrap();
+        assert_eq!(viewed, vec![], "naming a PR is not opening it");
+    }
+
     // The shapes Claude Code's own tools give their results (2.1.291 and the SDK reference): a
     // kept isolated subagent and EnterWorktree name the worktree; a background isolated subagent
     // names only its id; ExitWorktree's `remove` can keep the worktree, so it settles nothing.

@@ -1036,7 +1036,7 @@
           "value": 0
         }
       ],
-      "cs_evidence": ["domain_store::tests::lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets"],
+      "cs_evidence": ["domain_store::tests::lifetime_pr_sql_constraints_reject_a_repeated_pr_reparent_delete_and_bad_targets"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1108,7 +1108,7 @@
           "value": true
         }
       ],
-      "cs_evidence": ["domain::tests::lifetime_pr_survives_cancel_reopen_and_register_is_noop", "domain_store::tests::lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets"],
+      "cs_evidence": ["domain::tests::lifetime_pr_survives_cancel_reopen_and_register_is_noop", "domain_store::tests::lifetime_pr_sql_constraints_reject_a_repeated_pr_reparent_delete_and_bad_targets"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },

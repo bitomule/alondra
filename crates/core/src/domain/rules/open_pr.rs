@@ -12,10 +12,9 @@ pub fn cancelled_pr_comment(title: &str) -> String {
 }
 
 impl DomainState {
-    /// The task's registered pull request while it is open on GitHub.
+    /// The first of the task's pull requests still open on GitHub.
     pub fn open_pr_of(&self, task: &TaskId) -> Option<&PullRequest> {
-        let t = self.tasks.get(task)?;
-        t.pr_id.as_ref().and_then(|pr| self.pull_requests.get(pr)).filter(|pr| pr.state == PrState::Open)
+        self.open_prs(self.tasks.get(task)?).next()
     }
 
     /// Ends `task` for `actor`, who closes it without a delivery. With its PR open, the user's
@@ -56,7 +55,7 @@ impl DomainState {
         let Some(OpenPrPending::Deliver { result }) = self.task(task)?.open_pr.clone() else {
             return refuse("open_pr_settled", "task_id", &format!("Task {task} has no open pull request left to deliver"));
         };
-        let pr = self.task(task)?.pr_id.clone().and_then(|pr| self.pull_requests.get(&pr).cloned())
+        let pr = self.open_pr_of(task).or_else(|| self.task_prs(&self.tasks[task]).last()).cloned()
             .ok_or_else(|| DomainError::new("not_found", "The task has no pull request"))?;
         let merged_head = (status.state == PrState::Merged).then(|| status.head.clone());
         if (&pr.head, &pr.base, pr.state, &pr.merged_head) != (&status.head, &status.base, status.state, &merged_head) {
@@ -82,7 +81,7 @@ impl DomainState {
         let content = CardContent { kind: ContentKind::Report, summary: None, body: card.detail(crate::views::Lang::En) };
         let spec = CardSpec { system: Some(SystemCard::OpenPrDelivery), need, why, content: Some(content),
             ..CardSpec::new(kind, clip(&t.title, CardSpec::TITLE_MAX)) };
-        let targets = vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: status.head.clone() }];
+        let targets = self.with_open_prs(task, &[DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: status.head.clone() }]);
         self.insert_interaction(actor, &id, &Scope::Task { task_id: task.clone() }, &Recipient::User, &card.to_body(), false, &[],
             InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] }, &spec, Source::Delivery)?;
         self.invalidate(task);

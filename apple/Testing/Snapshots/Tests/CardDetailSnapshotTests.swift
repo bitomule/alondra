@@ -212,6 +212,11 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    func test_twoPullRequestsEachWithItsMerge_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-two-prs-es"))
+        assertDetail(store, language: .spanish)
+    }
+
     // MARK: A final delivery held to its approved plan
 
     func test_deliveryWithItsApprovedPlan() throws {

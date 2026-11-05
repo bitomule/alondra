@@ -182,6 +182,32 @@ fn the_users_cancel_closes_the_pr_with_the_reason_until_github_reports_it_closed
     assert_eq!(task(&s).open_pr, None);
 }
 
+fn with_a_second_pr(s: &mut DomainState) {
+    must(s, node("a"), Command::RegisterPr {
+        task_id: "t".into(), pr_id: "github.com/bitomule/site#6".into(), host: "github.com".into(), repository: "bitomule/site".into(), number: 6,
+        head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+}
+
+#[test]
+fn a_task_closed_with_two_prs_open_delivers_both_and_a_cancel_closes_both() {
+    let mut delivered = registered();
+    with_a_second_pr(&mut delivered);
+    must(&mut delivered, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    settle_pr(&mut delivered, status(PrState::Open, PrMergeable::Clean, PrChecks::None)).unwrap();
+    let InteractionPayload::Delivery { targets, .. } = &alondras_delivery(&delivered).payload else { panic!("a delivery") };
+    assert_eq!(targets.len(), 2, "{targets:?}");
+
+    let mut cancelled = registered();
+    with_a_second_pr(&mut cancelled);
+    must(&mut cancelled, user(), Command::CancelTask { task_id: "t".into() });
+    let closed = |pr: &str, head: &str| Command::ObservePrState { pr_id: pr.into(), head: head.into(), base: "main".into(), state: PrState::Closed, merged_head: None };
+    must(&mut cancelled, Actor::System, closed(PR, HEAD));
+    assert!(task(&cancelled).open_pr.is_some(), "the other PR is still to close");
+    must(&mut cancelled, Actor::System, closed("github.com/bitomule/site#6", HEAD));
+    assert!(task(&cancelled).open_pr.is_none());
+}
+
 #[test]
 fn only_alondra_settles_an_open_pr_and_only_one_it_holds() {
     let mut s = registered();

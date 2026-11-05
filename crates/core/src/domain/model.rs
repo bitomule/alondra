@@ -135,7 +135,14 @@ pub struct Task {
     pub started: bool,
     pub review_prs: bool,
     pub final_presentation: Option<InteractionId>,
+    /// The first PR the task registered; `later_prs` holds the ones after it.
     pub pr_id: Option<PrId>,
+    /// The PRs this task registered after its first, in any repository.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub later_prs: Vec<PrId>,
+    /// PRs its node was seen opening that Alondra has not read from GitHub yet.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub opened_prs: BTreeSet<OpenedPr>,
     pub dependencies: BTreeSet<TaskId>,
     /// Tasks this one starts after, as soon as they make their final delivery.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -311,6 +318,10 @@ pub enum WorktreeEnd {
     HandedOver,
 }
 impl Task {
+    /// The ids of every PR of the task, the first one first.
+    pub fn pr_ids(&self) -> impl Iterator<Item = &PrId> {
+        self.pr_id.iter().chain(&self.later_prs)
+    }
     pub fn account_key(&self) -> crate::accounts::AccountKey {
         crate::accounts::AccountKey::new(self.provider, self.account.clone().unwrap_or_else(crate::accounts::AccountId::default_account))
     }
@@ -574,6 +585,14 @@ impl BranchUpdate {
         }
     }
 }
+/// Where a PR a node was seen opening lives, until Alondra reads the rest of it from GitHub.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct OpenedPr {
+    pub host: String,
+    pub repository: String,
+    pub number: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequest {
     pub id: PrId,

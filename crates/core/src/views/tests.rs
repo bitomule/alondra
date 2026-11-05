@@ -47,6 +47,8 @@ fn fixture() -> DomainState {
             review_prs: false,
             final_presentation: Some("i-3".into()),
             pr_id: None,
+            later_prs: vec![],
+            opened_prs: Default::default(),
             dependencies: BTreeSet::new(),
             stack: None,
             documents: BTreeMap::new(),
@@ -2733,6 +2735,20 @@ fn only_destructive_card_actions_ask_for_confirmation() {
     }
     assert!(merges > 0, "the fixtures offer a merge");
     assert!(confirms > 0, "closing without merging still confirms");
+}
+
+#[test]
+fn a_delivery_of_two_prs_matches_its_goldens_in_every_apple_client() {
+    let state = crate::domain::several_prs_tests::two_open_prs();
+    let live = LiveSnapshot::default();
+    for (filename, client, lang, expected) in [
+        ("card-two-prs.json", Client::Ios, Lang::En, include_str!("../../../../fixtures/views/cards/card-two-prs.json")),
+        ("card-two-prs-es.json", Client::Ios, Lang::Es, include_str!("../../../../fixtures/views/cards/card-two-prs-es.json")),
+        ("card-two-prs-es-mac.json", Client::Mac, Lang::Es, include_str!("../../../../fixtures/views/cards/card-two-prs-es-mac.json")),
+    ] {
+        let actual = render(&state, &live, client, lang, "card:final", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
 }
 
 #[test]

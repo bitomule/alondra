@@ -1628,10 +1628,7 @@ impl DomainState {
     /// Why a turn of `task` that ended with nothing explaining its next step is empty.
     pub fn empty_turn(&self, task: &TaskId) -> EmptyTurn {
         let Some(t) = self.tasks.get(task) else { return EmptyTurn::Unexplained };
-        t.pr_id.as_ref()
-            .and_then(|pr| self.pull_requests.get(pr))
-            .filter(|pr| pr.state == PrState::Open && t.final_presentation.is_none())
-            .map_or(EmptyTurn::Unexplained, |pr| EmptyTurn::UnpresentedPr { number: pr.number })
+        self.undelivered_pr(t).map_or(EmptyTurn::Unexplained, |pr| EmptyTurn::UnpresentedPr { number: pr.number })
     }
 
     /// The step the node of `task` still owes its delivery while it rests: the answer to its own

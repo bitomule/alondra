@@ -61,6 +61,8 @@ pub enum Step {
     /// Writes `file` without committing it.
     Dirty { file: String },
     Push,
+    /// Starts a new branch from where the worktree is.
+    Branch { name: String },
     /// Opens a PR on the fake GitHub for the worktree's branch.
     OpenPr {
         number: u64,

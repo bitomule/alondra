@@ -242,3 +242,53 @@ fn rehearse_the_migration_on_a_copy_of_a_real_database() {
         println!("rehearsal: {count:4} {shape}");
     }
 }
+
+/// A database from before a task could own several PRs: the column's UNIQUE and no columns for them.
+fn with_one_pr_per_task(path: &Path) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    let table: String = conn.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pull_requests'", [], |row| row.get(0)).unwrap();
+    let attached: Vec<String> = conn.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name='pull_requests' AND type='trigger'").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert!(!attached.is_empty());
+    conn.execute_batch(&format!("CREATE TABLE copied AS SELECT * FROM pull_requests; DROP TABLE pull_requests; {};
+        INSERT INTO pull_requests SELECT * FROM copied; DROP TABLE copied;
+        ALTER TABLE task_relations DROP COLUMN later_prs; ALTER TABLE task_relations DROP COLUMN opened_prs;",
+        table.replace("task_id TEXT NOT NULL REFERENCES tasks(id)", "task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id)"))).unwrap();
+    for trigger in attached {
+        conn.execute_batch(&trigger).unwrap();
+    }
+}
+
+#[test]
+fn a_database_with_one_pr_per_task_keeps_its_prs_and_takes_more() {
+    let (fixture, _) = every_shape();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    run(&mut store, &node("node-running"), "first-pr", Command::RegisterPr {
+        task_id: "running".into(), pr_id: "github.com/me/app#1".into(), host: "github.com".into(), repository: "me/app".into(), number: 1,
+        head: "0123456789abcdef".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    let before = store.load().unwrap();
+    drop(store);
+    with_one_pr_per_task(&fixture.path());
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let after = store.load().unwrap();
+    assert_eq!(after.pull_requests, before.pull_requests);
+    assert_eq!(after.tasks, before.tasks);
+    let table: String = store.conn.query_row("SELECT sql FROM sqlite_schema WHERE name='pull_requests'", [], |row| row.get(0)).unwrap();
+    assert!(!table.contains("task_id TEXT NOT NULL UNIQUE"), "{table}");
+    let triggers: i64 = store.conn.query_row("SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='pull_requests'", [], |row| row.get(0)).unwrap();
+    assert_eq!(triggers, 2, "its triggers came back with it");
+    let dangling: i64 = store.conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).unwrap();
+    assert_eq!(dangling, 0);
+
+    run(&mut store, &node("node-running"), "second-pr", Command::RegisterPr {
+        task_id: "running".into(), pr_id: "github.com/me/site#2".into(), host: "github.com".into(), repository: "me/site".into(), number: 2,
+        head: "fedcba9876543210".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let state = store.load().unwrap();
+    assert_eq!(state.task_prs(&state.tasks[&"running".into()]).count(), 2);
+}

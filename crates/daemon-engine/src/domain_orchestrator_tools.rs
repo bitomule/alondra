@@ -904,7 +904,7 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
                         missing_inputs.push(format!("interaction:{}", result.id));
                     }
                 }
-                if let Some(pr) = earlier.pr_id.as_ref().and_then(|id| state.pull_requests.get(id)) {
+                for pr in state.task_prs(earlier) {
                     text.push_str(&format!("\nPull request: https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
                 }
                 append(source, text);
@@ -952,7 +952,7 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
             None => "No final result was recorded for it.".to_owned(),
         };
         let mut entry = format!("### “{}” ({status})\n{body}", earlier.title);
-        if let Some(pr) = earlier.pr_id.as_ref().and_then(|id| state.pull_requests.get(id)) {
+        for pr in state.task_prs(earlier) {
             let pr_state = match pr.state {
                 alondra_core::domain::PrState::Merged => "merged",
                 alondra_core::domain::PrState::Open => "open",

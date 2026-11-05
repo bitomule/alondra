@@ -31,10 +31,10 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. Use request_plan_mode for an Alondra-managed planning turn, then end this turn. Produce the complete checklist plan in native plan mode; Alondra must receive and approve it before implementation. Native update_plan is progress, not approval. When you are done, deliver with present_result and is_final true; Alondra merges your one PR: never merge it yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
+            "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. Use request_plan_mode for an Alondra-managed planning turn, then end this turn. Produce the complete checklist plan in native plan mode; Alondra must receive and approve it before implementation. Native update_plan is progress, not approval. When you are done, deliver with present_result and is_final true; Alondra merges your PRs: never merge one yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
         ),
         Role::Orchestrator => format!(
-            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns one PR. Answer a Request without a Task with close_request (headline and answer): Alondra writes the user's card; close one whose Tasks are over with close_request, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
+            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns every PR it opens. Answer a Request without a Task with close_request (headline and answer): Alondra writes the user's card; close one whose Tasks are over with close_request, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
         ),
     }
 }
@@ -283,7 +283,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         ]}});
         tools.push(domain_tool(
             "present_result",
-            &format!("Deliver the result to {user}. Finishing is always present_result, never an ask. With is_final true, {user} accepts it; Alondra merges a registered PR. An open PR goes only in a final result. With is_final false, this is a progress notice. A final result needs content: the report written out in its body, never a path or a pasted document: {user} cannot open files from the app; files go in attachments. Say what the result means for {user} in plain words, never script names, task ids or internal steps. Commit and push everything first: uncommitted, unpushed or unregistered work is refused. Answer or withdraw your pending cards first. Ask any open choices before delivering: acceptance does not answer them. For an approved plan, mark every point done in checklist with evidence. {rule}"),
+            &format!("Deliver the result to {user}. Finishing is always present_result, never an ask. With is_final true, {user} accepts it; Alondra merges your PRs; a pull_request target, final only, takes all open ones. With is_final false, this is a progress notice. A final result needs content: the report written out in its body, never a path or a pasted document: {user} cannot open files from the app; files go in attachments. Say what the result means for {user} in plain words, never script names, task ids or internal steps. Commit and push everything first: uncommitted, unpushed or unregistered work is refused. Answer or withdraw your pending cards first. Ask any open choices before delivering: acceptance does not answer them. For an approved plan, mark every point done in checklist with evidence. {rule}"),
             json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. title names the plan subject; plan holds only its content, never an opening heading repeating title. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
             &["task_id", "interaction_id", "need", "targets", "is_final"],
         ));
@@ -402,7 +402,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "register_pr",
             "register_pr",
-            "Associate exactly one canonical PR with your Task; a hook can only observe GitHub.",
+            "Add a PR to your Task, in any repository. A task owns every PR it opens, and Alondra already adds what gh pr create opens: call this for a PR opened another way, or to name one yourself.",
             json!({"task_id":{"type":"string"},"host":{"type":"string"},"repository":{"type":"string"},"number":{"type":"integer","minimum":1},"head":{"type":"string","description":"The full 40-character commit sha you pushed (git rev-parse HEAD after git push), never a branch name"},"base":{"type":"string"},"allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}}),
             vec![
                 "task_id",
@@ -2029,7 +2029,7 @@ mod tests {
         assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "register_pr"));
         assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "domain_command"));
         assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "complete_task"));
-        assert!(instructions(Role::Node, "User").contains("Alondra merges your one PR: never merge it yourself or ask User to authorize a merge"));
+        assert!(instructions(Role::Node, "User").contains("Alondra merges your PRs: never merge one yourself or ask User to authorize a merge"));
         assert!(instructions(Role::Node, "Ana").contains("Your terminal does not reach Ana: these tools do"));
         for role in [Role::Node, Role::Orchestrator] {
             assert!(instructions(role, "Ana").contains("and your replies in this terminal too: the apps show your last one"));
@@ -2041,7 +2041,7 @@ mod tests {
         assert!(tools(Role::Node,"Ana").as_array().unwrap().iter().any(|tool| tool["name"]=="request_plan_mode"));
         assert!(!tools(Role::Orchestrator,"Ana").as_array().unwrap().iter().any(|tool| tool["name"]=="request_plan_mode"));
         let skill = skill_text(Role::Node);
-        assert!(skill.contains("A task owns exactly one PR for its whole life"));
+        assert!(skill.contains("A task owns every PR it opens, in any repository"));
         assert!(skill.contains("`ask` with the decision in `body` and the approval options, then at once `link_interaction_subject`"));
     }
 

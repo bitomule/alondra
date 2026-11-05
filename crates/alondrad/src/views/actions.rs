@@ -1273,10 +1273,11 @@ fn pr_of<'a>(
     interaction: &alondra_core::domain::Interaction,
 ) -> Option<&'a alondra_core::domain::PullRequest> {
     let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
-    targets.iter().find_map(|target| match target {
+    let prs: Vec<&alondra_core::domain::PullRequest> = targets.iter().filter_map(|target| match target {
         alondra_core::domain::DeliveryTarget::PullRequest { pr_id, .. } => state.pull_requests.get(pr_id),
         _ => None,
-    })
+    }).collect();
+    prs.iter().find(|pr| pr.state == alondra_core::domain::PrState::Open).or(prs.first()).copied()
 }
 
 /// Changes and replies belong to the task's current delivery, so they are judged against that
@@ -1306,10 +1307,10 @@ fn map_merge(
         .and_then(|id| state.interactions.get(&InteractionId(id)))
         .ok_or_else(|| gone.clone())?;
     seen_delivery_is_current(state, &interaction.id.0)?;
-    let pr = pr_of(state, interaction).ok_or_else(|| gone.clone())?;
+    let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone())).or(pr_of(state, interaction)).ok_or_else(|| gone.clone())?;
     let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return Err(gone); };
     let head = targets.iter().find_map(|target| match target {
-        alondra_core::domain::DeliveryTarget::PullRequest { head, .. } => Some(head.clone()),
+        alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head } if *pr_id == pr.id => Some(head.clone()),
         _ => None,
     }).ok_or(Refusal::NoLongerAvailable)?;
     if pr.head != head { return Err(Refusal::StaleHead { number: pr.number }); }
@@ -1971,7 +1972,8 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "launch_failed" => "No se pudo iniciar la sesión del nodo",
         "session_unreachable" => "El nodo no está conectado a Alondra: su sesión está parada o su mod de Claude Code no se está ejecutando. No se ha enviado nada",
         "unavailable" => "Esta acción no está disponible ahora mismo",
-        "task_already_has_pr" => "Esta tarea ya tiene una PR asociada",
+        "pr_not_open" => "Esta PR ya no está abierta",
+        "pr_being_read" => "Alondra aún está leyendo la PR de esta tarea",
         "pr_owned_by_other_task" => "Esta PR ya pertenece a otra tarea",
         "idempotency_conflict" => "El identificador del comando ya se usó con otros datos",
         "dependency_cycle" => "La dependencia crearía un ciclo entre tareas",
@@ -3627,6 +3629,40 @@ for line in sys.stdin:
             assert!(!feedback.is_empty(), "the changes reached the delivery the task has now");
             present_again(&domain, &format!("again-{}", &command_id[..4]));
         }
+    }
+
+    #[tokio::test]
+    async fn a_merge_on_a_delivery_of_several_prs_merges_the_pr_it_names() {
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
+        let agent = Actor::Agent { agent_id: "agent-a".into() };
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        });
+        for (id, repository, number, head) in [("app", "me/app", 7, "0123456789abcdef"), ("site", "me/site", 6, "fedcba9876543210")] {
+            apply_seed_command(&domain, agent.clone(), id, Command::RegisterPr {
+                task_id: "task".into(), pr_id: alondra_core::domain::hosted_pr_id("github.com", repository, number), host: "github.com".into(), repository: repository.into(),
+                number, head: head.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+            });
+        }
+        let site = alondra_core::domain::hosted_pr_id("github.com", "me/site", 6);
+        apply_seed_command(&domain, agent, "present", Command::PresentResult {
+            checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
+            targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: site.clone(), head: "fedcba9876543210".into() }],
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        let revision = domain.state().unwrap().revision;
+        let id = ActionId::new(Verb::Merge, &site.0, revision, Some("fedcba98-result".into())).unwrap();
+        let merged = act(&home, &domain, &client, FIRST, id, None, None).await;
+        assert_eq!(merged["outcome"], "applied", "{merged}");
+        let state = domain.state().unwrap();
+        let authorized: Vec<_> = state.merge_authorizations.values().map(|a| (a.pr_id.clone(), a.head.as_str())).collect();
+        assert_eq!(authorized, [(site, "fedcba9876543210")], "the PR the button names, at the commit presented");
     }
 
     #[tokio::test]

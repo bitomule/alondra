@@ -4,8 +4,8 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod, OpenPrPending, OpenPrStatus,
-    clip, CardSpec, PrChecks, PrId, PrMergeable, PrState, PullRequest, Scope, PROTOCOL_VERSION,
+    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod, OpenPrPending, OpenPrStatus, OpenedPr,
+    clip, hosted_pr_id, CardSpec, PrChecks, PrId, PrMergeable, PrState, PullRequest, Scope, TaskId, PROTOCOL_VERSION,
 };
 use alondra_core::pr::CheckState;
 use anyhow::Result;
@@ -16,6 +16,9 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// How long a delivery waits for GitHub to name one branch's open PR.
+const BRANCH_PR_LIMIT: Duration = Duration::from_secs(3);
 
 /// What GitHub reports for one PR. `merged_head` is the PR head at merge time,
 /// never the merge commit: squash and rebase produce a different commit that
@@ -350,11 +353,78 @@ fn watched(state: &DomainState) -> Vec<PullRequest> {
     state.pull_requests.values().filter(|pr| pr.state == PrState::Open).cloned().collect()
 }
 
+/// What the watcher waits on: the open PRs and the ones a node was seen opening.
+fn awaited(state: &DomainState) -> BTreeSet<PrId> {
+    let opened = state.tasks.values().flat_map(|task| &task.opened_prs).map(|pr| hosted_pr_id(&pr.host, &pr.repository, pr.number));
+    watched(state).into_iter().map(|pr| pr.id).chain(opened).collect()
+}
+
+/// Reads from GitHub each PR a node was seen opening, of `task` or of every task, and makes it its
+/// task's. One GitHub cannot report stays noted: its delivery waits, and the next round tries again.
+pub(crate) async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, task: Option<&TaskId>) -> Result<()> {
+    let state = domain.state()?;
+    let opened: Vec<(TaskId, OpenedPr)> = state.tasks.values().filter(|t| task.is_none_or(|task| *task == t.id))
+        .flat_map(|t| t.opened_prs.iter().map(|pr| (t.id.clone(), pr.clone()))).collect();
+    for (task_id, pr) in opened {
+        let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
+            Ok(facts) if !facts.allowed_methods.is_empty() => facts,
+            Ok(_) => {
+                log!("GitHub does not say how {}#{} merges yet: its task keeps waiting for it", pr.repository, pr.number);
+                continue;
+            }
+            Err(reason) => {
+                log!("could not read {}#{}, which {task_id} opened: {reason}", pr.repository, pr.number);
+                continue;
+            }
+        };
+        match execute_system(domain, Command::RecordOpenedPr {
+            task_id, host: pr.host, repository: pr.repository, number: pr.number, head: facts.head, base: facts.base,
+            state: facts.state, merged_head: facts.merged_head, allowed_methods: facts.allowed_methods,
+        }) {
+            Ok(()) => (),
+            Err(StoreError::Domain(error)) => log!("the PR a node opened was refused: {error}"),
+            Err(StoreError::Storage(error)) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// What a node's delivery is judged on, read when it presents: the open PR of each branch the task
+/// works on (a final delivery only, for a PR no command showed), what the node was seen opening,
+/// and where each open PR is when there are several to tell apart by their heads.
+pub async fn catch_up_task(domain: &DomainRuntime, gh: &GhCli, task_id: &TaskId, is_final: bool) -> Result<()> {
+    let state = domain.state()?;
+    let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
+    if is_final {
+        for (path, _) in task.open_worktrees() {
+            let Some((host, repository, number)) = gh.branch_pr(std::path::Path::new(path), BRANCH_PR_LIMIT).await else { continue };
+            match execute_system(domain, Command::NotePrOpened { task_id: task_id.clone(), host, repository, number }) {
+                Ok(()) => (),
+                Err(StoreError::Domain(error)) => log!("the open PR of {path} was refused: {error}"),
+                Err(StoreError::Storage(error)) => return Err(error),
+            }
+        }
+    }
+    read_opened(domain, gh, Some(task_id)).await?;
+    let state = domain.state()?;
+    let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
+    let open: Vec<&PullRequest> = state.open_prs(task).collect();
+    if open.len() > 1 {
+        for pr in open {
+            if let Ok(facts) = gh.observe(&pr.host, &pr.repository, pr.number).await {
+                apply(domain, &state, pr, &facts)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Bring the domain's view of each watched PR up to date with GitHub. A PR
 /// GitHub cannot report is left as it was.
 pub(crate) async fn reconcile(
     domain: &DomainRuntime, observer: &impl PrObserver, failures: &mut ObservationFailures,
 ) -> Result<()> {
+    read_opened(domain, observer, None).await?;
     let state = domain.state()?;
     for pr in watched(&state) {
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
@@ -387,7 +457,11 @@ pub(crate) async fn reconcile(
 
 /// What Alondra still does with `pr` because its task was closed while it was open.
 fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPending> {
-    state.tasks.get(&pr.task_id).filter(|t| t.pr_id.as_ref() == Some(&pr.id)).and_then(|t| t.open_pr.as_ref())
+    let task = state.tasks.get(&pr.task_id)?;
+    task.open_pr.as_ref().filter(|pending| match pending {
+        OpenPrPending::Close { .. } => task.pr_ids().any(|id| *id == pr.id),
+        OpenPrPending::Deliver { .. } => state.open_pr_of(&task.id).is_some_and(|open| open.id == pr.id),
+    })
 }
 
 /// Hands what GitHub reported to the task closed while its PR was open, once GitHub has worked
@@ -559,17 +633,17 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
     let mut changed = domain.subscribe();
     let mut failures = ObservationFailures::default();
     loop {
-        let mut open = watched(&*domain.state()?);
+        let mut open = awaited(&*domain.state()?);
         if open.is_empty() {
             // No timer exists while there is no open PR. A registration wakes
             // this receiver because it commits a new domain revision.
             changed.changed().await?;
             continue;
         }
-        let mut known: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
+        let mut known = open;
         let mut known_pending = pending_prs(&*domain.state()?);
         reconcile(&domain, &*observer, &mut failures).await?;
-        open = watched(&*domain.state()?);
+        open = awaited(&*domain.state()?);
         if open.is_empty() {
             continue;
         }
@@ -581,17 +655,16 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
                 change = changed.changed() => { change?; }
                 _ = interval.tick() => { reconcile(&domain, &*observer, &mut failures).await?; }
             }
-            open = watched(&*domain.state()?);
+            open = awaited(&*domain.state()?);
             if open.is_empty() {
                 break;
             }
-            let current: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
             let current_pending = pending_prs(&*domain.state()?);
-            if !current.is_subset(&known) || !current_pending.is_subset(&known_pending) {
-                // A newly registered PR, or a task closed while its PR is open.
+            if !open.is_subset(&known) || !current_pending.is_subset(&known_pending) {
+                // A node opened a PR, a new one was registered, or a task closed while its PR is open.
                 reconcile(&domain, &*observer, &mut failures).await?;
             }
-            known = current;
+            known = open.clone();
             known_pending = pending_prs(&*domain.state()?);
         }
     }
@@ -739,6 +812,85 @@ pub mod tests {
         observer.set(7, Ok(facts(HEAD, PrState::Open)));
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].allowed_methods, vec![MergeMethod::Squash]);
+    }
+
+    fn opened(domain: &DomainRuntime) {
+        command(domain, Actor::System, "opened", Command::NotePrOpened {
+            task_id: "t".into(), host: "github.com".into(), repository: "owner/site".into(), number: 6,
+        });
+    }
+
+    #[tokio::test]
+    async fn a_pr_a_node_opened_becomes_its_tasks_with_what_github_reports() {
+        let (_fixture, domain) = open("opened");
+        authorized(&domain);
+        opened(&domain);
+        assert!(awaited(&domain.state().unwrap()).contains(&hosted_pr_id("github.com", "owner/site", 6)), "the watcher wakes for it");
+
+        let observer = FakeObserver::new();
+        observer.set(6, Err("gh: could not resolve host".into()));
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].opened_prs.len(), 1, "one GitHub cannot report stays noted");
+
+        let mut github = facts(HEAD, PrState::Open);
+        observer.set(6, Ok(github.clone()));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].opened_prs.len(), 1, "a PR nobody can merge yet stays noted");
+
+        github.allowed_methods = vec![MergeMethod::Squash];
+        observer.set(6, Ok(github));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        let state = domain.state().unwrap();
+        let task = &state.tasks[&"t".into()];
+        assert!(task.opened_prs.is_empty());
+        assert_eq!(state.task_prs(task).map(|pr| (pr.repository.as_str(), pr.number)).collect::<Vec<_>>(), [("owner/repo", 7), ("owner/site", 6)]);
+    }
+
+    #[tokio::test]
+    async fn a_noted_pr_and_a_second_pr_survive_a_restart() {
+        let (fixture, domain) = open("opened-restart");
+        authorized(&domain);
+        opened(&domain);
+        drop(domain);
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].opened_prs.len(), 1, "the note outlives the daemon");
+
+        let observer = FakeObserver::new();
+        let mut github = facts(HEAD, PrState::Open);
+        github.allowed_methods = vec![MergeMethod::Squash];
+        observer.set(6, Ok(github.clone()));
+        observer.set(7, Ok(github));
+        read_opened(&domain, &observer, None).await.unwrap();
+        drop(domain);
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let state = domain.state().unwrap();
+        let task = &state.tasks[&"t".into()];
+        assert_eq!(task.later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
+        assert!(task.opened_prs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_final_delivery_finds_the_open_pr_of_a_branch_no_command_showed() {
+        let (fixture, domain) = open("branch-pr");
+        authorized(&domain);
+        let worktree = fixture.0.join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
+            task_id: "t".into(), path: worktree.display().to_string(), origin: alondra_core::domain::WorktreeOrigin::Entered, branch: None,
+        });
+        let program = fixture.0.join("gh");
+        std::fs::write(&program, format!("#!/bin/sh\ncase \"$*\" in\n\
+            *\"--json url,state\"*) printf '%s' '{{\"url\":\"https://github.com/owner/site/pull/6\",\"state\":\"OPEN\"}}' ;;\n\
+            *\"repo view\"*) printf '%s' '{{\"mergeCommitAllowed\":false,\"squashMergeAllowed\":true,\"rebaseMergeAllowed\":false}}' ;;\n\
+            *) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}' ;;\nesac\n")).unwrap();
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let gh = GhCli::at(program);
+
+        catch_up_task(&domain, &gh, &"t".into(), false).await.unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs.len(), 0, "only a final delivery looks at the branches");
+        catch_up_task(&domain, &gh, &"t".into(), true).await.unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
     }
 
     #[tokio::test]

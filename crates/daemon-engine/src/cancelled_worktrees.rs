@@ -25,7 +25,7 @@ enum Settled {
 
 /// A task with an open pull request keeps its local branch.
 fn keeps_branch(state: &DomainState, task: &Task) -> bool {
-    task.pr_id.as_ref().and_then(|id| state.pull_requests.get(id)).is_some_and(|pr| pr.state == PrState::Open)
+    state.open_prs(task).next().is_some()
 }
 
 /// Deletes the worktree at `path` unless it holds unsaved files, which it only counts.

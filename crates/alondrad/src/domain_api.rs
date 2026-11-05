@@ -1046,6 +1046,7 @@ async fn execute_command<H: DomainHost>(
         };
         if let Some(client) = host.new_work_client() {
             if matches!(principal, Principal::Agent { .. }) {
+                client.catch_up_task(&envelope.command).await;
                 client.catch_up_heads(&envelope.command).await;
             }
             if let Err(error) = client.verify_presentation(&envelope.command).await {
@@ -1088,9 +1089,9 @@ async fn execute_command<H: DomainHost>(
                 return domain_error(refusal);
             }
         }
-        if let (Principal::Agent { .. }, Command::PresentResult { targets, is_final: true, .. }) = (&principal, &envelope.command)
+        if let (Principal::Agent { .. }, Command::PresentResult { task_id, targets, is_final: true, .. }) = (&principal, &envelope.command)
             && let Ok(state) = host.domain().state()
-            && let Some(refusal) = crate::domain_merges::draft_refusal(&state, targets, &crate::domain_github::GhCli::new()).await
+            && let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &crate::domain_github::GhCli::new()).await
         {
             return domain_error(refusal);
         }

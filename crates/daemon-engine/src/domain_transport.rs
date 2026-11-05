@@ -736,7 +736,7 @@ pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainS
 fn undelivered_task<'a>(state: &'a DomainState, agent_id: &AgentId) -> Option<(&'a Task, i64)> {
     let task = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent_id)
         && matches!(task.state, TaskState::NotStarted | TaskState::Running)
-        && (task.final_presentation.is_none() || state.task_handed_back(&task.id).is_some()))?;
+        && (task.final_presentation.is_none() || state.task_handed_back(&task.id).is_some() || state.undelivered_pr(task).is_some()))?;
     let scope = Scope::Task { task_id: task.id.clone() };
     let author = Author::Agent { agent_id: agent_id.clone() };
     let mine = || state.interactions.values().filter(|card| card.scope == scope && card.author == author);

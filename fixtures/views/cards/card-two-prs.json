@@ -1,0 +1,233 @@
+{
+  "protocol": 1,
+  "data_epoch": "epoch",
+  "view": "card",
+  "key": "card:final",
+  "client": "ios",
+  "version": "ve1c7d9539edb716f",
+  "cursor": "cursor-1",
+  "title": "Review the result",
+  "status": {
+    "version": "v887807058841bf6a",
+    "summary": "1 to read · 1 node working",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "final",
+          "kind": "review",
+          "need": "Review the result",
+          "title_is_separate": true,
+          "meta": "bitomule/alondra · → main",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "1 point"
+          },
+          "reply": {
+            "id": "changes:github.com/bitomule/alondra#17@8~11111111",
+            "label": "Request changes",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Describe the changes",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "comments": {
+              "kind": "diff_lines"
+            },
+            "enabled": true,
+            "stamp": "Changes requested",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:github.com/bitomule/alondra#17"
+            },
+            "resolves_card": true
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:final"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Review · PR #17",
+            "tone": "accent"
+          },
+          "title": "Review the result",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Fix the phone menu",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              },
+              "state": {
+                "text": "Ready for review",
+                "tone": "info"
+              }
+            }
+          ],
+          "state": {
+            "text": "Checking with GitHub…",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:github.com/bitomule/alondra#17@8~11111111-final",
+              "label": "Squash and merge · alondra#17",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Merging…",
+              "resolves_card": false
+            },
+            {
+              "id": "merge:github.com/bitomule/alondra-cloud#6@8~66666666-final",
+              "label": "Squash and merge · alondra-cloud#6",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Merging…",
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pull_requests",
+      "title": "Pull requests",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "alondra#17",
+              "value": "Checking with GitHub…",
+              "tone": "neutral",
+              "link": {
+                "kind": "view",
+                "key": "pull_request:github.com/bitomule/alondra#17"
+              }
+            },
+            {
+              "label": "alondra-cloud#6",
+              "value": "Checking with GitHub…",
+              "tone": "neutral",
+              "link": {
+                "kind": "view",
+                "key": "pull_request:github.com/bitomule/alondra-cloud#6"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "title": "Diff",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "1111111111111111111111111111111111111111",
+          "fetch": "/pull-requests/github.com%2Fbitomule%2Falondra%2317/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "title": "Description",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Review the result",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Fix the phone menu",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

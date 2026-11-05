@@ -255,6 +255,10 @@ pub enum ObservedFact {
     SubagentWorktree {
         agent: String,
     },
+    /// A command of the task's node opened this pull request.
+    PullRequestOpened(alondra_provider_contract::OpenedPullRequest),
+    /// A command ran `gh pr create` and its output named no pull request.
+    PullRequestNotNamed,
     /// The request at `epoch` is over. An answered one that `continued` lets the turn that asked
     /// go on: the domain records that too.
     Settled {
@@ -282,6 +286,8 @@ impl ObservedFact {
             Self::ModelAnswered
             | Self::Worktree { .. }
             | Self::SubagentWorktree { .. }
+            | Self::PullRequestOpened(_)
+            | Self::PullRequestNotNamed
             | Self::McpServers { .. }
             | Self::McpSignIn { .. }
             | Self::McpToolFailed
@@ -344,6 +350,8 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             return Ok(ObservedFact::Worktree { path: path.clone(), branch: branch.clone(), subagent: *subagent });
         }
         Observation::SubagentWorktree { agent } => return Ok(ObservedFact::SubagentWorktree { agent: agent.clone() }),
+        Observation::PullRequestOpened(pr) => return Ok(ObservedFact::PullRequestOpened(pr.clone())),
+        Observation::PullRequestNotNamed => return Ok(ObservedFact::PullRequestNotNamed),
         Observation::DecisionSettled { epoch, answered, continued } => {
             return Ok(ObservedFact::Settled { epoch: *epoch, answered: *answered, continued: *continued });
         }

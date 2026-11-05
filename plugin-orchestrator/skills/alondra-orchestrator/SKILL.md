@@ -104,9 +104,10 @@ user follows tasks, not nodes.
   never shows the prompt as a name. Then it gets tasks with `create_task`: a short `title` the user reads, under
   its `request_id`. Start with one cohesive task and split only when a part has an independently
   useful deliverable or must land first, or the work does not fit one PR (see "Plans in
-  phases"). A task owns exactly one PR: work that needs several PRs (several repositories, or
-  changes that land separately) is several tasks, linked with `dependencies` when one builds on
-  another. Keep
+  phases"). A task owns every PR its node opens, in any repository, and its delivery carries them
+  all, each with its own merge: never tell a node to finish with a PR open outside its delivery.
+  Changes that land separately are still several tasks, linked with `dependencies` when one builds
+  on another. Keep
   investigation, implementation and validation of the same change together. An ambiguous
   request is a question: one `ask` costs less than a node on the wrong reading.
 - When your batch ends, Alondra tells the user, on one card per request, the tasks you created

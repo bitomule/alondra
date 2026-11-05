@@ -352,6 +352,29 @@ pub enum Command {
         base: String,
         allowed_methods: Vec<MergeMethod>,
     },
+    /// A node of the task was seen opening this PR: Alondra keeps it until GitHub says what it is.
+    NotePrOpened {
+        task_id: TaskId,
+        host: String,
+        repository: String,
+        number: u64,
+    },
+    /// What GitHub reports of a PR the task's node was seen opening: the PR is now the task's.
+    RecordOpenedPr {
+        task_id: TaskId,
+        host: String,
+        repository: String,
+        number: u64,
+        head: String,
+        base: String,
+        state: PrState,
+        merged_head: Option<String>,
+        allowed_methods: Vec<MergeMethod>,
+    },
+    /// A node ran `gh pr create` and its output named no PR: only the node can say which it was.
+    AskToRegisterPr {
+        task_id: TaskId,
+    },
     LinkInteractionSubject {
         interaction_id: InteractionId,
         subject: InteractionSubject,
