@@ -13,6 +13,33 @@ wrapper = Path(__file__).resolve().parents[1] / "test-tmpdir.sh"
 READ_ONLY_TREE = 'mkdir -p "$TMPDIR/cache/rules" && touch "$TMPDIR/cache/rules/BUILD" && chmod 555 "$TMPDIR/cache/rules"'
 
 
+# Starts a process in its own group, as a host runs, and waits until it told its pid.
+LEFT_RUNNING = """cd "$TMPDIR" && echo '{{}}' > {lock} && python3 -c '
+import os, sys
+os.setpgid(0, 0)
+open(sys.argv[1], "w").write(str(os.getpid()))
+os.execv("/bin/sleep", ["sleep", "600"])
+' "{pid}" < {lock} >/dev/null 2>&1 &
+until [ -s "{pid}" ]; do sleep 0.01; done
+"""
+
+
+def running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def end(pid):
+    if pid.exists() and pid.read_text():
+        try:
+            os.kill(int(pid.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def remove(path):
     for folder, _, _ in os.walk(path):
         os.chmod(folder, 0o700)
@@ -49,6 +76,44 @@ class BazelTestTmpdirTest(unittest.TestCase):
         process.send_signal(signal.SIGTERM)
         self.assertEqual(process.wait(timeout=60), 143)
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def left_running(self, lock):
+        pid = self.root.parent / f"{self.root.name}.pid"
+        self.addCleanup(pid.unlink, missing_ok=True)
+        self.addCleanup(end, pid)
+        return pid, LEFT_RUNNING.format(lock=lock, pid=pid)
+
+    def assert_ended(self, pid):
+        while running(int(pid.read_text())):
+            time.sleep(0.01)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_a_passing_test_that_leaves_a_host_fails_and_the_host_ends(self):
+        pid, script = self.left_running("host.lock")
+        self.assertEqual(self.run_wrapped(script), 1)
+        self.assert_ended(pid)
+
+    def test_a_failing_test_that_leaves_a_host_keeps_its_exit_code_and_the_host_ends(self):
+        pid, script = self.left_running("host.lock")
+        self.assertEqual(self.run_wrapped(script + "exit 3"), 3)
+        self.assert_ended(pid)
+
+    def test_a_host_of_a_test_cut_by_sigterm_ends(self):
+        pid, script = self.left_running("host.lock")
+        env = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root))
+        process = subprocess.Popen([str(wrapper), "/bin/sh", "-c", script + "exec sleep 600"], env=env)
+        self.addCleanup(process.kill)
+        while not pid.exists() or not pid.read_text():
+            self.assertIsNone(process.poll(), "the wrapped test ended before it started")
+            time.sleep(0.01)
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=60), 143)
+        self.assert_ended(pid)
+
+    def test_a_process_that_is_no_host_ends_without_failing_the_test(self):
+        pid, script = self.left_running("input")
+        self.assertEqual(self.run_wrapped(script), 0)
+        self.assert_ended(pid)
 
     def test_folders_of_dead_wrappers_go_and_others_stay(self):
         dead = subprocess.Popen(["true"])

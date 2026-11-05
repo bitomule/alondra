@@ -95,6 +95,13 @@ sh_test(
     size = "small",
 )
 
+sh_test(
+    name = "reap_test_hosts_test",
+    srcs = ["tests/test_reap_test_hosts.py"],
+    data = ["reap-test-hosts.py"],
+    size = "small",
+)
+
 # Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
 sh_test(
     name = "low_opt_rust_tests_test",

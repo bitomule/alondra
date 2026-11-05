@@ -6,8 +6,9 @@ import { chmodSync, closeSync, mkdtempSync, mkdirSync, openSync, readFileSync, r
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parsePayload, SDK_VERSION } from './frame.js';
+import { socketRoot } from './owned-host.mjs';
 
-const root = mkdtempSync(join(realpathSync('/tmp'), 'asf-'));
+const root = mkdtempSync(join(socketRoot(), 'asf-'));
 chmodSync(root, 0o700);
 const home = join(root, 'home'); mkdirSync(home, { mode: 0o700 });
 const fixture = realpathSync(fileURLToPath(new URL('./flush-fixture.mjs', import.meta.url)));

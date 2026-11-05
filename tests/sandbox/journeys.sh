@@ -10,6 +10,9 @@ dir=$(mktemp -d /tmp/alondra-jrn.XXXXXX)
 rmdir "$dir"
 export SANDBOX_DIR="$dir" SANDBOX_PORT="${SANDBOX_PORT:-48030}" MACS=2 FAKES=1 SDK_NODE="$5" SDK_HOST="$6"
 trap 'tools/e2e-sandbox-stop.sh "$dir" >/dev/null' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 tools/e2e-sandbox.sh "$1" "$2" "$3" "$4" >/dev/null
 python3 -I - "$dir/sandbox.json" <<'PY'

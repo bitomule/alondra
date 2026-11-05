@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -11,9 +12,15 @@ import { Channel } from './channel.js';
 import { parsePayload, PROTOCOL_VERSION, SDK_VERSION } from './frame.js';
 import { ownerProof } from './ownership.js';
 
+/** Where a host fixture's socket fits: the test's own TMPDIR, removed however the test ends, or /tmp when that is too long. */
+export function socketRoot() {
+  const temporary = realpathSync(tmpdir());
+  return temporary.length <= 32 ? temporary : realpathSync('/tmp');
+}
+
 /** Real persistent hosts over the persistent fake Claude, each owned through a real attach. */
 export function ownedHosts(prefix) {
-  const root = mkdtempSync(join(realpathSync('/tmp'), prefix));
+  const root = mkdtempSync(join(socketRoot(), prefix));
   chmodSync(root, 0o700);
   const fixture = fileURLToPath(new URL('./controls-fixture.mjs', import.meta.url));
   const nativeFixture = fileURLToPath(new URL('./persistent-fake-claude.py', import.meta.url));

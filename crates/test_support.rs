@@ -148,12 +148,26 @@ impl AsRef<std::ffi::OsStr> for Directory {
     }
 }
 
+/// The longest temporary folder that leaves room for a socket deep inside a fixture.
+#[cfg(unix)]
+const SOCKET_ROOT_LIMIT: usize = 32;
+
+#[cfg(unix)]
+pub fn socket_root(temporary: &Path) -> PathBuf {
+    match temporary.canonicalize() {
+        Ok(root) if root.as_os_str().len() <= SOCKET_ROOT_LIMIT => root,
+        _ => std::fs::canonicalize("/tmp").expect("resolve short fixture root"),
+    }
+}
+
 #[cfg(unix)]
 impl Directory {
-    /// Keeps macOS socket names within sockaddr_un limits while retaining fixture cleanup.
+    /// Keeps macOS socket names within sockaddr_un limits while retaining fixture cleanup. Under the
+    /// test's own TMPDIR when that is short: whatever removes it, also when the test was cut, ends
+    /// the hosts running here, which end themselves once their lock is gone.
     pub fn for_unix_socket() -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::fs::canonicalize("/tmp").expect("resolve short fixture root");
+        let root = socket_root(Path::new(&std::env::var_os("TMPDIR").unwrap_or_default()));
         let owner = tempfile::Builder::new()
             .prefix("as-")
             .permissions(std::fs::Permissions::from_mode(0o700))

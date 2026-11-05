@@ -30,6 +30,19 @@ fn removes_written_files_when_a_test_panics() {
 }
 
 #[cfg(unix)]
+#[test]
+fn a_socket_fixture_lives_in_a_short_temporary_folder_and_in_tmp_when_it_is_long() {
+    let short = std::fs::canonicalize("/tmp").unwrap().join(format!("sr-{}", std::process::id()));
+    std::fs::create_dir(&short).unwrap();
+    let long = short.join("a-folder-too-long-to-hold-the-socket-of-a-host");
+    std::fs::create_dir(&long).unwrap();
+    let (kept, replaced) = (test_support::socket_root(&short), test_support::socket_root(&long));
+    std::fs::remove_dir_all(&short).unwrap();
+    assert_eq!(kept, short);
+    assert_eq!(replaced, std::fs::canonicalize("/tmp").unwrap());
+}
+
+#[cfg(unix)]
 fn read_only_tree(directory: &Directory) {
     use std::os::unix::fs::PermissionsExt;
     let locked = directory.join("cache/external/rules");

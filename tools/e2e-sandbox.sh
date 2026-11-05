@@ -96,6 +96,9 @@ while [ "$i" -le "$all" ]; do
 done
 
 trap 'KEEP=1 "$repo/tools/e2e-sandbox-stop.sh" "$dir"; echo "Logs kept; remove $dir before the next start." >&2' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 wait_until() {
 	tries=0
@@ -258,7 +261,7 @@ SCRIPT
     {\"number\": $all, \"mac_id\": \"\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$all"), \"iroh_port\": $(iroh_port "$all")}"
 fi
 
-trap - EXIT
+trap - EXIT TERM INT HUP
 cat >"$dir/sandbox.json" <<EOF
 {
   "relay": "$relay",

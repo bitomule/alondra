@@ -18,31 +18,31 @@ fn runfile(name: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
-/// Waits for the end of the test process that started it, then kills the process group of every
-/// host still holding a file under the folder, waits for each of its processes to exit, and removes
-/// the folder. Dropping a `HostRoot` ends it first, while that process lives: then it does nothing.
+/// Reads until the test process that started it closes the pipe. It leaves alone only after `done`:
+/// a dying process closes its files before it stops being this one's parent, so nothing else tells
+/// a test that ended from one that was cut. Then it kills every process still holding a file under
+/// the folder, a host with its whole group, waits for each to exit, and removes the folder.
 const REAPER: &str = r#"
 import os, select, shutil, signal, subprocess, sys
 root, owner = sys.argv[1], int(sys.argv[2])
-sys.stdin.buffer.read()
-if os.getppid() == owner:
+if sys.stdin.buffer.read() == b'done':
     sys.exit(0)
 listed = subprocess.run(['/usr/sbin/lsof', '-t', '+D', root], capture_output=True, text=True).stdout.split()
 exits, watched = select.kqueue(), 0
-for pid in {int(pid) for pid in listed}:
+for pid in {int(pid) for pid in listed} - {owner}:
     try:
-        if os.getpgid(pid) != pid:
-            continue
+        leads = os.getpgid(pid) == pid
     except ProcessLookupError:
         continue
-    for member in subprocess.run(['/usr/bin/pgrep', '-g', str(pid)], capture_output=True, text=True).stdout.split():
+    members = subprocess.run(['/usr/bin/pgrep', '-g', str(pid)], capture_output=True, text=True).stdout.split() if leads else [pid]
+    for member in members:
         try:
             exits.control([select.kevent(int(member), select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 0)
             watched += 1
         except ProcessLookupError:
             pass
     try:
-        os.killpg(pid, signal.SIGKILL)
+        (os.killpg if leads else os.kill)(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
 while watched:
@@ -60,19 +60,14 @@ pub struct HostRoot {
 
 impl HostRoot {
     pub fn new() -> Self {
-        Self::owned_by(std::process::id())
-    }
-
-    fn owned_by(owner: u32) -> Self {
         use std::os::unix::process::CommandExt;
         let directory = Directory::for_unix_socket();
         let reaper = std::process::Command::new("/usr/bin/python3")
             .args(["-I", "-c", REAPER])
             .arg(&*directory)
-            .arg(owner.to_string())
+            .arg(std::process::id().to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
             .process_group(0)
             .spawn()
             .expect("start the hosts' reaper");
@@ -125,6 +120,15 @@ impl AsRef<Path> for HostRoot {
 
 impl HostRoot {
     fn end_reaper(&mut self) {
+        use std::io::Write;
+        if let Some(mut pipe) = self.reaper.stdin.take() {
+            let _ = pipe.write_all(b"done");
+        }
+        self.reaper.wait().unwrap();
+    }
+
+    /// What a dying test process does first: its pipe closes while it is still the reaper's parent.
+    fn close_reaper_pipe(&mut self) {
         drop(self.reaper.stdin.take());
         self.reaper.wait().unwrap();
     }
@@ -559,16 +563,51 @@ fn a_test_that_leaves_a_host_running_fails_and_the_host_ends_with_it() {
 }
 
 #[test]
-fn the_hosts_of_a_test_process_that_dies_without_unwinding_end_and_their_folder_goes() {
-    let mut owner = std::process::Command::new("/bin/sleep").arg("600").stdin(std::process::Stdio::null()).spawn().unwrap();
-    let mut slice = Slice::with_hosts(HostRoot::owned_by(owner.id()));
+fn a_reaper_whose_pipe_closes_while_its_parent_still_lives_ends_the_hosts_and_their_folder() {
+    let mut slice = Slice::new();
     let processes = host_left_running(&slice);
-    owner.kill().unwrap();
-    owner.wait().unwrap();
     let root = slice._state.to_path_buf();
-    slice._state.end_reaper();
+    slice._state.close_reaper_pipe();
     assert_eq!(survivors(&processes), Vec::<String>::new(), "the reaper killed the host's group");
     assert!(!root.parent().unwrap().exists(), "the reaper removed the hosts' folder");
+}
+
+/// The test process `a_test_process_killed_mid_test_leaves_no_host_and_no_folder` kills. It also
+/// stands for a test that hangs: left alone, it runs until Bazel's timeout cuts it.
+#[test]
+#[ignore = "started by a_test_process_killed_mid_test_leaves_no_host_and_no_folder"]
+fn a_test_process_holding_a_host() {
+    let slice = Slice::new();
+    let driver = slice.launch();
+    println!("holding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
+    loop {
+        std::thread::park();
+    }
+}
+
+#[test]
+fn a_test_process_killed_mid_test_leaves_no_host_and_no_folder() {
+    use std::io::{BufRead, Read};
+    let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "--nocapture", "sdk_owner::tests::a_test_process_holding_a_host"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut errors = owner.stderr.take().unwrap();
+    let holding = std::io::BufReader::new(owner.stdout.take().unwrap()).lines().map(Result::unwrap)
+        .find_map(|line| line.strip_prefix("holding ").map(str::to_owned)).expect("the test process launched its host");
+    let (group, root) = holding.split_once(' ').unwrap();
+    let processes = alondra_process_group::members(group.parse().unwrap()).unwrap();
+    assert!(!processes.is_empty(), "the host runs");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    // The reaper inherits this pipe: it closes when the reaper has finished.
+    let mut said = String::new();
+    errors.read_to_string(&mut said).unwrap();
+    assert_eq!(survivors(&processes), Vec::<String>::new(), "the reaper killed the host's group: {said}");
+    assert!(!Path::new(root).parent().unwrap().exists(), "the reaper removed the hosts' folder: {said}");
 }
 
 #[test]

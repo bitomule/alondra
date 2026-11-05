@@ -10,9 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { Channel } from './channel.js';
 import { parsePayload, PROTOCOL_VERSION, SDK_VERSION } from './frame.js';
 import { hostProof, ownerProof } from './ownership.js';
+import { socketRoot } from './owned-host.mjs';
 
 // Retain the owned short canonical directory through child exit; Darwin sun_path is bounded.
-const root = mkdtempSync(join(realpathSync('/tmp'), 'as-'));
+const root = mkdtempSync(join(socketRoot(), 'as-'));
 chmodSync(root, 0o700);
 const home = join(root, 'home'); mkdirSync(home, { mode: 0o700 });
 const fixture = fileURLToPath(new URL('./host-stop-fixture.mjs', import.meta.url));

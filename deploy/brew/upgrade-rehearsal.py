@@ -1630,7 +1630,14 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def stop_cleanly_when_cut():
+    """A cut rehearsal goes through its `finally`, which ends every host it started."""
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, lambda received, _: sys.exit(128 + received))
+
+
 if __name__ == '__main__':
+    stop_cleanly_when_cut()
     try:
         main()
     except (Failed, OSError, ValueError, subprocess.CalledProcessError) as error:

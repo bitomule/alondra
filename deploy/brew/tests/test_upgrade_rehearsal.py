@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -213,6 +214,28 @@ class Fixture(unittest.TestCase):
 
     def tearDown(self):
         subprocess.run(['/bin/rm', '-rf', str(self.root)], check=True)
+
+
+class CutRehearsalTests(Fixture):
+    def test_a_cut_rehearsal_runs_its_finally(self):
+        started, cleaned = self.work / 'started', self.work / 'cleaned'
+        script = (
+            'import importlib.machinery, pathlib, sys, time\n'
+            'u = importlib.machinery.SourceFileLoader("rehearsal", sys.argv[1]).load_module()\n'
+            'u.stop_cleanly_when_cut()\n'
+            'try:\n'
+            '    pathlib.Path(sys.argv[2]).touch()\n'
+            '    time.sleep(600)\n'
+            'finally:\n'
+            '    pathlib.Path(sys.argv[3]).touch()\n'
+        )
+        process = subprocess.Popen([sys.executable, '-c', script, u.__file__, str(started), str(cleaned)])
+        self.addCleanup(process.kill)
+        while not started.exists():
+            self.assertIsNone(process.poll(), 'the rehearsal ended before it started')
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=60), 128 + signal.SIGTERM)
+        self.assertTrue(cleaned.exists())
 
 
 class PreviousDoctorTests(Fixture):
