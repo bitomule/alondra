@@ -9,17 +9,17 @@ CREATE TABLE IF NOT EXISTS orchestrator_batch_reports(run TEXT NOT NULL REFERENC
 CREATE TABLE IF NOT EXISTS orchestrator_tool_operations(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),call TEXT NOT NULL,kind TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),request TEXT NOT NULL CHECK(json_valid(request)),state TEXT NOT NULL CHECK(state IN('started','succeeded','uncertain')),result TEXT,error TEXT,PRIMARY KEY(run,call));\
 CREATE TABLE IF NOT EXISTS orchestrator_batch_decisions(run TEXT PRIMARY KEY REFERENCES orchestrator_batch_runs(run),target TEXT NOT NULL CHECK(target IN('discarded','retryable')));";
 
-/// What a tool answers when the domain turned the call down before it changed anything: the
-/// call is settled and nothing is left to reconcile. Any other error leaves its effects unknown.
-const REFUSED_BEFORE_ANY_EFFECT: &[&str] = &[
-    "invalid_input", "conflict", "not_found", "node_paused", "task_not_active", "task_closed", "not_assigned",
-    "forbidden", "plan_review_pending", "model_is_binding", "active_account_immutable", "task_moving",
-    "usage_exhausted", "disk_low", "account_unavailable", "model_unavailable", "unsupported_capability",
-    "workspace_untrusted", "main_checkout", "session_unreachable",
+/// What only the orchestrator's tools answer, before they change anything.
+const TOOL_REFUSALS: &[&str] = &[
+    "node_paused", "task_closed", "model_is_binding", "task_moving", "usage_exhausted", "disk_low",
+    "account_unavailable", "model_unavailable", "unsupported_capability", "workspace_untrusted", "main_checkout",
+    "session_unreachable", "native_session_required", "selection_transition_required",
 ];
 
+/// The domain's rules refuse before they commit, so such a call is settled and nothing is left to
+/// reconcile, except `delivery_uncertain`. Any code not known here leaves its effects unknown.
 pub(crate) fn refused_before_any_effect(code: Option<&str>) -> bool {
-    code.is_some_and(|code| REFUSED_BEFORE_ANY_EFFECT.contains(&code))
+    code.is_some_and(|code| code != "delivery_uncertain" && (alondra_core::domain::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
 }
 
 fn error_code(error: Option<&str>) -> Option<String> {
@@ -280,6 +280,25 @@ mod tests {
         let state = store.load().unwrap();
         CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: 0,
             command: Command::TitleRequest { request_id: "request-1".into(), title: text.into() } }
+    }
+
+    fn uncertain(code: &str) -> (String, String, String, Option<String>, Option<String>) {
+        ("call".into(), "launch".into(), "uncertain".into(), None, Some(serde_json::to_string(&DomainError::new(code, "why")).unwrap()))
+    }
+
+    #[test]
+    fn every_refusal_of_the_domain_rules_settles_its_call() {
+        let refusals = alondra_core::domain::INTERNAL_CODES.iter().filter(|code| **code != "delivery_uncertain");
+        for code in refusals.chain(TOOL_REFUSALS) {
+            assert!(!is_unconfirmed(&uncertain(code)), "{code} changed nothing");
+        }
+    }
+
+    #[test]
+    fn an_error_that_leaves_the_effect_unknown_stays_unconfirmed() {
+        for code in ["operation_uncertain", "delivery_uncertain", "launch_failed", "replace_failed", "storage_unavailable", "a_code_nobody_knows"] {
+            assert!(is_unconfirmed(&uncertain(code)), "{code} may have changed something");
+        }
     }
 
     #[test]
