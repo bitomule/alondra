@@ -633,6 +633,7 @@ struct SdkNode {
     driver: crate::sdk_owner::Driver,
     domain: Arc<DomainRuntime>,
     capture: PathBuf,
+    backend: crate::sdk_owner::SdkBackend,
     home: crate::test_support::Directory,
     _state: crate::sdk_owner::tests::HostRoot,
 }
@@ -661,11 +662,34 @@ impl SdkNode {
         }).unwrap();
         domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
         domain.live.gate.ignore_mac();
-        let mut node = Self { driver, domain, capture, home, _state: state };
+        let mut node = Self { driver, domain, capture, backend, home, _state: state };
         while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
             node.driver.observe().unwrap();
         }
         node
+    }
+
+    /// One more node of the same host root whose first turn the fake Claude holds open.
+    fn beside(&self, task: &str) -> crate::sdk_owner::Driver {
+        let worktree = self.home.join(task);
+        std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
+        run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+            task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())) });
+        let mut driver = crate::sdk_owner::start(Arc::clone(&self.domain), &self.backend, crate::sdk_owner::Launch {
+            task: task.into(), name: format!("Task {task}"), directory: worktree.to_str().unwrap().into(),
+            prompt: "consume-and-hold".into(), plugin: self.home.join("plugin"), options: Default::default(),
+            model: None, account: alondra_core::accounts::AccountId::default_account(),
+        }).unwrap();
+        self.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+        while self.activity(task) != alondra_domain::ActivityView::Working {
+            driver.observe().unwrap();
+        }
+        driver
+    }
+
+    fn activity(&self, task: &str) -> alondra_domain::ActivityView {
+        self.domain.state().unwrap().lifecycle_of(&task.into()).unwrap().activity()
     }
 
     fn lifecycle(&self) -> alondra_domain::TaskLifecycle {
@@ -993,6 +1017,63 @@ async fn a_stranded_task_goes_back_through_the_gate_after_its_wait_with_no_card(
     assert_eq!(node.pending_inputs(), 1);
     node.until_told("Nothing is running for your task");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
+}
+
+/// 5 November, 20:54: ten nodes the disk held, six of them still in the turn they ran, and 19 GB free
+/// in the container. Those turns reserved 3 GB each, so nothing came back, not even before a new
+/// High task. A held node reserves nothing: they come back one by one, first, while their builds fit.
+#[tokio::test]
+async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new_high_task() {
+    const GB: u64 = 1_000_000_000;
+    let node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(12)) });
+    let watch = &domain.live.machine_watch;
+    watch.seed_peaks("app", &[3 * GB; 3]);
+    let tasks: Vec<String> = (2..=10).map(|index| format!("t-sdk-{index}")).collect();
+    let mut drivers: Vec<(String, crate::sdk_owner::Driver)> = tasks.iter().map(|task| (task.clone(), node.beside(task))).collect();
+    let sessions: Vec<String> = std::iter::once(node.agent()).chain(drivers.iter().map(|(_, driver)| driver.agent().0.clone())).collect();
+    let now = alondra_core::now_millis();
+    for session in &sessions {
+        assert!(gate.hold_back(&domain, session, Reason::Disk, now));
+    }
+    watch.measure_disk(crate::disk::Space { free: 19 * GB, purgeable: 0, total: 500 * GB });
+    node.gate_look().await;
+    assert_eq!(crate::admission::working_tasks(&domain.state().unwrap()).len(), 10, "their turns go on and keep their slots");
+
+    let mut end_turn = |index: usize| {
+        let (task, driver) = &mut drivers[index];
+        interrupt_sdk_node(&domain, &driver.agent().0);
+        while node.activity(task) != alondra_domain::ActivityView::Resting {
+            driver.step(&|| true).unwrap();
+        }
+    };
+    (0..4).for_each(&mut end_turn);
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+        task_id: "t-high".into(), request_id: "r".into(), title: "Task t-high".into(), agent_id: None, review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
+    let high = Waiting { key: Key::Task("t-high".into()), priority: TaskPriority::High, resuming: false, since: now };
+    run(&domain, user(), Command::SetPriority { task_id: "t-high".into(), priority: TaskPriority::High });
+    assert!(gate.ask(&domain, high, alondra_core::now_millis()).is_err(), "the nodes the disk held go first");
+
+    let back = || sessions.iter().filter(|session| gate.paused(&domain, session).is_none()).count();
+    assert_eq!(back(), 0);
+    for expected in 1..=4 {
+        node.gate_look().await;
+        assert_eq!(back(), expected, "one more each look: its 3 GB and the 5 GB line fit beside those already back");
+    }
+    end_turn(4);
+    node.gate_look().await;
+    assert_eq!(back(), 4, "the four back reserve 12 GB: one more needs 20 GB");
+    let state = domain.state().unwrap();
+    let at_work = crate::admission::working_tasks(&state);
+    assert_eq!(at_work.len(), 9, "the five turns still held keep their slots beside the four back");
+    assert_eq!(watch.disk_reserved(&crate::admission::reserving_tasks(&state, at_work.iter())), 12 * GB, "only the four back reserve");
+    assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
+    for (_, driver) in &mut drivers {
+        let _ = driver.stop();
+    }
 }
 
 /// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and

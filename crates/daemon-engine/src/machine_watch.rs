@@ -718,7 +718,8 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
         domain.live.gate.poke();
     }
     if let Some(home) = watch.home() {
-        let disk = (machine.disk_total > 0).then(|| (usable, watch.disk_reserved(&working)));
+        let reserving = domain.state().map(|state| crate::admission::reserving_tasks(&state, working.keys())).unwrap_or_default();
+        let disk = (machine.disk_total > 0).then(|| (usable, watch.disk_reserved(&reserving)));
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working.len(), disk);
     }
     let working = working.len();
