@@ -1595,6 +1595,104 @@ fn a_host_that_ends_while_the_node_works_on_the_users_reply_resumes_it_and_names
     assert_aggregate_rules(&s);
 }
 
+/// An SDK task whose delivery the user sent back: the node's turn on what they said runs a
+/// background command.
+fn working_on_what_the_user_sent_back(s: &mut DomainState, instruction: Instruction) {
+    sdk_turn(s, "t", "a");
+    deliver(s, "t", "a", "result");
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Pass the MCP variables too".into(), instruction });
+    must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: instruction.message("Pass the MCP variables too"), from_user: false, answers: None });
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    let told = replayed.pending_inputs()[0].as_str().to_owned();
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: told },
+        RuntimeObservation::WorkStarted { turn: "turn-2".into(), work: "claude-task:build".into() },
+    ] });
+}
+
+fn gate_pause(reason: PauseReason, since: Millis) -> Pause {
+    Pause { reason, since, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false }
+}
+
+// 5 Nov, t-env-allowlist-nodes: the user sent its delivery back and the node worked on it. The disk
+// fell under its floor at 13:40, the host died at 14:01 and a new one took the same session, and at
+// 16:31 the gate ended the pause. A delivery's lifecycle accepts the end of a pause with nothing to
+// go on with, so the task read as running for 2 h 40 min with no turn, no input and no wait, until
+// the user wrote to it. Whatever held it, the end of the pause tells the node to go on.
+#[test]
+fn a_pause_a_host_ended_in_while_the_node_worked_on_what_the_user_sent_back_ends_by_telling_it_to_go_on() {
+    for (reason, note) in [
+        (PauseReason::Disk, "will not report back"),
+        (PauseReason::Declared { reason: "Waiting for a full machine".into() }, "run again what was cut"),
+    ] {
+        for instruction in [Instruction::Changes, Instruction::Reply] {
+            let mut s = world();
+            working_on_what_the_user_sent_back(&mut s, instruction);
+            must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: gate_pause(reason.clone(), 5) }, at: 5 });
+            must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec!["claude-task:build".into()], by_alondra: false });
+            let session = s.lifecycle_of(&"t".into()).unwrap().execution().cloned();
+
+            must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
+
+            let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+            assert_eq!(replayed.phase(), alondra_domain::TaskPhase::Delivered, "{reason:?} {instruction:?}");
+            assert_eq!(replayed.pending_inputs().len(), 1, "{reason:?} {instruction:?}: the node has something to go on with");
+            assert_eq!(replayed.execution().cloned(), session, "in the same session");
+            let Some(LifecycleRecord::Resumed { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from("t")].last()) };
+            assert!(text.contains(note), "{text}");
+            assert!(!s.interactions.keys().any(|id| id.0.starts_with(SESSION_ENDED_PREFIX)), "no card");
+            assert_aggregate_rules(&s);
+        }
+    }
+}
+
+// A host that ends with no session to resume leaves the delivery sent back with nobody on it: the
+// invariant tells the node to go on, with no card, and a second stop is the orchestrator's case.
+#[test]
+fn a_stranded_task_goes_back_to_work_once_and_then_to_the_orchestrator_never_to_the_user() {
+    let mut s = world();
+    working_on_what_the_user_sent_back(&mut s, Instruction::Changes);
+    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "a turn runs");
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
+    assert_eq!(s.stranded_tasks(), [TaskId::from("t")]);
+
+    let told = must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
+    assert!(told.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "no notice");
+    let Some(LifecycleRecord::Unfinished { wake: Some(input), text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from("t")].last()) };
+    assert_eq!(text, STRANDED_INSTRUCTION);
+    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "it has what it goes on with");
+    assert!(s.lifecycle_of(&"t".into()).unwrap().cards().is_empty(), "no card");
+
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "turn-3".into(), input }] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-3".into(), failure: None, failed: None });
+    assert_eq!(s.stranded_tasks(), [TaskId::from("t")], "its turn ended with nothing delivered");
+
+    let again = must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
+    assert!(again.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "the user is not asked");
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    let cards = lifecycle.cards();
+    let [(case, _)] = cards.as_slice() else { panic!("{cards:?}") };
+    assert!(is_stall_case(&s.interactions[*case]), "the orchestrator settles it");
+    assert_eq!(s.interactions[*case].recipient, Recipient::Orchestrator);
+    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "a case holds it");
+    assert_aggregate_rules(&s);
+}
+
+// A delivery the user reviews with a resting node is no stranded task: nothing was sent back.
+#[test]
+fn a_delivery_under_review_or_a_task_that_left_that_state_is_not_touched() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "result");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new());
+    let journal = s.lifecycle_journal[&TaskId::from("t")].len();
+    must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
+    assert_eq!(s.lifecycle_journal[&TaskId::from("t")].len(), journal, "nothing was recorded");
+}
+
 // Found capturing the TUI for t-parcel-open-issues-widget: an SDK node ended its turn on the user's
 // reply without presenting again, and the delivery never came back: the task read «Delivered»
 // with nothing in the user's inbox. Its node phase never moves with its turns; the end of the

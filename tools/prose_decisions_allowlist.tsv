@@ -210,4 +210,5 @@ crates/core/src/views/misc.rs	.to_ascii_lowercase();	user-search	search or sort 
 crates/core/src/views/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains(&q))	user-search	search or sort over text the user filters
 crates/alondra/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
 crates/daemon-engine/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
+crates/daemon-engine/src/sdk_owner/node_environment.rs	WITHHELD.contains(&name) || name.starts_with(WITHHELD_PREFIX)	format	Environment variable names are a documented format, not prose.
 crates/core/src/domain/rules.rs	if need.is_empty() || card.need.contains(['\n', '\r']) {	format	a card's request is one line: a field shape check, not an interpretation of what it says

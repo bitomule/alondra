@@ -745,6 +745,20 @@ impl SdkNode {
         assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
     }
 
+    fn deliver(&self) {
+        run(&self.domain, Actor::Agent { agent_id: self.driver.agent().clone() }, Command::PresentResult {
+            attachments: vec![], task_id: SDK_TASK.into(), interaction_id: "result".into(), body: "Done".into(), is_final: true, nothing_to_review: false,
+            targets: vec![alondra_core::domain::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
+            card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+    }
+
+    /// The user sends the delivery back with changes.
+    fn get_it_back(&self) {
+        run(&self.domain, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
+            targets: vec![alondra_core::domain::DeliveryTarget::Text { text: "Done".into() }], body: "Pass the MCP variables too".into(),
+            instruction: alondra_core::domain::Instruction::Changes });
+    }
+
     fn host_lost_card(&self) -> Option<alondra_core::domain::Interaction> {
         crate::sdk_owner::tests::open_card(&self.domain, alondra_core::domain::HOST_LOST_PREFIX)
     }
@@ -912,6 +926,73 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     assert!(domain.live.gate.paused(&domain, &node.agent()).is_none(), "the pause ended");
     node.until_told("held your next turn while the disk was nearly full");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
+}
+
+/// 5 Nov, t-env-allowlist-nodes: the user sent its delivery back and the node worked on it when the
+/// disk fell under its floor. Its host died, a new one took the same session, and once the disk had
+/// room the gate ended the pause with nothing to go on with: the task read as running for 2 h 40 min
+/// with no turn and no wait. The end of the pause now tells the session to go on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once_there_is_room() {
+    const GB: u64 = 1_000_000_000;
+    let mut node = SdkNode::working();
+    let session = node.starts()[0]["session"].as_str().unwrap().to_owned();
+    let domain = Arc::clone(&node.domain);
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    node.deliver();
+    node.get_it_back();
+    assert!(domain.live.gate.hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+
+    node.lose_host();
+    crate::sdk_owner::retake(&domain, SDK_TASK.into());
+    domain.join_retakes();
+    assert!(domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
+    assert_eq!(node.pending_inputs(), 0, "nothing waits for it while the disk has no room");
+
+    domain.live.machine_watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    let mut changed = domain.subscribe();
+    node.gate_look().await;
+    assert!(domain.live.gate.paused(&domain, &node.agent()).is_none(), "the pause ended");
+    let capture = node.capture.clone();
+    let told = move || crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
+        .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("held your next turn"));
+    tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| told())).await.expect("nothing told the session to go on").unwrap();
+    domain.stop_sdk_owners();
+    assert_eq!(node.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on");
+    assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
+}
+
+/// A task only waits for capacity or the user. A delivery sent back with nobody on it goes back to
+/// work by itself, once it stayed so `STRANDED_AFTER`, through the gate and with no card.
+#[tokio::test]
+async fn a_stranded_task_goes_back_through_the_gate_after_its_wait_with_no_card() {
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    node.deliver();
+    interrupt_sdk_node(&domain, &node.agent());
+    node.step_until(SdkNode::turn_ended);
+    node.get_it_back();
+    assert_eq!(domain.state().unwrap().stranded_tasks(), [TaskId::from(SDK_TASK)]);
+
+    let now = alondra_core::now_millis();
+    let look = |at| crate::admission::pass_at(&domain, &node.home, at);
+    look(now).await.unwrap();
+    look(now + crate::admission::STRANDED_AFTER - 1).await.unwrap();
+    assert_eq!(node.pending_inputs(), 0, "not yet");
+
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
+    look(now + crate::admission::STRANDED_AFTER).await.unwrap();
+    assert_eq!(node.pending_inputs(), 0, "the Mac has no slot");
+    let pacing = domain.live.gate.live(&domain, now + crate::admission::STRANDED_AFTER).unwrap();
+    assert!(matches!(pacing.queued.as_slice(), [queued] if queued.task_id == SDK_TASK), "it waits for capacity: {:?}", pacing.queued);
+
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    look(now + crate::admission::STRANDED_AFTER + 1).await.unwrap();
+    assert_eq!(node.pending_inputs(), 1);
+    node.until_told("Nothing is running for your task");
+    assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 
 /// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and

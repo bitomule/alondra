@@ -597,6 +597,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         by_alondra: bool,
     },
+    /// The Task stayed stranded (`DomainState::stranded`): its node is told to go on, or, if it was
+    /// told already, the orchestrator gets the case. A Task no longer stranded changes nothing.
+    RecordStranded {
+        task_id: TaskId,
+    },
     /// `input`, told `text`, was handed to the Task's SDK host of `generation`, which ended before
     /// it showed the input was read. When a host that resumes the same Claude session takes its
     /// place (`resumes`), the same text goes to it, flagged as possibly received already; otherwise
