@@ -8,6 +8,7 @@ pub(crate) mod seals;
 mod worker;
 mod account_identity;
 mod claude_history;
+mod node_environment;
 pub(crate) use account_identity::NativeAccountIdentity;
 use worker::{Worker, Found};
 use alondra_core::accounts::{AccountKey, Provider};
@@ -1115,7 +1116,13 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
             .map_err(|error| Failed::written(format!("creating the host's folder: {error}"), &error))?;
     }
     let mut native_environment = backend.native_environment.clone();
-    if let Some(provider) = Provider::from_driver(binding.driver()) { native_environment.insert("ALONDRA_PROVIDER".into(), provider.as_str().into()); }
+    if let Some(provider) = Provider::from_driver(binding.driver()) {
+        native_environment.insert("ALONDRA_PROVIDER".into(), provider.as_str().into());
+        if backend.installed_native && let (Some(alondra_home), Some(user_home)) = (backend.state_root.parent(), backend.native_environment.get("HOME")) {
+            let daemon = |name: &str| std::env::var(name).ok();
+            native_environment.extend(node_environment::granted(alondra_home, std::path::Path::new(user_home), std::path::Path::new(directory), provider, &daemon));
+        }
+    }
     if binding.driver() == "codex-app-server" {
         if let Some(plugin) = worker.as_ref().and_then(|profile| profile.plugins.first()) {
             native_environment.insert("ALONDRA_NODE_PLUGIN".into(), plugin.display().to_string());

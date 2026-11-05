@@ -35,7 +35,7 @@ const NATIVE_ENVIRONMENT: &[&str] = &[
     "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_EXEC_PATH",
     "GH_HOST", "GH_CONFIG_DIR", "GH_ENTERPRISE_HOST",
     "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "CODEX_HOME", "OPENAI_BASE_URL", "BROWSER", "EDITOR",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "CODEX_HOME", "OPENAI_BASE_URL", "BROWSER", "EDITOR", "DEVELOPER_DIR", "JAVA_HOME",
 ];
 
 fn is_native_variable(key: &str) -> bool {
@@ -410,6 +410,7 @@ mod tests {
         let environment = BTreeMap::from([
             ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display())), ("LANG".to_owned(), "es_ES.UTF-8".to_owned()),
             ("ALONDRA_PORT".to_owned(), "7777".to_owned()), ("CLAUDECODE".to_owned(), "1".to_owned()),
+            ("DEVELOPER_DIR".to_owned(), "/Applications/Xcode.app".to_owned()), ("JAVA_HOME".to_owned(), "/jdk".to_owned()),
             ("LC_ALL".to_owned(), "es_ES.UTF-8".to_owned()), ("HTTPS_PROXY".to_owned(), "http://proxy:3128".to_owned()),
             ("FIRECRAWL_API_KEY".to_owned(), "secret-a".to_owned()), ("REVENUECAT_MCP_BEARER_TOKEN".to_owned(), "secret-b".to_owned()),
             ("CLAUDE_CODE_MESSAGING_TOKEN".to_owned(), "secret-c".to_owned()), ("ANTHROPIC_API_KEY".to_owned(), "secret-d".to_owned()),
@@ -426,7 +427,7 @@ mod tests {
         assert_eq!(started.native_sha256, digest(&tools.join("claude")).unwrap());
         assert_eq!(started.native_environment.get("HOME").map(String::as_str), Some(user.to_str().unwrap()));
         assert_eq!(started.native_environment.get("LANG").map(String::as_str), Some("es_ES.UTF-8"), "the user's environment");
-        for kept in ["LC_ALL", "HTTPS_PROXY"] {
+        for kept in ["LC_ALL", "HTTPS_PROXY", "DEVELOPER_DIR", "JAVA_HOME"] {
             assert!(started.native_environment.contains_key(kept), "{kept} is on the allowlist");
         }
         for private in ["ALONDRA_PORT", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CLAUDECODE", "FIRECRAWL_API_KEY", "REVENUECAT_MCP_BEARER_TOKEN", "CLAUDE_CODE_MESSAGING_TOKEN", "ANTHROPIC_API_KEY"] {

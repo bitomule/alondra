@@ -193,6 +193,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "toml",
  "url",
 ]
 
