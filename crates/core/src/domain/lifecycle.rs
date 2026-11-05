@@ -1786,13 +1786,13 @@ impl DomainState {
 
     /// The user answered `card`, one the lifecycle of the task requires: cancelling ends the
     /// task, any other answer tells it how to go on. False for a card the lifecycle does not hold.
-    pub(super) fn answer_lifecycle_card(&mut self, card: &InteractionId, option: &str, written: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<bool> {
+    pub(super) fn answer_lifecycle_card(&mut self, actor: &Actor, card: &InteractionId, option: &str, written: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<bool> {
         let Some(Scope::Task { task_id }) = self.interactions.get(card).map(|i| i.scope.clone()) else { return Ok(false) };
         if !self.lifecycle_journal.contains_key(&task_id) || !self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, _)| *held == card) {
             return Ok(false);
         }
         if option == CANCEL_TASK {
-            self.cancel(&task_id, effects, lifecycles)?;
+            self.close_task(actor, &task_id, None, effects, lifecycles)?;
             return Ok(true);
         }
         let after_merge = self.work_after_merge(&task_id, self.lifecycle(lifecycles, &task_id)?);

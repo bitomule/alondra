@@ -305,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "stalls", "stall_closing", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending", "stalls", "stall_closing", "open_pr", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -848,6 +848,16 @@ pub(super) fn save_changes(
                 "INSERT INTO task_stalls(task_id,stalls,closing) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET stalls=excluded.stalls,closing=excluded.closing",
                 params![x.id.0, x.stalls as i64, x.stall_closing.as_ref().map(serde_json::to_string).transpose()?],
             )?;
+        }
+        if prior.map_or(x.open_pr.is_some(), |p| p.open_pr != x.open_pr) {
+            match &x.open_pr {
+                Some(pending) => exec(
+                    c,
+                    "INSERT INTO task_open_prs(task_id,pending) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET pending=excluded.pending",
+                    params![x.id.0, serde_json::to_string(pending)?],
+                )?,
+                None => exec(c, "DELETE FROM task_open_prs WHERE task_id=?1", params![x.id.0])?,
+            };
         }
     }
     for (x, _) in changed(&before.documents, &after.documents) {
@@ -1407,6 +1417,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         let task = state.tasks.get_mut(&TaskId::from(id)).context("stalled task missing")?;
         task.stalls = row.get::<_, i64>(1)? as u32;
         task.stall_closing = row.get::<_, Option<String>>(2)?.as_deref().map(serde_json::from_str).transpose()?;
+    }
+    drop(stored);
+    let mut open_prs = c.prepare("SELECT task_id, pending FROM task_open_prs")?;
+    let mut stored = open_prs.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let task = state.tasks.get_mut(&TaskId::from(id)).context("task of an open PR missing")?;
+        task.open_pr = Some(serde_json::from_str(&row.get::<_, String>(1)?)?);
     }
     drop(stored);
     let mut relations = c.prepare("SELECT task_id, delivered_dependencies, blocks, verdict, review_rounds FROM task_relations")?;

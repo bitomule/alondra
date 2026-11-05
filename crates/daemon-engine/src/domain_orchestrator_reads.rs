@@ -3,7 +3,7 @@
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{body_title, is_stall_case, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, Scope, TaskActivity, TaskId, NODE_PAUSE_PREFIX};
+use alondra_core::domain::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, Scope, TaskActivity, TaskId, NODE_PAUSE_PREFIX};
 use alondra_domain::{Capacity, LiveState, Step, Worker};
 use alondra_core::Node;
 use serde_json::{Value, json};
@@ -73,7 +73,7 @@ fn live_fields(row: &mut Value, state: &DomainState, agent: &AgentId) {
         Some(LiveState::Working(Worker::Alondra(Step::Delivering))) => "Alondra is handing it an input it has not read yet",
         Some(LiveState::Working(Worker::Alondra(Step::Waking))) => "Alondra is waking it: work it waited on ended",
         Some(LiveState::Working(Worker::Alondra(Step::Answering))) if state.node_task(agent).is_some_and(|task| state.interactions.values()
-            .any(|i| is_stall_case(i) && state.open(i) && i.scope == (Scope::Task { task_id: task.id.clone() }))) =>
+            .any(|i| state.unsettled_stall(i) && i.scope == (Scope::Task { task_id: task.id.clone() }))) =>
             "it stopped with nothing explaining its next step: settle its case with settle_stall",
         Some(LiveState::Working(Worker::Alondra(Step::Answering))) => "it waits for your answer to what it asked you",
         Some(LiveState::Working(Worker::Alondra(Step::Merging))) => "Alondra merges its PR",

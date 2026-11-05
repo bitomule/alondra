@@ -4,9 +4,10 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod,
-    clip, CardSpec, PrId, PrState, PullRequest, Scope, PROTOCOL_VERSION,
+    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod, OpenPrPending, OpenPrStatus,
+    clip, CardSpec, PrChecks, PrId, PrMergeable, PrState, PullRequest, Scope, PROTOCOL_VERSION,
 };
+use alondra_core::pr::CheckState;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,19 +27,38 @@ pub struct PrFacts {
     pub state: PrState,
     pub merged_head: Option<String>,
     pub allowed_methods: Vec<MergeMethod>,
+    pub mergeable: PrMergeable,
+    pub checks: PrChecks,
+}
+
+impl PrFacts {
+    fn status(&self) -> OpenPrStatus {
+        OpenPrStatus { state: self.state, head: self.head.clone(), base: self.base.clone(),
+            mergeable: self.mergeable, checks: self.checks.clone() }
+    }
 }
 
 type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
+type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 pub trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
+    /// Closes the PR on GitHub with `comment`.
+    fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, _number: u64, _comment: &'a str) -> Closed<'a> {
+        Box::pin(async { Err("this observer cannot close pull requests".to_owned()) })
+    }
 }
 
 impl<T: PrObserver> PrObserver for Arc<T> {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         (**self).observe(host, repository, number)
     }
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+        (**self).close(host, repository, number, comment)
+    }
 }
+
+const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup";
 
 pub struct GhCli {
     program: PathBuf,
@@ -62,7 +82,7 @@ impl PrObserver for GhCli {
         Box::pin(async move {
             let url = format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host));
             let run = tokio::process::Command::new(&self.program)
-                .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName"])
+                .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
                 .kill_on_drop(true)
                 .output();
             let output = match tokio::time::timeout(Duration::from_secs(30), run).await {
@@ -75,6 +95,13 @@ impl PrObserver for GhCli {
             let mut facts = parse(&value)?;
             facts.allowed_methods = self.repository_methods(host, repository).await;
             Ok(facts)
+        })
+    }
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+        Box::pin(async move {
+            let url = pr_url(host, repository, number);
+            self.run(&["pr", "close", &url, "--comment", comment], None, Duration::from_secs(30)).await
+                .map(drop).map_err(|failure| failure.to_string())
         })
     }
 }
@@ -263,7 +290,46 @@ pub fn parse(value: &Value) -> Result<PrFacts, String> {
         merged_head: (state == PrState::Merged).then(|| head.to_owned()),
         state,
         allowed_methods: vec![],
+        mergeable: mergeable(value),
+        checks: checks(value),
     })
+}
+
+fn mergeable(value: &Value) -> PrMergeable {
+    match (value["mergeable"].as_str(), value["mergeStateStatus"].as_str()) {
+        (Some("CONFLICTING"), _) | (_, Some("DIRTY")) => PrMergeable::Conflicting,
+        (Some("UNKNOWN") | None, _) | (_, Some("UNKNOWN")) => PrMergeable::Computing,
+        (Some("MERGEABLE"), None | Some("CLEAN" | "HAS_HOOKS")) => PrMergeable::Clean,
+        _ => PrMergeable::Other,
+    }
+}
+
+/// The latest run of each check: any failure first, then any that needs someone's approval to run,
+/// then any still running.
+fn checks(value: &Value) -> PrChecks {
+    let entries = value["statusCheckRollup"].as_array().map(|rollup| alondra_daemon_support::prs::latest_entries(rollup)).unwrap_or_default();
+    let (mut failed, mut approval, mut running, mut any) = (vec![], vec![], false, false);
+    for entry in entries {
+        let Some(check) = alondra_daemon_support::prs::check(entry) else { continue };
+        any = true;
+        match check.state {
+            _ if entry["conclusion"].as_str() == Some("ACTION_REQUIRED") => approval.push(check.name),
+            CheckState::Failed => failed.push(check.name),
+            CheckState::Running => running = true,
+            CheckState::Passed | CheckState::Other => (),
+        }
+    }
+    if !failed.is_empty() {
+        PrChecks::Failed { names: failed }
+    } else if !approval.is_empty() {
+        PrChecks::ActionRequired { names: approval }
+    } else if running {
+        PrChecks::Pending
+    } else if any {
+        PrChecks::Passed
+    } else {
+        PrChecks::None
+    }
 }
 
 pub fn execute_system(domain: &DomainRuntime, command: Command) -> Result<(), StoreError> {
@@ -300,17 +366,68 @@ pub(crate) async fn reconcile(
         };
         failures.recovered(domain, &pr);
         apply(domain, &state, &pr, &facts)?;
+        settle(domain, &pr, &facts)?;
+        if facts.state == PrState::Open
+            && let Some(OpenPrPending::Close { comment }) = pending(&state, &pr)
+            && failures.close_due(&pr.id)
+        {
+            match observer.close(&pr.host, &pr.repository, pr.number, comment).await {
+                Ok(()) => {
+                    failures.closed(domain, &pr);
+                    if let Ok(closed) = observer.observe(&pr.host, &pr.repository, pr.number).await {
+                        apply(domain, &*domain.state()?, &pr, &closed)?;
+                    }
+                }
+                Err(reason) => failures.close_failed(domain, &pr, &reason),
+            }
+        }
     }
     Ok(())
 }
 
+/// What Alondra still does with `pr` because its task was closed while it was open.
+fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPending> {
+    state.tasks.get(&pr.task_id).filter(|t| t.pr_id.as_ref() == Some(&pr.id)).and_then(|t| t.open_pr.as_ref())
+}
+
+/// Hands what GitHub reported to the task closed while its PR was open, once GitHub has worked
+/// out its checks and whether it merges.
+fn settle(domain: &DomainRuntime, pr: &PullRequest, facts: &PrFacts) -> Result<()> {
+    let state = domain.state()?;
+    let status = facts.status();
+    if !matches!(pending(&state, pr), Some(OpenPrPending::Deliver { .. })) || status.settling() {
+        return Ok(());
+    }
+    match execute_system(domain, Command::SettleOpenPr { task_id: pr.task_id.clone(), status }) {
+        Ok(()) => Ok(()),
+        Err(StoreError::Domain(error)) => {
+            log!("settling the open PR {} refused: {error}", pr.id);
+            Ok(())
+        }
+        Err(StoreError::Storage(error)) => Err(error),
+    }
+}
+
+fn pending_prs(state: &DomainState) -> BTreeSet<PrId> {
+    watched(state).into_iter().filter(|pr| pending(state, pr).is_some()).map(|pr| pr.id).collect()
+}
+
 const OBSERVATION_FAILURES_BEFORE_PROBLEM: u32 = 5;
+const CLOSE_FAILURES_BEFORE_PROBLEM: u32 = 5;
+const CLOSE_WAIT_MAX_ROUNDS: u32 = 32;
 
 /// Consecutive failed reads per PR. The log records each failure up to the
 /// threshold; at the threshold the user gets one Problem and the log stops
-/// repeating itself.
+/// repeating itself. Closes that GitHub refused count apart: each failure
+/// doubles the rounds Alondra lets pass before it tries again.
 #[derive(Default)]
-pub(crate) struct ObservationFailures(BTreeMap<PrId, u32>);
+pub(crate) struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>);
+
+#[derive(Default)]
+struct CloseFailure {
+    count: u32,
+    wait: u32,
+}
 
 impl ObservationFailures {
     fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
@@ -318,6 +435,44 @@ impl ObservationFailures {
         if reported {
             let _ = domain.withdraw_problem(&format!("problem-pr-unreadable-{}", pr.slug()).into());
         }
+    }
+
+    fn close_due(&mut self, pr: &PrId) -> bool {
+        match self.1.get_mut(pr) {
+            Some(failure) if failure.wait > 0 => {
+                failure.wait -= 1;
+                false
+            }
+            _ => true,
+        }
+    }
+
+    fn closed(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
+        if self.1.remove(&pr.id).is_some_and(|failure| failure.count >= CLOSE_FAILURES_BEFORE_PROBLEM) {
+            let _ = domain.withdraw_problem(&format!("problem-pr-close-{}", pr.slug()).into());
+        }
+    }
+
+    fn close_failed(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
+        let failure = self.1.entry(pr.id.clone()).or_default();
+        failure.count += 1;
+        failure.wait = (1 << (failure.count - 1).min(5)).min(CLOSE_WAIT_MAX_ROUNDS);
+        let url = format!("{}/{}#{}", pr.host, pr.repository, pr.number);
+        log!("Alondra could not close {url} on GitHub ({} in a row): {reason}", failure.count);
+        if failure.count != CLOSE_FAILURES_BEFORE_PROBLEM {
+            return;
+        }
+        let need = clip(&format!("Close PR {}#{} on GitHub", pr.repository, pr.number), CardSpec::NEED_MAX);
+        let why = clip(&format!("Its task was cancelled and GitHub refused to close it {} times in a row: {reason}", failure.count), CardSpec::WHY_MAX);
+        let diagnosis = format!(
+            "The task of {url} was cancelled, so Alondra closes its PR, and GitHub refused it {} times in a row. Last error: {reason}. Alondra keeps trying, less and less often; closing the PR on GitHub yourself also ends this.",
+            failure.count);
+        let _ = domain.raise_problem(
+            &format!("problem-pr-close-{}", pr.slug()), None,
+            Some(&format!("pr-close:{}", pr.slug())),
+            Scope::Task { task_id: pr.task_id.clone() },
+            need, why, diagnosis, vec![],
+        );
     }
 
     fn failed(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
@@ -412,6 +567,7 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
             continue;
         }
         let mut known: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
+        let mut known_pending = pending_prs(&*domain.state()?);
         reconcile(&domain, &*observer, &mut failures).await?;
         open = watched(&*domain.state()?);
         if open.is_empty() {
@@ -430,21 +586,30 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
                 break;
             }
             let current: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
-            if !current.is_subset(&known) {
-                // A hook or register_pr committed a newly registered PR.
+            let current_pending = pending_prs(&*domain.state()?);
+            if !current.is_subset(&known) || !current_pending.is_subset(&known_pending) {
+                // A newly registered PR, or a task closed while its PR is open.
                 reconcile(&domain, &*observer, &mut failures).await?;
             }
             known = current;
+            known_pending = pending_prs(&*domain.state()?);
         }
     }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
-pub(crate) struct FakeObserver(pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>);
+/// GitHub from memory: the facts of each PR, the closes it took, the ones it was asked for, and
+/// the error it refuses closes with, if any. A close it takes leaves the PR closed.
+pub(crate) struct FakeObserver(
+    pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>,
+    pub std::sync::Mutex<Vec<(u64, String)>>,
+    pub std::sync::Mutex<Option<String>>,
+    pub std::sync::atomic::AtomicUsize,
+);
 #[cfg(any(test, feature = "test-hooks"))]
 impl FakeObserver {
     pub(crate) fn new() -> Self {
-        Self(std::sync::Mutex::new(Default::default()))
+        Self(Default::default(), Default::default(), Default::default(), Default::default())
     }
     pub(crate) fn set(&self, number: u64, facts: Result<PrFacts, String>) {
         self.0.lock().unwrap().insert(number, facts);
@@ -456,6 +621,17 @@ impl PrObserver for FakeObserver {
         let facts = self.0.lock().unwrap().get(&number).cloned()
             .unwrap_or_else(|| Err("no such PR".into()));
         Box::pin(async move { facts })
+    }
+    fn close<'a>(&'a self, _: &'a str, _: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+        self.3.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let refused = self.2.lock().unwrap().clone();
+        if refused.is_none() {
+            self.1.lock().unwrap().push((number, comment.to_owned()));
+            if let Some(Ok(facts)) = self.0.lock().unwrap().get_mut(&number) {
+                facts.state = PrState::Closed;
+            }
+        }
+        Box::pin(async move { refused.map_or(Ok(()), Err) })
     }
 }
 
@@ -492,7 +668,8 @@ pub mod tests {
 
     fn facts(head: &str, state: PrState) -> PrFacts {
         PrFacts { head: head.into(), base: "main".into(), state,
-            merged_head: (state == PrState::Merged).then(|| head.to_owned()), allowed_methods: vec![] }
+            merged_head: (state == PrState::Merged).then(|| head.to_owned()), allowed_methods: vec![],
+            mergeable: PrMergeable::Computing, checks: PrChecks::None }
     }
 
     /// A Task with a registered PR, a presented final and the user's merge authorization.
@@ -807,11 +984,12 @@ pub mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let gh = GhCli::at(program);
         let merged = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()), allowed_methods: vec![] });
+        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()), allowed_methods: vec![],
+            mergeable: PrMergeable::Computing, checks: PrChecks::None });
         assert_eq!(gh.observe("github.com", "owner/repo", 8).await.unwrap_err(), "gh reported no PR head");
         assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().contains("no pull requests found"));
         let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName"), "{calls}");
+        assert!(calls.contains(&format!("pr view https://github.com/owner/repo/pull/7 --json {OBSERVED_FIELDS}")), "{calls}");
     }
 
     #[tokio::test]
@@ -851,4 +1029,138 @@ pub mod tests {
         reconcile(&domain, &observer, &mut failures).await.unwrap();
         assert!(problems(&domain).iter().all(|card| card.withdrawn), "reading works again");
     }
+
+    /// The task `t` of PR #7, registered and never presented.
+    fn registered(domain: &DomainRuntime) {
+        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+            task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
+            review_prs: true, dependencies: BTreeSet::new(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        });
+        command(domain, Actor::Agent { agent_id: "a".into() }, "pr", Command::RegisterPr {
+            task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+            number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+        });
+    }
+
+    #[tokio::test]
+    async fn the_open_pr_of_a_task_the_orchestrator_cancelled_reaches_the_user_once_github_has_worked_it_out() {
+        let (fixture, domain) = open("open-pr-deliver");
+        registered(&domain);
+        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        drop(domain);
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }), "it outlives a restart");
+        let observer = FakeObserver::new();
+        let mut github = facts(HEAD, PrState::Open);
+        github.checks = PrChecks::Pending;
+        github.mergeable = PrMergeable::Clean;
+        observer.set(7, Ok(github.clone()));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert!(domain.state().unwrap().tasks[&"t".into()].final_presentation.is_none(), "the checks still run");
+        github.checks = PrChecks::Failed { names: vec!["test".into()] };
+        observer.set(7, Ok(github));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        let state = domain.state().unwrap();
+        let t = &state.tasks[&"t".into()];
+        assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None));
+        let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
+        assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::ChecksFailed { names: vec!["test".into()] });
+        assert!(observer.1.lock().unwrap().is_empty(), "Alondra closes no PR it delivers");
+    }
+
+    #[tokio::test]
+    async fn the_users_cancel_closes_the_pr_on_github_with_the_reason() {
+        let (_fixture, domain) = open("open-pr-close");
+        registered(&domain);
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Cancelled in Alondra: Task".to_owned())]);
+        let state = domain.state().unwrap();
+        assert_eq!((state.pull_requests[&"pr".into()].state, state.tasks[&"t".into()].open_pr.clone()), (PrState::Closed, None));
+    }
+
+    #[tokio::test]
+    async fn a_pr_already_closed_on_github_is_not_closed_again() {
+        let (_fixture, domain) = open("open-pr-closed-already");
+        registered(&domain);
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Closed)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 0, "nothing to close");
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, None);
+    }
+
+    #[tokio::test]
+    async fn a_close_github_keeps_refusing_is_tried_less_and_less_often_and_the_fifth_raises_one_problem() {
+        let (_fixture, domain) = open("open-pr-close-refused");
+        registered(&domain);
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        *observer.2.lock().unwrap() = Some("HTTP 502".into());
+        let mut failures = ObservationFailures::default();
+        let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.values()
+            .filter(|card| card.id.0.starts_with("problem-pr-close-") && !card.withdrawn).count();
+        let mut tried = vec![];
+        for round in 1..=25 {
+            let before = observer.3.load(std::sync::atomic::Ordering::Relaxed);
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+            if observer.3.load(std::sync::atomic::Ordering::Relaxed) > before {
+                tried.push(round);
+            }
+            if round == 19 {
+                assert_eq!(problems(&domain), 0, "four refusals are a bad moment on GitHub");
+            }
+        }
+        assert_eq!(tried, [1, 3, 6, 11, 20], "each refusal doubles the wait");
+        assert_eq!(problems(&domain), 1, "one Problem however long it keeps refusing");
+        *observer.2.lock().unwrap() = None;
+        for _ in 0..17 {
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+        }
+        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Cancelled in Alondra: Task".to_owned())]);
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
+        assert_eq!(problems(&domain), 0, "the close went through");
+    }
+
+    #[tokio::test]
+    async fn gh_closes_a_pr_with_its_comment() {
+        let (fixture, _) = open("gh-close");
+        let program = fixture.0.join("gh");
+        let log = fixture.0.join("calls");
+        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\ncase \"$*\" in *pull/7*) exit 0;; *) echo 'no pull requests found' >&2; exit 1;; esac\n", log.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let gh = GhCli::at(program);
+        gh.close("github.com", "owner/repo", 7, "Cancelled in Alondra: Task").await.unwrap();
+        assert!(gh.close("github.com", "owner/repo", 9, "Cancelled in Alondra: Task").await.unwrap_err().contains("no pull requests found"));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("pr close https://github.com/owner/repo/pull/7 --comment Cancelled in Alondra: Task"), "{calls}");
+    }
+
+    #[test]
+    fn readiness_is_read_from_githubs_typed_fields() {
+        let read = |extra: Value| {
+            let mut value = serde_json::json!({"state": "OPEN", "headRefOid": HEAD, "baseRefName": "main"});
+            value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let facts = parse(&value).unwrap();
+            (facts.mergeable, facts.checks)
+        };
+        let run = |name: &str, status: &str, conclusion: &str| serde_json::json!({"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion});
+        assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": []})),
+            (PrMergeable::Clean, PrChecks::None));
+        assert_eq!(read(serde_json::json!({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY",
+            "statusCheckRollup": [run("test", "COMPLETED", "SUCCESS"), run("lint", "IN_PROGRESS", "")]})), (PrMergeable::Conflicting, PrChecks::Pending));
+        assert_eq!(read(serde_json::json!({"mergeable": "UNKNOWN", "statusCheckRollup": [run("test", "COMPLETED", "FAILURE"), run("lint", "IN_PROGRESS", "")]})),
+            (PrMergeable::Computing, PrChecks::Failed { names: vec!["test".into()] }));
+        assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
+            "statusCheckRollup": [run("deploy", "COMPLETED", "ACTION_REQUIRED"), run("test", "COMPLETED", "SUCCESS")]})),
+            (PrMergeable::Other, PrChecks::ActionRequired { names: vec!["deploy".into()] }));
+    }
+
 }

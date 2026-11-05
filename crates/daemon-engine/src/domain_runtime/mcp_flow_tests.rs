@@ -121,7 +121,8 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
     let state = fixture.runtime.state().unwrap();
     assert_eq!(state.tasks[&"pr-task".into()].pr_id.as_ref().unwrap().0, "pr-1");
     assert_ne!(state.tasks[&"pr-task".into()].state, TaskState::Done);
-    fixture.manager(json!({"kind":"cancel_task", "task_id":"pr-task"})).unwrap();
+    assert_eq!(domain_code(fixture.manager(json!({"kind":"cancel_task", "task_id":"pr-task"})).unwrap_err()), "open_pr_delivered");
+    fixture.user(json!({"kind":"cancel_task", "task_id":"pr-task"})).unwrap();
 
     fixture.task("doc-task", false);
     std::fs::create_dir_all(fixture.home.join("files")).unwrap();

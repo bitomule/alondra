@@ -61,6 +61,18 @@ pub fn is_stall_case(i: &Interaction) -> bool {
     i.system_card == Some(SystemCard::Stalled) && i.author == Author::System && i.recipient == Recipient::Orchestrator
 }
 
+impl DomainState {
+    /// Whether `i` is a case about a stopped node still waiting for someone to settle it. A case
+    /// closed while the task's PR was open stays open until Alondra delivers the PR, and nobody
+    /// settles it again.
+    pub fn unsettled_stall(&self, i: &Interaction) -> bool {
+        is_stall_case(i) && self.open(i) && !match &i.scope {
+            Scope::Task { task_id } => self.tasks.get(task_id).is_some_and(|t| matches!(t.open_pr, Some(OpenPrPending::Deliver { .. }))),
+            Scope::Orchestrator { .. } => false,
+        }
+    }
+}
+
 fn stall_options(only_close: bool) -> Vec<QuestionOption> {
     let instruct = QuestionOption {
         id: STALL_INSTRUCT.into(),
@@ -141,7 +153,7 @@ impl DomainState {
         if !is_stall_case(i) || i.scope != (Scope::Task { task_id: task.clone() }) {
             return refuse("invalid_action_for_kind", "case_id", &format!("{case_id} is not a case about a stopped node of task {task}: answer other questions with answer_question"));
         }
-        if !self.open(i) || !self.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.cards().iter().any(|(held, _)| *held == case_id)) {
+        if !self.unsettled_stall(i) || !self.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.cards().iter().any(|(held, _)| *held == case_id)) {
             return refuse("stall_settled", "case_id", "This case is already settled, or the node went on without it: nothing is left to settle");
         }
         if let Some((what, text)) = outcome.written()
@@ -161,6 +173,11 @@ impl DomainState {
         effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.settle_stall_guard(actor, case_id, task, outcome)?;
         let text = outcome.written().map(|(_, text)| text.trim().to_owned());
+        // The case stays open, held by the task, until Alondra delivers the PR it read on GitHub.
+        if !matches!(outcome, StallOutcome::Instruct { .. }) && self.open_pr_of(task).is_some()
+            && self.lifecycle(lifecycles, task)?.phase() != alondra_domain::TaskPhase::Delivered {
+            return self.close_task(actor, task, text, effects, lifecycles);
+        }
         let at = self.revision + 1;
         let i = self.interactions.get_mut(case_id).expect("the guard found it");
         if let InteractionPayload::Question { answer, .. } = &mut i.payload {
@@ -179,7 +196,8 @@ impl DomainState {
                 let record = LifecycleRecord::Answered { card: case_id.clone(), input: self.next_input(task), text };
                 self.decide(lifecycles, task, record)
             }
-            StallOutcome::Unsettled if self.lifecycle(lifecycles, task)?.phase() == alondra_domain::TaskPhase::Delivered => {
+            StallOutcome::Close { .. } | StallOutcome::Unsettled if self.lifecycle(lifecycles, task)?.phase() == alondra_domain::TaskPhase::Delivered
+                && (*outcome == StallOutcome::Unsettled || self.open_pr_of(task).is_some()) => {
                 let text = if self.work_after_merge(task, self.lifecycle(lifecycles, task)?).is_some() { UNSETTLED_AFTER_MERGE } else { UNSETTLED_DELIVERY };
                 let record = LifecycleRecord::Answered { card: case_id.clone(), input: self.next_input(task), text: Some(text.into()) };
                 self.decide(lifecycles, task, record)

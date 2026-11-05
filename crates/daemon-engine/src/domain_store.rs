@@ -153,6 +153,11 @@ const TASK_STALLS: &str = "CREATE TABLE IF NOT EXISTS task_stalls(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  stalls INTEGER NOT NULL,\
  closing TEXT);";
+/// What Alondra still does with the open pull request of a task closed while it was open;
+/// created on every open like task_relations.
+const TASK_OPEN_PRS: &str = "CREATE TABLE IF NOT EXISTS task_open_prs(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ pending TEXT NOT NULL);";
 /// Each task's scope, the points of the last plan the user approved, and the points each final
 /// delivery marked done; created on every open like task_relations.
 const TASK_CHECKLISTS: &str = "CREATE TABLE IF NOT EXISTS task_checklists(\
@@ -694,6 +699,7 @@ impl DomainStore {
         tx.execute_batch(TASK_POST_MERGE_TURNS)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(TASK_STALLS)?;
+        tx.execute_batch(TASK_OPEN_PRS)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;

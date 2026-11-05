@@ -10,7 +10,7 @@
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
     Author, CardKind, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
-    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, SystemCard, Task, TaskId, is_stall_case,
+    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, SystemCard, Task, TaskId,
 };
 use alondra_core::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
@@ -56,7 +56,7 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
     for (id, review) in &state.plan_reviews {
         steps.extend(unreviewed(state, id, review));
     }
-    for case in state.interactions.values().filter(|i| is_stall_case(i) && state.open(i)) {
+    for case in state.interactions.values().filter(|i| state.unsettled_stall(i)) {
         steps.extend(stalled(state, case));
     }
     for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {

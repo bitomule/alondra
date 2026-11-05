@@ -7,6 +7,8 @@ mod plan_review;
 mod scheduled_launch;
 pub use scheduled_launch::{SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED};
 mod snooze;
+mod open_pr;
+pub use open_pr::cancelled_pr_comment;
 mod stall;
 pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, is_stall_case, stalled_card_id};
 pub(in crate::domain) use stall::stalled_in_place_of;
@@ -909,7 +911,7 @@ impl DomainState {
                 }
                 Ok(Author::Orchestrator { generation: *generation })
             }
-            Actor::System if matches!(source, Source::Problem | Source::Information | Source::Question) => Ok(Author::System),
+            Actor::System if matches!(source, Source::Problem | Source::Information | Source::Question | Source::Delivery) => Ok(Author::System),
             _ => fail("forbidden", "Only assigned Agent or current orchestrator may communicate"),
         }
     }
@@ -2465,6 +2467,7 @@ impl DomainState {
             | Command::PublishStackReadiness { task_id, .. }
             | Command::CompleteTask { task_id, .. }
             | Command::CancelTask { task_id }
+            | Command::SettleOpenPr { task_id, .. }
             | Command::ReopenTask { task_id }
             | Command::ConfirmCleanup { task_id, .. }
             | Command::RecordTaskWorktree { task_id, .. }
@@ -3264,7 +3267,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -3946,7 +3949,7 @@ impl DomainState {
                     && !self.decide_sdk_card(interaction_id, lifecycles)?
                     && !self.settle_host_lost(interaction_id, option_id, written.as_deref(), lifecycles)?
                 {
-                    self.answer_lifecycle_card(interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
+                    self.answer_lifecycle_card(actor, interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
                 }
                 self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
                 self.settle_post_merge_problem(interaction_id, option_id, lifecycles)?;
@@ -4389,6 +4392,7 @@ impl DomainState {
                     let t = self.tasks.get_mut(task_id).unwrap();
                     t.final_presentation = Some(interaction_id.clone());
                     t.verdict = None;
+                    t.open_pr = None;
                     self.blocks_acyclic(interaction_id)?;
                     let reviewers: Vec<TaskId> = self.open_blockers(task_id).into_iter()
                         .filter(|b| self.tasks.get(b).is_some_and(|b| b.started))
@@ -4591,6 +4595,11 @@ impl DomainState {
                 p.base = base.clone();
                 p.state = *state;
                 p.merged_head = merged_head.clone();
+                if *state != PrState::Open
+                    && let Some(t) = self.tasks.get_mut(&task).filter(|t| matches!(t.open_pr, Some(OpenPrPending::Close { .. })))
+                {
+                    t.open_pr = None;
+                }
                 if *state == PrState::Merged {
                     for a in self.merge_authorizations.values_mut().filter(|a| {
                         a.pr_id == *pr_id
@@ -4690,7 +4699,10 @@ impl DomainState {
             }
             Command::CancelTask { task_id } => {
                 self.cancel_guard(actor, task_id)?;
-                self.cancel(task_id, effects, lifecycles)?;
+                self.close_task(actor, task_id, None, effects, lifecycles)?;
+            }
+            Command::SettleOpenPr { task_id, status } => {
+                self.settle_open_pr(actor, task_id, status, effects, created, lifecycles)?;
             }
             Command::ReopenTask { task_id } => {
                 self.reopen_guard(actor, task_id)?;
@@ -4701,6 +4713,7 @@ impl DomainState {
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.archived = false;
                 t.stall_closing = None;
+                t.open_pr = None;
                 let node_gone = matches!(t.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone));
                 t.wrap_up = WrapUp::default();
                 let kept = self.tasks[task_id].agent_id.clone().filter(|_| !released && !node_gone);

@@ -668,7 +668,7 @@ impl Github for FakeGithub {
         })
     }
 
-    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("closing is not available here".into()) })
     }
     fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
@@ -1411,7 +1411,7 @@ impl Github for HeldIssueSearch {
     fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> close::Answer<'a, Result<Value, String>> {
         Box::pin(async { Err("unexpected issue detail".into()) })
     }
-    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
     fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
@@ -1568,7 +1568,7 @@ impl Github for ViewedGithub {
     fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> close::Answer<'a, Result<Value, String>> {
         Box::pin(async { Err("unexpected issue detail".into()) })
     }
-    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
     fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
