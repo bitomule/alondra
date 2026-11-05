@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -4434,6 +4434,24 @@ fn a_pull_request_detail_puts_the_diff_before_the_folded_description_and_drops_t
     assert!(matches!(&description.items[..], [Item::Markdown(body)] if body.text.starts_with("Replaces the long schedule form")));
     assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::Facts(facts)
         if facts.items.iter().any(|fact| fact.label == "Repository" || fact.label == "Base" || fact.label == "Head"))));
+}
+
+#[test]
+fn alondras_delivery_of_an_open_pr_explains_itself_in_the_readers_language() {
+    let mut domain = golden_fixture();
+    let card = domain.interactions.values_mut().find(|i| matches!(&i.payload, InteractionPayload::Delivery { targets, .. }
+        if targets.iter().any(|t| matches!(t, crate::domain::DeliveryTarget::PullRequest { pr_id, .. } if pr_id.0 == "github.com/example/repo#12"))))
+        .expect("the delivery of PR #12");
+    card.author = Author::System;
+    card.system_card = Some(crate::domain::SystemCard::OpenPrDelivery);
+    card.body = crate::open_pr_delivery::OpenPrDelivery { title: "Validate the ignored parent folder".into(), repository: "example/repo".into(),
+        number: 12, readiness: crate::open_pr_delivery::PrReadiness::Ready, result: Some("The fix is in.".into()) }.to_body();
+    for (lang, start) in [(Lang::En, "Its task was closed"), (Lang::Es, "Su tarea se cerró")] {
+        let view = render(&domain, &golden_live(), Client::Tui, lang, "card:github.com/example/repo#12", "");
+        let description = section_of(&view, "description").unwrap();
+        assert!(matches!(&description.items[..], [Item::Markdown(body)] if body.text.starts_with(start) && body.text.contains("The fix is in.")),
+            "{lang:?}: {:?}", description.items);
+    }
 }
 
 #[test]

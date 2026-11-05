@@ -145,7 +145,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3235,9 +3235,10 @@ fn variant_index(c: &Command) -> usize {
         Command::AnnounceRequestTasks => 122,
         Command::AcknowledgeRequestTasks => 123,
         Command::MoveTask { .. } => 124,
+        Command::SettleOpenPr { .. } => 125,
     }
 }
-const COMMAND_KINDS: usize = 125;
+const COMMAND_KINDS: usize = 126;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3431,6 +3432,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             model: crate::model_selection::ModelSelection { model: crate::model_selection::ModelKey { provider: crate::accounts::Provider::Codex, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "A user choice".into(),
         } }, false),
         (Command::MoveTask { task_id: ids.task.into(), expected_selection: "fixture".into(), account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex) }, false),
+        (Command::SettleOpenPr { task_id: ids.task.into(), status: crate::domain::OpenPrStatus { state: PrState::Open, head: "a".repeat(40),
+            base: "main".into(), mergeable: crate::domain::PrMergeable::Clean, checks: crate::domain::PrChecks::Passed } }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {

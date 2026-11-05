@@ -104,8 +104,12 @@ fn started(c: &Value) -> Option<&str> {
     c.get("startedAt").or_else(|| c.get("createdAt")).and_then(Value::as_str).filter(|at| !at.is_empty())
 }
 
-/// Each check once: a check run again keeps only its latest run, as GitHub's own page counts it.
 fn latest_runs(rollup: &[Value]) -> Vec<Check> {
+    latest_entries(rollup).into_iter().filter_map(check).collect()
+}
+
+/// Each check once: a check run again keeps only its latest run, as GitHub's own page counts it.
+pub fn latest_entries(rollup: &[Value]) -> Vec<&Value> {
     let mut latest: Vec<(&Value, Check)> = Vec::new();
     for entry in rollup {
         let Some(run) = check(entry) else { continue };
@@ -123,7 +127,7 @@ fn latest_runs(rollup: &[Value]) -> Vec<Check> {
             None => latest.push((entry, run)),
         }
     }
-    latest.into_iter().map(|(_, run)| run).collect()
+    latest.into_iter().map(|(entry, _)| entry).collect()
 }
 
 pub fn check(c: &Value) -> Option<Check> {

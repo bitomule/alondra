@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3821f6627013f0aef5cdc3db9441e40d5dec132ac088f649e7374b1f297b1ead # shrinks to closer = SettleClose, state = Open, mergeable = Clean, checks = None
+cc 9c318b769f0d29a2371e5ed11c50767cd77a73ef125a3ba341ef25e1f2990ca0 # shrinks to closer = SettleClose, state = Merged, mergeable = Clean, checks = None

@@ -1379,6 +1379,11 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     {
         return Some(card.text(lang));
     }
+    if matches!(interaction.system_card, Some(SystemCard::OpenPrDelivery))
+        && let Some(card) = crate::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)
+    {
+        return Some(card.text(lang));
+    }
     if matches!(interaction.system_card, Some(SystemCard::OverPace { .. })) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
         return Some((
@@ -1885,6 +1890,13 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         out.push(markdown(card.detail(lang)));
         return out;
     }
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::OpenPrDelivery))
+        && let Some(card) = crate::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)
+    {
+        out.push(markdown(card.detail(lang)));
+        return out;
+    }
     if let Some(content) = start_problem_card(interaction, domain, lang).and_then(|card| card.content) {
         out.push(markdown(content.body));
         return out;
@@ -2116,7 +2128,12 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     let (facts, checks) = pr_overview(pr, context);
     let shown = interaction.shown_content();
     let content = shown.as_deref().filter(|content| content.kind != DomainContent::Diff);
-    let report = content.map(|content| without_pr_link(&content.body, pr)).filter(|text| !text.is_empty());
+    let open_pr = (interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::OpenPrDelivery)))
+        .then(|| crate::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)).flatten();
+    let report = match open_pr {
+        Some(card) => Some(card.detail(lang)),
+        None => content.map(|content| without_pr_link(&content.body, pr)),
+    }.filter(|text| !text.is_empty());
     let live = live_pr(pr, context);
     let body = live.and_then(|detail| detail.body.as_deref()).unwrap_or_default();
     let images = live.map(|detail| detail.images.as_slice()).unwrap_or_default();

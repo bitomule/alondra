@@ -1,7 +1,7 @@
 //! What the orchestrator reads with the case of a stopped node: the task's mission, the node's
 //! last words and its worktree, read when the case reaches it.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{DomainState, Interaction, Scope, Task, WorktreeOrigin, is_stall_case};
+use alondra_core::domain::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
 use std::path::Path;
 use std::process::Command;
 
@@ -11,7 +11,7 @@ const STATUS_LINES: usize = 30;
 
 /// The case's context, or nothing for a message that is not a case.
 pub(crate) fn context(domain: &DomainRuntime, state: &DomainState, case: &Interaction) -> String {
-    if !is_stall_case(case) || !state.open(case) {
+    if !state.unsettled_stall(case) {
         return String::new();
     }
     let Scope::Task { task_id } = &case.scope else { return String::new() };

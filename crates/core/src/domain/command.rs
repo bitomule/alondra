@@ -438,6 +438,12 @@ pub enum Command {
     CancelTask {
         task_id: TaskId,
     },
+    /// What GitHub reports of the open pull request of a task someone closed without delivering
+    /// it: Alondra delivers it, records its merge, or lets the task be cancelled once it is closed.
+    SettleOpenPr {
+        task_id: TaskId,
+        status: OpenPrStatus,
+    },
     ReopenTask {
         task_id: TaskId,
     },

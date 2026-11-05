@@ -396,7 +396,10 @@ impl DomainState {
         if self.active(task_id)?.ending() {
             return fail("task_not_active", "Task is already ending");
         }
-        Ok(())
+        if matches!(actor, Actor::User { .. }) || self.open_pr_of(task_id).is_none() {
+            return Ok(());
+        }
+        self.delivered_pr_stays(actor, task_id, self.lifecycle_of(task_id)?.phase())
     }
 
     pub(super) fn reopen_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<()> {

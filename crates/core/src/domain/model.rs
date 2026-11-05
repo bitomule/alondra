@@ -176,6 +176,10 @@ pub struct Task {
     /// How the task closed because its node kept stopping with nothing explaining its next step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall_closing: Option<StallClosing>,
+    /// What Alondra still does with the task's open pull request because someone closed the task
+    /// while it was open: deliver it to the user, or close it on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_pr: Option<OpenPrPending>,
     /// Every git worktree the task made or took, by path: its node's own and those of the
     /// subagents it launched. A task ends only once each of them has ended.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -216,6 +220,54 @@ pub struct TaskGrant {
 pub enum StallClosing {
     Settled { result: String },
     Unsettled,
+}
+/// A task never ends with its pull request open and nobody to answer for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpenPrPending {
+    /// The orchestrator or Alondra closed the task: Alondra reads the PR on GitHub and delivers it
+    /// to the user, with what the orchestrator wrote of the work, if anything.
+    Deliver {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+    },
+    /// The user cancelled the task: Alondra closes the PR on GitHub with this comment.
+    Close { comment: String },
+}
+/// What GitHub reports of a pull request when Alondra decides what to do with it: its JSON
+/// fields `state`, `mergeable` with `mergeStateStatus`, and `statusCheckRollup`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenPrStatus {
+    pub state: PrState,
+    pub head: String,
+    pub base: String,
+    pub mergeable: PrMergeable,
+    pub checks: PrChecks,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrMergeable {
+    Clean,
+    Conflicting,
+    /// GitHub has not worked it out yet.
+    Computing,
+    /// Blocked, behind or unstable: only GitHub's answer to a merge tells.
+    Other,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PrChecks {
+    None,
+    Pending,
+    Passed,
+    Failed { names: Vec<String> },
+    ActionRequired { names: Vec<String> },
+}
+impl OpenPrStatus {
+    /// GitHub still works out the checks or whether it merges: Alondra reads it again later.
+    pub fn settling(&self) -> bool {
+        self.state == PrState::Open && (self.checks == PrChecks::Pending || self.mergeable == PrMergeable::Computing)
+    }
 }
 fn is_zero_stalls(stalls: &u32) -> bool {
     *stalls == 0

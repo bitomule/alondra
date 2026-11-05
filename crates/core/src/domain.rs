@@ -83,6 +83,8 @@ mod turn_end_wait_tests;
 #[cfg(test)]
 mod stall_tests;
 #[cfg(test)]
+mod open_pr_close_tests;
+#[cfg(test)]
 mod answered_card_tests;
 #[cfg(test)]
 mod system_card_tests;

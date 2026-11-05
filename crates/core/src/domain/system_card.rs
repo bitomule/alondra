@@ -35,6 +35,8 @@ pub enum SystemCard {
     CloseProblem,
     /// Cancelled tasks whose worktrees hold changes no commit has, and the user decides on them.
     DiscardWorktrees,
+    /// The open pull request of a task closed without delivering it, which Alondra delivers.
+    OpenPrDelivery,
     LaunchProblem { run: String },
     BatchProblem { run: String },
     StuckProblem,
@@ -74,7 +76,7 @@ pub enum InboxCard {
 }
 
 /// The ids Alondra's own cards were named with: a node or the orchestrator may not name a card so.
-pub const RESERVED_PREFIXES: [&str; 35] = [
+pub const RESERVED_PREFIXES: [&str; 36] = [
     super::NODE_PAUSE_PREFIX,
     crate::usage::OVER_PACE_PREFIX,
     crate::usage::PACE_RESUME_PREFIX,
@@ -109,6 +111,7 @@ pub const RESERVED_PREFIXES: [&str; 35] = [
     crate::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX,
     super::PLAN_REVIEW_PROBLEM_PREFIX,
     crate::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX,
+    crate::open_pr_delivery::OPEN_PR_DELIVERY_PREFIX,
     ALONDRA_PROBLEM_PREFIX,
 ];
 /// What every Problem Alondra raises is named with.
@@ -144,7 +147,7 @@ impl SystemCard {
             return Some(Self::ClaudeUsage { resets_at: rest.split('-').next()?.parse().ok() });
         }
         type Read = fn(&str) -> Option<SystemCard>;
-        let cards: [(&str, Read); 25] = [
+        let cards: [(&str, Read); 26] = [
             (crate::usage::OVER_PACE_PREFIX, |day| Some(Self::OverPace { day: day.to_owned() })),
             (crate::usage::PACE_RESUME_PREFIX, |day| Some(Self::PaceResume { day: day.to_owned() })),
             (crate::machine_incident::MACHINE_PREFIX, |_| Some(Self::Machine)),
@@ -165,6 +168,7 @@ impl SystemCard {
             (super::START_PROBLEM_PREFIX, |_| Some(Self::StartProblem)),
             (super::POST_MERGE_PROBLEM_PREFIX, |_| Some(Self::PostMergeProblem)),
             (crate::close_problem::CLOSE_PROBLEM_PREFIX, |_| Some(Self::CloseProblem)),
+            (crate::open_pr_delivery::OPEN_PR_DELIVERY_PREFIX, |_| Some(Self::OpenPrDelivery)),
             (super::LAUNCH_PROBLEM_PREFIX, |run| Some(Self::LaunchProblem { run: run.to_owned() })),
             (crate::orchestrator_cards::STUCK_PROBLEM_PREFIX, |_| Some(Self::StuckProblem)),
             (crate::orchestrator_batch::BATCH_PROBLEM_PREFIX, |run| Some(Self::BatchProblem { run: run.to_owned() })),

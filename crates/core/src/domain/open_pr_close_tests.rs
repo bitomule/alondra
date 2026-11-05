@@ -1,0 +1,236 @@
+//! A task never ends with its pull request open and nobody to answer for it: the user's cancel
+//! closes the PR on GitHub, and anyone else's close hands the PR to the user as a delivery, decided
+//! on what GitHub reports of it.
+use super::lifecycle_tests::{assert_aggregate_rules, exec, must, node, sdk_turn, user, world};
+use super::*;
+use crate::open_pr_delivery::{OpenPrDelivery, PrReadiness};
+use proptest::prelude::*;
+
+const HEAD: &str = "1111111111111111111111111111111111111111";
+const PUSHED: &str = "2222222222222222222222222222222222222222";
+const PR: &str = "github.com/bitomule/musts#113";
+
+fn orchestrator() -> Actor {
+    Actor::Orchestrator { generation: 0 }
+}
+fn task(s: &DomainState) -> &Task {
+    &s.tasks[&TaskId::from("t")]
+}
+fn pr(s: &DomainState) -> &PullRequest {
+    &s.pull_requests[&PrId::from(PR)]
+}
+fn end_empty(s: &mut DomainState, turn: &str) {
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: None, failed: None });
+}
+fn start(s: &mut DomainState, turn: &str) {
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    let input = lifecycle.pending_inputs().first().map(|input| input.as_str().to_owned()).expect("the wake to start with");
+    must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: turn.into(), input: input.into() },
+    ] });
+}
+fn open_case(s: &DomainState) -> InteractionId {
+    s.interactions.values().find(|i| is_stall_case(i) && s.open(i)).map(|i| i.id.clone()).expect("an open case")
+}
+fn settle_case(s: &mut DomainState, actor: Actor, outcome: StallOutcome) {
+    let case_id = open_case(s);
+    must(s, actor, Command::SettleStall { case_id, task_id: "t".into(), outcome });
+}
+fn status(state: PrState, mergeable: PrMergeable, checks: PrChecks) -> OpenPrStatus {
+    OpenPrStatus { state, head: PUSHED.into(), base: "main".into(), mergeable, checks }
+}
+fn settle_pr(s: &mut DomainState, status: OpenPrStatus) -> Result<CommandOutcome, DomainError> {
+    exec(s, Actor::System, Command::SettleOpenPr { task_id: "t".into(), status })
+}
+fn alondras_delivery(s: &DomainState) -> &Interaction {
+    let id = task(s).final_presentation.as_ref().expect("a delivery");
+    &s.interactions[id]
+}
+
+/// A node working on task `t` that registered its PR and never presented it.
+fn registered() -> DomainState {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, node("a"), Command::RegisterPr {
+        task_id: "t".into(), pr_id: PR.into(), host: "github.com".into(), repository: "bitomule/musts".into(), number: 113,
+        head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    s
+}
+
+/// The stops of t-musts-validate-ignored-parent: its node registered musts #113 and its turns
+/// ended twice without presenting it, so the second stop became a case for the orchestrator.
+fn stalled_with_open_pr() -> DomainState {
+    let mut s = registered();
+    end_empty(&mut s, "turn-1");
+    start(&mut s, "turn-2");
+    end_empty(&mut s, "turn-2");
+    s
+}
+
+/// The sequence the command audit recorded for musts #113 and #114 (revisions 196057 and
+/// 196122): record_turn_boundary, bind_orchestrator_session, settle_stall with close. It used to
+/// end in closing and then cancelled, with the PR left open on GitHub.
+#[test]
+fn the_recorded_settle_stall_of_a_task_with_its_pr_open_delivers_the_pr_instead_of_cancelling() {
+    let mut s = stalled_with_open_pr();
+    must(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "orchestrator-session".into() });
+    let result = "The fix and its test are in PR #113, green.";
+    let case = open_case(&s);
+    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: result.into() });
+    assert!(!task(&s).state.terminal() && task(&s).ending.is_none(), "the task stays: {:?}", task(&s).state);
+    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Deliver { result: Some(result.into()) }));
+    assert_eq!(pr(&s).state, PrState::Open);
+    assert!(!s.unsettled_stall(&s.interactions[&case]), "nobody settles the case again");
+    let again = exec(&mut s, orchestrator(), Command::SettleStall { case_id: case.clone(), task_id: "t".into(),
+        outcome: StallOutcome::Close { result: result.into() } }).unwrap_err();
+    assert_eq!(again.code, "stall_settled");
+
+    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap();
+    assert!(!s.open(&s.interactions[&case]), "the delivery ends the case");
+    let delivery = alondras_delivery(&s);
+    assert_eq!((delivery.author.clone(), delivery.system_card.clone(), delivery.card.kind),
+        (Author::System, Some(SystemCard::OpenPrDelivery), CardKind::Review));
+    assert!(matches!(&delivery.payload, InteractionPayload::Delivery { targets, is_final: true, .. }
+        if *targets == vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: PUSHED.into() }]));
+    let card = OpenPrDelivery::from_body(&delivery.body).expect("the card's body");
+    assert_eq!((card.number, card.readiness, card.result.as_deref()), (113, PrReadiness::Ready, Some(result)));
+    assert_eq!(task(&s).open_pr, None);
+    assert_eq!(task(&s).state, TaskState::ForYourReview);
+    assert_eq!(pr(&s).head, PUSHED, "the delivery is of the head GitHub reported");
+
+    let presentation = task(&s).final_presentation.clone().unwrap();
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: presentation,
+        targets: vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: PUSHED.into() }] });
+    assert!(s.merge_authorizations.values().any(|a| a.pr_id == PrId::from(PR) && a.head == PUSHED && a.valid),
+        "accepting it lets Alondra merge it");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_pr_with_conflicts_or_failing_checks_reaches_the_user_saying_what_keeps_it_from_merging() {
+    for (mergeable, checks, readiness) in [
+        (PrMergeable::Conflicting, PrChecks::Failed { names: vec!["test".into()] }, PrReadiness::Conflicting { base: "main".into() }),
+        (PrMergeable::Clean, PrChecks::Failed { names: vec!["test".into()] }, PrReadiness::ChecksFailed { names: vec!["test".into()] }),
+    ] {
+        let mut s = stalled_with_open_pr();
+        settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Unfinished".into() });
+        settle_pr(&mut s, status(PrState::Open, mergeable, checks)).unwrap();
+        assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, readiness);
+        assert_eq!(task(&s).state, TaskState::ForYourReview);
+    }
+}
+
+#[test]
+fn alondra_reads_the_pr_again_while_github_still_works_out_its_checks() {
+    let mut s = stalled_with_open_pr();
+    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Done".into() });
+    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Pending)).unwrap();
+    settle_pr(&mut s, status(PrState::Open, PrMergeable::Computing, PrChecks::Passed)).unwrap();
+    assert!(task(&s).final_presentation.is_none());
+    assert!(matches!(task(&s).open_pr, Some(OpenPrPending::Deliver { .. })));
+}
+
+#[test]
+fn a_pr_closed_on_github_lets_the_task_be_cancelled_with_its_result() {
+    let mut s = stalled_with_open_pr();
+    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Superseded".into() });
+    settle_pr(&mut s, status(PrState::Closed, PrMergeable::Clean, PrChecks::None)).unwrap();
+    assert_eq!(pr(&s).state, PrState::Closed);
+    assert_eq!(task(&s).ending, Some(TaskEnding::Cancelling));
+    assert_eq!(task(&s).stall_closing, Some(StallClosing::Settled { result: "Superseded".into() }));
+    assert_eq!(task(&s).open_pr, None);
+}
+
+#[test]
+fn a_pr_merged_on_github_finishes_the_task_instead_of_cancelling_it() {
+    let mut s = stalled_with_open_pr();
+    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Done".into() });
+    settle_pr(&mut s, status(PrState::Merged, PrMergeable::Clean, PrChecks::Passed)).unwrap();
+    assert_eq!(pr(&s).state, PrState::Merged);
+    assert_eq!(alondras_delivery(&s).card.kind, CardKind::Know);
+    assert_eq!(task(&s).state, TaskState::Closing, "the merge settles the delivery and the task closes as done");
+    assert_ne!(task(&s).ending, Some(TaskEnding::Cancelling));
+    assert!(s.finished(task(&s)) && task(&s).wrap_up.asked_at.is_some(), "the node is asked to clean up and close");
+}
+
+#[test]
+fn alondra_leaving_the_case_unsettled_also_delivers_the_open_pr() {
+    let mut s = stalled_with_open_pr();
+    settle_case(&mut s, Actor::System, StallOutcome::Unsettled);
+    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Deliver { result: None }));
+    assert!(!task(&s).state.terminal());
+}
+
+#[test]
+fn the_orchestrators_cancel_of_a_task_with_its_pr_open_delivers_the_pr() {
+    let mut s = registered();
+    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Deliver { result: None }));
+    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::None)).unwrap();
+    assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, PrReadiness::NoChecks);
+}
+
+#[test]
+fn the_users_cancel_closes_the_pr_with_the_reason_until_github_reports_it_closed() {
+    let mut s = registered();
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    assert_eq!(task(&s).ending, Some(TaskEnding::Cancelling));
+    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Closed by Alondra: the task “{}” was cancelled.", task(&s).title) }));
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(),
+        state: PrState::Closed, merged_head: None });
+    assert_eq!(task(&s).open_pr, None);
+}
+
+#[test]
+fn only_alondra_settles_an_open_pr_and_only_one_it_holds() {
+    let mut s = registered();
+    let refused = settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap_err();
+    assert_eq!(refused.code, "open_pr_settled");
+    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    for actor in [user(), orchestrator(), node("a")] {
+        let refused = exec(&mut s, actor, Command::SettleOpenPr { task_id: "t".into(),
+            status: status(PrState::Open, PrMergeable::Clean, PrChecks::Passed) }).unwrap_err();
+        assert_eq!(refused.code, "forbidden");
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Closer {
+    SettleClose,
+    SettleUnsettled,
+    OrchestratorCancel,
+    UserCancel,
+}
+
+proptest! {
+    /// Whoever closes a task with its PR open, the task is never cancelled with its PR open and
+    /// nothing left to close it: the user's cancel closes the PR, anyone else's delivers it.
+    #[test]
+    fn no_close_leaves_a_cancelled_task_with_its_pr_open(
+        closer in prop_oneof![Just(Closer::SettleClose), Just(Closer::SettleUnsettled), Just(Closer::OrchestratorCancel), Just(Closer::UserCancel)],
+        state in prop_oneof![Just(PrState::Open), Just(PrState::Closed), Just(PrState::Merged)],
+        mergeable in prop_oneof![Just(PrMergeable::Clean), Just(PrMergeable::Conflicting), Just(PrMergeable::Computing), Just(PrMergeable::Other)],
+        checks in prop_oneof![Just(PrChecks::None), Just(PrChecks::Pending), Just(PrChecks::Passed), Just(PrChecks::Failed { names: vec!["test".into()] })],
+    ) {
+        let mut s = stalled_with_open_pr();
+        let case = open_case(&s);
+        let settle = |outcome| Command::SettleStall { case_id: case.clone(), task_id: "t".into(), outcome };
+        let _ = match closer {
+            Closer::SettleClose => exec(&mut s, orchestrator(), settle(StallOutcome::Close { result: "Done".into() })),
+            Closer::SettleUnsettled => exec(&mut s, Actor::System, settle(StallOutcome::Unsettled)),
+            Closer::OrchestratorCancel => exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }),
+            Closer::UserCancel => exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }),
+        }.unwrap();
+        if matches!(task(&s).open_pr, Some(OpenPrPending::Deliver { .. })) {
+            settle_pr(&mut s, OpenPrStatus { state, head: PUSHED.into(), base: "main".into(), mergeable, checks }).unwrap();
+        }
+        let t = task(&s);
+        let cancelled = t.cancelled() || t.ending == Some(TaskEnding::Cancelling);
+        prop_assert!(!(cancelled && pr(&s).state == PrState::Open && !matches!(t.open_pr, Some(OpenPrPending::Close { .. }))),
+            "cancelled with its PR open and nothing to close it: {:?} {:?}", t.state, t.open_pr);
+        prop_assert!(matches!(closer, Closer::UserCancel) || !cancelled || pr(&s).state == PrState::Closed,
+            "only the user, or a PR closed on GitHub, cancels it: {:?}", t.state);
+        assert_aggregate_rules(&s);
+    }
+}
