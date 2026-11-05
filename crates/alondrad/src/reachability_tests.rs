@@ -153,6 +153,26 @@ fn a_device_that_already_connected_directly_from_outside_confirms_the_mac_is_rea
 }
 
 #[test]
+fn a_direct_session_stays_confirmed_after_the_sessions_kept_move_on_until_the_public_address_changes() {
+    let mut live = Live { inputs: home(), ledger: Ledger::default() };
+    live.record(PathKind::Internet, Bytes::default());
+    for _ in 0..=KEPT_SESSIONS {
+        live.record(PathKind::Lan, Bytes::default());
+    }
+    assert_eq!(live.inputs.sessions.internet, 0, "the direct session left the sessions kept");
+    let found = diagnose(&live.inputs);
+    assert_eq!(found.verdict, Verdict::Reachable);
+    assert!(found.confirmed);
+
+    let moved_to = v4(Ipv4Addr::new(81, 40, 12, 8), 47811);
+    live.inputs.report = Some(NetFacts { global_v4: Some(moved_to), ..live.inputs.report.unwrap() });
+    live.inputs.endpoint_addrs = vec![SocketAddr::V4(v4(MAC_LAN, 47811)), SocketAddr::V4(moved_to)];
+    let moved = diagnose(&live.inputs);
+    assert_eq!(moved.verdict, Verdict::RelayOnly);
+    assert!(!moved.confirmed);
+}
+
+#[test]
 fn a_denied_local_network_permission_is_listed_even_when_the_mac_is_reachable() {
     let mut inputs = home();
     inputs.interface_ips.push(IpAddr::V4(HOME_PUBLIC));
@@ -178,6 +198,21 @@ fn before_the_first_report_it_is_checking_with_the_relay_and_unknown_without_it(
 
     inputs.relay_configured = false;
     assert_eq!(diagnose(&inputs).reasons, vec![Reason::RelayOff]);
+}
+
+#[test]
+fn a_relay_still_to_be_announced_is_not_a_relay_that_is_off() {
+    let mut inputs = home();
+    inputs.report = None;
+    inputs.endpoint_addrs.truncate(1);
+    inputs.relay_connected = false;
+
+    inputs.relay_configured = crate::iroh_endpoint::IrohConfig::default().relay_configured();
+    assert_eq!(diagnose(&inputs).reasons, vec![Reason::RelayDisconnected, Reason::RouterOffersNoMapping]);
+
+    let off = crate::iroh_endpoint::IrohConfig { relay: "off".into(), ..Default::default() };
+    inputs.relay_configured = off.relay_configured();
+    assert_eq!(diagnose(&inputs).reasons, vec![Reason::RelayOff, Reason::RouterOffersNoMapping]);
 }
 
 #[test]

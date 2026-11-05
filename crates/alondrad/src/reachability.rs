@@ -123,6 +123,9 @@ pub(crate) struct Inputs {
     pub(crate) relay_on_same_network: bool,
     pub(crate) local_network: &'static str,
     pub(crate) sessions: Sessions,
+    /// The public address of the last session that came in directly from outside. It outlives the
+    /// sessions kept, and only says something while the Mac keeps that address.
+    pub(crate) confirmed_on: Option<Ipv4Addr>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -237,7 +240,7 @@ pub(crate) fn diagnose(inputs: &Inputs) -> Reachability {
         _ => Nat::Unknown,
     };
     let ipv6_way_in = public_ipv6.is_some() && report.as_ref().is_some_and(|report| report.varies_v6 != Some(true));
-    let confirmed = inputs.sessions.internet > 0;
+    let confirmed = inputs.sessions.internet > 0 || (public_ipv4.is_some() && public_ipv4 == inputs.confirmed_on);
     let way_in = mapped.is_some() || ipv6_way_in || (nat == Nat::None && report.as_ref().is_some_and(|r| r.udp_v4));
     let verdict = match &report {
         _ if way_in || confirmed => Verdict::Reachable,
@@ -389,6 +392,17 @@ struct Live {
     ledger: Ledger,
 }
 
+impl Live {
+    fn record(&mut self, kind: PathKind, bytes: Bytes) {
+        self.ledger.record(kind, bytes);
+        self.inputs.sessions = self.ledger.sessions();
+        let public = self.inputs.report.as_ref().and_then(|report| report.global_v4).map(|addr| *addr.ip());
+        if kind == PathKind::Internet && public.is_some() {
+            self.inputs.confirmed_on = public;
+        }
+    }
+}
+
 /// A holder that panics leaves it whole, so it is recovered: a diagnostic snapshot whose inputs the
 /// next loop writes again.
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
@@ -403,7 +417,7 @@ fn change(update: impl FnOnce(&mut Live)) {
 pub(crate) fn record_session(kind: PathKind, bytes: Bytes) {
     #[cfg(test)]
     RECORDED[rank(kind) as usize].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    change(|live| live.ledger.record(kind, bytes));
+    change(|live| live.record(kind, bytes));
 }
 
 #[cfg(test)]
@@ -418,10 +432,10 @@ pub(crate) fn recorded(kind: PathKind) -> usize {
 /// The latest diagnosis, or `None` while the endpoint is not up.
 pub(crate) fn current() -> Option<Reachability> {
     let inputs = LIVE.lock_or_recover("the reachability").as_ref()?.inputs.clone();
-    let (relay, relay_connected) = crate::iroh_endpoint::relay_state();
+    let relay = crate::iroh_endpoint::relay_state();
     Some(diagnose(&Inputs {
-        relay_configured: relay.is_some(),
-        relay_connected,
+        relay_configured: relay.configured,
+        relay_connected: relay.connected,
         local_network: crate::local_network::current(),
         ..inputs
     }))
@@ -468,8 +482,7 @@ pub(crate) async fn watch(endpoint: Endpoint, port_fixed: bool, portmapper: &Por
     let mut logged: Option<Reachability> = None;
     loop {
         let (interface_ips, gateway) = interfaces().await;
-        let (relay, _) = crate::iroh_endpoint::relay_state();
-        let same_network = match &relay {
+        let same_network = match &crate::iroh_endpoint::relay_state().url {
             Some(url) => relay_on_same_network(url, &interface_ips).await,
             None => false,
         };

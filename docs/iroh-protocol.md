@@ -111,7 +111,13 @@ It serves the result as `iroh.reachability` on `/daemon` and `direct_connection`
 ```
 
 `verdict` is `reachable`, `relay_only`, `checking` or `unknown`; `confirmed` says a device away
-from home already connected directly. Reasons: `local_network_denied`, `relay_off`,
+from home already connected directly while the Mac had its current public address. The daemon
+keeps that in memory, so a restart clears it until the next direct session. Reasons: `local_network_denied`, `relay_off`,
 `relay_disconnected`, `captive_portal`, `relay_on_same_network`, `no_udp`, `symmetric_nat`,
 `router_offers_no_mapping`, `no_port_mapping`, `no_ipv6`, `port_not_fixed`. Clients word them and
 read an unknown code as nothing.
+
+`relay_off` means `relay = "off"` in `service.toml`; with `auto`, a relay not announced or connected
+yet is `relay_disconnected`. `no_port_mapping` also covers a router that answers the probe of a
+port mapping protocol and then refuses every mapping: a port forwarded by hand is the way in there,
+and it only shows as `reachable` once a device has come in through it.
