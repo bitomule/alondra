@@ -2,7 +2,7 @@
 type: fixed
 ---
 
-Available models: model | efforts | account margin | sheet: cost, good for, caution | measured: tasks, % done first time, mean cost; kinds with 3+
+Available models: model | efforts | account margin | sheet: cost, good for, caution | measured: tasks (done, when some were cancelled), % of the done ones without rework, mean cost; kinds with 3+
 claude/opus | low,medium,high | Personal 64% | high cost, feature/refactor/design/review/research/migration, Priciest Claude tier; wasted on mechanical work | 40: 80% $3.10; feature 14: 86% $3.40; fix 9: 78% $2.20
 claude/sonnet | low,medium,high | Personal 64% | medium cost, feature/fix/refactor/tests/docs, Below Opus on TB4 (61.8% vs 64.8%) | 31: 74% $1.10; docs 12: 92% $0.80; feature 8: 50% $1.60
 codex/gpt-6.1-sol | low,medium,high | Codex 88% | medium cost, fix/tests/migration/refactor/review/docs, Below the Claude Code runs on TB4 (58.2%) | 6: 67% $1.40; fix 3: 67% $1.30

@@ -544,3 +544,16 @@ fn by_margin_the_roomiest_claude_account_leads_the_claude_accounts_with_codex_in
     assert_eq!(ranked_for_launch(Policy::Margin, &codex_first, &accounts, &usage, default_reserve(), NOW, TODAY),
         [key(Provider::Codex, "default"), key(Provider::Claude, "claude-2"), key(Provider::Claude, "default")]);
 }
+
+// A Codex account whose ordinary usage the backend did not confirm gets no quota reading, and that
+// alone never holds work back: it is signed in, so it can take the launch Claude cannot.
+#[test]
+fn a_signed_in_codex_account_without_a_quota_reading_is_eligible() {
+    let subscription = || AccountBilling::Subscription { plan: None, weight: None };
+    let codex = AccountStatus { provider: Provider::Codex, ..status("default", AccountState::SignedIn, subscription()) };
+    let accounts = vec![status("default", AccountState::SignedIn, subscription()), codex];
+    let key = |provider| AccountKey::new(provider, id("default"));
+    let exhausted = record(None, Provider::Claude, &id("default"), &reading(1.0, 1.0), NOW, TODAY);
+    assert_eq!(eligible_account_keys(&[], &accounts, &[], NOW), [key(Provider::Claude), key(Provider::Codex)]);
+    assert_eq!(eligible_account_keys(&[], &accounts, &[exhausted], NOW), [key(Provider::Codex)]);
+}

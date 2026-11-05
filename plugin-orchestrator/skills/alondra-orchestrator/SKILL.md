@@ -233,7 +233,9 @@ by provider and by kind.
 `machine` starts with the Available models table: one row per model an enabled account
 advertises, with its reasoning efforts, the accounts that serve it and their margin, its sheet
 (relative cost, the kinds it is good for, its caution) and Alondra's measured results (ended
-tasks, % done the first time, mean cost; per kind once a kind has 3 tasks). `model_evidence`
+tasks, how many of them were done when some were cancelled, % of the done ones without rework,
+mean cost; per kind once a kind has 3 tasks). A cancelled task says nothing about the model:
+never count it against a model. `model_evidence`
 holds the public evidence behind each sheet. Choose only from that table. A catalog entry does
 not guarantee that an account has access; respect a native rejection.
 
@@ -252,8 +254,8 @@ not guarantee that an account has access; respect a native rejection.
    without a sheet is chosen only when the user named it or no model with a sheet lists the kind.
 4. **At equal cost, spread the work.** Among the models left, a model with fewer than 5 ended
    tasks of the task's kind gets it, so every provider gets measured. Otherwise prefer the one
-   whose serving account has the most weekly margin left, so no subscription runs out before its
-   reset while another sits idle. Only then the better measured results, then the better evidence.
+   whose serving account has the most margin in the table (the least of its windows), so no
+   subscription runs out before its reset while another sits idle. Only then the better measured results, then the better evidence.
 5. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
    little measurement is not worse; it is unmeasured.
 
