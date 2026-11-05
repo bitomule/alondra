@@ -169,6 +169,7 @@ async fn launch_through_sdk(
             .ok_or_else(|| if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }.to_owned())?;
         alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Claude, id)
     };
+    crate::accounts::log_choice(domain, "scheduled run", &account, alondra_core::now_millis());
     let profile = alondra_core::accounts::provider_folder(home, &account);
     let mut selected_launch = launch.clone();
     selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| why.to_string())?;

@@ -458,6 +458,7 @@ impl Executor {
         if claimed.is_empty() && runtime.pending_resolutions.is_empty() {
             return Ok(());
         }
+        crate::accounts::log_choice(&self.domain, "orchestrator batch", &selection.account, now);
         let run = Run {
             id: run_id.clone(), message_ids: claimed.iter().map(|m| m.id).collect(),
             attempts, started_at: now, spawned: false,

@@ -106,12 +106,14 @@ fn a_window_whose_reset_has_passed_counts_as_unused() {
 }
 
 #[test]
-fn the_margin_is_the_least_of_the_week_and_todays_slice() {
+fn the_margin_is_the_least_of_the_session_window_the_week_and_todays_slice() {
     let usage = measured("default");
     let reserve = default_reserve();
     assert_eq!(own_margin(AccountState::SignedIn, Some(&usage), reserve, NOW, TODAY), Some(0.0), "today took more than its slice");
     let fresh = record(None, Provider::Claude, &id("default"), &reading(0.10, 0.30), NOW, TODAY);
     assert_eq!(own_margin(AccountState::SignedIn, Some(&fresh), reserve, NOW, TODAY), Some(0.7), "nothing spent today yet: what is left of the week");
+    let session = record(None, Provider::Claude, &id("default"), &reading(0.60, 0.30), NOW, TODAY);
+    assert_eq!(own_margin(AccountState::SignedIn, Some(&session), reserve, NOW, TODAY), Some(0.4), "the session window counts below the reserve too");
     let busy = record(None, Provider::Claude, &id("default"), &reading(0.95, 0.30), NOW, TODAY);
     assert_eq!(own_margin(AccountState::SignedIn, Some(&busy), reserve, NOW, TODAY), Some(0.0), "the session window passed the reserve");
     assert_eq!(own_margin(AccountState::SignedIn, None, reserve, NOW, TODAY), None, "never measured");
@@ -133,8 +135,8 @@ fn the_combined_margin_weighs_each_account_by_its_plan_and_leaves_out_pay_per_us
     ];
     let margins = margins(&accounts, &usage, default_reserve(), NOW, TODAY);
     let counted: Vec<_> = margins.accounts.iter().map(|m| (m.account.as_str(), m.weight, m.absolute)).collect();
-    assert_eq!(counted, [("default", 10, 5.0), ("pro", 1, 1.0)]);
-    assert_eq!(margins.combined, Some(6.0 / 11.0));
+    assert_eq!(counted, [("default", 10, 5.0), ("pro", 1, 0.9)], "the pro account has its week whole but 90% of its session window left");
+    assert_eq!(margins.combined, Some(5.9 / 11.0));
 }
 
 #[test]
@@ -369,6 +371,43 @@ fn margin_spreads_new_work_and_a_chain_fills_the_first_account() {
     let opus = UsageReading { windows: vec![WindowReading { kind: WindowKind::Other("seven_day_opus".into()), used: Share::FULL, resets_at: Some(WEEK_RESET), exhausted: true }], plan: None, complete: false };
     let only_opus = [record(Some(&usage(0.2, 0.2)[0]), Provider::Claude, &id("main"), &opus, NOW, TODAY), over[1].clone()];
     assert_eq!(choose(Policy::Chain, &only_opus), Some("main".into()), "one model's week alone leaves the others working");
+}
+
+/// The two accounts as measured on 2026-11-05: claude-2 took nearly every new launch while its
+/// week had room, until its session window ran out, though default had most of its own left.
+#[test]
+fn a_full_session_window_hands_new_work_to_the_account_with_room_in_its_own() {
+    let accounts = [status("default", AccountState::SignedIn, AccountBilling::default()), status("claude-2", AccountState::SignedIn, AccountBilling::default())];
+    let usage = |claude_2_session: f64| [
+        record(None, Provider::Claude, &id("default"), &reading(0.18, 0.36), NOW, TODAY),
+        record(None, Provider::Claude, &id("claude-2"), &reading(claude_2_session, 0.09), NOW, TODAY),
+    ];
+    let choose = |usage: &[AccountUsage]| choose_account(Policy::Margin, Provider::Claude, &accounts, usage, default_reserve(), NOW, TODAY).map(|id| id.to_string());
+    assert_eq!(choose(&usage(0.10)), Some("claude-2".into()), "claude-2 has more room in both windows");
+    for session in [0.50, 0.70, 0.85, 0.90] {
+        assert_eq!(choose(&usage(session)), Some("default".into()), "claude-2 at {session} of its session window has less room than default's 64% of its week");
+    }
+    assert_eq!(choose(&usage(1.0)), Some("default".into()), "claude-2 ran out of its session window");
+}
+
+#[test]
+fn the_choice_line_names_every_accounts_margin_and_room() {
+    let subscription = |plan: &str| AccountBilling::Subscription { plan: Some(plan.into()), weight: None };
+    let accounts = [
+        status("default", AccountState::SignedIn, subscription("max 5x")),
+        status("claude-2", AccountState::SignedIn, subscription("max 5x")),
+        status("api", AccountState::SignedIn, AccountBilling::PayPerUse),
+        status("spare", AccountState::SignedIn, subscription("pro")),
+        status("old", AccountState::Disabled, subscription("pro")),
+    ];
+    let usage = [
+        record(None, Provider::Claude, &id("default"), &reading(0.18, 0.36), NOW, TODAY),
+        record(None, Provider::Claude, &id("claude-2"), &reading(1.0, 0.09), NOW, TODAY),
+    ];
+    let chosen = AccountKey::new(Provider::Claude, id("default"));
+    assert_eq!(choice_line(&chosen, &accounts, &usage, default_reserve(), NOW, TODAY),
+        "launch on claude/default · default margin 64% ×5 (left: 5 h 82%, week 64%, today 100%) \
+         · claude-2 margin 0% ×5 (left: 5 h 0%, week 91%, today 100%, at its limit) · api paid per use · spare not measured · old off");
 }
 
 fn line(stand: AccountStand, week: Option<f64>, five: Option<f64>, today: Option<(f64, f64)>) -> AccountLine {

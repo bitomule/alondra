@@ -432,9 +432,28 @@ fn pace_in(usage: &AccountUsage, week: &WindowReading, now: Millis, today: &str)
     })
 }
 
+/// What an account has left of its session window, its week and today's slice, from 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Room {
+    pub session: f64,
+    pub week: f64,
+    pub today: f64,
+}
+
+impl Room {
+    pub fn of(usage: &AccountUsage, now: Millis, today: &str) -> Room {
+        let left = |kind: WindowKind| usage.current(&kind, now).map_or(1.0, |reading| 1.0 - reading.used.fraction());
+        Room { session: left(WindowKind::Session), week: left(WindowKind::Weekly), today: pace(usage, now, today).map_or(1.0, |pace| pace.today_left()) }
+    }
+
+    pub fn least(self) -> f64 {
+        self.session.min(self.week).min(self.today).clamp(0.0, 1.0)
+    }
+}
+
 /// The account's own margin, from 0 to 1: none when its sign-in expired, it ran out or its
-/// session window went past `reserve`; otherwise the least of what is left of its week and of
-/// today's slice. Unknown for a disabled account or one never measured.
+/// session window went past `reserve`; otherwise the least of what is left of its session window,
+/// its week and today's slice. Unknown for a disabled account or one never measured.
 pub fn own_margin(state: AccountState, usage: Option<&AccountUsage>, reserve: Share, now: Millis, today: &str) -> Option<f64> {
     match state {
         AccountState::Disabled => return None,
@@ -445,9 +464,7 @@ pub fn own_margin(state: AccountState, usage: Option<&AccountUsage>, reserve: Sh
     if usage.exhausted(now) || usage.current(&WindowKind::Session, now).is_some_and(|session| session.used > reserve) {
         return Some(0.0);
     }
-    let week_left = usage.current(&WindowKind::Weekly, now).map_or(1.0, |week| 1.0 - week.used.fraction());
-    let today_left = pace(usage, now, today).map_or(1.0, |pace| pace.today_left());
-    Some(week_left.min(today_left).clamp(0.0, 1.0))
+    Some(Room::of(usage, now, today).least())
 }
 
 /// One account's part in the combined margin.
@@ -566,6 +583,35 @@ pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountSta
         Policy::Chain => candidates.iter().find(|(_, absolute, _)| *absolute > 0.0).or(candidates.first()),
     };
     chosen.map(|(account, _, _)| account.id.clone())
+}
+
+/// The account a launch of its provider took and, for every account of that provider, its margin
+/// and what it has left of each window, in percent: how the log shows work spreading over them.
+pub fn choice_line(chosen: &AccountKey, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> String {
+    let accounts = or_implicit(accounts);
+    let percent = |share: f64| format!("{:.0}%", 100.0 * share);
+    let each: Vec<String> = accounts
+        .iter()
+        .filter(|account| account.provider == chosen.provider)
+        .map(|account| {
+            let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
+            let weight = weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()));
+            let stand = match (account.state, weight, measured) {
+                (AccountState::Disabled, _, _) => "off".to_owned(),
+                (AccountState::SignedOut, _, _) => "signed out".to_owned(),
+                (_, None, _) => "paid per use".to_owned(),
+                (_, Some(_), None) => "not measured".to_owned(),
+                (state, Some(weight), Some(measured)) => {
+                    let margin = own_margin(state, Some(measured), reserve, now, today).unwrap_or(0.0);
+                    let room = Room::of(measured, now, today);
+                    let limit = if measured.plan_exhausted(now) { ", at its limit" } else { "" };
+                    format!("margin {} ×{weight} (left: 5 h {}, week {}, today {}{limit})", percent(margin), percent(room.session), percent(room.week), percent(room.today))
+                }
+            };
+            format!("{} {stand}", account.id)
+        })
+        .collect();
+    format!("launch on {} · {}", chosen.wire_id(), each.join(" · "))
 }
 
 /// `eligible` as `policy` ranks it for a new launch. By margin, the Claude account with the most
