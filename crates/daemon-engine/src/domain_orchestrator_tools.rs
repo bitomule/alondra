@@ -539,6 +539,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let account = account.unwrap_or_else(alondra_core::accounts::AccountId::default_account);
     let key = alondra_core::accounts::AccountKey::new(provider, account.clone());
+    if !prior_native { crate::accounts::log_choice(domain, &format!("node for {}", task.id), &key, alondra_core::now_millis()); }
     let known = if reopening.is_some() {
         crate::sdk_owner::original_directory(domain, &task.id)
             .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?

@@ -191,6 +191,15 @@ pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondr
     chosen
 }
 
+/// Writes to the log the Claude account a launch took and every Claude account's margin then.
+pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
+    if account.provider != Provider::Claude { return; }
+    let read = domain.read();
+    let state = read.state();
+    let line = alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &crate::node_reports::local_day(now));
+    log!("{what}: {line}");
+}
+
 pub(crate) fn select_for_launch(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection, now: alondra_core::Millis)
     -> Result<alondra_core::model_selection::SelectionDecision, alondra_core::domain::DomainError>
 {
