@@ -1099,6 +1099,14 @@ checks:
       targets:
         - //tools:load_bench_test
 
+  web-source:
+    uses: bazel/test
+    paths:
+      - "web/source/**"
+    with:
+      targets:
+        - //web/source:check_test
+
   buildbuddy-credential-helper:
     uses: bazel/test
     paths:

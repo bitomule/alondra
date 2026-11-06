@@ -35,6 +35,16 @@ device-console: device
 test:
 	bazelisk test //crates/...
 
+# Explicit modes keep an accidentally removed mirror from passing the transition gate.
+WEB_SOURCE_REF ?= HEAD
+WEB_PEER_REF ?= HEAD
+WEB_SOURCE_MODE ?= mirror
+.PHONY: web-source-check
+web-source-check:
+	@test -n "$(WEB_PEER)" || { echo 'Set WEB_PEER to the counterpart checkout' >&2; exit 2; }
+	python3 web/source/check.py check --source "$(CURDIR)" --source-ref "$(WEB_SOURCE_REF)" \
+		--peer "$(WEB_PEER)" --peer-ref "$(WEB_PEER_REF)" --mode "$(WEB_SOURCE_MODE)"
+
 
 SNAPSHOT_TARGET := //apple/Testing/Snapshots:AlondraSnapshotTests
 SNAPSHOT_ROOT := apple/Testing/Snapshots/Tests/__Snapshots__

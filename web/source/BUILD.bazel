@@ -1,0 +1,7 @@
+sh_test(
+    name = "check_test",
+    srcs = ["check_test.py"],
+    data = ["check.py", "inputs.json"],
+    env_inherit = ["PATH"],
+    size = "small",
+)

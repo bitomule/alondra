@@ -1,0 +1,11 @@
+{
+  "paths": [
+    "web/package.json",
+    "web/package-lock.json",
+    "web/app",
+    "web/tokens.css",
+    "web/tsconfig.json",
+    "web/vite.config.ts",
+    "web/react-router.config.ts"
+  ]
+}
