@@ -96,7 +96,7 @@ pub struct OptionsFile {
     pub projects: BTreeMap<String, ProjectOptions>,
     pub issues: IssuesConfig,
     /// How many nodes may work at once on this Mac: `"auto"` (the default) derives it from its
-    /// cores and memory.
+    /// memory; a number is the most that may work, however much memory is free.
     pub max_working_nodes: NodeLimit,
     /// The provider accounts nodes may run on; without it, each provider's default sign-in.
     pub accounts: crate::accounts::AccountsConfig,
@@ -119,8 +119,8 @@ const KEPT_FOR_MACOS: u64 = 4 << 30;
 pub struct NodeLimits {
     /// Two nodes per core.
     pub most: u32,
-    /// One node per core, as many as fit in the memory over 4 GB at `node_cost` bytes each,
-    /// from 1 to `most`.
+    /// As many as fit in the memory over 4 GB at `node_cost` bytes each, from 1 to `most`. The
+    /// CPU does not lower it: builds spend it, not nodes.
     pub auto: u32,
 }
 
@@ -130,7 +130,7 @@ impl NodeLimits {
         let most = cores.saturating_mul(2);
         let by_memory = memory_bytes.saturating_sub(KEPT_FOR_MACOS) / node_cost.max(1);
         let by_memory = u32::try_from(by_memory).unwrap_or(u32::MAX);
-        Self { most, auto: cores.min(by_memory).clamp(1, most) }
+        Self { most, auto: by_memory.clamp(1, most) }
     }
 
     /// The limit `setting` gives on this Mac.
@@ -1058,13 +1058,14 @@ mod node_limit_tests {
     const MB: u64 = 1 << 20;
 
     #[test]
-    fn auto_is_one_node_per_core_while_the_memory_over_4_gb_holds_each_at_what_a_node_measures() {
-        assert_eq!(NodeLimits::of(11, 18 * GB, 520 * MB), NodeLimits { most: 22, auto: 11 });
+    fn auto_is_what_the_memory_over_4_gb_holds_at_what_a_node_measures_whatever_the_cores() {
+        assert_eq!(NodeLimits::of(11, 18 * GB, 520 * MB), NodeLimits { most: 22, auto: 22 });
         assert_eq!(NodeLimits::of(11, 18 * GB, 2 * GB), NodeLimits { most: 22, auto: 7 });
-        assert_eq!(NodeLimits::of(16, 16 * GB, 512 * MB), NodeLimits { most: 32, auto: 16 });
+        assert_eq!(NodeLimits::of(16, 16 * GB, 512 * MB), NodeLimits { most: 32, auto: 24 });
         assert_eq!(NodeLimits::of(8, 8 * GB, 1536 * MB), NodeLimits { most: 16, auto: 2 });
         assert_eq!(NodeLimits::of(4, 4 * GB, 512 * MB), NodeLimits { most: 8, auto: 1 });
-        assert_eq!(NodeLimits::of(1, 512 * GB, 0), NodeLimits { most: 2, auto: 1 });
+        assert_eq!(NodeLimits::of(1, 512 * GB, 0), NodeLimits { most: 2, auto: 2 });
+        assert_eq!(NodeLimits::of(2, 18 * GB, 520 * MB).auto, 4, "two cores take as many as two per core");
     }
 
     #[test]
@@ -1072,7 +1073,8 @@ mod node_limit_tests {
         let limits = NodeLimits::of(11, 18 * GB, 520 * MB);
         assert_eq!(limits.applied(NodeLimit::Fixed(30)), 22);
         assert_eq!(limits.applied(NodeLimit::Fixed(10)), 10);
-        assert_eq!(limits.applied(NodeLimit::Auto), 11);
+        assert_eq!(limits.applied(NodeLimit::Auto), 22);
+        assert_eq!(limits.applied(NodeLimit::Fixed(8)), 8, "a number the user set caps the automatic limit, which is 22 here");
     }
 
     #[test]

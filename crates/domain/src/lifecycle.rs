@@ -912,11 +912,13 @@ impl Activity {
         matches!(self, Self::Awaiting(_) | Self::Resting)
     }
     fn owns_work(&self) -> bool {
-        match self {
-            Self::OwnWork { .. } => true,
-            Self::Turn { work, .. } => !work.is_empty(),
-            _ => false,
-        }
+        self.waits_for_own_work() || self.turn_runs_work()
+    }
+    fn waits_for_own_work(&self) -> bool {
+        matches!(self, Self::OwnWork { .. })
+    }
+    fn turn_runs_work(&self) -> bool {
+        matches!(self, Self::Turn { work, .. } if !work.is_empty())
     }
     fn work(&self) -> BTreeSet<WorkId> {
         match self {
@@ -938,12 +940,14 @@ struct Execution {
     inbox: Inputs,
 }
 impl Execution {
+    /// A node whose turn ended and only waits for work of its own to finish spends no more of the
+    /// agent's memory than a resting one, so it takes no slot; its memory is still measured.
     fn holds_slot(&self) -> bool {
         matches!(
             self.resource,
             ResourceEvidence::Reserved | ResourceEvidence::ObservationPending
-        ) || self.activity.owns_work()
-            || (self.resource == ResourceEvidence::Available && !self.activity.rests())
+        ) || self.activity.turn_runs_work()
+            || (self.resource == ResourceEvidence::Available && !self.activity.rests() && !self.activity.waits_for_own_work())
     }
 }
 

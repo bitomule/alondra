@@ -8,7 +8,7 @@
 //! with a third or half of memory free, so it only spaces starts out (`WARNING_SPACING`). Percentages
 //! of the Mac's memory, as macOS reports it, so the rule holds on a Mac of any size.
 //!
-//! A daemon that just started judges the samples it has. The CPU load only holds new starts.
+//! A daemon that just started judges the samples it has. The CPU load holds nothing.
 use std::collections::VecDeque;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
@@ -25,10 +25,6 @@ const FREE_FLOOR: u32 = 20;
 const SWAPPING_FLOOR: u32 = 30;
 /// What macOS must swap out within `ROOM_WINDOW` to count as swapping.
 const SWAPPING: u64 = 64 * MIB;
-const LOAD_BUSY_PER_CORE: f64 = 4.0;
-const LOAD_CALM_PER_CORE: f64 = 3.0;
-const LOAD_BUSY_HOLDS: Millis = 60_000;
-const LOAD_CALM_HOLDS: Millis = 2 * 60_000;
 
 /// Why one more node may not start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,12 +56,11 @@ struct Sample {
     swapped_out: Option<u64>,
 }
 
-/// The Mac as the gate reads it: the last sample's gauges, the samples of the last minute, and
-/// whether the CPU holds new starts. Nothing of it is kept across restarts.
+/// The Mac as the gate reads it: the last sample's gauges and the samples of the last minute. The
+/// load is shown and recorded but never holds a start: builds spend the CPU, agents the memory.
+/// Nothing of it is kept across restarts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MacState {
-    /// No new node starts while the CPU load stays this high.
-    pub cpu_busy: bool,
     pub free_percent: Option<u32>,
     pub pressure: Option<MemoryPressure>,
     pub compressor: Option<MemoryCompressor>,
@@ -80,23 +75,12 @@ pub struct MacState {
     /// The samples of the last `ROOM_WINDOW` and the one before them, from which the swap-outs of
     /// the whole minute are counted.
     samples: VecDeque<Sample>,
-    load_high: Option<Millis>,
-    load_low: Option<Millis>,
-}
-
-fn held(since: &mut Option<Millis>, holds: bool, now: Millis) -> Millis {
-    if holds {
-        now - *since.get_or_insert(now)
-    } else {
-        *since = None;
-        -1
-    }
 }
 
 impl MacState {
-    /// Takes one sample; one without a memory reading only counts for the CPU.
+    /// Takes one sample; one without a memory reading only counts for the load.
     pub(crate) fn step(&mut self, machine: &Machine, now: Millis) {
-        self.step_load(machine, now);
+        self.step_load(machine);
         let Some(free) = machine.memory_free_percent else { return };
         let before = self.samples.back().map(|sample| sample.at).zip(self.compressor);
         self.swap_rates = machine.compressor.zip(before).filter(|&(_, (at, _))| now > at).map(|(compressor, (at, before))| {
@@ -160,20 +144,12 @@ impl MacState {
         u32::try_from((bytes * 100).div_ceil(u128::from(self.memory_total))).unwrap_or(u32::MAX).min(100)
     }
 
-    fn step_load(&mut self, machine: &Machine, now: Millis) {
+    fn step_load(&mut self, machine: &Machine) {
         if machine.cpus == 0 {
             return;
         }
-        let per_core = machine.load[0] / machine.cpus as f64;
         self.load = machine.load[0];
         self.cpus = machine.cpus;
-        let high = held(&mut self.load_high, per_core > LOAD_BUSY_PER_CORE, now);
-        let low = held(&mut self.load_low, per_core < LOAD_CALM_PER_CORE, now);
-        if !self.cpu_busy && high >= LOAD_BUSY_HOLDS {
-            self.cpu_busy = true;
-        } else if self.cpu_busy && low >= LOAD_CALM_HOLDS {
-            self.cpu_busy = false;
-        }
     }
 }
 
@@ -208,7 +184,7 @@ const KEEP_DAYS: Millis = 7 * 24 * 60 * 60_000;
 
 /// `health` says whether the gate had room for one more node with none in flight; the disk's usable
 /// space and what the nodes at work may still take of it are in decimal GB.
-const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb,disk_usable_gb,disk_reserved_gb";
+const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb,disk_usable_gb,disk_reserved_gb";
 const GB: f64 = (1u64 << 30) as f64;
 
 pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) {
@@ -233,7 +209,7 @@ pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working
         }).unwrap_or_else(|| ",,,,,,,".into());
         let node_cost = mac.node_cost.map(|cost| format!("{:.2}", cost as f64 / GB)).unwrap_or_default();
         let disk = disk.map(|(usable, reserved)| format!("{:.2},{:.2}", usable as f64 / 1e9, reserved as f64 / 1e9)).unwrap_or_else(|| ",".into());
-        writeln!(out, "{now},{free},{:.2},{},{room},{},{working},{pressure},{compressor},{node_cost},{disk}", mac.load, mac.cpus, mac.cpu_busy)
+        writeln!(out, "{now},{free},{:.2},{},{room},{working},{pressure},{compressor},{node_cost},{disk}", mac.load, mac.cpus)
     });
     if let Err(error) = written {
         log!("could not record the machine sample in {}: {error}", file.display());
@@ -583,7 +559,7 @@ mod tests {
         let mut state = MacState::default();
         assert_eq!(state.room(5, 0), Ok(()));
         state.step(&Machine { memory_free_percent: None, ..machine(0) }, 0);
-        assert_eq!(state.room(0, MIN), Ok(()), "a sample without a memory reading only counts for the CPU");
+        assert_eq!(state.room(0, MIN), Ok(()), "a sample without a memory reading only counts for the load");
         for free in [61, 87] {
             let mut state = MacState::default();
             state.step(&Machine { memory_total: 16 * GIB as u64, ..pressed(free, MemoryPressure::Warning) }, MIN);
@@ -592,29 +568,6 @@ mod tests {
         let mut state = MacState::default();
         state.step(&machine(15), MIN);
         assert!(matches!(state.room(0, MIN), Err(NoRoom::Free { free: 15, .. })), "nor does it start a node into low memory");
-    }
-
-    #[test]
-    fn the_cpu_closes_starts_after_a_minute_over_4_per_core_and_opens_after_2_minutes_under_3() {
-        let mut state = MacState::default();
-        let busy = |load: f64| Machine { load: [load, load, load], ..machine(50) };
-        let mut now = 0;
-        while now < 60_000 {
-            state.step(&busy(50.0), now);
-            assert!(!state.cpu_busy);
-            now += SAMPLE;
-        }
-        state.step(&busy(50.0), now);
-        assert!(state.cpu_busy);
-        now += SAMPLE;
-        let calm_from = now;
-        while now < calm_from + 120_000 {
-            state.step(&busy(30.0), now);
-            assert!(state.cpu_busy);
-            now += SAMPLE;
-        }
-        state.step(&busy(30.0), now);
-        assert!(!state.cpu_busy);
     }
 
     #[test]
@@ -627,7 +580,7 @@ mod tests {
         let text = std::fs::read_to_string(day).unwrap();
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some(SAMPLES_HEADER));
-        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,room,false,6,warning,,,,,,,,,,21.40,8.00"), "the disk's usable space and what the nodes at work reserve of it");
+        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,room,6,warning,,,,,,,,,,21.40,8.00"), "the disk's usable space and what the nodes at work reserve of it");
     }
 
     #[test]
@@ -648,8 +601,8 @@ mod tests {
         let text = std::fs::read_to_string(day).unwrap();
         assert_eq!(text.lines().collect::<Vec<_>>(), [
             SAMPLES_HEADER,
-            "1,40,1.00,11,tight,false,2,normal,0.318,5.00,286160,613840,0,6700,30,0,,,",
-            "1791500000000,40,5.00,11,room,false,6,normal,0.318,5.00,286160,613840,0,6700,30,0,0.38,,",
+            "1,40,1.00,11,tight,2,normal,0.318,5.00,286160,613840,0,6700,30,0,,,",
+            "1791500000000,40,5.00,11,room,6,normal,0.318,5.00,286160,613840,0,6700,30,0,0.38,,",
         ]);
     }
 }

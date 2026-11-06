@@ -1102,7 +1102,7 @@ fn free_text_question_with_no_buttons_is_still_actionable() {
 }
 
 #[test]
-fn replay_preserves_own_background_work_as_working_while_permission_waits() {
+fn replay_preserves_own_background_work_while_permission_waits_without_a_slot() {
     let mut fixture = Fixture::new();
     fixture.create("task");
     drop(fixture.launch("task"));
@@ -1142,7 +1142,7 @@ fn replay_preserves_own_background_work_as_working_while_permission_waits() {
     );
     let tx = fixture.transaction();
     let aggregate = tx.load(&"task".into()).unwrap();
-    assert!(aggregate.holds_slot());
+    assert!(!aggregate.holds_slot(), "waiting for its own work takes no slot");
     assert_eq!(aggregate.activity(), ActivityView::OwnWork);
     assert_eq!(
         aggregate.cards(),

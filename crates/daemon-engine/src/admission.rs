@@ -1,11 +1,11 @@
 //! The gate every node start passes through: at most the working-node limit at once, one start
 //! a minute (one every 3 while macOS warns of memory pressure), none while memory has no room for
 //! one more node (`MacState::room`, which reserves free memory for every node admitted in the last
-//! `IN_FLIGHT`), none while the CPU is overloaded, and none while the disk has no room for its build
+//! `IN_FLIGHT`), and none while the disk has no room for its build
 //! on top of what the nodes at work may still take (`disk_peaks`). A paused node coming back, the user's Resume
-//! included, passes the same checks as a start. Memory and the CPU only ever hold starts and
-//! resumes: they never pause a working node. The
-//! limit is the user's number, or in automatic what this Mac's cores and measured nodes take. What does not
+//! included, passes the same checks as a start. Memory only ever holds starts and
+//! resumes, never pauses a working node, and the CPU holds nothing: builds spend it, agents spend memory. The
+//! limit is the user's number, or in automatic what this Mac's memory takes at the measured cost of a node. What does not
 //! fit waits in a queue ordered by priority, then resumed work before new starts, then age.
 //!
 //! Launches the orchestrator or the user asked for wait in the durable `launch_queue` and this
@@ -68,7 +68,6 @@ pub struct Waiting {
 pub enum Hold {
     Slots { working: usize, limit: u32 },
     Memory { why: NoRoom, free: Option<u32> },
-    Cpu { load: f64, cpus: usize },
     Spacing { until: Millis },
     /// No room on the disk for one more build: the Mac's own, or the volume named.
     Disk { free: u64, needed: u64, volume: Option<String> },
@@ -80,13 +79,10 @@ pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
 }
 
 /// Whether `head` may start now, with `in_flight` nodes admitted in the last `IN_FLIGHT`. Memory
-/// and the CPU hold every start and resume; macOS's warning only spaces them.
+/// holds every start and resume, and the CPU holds none; macOS's warning only spaces them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState, in_flight: usize, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     mac.room(in_flight, now).map_err(|why| Hold::Memory { why, free: mac.free_percent })?;
-    if mac.cpu_busy {
-        return Err(Hold::Cpu { load: mac.load, cpus: mac.cpus });
-    }
     if working >= limit as usize {
         return Err(Hold::Slots { working, limit });
     }
@@ -172,7 +168,6 @@ struct Inner {
 pub(crate) enum Cause {
     Slots,
     Memory,
-    Cpu,
     Disk,
 }
 
@@ -182,7 +177,6 @@ impl Cause {
             Hold::Spacing { .. } => None,
             Hold::Slots { .. } => Some(Self::Slots),
             Hold::Memory { .. } => Some(Self::Memory),
-            Hold::Cpu { .. } => Some(Self::Cpu),
             Hold::Disk { .. } => Some(Self::Disk),
         }
     }
@@ -746,7 +740,6 @@ fn live_hold(hold: &Hold) -> LiveHold {
     match hold {
         Hold::Slots { working, limit } => LiveHold::Slots { working: *working, limit: *limit },
         Hold::Memory { free, .. } => LiveHold::Memory { free: *free },
-        Hold::Cpu { load, cpus } => LiveHold::Cpu { load: load.round() as u32, cpus: *cpus },
         Hold::Spacing { .. } => LiveHold::Next,
         Hold::Disk { free, needed, volume } => LiveHold::Disk { free: *free, needed: *needed, volume: volume.clone() },
     }
@@ -775,7 +768,6 @@ pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold:
             why
         }
         Hold::Memory { why, free } => format!("memory has no room for one more node: {why} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
-        Hold::Cpu { load, cpus } => format!("the CPU is overloaded (load {load:.0} on {cpus} cores), which holds new starts"),
         Hold::Disk { free, needed, volume } => format!("the disk has no room for one more build: {} free of {} needed{}", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En), on_volume(volume.as_deref())),
     };
     let paused = if paused > 0 { format!("; {paused} node(s) paused") } else { String::new() };
