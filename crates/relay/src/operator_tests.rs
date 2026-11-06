@@ -77,7 +77,7 @@ mod operator_api {
                 management_keycloak: None,
                 web_session: None,
                 web_assets: None,
-                apns: None,
+                apns: Some(push::Apns::test("http://127.0.0.1:1".into())),
                 pairing: pairing::Mailbox::default(),
                 requests: Arc::new(Semaphore::new(128)),
                 device_gate: Arc::new(RwLock::new(())),
@@ -223,6 +223,20 @@ mod operator_api {
         let response = world.http.post(format!("{}/v1/operator/removals", tokenless.operator_url))
             .bearer_auth(TOKEN).json(&body).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn push_counters_are_private_authenticated_and_readable() {
+        let (world, relay) = World::new().await;
+        let path = "/v1/operator/push-counters";
+        assert_eq!(world.http.get(format!("{}{path}", relay.url)).bearer_auth(TOKEN).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(world.http.get(format!("{}{path}", relay.operator_url)).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let response = world.http.get(format!("{}{path}", relay.operator_url)).bearer_auth(TOKEN).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap(), json!({"accepted":0,"token_expired":0,"provider_token_expired":0,"retryable":0,"rejected":{}}));
+        relay.server.apns.as_ref().unwrap().counters.lock().unwrap().accepted = 7;
+        let response: Value = world.http.get(format!("{}{path}", relay.operator_url)).bearer_auth(TOKEN).send().await.unwrap().json().await.unwrap();
+        assert_eq!(response["accepted"], 7, "operator reads the live APNs counters");
     }
 
     #[test]
