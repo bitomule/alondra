@@ -75,8 +75,18 @@ fn exchange(client: &Client, method: &str, path: &str, body: Option<&Value>) -> 
     Ok(serde_json::from_value(value)?)
 }
 
+fn listing_path() -> String {
+    format!("{PATH}?capabilities=provider_accounts")
+}
+
 fn listing(client: &Client) -> Result<Listing> {
-    exchange(client, "GET", &format!("{PATH}?capabilities=provider_accounts"), None)
+    exchange(client, "GET", &listing_path(), None)
+}
+
+/// The accounts of every provider as the daemon reports them, for callers that only read.
+pub(crate) fn accounts(client: &Client) -> Option<Value> {
+    let listing: Value = client.get(&listing_path()).ok()?;
+    listing.get("accounts").cloned()
 }
 
 fn save(client: &Client, seen: &Listing, next: &AccountsConfig) -> Result<Listing> {

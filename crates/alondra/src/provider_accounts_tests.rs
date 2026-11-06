@@ -87,6 +87,14 @@ fn adding_an_account_registers_it_and_tells_the_providers_own_command_without_si
 }
 
 #[test]
+fn reading_the_accounts_declares_the_capability_so_the_daemon_keeps_codex_rows() {
+    let codex = json!({"provider": "codex", "id": "default", "name": "Default", "enabled": true, "default": true, "state": "signed_in"});
+    let (client, server) = fake_daemon(vec![json!({"accounts": [codex.clone()]})]);
+    assert_eq!(accounts(&client), Some(json!([codex])));
+    assert_eq!(server.join().unwrap(), ["GET /settings/accounts?capabilities=provider_accounts"]);
+}
+
+#[test]
 fn every_accounts_verb_parses_and_only_list_takes_json() {
     use clap::Parser as _;
     let parse = |args: &[&str]| crate::Cli::try_parse_from(std::iter::once("alondra").chain(args.iter().copied()));
