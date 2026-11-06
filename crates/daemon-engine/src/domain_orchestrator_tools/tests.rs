@@ -1848,6 +1848,229 @@ fn connect_claude_and_codex(f: &Fixture) {
     }
 }
 
+#[test]
+fn an_unstarted_selection_replaces_a_disabled_provider() {
+    use alondra_core::accounts::{AccountKey, Provider};
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    let f = bare_world();
+    connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    }
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+    let chosen = crate::accounts::select_for_node(&f.domain, &f.home, &intent, None, Some(Provider::Codex), 100).unwrap();
+    task.provider = Provider::Codex;
+    intent.effective = Some(chosen.selection);
+    task.selection = Some(intent);
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\"]\n").unwrap();
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let body = launch_body(&f, json!({"model": "codex/gpt-6", "provider": "codex"}));
+    let (_, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false)
+        .expect("a task that never started must reselect an active provider").unwrap();
+    assert_eq!(account, AccountKey::native(Provider::Claude));
+}
+
+#[test]
+fn an_unstarted_selection_replaces_a_disabled_legacy_provider() {
+    use alondra_core::accounts::{AccountKey, Provider};
+    let f = bare_world();
+    connect_claude_and_codex(&f);
+    let mut catalog = f.domain.state().unwrap().model_catalogs.iter().find(|catalog| catalog.account.provider == Provider::Codex).unwrap().clone();
+    catalog.native_default = Some("gpt-6".into());
+    let mut collision = catalog.models[0].clone();
+    collision.model = "sonnet".into();
+    catalog.models.push(collision);
+    command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    let mut requested = OptionsFile::default().resolve(None, &std::collections::BTreeMap::new()).unwrap();
+    requested.picked.push(alondra_core::options::Picked {
+        id: alondra_core::options::ACCOUNT.into(), label: "Account".into(),
+        choice: alondra_core::options::Choice::Value("default".into()), value_label: "Default".into(), mission: None,
+    });
+    assert!(requested.selection.is_none(), "stored legacy requests have no modern selection");
+    assert_eq!(requested.account_key(), Some(AccountKey::native(Provider::Claude)));
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"codex\"]\n").unwrap();
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let body = launch_body(&f, json!({"model": "sonnet"}));
+    let (resolved, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap()
+        .expect("an unstarted legacy request must resolve against active providers");
+    assert_eq!(account, AccountKey::native(Provider::Codex));
+    assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &body, true, false).unwrap().is_none(), "a started legacy session stays on its original launch path");
+    task.provider = Provider::Codex;
+    task.account = Some(account.account.clone());
+    task.selection = resolved.selection;
+    task.started = true;
+    let recovery = launch_body(&f, json!({}));
+    let (recovered, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &recovery, true, false).unwrap().unwrap();
+    assert_eq!(account, AccountKey::native(Provider::Codex));
+    assert_eq!(recovered.selection.unwrap().effective.as_ref().unwrap().model.model, "gpt-6");
+}
+
+#[tokio::test]
+async fn an_unstarted_selection_replaces_a_disabled_account_but_a_started_one_cannot_move() {
+    use alondra_core::accounts::{AccountId, AccountKey, Provider};
+    use alondra_core::model_selection::{ModelKey, ModelProfile, ModelSelection, TaskSelection};
+    let f = world();
+    connect_claude_and_codex(&f);
+    let mut catalog = f.domain.state().unwrap().model_catalogs.iter().find(|catalog| catalog.account.provider == Provider::Claude).unwrap().clone();
+    with_work_account(&f);
+    let work = AccountKey::new(Provider::Claude, AccountId::parse("work").unwrap());
+    catalog.account = work.clone();
+    command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\"]\n[[accounts.claude]]\nid = \"default\"\nname = \"Default\"\nenabled = false\n[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n").unwrap();
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude), work.clone()], version: alondra_core::accounts::config_version(&file.accounts) });
+    let requested = file.orchestrator_defaults(None, None);
+    let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+    intent.account = Some(AccountKey::native(Provider::Claude));
+    intent.requested = Some(ModelKey::parse_wire("claude/sonnet").unwrap());
+    intent.allow_model_substitution = false;
+    intent.effective = Some(ModelSelection { model: intent.requested.clone().unwrap(), reasoning_effort: Some("medium".into()), catalog_revision: "fixture".into() });
+    task.selection = Some(intent.clone());
+    command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent, pending: None });
+    let body = launch_body(&f, json!({"model": "claude/sonnet"}));
+    let (resolved, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false)
+        .expect("a task that never started must reselect an active account").unwrap();
+    assert_eq!(account, work);
+    assert_eq!(resolved.selection.unwrap().requested, task.selection.as_ref().unwrap().requested, "a compatible model stays binding");
+    task.started = true;
+    assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &body, true, false).is_err(), "an existing session never migrates");
+    f.domain.live.machine_watch.set_disk_low(true);
+    let queued = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    assert_eq!(queued["queued"], true);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().account, Some(work.clone()), "the move survives a refusal before admission");
+    assert!(f.sdk().starts().is_empty());
+    f.domain.live.machine_watch.set_disk_low(false);
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    f.launched(1).await;
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key(), work, "the admitted execution keeps the reselected account");
+}
+
+#[tokio::test]
+async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_provider() {
+    use alondra_core::accounts::{AccountKey, Provider};
+    use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
+    let f = world();
+    connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    }
+    let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+    intent.account = Some(AccountKey::native(Provider::Codex));
+    intent.requested = Some(ModelKey::parse_wire("codex/gpt-6").unwrap());
+    intent.requested_reasoning_effort = Some("medium".into());
+    intent.allow_model_substitution = false;
+    command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent.clone(), pending: None });
+    let plan = crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("medium".into()),
+        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
+    let cards = f.domain.state().unwrap().interactions.len();
+    for _ in 0..=alondra_core::domain::START_RETRIES.len() {
+        crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+        let store = f.domain.store.lock().unwrap();
+        assert!(store.start_retries().unwrap().is_empty(), "account availability is not a failed start");
+        assert!(store.auto_launch(&"t".into()).unwrap().is_none(), "the next pass can try again");
+        drop(store);
+        assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "an unavailable account reserves no working slot");
+    }
+    assert_eq!(f.domain.state().unwrap().interactions.len(), cards);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref(), Some(&intent), "waiting preserves the selection until a destination is known");
+    assert!(f.sdk().starts().is_empty());
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\"]\n").unwrap();
+    let mut catalog = f.domain.state().unwrap().model_catalogs.iter().find(|catalog| catalog.account.provider == Provider::Claude).unwrap().clone();
+    let default = catalog.native_default.take();
+    command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog: catalog.clone() });
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "a destination without a compatible model waits too");
+    assert!(f.sdk().starts().is_empty());
+    catalog.native_default = default;
+    command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    f.launched(1).await;
+    let state = f.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from("t")];
+    assert_eq!(task.account_key(), AccountKey::native(Provider::Claude));
+    let selection = task.selection.as_ref().unwrap();
+    assert_eq!(selection.account, Some(task.account_key()));
+    assert_eq!(selection.effective.as_ref().unwrap().model.provider, Provider::Claude);
+    assert!(selection.requested.is_none());
+    assert_eq!(state.interactions.len(), cards, "no intervention is needed to reselect");
+}
+
+#[test]
+fn an_unstarted_selection_does_not_transfer_payment_authorization_to_another_account() {
+    use alondra_core::accounts::{AccountBilling, AccountKey, Provider};
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    let f = bare_world();
+    connect_claude_and_codex(&f);
+    let mut accounts = f.domain.state().unwrap().accounts.clone();
+    for account in &mut accounts { account.billing = AccountBilling::PayPerUse; }
+    command(&f.domain, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+    std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"codex\"]\n[[accounts.codex]]\nid = \"default\"\nname = \"Default\"\nbilling = { kind = \"pay_per_use\" }\n").unwrap();
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+    intent.account = Some(AccountKey::native(Provider::Claude));
+    intent.paid_account_grant = intent.account.clone();
+    task.selection = Some(intent);
+    let body = launch_body(&f, json!({"model": "claude/opus"}));
+    let error = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap_err();
+    assert_eq!(error.code, "account_unavailable", "a grant for the disabled account cannot authorize Codex");
+}
+
+#[tokio::test]
+async fn an_unstarted_selection_keeps_the_fallback_account_when_the_original_request_is_reused() {
+    use alondra_core::accounts::{AccountId, AccountKey, Provider};
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    for preselected in [false, true] {
+        let f = world();
+        connect_claude_and_codex(&f);
+        let mut catalog = f.domain.state().unwrap().model_catalogs.iter().find(|catalog| catalog.account.provider == Provider::Claude).unwrap().clone();
+        let opus = catalog.models.iter().find(|model| model.model == "opus").unwrap().clone();
+        with_work_account(&f);
+        let work = AccountKey::new(Provider::Claude, AccountId::parse("work").unwrap());
+        catalog.account = work.clone();
+        catalog.native_default = Some("sonnet".into());
+        catalog.models.retain(|model| model.model == "sonnet");
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog: catalog.clone() });
+        let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+        intent.account = Some(AccountKey::native(Provider::Claude));
+        if preselected {
+            command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent.clone(), pending: None });
+        }
+        let mut requested = crate::domain_schedule_runner::options_at(&f.home).unwrap().orchestrator_defaults(None, None);
+        requested.selection = Some(intent);
+        let choices = Choices { project: None, options: requested, issue: None, issue_text: None, attachments: vec![] };
+        std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\"]\n[[accounts.claude]]\nid = \"default\"\nname = \"Default\"\nenabled = false\n[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n").unwrap();
+        let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+        command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude), work.clone()], version: alondra_core::accounts::config_version(&file.accounts) });
+        let plan = crate::launch_plans::LaunchPlan { model: Some("opus".into()), ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+        f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+        launch(&f.domain, &f.home, launch_body(&f, json!({})), |_| Some(choices.clone())).await.unwrap();
+        f.launched(1).await;
+        f.sdk().until_answered("t").await;
+        let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
+        assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().account, Some(work.clone()), "the fallback account is durable even without a previous task selection");
+        assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().effective.as_ref().unwrap().model.model, "sonnet");
+        catalog.models.push(opus);
+        catalog.revision = "more-models".into();
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+        launch(&f.domain, &f.home, launch_body(&f, json!({"replace": true})), |_| Some(choices.clone())).await.unwrap();
+        f.launched(2).await;
+        assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key(), work);
+        assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().effective.as_ref().unwrap().model.model, "sonnet", "a stale launch plan cannot replace the retained model during recovery");
+        assert_eq!(f.sdk().starts()[1]["resume"].as_str(), Some(original.as_str()), "the request's old pin cannot change the recovered native session");
+    }
+}
+
 #[tokio::test]
 async fn a_plan_naming_opus_without_provider_starts_on_claude_when_claude_and_codex_are_connected() {
     let f = world();
