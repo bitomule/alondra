@@ -5,6 +5,7 @@ import SwiftUI
 
 /// The sheet behind the gear: this iPhone and its Macs, the alerts it may send, and the version.
 public struct SettingsView: View {
+    @Environment(\.locale) private var locale
     @Environment(\.scenePhase) private var phase
     @Environment(\.calendar) private var calendar
     @Bindable var store: StoreOf<SettingsFeature>
@@ -70,14 +71,20 @@ public struct SettingsView: View {
         .task { await store.send(.mcpServers(.task)).finish() }
         .task { await store.send(.metrics(.task)).finish() }
         .onDisappear { store.send(.disappeared) }
-        .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
+        .onChange(of: phase) { _, phase in
+            if phase == .active {
+                store.send(.refreshPermission)
+                store.send(.loadMacStatuses)
+                store.send(.loadAccountName)
+            }
+        }
     }
 
     private var account: some View {
         Section {
             if store.usesAccount {
                 LabeledContent("Account") {
-                    Text(verbatim: store.service)
+                    (store.accountName.map { Text(verbatim: $0) } ?? Text("Account connected"))
                         .font(.mono(.subheadline))
                         .foregroundStyle(Palette.ink)
                 }
@@ -90,33 +97,42 @@ public struct SettingsView: View {
                     .textSelection(.enabled)
             }
             ForEach(store.macs) { mac in
-                HStack {
-                    Button { store.send(.selectMac(mac.id)) } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Label(mac.displayName, systemImage: "desktopcomputer")
-                                    .foregroundStyle(Palette.ink)
-                                if let status = store.macStatuses[mac.id] {
-                                    MacStatusLabel(status: status).font(.caption).padding(.leading, 34)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Button { store.send(.selectMac(mac.id)) } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Label(mac.displayName, systemImage: "desktopcomputer")
+                                        .foregroundStyle(Palette.ink)
+                                    if let status = store.macStatuses[mac.id] {
+                                        MacStatusLabel(status: status).font(.caption).padding(.leading, 34)
+                                    }
+                                }
+                                Spacer()
+                                if store.selectingMacID == mac.id || store.forgettingMacID == mac.id {
+                                    ProgressView()
+                                } else if store.selectedMacID == mac.id {
+                                    Image(systemName: "checkmark").foregroundStyle(Palette.sage).accessibilityHidden(true)
                                 }
                             }
-                            Spacer()
-                            if store.selectingMacID == mac.id || store.forgettingMacID == mac.id {
-                                ProgressView()
-                            } else if store.selectedMacID == mac.id {
-                                Image(systemName: "checkmark").foregroundStyle(Palette.sage).accessibilityHidden(true)
-                            }
                         }
+                        .buttonStyle(.borderless)
+                        .disabled(store.selectingMacID != nil || (store.selectedMacID == mac.id && !mac.hasAlternatePairings))
+                        .accessibilityLabel(Text(verbatim: mac.displayName))
+                        .accessibilityValue(Text(verbatim: [
+                            store.selectedMacID == mac.id ? String(localized: "Selected", locale: locale) : nil,
+                            store.macStatuses[mac.id]?.accessibilityDescription(locale: locale),
+                        ].compactMap { $0 }.joined(separator: ", ")))
+                        Button { store.send(.openMacSettings(mac.id)) } label: {
+                            Label("This Mac’s settings", systemImage: "info.circle").labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("settings.macSettings")
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
-                    .accessibilityLabel(Text(verbatim: mac.displayName))
-                    .accessibilityValue(store.selectedMacID == mac.id ? Text("Selected") : Text(verbatim: ""))
-                    Button { store.send(.openMacSettings(mac.id)) } label: {
-                        Label("This Mac’s settings", systemImage: "info.circle").labelStyle(.iconOnly)
+                    if store.macStatuses[mac.id]?.canPairAgain == true {
+                        Button("Link Again", systemImage: "link.badge.plus") { store.send(.pairAgain(mac.id)) }
+                            .accessibilityIdentifier("settings.pairAgain")
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("settings.macSettings")
                 }
                 .swipeActions {
                     if mac.forgettable {
@@ -125,6 +141,7 @@ public struct SettingsView: View {
                 }
             }
             .task { await store.send(.loadMacStatuses).finish() }
+            .task { await store.send(.loadAccountName).finish() }
             if let problem = store.macError {
                 Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
                     .foregroundStyle(Palette.rose)

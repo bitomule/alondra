@@ -40,6 +40,10 @@ extension NotificationRuntime {
             try await owner.selectMac(choice: id, expectedSession: services)
         }
         client.macStatuses = { await owner.macStatuses() }
+        client.accountName = { await owner.accountName() }
+        client.pairAgain = { id in
+            await MainActor.run { owner.pairAgain(macID: owner.macs.first(where: { $0.id == id })?.macID) }
+        }
         client.forgetMac = { id in try await owner.forgetMac(choice: id) }
         client.macSettings = { id in
             guard let first = await owner.session(choice: id)?.macSettingsClient() else { return nil }

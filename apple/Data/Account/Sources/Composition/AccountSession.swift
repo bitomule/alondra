@@ -34,11 +34,12 @@ public final class AccountSession {
         let measurements = measurements
         let irohDialer = irohDialer
         let localNetwork = localNetwork
+        let accountTransport = accountTransport
         return ApprovedSessionRegistry<Connection>(
             make: { [weak self] approved in
                 let connection = try await Connection(approved: approved, auth: auth, storageDirectory: storageDirectory,
                                                       measurements: measurements,
-                                                      localNetworkAllowed: { localNetwork.allowed }, irohDialer: irohDialer)
+                                                      localNetworkAllowed: { localNetwork.allowed }, irohDialer: irohDialer, accountTransport: accountTransport)
                 if await MainActor.run(body: { self?.isLive == true }) { await connection.goLive() }
                 return connection
             },
@@ -48,6 +49,7 @@ public final class AccountSession {
             }, clearPlatform: { [weak self] in try await self?.willDeactivate() })
     }
     private let pairing: PairingClient
+    private let accountTransport: (any HTTPTransport)?
     @ObservationIgnored private let irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)?
     /// Whether the app is in the foreground, where every Mac keeps its live connection open.
     @ObservationIgnored private var isLive = false
@@ -117,6 +119,7 @@ public final class AccountSession {
                 browse: (@Sendable () -> AsyncStream<MacBrowser.Update>)? = nil,
                 irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil, startsLive: Bool = false) {
         self.auth = auth
+        self.accountTransport = pairingTransport
         isLive = startsLive
         self.irohDialer = irohDialer
         self.pushBinding = pushBinding
@@ -151,6 +154,7 @@ public final class AccountSession {
                 await cancel(scope: scope)
             }, logout: { throw CancellationError() })
         service.prepareCamera = prepareCamera
+        service.cancelAttempt = { [self] in await cancel(scope: scope) }
         return service
     }
 
@@ -269,31 +273,61 @@ public final class AccountSession {
     /// Forgets a paired Mac, whether it was paired on the local network or through the account. Its
     /// keys leave this device; the Mac keeps listing the device until someone revokes it there.
     public func forgetMac(choice id: UUID) async throws {
-        guard let pairingID = choiceIDs.first(where: { $0.value == id })?.key else { throw CancellationError() }
+        let ids = Set(choiceIDs.filter { $0.value == id }.map(\.key))
+        guard !ids.isEmpty else { throw CancellationError() }
         let current = generation
-        try await pairing.removePairing(pairingID)
+        try await pairing.removePairings(ids)
         let collection = try await pairing.approvedPairings()
         try await reconcile(collection, subject: registry.ownerSubject, preferred: collection.selectedID, generation: current)
     }
 
-    public func session(choice id: UUID) -> Connection? {
-        registry.snapshot.entries.first { choiceIDs[$0.id] == id }?.session
+    private func entries(choice id: UUID) -> [ApprovedSessionRegistry<Connection>.Entry] {
+        let selected = registry.snapshot.selectedID
+        return registry.snapshot.entries.filter { choiceIDs[$0.id] == id }.sorted {
+            if ($0.id == selected) != ($1.id == selected) { return $0.id == selected }
+            if $0.approved.approvedAtMs != $1.approved.approvedAtMs { return $0.approved.approvedAtMs > $1.approved.approvedAtMs }
+            return $0.id.deviceID < $1.id.deviceID
+        }
     }
 
-    /// How every paired Mac answers now: one signed round trip each, all at once, read back from
-    /// that Mac's connection state so Settings says what every other screen says.
+    public func session(choice id: UUID) -> Connection? { entries(choice: id).first?.session }
+
+    public func accountName() async -> String? {
+        let current = generation
+        guard let approved = registry.snapshot.entries.first(where: { $0.approved.hasRelay })?.approved,
+              let relay = approved.relayURL else { return nil }
+        do {
+            try Self.validateRelay(relay)
+            let subject = try await auth.verifiedSubject()
+            guard subject == approved.ownerSub else { return nil }
+            let directory = try RelayAccountDirectory(base: relay, bearer: { [auth] in try await auth.bearerToken() },
+                                                       transport: accountTransport)
+            let name = try await directory.accountName()
+            guard generation == current else { return nil }
+            return name
+        } catch { return nil }
+    }
+
     public func macStatuses() async -> [UUID: MacStatus] {
-        let entries = registry.snapshot.entries.compactMap { entry in choiceIDs[entry.id].map { ($0, entry.session) } }
-        return await withTaskGroup(of: (UUID, MacStatus).self) { group in
-            for (id, session) in entries {
+        let current = generation
+        let entries = registry.snapshot.entries.compactMap { entry in
+            choiceIDs[entry.id].map { ($0, entry.approved.hasRelay, entry.session) }
+        }
+        let states = await withTaskGroup(of: (UUID, Bool, ConnectionState, Bool).self) { group in
+            for (id, account, session) in entries {
                 group.addTask {
                     try? await session.checkSettingsConnection()
-                    return (id, MacStatus(await session.monitor.state))
+                    let removed = await session.accountRemoved()
+                    return (id, account, await session.monitor.state, removed)
                 }
             }
-            var statuses: [UUID: MacStatus] = [:]
-            for await (id, status) in group { statuses[id] = status }
-            return statuses
+            var values: [(UUID, Bool, ConnectionState, Bool)] = []
+            for await value in group { values.append(value) }
+            return values
+        }
+        guard current == generation else { return [:] }
+        return Dictionary(grouping: states, by: { $0.0 }).mapValues { values in
+            MacStatus.combining(values.map { (local: !$0.1, state: $0.2, removed: $0.3) })
         }
     }
 
@@ -535,8 +569,15 @@ public final class AccountSession {
     }
     public func selectMac(choice id: UUID, expectedSession: Connection) async throws {
         try await SessionBoundAction.run(expected: expectedSession, current: { self.services }) { expected in
-            guard let pairingID = self.choiceIDs.first(where: { $0.value == id })?.key else { throw CancellationError() }
-            try await self.selectMac(pairingID, expectedSession: expected)
+            let candidates = self.entries(choice: id)
+            guard !candidates.isEmpty else { throw CancellationError() }
+            var failure: (any Error)?
+            for entry in candidates {
+                do { try await self.selectMac(entry.id, expectedSession: expected); return }
+                catch is CancellationError { throw CancellationError() }
+                catch { failure = error }
+            }
+            if let failure { throw failure }
         }
     }
 
@@ -601,12 +642,16 @@ public final class AccountSession {
 
     private func publishChoices() {
         let snapshot = registry.snapshot
-        choiceIDs = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.id, choiceIDs[$0.id] ?? UUID()) })
-        macs = snapshot.entries.compactMap { entry in
-            choiceIDs[entry.id].map {
-                MacChoice(id: $0, macID: entry.id.macID, name: entry.approved.name, local: !entry.approved.hasRelay)
-            }
+        let groups = Dictionary(grouping: snapshot.entries, by: { $0.id.macID })
+        var next: [ApprovedPairingID: UUID] = [:]
+        macs = groups.map { macID, entries in
+            let ordered = entries.sorted { $0.id.deviceID < $1.id.deviceID }
+            let id = ordered.compactMap { choiceIDs[$0.id] }.first ?? UUID()
+            for entry in entries { next[entry.id] = id }
+            return MacChoice(id: id, macID: macID, name: ordered.compactMap { $0.approved.name }.first,
+                             local: entries.allSatisfy { !$0.approved.hasRelay }, hasAlternatePairings: entries.count > 1)
         }.sorted { ($0.name ?? $0.macID, $0.macID) < ($1.name ?? $1.macID, $1.macID) }
+        choiceIDs = next
         selectedMacID = snapshot.selectedID.flatMap { choiceIDs[$0] }
         services = snapshot.selected?.session
     }

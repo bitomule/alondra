@@ -12,6 +12,7 @@ actor RelayTransport: Transport {
     private let bearerRefused: @Sendable () async -> Void
     private let bearerRefusedForToken: (@Sendable (String) async -> Void)?
     private let transport: any HTTPTransport
+    private let deviceRefused: @Sendable () async -> Bool
     private struct BootstrapFlight {
         let id: UUID
         let generation: UInt64
@@ -35,6 +36,7 @@ actor RelayTransport: Transport {
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefused: @escaping @Sendable () async -> Void = {},
                 bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
+                deviceRefused: @escaping @Sendable () async -> Bool = { false },
                 transport: any HTTPTransport,
                 now: @escaping @Sendable () -> UInt64) throws {
         let scheme = base.scheme?.lowercased()
@@ -43,7 +45,8 @@ actor RelayTransport: Transport {
               base.path.isEmpty || base.path == "/", RelayHTTPChallenge.validText(deviceID)
         else { throw RelayWireError.invalidEndpoint }
         self.base = base; self.deviceID = deviceID; self.signer = signer
-        self.bearer = bearer; self.bearerRefused = bearerRefused; self.bearerRefusedForToken = bearerRefusedForToken; self.transport = transport; self.now = now
+        self.bearer = bearer; self.bearerRefused = bearerRefused; self.bearerRefusedForToken = bearerRefusedForToken; self.deviceRefused = deviceRefused
+        self.transport = transport; self.now = now
     }
 
     public func bootstrap() async throws -> RelayBootstrap {
@@ -269,6 +272,7 @@ actor RelayTransport: Transport {
         if Task.isCancelled || MutationScope.current?.interruption != nil { return reply }
         guard signed, signedEpoch == epoch, signedBearer == latestBearer else { return reply }
         if reply.status == 401 {
+            if await deviceRefused() { throw AccountDeviceError.removedFromWeb }
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
             // never that the Mac revoked this device: renew it before the next request.

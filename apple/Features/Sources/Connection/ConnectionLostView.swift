@@ -72,7 +72,12 @@ public struct ConnectionLostView: View {
     }
 
     private func pairAgainButton(_ action: @escaping () -> Void) -> some View {
-        Button("Pair Again", systemImage: "link.badge.plus", action: action)
+        Button(action: action) {
+            Label {
+                if problem == .removedFromWeb { Text("Link Again") }
+                else { Text("Pair Again") }
+            } icon: { Image(systemName: "link.badge.plus") }
+        }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
             .tint(Palette.dawn)

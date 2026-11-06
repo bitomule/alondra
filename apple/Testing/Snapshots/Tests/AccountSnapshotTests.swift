@@ -313,6 +313,43 @@ final class AccountSnapshotTests: XCTestCase {
         }
     }
 
+    private func recoveredSettings(removed: Bool) -> StoreOf<SettingsFeature> {
+        settings {
+            let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+            $0.accountName = "Alice Example"
+            $0.macs = [.init(id: id, macID: "mac-studio", name: "Mac Studio", hasAlternatePairings: true)]
+            $0.selectedMacID = id
+            $0.macStatuses = [id: removed
+                ? .paths(local: .connected(.localNetwork), account: .unreachable(.removedFromWeb))
+                : .route(.irohRelay)]
+        }
+    }
+
+    func test_settings_oneMacWithItsRemovedAccountPath_spanish() {
+        let store = recoveredSettings(removed: true)
+        assertScreen([.light, .dark], language: .spanish, inWindow: true) {
+            ScreenFrame(height: 1000) { SettingsView(store: store) }
+        }
+    }
+
+    func test_settings_oneMacAfterLinkingAgain_spanish() {
+        let store = recoveredSettings(removed: false)
+        assertScreen([.light], language: .spanish, inWindow: true) {
+            ScreenFrame(height: 1000) { SettingsView(store: store) }
+        }
+    }
+
+    func test_connectionLost_removedFromWeb_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.removedFromWeb, pairAgain: {}) }
+    }
+
+    func test_pairing_accountRecoveryKeepsTheAccountSelected_spanish() {
+        let store = signIn({ $0.path = .account; $0.signedIn = true }, additionalMac: true)
+        assertScreen([.light], language: .spanish, inWindow: true) {
+            ScreenFrame(height: 852) { SignInView(store: store) }
+        }
+    }
+
     func test_settings_macsOverTheLiveConnection() {
         let store = liveSettings()
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }

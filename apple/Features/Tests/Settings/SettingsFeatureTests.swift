@@ -1,3 +1,4 @@
+import AlondraContract
 import AlondraFeatures
 import ComposableArchitecture
 import Testing
@@ -170,4 +171,83 @@ private actor PairingCleanupGate {
         if continuation == nil { await withCheckedContinuation { observer = $0 } }
     }
     func resume() { continuation?.resume(); continuation = nil }
+}
+
+
+@MainActor struct AccountRecoverySettingsTests {
+    @Test func aRemovedAccountPathStaysVisibleBesideAWorkingLocalPath() {
+        let status = MacStatus.combining([
+            (local: true, state: .connected(.localNetwork)),
+            (local: true, state: .unreachable(.deviceRevoked(macName: nil))),
+            (local: false, state: .unreachable(.removedFromWeb))
+        ])
+        #expect(status == .paths(local: .connected(.localNetwork), account: .unreachable(.removedFromWeb)))
+        #expect(status.canPairAgain)
+    }
+
+    @Test func anOldRemovedEnrollmentCannotHideTheCurrentRelayConnection() {
+        let status = MacStatus.combining([
+            (local: false, state: .unreachable(.removedFromWeb), removed: true),
+            (local: false, state: .connected(.irohRelay), removed: false)
+        ])
+        #expect(status == .route(.irohRelay))
+        #expect(!status.canPairAgain)
+    }
+
+    @Test func aSelectedGroupCanResolveAnAlternatePairing() async {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        var state = SettingsFeature.State(service: "mac-studio", device: "phone", supportsNotifications: false)
+        state.macs = [.init(id: id, macID: "mac-studio", hasAlternatePairings: true)]
+        state.selectedMacID = id
+        let store = TestStore(initialState: state) { SettingsFeature() } withDependencies: {
+            $0.serviceSettings.selectMac = { selected in #expect(selected == id) }
+        }
+        await store.send(.selectMac(id)) { $0.selectingMacID = id }
+        await store.receive(\.macSelected) { $0.selectingMacID = nil }
+    }
+
+    @Test func settingsReadsTheAccountNameIndependentlyOfItsMacHost() async {
+        let store = TestStore(initialState: SettingsFeature.State(service: "mac-studio", device: "phone", supportsNotifications: true)) {
+            SettingsFeature()
+        } withDependencies: { $0.serviceSettings.accountName = { "Alice Example" } }
+        await store.send(.loadAccountName)
+        await store.receive(\.accountNameLoaded) { $0.accountName = "Alice Example" }
+        #expect(store.state.service == "mac-studio")
+    }
+
+    @Test func startingAccountPairingAgainCancelsOnlyTheAttempt() async {
+        var state = SignInFeature.State(additionalMac: true)
+        state.path = .account; state.signedIn = true; state.phase = .pending("123456")
+        let store = TestStore(initialState: state) { SignInFeature() } withDependencies: {
+            $0.cloudPairing.cancelAttempt = {}
+            $0.cloudPairing.cancel = { Issue.record("Starting again ended the recovery flow") }
+        }
+        await store.send(.cancel) { $0.generation = 1; $0.phase = .cancelling }
+        await store.receive(\.cancelled) { $0.phase = .scanning }
+        #expect(store.state.path == .account)
+        #expect(store.state.signedIn)
+    }
+
+    @Test func oneTapStartsAccountRecoveryAndCancellingKeepsTheMac() async {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        var state = SettingsFeature.State(service: "mac-studio", device: "phone", supportsNotifications: true)
+        state.macs = [MacChoice(id: id, macID: "mac-studio", name: "Studio")]
+        state.selectedMacID = id
+        let store = TestStore(initialState: state) { SettingsFeature() } withDependencies: {
+            $0.serviceSettings.pairAgain = { selected in #expect(selected == id) }
+            $0.cloudPairing.cancel = {}
+            $0.findMac.cancel = {}
+        }
+        await store.send(.pairAgain(id)) { $0.pairingTarget = id }
+        await store.receive(\.pairAgainReady) {
+            $0.pairingTarget = nil
+            var pairing = SignInFeature.State(additionalMac: true)
+            pairing.path = .account; pairing.signedIn = true
+            $0.pairing = pairing
+        }
+        await store.send(.pairing(.dismiss)) { $0.pairing = nil; $0.pairingCleanup = true }
+        await store.receive(\.pairingCleanupFinished) { $0.pairingCleanup = false }
+        #expect(store.state.macs == state.macs)
+        #expect(store.state.selectedMacID == id)
+    }
 }

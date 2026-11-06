@@ -22,9 +22,11 @@ public actor Connection {
     /// Whether this Mac is answering, decided from every request to it.
     public nonisolated let monitor: ConnectionMonitor
     private let operations: any FeedOperations
+    private let account: RelayAccount?
     private let macName: String?
     private let irohEndpoint: IrohEndpointHolder?
     private var movesTask: Task<Void, Never>?
+    private var accountCheckTask: Task<Void, Never>?
     /// The paired Mac's ID; nil for the Mac this app runs on.
     public nonisolated let macID: String?
     private var active = true
@@ -35,7 +37,8 @@ public actor Connection {
     public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL? = nil,
                 measurements: ConnectionMeasurements? = nil,
                 localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.standard.allowed },
-                irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil) async throws {
+                irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil,
+                accountTransport: (any HTTPTransport)? = nil) async throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
         let macSigning = try approved.macSigningPublicKey()
@@ -62,7 +65,7 @@ public actor Connection {
         var account: RelayAccount?
         if let relayURL = approved.relayURL, approved.hasRelay {
             account = try RelayAccount(relay: relayURL, macID: approved.macID, deviceID: approved.deviceID, signing: signing,
-                bearer: { try await auth.bearerToken() }, bearerRefusedForToken: { await auth.accessTokenRefused(ifMatches: $0) })
+                bearer: { try await auth.bearerToken() }, bearerRefusedForToken: { await auth.accessTokenRefused(ifMatches: $0) }, transport: accountTransport)
         }
         var iroh: RoutedSession.Iroh?
         var irohEndpoint: IrohEndpointHolder?
@@ -85,7 +88,7 @@ public actor Connection {
         let routed = RoutedSession(iroh: iroh, direct: direct, router: router, account: account, directAllowed: directAllowed)
         self.init(operations: routed, server: server, deviceID: approved.deviceID, macName: approved.name,
                   macID: approved.macID, intents: intents, measurements: measurements, irohEndpoint: irohEndpoint,
-                  isDirectOnly: !pairedWithAccount)
+                  isDirectOnly: !pairedWithAccount, account: account)
         if let carrier = iroh?.carrier {
             await follow(carrier, measurements: measurements)
             // Open the live connection before the first request; the background closes it.
@@ -148,10 +151,13 @@ public actor Connection {
     public func goLive() async {
         guard active else { return }
         await (operations as? RoutedSession)?.goLive()
+        accountCheckTask?.cancel()
+        accountCheckTask = Task { [weak self] in _ = await self?.accountRemoved() }
     }
 
     /// The app went to the background: close the live connection; push still reaches this device.
     public func goIdle() async {
+        accountCheckTask?.cancel()
         await (operations as? RoutedSession)?.goIdle()
     }
 
@@ -182,8 +188,9 @@ public actor Connection {
 
     private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?,
                  intents: OpenedActionIntents?, measurements: ConnectionMeasurements?, irohEndpoint: IrohEndpointHolder?,
-                 isDirectOnly: Bool) {
+                 isDirectOnly: Bool, account: RelayAccount? = nil) {
         self.operations = operations
+        self.account = account
         self.isDirectOnly = isDirectOnly
         self.macName = macName
         self.irohEndpoint = irohEndpoint
@@ -251,6 +258,9 @@ public actor Connection {
     public func deactivate() async {
         active = false
         movesTask?.cancel()
+        accountCheckTask?.cancel()
+        await accountCheckTask?.value
+        accountCheckTask = nil
         await monitor.stop()
         await viewActionSender.stop()
         await viewsFeed.stop()
@@ -264,6 +274,13 @@ public actor Connection {
 
     public func checkActive() throws {
         guard active else { throw CancellationError() }
+    }
+
+    public func accountRemoved() async -> Bool {
+        guard active, let account else { return false }
+        let removed = await account.removedFromAccount()
+        guard active else { return false }
+        return removed
     }
 
     public func checkSettingsConnection() async throws {

@@ -9,20 +9,29 @@ public actor RelayAccount: PushRegistrationAPI {
     private let macID: String
     private let deviceID: String
     private var active = true
+    private let directory: RelayAccountDirectory?
 
     public init(relay: URL, macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
                 transport: (any HTTPTransport)? = nil) throws {
+        let directory = try RelayAccountDirectory(base: relay, bearer: bearer, transport: transport)
         let client = try AlondraAPIClient.makeTransport(base: relay, deviceID: deviceID, signing: signing,
-            bearer: bearer, bearerRefusedForToken: bearerRefusedForToken, transport: transport)
-        self.init(client: client, macID: macID, deviceID: deviceID)
+            bearer: bearer, bearerRefusedForToken: bearerRefusedForToken,
+            deviceRefused: { (try? await directory.isRemoved(macID: macID, deviceID: deviceID)) == true }, transport: transport)
+        self.init(client: client, macID: macID, deviceID: deviceID, directory: directory)
     }
 
-    init(client: any Transport, macID: String, deviceID: String) {
+    init(client: any Transport, macID: String, deviceID: String, directory: RelayAccountDirectory? = nil) {
         self.client = client
         self.macID = macID
         self.deviceID = deviceID
+        self.directory = directory
+    }
+
+    public func removedFromAccount() async -> Bool {
+        guard active, let directory else { return false }
+        return (try? await directory.isRemoved(macID: macID, deviceID: deviceID)) == true
     }
 
     /// The iroh relay this relay admits endpoints to, nil while it has none.

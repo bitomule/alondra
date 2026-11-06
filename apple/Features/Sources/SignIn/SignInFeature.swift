@@ -20,6 +20,8 @@ public struct SignInClient: Sendable {
     public var begin: @Sendable (String) async throws -> String
     public var approve: @Sendable () async throws -> Void
     public var cancel: @Sendable () async -> Void
+    /// Restarting an attempt keeps the Mac being replaced; dismissing the flow uses cancel.
+    public var cancelAttempt: (@Sendable () async -> Void)?
     public var logout: @Sendable () async throws -> Void
     public var alerts = Alerts.unavailable
     public init(restore: @escaping @Sendable () async throws -> Bool, login: @escaping @Sendable () async throws -> Void,
@@ -316,7 +318,7 @@ public struct SignInFeature: Sendable {
                     state.generation += 1; state.phase = .cancelling; state.payload = ""; state.error = nil
                     let generation = state.generation
                     return .concatenate(.cancel(id: CancelID.operation), .run { send in
-                        await service.cancel()
+                        await (service.cancelAttempt ?? service.cancel)()
                         await send(.cancelled(generation))
                     })
                 }

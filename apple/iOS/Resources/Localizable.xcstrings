@@ -1,6 +1,11 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Account connected": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cuenta conectada"}}}},
+    "Removed from the web": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Quitado desde la web"}}}},
+    "removed from the web": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "quitado desde la web"}}}},
+    "This device was removed from your Alondra account on the web. Pair it again to reconnect away from home.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo se quitó de tu cuenta de Alondra desde la web. Vuelve a vincularlo para conectar fuera de casa."}}}},
+    "Link Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Volver a vincular"}}}},
     "Its settings can’t be read right now. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no se pueden leer sus ajustes. Alondra lo sigue intentando."}}}},
     "Licenses": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Licencias"}}}},
     "Alondra": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra"}}}},

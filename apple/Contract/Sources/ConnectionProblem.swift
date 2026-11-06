@@ -21,6 +21,8 @@ public enum ConnectionProblem: Equatable, Sendable {
     /// The Mac or relay no longer accepts this device; it has to be paired again. `macName` is the
     /// paired Mac's name when it is known.
     case deviceRevoked(macName: String?)
+    /// The authenticated account directory confirms this device was removed.
+    case removedFromWeb
     /// A Mac paired without an account answers on none of its direct routes from this network.
     case macNotOnNetwork
     /// Like `macNotOnNetwork`, and an address that answered as this Mac before now answers as the
@@ -38,12 +40,15 @@ public enum ConnectionProblem: Equatable, Sendable {
 
     /// Problems only the person can fix. Automatic retries continue, but they cannot succeed.
     public var isDeviceRevoked: Bool {
-        if case .deviceRevoked = self { true } else { false }
+        switch self {
+        case .deviceRevoked, .removedFromWeb: true
+        default: false
+        }
     }
 
     public var needsAction: Bool {
         switch self {
-        case .sessionExpired, .deviceRevoked, .signOutIncomplete, .localNetworkDenied: true
+        case .sessionExpired, .deviceRevoked, .removedFromWeb, .signOutIncomplete, .localNetworkDenied: true
         default: false
         }
     }
