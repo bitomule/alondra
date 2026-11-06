@@ -48,6 +48,9 @@
   (`docs/running-tests.md`). `//tools:test_limits_test` fails on one that does not.
 - Tests never touch the real `~/.alondra`, launchd job, Keychain, Homebrew install or provider
   logins. Use temporary `HOME` fixtures, removed on success and failure.
+- Never load the shared Mac on purpose: no `yes` processes, spawners, `stress`, busy loops or
+  filling the disk. A failure that only appears under load is reproduced inside the test with fake
+  clocks, injected limits and deterministic fixtures.
 - A test that starts a host owns it: its folder comes from `Directory::for_unix_socket` or
   `socketRoot()`, inside the test's TMPDIR, and `make reap-test-hosts` ends what an older cut left.
 - A change to what the user sees is tried in the real TUI inside tmux against a sandbox daemon

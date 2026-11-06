@@ -50,6 +50,13 @@ Never install, restart or replace the Alondra daemon or CLI on the user's machin
 install`, `brew`, `launchctl`, `alondra doctor --fix` or `alondra update`. Test with the e2e sandbox
 (`make e2e-sandbox`). Deployment is the coordinator's job.
 
+## Never load the machine
+
+The Mac is shared with every other node. Never create artificial load or occupy its CPU, memory or
+disk on purpose: no `yes` processes, spawners, `stress`, busy loops or filling the disk. A problem
+that only shows under load is reproduced inside the test, with fake clocks, injected limits and
+deterministic fixtures, never by stressing the Mac.
+
 ## Your task
 
 The work you were launched for is an Alondra task; its id (`t-…`) is in your mission. Pass it as
