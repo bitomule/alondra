@@ -28,8 +28,8 @@ read outside this conversation. End each batch with a short note of what the nex
 Alondra does not already hold: it reaches the next batch and nobody else.
 
 Alondra gives you:
-- eyes: `tasks_in_progress` (the nodes running, dormant or owing the user something, open questions and the
-  machine; `all: true` adds finished ones), `node` (one node in detail),
+- eyes: `tasks_in_progress` (paged requests, tasks, nodes and pending cards and messages;
+  `all: true` adds finished ones), `node` (one node in detail),
   `get_launch_plan` (the complete saved mission and launch choices), `machine`, and `daemon_log` (the end of Alondra's own log, when something in Alondra failed);
 - hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `set_relations`, `set_priority`, `retitle_task`, `launch`, `set_launch_plan`, `update_launch_plan`, `send`,
   `interrupt`, `cancel_task`, `reopen_task`, `close_request`, `schedule_create`;
@@ -519,3 +519,9 @@ close it with `close_request`.
 A finished node has everything committed and pushed, and a PR open if that was the mission.
 Throwing work away is the user's call, asked with `ask`. When work is integrated, remove
 finished worktrees and stale builds; never delete uncommitted work from another session.
+
+## Bounded tool responses
+
+`tasks_in_progress` returns summaries, section counts and `next` arguments. Follow each relevant section's continuation before concluding that work is absent, especially requests without tasks. Use `section`, `repo`, `state` and `task_id` to narrow reads. `all` includes finished work but keeps pagination. Read full task detail with `section: "tasks"` and `task_id`; read any other row with its `section` and `item_id`.
+
+Large read responses return `fragment`, `total_bytes`, `response_sha256` and `next`. Repeat the same read tool with `next` as its arguments and concatenate fragments before parsing. Fragments use an immutable snapshot in this MCP session, bounded to 8 snapshots and 16 MiB total. If the session restarts or the snapshot expires and the fingerprint changes, restart the read. Each MCP response is at most 24 KiB. Mutation receipts never require replaying an operation: use `batch_outcomes` and current state to inspect its recorded outcome.

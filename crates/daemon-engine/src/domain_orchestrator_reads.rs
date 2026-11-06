@@ -187,6 +187,7 @@ fn report(i: &Interaction, state: &DomainState) -> Option<Value> {
 fn tasks(state: &DomainState) -> Vec<Value> {
     state.tasks.values().filter(|t| !t.archived).map(|t| json!({
         "id": t.id, "title": t.title, "state": wire(&t.state), "activity": state.task_activity(t).map(|activity| activity.key()), "request": t.request_id,
+        "repo": t.project,
         "depends_on": t.dependencies, "assignee": t.agent_id.as_ref().map(|a| json!({"session_id": a})),
         "delivered_dependencies": t.delivered_dependencies, "blocks": t.blocks,
         "blocked_by": state.open_blockers(&t.id), "verdict": t.verdict, "review_rounds": t.review_rounds,

@@ -53,6 +53,17 @@ fn world() -> Fixture {
 }
 
 #[test]
+fn queued_tasks_keep_the_repository_from_their_launch_plan() {
+    let f = world();
+    let mut state = (*f.1.state().unwrap()).clone();
+    state.tasks.get_mut(&TaskId::from("t2")).unwrap().project = Some("sample".into());
+    let rows = tasks(&state);
+    let queued = rows.iter().find(|t| t["id"] == "t2").unwrap();
+    assert!(queued["assignee"].is_null());
+    assert_eq!(queued["repo"], "sample");
+}
+
+#[test]
 fn tasks_in_progress_lists_live_agents_what_waits_on_someone_and_the_requests() {
     let f = world();
     let task_scope = Scope::Task { task_id: "t1".into() };

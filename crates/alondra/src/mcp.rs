@@ -1,3 +1,5 @@
+mod output;
+mod overview;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::time::Duration;
@@ -94,6 +96,19 @@ fn tools(role: Role, user: &str) -> Value {
         ]);
     }
     for tool in &mut list {
+        if role == Role::Orchestrator && output::read_tool(tool["name"].as_str().unwrap_or("")) {
+            let properties = tool["inputSchema"]["properties"].as_object_mut().expect("tool properties");
+            properties.insert("response_offset".into(), json!({"type":"integer","minimum":0,"description":"Byte offset from a fragment continuation; use its response_sha256 too"}));
+            properties.insert("response_bytes".into(), json!({"type":"integer","minimum":1,"maximum":12000}));
+            properties.insert("response_sha256".into(), json!({"type":"string","maxLength":64}));
+        }
+        if tool["name"] == "tasks_in_progress" {
+            let properties = tool["inputSchema"]["properties"].as_object_mut().expect("overview properties");
+            properties.insert("section".into(), json!({"type":"string","enum":["tasks","requests","nodes","open_questions","unread_reports","orchestrator_messages"]}));
+            for key in ["repo", "state", "task_id", "item_id", "after"] { properties.insert(key.into(), json!({"type":"string"})); }
+            properties.insert("limit".into(), json!({"type":"integer","minimum":1,"maximum":50}));
+            tool["description"] = json!("Bounded work overview with task summaries and counts. Follow each section's next arguments to retrieve every page. Filter with repo, state or task_id; task_id with section tasks reads full task detail. all includes finished work but never removes size limits. Pending requests without tasks remain in requests.");
+        }
         if tool["name"] == "launch" {
             tool["description"] = json!(format!(
                 "Launch a new node with the Alondra plugin for a Task no connected node works on, or with replace: true for supported legacy recovery on its original account (existing SDK nodes refuse replacement; use the task options for supported same-session model controls, with account and provider fixed): it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While the selected account has no available usage, launches wait for an eligible account or its reset."
@@ -839,10 +854,10 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         }
         "tasks_in_progress" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&tasks_in_progress_summary(
+            serde_json::to_string(&overview::overview(
                 &client.domain_get("/orchestrator/tasks_in_progress", &bearer)?,
-                flag(args, "all"),
-            ))?
+                args,
+            )?)?
         }
         "node" => {
             let bearer = domain_bearer()?;
@@ -1527,101 +1542,6 @@ fn list(v: &Value, key: &str) -> Vec<Value> {
 
 /// What the orchestrator acts on: unfinished nodes that are running, dormant, or still owe
 /// the user something. `all` adds finished nodes and the ones whose session is gone.
-fn tasks_in_progress_summary(o: &Value, all: bool) -> Value {
-    let open = list(o, "open_questions");
-    let unread: Vec<Value> = list(o, "reports").into_iter().filter(|r| r.get("read") == Some(&Value::Bool(false))).collect();
-    let owes = |session: Option<&str>| open.iter().chain(&unread).any(|x| x.get("session_id").and_then(Value::as_str) == session);
-    let (mut done, mut gone) = (0, 0);
-    let mut nodes = vec![];
-    for n in list(o, "nodes") {
-        let is = |k: &str| n.get(k) == Some(&Value::Bool(true));
-        let finished = n.get("state").and_then(Value::as_str) == Some("done");
-        let present = is("alive") || is("in_daemon") || owes(n.get("session_id").and_then(Value::as_str));
-        if !all && finished {
-            done += 1;
-        } else if !all && !present {
-            gone += 1;
-        } else {
-            let mut row = pick(&n, &["name", "short_id", "project", "state", "state_since", "model", "daemon_needs", "waiting_permission", "alive", "in_daemon", "sdk_host", "undeliverable_messages"]);
-            if let Some(b) = running(&n) {
-                row["background"] = b;
-            }
-            nodes.push(row);
-        }
-    }
-    let questions: Vec<Value> = open.iter().map(|q| pick(q, &["id", "title", "node_name", "origin", "to_orchestrator", "action", "asked_at"])).collect();
-    let reports: Vec<Value> = unread.iter().map(|r| pick(r, &["id", "title", "kind", "node_name"])).collect();
-    let messages: Vec<Value> =
-        list(o, "orchestrator_messages").into_iter().filter(|m| all || m.get("handed_at").is_none_or(Value::is_null)).collect();
-    let (requests, done_requests) = requests_summary(o, all);
-    let mut out = json!({"nodes": nodes, "requests": requests, "open_questions": questions, "unread_reports": reports,
-                         "orchestrator_messages": messages, "machine": o.get("machine"), "usage": o.get("usage")});
-    if done + gone + done_requests > 0 {
-        let mut hidden = serde_json::Map::new();
-        for (k, n) in [("done_nodes", done), ("gone_nodes", gone), ("done_requests", done_requests)] {
-            if n > 0 {
-                hidden.insert(k.into(), json!(n));
-            }
-        }
-        hidden.insert("see_them_with".into(), json!("tasks_in_progress with all: true"));
-        out["hidden"] = Value::Object(hidden);
-    }
-    out
-}
-
-/// The requests still open, each with its tasks: their state, what they build on and the node
-/// on them. A request with no task yet is one to `define`. `all` adds the finished ones.
-fn requests_summary(o: &Value, all: bool) -> (Vec<Value>, usize) {
-    let nodes = list(o, "nodes");
-    let name_of = |session: &str| {
-        nodes.iter().find(|n| n.get("session_id").and_then(Value::as_str) == Some(session)).and_then(|n| n.get("name").or(n.get("short_id"))).cloned().unwrap_or(json!(session))
-    };
-    let tasks = list(o, "tasks");
-    let (mut shown, mut hidden) = (vec![], 0);
-    for r in list(o, "requests").iter().filter(|r| r.get("synthetic") != Some(&Value::Bool(true))) {
-        if !all && r.get("state").and_then(Value::as_str) == Some("done") {
-            hidden += 1;
-            continue;
-        }
-        let id = r.get("id").and_then(Value::as_str);
-        let mine: Vec<Value> = tasks
-            .iter()
-            .filter(|t| t.get("request").and_then(Value::as_str) == id)
-            .map(|t| {
-                let mut row = pick(t, &["id", "title", "state"]);
-                if let Some(activity) = t.get("activity").filter(|a| !a.is_null()) {
-                    row["activity"] = activity.clone();
-                }
-                if let Some(d) = t.get("depends_on").filter(|d| d.as_array().is_some_and(|a| !a.is_empty())) {
-                    row["depends_on"] = d.clone();
-                }
-                for key in ["delivered_dependencies", "blocks", "blocked_by"] {
-                    if let Some(list) = t.get(key).filter(|d| d.as_array().is_some_and(|a| !a.is_empty())) {
-                        row[key] = list.clone();
-                    }
-                }
-                if let Some(verdict) = t.get("verdict").filter(|v| !v.is_null()) {
-                    row["verdict"] = verdict.clone();
-                }
-                if let Some(rounds) = t.get("review_rounds").and_then(Value::as_u64).filter(|n| *n > 0) {
-                    row["review_rounds"] = json!(rounds);
-                }
-                if let Some(session) = t.pointer("/assignee/session_id").and_then(Value::as_str) {
-                    row["node"] = name_of(session);
-                }
-                row
-            })
-            .collect();
-        let mut row = pick(r, &["id", "state", "text"]);
-        if let Some(text) = row.get("text").and_then(Value::as_str).filter(|t| t.chars().count() > 160) {
-            row["text"] = json!(format!("{}…", text.chars().take(160).collect::<String>()));
-        }
-        row["tasks"] = json!(mine);
-        shown.push(row);
-    }
-    (shown, hidden)
-}
-
 /// Which part of a node's record `node` returns.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Page {
@@ -1900,6 +1820,7 @@ fn serve_server(
 ) -> Result<()> {
     let client = Client::new(CALL_TIMEOUT);
     let instance = crate::client::new_id("mcp-server");
+    let mut responses = output::Responses::default();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -1930,9 +1851,20 @@ fn serve_server(
                         let mapping=std::env::var_os("ALONDRA_CODEX_THREAD_MAPPING").ok_or_else(||anyhow::anyhow!("incompatible_protocol: the host did not provide its native root thread mapping"))?;
                         require_native_root(&params,std::path::Path::new(&mapping))?;
                     }
-                    dispatch(&client.with_mcp_operation(&operation),name,&args)
+                    let read = server_name == "alondra-orchestrator" && output::read_tool(name);
+                    let text = match read.then(|| responses.lookup(name, &args)).flatten() {
+                        Some(text) => text,
+                        None => dispatch(&client.with_mcp_operation(&operation),name,&output::arguments(&args))?,
+                    };
+                    if read { responses.remember(name, &args, &text)?; }
+                    Ok(text)
                 }) {
-                    Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
+                    Ok(text) if server_name == "alondra-orchestrator" => match output::reply(name, &args, text) {
+                        Ok(reply) => reply,
+                        Err(error) => output::bounded_error(refusal_reply(&error)),
+                    },
+                    Ok(text) => output::text_reply(&text),
+                    Err(e) if server_name == "alondra-orchestrator" => output::bounded_error(refusal_reply(&e)),
                     Err(e) => refusal_reply(&e),
                 })
             }
@@ -2258,6 +2190,17 @@ mod tests {
     }
 
     #[test]
+    fn overview_with_hundreds_of_tasks_fits_the_mcp_response_budget() {
+        let tasks: Vec<Value> = (0..500).map(|i| json!({"id": format!("task-{i:04}"), "title": "A task with a reasonably descriptive title", "state": "working", "request": "request"})).collect();
+        let raw = json!({"tasks": tasks, "requests": [{"id":"request", "state":"working", "text":"Build these tasks"}]});
+        for all in [false, true] {
+            let text = serde_json::to_string(&overview::overview(&raw, &json!({"all":all})).unwrap()).unwrap();
+            let reply = json!({"content":[{"type":"text", "text":text}]});
+            assert!(serde_json::to_vec(&reply).unwrap().len() <= 24 * 1024, "all={all}: {} bytes", serde_json::to_vec(&reply).unwrap().len());
+        }
+    }
+
+    #[test]
     fn the_tasks_in_progress_and_node_answers_read_through_the_8ccd131_summaries() {
         let answer = json!({
             "nodes": [{"session_id": "agent-a", "name": "Instance A", "short_id": "", "project": "App", "state": "working", "alive": true, "in_daemon": false}],
@@ -2268,12 +2211,13 @@ mod tests {
             "tasks": [{"id": "t1", "title": "Colours", "state": "running", "request": "r", "depends_on": [], "assignee": {"session_id": "agent-a"}}],
             "machine": {"cpus": 10}, "usage": null,
         });
-        let summary = tasks_in_progress_summary(&answer, false);
-        assert_eq!(summary["nodes"][0]["name"], "Instance A");
-        assert_eq!(summary["open_questions"][0]["id"], "q");
-        assert_eq!(summary["unread_reports"][0]["id"], "info");
-        assert_eq!(summary["orchestrator_messages"][0]["id"], 3);
-        assert_eq!(summary["requests"][0]["tasks"][0]["node"], "Instance A");
+        let summary = overview::overview(&answer, &json!({})).unwrap();
+        assert_eq!(summary["nodes"]["items"][0]["name"], "Instance A");
+        assert_eq!(summary["open_questions"]["items"][0]["id"], "q");
+        assert_eq!(summary["unread_reports"]["items"][0]["id"], "info");
+        assert_eq!(summary["orchestrator_messages"]["items"][0]["id"], "3");
+        assert_eq!(summary["tasks"]["items"][0]["repo"], "App");
+        assert_eq!(summary["tasks"]["items"][0]["request"], "r");
         let node = json!({"node": {"name": "Instance A", "state": "working", "alive": true},
             "questions": [{"id": "q", "title": "Ship?", "status": "open", "blocking": false}, {"id": "old", "title": "Before", "status": "answered"}],
             "reports": [{"id": "info", "title": "Found it", "kind": "notice", "read": false}],
@@ -2538,82 +2482,7 @@ mod tests {
         assert_no_text_repeats(&next);
     }
 
-    fn overview() -> Value {
-        let node = |sid: &str, state: &str, alive: bool, in_daemon: bool| json!({"session_id": sid, "name": sid, "short_id": sid, "state": state, "alive": alive, "in_daemon": in_daemon, "last_message": SAID});
-        json!({
-            "nodes": [
-                node("running", "working", true, true),
-                node("dormant", "waiting_answer", false, true),
-                node("gone-owing", "unclear", false, false),
-                node("gone", "unclear", false, false),
-                node("gone-too", "working", false, false),
-                node("finished", "done", false, true),
-            ],
-            "open_questions": [{"id": 9, "session_id": "gone-owing", "title": "Keep the old branch?", "detail": SAID, "status": "open"}],
-            "reports": [{"id": 8, "session_id": "running", "title": "Done", "kind": "final", "read": false, "body": SAID}],
-            "orchestrator_messages": [
-                {"id": 1, "text": "[Alondra] Stalled node: gone (gone) ended its turn twice", "handed_at": 5},
-                {"id": 2, "text": "[Alondra] Stalled node: running (running) ended its turn twice", "handed_at": null}
-            ],
-            "machine": {"load": [1.0, 1.0, 1.0]}
-        })
-    }
 
-    #[test]
-    fn tasks_in_progress_lists_the_nodes_that_matter_and_counts_the_rest() {
-        let v = tasks_in_progress_summary(&overview(), false);
-        let names: Vec<&str> = v["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["running", "dormant", "gone-owing"], "a gone node that still owes the user an answer stays");
-        assert_eq!(v["hidden"], json!({"done_nodes": 1, "gone_nodes": 2, "see_them_with": "tasks_in_progress with all: true"}));
-        assert_eq!(v["orchestrator_messages"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2], "already typed in: not again");
-        assert!(!v.to_string().contains(SAID), "tasks_in_progress carries titles, not bodies: {v:#}");
-    }
-
-    #[test]
-    fn tasks_in_progress_with_all_lists_every_node_and_message() {
-        let v = tasks_in_progress_summary(&overview(), true);
-        assert_eq!(v["nodes"].as_array().unwrap().len(), 6);
-        assert_eq!(v["orchestrator_messages"].as_array().unwrap().len(), 2);
-        assert!(v.get("hidden").is_none());
-    }
-
-    #[test]
-    fn tasks_in_progress_lists_open_requests_with_their_task_trees() {
-        let o = json!({
-            "nodes": [{"session_id": "s1", "name": "app/model", "state": "working", "alive": true}],
-            "requests": [
-                {"id": "r-1", "state": "defining", "text": "Menu by sections"},
-                {"id": "r-2", "state": "in_progress", "text": "x".repeat(200)},
-                {"id": "r-3", "state": "done", "text": "Old"},
-                {"id": "r-s1", "state": "in_progress", "synthetic": true},
-            ],
-            "tasks": [
-                {"id": "t-5", "request": "r-2", "title": "Model", "state": "in_review", "depends_on": [], "assignee": {"session_id": "s1"}},
-                {"id": "t-6", "request": "r-2", "title": "UI", "state": "waiting_dependency", "depends_on": ["t-5"], "assignee": null},
-            ]
-        });
-        let f = tasks_in_progress_summary(&o, false);
-        assert_eq!(f["requests"][0], json!({"id": "r-1", "state": "defining", "text": "Menu by sections", "tasks": []}), "a request to define");
-        assert_eq!(f["requests"][1]["tasks"], json!([
-            {"id": "t-5", "title": "Model", "state": "in_review", "node": "app/model"},
-            {"id": "t-6", "title": "UI", "state": "waiting_dependency", "depends_on": ["t-5"]},
-        ]));
-        assert_eq!(f["requests"][1]["text"].as_str().unwrap().chars().count(), 161);
-        assert_eq!(f["requests"].as_array().unwrap().len(), 2, "done and made-up requests are left out");
-        assert_eq!(f["hidden"], json!({"done_requests": 1, "see_them_with": "tasks_in_progress with all: true"}));
-        assert_eq!(tasks_in_progress_summary(&o, true)["requests"].as_array().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn tasks_in_progress_lists_what_a_node_runs_only_when_it_runs_something() {
-        let o = json!({"nodes": [
-            {"name": "a", "state": "working", "alive": true, "background": [{"kind": "shell", "label": "until pgrep", "started_at": 1}]},
-            {"name": "b", "state": "working", "alive": true, "background": []}
-        ]});
-        let f = tasks_in_progress_summary(&o, false);
-        assert_eq!(f["nodes"][0]["background"][0]["label"], "until pgrep");
-        assert!(f["nodes"][1].get("background").is_none());
-    }
 }
 
 #[cfg(test)]
