@@ -198,6 +198,17 @@ def backup_from_clone(database, target):
         shutil.rmtree(staging)
 
 
+def remove(tree, ignore_errors=False):
+    """Removes a copy of the user's HOME, which keeps the read-only folders of the original."""
+    for folder, _, _ in os.walk(tree):
+        try:
+            os.chmod(folder, 0o700)
+        except OSError:
+            if not ignore_errors:
+                raise
+    shutil.rmtree(tree, ignore_errors=ignore_errors)
+
+
 def copy_home(source, target):
     """Run inside the sandbox: SQLite through read-only connections, the rest as APFS clones."""
     source, target = source.resolve(), target.resolve()
@@ -1658,7 +1669,7 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
             if after != before:
                 changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
                 raise Failed(f'preflight changed the HOME it checked: {", ".join(changed[:5])}')
-            shutil.rmtree(checked)
+            remove(checked)
             timings = {'preflight_ms': preflight_ms, **upgrade(rehearsal, case, home, old, new, mutate)}
         except Failed as error:
             raise Failed(f'case {case}: {error}') from None
@@ -1781,7 +1792,7 @@ def main():
             args.output.write_text(json.dumps(result, indent=2) + '\n')
         print(f'Upgrade rehearsal passed: {old_version} → {new_version}')
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        remove(work, ignore_errors=True)
 
 
 def stop_cleanly_when_cut():

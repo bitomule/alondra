@@ -75,6 +75,24 @@ def fake_daemon(path, version, mode):
 
 
 class CopyHomeTests(unittest.TestCase):
+    def test_a_copy_that_keeps_read_only_folders_of_the_home_is_removed_whole(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = pathlib.Path(directory) / 'copy'
+            skill = copy / 'files' / 'security-audit' / 'skill'
+            (skill / 'rules').mkdir(parents=True)
+            (skill / 'rules' / 'auth.md').write_text('rule')
+            (skill / 'SKILL.md').write_text('skill')
+            for path in (skill / 'rules' / 'auth.md', skill / 'SKILL.md'):
+                path.chmod(0o444)
+            for folder in (skill / 'rules', skill):
+                folder.chmod(0o555)
+            try:
+                u.remove(copy)
+            finally:
+                if copy.exists():
+                    subprocess.run(['chmod', '-R', 'u+w', str(copy)], check=True)
+            self.assertFalse(copy.exists())
+
     def test_a_database_that_cannot_be_read_in_place_is_copied_from_a_clone_of_it_and_its_wal(self):
         with tempfile.TemporaryDirectory() as directory:
             home, target = pathlib.Path(directory) / 'home', pathlib.Path(directory) / 'copy'
