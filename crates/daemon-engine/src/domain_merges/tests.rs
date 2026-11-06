@@ -147,16 +147,11 @@ async fn auto_merge_uses_the_method_set_in_settings_or_the_first_the_repository_
 }
 
 #[tokio::test]
-async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
+async fn auto_merge_claims_durably_and_merges_without_waiting_for_checks_nothing_requires() {
     let (_home, domain, github) = presented("auto", true);
     github.open(7, HEAD, Checks::Pending);
     let mut merger = now();
-    assert!(merger.merge_due(&domain, &github).await.unwrap(), "pending checks are looked at again");
-    assert!(github.merged.lock().unwrap().is_empty());
-    assert!(domain.state().unwrap().merge_authorizations.is_empty(), "nothing claimed while checks run");
-    assert_eq!(task(&domain), TaskState::ForYourReview);
-    github.open(7, HEAD, Checks::Passed);
-    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert!(!merger.merge_due(&domain, &github).await.unwrap(), "running checks hold nothing back");
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
     let state = domain.state().unwrap();
     let authorization = state.merge_authorizations.values().next().unwrap();
@@ -279,6 +274,26 @@ async fn pending_required_checks_that_have_not_reported_make_it_wait() {
 }
 
 #[tokio::test]
+async fn a_running_check_nothing_requires_does_not_hold_the_merge_but_a_required_one_does() {
+    let (_home, domain, github) = presented("running-required", true);
+    github.open(7, HEAD, Checks::Pending);
+    assert!(!now().merge_due(&domain, &github).await.unwrap(), "a running check the repository does not require waits for nothing");
+    assert_eq!(github.merged.lock().unwrap().len(), 1);
+
+    let (_home, domain, github) = presented("running-required", true);
+    github.open_blocked(7, HEAD, Checks::Pending);
+    github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "it waits for the check the repository requires");
+    assert!(!github.calls.lock().unwrap().iter().any(|call| call.starts_with("merge")), "merge is not even tried");
+    assert!(feedback(&domain).is_empty());
+    github.open(7, HEAD, Checks::Passed);
+    github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().passed.insert("build".into());
+    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(github.merged.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn blocked_without_required_checks_is_left_to_githubs_answer() {
     let (_home, domain, github) = presented("blocked-other", true);
     github.open_blocked(7, HEAD, Checks::None);
@@ -326,10 +341,11 @@ fn private_repo_pr(home: &Home, merge_state: &str, mergeable: &str) -> (GhCli, s
 #[tokio::test]
 async fn an_accepted_pr_is_not_closing_until_github_says_it_is_merged() {
     let (_home, domain, github) = presented("closing-after-merge", false);
-    github.open(7, HEAD, Checks::Pending);
+    github.open_blocked(7, HEAD, Checks::Pending);
+    github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
     accept(&domain);
     let mut merger = now();
-    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the merge waits for the checks");
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the merge waits for the check the repository requires");
     assert_ne!(task(&domain), TaskState::Closing, "accepted is not merged");
     let state = domain.state().unwrap();
     assert_eq!(state.attention(&state.tasks[&TaskId::from("t")]), Attention::Wait(WaitReason::Merging { pr: 7 }));
@@ -401,11 +417,12 @@ fn required_checks_come_from_rulesets_and_from_classic_protection() {
 #[tokio::test]
 async fn pressing_merge_again_while_the_checks_wait_is_acted_on_at_once() {
     let (_home, domain, github) = presented("pressed", false);
-    github.open(7, HEAD, Checks::Pending);
+    github.open_blocked(7, HEAD, Checks::Pending);
+    github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
     accept(&domain);
     assert_eq!(task(&domain), TaskState::WaitingDependency);
     let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
-    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: Alondra waits");
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the required check is pending: Alondra waits");
     github.open(7, HEAD, Checks::Passed);
     assert!(merger.merge_due(&domain, &github).await.unwrap(), "the same authorization waits out its poll");
     assert!(github.merged.lock().unwrap().is_empty());
@@ -825,7 +842,7 @@ async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
 #[tokio::test]
 async fn a_waiting_pr_is_read_from_github_at_most_once_per_poll() {
     let (_home, domain, github) = presented("throttle", true);
-    github.open(7, HEAD, Checks::Pending);
+    github.open(7, HEAD, Checks::ActionRequired(vec!["deploy".into()]));
     let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
     for _ in 0..5 {
         merger.merge_due(&domain, &github).await.unwrap();

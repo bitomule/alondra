@@ -22,6 +22,8 @@ pub enum PrReadiness {
     Conflicting { base: String },
     ChecksFailed { names: Vec<String> },
     ActionRequired { names: Vec<String> },
+    /// Checks still running: the PR is delivered without waiting for them, and only the merge does.
+    ChecksRunning { names: Vec<String> },
     /// GitHub only tells whether it merges when Alondra tries.
     Unconfirmed,
     Merged,
@@ -34,9 +36,10 @@ impl PrReadiness {
             (_, _, PrMergeable::Conflicting) => Self::Conflicting { base: status.base.clone() },
             (_, PrChecks::Failed { names }, _) => Self::ChecksFailed { names: names.clone() },
             (_, PrChecks::ActionRequired { names }, _) => Self::ActionRequired { names: names.clone() },
+            (_, PrChecks::Pending { names }, _) => Self::ChecksRunning { names: names.clone() },
             (_, _, PrMergeable::Other | PrMergeable::Computing) => Self::Unconfirmed,
             (_, PrChecks::None, PrMergeable::Clean) => Self::NoChecks,
-            (_, PrChecks::Passed | PrChecks::Pending, PrMergeable::Clean) => Self::Ready,
+            (_, PrChecks::Passed, PrMergeable::Clean) => Self::Ready,
         }
     }
 }
@@ -89,6 +92,9 @@ impl OpenPrDelivery {
             PrReadiness::ActionRequired { names: waiting } => tf!(lang,
                 "Its task ended without delivering it. Checks waiting for someone on GitHub: {names}.",
                 "Su tarea terminó sin entregarlo. Checks que esperan a alguien en GitHub: {names}.", names = names(waiting)),
+            PrReadiness::ChecksRunning { names: running } => tf!(lang,
+                "Its task ended without delivering it. Checks still running: {names}.",
+                "Su tarea terminó sin entregarlo. Checks todavía en marcha: {names}.", names = names(running)),
             PrReadiness::Unconfirmed => t!(lang,
                 "Its task ended without delivering it. GitHub only says whether it merges when Alondra tries.",
                 "Su tarea terminó sin entregarlo. GitHub solo dice si se puede hacer merge cuando Alondra lo intenta.").to_owned(),
@@ -110,6 +116,9 @@ impl OpenPrDelivery {
             PrReadiness::Ready | PrReadiness::NoChecks => t!(lang,
                 "\n\n**Accept:** Alondra merges it.",
                 "\n\n**Aceptar:** Alondra hace el merge."),
+            PrReadiness::ChecksRunning { .. } => t!(lang,
+                "\n\n**Accept:** Alondra merges it as soon as GitHub allows it, which depends on the checks the repository requires.",
+                "\n\n**Aceptar:** Alondra hace el merge en cuanto GitHub lo permite, lo que depende de los checks que exija el repositorio."),
             _ => t!(lang,
                 "\n\n**Accept:** Alondra tries to merge it; if GitHub refuses, the task goes back to work to fix it.",
                 "\n\n**Aceptar:** Alondra intenta hacer el merge; si GitHub lo rechaza, la tarea vuelve a trabajo para arreglarlo."),
@@ -140,6 +149,8 @@ mod tests {
         assert_eq!(PrReadiness::of(&status(PrState::Open, PrMergeable::Clean, failed)),
             PrReadiness::ChecksFailed { names: vec!["test".into()] });
         assert_eq!(PrReadiness::of(&status(PrState::Open, PrMergeable::Other, PrChecks::Passed)), PrReadiness::Unconfirmed);
+        assert_eq!(PrReadiness::of(&status(PrState::Open, PrMergeable::Clean, PrChecks::Pending { names: vec!["lint".into()] })),
+            PrReadiness::ChecksRunning { names: vec!["lint".into()] });
         assert_eq!(PrReadiness::of(&status(PrState::Merged, PrMergeable::Clean, PrChecks::Passed)), PrReadiness::Merged);
     }
 
@@ -147,6 +158,10 @@ mod tests {
     fn the_card_keeps_its_body_and_fits_in_both_languages() {
         let card = OpenPrDelivery { title: "t".repeat(200), repository: "owner/repo".into(), number: 7,
             readiness: PrReadiness::ChecksFailed { names: (0..9).map(|n| format!("check-{n}")).collect() }, result: Some("Done".into()) };
+        let running = OpenPrDelivery { readiness: PrReadiness::ChecksRunning { names: vec!["e2e".into()] }, ..card.clone() };
+        for lang in [Lang::En, Lang::Es] {
+            assert!(running.text(lang).1.contains("e2e") && running.detail(lang).contains("Done"));
+        }
         assert_eq!(OpenPrDelivery::from_body(&card.to_body()), Some(card.clone()));
         for lang in [Lang::En, Lang::Es] {
             let (need, why) = card.text(lang);
