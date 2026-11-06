@@ -40,9 +40,19 @@ pub struct Apns {
     topic: String,
     private_key: EcdsaKeyPair,
     client: reqwest::Client,
+    pub counters: std::sync::Mutex<Counters>,
     provider_token: std::sync::Mutex<Option<(u64, String)>>,
     #[cfg(test)]
     test_endpoint: Option<String>,
+}
+
+#[derive(Default, Clone, serde::Serialize)]
+pub struct Counters {
+    pub accepted: u64,
+    pub token_expired: u64,
+    pub provider_token_expired: u64,
+    pub retryable: u64,
+    pub rejected: std::collections::BTreeMap<String, u64>,
 }
 
 pub fn validate_registration(reg: &PushRegistration) -> Result<()> {
@@ -82,6 +92,7 @@ pub struct Delivery {
     pub push_type: PushType,
     pub collapse_id: Option<String>,
     pub badge: Option<u32>,
+    pub urgent: Option<bool>,
 }
 
 /// Far above any real queue; keeps a forged count from reaching the icon.
@@ -107,7 +118,7 @@ pub fn valid_collapse_id(value: &str) -> bool {
 /// Exact payload submitted to APNs. The caller must enforce its serialized byte limit.
 pub fn payload(envelope: &Envelope, binding: &str) -> Value {
     json!({
-        "aps": {"alert": {"title": "Alondra", "body": "Nueva actividad"}, "mutable-content": 1},
+        "aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra", "loc-key": "New activity in Alondra"}, "mutable-content": 1},
         "alondra": {"envelope": envelope, "push_binding": binding}
     })
 }
@@ -140,7 +151,7 @@ pub fn payload_for(delivery: &Delivery, envelope: &Envelope, binding: &str) -> V
 /// that does not need the user right away.
 fn headers_for(delivery: &Delivery) -> [(&'static str, &'static str); 2] {
     match delivery.push_type {
-        PushType::Alert => [("apns-push-type", "alert"), ("apns-priority", "10")],
+        PushType::Alert => [("apns-push-type", "alert"), ("apns-priority", if delivery.urgent == Some(false) { "5" } else { "10" })],
         PushType::Background => [("apns-push-type", "background"), ("apns-priority", "5")],
         PushType::Badge => [("apns-push-type", "alert"), ("apns-priority", "5")],
     }
@@ -201,6 +212,7 @@ impl Apns {
             topic: config.topic,
             private_key,
             client,
+            counters: Default::default(),
             provider_token: Default::default(),
             #[cfg(test)]
             test_endpoint: None,
@@ -220,6 +232,7 @@ impl Apns {
             topic: "com.bitomule.alondra".into(),
             private_key,
             client: Self::http_client().unwrap(),
+            counters: Default::default(),
             provider_token: Default::default(),
             test_endpoint: Some(endpoint),
         }
@@ -320,28 +333,52 @@ impl Apns {
             .as_ref()
             .map(|base| format!("{base}/3/device/{token}"))
             .unwrap_or(url);
-        let mut request = self
-            .client
-            .post(url)
-            .header("authorization", format!("bearer {}", self.bearer()?))
-            .header("content-type", "application/json");
-        for (name, value) in headers {
-            request = request.header(name, value);
-        }
-        let response = request
-            .body(body)
-            .send()
-            .await
-            .map_err(reqwest::Error::without_url)?;
-        let status = response.status();
-        if !status.is_success() {
-            let apns_id = response
-                .headers()
-                .get("apns-id")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned);
+        let mut bearer = self.bearer()?;
+        for attempt in 0..2 {
+            let mut request = self.client.post(&url)
+                .header("authorization", format!("bearer {bearer}"))
+                .header("content-type", "application/json");
+            for (name, value) in &headers {
+                request = request.header(*name, value);
+            }
+            let response = request.body(body.clone()).send().await
+                .map_err(reqwest::Error::without_url)?;
+            let status = response.status();
+            let apns_id = response.headers().get("apns-id")
+                .and_then(|value| value.to_str().ok()).and_then(log_safe);
+            if status.is_success() {
+                self.counters.lock().unwrap().accepted += 1;
+                eprintln!("alondra-relay: APNs accepted apns-id={}", apns_id.as_deref().unwrap_or("none"));
+                return Ok(());
+            }
             let body = response.bytes().await.unwrap_or_default();
-            return Err(ApnsRejection::new(status.as_u16(), apns_id.as_deref(), &body).into());
+            let rejection = ApnsRejection::new(status.as_u16(), apns_id.as_deref(), &body);
+            let expired = rejection.status == 403 && rejection.reason.as_deref() == Some("ExpiredProviderToken");
+            {
+                let mut counters = self.counters.lock().unwrap();
+                if expired {
+                    counters.provider_token_expired += 1;
+                } else if rejection.registration_is_dead() {
+                    counters.token_expired += 1;
+                } else if rejection.is_retryable() {
+                    counters.retryable += 1;
+                } else {
+                    *counters.rejected.entry(rejection.reason.clone().unwrap_or_else(|| "unknown".into())).or_default() += 1;
+                }
+            }
+            if expired && attempt == 0 {
+                let mut cached = self.provider_token.lock().unwrap();
+                // Concurrent rejections of the same token reuse its replacement.
+                if let Some((_, current)) = cached.as_ref() && current != &bearer {
+                    bearer = current.clone();
+                } else {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                    bearer = self.sign_provider_token(now)?;
+                    *cached = Some((now, bearer.clone()));
+                }
+                continue;
+            }
+            return Err(rejection.into());
         }
         Ok(())
     }
@@ -371,6 +408,10 @@ impl ApnsRejection {
             apns_id: apns_id.and_then(log_safe),
             inactive_since_ms: field("timestamp").and_then(Value::as_u64),
         }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.status == 429 || (500..600).contains(&self.status)
     }
 
     /// Apple will never deliver to this token again; the phone must register a new one.
@@ -415,6 +456,60 @@ impl std::error::Error for ApnsRejection {}
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn apns_outcomes_refresh_once_and_count_every_response() {
+        use axum::{Router, Json, routing::post, http::{HeaderMap, StatusCode}, response::IntoResponse};
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = seen.clone();
+        let app = Router::new().route("/3/device/{token}", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                let mut seen = captured.lock().unwrap();
+                seen.push(headers["authorization"].to_str().unwrap().into());
+                let status = body["status"].as_u64().unwrap() as u16;
+                if status == 403 && seen.len() == 1 || status == 401 {
+                    (StatusCode::FORBIDDEN, Json(json!({"reason":"ExpiredProviderToken"}))).into_response()
+                } else if status == 403 {
+                    (StatusCode::OK, [("apns-id", "accepted-id")]).into_response()
+                } else {
+                    (StatusCode::from_u16(status).unwrap(), Json(json!({"reason":"TestReason"}))).into_response()
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let apns = Apns::test(format!("http://{}", listener.local_addr().unwrap()));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        apns.send_live_activity("token", "sandbox", &json!({"status":403}), 5, 0).await.unwrap();
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert_ne!(seen[0], seen[1], "expired JWT must be replaced");
+        }
+        for status in [429, 500, 503, 400, 401, 410] {
+            let failure = apns.send_live_activity("token", "sandbox", &json!({"status":status}), 5, 0).await.unwrap_err();
+            let response = crate::apns_failure_response(&failure);
+            if matches!(status, 429 | 500 | 503) {
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(response.headers()["retry-after"], "30");
+                let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+                assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["error"], "apns_retry_later");
+            } else if status == 410 {
+                assert_eq!(response.status(), StatusCode::GONE);
+            } else {
+                assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            }
+        }
+        assert_eq!(seen.lock().unwrap().len(), 9, "at most one refresh retry per send");
+        let counters = apns.counters.lock().unwrap().clone();
+        assert_eq!(counters.accepted, 1);
+        assert_eq!(counters.provider_token_expired, 3);
+        assert_eq!(counters.token_expired, 1);
+        assert_eq!(counters.retryable, 3);
+        assert_eq!(counters.rejected.get("TestReason"), Some(&1));
+        task.abort();
+    }
+
     #[test]
     fn provider_token_is_reused_until_it_ages() {
         let apns = Apns::test("http://127.0.0.1:1".into());
@@ -427,9 +522,10 @@ mod tests {
     }
 
     #[test]
-    fn apns_payload_matches_the_cross_language_fixture() {
-        let fixture: Value =
+    fn encrypted_envelope_matches_the_fixture_with_a_localizable_fallback() {
+        let mut fixture: Value =
             serde_json::from_str(include_str!("../../../fixtures/push/encrypted.json")).unwrap();
+        fixture["apns"]["aps"]["alert"] = json!({"title":"Alondra", "body":"New activity in Alondra", "loc-key":"New activity in Alondra"});
         let alondra = &fixture["apns"]["alondra"];
         let envelope: Envelope = serde_json::from_value(alondra["envelope"].clone()).unwrap();
         assert_eq!(
@@ -471,7 +567,7 @@ mod tests {
     #[test]
     fn only_a_badge_push_carries_a_count_and_it_carries_nothing_else() {
         let badge = |push_type, badge, collapse_id: Option<&str>| Delivery {
-            push_type, badge, collapse_id: collapse_id.map(str::to_owned),
+            push_type, badge, collapse_id: collapse_id.map(str::to_owned), urgent: None,
         };
         assert!(badge(PushType::Badge, Some(0), None).is_valid());
         assert!(badge(PushType::Badge, Some(MAX_BADGE), None).is_valid());

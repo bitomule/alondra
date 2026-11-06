@@ -87,6 +87,7 @@ fn source_url(value: &str) -> Result<reqwest::Url> {
 
 pub fn router(server: Arc<Server>) -> Router {
     Router::new()
+        .route("/v1/operator/push-counters", get(push_counters))
         .route("/v1/operator/removals", post(removals))
         .route("/v1/operator/owners/{owner}/devices", get(owner_devices))
         .route("/v1/operator/push-sessions", get(push_sessions))
@@ -300,4 +301,8 @@ pub async fn follow_source(server: Arc<Server>) {
             }
         }
     }
+}
+
+async fn push_counters(State(server): State<Arc<Server>>) -> Json<crate::push::Counters> {
+    Json(server.apns.as_ref().map(|apns| apns.counters.lock().unwrap().clone()).unwrap_or_default())
 }

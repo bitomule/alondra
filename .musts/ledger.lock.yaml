@@ -3872,6 +3872,7 @@ satisfied:
 - {check: "root/crate-relay", scope_hash: "2fbd1faabed50d4047c60cb0220b0652208befe970d55e9ad66823518887fcab"}
 - {check: "root/crate-relay", scope_hash: "3b53e4b7a22f7a01ebda7b96cf082a9866fd63c54bf1ed57b076aec8aec2b992"}
 - {check: "root/crate-relay", scope_hash: "720e94cf7dc6c37e6379189c43660cdcc992d567fd9f3bc778c4642d7b8a560c"}
+- {check: "root/crate-relay", scope_hash: "8efb3fed044a6b07bc3ff9c68f32b0dd11f1d159b26baa3cf863c2d632c8c51f"}
 - {check: "root/crate-relay", scope_hash: "93cadbb58b1eb97be282fee962c5d692b88d0d6e0b2fe43e44fbec9079e147e4"}
 - {check: "root/crate-relay", scope_hash: "9715dba6a3f3198517ae545f3894afdb20ad8f17e5acebb0a24d35f605d34f0c"}
 - {check: "root/crate-relay", scope_hash: "af31aba19ddd07908b6e94e2cea7343044a8c15889f94f43275e018f338442c2"}

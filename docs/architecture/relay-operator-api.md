@@ -133,6 +133,31 @@ account service decides when such a session ended.
 - `POST /v1/operator/push-sessions/ended` with `{"ended": [{"device_id", "sid"}]}` drops those
   registrations. A registration made since by another session stays. It answers `204`.
 
+## APNs delivery counters
+
+`GET /v1/operator/push-counters` uses the same operator authentication and is absent from the
+public listener. Counters live in memory and reset when the relay restarts; without APNs configured
+it returns zeros. They cover alerts, background and badge pushes, and Live Activities.
+
+```json
+{"accepted": 12, "token_expired": 1, "provider_token_expired": 1, "retryable": 2, "rejected": {"BadTopic": 1}}
+```
+
+Each APNs response increments one category: `accepted` for success, `token_expired` for a dead
+registration (410 or a recognized invalid-device-token reason), `provider_token_expired` for
+403 `ExpiredProviderToken`, `retryable` for 429 or 5xx, and `rejected` by Apple's reason for other
+failures (`unknown` for a missing or unsafe reason). A refresh retry produces another response and
+another count. Transport failures without an APNs response are not counted. Accepted responses log
+Apple's `apns-id`, without tokens or payloads.
+
+`POST /v1/mac/push` accepts optional `urgent`: false sends alert priority 5; true, null or omitted
+keeps priority 10. Background and badge pushes always use 5. Alert fallback text uses
+`loc-key: "New activity in Alondra"` with the same English body as a fallback. No encrypted content
+is exposed. A 403 `ExpiredProviderToken` refreshes the cached JWT and retries exactly once;
+concurrent rejections reuse the refreshed token. Normal JWT rotation remains every 40 minutes.
+429 and 5xx return `503 {"error":"apns_retry_later"}` and `Retry-After: 30` seconds, without an
+immediate retry. Other rejections retain the existing 502 response, or 410 for a dead registration.
+
 ## Not yet
 
 - One token serves both directions; a token per direction would let either side rotate its own.

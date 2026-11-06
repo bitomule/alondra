@@ -664,6 +664,8 @@ struct PushRequest {
     push_type: push::PushType,
     #[serde(default)]
     badge: Option<u32>,
+    #[serde(default)]
+    urgent: Option<bool>,
 }
 
 async fn send_push(
@@ -694,6 +696,7 @@ async fn send_push(
         push_type: request.push_type,
         collapse_id: request.collapse_id.clone(),
         badge: request.badge,
+        urgent: request.urgent,
     };
     if !delivery.is_valid() {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_push"));
@@ -752,7 +755,7 @@ async fn send_push(
                 request.device_id
             );
         }
-        return Err(apns_failure_response(&failure));
+        return Ok(apns_failure_response(&failure));
     }
     Ok(StatusCode::ACCEPTED.into_response())
 }
@@ -896,13 +899,16 @@ async fn report_activity(
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
-fn apns_failure_response(failure: &anyhow::Error) -> (StatusCode, Json<Value>) {
+fn apns_failure_response(failure: &anyhow::Error) -> Response {
     match failure.downcast_ref::<push::ApnsRejection>() {
+        Some(rejection) if rejection.is_retryable() => {
+            return (StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, "30")], Json(json!({"error":"apns_retry_later"}))).into_response();
+        }
         Some(rejection) if rejection.registration_is_dead() => {
             error(StatusCode::GONE, "push_registration_gone")
         }
         _ => error(StatusCode::BAD_GATEWAY, "apns_delivery_failed"),
-    }
+    }.into_response()
 }
 
 fn now_ms() -> u64 {
@@ -2155,7 +2161,8 @@ mod http_tests {
         {
             let pushed = delivered.lock().unwrap();
             assert_eq!(pushed.len(), 1);
-            assert_eq!(pushed[0]["aps"]["alert"]["body"], "Nueva actividad");
+            assert_eq!(pushed[0]["aps"]["alert"]["body"], "New activity in Alondra");
+            assert_eq!(pushed[0]["aps"]["alert"]["loc-key"], "New activity in Alondra");
             assert_eq!(pushed[0]["aps"]["mutable-content"], 1);
             assert_eq!(pushed[0]["alondra"]["push_binding"], binding);
             assert!(pushed[0].to_string().contains("ciphertext"));
@@ -2173,7 +2180,7 @@ mod http_tests {
         };
         let collapse_id = URL_SAFE_NO_PAD.encode([9u8; 16]);
         for (counter, extra, status) in [
-            (90, json!({"collapse_id": collapse_id}), StatusCode::ACCEPTED),
+            (90, json!({"collapse_id": collapse_id, "urgent": false}), StatusCode::ACCEPTED),
             (91, json!({"push_type": "background"}), StatusCode::ACCEPTED),
             (92, json!({"collapse_id": "a".repeat(65)}), StatusCode::BAD_REQUEST),
             (93, json!({"collapse_id": "card\nforged"}), StatusCode::BAD_REQUEST),
@@ -2207,6 +2214,7 @@ mod http_tests {
             assert_eq!(pushed.len(), 4, "invalid collapse ids, push types and badges never reach APNs");
             assert_eq!(headers[1]["apns-collapse-id"], collapse_id.as_str());
             assert_eq!(headers[1]["apns-push-type"], "alert");
+            assert_eq!(headers[1]["apns-priority"], "5");
             assert_eq!(pushed[1]["aps"]["mutable-content"], 1);
             assert_eq!(headers[2]["apns-push-type"], "background");
             assert_eq!(headers[2]["apns-priority"], "5", "APNs rejects a background push at priority 10");
