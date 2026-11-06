@@ -5328,3 +5328,29 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
     assert_eq!(["session-ended", "message-not-delivered", "not-resumed"],
         [ReportedFailure::SessionEnded.word(), ReportedFailure::MessageNotDelivered.word(), ReportedFailure::NotResumed.word()]);
 }
+
+#[test]
+fn clearing_takes_a_task_whose_request_closed_while_its_node_was_still_ending() {
+    use crate::views::{build, Client, Item, Lang, LiveSnapshot, RenderContext, Transport};
+    let mut s = fixture();
+    present(&mut s, "d", text());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
+    end_node(&mut s, "t");
+    exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None, task_id: "c".into(), request_id: "r".into(),
+        title: "c".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "c".into() }).unwrap();
+    assert!(s.tasks[&"c".into()].ending() && !s.tasks[&"c".into()].state.terminal());
+    exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: false, title: None, headline: None }).unwrap();
+    let seen = s.revision;
+    exec(&mut s, user(), Command::ClearCompleted { seen }).unwrap();
+    let index = ReadIndex::build(&s);
+    let live = LiveSnapshot::default();
+    let view = build("tasks?section=finished&after=0", RenderContext {
+        domain: &s, index: &index, live: &live, client: Client::Tui, lang: Lang::En,
+        transport: Transport::Loopback, cursor: "c", rendered_at: "",
+    }).unwrap();
+    let listed = view.sections.iter().find(|section| section.id == "finished").unwrap();
+    let rows: Vec<_> = listed.items.iter().filter(|item| matches!(item, Item::Row(_))).collect();
+    assert!(rows.is_empty(), "cleared work is still listed: {rows:?}");
+}

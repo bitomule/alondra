@@ -452,7 +452,8 @@ impl DomainState {
     }
 
     /// What clearing the completed work takes off the lists: the ended Tasks the user saw at
-    /// revision `seen`, and the closed Requests listed without Tasks (an answered one is not listed).
+    /// revision `seen`, and the closed Requests listed without Tasks (an answered one is not listed) or whose
+    /// last Task is still ending.
     pub(super) fn clear_guard(&self, actor: &Actor, seen: Revision) -> Result<(Vec<TaskId>, Vec<RequestId>)> {
         user(actor)?;
         if seen > self.revision {
@@ -463,12 +464,22 @@ impl DomainState {
             .map(|t| t.id.clone()).collect();
         let with_tasks: BTreeSet<&RequestId> = self.tasks.values().map(|t| &t.request_id).collect();
         let requests: Vec<RequestId> = self.requests.values()
-            .filter(|r| r.closed && !r.cleared && !r.message && !r.answered() && !with_tasks.contains(&r.id))
+            .filter(|r| r.closed && !r.cleared && !r.message && !r.answered() && !with_tasks.contains(&r.id)
+                || self.closed_with_tasks_still_ending(r))
             .map(|r| r.id.clone()).collect();
         if tasks.is_empty() && requests.is_empty() {
             return fail("nothing_to_clear", "Nothing completed is left to clear");
         }
         Ok((tasks, requests))
+    }
+
+    /// A closed Request whose Tasks are all over but one still ending: that Task cannot be archived yet,
+    /// so the Request leaves the list in its place and the Task follows it.
+    fn closed_with_tasks_still_ending(&self, request: &Request) -> bool {
+        let mut tasks = self.tasks.values().filter(|t| t.request_id == request.id).peekable();
+        request.closed && !request.cleared && !request.message && tasks.peek().is_some()
+            && tasks.all(|t| t.over() || t.archived)
+            && self.tasks.values().any(|t| t.request_id == request.id && t.over() && !t.state.terminal())
     }
 }
 
