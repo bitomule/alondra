@@ -327,9 +327,7 @@ impl System for Real {
         command_output(command, Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
     }
     fn native_accounts(&self) -> Option<Value> {
-        let client = Client::new(Duration::from_secs(5));
-        let listing: Value = client.get("/settings/accounts").ok()?;
-        listing.get("accounts").cloned()
+        crate::provider_accounts::accounts(&Client::new(Duration::from_secs(5)))
     }
 
     fn home(&self) -> PathBuf {
