@@ -4,7 +4,11 @@ LABEL = $(shell $(BIN)/alondra config get service_label 2>/dev/null)
 DEVICE ?=
 # A Rust target's executable: cquery also lists the clippy report it builds beside it.
 exe = $$(bazelisk cquery --output=files $(1) 2>/dev/null | grep -v '\.ok$$')
-in_execroot = $$(bazelisk info execution_root 2>/dev/null)/$(call exe,$(1))
+# External source artifacts may not have a link in the execution root until an action uses them.
+bazel_artifact = "$$(path=$(call exe,$(1)); root=$$(bazelisk info execution_root 2>/dev/null); \
+	case "$$path" in (external/*) \
+		if [ ! -e "$$root/$$path" ]; then root=$$(bazelisk info output_base 2>/dev/null); fi ;; \
+	esac; printf '%s\n' "$$root/$$path")"
 export DEVICE
 
 # TestFlight betas go out with the /beta skill, which reads these variables. They are the published app's
@@ -195,11 +199,11 @@ mac:
 # Every Mac runs its tasks through the Agent SDK host with the sandbox's scripted Claude; SDK=1
 # FAKES=1 gives Mac 1 the pinned native Claude instead (tools/e2e_sdk_backend.py).
 SDK_HOST_TARGETS = //agent-host:pinned_node //agent-host:persistent.cjs
-SDK_HOST_ENV = SDK_NODE=$(call in_execroot,//agent-host:pinned_node) SDK_HOST=$(call in_execroot,//agent-host:persistent.cjs)
+SDK_HOST_ENV = SDK_NODE=$(call bazel_artifact,//agent-host:pinned_node) SDK_HOST=$(call bazel_artifact,//agent-host:persistent.cjs)
 e2e-sandbox:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS) \
 		$(if $(filter 1,$(SDK)),@claude_native_test//:archive)
-	$(SDK_HOST_ENV) $(if $(filter 1,$(SDK)),SDK_ARCHIVE=$(call in_execroot,@claude_native_test//:archive)) \
+	$(SDK_HOST_ENV) $(if $(filter 1,$(SDK)),SDK_ARCHIVE=$(call bazel_artifact,@claude_native_test//:archive)) \
 	tools/e2e-sandbox.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
 		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 

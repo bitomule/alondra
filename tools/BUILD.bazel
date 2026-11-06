@@ -1,5 +1,12 @@
 exports_files(["shared.bzl"])
 
+sh_test(
+    name = "bazel_artifact_paths_test",
+    srcs = ["tests/test_bazel_artifact_paths.py"],
+    data = ["//:Makefile"],
+    size = "small",
+)
+
 exports_files(
     [
         "e2e-doc-review.py",

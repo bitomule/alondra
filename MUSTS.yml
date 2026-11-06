@@ -576,6 +576,20 @@ checks:
       targets:
         - //tools:prose_decisions_test
 
+  bazel-artifact-paths:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Makefile"
+      - "tools/BUILD.bazel"
+      - "tools/tests/test_bazel_artifact_paths.py"
+    with:
+      targets:
+        - //tools:bazel_artifact_paths_test
+
   sandbox-accounts:
     uses: bazel/test
     paths:
