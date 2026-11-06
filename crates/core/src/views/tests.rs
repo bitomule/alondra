@@ -8397,7 +8397,7 @@ fn live_states() -> Vec<alondra_domain::LiveState> {
             LiveState::Working(Worker::Turn | Worker::OwnWork | Worker::AfterMerge
                 | Worker::Alondra(Step::Starting | Step::Delivering | Step::Waking | Step::Answering | Step::Merging | Step::Finishing))
             | LiveState::WaitingUser(_) | LiveState::WaitingCapacity(Capacity::Gate | Capacity::Machine | Capacity::Disk | Capacity::Usage | Capacity::ClaudeApi)
-            | LiveState::WaitingTask(_) => {}
+            | LiveState::WaitingTask(_) | LiveState::Paused => {}
         }
     }
     states

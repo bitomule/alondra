@@ -605,6 +605,8 @@ fn domain_fixture(home: &Path, user_version: i64, with_closings: bool) {
         json!({"kind": "admit", "data": {"node": node, "conversation": "conv-1", "instance": "sdk-0abdea5e130f80de", "host": "sdk-host"}}),
         json!({"kind": "decide", "data": {"card": "q-1", "decision": {"kind": "deny", "data": {"message": "the secret answer"}}}}),
         json!({"kind": "runtime", "data": {"stamp": {"task": "t-fix-acme-invoice-rounding", "node": node, "conversation": "conv-1", "instance": "sdk-0abdea5e130f80de", "host": "sdk-host", "generation": 1}, "cursor": 7, "fact": {"kind": "host_ended", "data": {"unheard_card": "q-1", "resume": null}}}}),
+        json!({"kind": "runtime", "data": {"stamp": {"task": "t-fix-acme-invoice-rounding", "node": node, "conversation": "conv-1", "instance": "sdk-0abdea5e130f80de", "host": "sdk-host", "generation": 1}, "cursor": 8, "fact": {"kind": "host_stopped", "data": {"unheard_card": "q-1"}}}}),
+        json!({"kind": "runtime", "data": {"stamp": {"task": "t-fix-acme-invoice-rounding", "node": node, "conversation": "conv-1", "instance": "sdk-0abdea5e130f80de", "host": "sdk-host", "generation": 1}, "cursor": 9, "fact": {"kind": "turn_ended", "data": {"turn": "turn-stopped", "unheard_card": "q-1", "wake": null, "awaits": {"kind": "instruction"}}}}}),
         json!({"kind": "request_control", "data": {"control": "ctl-1", "kind": {"kind": "set_model", "data": {"model": "claude-acme-key"}}}}),
         json!({"kind": "a_kind_from_a_newer_build", "data": {"text": "Fix the Acme invoice rounding"}}),
     ];
@@ -706,6 +708,7 @@ fn the_state_sections_keep_only_structure_and_one_pseudonym_per_id() {
     assert_eq!(task["open_questions"], json!([{"kind": "question", "blocking": true, "for": "user"}]));
     assert_eq!(task["closing"]["failures"], 2);
     let lifecycle = get("lifecycle.jsonl");
+    assert!(lifecycle.contains("host_stopped") && lifecycle.contains("instruction"), "{lifecycle}");
     assert!(lifecycle.lines().all(|l| l.contains(&format!("\"task\":\"{pseudonym}\""))), "{lifecycle}");
     let ended: Value = serde_json::from_str(lifecycle.lines().find(|l| l.contains("host_ended")).unwrap()).unwrap();
     assert_eq!(ended["instance"], "sdk-0abdea5e130f80de");

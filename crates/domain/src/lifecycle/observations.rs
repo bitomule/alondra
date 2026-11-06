@@ -42,6 +42,11 @@ impl TaskLifecycle {
         {
             return Err(Refusal::InvalidState);
         }
+        let stopped_host = matches!(&fact, RuntimeFact::HostStopped { .. });
+        let host_resume = match &fact {
+            RuntimeFact::HostEnded { resume, .. } => resume.clone(),
+            _ => None,
+        };
         match fact {
             RuntimeFact::Ask {
                 card,
@@ -299,7 +304,7 @@ impl TaskLifecycle {
                     match &awaits {
                         Await::User(card) | Await::Orchestrator(card) => valid_id(&card.0)?,
                         Await::Tasks(tasks) if tasks.iter().any(|task| *task == self.task) => return Err(Refusal::SelfDependency),
-                        Await::Tasks(_) | Await::Machine => {}
+                        Await::Tasks(_) | Await::Machine | Await::Instruction => {}
                     }
                     self.woken = None;
                     Activity::Awaiting(awaits)
@@ -440,7 +445,8 @@ impl TaskLifecycle {
                 }
             }
             RuntimeFact::Notification => {}
-            RuntimeFact::HostEnded { unheard_card, resume } => {
+            RuntimeFact::HostEnded { unheard_card, .. } | RuntimeFact::HostStopped { unheard_card } => {
+                let resume = host_resume;
                 valid_id(&unheard_card.0)?;
                 host_end = Some(unheard_card.clone());
                 if !matches!(execution.resource, ResourceEvidence::Reserved | ResourceEvidence::Available) {
@@ -451,7 +457,11 @@ impl TaskLifecycle {
                     Activity::Turn { .. } | Activity::OwnWork { .. } | Activity::Continuation(_)
                 );
                 ended_callbacks = execution.callbacks.drain(..).map(|state| callback_id(&state).clone()).collect();
-                if cut {
+                if stopped_host && self.cards().iter().any(|(_, reason)| *reason == WaitReason::Pause) {
+                    execution.activity = Activity::Resting;
+                } else if stopped_host {
+                    execution.activity = Activity::Awaiting(Await::Instruction);
+                } else if cut {
                     execution.activity = Activity::Resting;
                 }
                 cut_by_end = cut;

@@ -41,15 +41,19 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         deliver_merge_close(report, fakes, &user, &revived, "t-s1", 21)
     });
-    report.case("S2", "The user interrupts a node from its task: its turn ends with one card and its Claude is not restarted", |report| {
+    report.case("S2", "The user interrupts a node from its task: it pauses without a card and its Claude is not restarted", |report| {
         request(report, fakes, &user, &task_script("req-s2", "t-s2", "Stop on purpose"), "Stop on purpose")?;
         let node = launched(report, fakes, "t-s2")?;
         state(report, &user, "t-s2", WORKING)?;
         report.snapshot("task-working", &user.view("task:t-s2")?)?;
         let interrupt = interrupt_of(&user, "t-s2")?.context("the task offers no «Interrupt» on its working node")?;
         report.step("the user presses «Interrupt» on the task", || user.press(interrupt["id"].as_str().unwrap_or_default(), None, None))?;
-        let card = wait(report, "the turn ends with a card that asks how to go on", || card_in_inbox(&user, "turn-ended-t-s2-"))?;
-        report.snapshot("card-interrupted", &user.view(&format!("card:{card}"))?)?;
+        state(report, &user, "t-s2", "Paused")?;
+        report.snapshot("task-interrupted", &user.view("task:t-s2")?)?;
+        report.step("the interruption creates no decision card", || {
+            anyhow::ensure!(card_in_inbox(&user, "turn-ended-t-s2-")?.0.is_none(), "an interruption card was created");
+            Ok(())
+        })?;
         report.step("the node no longer offers «Interrupt» and its Claude was not restarted", || {
             if interrupt_of(&user, "t-s2")?.is_some() {
                 bail!("the node still offers «Interrupt»");
@@ -158,7 +162,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         report.snapshot("task-after-plan", &user.view("task:t-s5")?)
     });
-    report.case("S6", "The user force-stops a node while it runs its work after the merge: a card says so, and «Close the task» finishes it", |report| {
+    report.case("S6", "The user force-stops work after the merge: it pauses without a card, then a message resumes it", |report| {
         let mut script = task_script("req-s6", "t-s6", S6_TITLE);
         script.tasks[0].cleans_up = false;
         request(report, fakes, &user, &script, S6_TITLE)?;
@@ -178,19 +182,25 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Ok((task_action(&user, "t-s6", "force_stop:")?, "no «Force stop»".into()))
         })?;
         report.step("the user presses «Force stop»", || user.press(force["id"].as_str().unwrap_or_default(), None, None))?;
-        let card = wait(report, "a card in Inbox says the work after the merge stopped", || card_in_inbox(&user, "session-ended-t-s6-"))?;
-        let view = user.view(&format!("card:{card}"))?;
-        report.snapshot("card-post-merge-stopped", &view)?;
-        report.step("the card names the stopped work and offers «Carry on» and «Close the task»", || {
-            anyhow::ensure!(mentions(&view, "during its work after the merge") && mentions(&view, "release.sh publishes 0.3.0"), "{view}");
-            anyhow::ensure!(user.action_labeled(&view, "Carry on").is_some(), "no «Carry on»: {view}");
+        state(report, &user, "t-s6", "Paused")?;
+        report.snapshot("task-post-merge-stopped", &user.view("task:t-s6")?)?;
+        report.step("the force stop creates no decision card", || {
+            anyhow::ensure!(card_in_inbox(&user, "session-ended-t-s6-")?.0.is_none(), "a force-stop card was created");
             Ok(())
         })?;
-        let close = user.action_labeled(&view, "Close the task").with_context(|| format!("no «Close the task»: {view}"))?;
-        report.step("the user presses «Close the task»", || {
+        let agent = node_of(&user, S6_TITLE)?.context("the task has no node")?;
+        report.step("the user asks it to finish the release", || {
             let _ = fs::remove_file(&hold);
-            user.press(close["id"].as_str().unwrap_or_default(), close["option_id"].as_str(), None)
+            let (status, body) = user.send("POST", &format!("/agents/{agent}/messages"), Some(json!({"text": "Finish the release"})))?;
+            anyhow::ensure!((200..300).contains(&status), "{status} {body}");
+            Ok(())
         })?;
+        let resumed = wait(report, "its resumed native session receives the instruction", || {
+            let now = fakes.session(&node.short)?;
+            let read = fakes.received(&node.short)?.iter().any(|input| input.text.contains("Finish the release"));
+            Ok(((now.running() && read).then_some(now), "the instruction has not arrived".into()))
+        })?;
+        act(report, fakes, &resumed, "the node finishes the release and cleans up", &[Step::PostMergeWork { reason: None }, Step::Cleanup])?;
         state(report, &user, "t-s6", FINISHED)
     });
 }

@@ -46,7 +46,7 @@ const QUESTION_SHOWN: usize = 160;
 /// Held tasks a plan-review problem names before it counts the rest.
 const PLAN_REVIEW_NAMED: usize = 3;
 
-/// Claude could not start the orchestrator several times in a row: new requests wait for it.
+/// Repeated unsuccessful attempts leave new requests waiting.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct StuckProblem {
     pub failures: u32,
@@ -65,10 +65,10 @@ impl StuckProblem {
 
     pub fn text(&self, lang: Lang) -> (String, String) {
         (
-            t!(lang, "Alondra cannot start the work on your requests", "Alondra no consigue ponerse con tus peticiones").into(),
+            t!(lang, "Alondra cannot finish processing your requests", "Alondra no consigue terminar de atender tus peticiones").into(),
             tf!(lang,
-                "The assistant failed to start {failures} times in a row, so new requests wait. Alondra keeps trying by itself.",
-                "El asistente no arrancó {failures} veces seguidas, así que las peticiones nuevas esperan. Alondra lo sigue intentando sola.",
+                "The assistant failed to complete {failures} attempts in a row, so requests wait. Alondra keeps trying by itself.",
+                "El asistente no completó {failures} intentos seguidos, así que las peticiones esperan. Alondra lo sigue intentando sola.",
                 failures = self.failures),
         )
     }

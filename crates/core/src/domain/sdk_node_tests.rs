@@ -257,33 +257,54 @@ fn a_pause_of_a_node_of_the_agent_sdk_lives_in_its_task_s_lifecycle() {
 /// carry on, in the same session.
 #[test]
 fn a_disk_pause_the_node_rested_through_ends_by_telling_it_to_carry_on_in_the_same_session() {
-    for host_ended in [false, true] {
-        let mut s = three_tasks();
-        let agent = AgentId::from(NODE);
-        must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(5) }, at: 5 });
-        assert_eq!(s.live_state(&SDK.into()), Some(LiveState::WaitingCapacity(Capacity::Disk)));
-        run(&mut s, &Step::TurnEnded, 0).unwrap();
-        if host_ended {
-            let generation = s.lifecycle_of(&SDK.into()).unwrap().generation();
-            must(&mut s, Actor::System, Command::RecordHostEnded { task_id: SDK.into(), generation, resumes: false, by_alondra: false, ended_work: vec![] });
-        }
-        let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
-        let card = s.lifecycle_journal[&TaskId::from(SDK)].iter().rev().find_map(|record| match record {
-            LifecycleRecord::Paused { card, .. } => Some(card.clone()),
-            _ => None,
-        }).unwrap();
-        assert!(lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card }).is_err(), "nothing waits for the resting node");
-        let session = lifecycle.execution().cloned();
+    for interrupted in [false, true] {
+        for held_pause in [disk_pause(5), pause(true, 5), pause(false, 5)] {
+            for ending in 0..3 {
+                let host_ended = ending != 0;
+                let mut s = three_tasks();
+                let agent = AgentId::from(NODE);
+                must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: held_pause.clone() }, at: 5 });
+                if interrupted {
+                    must(&mut s, Actor::System, Command::InterruptTurn { agent_id: NODE.into() });
+                }
+                if ending == 2 {
+                    if !interrupted {
+                        must(&mut s, Actor::System, Command::InterruptTurn { agent_id: NODE.into() });
+                    }
+                    let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
+                    let generation = lifecycle.generation();
+                    let turn = s.lifecycle_journal[&TaskId::from(SDK)].iter().rev().find_map(|record| match record {
+                        LifecycleRecord::TurnStarted { turn, .. } => Some(turn.clone()),
+                        _ => None,
+                    }).unwrap();
+                    must(&mut s, Actor::System, Command::RecordInterruptAccepted { task_id: SDK.into(), generation, turn });
+                    must(&mut s, user(), Command::ForceStopTurn { agent_id: NODE.into() });
+                } else {
+                    run(&mut s, &Step::TurnEnded, 0).unwrap();
+                }
+                if host_ended {
+                    let generation = s.lifecycle_of(&SDK.into()).unwrap().generation();
+                    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: SDK.into(), generation, resumes: false, by_alondra: false, ended_work: vec![] });
+                }
+                let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
+                let card = s.lifecycle_journal[&TaskId::from(SDK)].iter().rev().find_map(|record| match record {
+                    LifecycleRecord::Paused { card, .. } => Some(card.clone()),
+                    _ => None,
+                }).unwrap();
+                assert!(lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card }).is_err(), "nothing waits for the resting node");
+                let session = lifecycle.execution().cloned();
 
-        must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 6 });
-        assert_eq!(s.node_pause(&agent), None, "the pause ended (host ended: {host_ended})");
-        let Some(LifecycleRecord::Resumed { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from(SDK)].last() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from(SDK)].last()) };
-        assert!(text.contains("carry on with your task"), "{text}");
-        let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
-        assert_eq!(lifecycle.pending_inputs().len(), 1, "the node is told to carry on");
-        assert_eq!(lifecycle.execution().cloned(), session, "in the same session");
-        assert!(!s.paused_nodes().contains_key(&agent));
-        assert_aggregate_rules(&s);
+                must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 6 });
+                assert_eq!(s.node_pause(&agent), None, "the pause ended (host ended: {host_ended})");
+                let Some(LifecycleRecord::Resumed { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from(SDK)].last() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from(SDK)].last()) };
+                assert!(text.to_ascii_lowercase().contains("carry on with your task"), "{text}");
+                let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
+                assert_eq!(lifecycle.pending_inputs().len(), 1, "the node is told to carry on");
+                assert_eq!(lifecycle.execution().cloned(), session, "in the same session");
+                assert!(!s.paused_nodes().contains_key(&agent));
+                assert_aggregate_rules(&s);
+            }
+        }
     }
 }
 

@@ -47,7 +47,7 @@ pub struct Runtime {
     pub pending_resolutions: Vec<Resolution>,
     #[serde(default,skip_serializing_if="Vec::is_empty")]
     pub batch_handoffs: Vec<crate::orchestrator_provider::BatchHandoff>,
-    /// The Problem that tells the user Claude does not start, while it is open.
+    /// The open recovery question after repeated unsuccessful attempts.
     #[serde(default)]
     pub stuck_problem: Option<String>,
     /// What the last handled batch said at its end, for the next batch, which starts a new
@@ -596,6 +596,14 @@ impl Executor {
                 self.handled(runtime, &run, &asked)
             }
             BatchEnd::NotStarted { why } => self.failed(runtime, &run, why, None),
+            BatchEnd::Interrupted { why, .. } if effects_confirmed && !output.stream.denied && !output.stream.native_request_rejected => {
+                runtime.batch_handoffs.push(crate::orchestrator_provider::BatchHandoff {
+                    run_id: run.id.clone(), selection: selection.clone(),
+                    reason: "The native turn ended after its effects were confirmed. Inspect durable results and continue only unfinished goals.".into(),
+                });
+                save(&self.home, &runtime)?;
+                self.failed(runtime, &run, why, None)
+            }
             BatchEnd::Interrupted { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Interrupted, calls))),
             BatchEnd::Denied { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Denied, calls))),
         }
@@ -713,7 +721,7 @@ impl Executor {
         Ok(())
     }
 
-    /// Claude did not start several times in a row: the user hears of it, with a way to try at once.
+    /// Repeated unsuccessful attempts leave one recovery question while automatic retries continue.
     fn raise_stuck_problem(&self, run_id: &str, failures: u32, error: &str) -> Option<String> {
         let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
         let problem = StuckProblem { failures, error: error.to_owned() };
@@ -1519,20 +1527,31 @@ mod tests {
         }, None, || Ok(())).unwrap();
     }
 
-    /// Claude created a task and then died: the batch changed something.
+    /// The native stream announced tool intent, then ended without a result.
     const CREATED_THEN_EXIT: &str = "fixture:tool-then-exit";
     /// Claude died before it answered: the batch changed nothing.
     const DIED_BEFORE_ANSWERING: &str = "fixture:exit-before-init";
 
-    #[tokio::test]
-    async fn a_failed_batch_is_a_problem_card_and_its_answer_is_the_decision() {
+    #[test]
+    fn an_unconfirmed_batch_is_a_problem_card_and_its_answer_is_the_decision() {
         for (option, replays) in [("retry", true), ("continue", false)] {
             let f = fixture();
-            f.mark(CREATED_THEN_EXIT);
             let domain = &f.executor.domain;
             ask_orchestrator(&f, 1);
-            f.tick().await;
-            let run = load(&f.executor.home).unwrap().active_run.expect("the failed batch stays claimed");
+            let pending = unhandled(domain)[0].0;
+            let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
+            let epoch = domain.state().unwrap().data_epoch.clone();
+            let run = Run { id: "unconfirmed-decision".into(), message_ids: vec![claim.message.id],
+                attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true };
+            {
+                let mut store = domain.store.lock().unwrap();
+                store.bind_batch_effects(&run.id, &epoch).unwrap();
+                store.begin_tool_operation(&run.id, "call", "interrupt", &serde_json::json!({"session_id":"a"})).unwrap();
+            }
+            let mut runtime = load(&f.executor.home).unwrap();
+            runtime.active_run = Some(run.clone());
+            save(&f.executor.home, &runtime).unwrap();
+            f.executor.recover().unwrap();
             let id = format!("{PROBLEM_PREFIX}{}", run.id);
             let problem = domain.state().unwrap().interactions[&id.clone().into()].clone();
             assert_eq!(problem.card.kind, CardKind::Problem);
@@ -1540,11 +1559,8 @@ mod tests {
             let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem is asked like a question") };
             assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["continue", "retry"]);
             assert_eq!(problem.card.recommended.as_deref(), Some("continue"));
-            let body = BatchProblem::from_body(&problem.body).expect("the body words the card in every language");
-            assert_eq!(body.stop, BatchStop::Interrupted);
-            assert_eq!(body.calls, ["create_task"]);
-            assert_eq!(body.subjects, ["Task: Answer the question"]);
-            assert!(body.error.contains("Claude exited"), "{body:?}");
+            assert_eq!(BatchProblem::from_body(&problem.body).unwrap().stop, BatchStop::Interrupted);
+            assert_eq!(domain.store.lock().unwrap().tool_operations(&run.id).unwrap().len(), 1);
             answer_problem(domain, &run.id, option);
             f.executor.apply_problem_answers().unwrap();
             let runtime = load(&f.executor.home).unwrap();
@@ -1675,18 +1691,18 @@ mod tests {
     #[tokio::test]
     async fn a_turn_that_fails_leaves_its_tasks_for_the_next_turn_to_tell() {
         let f = fixture();
-        let domain = &f.executor.domain;
         f.mark(CREATED_THEN_EXIT);
         f.run(Actor::User { user_id: "u".into() }, "sync", Command::CreateRequest {
             request_id: "sync".into(), body: "Sync my notes between iPhone and Mac".into(), auto_merge: false, maintenance: false, message: false,
         });
         plan_sync(&f);
         f.tick().await;
-        let run = load(&f.executor.home).unwrap().active_run.expect("the failed batch stays claimed");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.retry_at.is_some());
+        assert!(f.cards(PROBLEM_PREFIX).is_empty());
         assert!(announced(&f).is_empty(), "a failed turn tells nothing");
-        answer_problem(domain, &run.id, "continue");
-        f.executor.apply_problem_answers().unwrap();
         f.clear_marker();
+        again(&f);
         f.tell("later", "Anything else?");
         f.tick().await;
         assert_eq!(announced(&f), [["model", "ios", "mac"]]);
@@ -1715,7 +1731,7 @@ mod tests {
     #[tokio::test]
     async fn a_batch_settled_elsewhere_withdraws_its_problem() {
         let f = fixture();
-        f.mark(CREATED_THEN_EXIT);
+        f.mark("fixture:denied");
         let domain = &f.executor.domain;
         ask_orchestrator(&f, 1);
         f.tick().await;
@@ -1728,14 +1744,14 @@ mod tests {
     #[tokio::test]
     async fn a_failed_execution_is_ambiguous_until_acknowledged_and_resolved_at_restart() {
         let f = fixture();
-        f.mark(CREATED_THEN_EXIT);
+        f.mark("fixture:denied");
         let domain = &f.executor.domain;
         ask_orchestrator(&f, 1);
         f.tick().await;
         let runtime = load(&f.executor.home).unwrap();
         let run = runtime.active_run.clone().expect("an ambiguous execution stays claimed");
         assert!(runtime.last_error.is_some());
-        assert_eq!(runtime.failure, Some(Failure::Interrupted));
+        assert_eq!(runtime.failure, Some(Failure::Denied));
         assert!(attempts(domain).iter().all(|(_, state, reason)| state == "uncertain" && reason.as_deref() == Some("orchestrator_execution_ambiguous")));
         assert!(outbox(domain).is_empty(), "an ambiguous batch is not offered again");
         f.tick().await;
@@ -1911,7 +1927,7 @@ mod tests {
     #[tokio::test]
     async fn the_user_decides_on_an_ambiguous_execution_through_its_status() {
         let f = fixture();
-        f.mark(CREATED_THEN_EXIT);
+        f.mark("fixture:denied");
         let domain = &f.executor.domain;
         assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
         ask_orchestrator(&f, 1);
@@ -1939,7 +1955,7 @@ mod tests {
     #[tokio::test]
     async fn a_retry_offers_the_batch_again_and_a_cancel_is_ambiguous() {
         let f = fixture();
-        f.mark(CREATED_THEN_EXIT);
+        f.mark("fixture:denied");
         let domain = &f.executor.domain;
         ask_orchestrator(&f, 1);
         f.tick().await;

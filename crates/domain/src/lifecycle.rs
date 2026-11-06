@@ -275,6 +275,8 @@ impl<T: Ord> Several<T> {
 /// it is not empty, and the fact that ends the wait reaches the node as an input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Await {
+    /// The turn was interrupted; a new message resumes it without a decision card.
+    Instruction,
     /// The user answers the node's question `0`.
     User(InteractionId),
     /// The orchestrator answers what the node asked it with `0`.
@@ -289,6 +291,7 @@ pub enum Await {
 /// one of these; none says that nobody owns its next step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LiveState {
+    Paused,
     Working(Worker),
     WaitingUser(Several<InteractionId>),
     WaitingCapacity(Capacity),
@@ -816,6 +819,8 @@ pub enum RuntimeFact {
         operation: OperationId,
     },
     Notification,
+    /// A host explicitly stopped by the user: its work ends and it waits for new instructions.
+    HostStopped { unheard_card: InteractionId },
     /// The execution's host ended (no process holds its lock any more), and its native Claude
     /// with it: the turn, the work and the questions it had open ended too. When that leaves
     /// nothing to explain the task's next step, a host that resumes the same session goes on with
@@ -968,6 +973,7 @@ impl Execution {
     /// What an execution the task runs is doing, or who it waits on.
     fn live(&self) -> Option<LiveState> {
         match &self.activity {
+            Activity::Awaiting(Await::Instruction) => Some(LiveState::Paused),
             Activity::Awaiting(Await::User(card)) => Several::new([card.clone()]).map(LiveState::WaitingUser),
             Activity::Awaiting(Await::Machine) => Some(LiveState::WaitingCapacity(Capacity::Machine)),
             Activity::Awaiting(Await::Tasks(tasks)) => Some(LiveState::WaitingTask(tasks.clone())),
@@ -1541,7 +1547,7 @@ fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
         | RuntimeFact::CallbackSettled { .. }
         | RuntimeFact::CallbackAborted { .. }
         | RuntimeFact::AnsweredByPolicy { .. }
-        | RuntimeFact::HostEnded { .. } => false,
+        | RuntimeFact::HostEnded { .. } | RuntimeFact::HostStopped { .. } => false,
     }
 }
 

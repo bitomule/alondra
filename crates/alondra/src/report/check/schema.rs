@@ -245,6 +245,7 @@ const FACTS: &[&str] = &[
     "interrupt_accepted",
     "notification",
     "host_ended",
+    "host_stopped",
 ];
 
 fn lifecycle_fields(root: &Value) -> &'static [&'static str] {
@@ -266,6 +267,7 @@ fn lifecycle_fields(root: &Value) -> &'static [&'static str] {
             "effect_accepted" | "effect_observed" => &["operation"],
             "interrupt_accepted" => &["turn"],
             "host_ended" => &["unheard_card", "resume"],
+            "host_stopped" => &["unheard_card"],
             _ => &[],
         };
     }
@@ -345,7 +347,7 @@ fn lifecycle_value(path: &[&str], value: &str, root: &Value) -> bool {
         ["data", "host"] if root["event"] == "admit" => &["claude-bg"],
         ["data", "reason", "kind"] if root["event"] == "runtime" && root["fact"] == "ask" => &["question", "permission", "pause", "recovery", "unheard", "doubt", "dropped"],
         ["data", "trigger", "kind"] if root["event"] == "runtime" && root["fact"] == "turn_started" => &["input", "owned_continuation", "unprompted"],
-        ["data", "awaits", "kind"] if root["event"] == "runtime" && root["fact"] == "turn_ended" => &["user", "orchestrator", "machine", "tasks"],
+        ["data", "awaits", "kind"] if root["event"] == "runtime" && root["fact"] == "turn_ended" => &["user", "orchestrator", "machine", "tasks", "instruction"],
         ["data", "decision", "kind"] if root["event"] == "decide" || (root["event"] == "runtime" && root["fact"] == "answered_by_policy") => {
             &["allow", "answers", "deny", "accept", "decline"]
         }

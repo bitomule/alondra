@@ -1433,7 +1433,7 @@ impl Driver {
             if let Some(journal)=owner.state().lifecycle_journal.get(&self.task){
                 for record in journal{
                     match record{
-                        LifecycleRecord::Admitted{..}|LifecycleRecord::HostEnded{..}=>pending.clear(),
+                        LifecycleRecord::Admitted{..}|LifecycleRecord::HostEnded{..}|LifecycleRecord::HostStopped{..}=>pending.clear(),
                         LifecycleRecord::WorkEnded{continuation,..}=>{pending.insert(continuation.clone());},
                         LifecycleRecord::WorkContinued{continuation}|LifecycleRecord::TurnResumed{continuation,..}=>{pending.remove(continuation);},
                         _=>{},

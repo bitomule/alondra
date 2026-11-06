@@ -432,6 +432,7 @@ impl DrainRecord {
     deny_unknown_fields
 )]
 pub(super) enum AwaitRecord {
+    Instruction,
     User(String),
     Orchestrator(String),
     Machine,
@@ -440,6 +441,7 @@ pub(super) enum AwaitRecord {
 impl From<&Await> for AwaitRecord {
     fn from(event: &Await) -> Self {
         match event {
+            Await::Instruction => Self::Instruction,
             Await::User(card) => Self::User(card.0.clone()),
             Await::Orchestrator(card) => Self::Orchestrator(card.0.clone()),
             Await::Machine => Self::Machine,
@@ -450,6 +452,7 @@ impl From<&Await> for AwaitRecord {
 impl AwaitRecord {
     fn decode(self) -> Result<Await> {
         Ok(match self {
+            AwaitRecord::Instruction => Await::Instruction,
             AwaitRecord::User(card) => Await::User(InteractionId(card)),
             AwaitRecord::Orchestrator(card) => Await::Orchestrator(InteractionId(card)),
             AwaitRecord::Machine => Await::Machine,
@@ -569,6 +572,7 @@ pub(super) enum FactRecord {
         turn: String,
     },
     Notification,
+    HostStopped { unheard_card: String },
     HostEnded {
         unheard_card: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -651,6 +655,7 @@ impl From<&RuntimeFact> for FactRecord {
                 turn: turn.as_str().to_owned(),
             },
             RuntimeFact::Notification => Self::Notification,
+            RuntimeFact::HostStopped { unheard_card } => Self::HostStopped { unheard_card: unheard_card.0.clone() },
             RuntimeFact::HostEnded { unheard_card, resume } => Self::HostEnded {
                 unheard_card: unheard_card.0.clone(),
                 resume: resume.as_ref().map(|input| input.as_str().to_owned()),
@@ -680,6 +685,7 @@ impl FactRecord {
             Self::InterruptAccepted { .. } => "Runtime::InterruptAccepted",
             Self::Notification => "Runtime::Notification",
             Self::HostEnded { .. } => "Runtime::HostEnded",
+            Self::HostStopped { .. } => "Runtime::HostStopped",
         }
     }
 
@@ -760,6 +766,7 @@ impl FactRecord {
                 turn: TurnId::new(turn).map_err(Error::from)?,
             },
             FactRecord::Notification => RuntimeFact::Notification,
+            FactRecord::HostStopped { unheard_card } => RuntimeFact::HostStopped { unheard_card: InteractionId(unheard_card) },
             FactRecord::HostEnded { unheard_card, resume } => RuntimeFact::HostEnded {
                 unheard_card: InteractionId(unheard_card),
                 resume: resume.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
@@ -1648,6 +1655,10 @@ mod tests {
                 },
             );
         }
+        roundtrip(&current, Event::Runtime {
+            stamp: current.execution().unwrap().clone(), cursor: 2,
+            fact: RuntimeFact::HostStopped { unheard_card: "session-stopped".into() },
+        });
         for kind in [
             Control::Interrupt {
                 turn: Some(TurnId::new("turn").unwrap()),
@@ -1792,6 +1803,7 @@ mod tests {
             (None, Some(Await::User("question".into()))),
             (None, Some(Await::Orchestrator("message".into()))),
             (None, Some(Await::Machine)),
+            (None, Some(Await::Instruction)),
             (None, Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap()))),
         ] {
             roundtrip(

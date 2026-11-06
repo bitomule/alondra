@@ -524,7 +524,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 let mut live=false;
                 for record in self.draft.state.lifecycle_journal.get(&task_id).into_iter().flatten(){
                     match record {
-                        alondra_core::domain::LifecycleRecord::Admitted{..}|alondra_core::domain::LifecycleRecord::HostEnded{..}=>live=false,
+                        alondra_core::domain::LifecycleRecord::Admitted{..}|alondra_core::domain::LifecycleRecord::HostEnded{..}|alondra_core::domain::LifecycleRecord::HostStopped{..}=>live=false,
                         alondra_core::domain::LifecycleRecord::WorkStarted{work:found,..} if found==work.as_str()=>live=true,
                         alondra_core::domain::LifecycleRecord::WorkEnded{work:found,..} if found==work.as_str()=>live=false,
                         _=>{},

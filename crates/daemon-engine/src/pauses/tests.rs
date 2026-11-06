@@ -948,6 +948,7 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     domain.live.machine_watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
     assert!(domain.live.gate.paused(&domain, &node.agent()).is_none(), "the pause ended");
+    assert_eq!(node.pending_inputs(), 1, "recovery queues the carry-on instruction before the owner runs");
     node.until_told("held your next turn while the disk was nearly full");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
 }
@@ -987,10 +988,9 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 
-/// A task only waits for capacity or the user. A delivery sent back with nobody on it goes back to
-/// work by itself, once it stayed so `STRANDED_AFTER`, through the gate and with no card.
+/// An intentional interruption is not a stranded task for the gate to wake automatically.
 #[tokio::test]
-async fn a_stranded_task_goes_back_through_the_gate_after_its_wait_with_no_card() {
+async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the_gate() {
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
@@ -998,7 +998,8 @@ async fn a_stranded_task_goes_back_through_the_gate_after_its_wait_with_no_card(
     interrupt_sdk_node(&domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     node.get_it_back();
-    assert_eq!(domain.state().unwrap().stranded_tasks(), [TaskId::from(SDK_TASK)]);
+    assert!(domain.state().unwrap().stranded_tasks().is_empty());
+    assert_eq!(node.lifecycle().awaits(), Some(&alondra_domain::Await::Instruction));
 
     let now = alondra_core::now_millis();
     let look = |at| crate::admission::pass_at(&domain, &node.home, at);
@@ -1009,13 +1010,13 @@ async fn a_stranded_task_goes_back_through_the_gate_after_its_wait_with_no_card(
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
     look(now + crate::admission::STRANDED_AFTER).await.unwrap();
     assert_eq!(node.pending_inputs(), 0, "the Mac has no slot");
-    let pacing = domain.live.gate.live(&domain, now + crate::admission::STRANDED_AFTER).unwrap();
-    assert!(matches!(pacing.queued.as_slice(), [queued] if queued.task_id == SDK_TASK), "it waits for capacity: {:?}", pacing.queued);
 
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     look(now + crate::admission::STRANDED_AFTER + 1).await.unwrap();
+    assert_eq!(node.pending_inputs(), 0, "capacity recovery does not undo an intentional interruption");
+    run(&domain, Actor::System, Command::TellNode { task_id: SDK_TASK.into(), text: "Continue the release notes".into(), from_user: true, answers: None });
     assert_eq!(node.pending_inputs(), 1);
-    node.until_told("Nothing is running for your task");
+    node.until_told("Continue the release notes");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 

@@ -365,6 +365,7 @@ fn from_lifecycle(node: &mut Node, state: &alondra_core::domain::DomainState) {
     node.state = match state.sdk_live(&agent) {
         Some(LiveState::Working(_)) => NodeState::Working,
         Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| Some(card) == result) => NodeState::WaitingMerge,
+        Some(LiveState::Paused) => NodeState::Idle,
         Some(LiveState::WaitingUser(_) | LiveState::WaitingTask(_)) => NodeState::WaitingAnswer,
         Some(LiveState::WaitingCapacity(_)) => NodeState::WaitingMachine,
         None => NodeState::Done,

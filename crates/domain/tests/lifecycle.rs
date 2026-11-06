@@ -1020,8 +1020,19 @@ fn a_lapsed_wait_with_nothing_told_waits_on_the_orchestrator_once_the_node_was_w
 }
 
 #[test]
+fn a_stopped_host_keeps_the_instruction_queued_behind_its_turn() {
+    let mut task = running();
+    apply(&mut task, Event::Tell { input: input("next-instruction"), answers: None });
+    fact(&mut task, RuntimeFact::HostStopped { unheard_card: card("stopped") });
+    assert!(task.cards().is_empty());
+    assert_eq!(task.pending_inputs(), [&input("next-instruction")]);
+    assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))));
+}
+
+#[test]
 fn a_turn_that_ends_on_a_recorded_wait_is_that_wait_until_its_input_arrives() {
     for (awaits, live) in [
+        (Await::Instruction, Some(LiveState::Paused)),
         (Await::User("question".into()), Several::new([InteractionId::from("question")]).map(LiveState::WaitingUser)),
         (Await::Orchestrator("message".into()), Some(LiveState::Working(Worker::Alondra(Step::Answering)))),
         (Await::Machine, Some(LiveState::WaitingCapacity(Capacity::Machine))),
@@ -1249,6 +1260,7 @@ proptest! {
             };
             let cards: Vec<(InteractionId, WaitReason)> = task.cards().into_iter().map(|(card, reason)| (card.clone(), reason)).collect();
             match live {
+                LiveState::Paused => prop_assert!(task.awaits() == Some(&Await::Instruction)),
                 LiveState::WaitingUser(waiting) => for card in waiting.iter() {
                     prop_assert!(task.delivery() == Some(card) || cards.iter().any(|(held, _)| held == card) || task.awaits() == Some(&Await::User(card.clone())),
                         "the user is asked by a card the task holds or the question its node asked: {:?} in {:?}", card, task);
