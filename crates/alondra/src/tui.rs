@@ -122,7 +122,7 @@ fn diff_pull_request(route: &str) -> Option<String> {
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alondra_core::domain::{
     AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction, InteractionId,
@@ -158,7 +158,7 @@ const FLASH_MS: i64 = 4500;
 const NOTICE_MS: i64 = 12_000;
 const CLOCK_MS: i64 = 20_000;
 const IDLE_POLL: Duration = Duration::from_millis(250);
-const ACTIVITY_EVERY_MS: i64 = 60_000;
+const ACTIVITY_EVERY: Duration = Duration::from_secs(30);
 /// Threads move with every tool call, which does not move the domain: the open agent asks again this often.
 const THREADS_EVERY_MS: i64 = 10_000;
 const PREVIEW_PIXELS: u32 = 480;
@@ -783,6 +783,8 @@ pub struct App {
     /// Every request that is not a domain command, as the tests read what it would have sent.
     #[cfg(test)]
     posted: std::cell::RefCell<Vec<(String, Value)>>,
+    #[cfg(test)]
+    presence_posted: std::cell::RefCell<Vec<(String, Value)>>,
     /// The direct Mac each background request would have gone to; `None` is this Mac.
     #[cfg(test)]
     spawned: std::cell::RefCell<Vec<Option<String>>>,
@@ -821,7 +823,7 @@ pub struct App {
     threads_asked: Option<(AgentId, Revision, i64)>,
     pub histories: HashMap<TaskId, TaskHistory>,
     history_asked: HashSet<(TaskId, Revision)>,
-    activity_told: i64,
+    activity_told: Option<Instant>,
     pub flash: Option<Flash>,
     pub help: bool,
     pub help_scroll: usize,
@@ -970,7 +972,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
         }
         if event::poll(IDLE_POLL)? {
             let app = &mut macs[active].0;
-            app.note_activity();
             loop {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
@@ -1271,6 +1272,8 @@ impl App {
             #[cfg(test)]
             posted: Default::default(),
             #[cfg(test)]
+            presence_posted: Default::default(),
+            #[cfg(test)]
             spawned: Default::default(),
             target,
             macs: Vec::new(),
@@ -1295,7 +1298,7 @@ impl App {
             threads_asked: None,
             histories: HashMap::new(),
             history_asked: HashSet::new(),
-            activity_told: 0,
+            activity_told: None,
             flash: None,
             help: false,
             help_scroll: 0,
@@ -1806,17 +1809,20 @@ impl App {
         std::thread::spawn(move || job(&tx, &target));
     }
 
-    /// Tells alondrad the user is at the TUI, at most once a minute, so it holds back pushes.
     fn note_activity(&mut self) {
-        let now = now_millis();
-        if now - self.activity_told < ACTIVITY_EVERY_MS {
+        self.note_activity_at(Instant::now());
+    }
+
+    fn note_activity_at(&mut self, now: Instant) {
+        if self.activity_told.is_some_and(|last| now.duration_since(last) < ACTIVITY_EVERY) {
             return;
         }
-        self.activity_told = now;
+        self.activity_told = Some(now);
         #[cfg(test)]
-        self.posted
+        self.presence_posted
             .borrow_mut()
             .push((ops::PRESENCE.into(), json!({"client": "tui"})));
+        #[cfg(not(test))]
         self.spawn(|_, target| {
             let _ = Client::for_target(target, Duration::from_secs(5))
                 .post(ops::PRESENCE, &json!({"client": "tui"}));
@@ -2565,6 +2571,7 @@ impl App {
     }
 
     fn on_paste(&mut self, s: &str) {
+        self.note_activity();
         if let Some(form) = self.elicitation.as_mut().filter(|form| form.editing()) {
             form.paste(s);
             return;
@@ -2618,6 +2625,7 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Flow {
+        self.note_activity();
         let flow = self.on_key_pressed(k);
         let flow = match self.pending_flow.take() {
             Some(pending) if matches!(flow, Flow::Go) => pending,
