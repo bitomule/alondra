@@ -45,18 +45,23 @@ fn respond(mut stream: std::net::TcpStream, body: &[u8]) {
 }
 
 fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, (String, Value)) {
+    mcp_exchange_with_response(entrypoint, tool, arguments, json!({"revision":2,"changed":true,"effects":[],"created_ids":[]}))
+}
+
+fn mcp_exchange_with_response(entrypoint: &str, tool: &str, arguments: Value, response: Value) -> (Vec<Value>, (String, Value)) {
     let scratch_directory = crate::test_support::Directory::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        let capabilities = request_body(&stream);
-        assert_eq!(capabilities.0, "get /capabilities http/1.1");
-        respond(stream, br#"{"data_epoch":"epoch"}"#);
-        let (stream, _) = listener.accept().unwrap();
-        let request = request_body(&stream);
-        let response = br#"{"revision":2,"changed":true,"effects":[],"created_ids":[]}"#;
-        respond(stream, response);
+        let first = request_body(&stream);
+        let (stream, request) = if first.0 == "get /capabilities http/1.1" {
+            respond(stream, br#"{"data_epoch":"epoch"}"#);
+            let (stream, _) = listener.accept().unwrap();
+            let request = request_body(&stream);
+            (stream, request)
+        } else { (stream, first) };
+        respond(stream, response.to_string().as_bytes());
         request
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
@@ -78,6 +83,107 @@ fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, 
     assert_eq!(replies.len(), 3);
     assert_ne!(replies[2]["result"]["isError"], true, "{}", replies[2]);
     (replies, server.join().unwrap())
+}
+
+fn tool_json(replies: &[Value]) -> Value {
+    assert!(serde_json::to_vec(&replies[2]).unwrap().len() <= 24 * 1024, "complete JSON-RPC reply exceeds budget");
+    serde_json::from_str(replies[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn orchestrator_overview_is_bounded_over_the_actual_mcp_transport() {
+    let tasks: Vec<_> = (0..500).map(|n| json!({"id":format!("t-{n:04}"),"title":"猫🙂\\\"".repeat(200),
+        "state":"working","repo":"example/project","request":"r-work"})).collect();
+    let raw = json!({"tasks":tasks,"requests":[{"id":"r-open","state":"defining","text":"Unassigned request"},
+        {"id":"r-work","state":"in_progress","text":"Work"}]});
+    assert!(serde_json::to_vec(&raw).unwrap().len() > 24 * 1024);
+    for all in [false, true] {
+        let (replies, request) = mcp_exchange_with_response("mcp-orchestrator", "tasks_in_progress", json!({"all":all}), raw.clone());
+        assert_eq!(request.0, "get /orchestrator/tasks_in_progress http/1.1");
+        let page = tool_json(&replies);
+        assert_eq!(page["tasks"]["total"], 500);
+        assert!(page["tasks"]["items"].as_array().unwrap().len() < 500);
+        assert_eq!(page["requests"]["items"][0]["id"], "r-open");
+        assert!(page["requests"]["items"][1].get("tasks").is_none());
+        let mut args = json!({"section":"tasks","all":all});
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            let (replies, _) = mcp_exchange_with_response("mcp-orchestrator", "tasks_in_progress", args, raw.clone());
+            let page = tool_json(&replies);
+            for row in page["items"].as_array().unwrap() {
+                assert!(seen.insert(row["id"].as_str().unwrap().to_owned()), "duplicate task");
+            }
+            if page["next"].is_null() { break; }
+            args = page["next"].clone();
+        }
+        assert_eq!(seen.len(), 500);
+    }
+}
+
+#[test]
+fn oversized_machine_reads_reassemble_and_mutations_return_receipts() {
+    let model_table = "猫🙂\\\"\n".repeat(6000);
+    let raw = json!({"available_models":model_table,"status":"ready"});
+    let expected = format!("{}\n{}", raw["available_models"].as_str().unwrap(), serde_json::to_string_pretty(&json!({"status":"ready"})).unwrap());
+    let mut args = json!({"response_bytes":3000});
+    let mut restored = String::new();
+    loop {
+        let (replies, request) = mcp_exchange_with_response("mcp-orchestrator", "machine", args, raw.clone());
+        assert_eq!(request.0, "get /orchestrator/machine http/1.1");
+        let page = tool_json(&replies);
+        restored.push_str(page["fragment"].as_str().unwrap());
+        if page["next"].is_null() { break; }
+        args = page["next"].clone();
+    }
+    assert_eq!(restored, expected);
+    let (replies, request) = mcp_exchange_with_response("mcp-orchestrator", "send", json!({"node":"worker","text":"Continue"}),
+        json!({"accepted":true,"detail":"\\\"猫🙂".repeat(10000)}));
+    assert_eq!(request.0, "post /orchestrator/send http/1.1");
+    let receipt = tool_json(&replies);
+    assert_eq!(receipt["completed"], true);
+    assert_eq!(receipt["detail_omitted"], true);
+    assert!(receipt["see"].as_str().unwrap().contains("Do not repeat"));
+}
+
+#[test]
+fn live_read_fragments_use_one_immutable_snapshot_without_refetching() {
+    let home = crate::test_support::Directory::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let table = "Initial model catalog\n".repeat(3000);
+    let expected = format!("{table}\n{{}}");
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        assert_eq!(request_body(&stream).0, "get /orchestrator/machine http/1.1");
+        respond(stream, json!({"available_models":table}).to_string().as_bytes());
+        // The listener closes here. A continuation that refetches cannot succeed.
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+        .arg("mcp-orchestrator")
+        .env("ALONDRA_HOME", &*home)
+        .env("ALONDRA_PORT", port.to_string())
+        .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut args = json!({});
+    let mut restored = String::new();
+    loop {
+        writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"machine","arguments":args}})).unwrap();
+        let mut line = String::new();
+        assert!(stdout.read_line(&mut line).unwrap() > 0);
+        assert!(line.len() <= 24 * 1024);
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let page: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        restored.push_str(page["fragment"].as_str().unwrap());
+        if page["next"].is_null() { break; }
+        args = page["next"].clone();
+    }
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    server.join().unwrap();
+    assert_eq!(restored, expected);
 }
 
 #[test]
