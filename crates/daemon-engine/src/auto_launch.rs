@@ -191,6 +191,10 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
         Err(_) if crate::start_failures::ended(domain, task)? => {}
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
+            "account_unavailable" | "account_check_in_progress" => {
+                domain.live.gate.not_started(&crate::admission::Key::Task(task.clone()));
+                domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?;
+            }
             "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
             "conflict" => {
                 let taken = domain.state()?.tasks.get(task).is_some_and(|task| task.agent_id.is_some());

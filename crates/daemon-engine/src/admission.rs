@@ -1236,7 +1236,7 @@ fn send_back_stranded(domain: &DomainRuntime, state: &DomainState, now: Millis) 
 /// by itself and then put to the user. `launch_from` records the failures it knows.
 fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_core::domain::DomainError, now: Millis) -> anyhow::Result<()> {
     domain.live.gate.not_started(&Key::Task(task.clone()));
-    if domain.live.is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "disk_low") {
+    if domain.live.is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "disk_low" | "account_unavailable" | "account_check_in_progress") {
         return Ok(());
     }
     let state = domain.state()?;
