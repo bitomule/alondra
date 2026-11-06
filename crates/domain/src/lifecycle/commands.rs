@@ -233,6 +233,11 @@ impl TaskLifecycle {
             Event::Present { delivery } => {
                 valid_id(&delivery.0)?;
                 let (session, decisions, gate) = match &self.state {
+                    State::InProgress(Progress::Queued { input, remaining, .. }) => {
+                        let mut pending = remaining.clone();
+                        pending.push_front(input.clone());
+                        (Session::Absent(pending), BTreeMap::new(), DeliveryGate::Review)
+                    }
                     State::InProgress(Progress::Executing { execution, .. }) => (
                         Session::Present(execution.0.clone()),
                         BTreeMap::new(),

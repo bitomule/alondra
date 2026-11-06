@@ -697,6 +697,7 @@ async fn serve_domain(
         (domain_merges::Merger::default(), std::time::Duration::from_secs(60))
     };
     tokio::spawn(domain_merges::run(merges_domain, Arc::new(domain_github::GhCli::new()), merger));
+    tokio::spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone()));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),

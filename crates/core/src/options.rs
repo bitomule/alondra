@@ -82,9 +82,10 @@ pub struct ProjectOptions {
     pub option: Vec<UserOption>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct OptionsFile {
+    pub pr_sweep_ignore_branch_prefixes: Vec<String>,
     pub projects_root: Option<String>,
     pub effort: BTreeMap<String, EffortFlags>,
     /// Extra model aliases the orchestrator may pick, and what `--model` receives for any alias
@@ -100,6 +101,18 @@ pub struct OptionsFile {
     pub max_working_nodes: NodeLimit,
     /// The provider accounts nodes may run on; without it, each provider's default sign-in.
     pub accounts: crate::accounts::AccountsConfig,
+}
+
+impl Default for OptionsFile {
+    fn default() -> Self {
+        Self {
+            pr_sweep_ignore_branch_prefixes: vec!["release-plz-".into()],
+            projects_root: None, effort: Default::default(), models: Default::default(),
+            model_profiles: Default::default(), defaults: Default::default(), option: vec![],
+            projects: Default::default(), issues: Default::default(), max_working_nodes: Default::default(),
+            accounts: Default::default(),
+        }
+    }
 }
 
 /// `max_working_nodes`: a number from 1, or `"auto"`. A number over what this Mac takes

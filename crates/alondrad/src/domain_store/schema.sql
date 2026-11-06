@@ -11,7 +11,7 @@ CREATE TABLE tasks (
  revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991), started INTEGER NOT NULL CHECK(started IN(0,1)), review_prs INTEGER NOT NULL CHECK(review_prs IN(0,1)),
  final_presentation TEXT, pr_id TEXT, archived INTEGER NOT NULL CHECK(archived IN(0,1)),
  FOREIGN KEY(id,final_presentation) REFERENCES interactions(task_id,id) DEFERRABLE INITIALLY DEFERRED,
- FOREIGN KEY(id,pr_id) REFERENCES pull_requests(task_id,id) DEFERRABLE INITIALLY DEFERRED
+ FOREIGN KEY(id,pr_id) REFERENCES pull_request_tasks(task_id,pr_id) DEFERRABLE INITIALLY DEFERRED
 );
 CREATE TABLE task_dependencies(task_id TEXT NOT NULL REFERENCES tasks(id), depends_on_id TEXT NOT NULL REFERENCES tasks(id), PRIMARY KEY(task_id,depends_on_id), CHECK(task_id<>depends_on_id));
 CREATE TABLE documents(id TEXT PRIMARY KEY CHECK(length(id)>0),title TEXT NOT NULL,current_revision TEXT NOT NULL,
@@ -21,6 +21,7 @@ CREATE TRIGGER immutable_document_revision_update BEFORE UPDATE ON document_revi
 CREATE TRIGGER immutable_document_revision_delete BEFORE DELETE ON document_revisions BEGIN SELECT RAISE(ABORT,'document revision is retained'); END;
 CREATE TABLE task_documents(task_id TEXT NOT NULL REFERENCES tasks(id),document_id TEXT NOT NULL REFERENCES documents(id),role TEXT NOT NULL,PRIMARY KEY(task_id,document_id));
 CREATE TABLE pull_requests(id TEXT PRIMARY KEY CHECK(length(id)>0),task_id TEXT NOT NULL REFERENCES tasks(id),host TEXT NOT NULL,repository TEXT NOT NULL,number INTEGER NOT NULL CHECK(number>0),head TEXT NOT NULL,base TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN('open','closed','merged')),merged_head TEXT,allowed_methods TEXT NOT NULL CHECK(json_valid(allowed_methods)),UNIQUE(host,repository,number),UNIQUE(task_id,id));
+CREATE TABLE pull_request_tasks(task_id TEXT NOT NULL REFERENCES tasks(id),pr_id TEXT NOT NULL REFERENCES pull_requests(id),PRIMARY KEY(task_id,pr_id));
 CREATE TRIGGER immutable_pr_ownership BEFORE UPDATE ON pull_requests WHEN NEW.id<>OLD.id OR NEW.task_id<>OLD.task_id OR NEW.host<>OLD.host OR NEW.repository<>OLD.repository OR NEW.number<>OLD.number BEGIN SELECT RAISE(ABORT,'PR ownership is immutable'); END;
 CREATE TRIGGER retained_pr BEFORE DELETE ON pull_requests BEGIN SELECT RAISE(ABORT,'PR ownership is retained for Task lifetime'); END;
 CREATE TABLE pull_request_reviews(pr_id TEXT PRIMARY KEY REFERENCES pull_requests(id));
@@ -47,22 +48,22 @@ CREATE TABLE interactions (
 );
 CREATE TABLE interaction_reads(interaction_id TEXT NOT NULL REFERENCES interactions(id),user_id TEXT NOT NULL,PRIMARY KEY(interaction_id,user_id));
 CREATE TABLE interaction_subjects(interaction_id TEXT PRIMARY KEY,task_id TEXT NOT NULL,pr_id TEXT,document_id TEXT,revision_id TEXT,
- FOREIGN KEY(task_id,interaction_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_requests(task_id,id),
+ FOREIGN KEY(task_id,interaction_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_request_tasks(task_id,pr_id),
  FOREIGN KEY(task_id,document_id) REFERENCES task_documents(task_id,document_id),FOREIGN KEY(document_id,revision_id) REFERENCES document_revisions(document_id,id),
  CHECK((pr_id IS NOT NULL AND document_id IS NULL AND revision_id IS NULL) OR (pr_id IS NULL AND document_id IS NOT NULL AND revision_id IS NOT NULL)));
 CREATE TABLE delivery_targets(interaction_id TEXT NOT NULL,ordinal INTEGER NOT NULL,task_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN('text','document_revision','pull_request')),text TEXT,document_id TEXT,revision_id TEXT,pr_id TEXT,head TEXT,
- PRIMARY KEY(interaction_id,ordinal),FOREIGN KEY(task_id,interaction_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,document_id) REFERENCES task_documents(task_id,document_id),FOREIGN KEY(document_id,revision_id) REFERENCES document_revisions(document_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_requests(task_id,id),
+ PRIMARY KEY(interaction_id,ordinal),FOREIGN KEY(task_id,interaction_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,document_id) REFERENCES task_documents(task_id,document_id),FOREIGN KEY(document_id,revision_id) REFERENCES document_revisions(document_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_request_tasks(task_id,pr_id),
  CHECK((kind='text' AND text IS NOT NULL AND document_id IS NULL AND revision_id IS NULL AND pr_id IS NULL AND head IS NULL) OR (kind='document_revision' AND text IS NULL AND document_id IS NOT NULL AND revision_id IS NOT NULL AND pr_id IS NULL AND head IS NULL) OR (kind='pull_request' AND text IS NULL AND document_id IS NULL AND revision_id IS NULL AND pr_id IS NOT NULL AND head IS NOT NULL)));
 CREATE TABLE delivery_feedback(interaction_id TEXT NOT NULL REFERENCES interactions(id),ordinal INTEGER NOT NULL,user_id TEXT NOT NULL,body TEXT NOT NULL,at_revision INTEGER NOT NULL,instruction TEXT NOT NULL CHECK(instruction IN('changes','question','reply','conflicts')),PRIMARY KEY(interaction_id,ordinal));
 CREATE TABLE document_reviews(task_id TEXT NOT NULL,document_id TEXT NOT NULL,PRIMARY KEY(task_id,document_id),FOREIGN KEY(task_id,document_id) REFERENCES task_documents(task_id,document_id));
 CREATE TABLE document_decisions(task_id TEXT NOT NULL,document_id TEXT NOT NULL,ordinal INTEGER NOT NULL,revision_id TEXT NOT NULL,presentation_id TEXT,accepted INTEGER NOT NULL CHECK(accepted IN(0,1)),user_id TEXT NOT NULL,at_revision INTEGER NOT NULL,
  PRIMARY KEY(task_id,document_id,ordinal),FOREIGN KEY(task_id,document_id) REFERENCES document_reviews(task_id,document_id),FOREIGN KEY(document_id,revision_id) REFERENCES document_revisions(document_id,id),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id));
 CREATE TABLE pr_decisions(pr_id TEXT NOT NULL REFERENCES pull_request_reviews(pr_id),ordinal INTEGER NOT NULL,task_id TEXT NOT NULL,presentation_id TEXT NOT NULL,head TEXT NOT NULL,accepted INTEGER NOT NULL CHECK(accepted IN(0,1)),user_id TEXT NOT NULL,at_revision INTEGER NOT NULL,
- PRIMARY KEY(pr_id,ordinal),FOREIGN KEY(task_id,pr_id) REFERENCES pull_requests(task_id,id),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id));
+ PRIMARY KEY(pr_id,ordinal),FOREIGN KEY(task_id,pr_id) REFERENCES pull_request_tasks(task_id,pr_id),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id));
 CREATE TABLE merge_authorizations(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,pr_id TEXT NOT NULL,presentation_id TEXT NOT NULL,head TEXT NOT NULL,method TEXT NOT NULL CHECK(method IN('merge','squash','rebase')),user_id TEXT NOT NULL,valid INTEGER NOT NULL CHECK(valid IN(0,1)),attempt TEXT NOT NULL CHECK(attempt IN('unclaimed','claimed','uncertain','confirmed','failed')),claimed_by TEXT REFERENCES agents(id),at_revision INTEGER NOT NULL,
- FOREIGN KEY(task_id,pr_id) REFERENCES pull_requests(task_id,id),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id));
-CREATE TABLE task_stacks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),upstream_task TEXT NOT NULL,presentation_id TEXT NOT NULL,pr_id TEXT NOT NULL,head TEXT NOT NULL,CHECK(task_id<>upstream_task),FOREIGN KEY(upstream_task,presentation_id) REFERENCES interactions(task_id,id),FOREIGN KEY(upstream_task,pr_id) REFERENCES pull_requests(task_id,id));
-CREATE TABLE stack_readiness(task_id TEXT PRIMARY KEY,presentation_id TEXT NOT NULL,pr_id TEXT NOT NULL,head TEXT NOT NULL,ready INTEGER NOT NULL CHECK(ready IN(0,1)),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_requests(task_id,id));
+ FOREIGN KEY(task_id,pr_id) REFERENCES pull_request_tasks(task_id,pr_id),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id));
+CREATE TABLE task_stacks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),upstream_task TEXT NOT NULL,presentation_id TEXT NOT NULL,pr_id TEXT NOT NULL,head TEXT NOT NULL,CHECK(task_id<>upstream_task),FOREIGN KEY(upstream_task,presentation_id) REFERENCES interactions(task_id,id),FOREIGN KEY(upstream_task,pr_id) REFERENCES pull_request_tasks(task_id,pr_id));
+CREATE TABLE stack_readiness(task_id TEXT PRIMARY KEY,presentation_id TEXT NOT NULL,pr_id TEXT NOT NULL,head TEXT NOT NULL,ready INTEGER NOT NULL CHECK(ready IN(0,1)),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_request_tasks(task_id,pr_id));
 CREATE TABLE interaction_holds(interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),hold TEXT NOT NULL CHECK(hold IN('permission','plan','question','elicitation')));
 CREATE TABLE semantic_receipts(actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),result TEXT NOT NULL CHECK(json_valid(result)), at INTEGER,PRIMARY KEY(actor,command_id,data_epoch));
 CREATE TABLE local_command_results(sender TEXT NOT NULL,request_id TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),result TEXT NOT NULL CHECK(json_valid(result)),PRIMARY KEY(sender,request_id));
