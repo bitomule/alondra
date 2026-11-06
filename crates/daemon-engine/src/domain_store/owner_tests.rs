@@ -950,7 +950,7 @@ fn a_stop_the_orchestrator_settles_gets_no_reminder() {
 
 // 3d: a turn that ends behind work of its own asks nothing, and the work keeps its slot.
 #[test]
-fn a_turn_end_behind_work_of_its_own_commits_no_card_and_keeps_the_slot() {
+fn a_turn_end_behind_work_of_its_own_commits_no_card_and_frees_the_slot() {
     let (fixture, mut store, execution) = running();
     let input = pending_input(&mut store);
     let runtime = runtime(&fixture, store);
@@ -963,7 +963,7 @@ fn a_turn_end_behind_work_of_its_own_commits_no_card_and_keeps_the_slot() {
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
     let scope = scope_of(&reopened.load().unwrap());
     let (holds, _) = reopened.own(scope, |owner| Ok(owner.journal().load(&task())?.holds_slot())).unwrap();
-    assert!(holds, "the work still running keeps the slot");
+    assert!(!holds, "waiting for its work takes no slot");
 }
 
 // 3d: the card cannot be created after the raw observation was accepted: nothing of the

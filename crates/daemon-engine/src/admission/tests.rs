@@ -38,7 +38,7 @@ fn fine() -> MacState {
 }
 
 #[test]
-fn memory_and_the_cpu_hold_every_start_and_every_resume() {
+fn memory_holds_every_start_and_every_resume_and_the_cpu_holds_none() {
     let new = waiting("new", TaskPriority::Normal, false, 0);
     let resumed = waiting("resumed", TaskPriority::Normal, true, 0);
     assert_eq!(decide(&new, 0, 6, &fine(), 0, None, SPACING, MIN), Ok(()));
@@ -48,9 +48,11 @@ fn memory_and_the_cpu_hold_every_start_and_every_resume() {
     assert!(matches!(decide(&resumed, 0, 6, &short, 0, None, SPACING, MIN), Err(Hold::Memory { why: NoRoom::Free { free: 3, .. }, free: Some(3) })));
 
     let mut busy = fine();
-    (busy.cpu_busy, busy.load) = (true, 52.0);
-    assert!(matches!(decide(&new, 0, 6, &busy, 0, None, SPACING, MIN), Err(Hold::Cpu { cpus: 11, .. })));
-    assert!(matches!(decide(&resumed, 0, 6, &busy, 0, None, SPACING, MIN), Err(Hold::Cpu { cpus: 11, .. })), "a resume waits for the CPU like a start");
+    busy.step(&Machine { load: [39.0; 3], cpus: 11, memory_free_percent: Some(80), ..Machine::default() }, MIN - SAMPLE);
+    busy.step(&Machine { load: [39.0; 3], cpus: 11, memory_free_percent: Some(80), ..Machine::default() }, MIN);
+    assert_eq!((busy.load, busy.cpus), (39.0, 11), "the load is read");
+    assert_eq!(decide(&new, 0, 6, &busy, 0, None, SPACING, MIN), Ok(()), "a load of 39 on 11 cores holds no start");
+    assert_eq!(decide(&resumed, 0, 6, &busy, 0, None, SPACING, MIN), Ok(()), "nor a resume");
 }
 
 #[test]
@@ -322,8 +324,6 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     let swapping = Hold::Memory { why: NoRoom::Swapping { swapped: 300 << 20, free: 31, needed: 33 }, free: Some(31) };
     assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &swapping, &[], &[], 0).unwrap(),
         "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: macOS swapped out 300 MiB in the last minute with 31% free, 33% needed while it swaps (31% free)");
-    assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Cpu { load: 52.4, cpus: 11 }, &[], &[], 0).unwrap(),
-        "the admission gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
 
     let mut told = Told::default();
@@ -334,10 +334,10 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     }
     assert!(!told.due(tight(7), 9 * MIN), "the same cause within 10 minutes");
     assert!(told.due(tight(7), 10 * MIN), "said again after 10 minutes");
-    assert!(told.due(Cause::of(&Hold::Cpu { load: 52.4, cpus: 11 }), 10 * MIN + 2), "a new cause at once");
-    assert!(!told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 10 * MIN + 3), "a different load is the same cause");
+    assert!(told.due(Cause::of(&Hold::Slots { working: 3, limit: 3 }), 10 * MIN + 2), "a new cause at once");
+    assert!(!told.due(Cause::of(&Hold::Slots { working: 4, limit: 4 }), 10 * MIN + 3), "a different count is the same cause");
     assert!(!told.due(None, 11 * MIN));
-    assert!(told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 11 * MIN + 1), "after the queue moved, the next wait is told");
+    assert!(told.due(Cause::of(&Hold::Slots { working: 4, limit: 4 }), 11 * MIN + 1), "after the queue moved, the next wait is told");
 }
 
 fn sample(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
@@ -445,6 +445,15 @@ fn a_node_waiting_for_the_machine_leaves_its_slot_and_comes_back_through_the_gat
     assert_eq!((snapshot.working, snapshot.working_tasks.into_iter().collect::<Vec<_>>()), (1, vec![TaskId::from("t1")]),
         "back from its wait it takes its slot again");
     assert_eq!(ask(&domain, "t2", now + MIN), Err(Hold::Slots { working: 1, limit: 1 }));
+}
+
+#[test]
+fn a_number_the_user_set_caps_the_automatic_limit_the_memory_gives() {
+    let limits = NodeLimits::of(11, 18 << 30, 520 << 20);
+    assert_eq!(limits.auto, 22);
+    let tuning = Tuning { spacing: 0, limit: None };
+    assert_eq!(limit_setting(NodeLimit::Fixed(8), limits, tuning).count(), 8, "the user's 8 holds with room for 22");
+    assert_eq!(limit_setting(NodeLimit::Auto, limits, tuning).count(), 22, "unset, the memory decides");
 }
 
 /// 9 October: 59 notices to the orchestrator, one per swing of the Mac's memory, and none ever read.
@@ -619,7 +628,7 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
     let (cores, memory) = machine_size();
     let most = NodeLimits::of(cores, memory, 0).most;
     let over_4_gb = memory.saturating_sub(4 << 30);
-    for (cost, auto) in [(over_4_gb / 2, 2.min(cores as u32)), (128 << 20, NodeLimits::of(cores, memory, 128 << 20).auto)] {
+    for (cost, auto) in [(over_4_gb / 2, 2), (128 << 20, NodeLimits::of(cores, memory, 128 << 20).auto)] {
         let (home, domain) = world();
         domain.live.gate.tune(Tuning { spacing: 0, limit: None });
         let now = alondra_core::now_millis();
