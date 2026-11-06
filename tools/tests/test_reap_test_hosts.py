@@ -20,8 +20,10 @@ sys.modules["reap_test_hosts"] = reap
 loader.exec_module(reap)
 
 BAZEL = "/Volumes/BazelCache/output/" + "0" * 32 + "/execroot/_main/bazel-out/darwin_arm64-opt/bin/agent-host/alondra-host"
+BAZEL_CODEX = BAZEL.replace("alondra-host", "alondra-codex-host")
 COPY = "/private/tmp/bt.dTKPJk/at-etQZGP/work/alondra-host-before"
 PRODUCTION = "/opt/homebrew/Cellar/alondra/0.3.18/libexec/alondra/sdk/alondra-host"
+PRODUCTION_CODEX = "/opt/homebrew/Cellar/alondra/0.3.18/libexec/alondra/codex/alondra-codex-host"
 
 # Double forks so the host is an orphan in its own group, with a child, as a cut test leaves it.
 ORPHAN = """
@@ -52,8 +54,11 @@ class SelectionTests(unittest.TestCase):
     def test_an_orphan_host_of_a_bazel_output_base_or_a_test_copy_is_selected(self):
         self.assertEqual(self.selected(reap.Process(10, 1, 10, BAZEL), reap.Process(11, 1, 11, COPY)), [10, 11])
 
+    def test_an_orphan_codex_host_of_a_bazel_output_base_is_selected(self):
+        self.assertEqual(self.selected(reap.Process(10, 1, 10, BAZEL_CODEX)), [10])
+
     def test_the_production_host_is_never_selected(self):
-        self.assertEqual(self.selected(reap.Process(10, 1, 10, PRODUCTION)), [])
+        self.assertEqual(self.selected(reap.Process(10, 1, 10, PRODUCTION), reap.Process(11, 1, 11, PRODUCTION_CODEX)), [])
 
     def test_a_host_with_a_parent_is_never_selected(self):
         self.assertEqual(self.selected(reap.Process(10, 59068, 10, BAZEL), reap.Process(11, 59068, 11, COPY)), [])
