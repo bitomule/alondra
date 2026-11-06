@@ -699,7 +699,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = Worker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
     let identity=NativeAccountIdentity::load(worker.state_directory())?;
-    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("checking the original native account before adoption"))?;
+    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("Alondra cannot resume this session"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
@@ -909,7 +909,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         .is_some_and(|lifecycle| lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available));
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
-    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("checking the original native account before relaunch"))?;
+    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("Alondra cannot resume this session"))?;
     worker.relaunch(grant, adapter_state, base, resume, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
     // Continued hosts open the native session lazily, on the first input after these files are synced.
     options.save(worker.state_directory())?;if let Some(identity)=identity.as_ref(){identity.retain(worker.state_directory())?;}
@@ -929,6 +929,7 @@ pub fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
             Ok(driver) => {
                 domain.add_sdk_owner(Owner::spawn(driver));
                 domain.live.forget_closed_task(&task.0);
+                domain.host_losses_told.lock_or_recover("the tasks told of a lost host").remove(&task);
                 log!("the SDK execution of {task} was taken over: the same Claude session goes on");
             }
             Err(failed) => not_taken(domain, &task, failed),
@@ -963,7 +964,8 @@ pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
 /// The task's execution could not be taken over and no host runs it: its card tells the user why
 /// and offers to try again or cancel the task. It is never left as it is. A task the gate holds
 /// paused gets no card: its resume takes it over (`take_if_unowned`), and puts the card if that
-/// fails too.
+/// fails too. The user hears of an outage once: until a takeover works, another failure leaves its
+/// card without a push.
 pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     log!("the SDK execution of {task} was not taken over: {why}");
     let Ok(state) = domain.state() else { return };
@@ -971,12 +973,13 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
         log!("{task} is paused: a host that resumes its session takes it over when the pause ends");
         return;
     }
+    let quiet = !domain.host_losses_told.lock_or_recover("the tasks told of a lost host").insert(task.clone());
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
         command_id: format!("host-lost-{task}-{}", crate::auth::random_hex(8)).into(),
         expected_revision: 0,
-        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned() },
+        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned(), quiet },
     };
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
@@ -1032,6 +1035,7 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
     match taken {
         Ok(driver) => {
             runtime.add_sdk_owner(Owner::spawn(driver));
+            runtime.host_losses_told.lock_or_recover("the tasks told of a lost host").remove(task);
             log!("the SDK execution of {task} was taken over again: the same Claude session goes on");
         }
         Err(failed) => not_taken(runtime, task, failed),

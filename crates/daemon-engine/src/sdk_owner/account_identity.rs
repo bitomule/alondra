@@ -44,6 +44,22 @@ impl NativeAccountIdentity {
         file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing the native account identity: {error}"), &error))?;
         std::fs::File::open(directory).and_then(|folder|folder.sync_all()).map_err(|error|Failed::written(format!("Syncing the native account folder: {error}"), &error))
     }
+    /// The session in `directory` recorded `wrong`, another account's email, because its host ran
+    /// on that account's profile: it takes `status`'s email. Whether it changed anything.
+    pub(crate) fn correct_email(directory:&Path,wrong:&str,status:&AccountStatus)->Result<bool,Failed>{
+        use std::io::Write;use std::os::unix::fs::OpenOptionsExt;
+        let Some(mut identity)=Self::load(directory)? else{return Ok(false)};
+        if !identity.email.as_deref().is_some_and(|email|email.eq_ignore_ascii_case(wrong)){return Ok(false)}
+        identity.email=status.email.as_ref().map(|email|email.trim().to_owned());
+        let bytes=serde_json::to_vec(&identity).map_err(|error|Failed::new(format!("Encoding the corrected native identity: {error}")))?;
+        let staged=directory.join("native-account.json.corrected");
+        match std::fs::remove_file(&staged){Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(Failed::written(format!("Clearing the corrected native identity: {error}"),&error))}
+        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(&staged).map_err(|error|Failed::written(format!("Writing the corrected native identity: {error}"),&error))?;
+        file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing the corrected native identity: {error}"),&error))?;
+        std::fs::rename(&staged,directory.join("native-account.json")).map_err(|error|Failed::written(format!("Replacing the native identity: {error}"),&error))?;
+        std::fs::File::open(directory).and_then(|folder|folder.sync_all()).map_err(|error|Failed::written(format!("Syncing the native account folder: {error}"),&error))?;
+        Ok(true)
+    }
     pub(crate) fn retain(&self,directory:&Path)->Result<(),Failed>{
         use std::io::Write;use std::os::unix::fs::OpenOptionsExt;
         let mut files=vec![("native-account.json",serde_json::to_vec(self).map_err(|error|Failed::new(format!("Encoding retained native identity: {error}")))?)];
@@ -93,6 +109,22 @@ mod tests{
         NativeAccountIdentity::save(&directory,Some(&account)).unwrap();let expected=NativeAccountIdentity::load(&directory).unwrap().unwrap();
         for count in [1,2]{account.sign_ins=count;account.email=Some("NATIVE@example.test".into());account.billing=AccountBilling::Subscription{plan:Some("max".into()),weight:Some(2)};assert!(expected.same_known_email(&account));assert_eq!(expected.change(&account),None);}
         account.email=Some("other@example.test".into());assert!(!expected.same_known_email(&account));assert_eq!(expected.change(&account),Some("identity"));
+    }
+    #[test]
+    fn a_session_recorded_with_another_accounts_email_takes_its_own_and_no_other_is_touched(){
+        use std::os::unix::fs::PermissionsExt;
+        let directory=crate::test_support::Directory::new();std::fs::create_dir_all(&directory).unwrap();let mut account=status();account.email=Some("other-profile@example.test".into());
+        NativeAccountIdentity::save(&directory,Some(&account)).unwrap();account.email=Some("own-profile@example.test".into());
+        assert_eq!(NativeAccountIdentity::load(&directory).unwrap().unwrap().change(&account),Some("identity"),"the guard refuses it before");
+        assert!(!NativeAccountIdentity::correct_email(&directory,"third@example.test",&account).unwrap(),"an identity it did not record stays");
+        assert_eq!(NativeAccountIdentity::load(&directory).unwrap().unwrap().change(&account),Some("identity"));
+        assert!(NativeAccountIdentity::correct_email(&directory,"OTHER-profile@example.test",&account).unwrap());
+        assert_eq!(NativeAccountIdentity::load(&directory).unwrap().unwrap().change(&account),None,"the guard accepts it after");
+        assert_eq!(std::fs::metadata(directory.join("native-account.json")).unwrap().permissions().mode()&0o777,0o600);
+        assert!(!directory.join("native-account.json.corrected").exists());
+        assert!(!NativeAccountIdentity::correct_email(&directory,"other-profile@example.test",&account).unwrap(),"correcting again changes nothing");
+        let empty=crate::test_support::Directory::new();std::fs::create_dir_all(&empty).unwrap();
+        assert!(!NativeAccountIdentity::correct_email(&empty,"other-profile@example.test",&account).unwrap(),"a host with no record stays without one");
     }
     #[test]
     fn billing_policy_edits_are_not_presented_as_credential_identity_changes(){

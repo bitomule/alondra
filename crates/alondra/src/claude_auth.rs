@@ -91,8 +91,8 @@ pub(crate) fn job_profile(job: &serde_json::Value) -> Option<PathBuf> {
 }
 
 impl ContextEnv {
-    pub fn for_setup(home: &Path, bin: &Path) -> Self {
-        let config_dir = alondra_core::claude_account::configured_profile(&|key| std::env::var(key).ok())
+    pub fn for_setup(home: &Path, bin: &Path, env: &impl Fn(&str) -> Option<String>) -> Self {
+        let config_dir = alondra_core::claude_account::configured_profile(env)
             .map(|p| {
                 if p.is_absolute() {
                     p
@@ -353,7 +353,7 @@ fi
         assert_eq!(context.config_dir.as_deref(), Some("/Users/other/custom"));
         assert_eq!(context.path, "/opt/homebrew/bin");
         assert_eq!(context.status_timeout, Some(alondra_core::claude_account::STATUS_TIMEOUT));
-        assert_eq!(ContextEnv::for_setup(Path::new("/Users/other"), Path::new("/opt/homebrew/bin")).status_timeout, Some(alondra_core::claude_account::STATUS_TIMEOUT));
+        assert_eq!(ContextEnv::for_setup(Path::new("/Users/other"), Path::new("/opt/homebrew/bin"), &|_| None).status_timeout, Some(alondra_core::claude_account::STATUS_TIMEOUT));
     }
 
     // The daemon's nodes run with `claude_account::configured_profile` of this same environment:

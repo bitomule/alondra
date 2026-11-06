@@ -592,6 +592,7 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
     if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return crate::native_probe::Outcome::Finished; }
     match probe_fence(domain, home) {
         Ok((fence, file)) => {
+            let known = fence.state.accounts.clone();
             let prior_generations: Vec<_> = fence.state.accounts.iter().map(|account| (AccountKey::new(account.provider, account.id.clone()), account.sign_ins)).collect();
             let mut commands = vec![];
             let profiles_version = alondra_core::model_selection::profiles_version(&file.model_profiles);
@@ -654,6 +655,7 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
                 log!("Discarded native account metadata: {why}");
                 return crate::native_probe::Outcome::of(&why);
             }
+            correct_crossed_sessions(domain, &known);
             if domain.live.initial_account_check_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 domain.live.gate.poke();
             }
@@ -675,6 +677,52 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
         Err(why) => log!("accounts not checked: {why}"),
     }
     crate::native_probe::Outcome::Finished
+}
+
+/// Claude accounts `before` showed with another's email and `now` show with their own: their
+/// profile answered for the other one, which keeps that email. Each with the email it wore.
+fn uncrossed(before: &[AccountStatus], now: &[AccountStatus]) -> Vec<(AccountKey, String)> {
+    let email = |status: &AccountStatus| status.email.as_deref().map(str::trim).filter(|email| !email.is_empty()).map(str::to_lowercase);
+    let current = |account: &AccountStatus| now.iter().find(|status| status.provider == account.provider && status.id == account.id).and_then(email);
+    let claude: Vec<_> = before.iter().filter(|account| account.provider == Provider::Claude).collect();
+    claude.iter().filter_map(|account| {
+        let worn = email(account)?;
+        let owner = claude.iter().any(|other| other.id != account.id && email(other).as_ref() == Some(&worn) && current(other).as_ref() == Some(&worn));
+        (owner && current(account).is_some_and(|own| own != worn)).then(|| (AccountKey::new(account.provider, account.id.clone()), worn))
+    }).collect()
+}
+
+/// While an account answered with another's profile, its sessions recorded that other identity:
+/// they ran on it. Their conversations are shared, so they go on, under the account's own identity.
+pub(crate) fn correct_crossed_sessions(domain: &DomainRuntime, before: &[AccountStatus]) {
+    let state = domain.read().state().clone();
+    let crossed = uncrossed(before, &state.accounts);
+    if crossed.is_empty() { return; }
+    let Some(root) = domain.sdk().and_then(|(backend, _)| backend.for_provider(Provider::Claude, domain.home()).ok()).map(|backend| backend.state_root) else { return };
+    for (key, worn) in crossed {
+        let Some(status) = state.accounts.iter().find(|status| status.provider == key.provider && status.id == key.account) else { continue };
+        log!("account {} no longer answers with the identity of another account: its sessions take its own", key.account);
+        for task in state.tasks.values().filter(|task| !task.over() && task.provider == key.provider && task.account_key() == key) {
+            let Some(stamp) = state.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.execution().cloned()) else { continue };
+            match crate::sdk_owner::NativeAccountIdentity::correct_email(&root.join(stamp.instance().as_str()), &worn, status) {
+                Ok(true) => log!("the session of {} now records the identity of account {}", task.id, key.account),
+                Ok(false) => {}
+                Err(why) => log!("could not correct the identity the session of {} recorded: {why}", task.id),
+            }
+        }
+    }
+}
+
+/// Two Claude accounts with one email: one of them answered with the other's profile, and the
+/// sessions of the account it really is would be refused. They are checked before any is taken over.
+pub fn check_if_crossed(domain: &DomainRuntime) {
+    let crossed = {
+        let read = domain.read();
+        let emails: Vec<_> = read.state().accounts.iter().filter(|account| account.provider == Provider::Claude)
+            .filter_map(|account| account.email.as_deref()).map(|email| email.trim().to_lowercase()).filter(|email| !email.is_empty()).collect();
+        emails.iter().enumerate().any(|(index, email)| emails[..index].contains(email))
+    };
+    if crossed { check(domain, domain.home()); }
 }
 
 /// Claude never names its native default model, so the orchestrator starts with opus until the

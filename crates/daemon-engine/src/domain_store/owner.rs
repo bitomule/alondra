@@ -791,8 +791,9 @@ impl<'connection> OwnerTransaction<'connection> {
         let Some(expected)=expected else{return Ok(())};
         let Some(provider)=alondra_core::accounts::Provider::from_driver(binding.driver()) else{return Ok(())};
         let id=crate::usage_probe::account_of(binding.credential());
-        if let Some(change)=self.state().accounts.iter().find(|account|account.provider==provider && account.id==id).and_then(|account|expected.change(account)){
-            return Err(if change=="identity"{DomainError::new("native_account_changed","This account now has a different known identity. Its existing native session will not take new input or switch accounts; create a new node")}else{DomainError::new("native_billing_policy_changed","Billing policy changed for this account. Restore the original policy or create a new node with an explicit paid account selection")}.into())
+        let account=self.state().accounts.iter().find(|account|account.provider==provider && account.id==id);
+        if let Some((account,change))=account.and_then(|account|expected.change(account).map(|change|(account,change))){
+            return Err(if change=="identity"{DomainError::new("native_account_changed",format!("the account {} now has a different known identity. Sign that account in again with the identity this session started on, then try again, or cancel the task",account.name))}else{DomainError::new("native_billing_policy_changed","Billing policy changed for this account. Restore the original policy or create a new node with an explicit paid account selection")}.into())
         }
         Ok(())
     }

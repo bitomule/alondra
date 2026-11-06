@@ -2004,7 +2004,7 @@ impl DomainState {
     /// The task's SDK execution could not be taken over and has no host: the task holds on a card
     /// that says why and offers to try again or to cancel it. Nothing runs it until the user says.
     /// A card that only asked how the task goes on becomes this one, so the task has one card.
-    pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, quiet: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let generation = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.generation())
             .ok_or_else(|| DomainError::new("conflict", format!("Task {task} has no execution to lose")))?;
         self.sdk_execution(task, generation, lifecycles)?;
@@ -2020,13 +2020,17 @@ impl DomainState {
             lost.order = order;
             lost.system_card = self.interactions[&card].system_card.clone();
             self.interactions.insert(card.clone(), lost);
-            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+            if !quiet {
+                effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+            }
             return Ok(());
         }
         let card = InteractionId(format!("{HOST_LOST_PREFIX}{task}-{}", self.revision + 1));
         self.decide(lifecycles, task, LifecycleRecord::Paused { card: card.clone(), owner: Some(PauseOwner::User) })?;
         self.interactions.insert(card.clone(), host_lost_card(card.clone(), task, &title, reason, self.revision + 1));
-        effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        if !quiet {
+            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        }
         Ok(())
     }
 

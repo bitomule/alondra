@@ -243,6 +243,61 @@ fn the_default_account_is_the_profile_the_daemon_was_set_up_with() {
 }
 
 #[test]
+fn a_daemon_environment_naming_an_added_account_leaves_each_account_on_its_own_profile() {
+    let mut f = fixture();
+    let config = with(vec![work()]);
+    f.store(&config).unwrap();
+    let added = f.home.join("accounts/work");
+    std::fs::write(added.join("signed-in"), "work@example.org").unwrap();
+    f.claude.environment = BTreeMap::from([("HOME".into(), f.user_home.display().to_string()),
+        ("CLAUDE_CONFIG_DIR".into(), added.display().to_string()), ("CLAUDE_HOME".into(), added.display().to_string())]);
+    let seen = observe(&f.home, Some(&f.claude), &config);
+    assert_eq!(seen.iter().map(|s| s.email.as_deref()).collect::<Vec<_>>(), [Some("me@example.org"), Some("work@example.org")]);
+}
+
+#[test]
+fn accounts_sharing_one_email_are_checked_before_their_sessions_are_taken_over() {
+    let f = fixture();
+    let config = with(vec![work()]);
+    f.store(&config).unwrap();
+    std::fs::write(f.home.join("accounts/work/signed-in"), "work@example.org").unwrap();
+    let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let native = f.claude.executable.clone();
+    domain.enable_sdk(crate::sdk_owner::SdkBackend {
+        provider: Provider::Claude, origin: None,
+        node: native.clone(), node_sha256: String::new(),
+        host: native.clone(), host_sha256: String::new(),
+        native, native_sha256: String::new(),
+        host_environment: BTreeMap::new(),
+        native_environment: BTreeMap::from([("HOME".into(), f.user_home.display().to_string()), ("PATH".into(), f.claude.path.clone())]),
+        confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native: false,
+    });
+    let stored = |email: &str| vec![probe_account(email), AccountStatus { id: AccountId::parse("work").unwrap(), ..probe_account("work@example.org") }];
+    let default = || domain.read().state().accounts[0].email.clone();
+    record_probe_fixture(&domain, stored("stale@example.org"));
+    check_if_crossed(&domain);
+    assert_eq!(default().as_deref(), Some("stale@example.org"), "accounts with their own emails wait for the usual check");
+    record_probe_fixture(&domain, stored("work@example.org"));
+    check_if_crossed(&domain);
+    assert_eq!(default().as_deref(), Some("me@example.org"), "the default account answers for its own profile");
+}
+
+#[test]
+fn only_the_account_that_wore_anothers_email_is_uncrossed() {
+    let account = |id: &str, email: Option<&str>| AccountStatus { id: AccountId::parse(id).unwrap(), email: email.map(str::to_owned), ..probe_account("") };
+    let key = |id: &str| AccountKey::new(Provider::Claude, AccountId::parse(id).unwrap());
+    let shared = "work@example.org";
+    assert_eq!(uncrossed(&[account("default", Some(shared)), account("work", Some(" WORK@example.org "))], &[account("default", Some("me@example.org")), account("work", Some(shared))]),
+        [(key("default"), shared.to_owned())]);
+    let same = [account("default", Some(shared)), account("work", Some(shared))];
+    assert!(uncrossed(&same, &same).is_empty(), "two folders signed in to one account stay as they are");
+    assert!(uncrossed(&same, &[account("default", None), account("work", Some(shared))]).is_empty(), "a check that saw no email proves nothing");
+    assert!(uncrossed(&same, &[account("default", Some("a@example.org")), account("work", Some("b@example.org"))]).is_empty(), "with no account keeping it, it is nobody's identity");
+    assert!(uncrossed(&[account("default", Some("a@example.org")), account("work", Some(shared))], &[account("default", Some("b@example.org")), account("work", Some(shared))]).is_empty(),
+        "signing in to another identity is no crossing: its sessions stay refused");
+}
+
+#[test]
 fn an_account_is_checked_with_the_environment_its_nodes_run_claude_with() {
     let mut f = fixture();
     std::fs::remove_file(f.user_home.join(".claude/signed-in")).unwrap();

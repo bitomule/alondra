@@ -639,10 +639,15 @@ fn top_level_key(line: &str) -> Option<&str> {
     Some(key.trim().trim_matches('"'))
 }
 
+/// The folder holding every added account's own folder.
+pub fn folders(home: &Path) -> PathBuf {
+    home.join(FOLDER)
+}
+
 /// The folder of an account's provider configuration; none for the default one, which stays the
 /// provider's own.
 pub fn folder(home: &Path, id: &AccountId) -> Option<PathBuf> {
-    (!id.is_default()).then(|| home.join(FOLDER).join(id.as_str()))
+    (!id.is_default()).then(|| folders(home).join(id.as_str()))
 }
 
 pub fn provider_folder(home: &Path, key: &AccountKey) -> Option<PathBuf> {
