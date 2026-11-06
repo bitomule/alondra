@@ -2,6 +2,7 @@ import AlondraAccount
 import AlondraIroh
 import AlondraNotifications
 import AlondraPairing
+import AlondraTransport
 import AppKit
 import UserNotifications
 
@@ -11,6 +12,8 @@ import UserNotifications
 final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let owner: MacWorkspaceOwner
     let notices = MacLocalNotices()
+    private let presence = ClientPresence()
+    private var inputMonitor: Any?
 
     // Own keychain services: the Mac app moved from com.bitomule.alondra.mac to the iOS bundle ID,
     // and the login keychain guards the old app's items with an ACL bound to that app. Reading them
@@ -35,7 +38,34 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [
+            .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel,
+        ]) { [weak self] event in
+            self?.noteActivity()
+            return event
+        }
         Task { [owner, notices] in await notices.run(owner: owner) }
+    }
+
+    private func noteActivity() {
+        guard NSApplication.shared.isActive else { return }
+        var connections: [String: Connection] = [:]
+        if let local = owner.thisMac { connections["local"] = local }
+        for mac in owner.account.macs {
+            if let connection = owner.account.session(choice: mac.id) {
+                connections[mac.id.uuidString] = connection
+            }
+        }
+        Task { [presence] in
+            var clients: [String: AlondraAPIClient] = [:]
+            for (id, connection) in connections { clients[id] = await connection.api }
+            await presence.activity(active: true, clients: clients)
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
     }
 
     /// With the app in front, the window shows the same notice; a pairing request as a sheet.

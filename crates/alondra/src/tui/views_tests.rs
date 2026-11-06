@@ -43,19 +43,34 @@ fn tasks_search_types_and_pastes_into_the_views_key() {
 }
 
 #[test]
-fn terminal_presence_is_recorded_once_per_minute() {
+fn terminal_presence_is_throttled_for_thirty_seconds() {
     let mut app = app();
-    app.activity_told = 0;
-    app.note_activity();
-    app.note_activity();
+    let start = Instant::now();
+    for seconds in (0..30).step_by(3) {
+        app.note_activity_at(start + Duration::from_secs(seconds));
+    }
     assert_eq!(
-        app.posted
+        app.presence_posted
             .borrow()
             .iter()
             .filter(|(path, _)| path == crate::ops::PRESENCE)
             .count(),
         1
     );
+    app.note_activity_at(start + Duration::from_secs(30));
+    assert_eq!(app.presence_posted.borrow().len(), 2);
+    assert_eq!(app.presence_posted.borrow()[0].1, json!({"client": "tui"}));
+}
+
+#[test]
+fn terminal_keys_and_paste_report_presence() {
+    let mut keyed = app();
+    press(&mut keyed, KeyCode::Down);
+    keyed.on_paste("text");
+    assert_eq!(&*keyed.presence_posted.borrow(), &[(crate::ops::PRESENCE.into(), json!({"client": "tui"}))]);
+    let mut pasted = app();
+    pasted.on_paste("text");
+    assert_eq!(&*pasted.presence_posted.borrow(), &[(crate::ops::PRESENCE.into(), json!({"client": "tui"}))]);
 }
 
 #[test]
