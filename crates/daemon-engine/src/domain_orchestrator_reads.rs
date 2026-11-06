@@ -89,6 +89,7 @@ fn live_fields(row: &mut Value, state: &DomainState, agent: &AgentId) {
         Some(LiveState::WaitingCapacity(Capacity::Usage)) => "it waits for the usage limit to renew",
         Some(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "it waits for Claude's API to answer again",
         Some(LiveState::WaitingTask(_)) => "its task waits for another task to be done",
+        Some(LiveState::Paused) => "the user interrupted its turn; it waits for a new message",
         None => "it has no open task",
     });
 }

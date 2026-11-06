@@ -20,6 +20,10 @@ fn request(f: &Fixture, id: &str) {
 }
 
 fn task_on_next_spawn(f: &Fixture, requests: &[&str]) -> (faults::SpawnHook, Arc<AtomicBool>) {
+    task_then_on_next_spawn(f, requests, || {})
+}
+
+fn task_then_on_next_spawn(f: &Fixture, requests: &[&str], after: impl FnOnce() + Send + 'static) -> (faults::SpawnHook, Arc<AtomicBool>) {
     let domain = Arc::clone(&f.executor.domain);
     let home = f.executor.home.clone();
     let requests: Vec<String> = requests.iter().map(|id| (*id).to_owned()).collect();
@@ -55,6 +59,7 @@ fn task_on_next_spawn(f: &Fixture, requests: &[&str]) -> (faults::SpawnHook, Arc
             drop(state);
             domain.execute_bearer(bearer, &envelope).unwrap();
         }
+        after();
         done.store(true, Ordering::SeqCst);
     });
     (hook, called)
@@ -169,6 +174,91 @@ async fn repeated_recovery_write_failures_keep_the_claim_until_space_returns() {
     f.tick().await;
     assert!(called.load(Ordering::SeqCst));
     assert_eq!(f.domain().read().state().tasks.len(), 1);
+}
+
+#[tokio::test]
+async fn non_actionable_confirmed_batch_interruption_continues_without_repeating_its_task() {
+    let f = fixture();
+    request(&f, "pending");
+    let (_hook, called) = task_on_next_spawn(&f, &["pending"]);
+    f.mark_once("fixture:tool-then-exit");
+    f.tick().await;
+    assert!(called.load(Ordering::SeqCst));
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(runtime.active_run.is_none());
+    assert_eq!(runtime.batch_handoffs.len(), 1);
+    let run = &runtime.batch_handoffs[0].run_id;
+    assert_eq!(f.domain().store.lock().unwrap().batch_effects(run).unwrap().len(), 1);
+    assert!(f.cards(PROBLEM_PREFIX).is_empty());
+    assert_eq!(f.domain().read().state().tasks.len(), 1);
+    let (_hold, stop) = tokio::sync::watch::channel(false);
+    f.executor.tick_with_clock(stop.clone(), Some(runtime.retry_at.unwrap() - 1)).await.unwrap();
+    assert_eq!(f.starts().len(), 1, "a stopped native turn uses retry backoff");
+    f.executor.tick_with_clock(stop, runtime.retry_at).await.unwrap();
+    assert_eq!(f.starts().len(), 2);
+    assert!(f.prompts().last().unwrap().contains("CONFIRMED BATCH HANDOFF"));
+    assert_eq!(f.domain().read().state().tasks.len(), 1, "the committed task is not created twice");
+    assert_eq!(f.domain().store.lock().unwrap().batch_effects(run).unwrap().len(), 1);
+    assert!(load(&f.executor.home).unwrap().batch_handoffs.is_empty());
+    assert!(f.cards(PROBLEM_PREFIX).is_empty());
+}
+
+#[tokio::test]
+async fn non_actionable_confirmed_batch_recovers_a_failed_runtime_write_after_claim_release() {
+    let f = fixture();
+    request(&f, "pending");
+    let fault = Arc::new(std::sync::Mutex::new(None));
+    let armed = Arc::clone(&fault);
+    let home = f.executor.home.clone();
+    let (_hook, _) = task_then_on_next_spawn(&f, &["pending"], move || {
+        *armed.lock().unwrap() = Some(faults::Injection::at(&home, "runtime_write", 2));
+    });
+    f.mark_once("fixture:tool-then-exit");
+    assert!(f.executor.tick().await.is_err());
+    let fault = fault.lock().unwrap().take().unwrap();
+    assert_eq!(fault.hits(), 1);
+    drop(fault);
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(runtime.active_run.is_some(), "the final runtime write did not commit");
+    assert_eq!(runtime.batch_handoffs.len(), 1);
+    assert_eq!(f.attempts(), ["retryable"], "the claims were already released");
+    f.executor.repair_incomplete().await.unwrap();
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(runtime.active_run.is_none());
+    assert_eq!(runtime.batch_handoffs.len(), 1);
+    f.tick().await;
+    assert!(f.prompts().last().unwrap().contains("CONFIRMED BATCH HANDOFF"));
+    assert_eq!(f.domain().read().state().tasks.len(), 1);
+    assert!(load(&f.executor.home).unwrap().batch_handoffs.is_empty());
+    assert!(f.cards(PROBLEM_PREFIX).is_empty());
+}
+
+#[tokio::test]
+async fn non_actionable_read_only_batch_interruptions_back_off_and_only_persistent_failure_asks() {
+    let f = fixture();
+    f.tell("read-only", "Inspect the current state");
+    f.mark("fixture:read-then-exit");
+    let (_hold, stop) = tokio::sync::watch::channel(false);
+    for failure in 1..=STUCK_AFTER + 1 {
+        let next = load(&f.executor.home).unwrap().retry_at;
+        f.executor.tick_with_clock(stop.clone(), next).await.unwrap();
+        let runtime = load(&f.executor.home).unwrap();
+        assert_eq!(runtime.consecutive_failures, failure);
+        assert!(runtime.active_run.is_none() && runtime.retry_at.is_some());
+        assert!(f.cards(PROBLEM_PREFIX).is_empty());
+        assert_eq!(f.cards(STUCK_PROBLEM_PREFIX).len(), usize::from(failure >= STUCK_AFTER));
+        let starts = f.starts().len();
+        f.executor.tick_with_clock(stop.clone(), Some(runtime.retry_at.unwrap() - 1)).await.unwrap();
+        assert_eq!(f.starts().len(), starts, "no immediate retry loop");
+    }
+    f.clear_marker();
+    let next = load(&f.executor.home).unwrap().retry_at;
+    f.executor.tick_with_clock(stop, next).await.unwrap();
+    let runtime = load(&f.executor.home).unwrap();
+    assert_eq!(runtime.consecutive_failures, 0);
+    assert!(runtime.stuck_problem.is_none() && runtime.batch_handoffs.is_empty());
+    assert!(f.domain().read().state().interactions.values()
+        .filter(|card| card.id.0.starts_with(STUCK_PROBLEM_PREFIX)).all(|card| card.withdrawn));
 }
 
 #[tokio::test]

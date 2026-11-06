@@ -209,7 +209,7 @@ fn host_ended(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
     let read=domain.read();
     let journal=read.state().lifecycle_journal.get(task).ok_or_else(||failure("The task has no lifecycle"))?;
     let admitted=journal.iter().rposition(|record|matches!(record,LifecycleRecord::Admitted{..})).unwrap_or(0);
-    Ok(journal.iter().skip(admitted).any(|record|matches!(record,LifecycleRecord::HostEnded{..}|LifecycleRecord::ExecutionReleased{..})))
+    Ok(journal.iter().skip(admitted).any(|record|matches!(record,LifecycleRecord::HostEnded{..}|LifecycleRecord::HostStopped{..}|LifecycleRecord::ExecutionReleased{..})))
 }
 /// Whether the task has something to go on with and nobody else to wait for: the moment its next
 /// node starts, as the node it moved from would have resumed then.

@@ -245,12 +245,13 @@ async fn a_batch_claude_never_answered_is_offered_again_without_a_card() {
 }
 
 #[tokio::test]
-async fn a_batch_that_called_an_alondra_tool_and_died_is_the_users_call() {
+async fn a_batch_with_only_uncommitted_tool_intent_retries_without_a_card() {
     let f = ended("fixture:tool-then-exit").await;
     let runtime = load(&f.executor.home).unwrap();
-    assert_eq!(runtime.failure, Some(Failure::Interrupted), "{runtime:?}");
-    assert_eq!(f.attempts(), ["uncertain"]);
-    assert_eq!(f.cards("problem-orchestrator-").len(), 1);
+    assert_eq!(runtime.failure, Some(Failure::Launch), "{runtime:?}");
+    assert_eq!(f.attempts(), ["retryable"]);
+    assert!(f.cards("problem-orchestrator-").is_empty());
+    assert_eq!(runtime.batch_handoffs.len(), 1);
 }
 
 #[tokio::test]
@@ -265,9 +266,9 @@ async fn a_batch_with_an_alondra_tool_refused_is_the_users_call() {
 async fn a_result_of_another_input_is_not_the_batch_handled() {
     let f = ended("fixture:another-input").await;
     let runtime = load(&f.executor.home).unwrap();
-    assert_eq!(runtime.failure, Some(Failure::Interrupted), "{runtime:?}");
+    assert_eq!(runtime.failure, Some(Failure::Launch), "{runtime:?}");
     assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("another input")), "{runtime:?}");
-    assert_eq!(f.attempts(), ["uncertain"]);
+    assert_eq!(f.attempts(), ["retryable"]);
 }
 
 #[tokio::test]

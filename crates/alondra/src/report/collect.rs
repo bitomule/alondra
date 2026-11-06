@@ -406,7 +406,7 @@ const EVENT_KINDS: &[&str] = &[
 const FACT_KINDS: &[&str] = &[
     "ask", "resource_available", "turn_started", "input_consumed", "input_dropped", "work_started", "work_ended", "continuation_consumed",
     "turn_ended", "connection_lost", "resource_released", "callback_settled", "callback_aborted", "answered_by_policy", "effect_accepted",
-    "effect_observed", "interrupt_accepted", "notification", "host_ended",
+    "effect_observed", "interrupt_accepted", "notification", "host_ended", "host_stopped",
 ];
 
 /// Fields of an event that hold text a person wrote or a name they chose: never in the report.

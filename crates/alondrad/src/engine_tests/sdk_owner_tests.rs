@@ -241,10 +241,9 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
     assert!(driver.host_to_replace(), "Claude's exit ends its host for the owner");
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the forced turn ended");
-    let card = open_card(&slice.domain, SESSION_ENDED_PREFIX).expect("the stopped task asks the user");
-    let title = slice.domain.read().state().tasks[&TaskId::from(TASK)].title.clone();
-    assert_eq!(card.card.effective_title(), format!("You interrupted “{title}”: tell it how to go on"), "it ended as the user's interrupt");
-    answer(&slice.domain, &card.id, CARRY_ON);
+    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "the stopped task creates no card");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    slice.run(&Actor::System, "continue", Command::TellNode { task_id: TASK.into(), text: "Continue the release notes".into(), from_user: true, answers: None });
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
     let starts = slice.starts();
@@ -254,7 +253,7 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
 }
 
 // The domain refuses to record that Claude accepted an interrupt: the owner goes on, and the turn
-// Claude ends still ends with one card.
+// Claude ends waits for another instruction without a card.
 #[test]
 fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
     let slice = Slice::new();
@@ -265,18 +264,16 @@ fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
     slice.settle(&mut driver);
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "with one card");
+    assert!(Slice::read_cards(&slice.domain).is_empty(), "without a card");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
 #[test]
-fn cancelling_from_the_turn_end_card_after_an_interrupt_ends_the_task() {
+fn cancelling_from_the_turn_end_card_after_a_failure_ends_the_task() {
     let slice = Slice::new();
-    let mut driver = slice.launch_working();
-    assert_eq!(press_interrupt(&slice, driver.agent())["outcome"], "applied");
-    driver.step(&|| false).unwrap();
+    let mut driver = slice.launch_with("max-turns");
     slice.settle(&mut driver);
-    assert_eq!(slice.control_rows()[0].2, "handed");
     let reply = cancel_from_turn_end_card(&slice);
     assert_cancelled_from_its_card(&slice, &reply);
     driver.stop().unwrap();
@@ -304,9 +301,9 @@ fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
 }
 
 // The user interrupts from the task while such a command runs: Claude Code stops it, and the turn
-// that waited for it ends with one card.
+// that waited for it pauses without a card.
 #[test]
-fn interrupting_a_command_claude_code_tracks_as_work_ends_its_turn_with_one_card() {
+fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("foreground-command-hold");
     while slice.observations_with("\"subtype\":\"task_started\"") == 0 {
@@ -321,17 +318,17 @@ fn interrupting_a_command_claude_code_tracks_as_work_ends_its_turn_with_one_card
     assert_eq!(slice.observations_with("\"status\":\"stopped\""), 1, "Claude Code stopped the command");
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
     let cards = Slice::read_cards(&slice.domain);
-    assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
-    assert_eq!(Slice::turn_end_need(&slice.domain), "You interrupted “<title>”: tell it how to go on", "the card says the user stopped the turn");
+    assert!(cards.is_empty(), "the turn ended without a card: {cards:?}");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
     driver.stop().unwrap();
 }
 
 // C1: the user presses Interrupt on the task of a working SDK node. The control commits with the
 // domain's decision, the owner sends it, the host hands it to Claude, and the interrupted turn
-// ends with one card.
+// pauses without a card.
 #[test]
-fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_its_turn_ends_with_one_card() {
+fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_without_a_card() {
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let offered = node_offers(&slice.domain, driver.agent());
@@ -351,8 +348,8 @@ fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_its_turn_end
     slice.settle(&mut driver);
     assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
     let cards = Slice::read_cards(&slice.domain);
-    assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
-    assert_eq!(Slice::turn_end_need(&slice.domain), "You interrupted “<title>”: tell it how to go on", "the card says the user stopped the turn");
+    assert!(cards.is_empty(), "the turn ended without a card: {cards:?}");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
     let again = slice.try_run(&user(), "interrupt-again", Command::InterruptTurn { agent_id: driver.agent().clone() }).unwrap_err();
     let StoreError::Domain(refusal) = again else { panic!("{again:?}") };
@@ -500,7 +497,8 @@ fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
     assert_eq!(slice.starts(), starts);
     assert_eq!(slice.prompts(), prompts, "a user interruption never becomes another inference turn");
     assert!(Slice::lifecycle(&slice.domain).turn().is_none());
-    assert_eq!(Slice::turn_end_need(&slice.domain), "You interrupted “<title>”: tell it how to go on");
+    assert!(Slice::read_cards(&slice.domain).is_empty());
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     assert!(!driver.host_to_replace());
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
     driver.stop().unwrap();

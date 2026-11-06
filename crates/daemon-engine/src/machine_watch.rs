@@ -1,25 +1,11 @@
-//! What the daemon does when the Mac stops nodes: the disk nearly full, or a node that declared
-//! with `wait_for_machine` that it waits for the machine. One incident at a
-//! time puts one Problem in front of the user and, once the gauges say the Mac recovered (or the
-//! user says they fixed it), withdraws the card. No clock reminds about it or holds it open. The nodes that waited are not
-//! woken here: they wait paused at the admission gate, which brings them back one at a time within the
-//! limit (`pauses`). A disk below `disk::low_lines()` opens an incident before any node fails,
-//! and while it is open no node starts; nor while the disk has no room for the next node's build
-//! on top of what the nodes at work may still take (`disk_room`, sized by `disk_peaks`). Under the
-//! disk's floor with nodes at work, the next turn of all but the lightest waits for room, with no
-//! card (`admission::hold_for_disk`). The disk watched is the Mac's own and every volume a node
-//! was launched on, so a repository on an external disk is watched too.
-//!
-//! Memory opens no incident: the user can do nothing about it that Alondra does not do already.
-//! `pace` takes each sample into `MacState`, from which the gate reads whether there is room for
-//! one more node; memory never pauses a working node. The orchestrator hears of neither: it has
-//! nothing to do about the machine, and `launch` says why a task is queued.
-//!
-//! With the disk full the domain may not be able to write the card, so the user then hears it by
-//! a push, which writes nothing to disk.
+//! Machine pressure is recorded as samples, incidents and admission state. No incident creates
+//! a user card or a fallback push. The admission gate resumes waiting nodes after recovery.
+//! Disk incidents retain hysteresis; memory only paces new starts and never stops running work.
 use alondra_core::domain::SystemCard;
+#[cfg(test)]
+use alondra_core::machine_incident::MACHINE_FIXED_LABEL;
 use crate::locks::Poisonable as _;
-use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause, MachineResource};
+use alondra_core::machine_incident::{ MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause, MachineResource};
 use alondra_core::views::Lang;
 use alondra_core::domain::TaskId;
 use alondra_core::{Machine, MemoryPressure, Millis, now_millis};
@@ -28,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// One machine incident is open at a time, so its card has one cause.
+#[cfg(test)]
 const MACHINE_CAUSE: &str = "machine";
 use std::sync::Mutex;
 use std::time::Duration;
@@ -172,7 +159,7 @@ pub(crate) struct Waiter {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Action {
-    Raise { id: String, card: MachineCard },
+    Log { id: String, card: MachineCard },
     Withdraw(String),
     /// The incident is over: its declared waits are left to the admission gate.
     Release(Vec<String>),
@@ -253,7 +240,7 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
         incident.card = Some(id.clone());
         incident.cause = cause;
         incident.nodes_shown = waiting.len();
-        actions.push(Action::Raise { id, card });
+        actions.push(Action::Log { id, card });
     }
     (Some(incident), actions)
 }
@@ -264,7 +251,7 @@ fn open(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[W
     let card = card_for(cause, machine, disk, waiting);
     let id = format!("{MACHINE_PREFIX}{now}");
     let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), healthy: 0 };
-    (Some(incident), vec![Action::Raise { id, card }])
+    (Some(incident), vec![Action::Log { id, card }])
 }
 
 /// The volume the machine's own disk gauge measures.
@@ -664,26 +651,13 @@ fn fixed(domain: &DomainRuntime, incident: Option<&Incident>) -> bool {
         Some(InteractionPayload::Question { answer: Some(answer), .. }) if answer.option_id == MACHINE_FIXED_OPTION)
 }
 
-fn push_text(card: MachineCard) -> impl Fn(bool) -> String + Send + Sync {
-    move |spanish| {
-        let (need, why) = card.text(if spanish { Lang::Es } else { Lang::En });
-        format!("{need}. {why}")
-    }
-}
-
 /// Carries out one step's actions.
-async fn act(domain: &std::sync::Arc<DomainRuntime>, alerts: &impl Alerts, actions: Vec<Action>) {
+async fn act(domain: &std::sync::Arc<DomainRuntime>, _alerts: &impl Alerts, actions: Vec<Action>) {
     for action in actions {
         match action {
-            Action::Raise { id, card } => {
+            Action::Log { id, card } => {
                 let (need, why) = card.text(Lang::En);
-                let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None };
-                let body = card.to_body();
-                let raising = domain.clone();
-                if let Err(error) = tokio::task::spawn_blocking(move || raising.raise_worded_problem(&id, Some(SystemCard::Machine), MACHINE_CAUSE, need, why, body, vec![option], None)).await.expect("machine card worker failed") {
-                    log!("could not put the machine's card in front of the user, pushing it instead: {error:?}");
-                    alerts.tell(push_text(card), false).await;
-                }
+                log!("machine incident {id}: {need}. {why}; the admission gate waits for recovery");
             }
             Action::Withdraw(id) => {
                 let withdrawing = domain.clone();
@@ -821,11 +795,11 @@ mod tests {
     }
 
     fn raised(actions: &[Action]) -> Vec<&MachineCard> {
-        actions.iter().filter_map(|action| match action { Action::Raise { card, .. } => Some(card), _ => None }).collect()
+        actions.iter().filter_map(|action| match action { Action::Log { card, .. } => Some(card), _ => None }).collect()
     }
 
     fn raised_ids(actions: &[Action]) -> Vec<String> {
-        actions.iter().filter_map(|action| match action { Action::Raise { id, .. } => Some(id.clone()), _ => None }).collect()
+        actions.iter().filter_map(|action| match action { Action::Log { id, .. } => Some(id.clone()), _ => None }).collect()
     }
 
     fn working(tasks: &[(&str, &str)]) -> BTreeMap<TaskId, Option<String>> {
@@ -1352,38 +1326,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_full_disk_puts_one_card_tells_the_orchestrator_nothing_and_i_have_fixed_it_withdraws_it() {
+    async fn a_full_disk_records_pressure_and_recovers_without_cards_or_pushes() {
         let (_home, domain) = world();
-        let session = "fase0";
-        domain.live.machine_watch.declare(session, None, "disk full, 0 bytes free", 0, now_millis());
-        let node = Node::connect(&domain, session);
+        domain.live.machine_watch.declare("node", None, "disk full", 0, now_millis());
         let disk = Arc::new(Mutex::new(0u64));
         let reading = disk.clone();
         let told = Arc::new(Told(Mutex::new(vec![])));
         let clock = Clock::default();
         let watcher = watching(&domain, &clock, move |at| Machine { at, ..machine(*reading.lock().unwrap(), 50) }, &told);
-
         clock.samples(1).await;
-        assert_eq!(open_machine_cards(&domain).len(), 1, "the first sample puts the card");
-        clock.samples(5).await;
-        let cards = open_machine_cards(&domain);
-        assert_eq!(cards.len(), 1, "one card for the incident, not one per sample");
-        assert_eq!(cards[0].card.effective_title(), "Free up disk space: 0 B left");
-        assert!(orchestrator_inbox(&domain).is_empty(), "the orchestrator has nothing to do about it: {:?}", orchestrator_inbox(&domain));
-        assert!(told.0.lock().unwrap().is_empty(), "the card got through: no push in its place");
-
-        *disk.lock().unwrap() = 50 * GB;
-        let state = domain.state().unwrap();
-        domain.execute(&Actor::User { user_id: "device:phone".into() }, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixed".into(), expected_revision: state.revision,
-            command: Command::AnswerQuestion { attachments: vec![], interaction_id: cards[0].id.clone(), option_id: MACHINE_FIXED_OPTION.into(), inputs: Default::default() },
-        }, None, || Ok(())).unwrap();
-        clock.samples(1).await;
-        watcher.abort();
-        assert!(domain.live.machine_watch.incident().is_none(), "the next sample after the answer closes the incident");
+        assert!(domain.live.machine_watch.incident().is_some());
         assert!(open_machine_cards(&domain).is_empty());
-        assert!(node.texts().is_empty(), "the admission gate brings the node back, not the machine watch");
-        assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
+        clock.samples(5).await;
+        assert!(open_machine_cards(&domain).is_empty());
+        assert!(told.0.lock().unwrap().is_empty());
+        assert!(orchestrator_inbox(&domain).is_empty());
+        *disk.lock().unwrap() = 50 * GB;
+        clock.samples(HEALTHY_SAMPLES as Millis).await;
+        watcher.abort();
+        assert!(domain.live.machine_watch.incident().is_none());
+        assert!(domain.live.machine_watch.declared().is_empty());
+        assert!(open_machine_cards(&domain).is_empty());
+        assert!(told.0.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1413,22 +1377,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn when_the_card_cannot_be_written_the_user_hears_it_by_push() {
+    async fn recording_a_machine_incident_does_not_write_the_domain_or_push() {
         let (_home, domain) = world();
-        domain.live.machine_watch.declare("fase0", None, "disk full", 0, now_millis());
+        let before = domain.state().unwrap();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, healthy: 0 };
-        domain.live.machine_watch.set_incident(Some(incident));
-        // The card's id is taken already, so the domain refuses it as a full disk would.
-        domain.raise_worded_problem("machine-0-2", Some(SystemCard::Machine), MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
-            alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None },
-        ], None).unwrap();
-        let clock = Clock::default();
-        let watcher = watching(&domain, &clock, |at| Machine { at, ..machine(0, 50) }, &told);
-        clock.samples(1).await;
-        watcher.abort();
-        assert_eq!(told.0.lock().unwrap().len(), 1, "{:?}", told.0.lock().unwrap());
-        assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Parados: fase0. Continúan solos cuando se recupere.");
+        let (_, actions) = step(None, &machine(0, 50), &[], false, 0);
+        act(&domain, &told, actions).await;
+        let after = domain.state().unwrap();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.interactions, before.interactions);
+        assert!(told.0.lock().unwrap().is_empty());
     }
 
     #[test]

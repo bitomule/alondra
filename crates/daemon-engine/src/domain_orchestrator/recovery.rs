@@ -96,6 +96,13 @@ impl Executor {
                         .iter()
                         .any(|handoff| handoff.run_id == batch.run)
                 {
+                    if active {
+                        runtime.active_run = None;
+                        runtime.last_error = None;
+                        runtime.failure = None;
+                        runtime.cancel_requested = false;
+                        save(&self.home, &runtime)?;
+                    }
                     continue;
                 }
                 if !unresolved && !active {

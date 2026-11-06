@@ -582,6 +582,7 @@ impl TaskActivity {
             Self::Live(LiveState::WaitingCapacity(Capacity::Usage)) => "waiting_usage",
             Self::Live(LiveState::WaitingCapacity(Capacity::ClaudeApi)) => "waiting_claude_api",
             Self::Live(LiveState::WaitingTask(_)) => "waiting_dependency",
+            Self::Live(LiveState::Paused) => "paused",
             Self::Starting => "starting",
             Self::ComingBack => "coming_back",
             Self::Reconnecting => "reconnecting",

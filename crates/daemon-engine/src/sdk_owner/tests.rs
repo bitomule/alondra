@@ -3052,7 +3052,8 @@ fn an_interrupt_whose_turn_already_ended_is_revoked_and_never_sent() {
     }
     assert_eq!(statuses(&slice), ["handed", "revoked"]);
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "only the first reached Claude");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1);
+    assert!(Slice::read_cards(&slice.domain).is_empty());
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -3068,7 +3069,8 @@ fn a_step_on_a_quiet_turn_returns_to_send_the_interrupt_that_comes_next() {
     driver.step(&|| false).unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "the interrupt went out on the next step");
     slice.settle(&mut driver);
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1);
+    assert!(Slice::read_cards(&slice.domain).is_empty());
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -3524,8 +3526,7 @@ fn a_node_running_a_user_only_command_is_denied_without_a_card() {
 }
 
 // D13: the user interrupts while Claude waits on its card: the request is cancelled, Claude is
-// denied, the card stops waiting and an answer to it is refused; the task waits on one card that
-// says how it goes on.
+// denied, the card stops waiting and an answer to it is refused; the task pauses without a card.
 #[test]
 fn an_interrupt_cancels_the_decision_withdraws_its_card_and_refuses_a_late_answer() {
     let slice = Slice::new();
@@ -3545,7 +3546,8 @@ fn an_interrupt_cancels_the_decision_withdraws_its_card_and_refuses_a_late_answe
             && matches!(&card.payload, InteractionPayload::Question { answer: None, .. }))
         .map(|card| card.id.0.as_str())
         .collect();
-    assert_eq!(waiting.len(), 1, "one card says how the task goes on: {waiting:?}");
+    assert!(waiting.is_empty(), "no process card asks how the task goes on: {waiting:?}");
+    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -4457,11 +4459,9 @@ fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card
     recovered.stop().unwrap();
 }
 
-// A session that never opened, whose host ended with no host to resume it: the card asks the user
-// whether to send the mission again. «Send it again» reaches the Claude of the host that takes the
-// execution over, though its session has not opened yet.
+// An uncertain mission is retried automatically even when its session never opened.
 #[test]
-fn send_again_on_the_card_of_a_mission_whose_session_never_opened_reaches_claude() {
+fn an_uncertain_mission_whose_session_never_opened_reaches_claude_without_a_card() {
     let slice = Slice::new();
     let fake = hold_prompts(&slice);
     let driver = slice.launch();
@@ -4469,9 +4469,8 @@ fn send_again_on_the_card_of_a_mission_whose_session_never_opened_reaches_claude
     std::fs::copy(&fake, &slice.backend.native).unwrap();
     let restarted = slice.restart();
     end_unowned_host(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
-    let card = open_card(&restarted, HANDOFF_DOUBT_PREFIX).expect("the user is asked whether to send it again");
+    assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none());
     assert_eq!(lifecycle(&restarted).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
-    answer(&restarted, &card.id, RESEND);
     let mut resumed = slice.take_over(&restarted);
     slice.settle(&mut resumed);
     let prompts = slice.prompts();

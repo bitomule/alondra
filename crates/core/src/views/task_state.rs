@@ -303,6 +303,8 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
             };
             Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
         }
+        LiveState::Paused => Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting,
+            Some(t!(lang, "Turn interrupted. Send a message to continue.", "Turno interrumpido. Envía un mensaje para continuar.").into())),
         LiveState::WaitingUser(cards) if cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)) => in_review(task, context),
         LiveState::WaitingUser(cards) if cards.iter().all(|card| context.domain.node_pause_card(card)) =>
             Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting,

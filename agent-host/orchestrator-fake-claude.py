@@ -118,6 +118,9 @@ for raw in sys.stdin:
     if 'fixture:tool-then-exit' in text:
         assistant(message, [dict(type='tool_use', id='toolu_fixture', name='mcp__%s__create_task' % server, input=dict(title='Fixture'))])
         sys.exit(1)
+    if 'fixture:read-then-exit' in text:
+        assistant(message, [dict(type='text', text='Inspected the current state')])
+        sys.exit(1)
     if 'fixture:denied' in text:
         assistant(message, [dict(type='tool_use', id='toolu_fixture', name='mcp__%s__create_task' % server, input=dict(title='Fixture'))])
         result(message, permission_denials=[dict(tool_name='mcp__%s__create_task' % server, tool_use_id='toolu_fixture', tool_input={})])

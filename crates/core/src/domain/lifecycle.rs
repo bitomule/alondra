@@ -224,6 +224,7 @@ pub enum RuntimeObservation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "on", rename_all = "snake_case")]
 pub enum TurnAwait {
+    Instruction,
     User { card: InteractionId },
     Orchestrator { card: InteractionId },
     Machine,
@@ -232,6 +233,7 @@ pub enum TurnAwait {
 impl TurnAwait {
     fn of(awaits: &Await) -> Self {
         match awaits {
+            Await::Instruction => Self::Instruction,
             Await::User(card) => Self::User { card: card.clone() },
             Await::Orchestrator(card) => Self::Orchestrator { card: card.clone() },
             Await::Machine => Self::Machine,
@@ -240,6 +242,7 @@ impl TurnAwait {
     }
     fn awaits(&self, task: &TaskId) -> Result<Await> {
         Ok(match self {
+            Self::Instruction => Await::Instruction,
             Self::User { card } => Await::User(card.clone()),
             Self::Orchestrator { card } => Await::Orchestrator(card.clone()),
             Self::Machine => Await::Machine,
@@ -378,6 +381,8 @@ pub enum LifecycleRecord {
     },
     /// The hold `card` ended with nothing new to tell: what the task goes on with already waits.
     PauseEnded { card: InteractionId },
+    /// The user stopped the SDK host; the task retains its place without a decision card.
+    HostStopped { unheard_card: InteractionId },
     /// The SDK execution's host ended, and its native Claude with it. When that leaves nothing to
     /// explain the task's next step, the session a new host resumes goes on with `resume`, told
     /// `text`, or, without one, the aggregate requires `unheard_card`.
@@ -605,6 +610,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             stalled: *stalled,
         })?,
         LifecycleRecord::Answered { card, input, .. } => Event::Answer { card: card.clone(), input: input_id(task, input)? },
+        LifecycleRecord::HostStopped { unheard_card } => runtime(RuntimeFact::HostStopped { unheard_card: unheard_card.clone() })?,
         LifecycleRecord::HostEnded { unheard_card, resume, .. } => runtime(RuntimeFact::HostEnded {
             unheard_card: unheard_card.clone(),
             resume: resume.as_deref().map(|input| input_id(task, input)).transpose()?,
@@ -901,6 +907,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             text: texts.get(input).cloned(),
         },
         Event::Pause { card, owner } => LifecycleRecord::Paused { card: card.clone(), owner: Some((*owner).into()) },
+        Event::Runtime { fact: RuntimeFact::HostStopped { unheard_card }, .. } => LifecycleRecord::HostStopped { unheard_card: unheard_card.clone() },
         Event::Runtime { fact: RuntimeFact::HostEnded { unheard_card, resume }, .. } => LifecycleRecord::HostEnded {
             unheard_card: unheard_card.clone(),
             resume: resume.as_ref().map(|input| input.as_str().into()),
@@ -1153,7 +1160,7 @@ impl DomainState {
     pub fn host_ended_since_pause(&self, task: &TaskId) -> bool {
         self.lifecycle_journal.get(task).is_some_and(|journal| journal.iter().rev()
             .take_while(|record| !matches!(record, LifecycleRecord::Paused { .. }))
-            .any(|record| matches!(record, LifecycleRecord::HostEnded { .. })))
+            .any(|record| matches!(record, LifecycleRecord::HostEnded { .. } | LifecycleRecord::HostStopped { .. })))
     }
     /// Whether the node of `task` was told something, since its last delivery, by a command at or
     /// after `revision`: each input carries the revision that made it (`next_input`).
@@ -1454,7 +1461,7 @@ impl DomainState {
     /// A turn a Claude API error ended is held instead when waiting helps: on the one card that
     /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on; when
     /// it is not held, it is a stop like an empty turn. A turn Claude Code ended as `failed`, the
-    /// API refused or the user interrupted wakes no one: its card says so at once.
+    /// API refused asks for intervention. An interruption waits for a new instruction, without a card.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
@@ -1478,6 +1485,7 @@ impl DomainState {
             Some(failure) => Some(TurnEnd::Refused(failure)),
             None if interrupted => Some(TurnEnd::Interrupted),
             None => failed.map(|code| match code {
+                "interrupted" => TurnEnd::Interrupted,
                 "codex_request_rejected" if provider == crate::accounts::Provider::Codex => TurnEnd::NativeRequestRejected,
                 "codex_context_exceeded" if provider == crate::accounts::Provider::Codex => TurnEnd::NativeContextExceeded,
                 code if provider == crate::accounts::Provider::Codex => TurnEnd::NativeFailed(code),
@@ -1507,7 +1515,13 @@ impl DomainState {
         end: Option<TurnEnd<'_>>, unexplained: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let stalled = end.is_none();
         let card = if stalled { stalled_card_id(task, generation, turn) } else { turn_ended_card_id(task, generation, turn) };
-        let awaits = self.turn_await(task).filter(|_| unexplained);
+        let paused = self.tasks.get(task).and_then(|task| task.agent_id.as_ref())
+            .and_then(|agent| self.node_pause(agent)).is_some_and(|pause| !pause.released);
+        let awaits = if matches!(end, Some(TurnEnd::Interrupted)) && !paused {
+            Some(TurnAwait::Instruction)
+        } else {
+            self.turn_await(task).filter(|_| unexplained)
+        };
         let wake_text = self.empty_turn(task).wake_text();
         let ended = |wake: Option<String>, awaits: Option<TurnAwait>| LifecycleRecord::TurnEnded {
             turn: turn.into(),
@@ -1760,7 +1774,7 @@ impl DomainState {
                 InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => answer.is_none(),
                 _ => true,
             }),
-            Await::Machine => false,
+            Await::Machine | Await::Instruction => false,
             Await::Tasks(tasks) => self.tasks.get(task).is_none_or(|t| !tasks.iter().any(|dependency|
                 t.dependencies.contains(dependency) || t.delivered_dependencies.contains(dependency) || t.stack.iter().any(|s| s.upstream_task == *dependency))),
         }
@@ -1771,6 +1785,9 @@ impl DomainState {
     /// under review while its node takes up what it was told after it.
     pub fn live_state(&self, task: &TaskId) -> Option<LiveState> {
         let lifecycle = self.lifecycle_of(task).ok()?;
+        if lifecycle.awaits() == Some(&Await::Instruction) && lifecycle.cards().is_empty() {
+            return Some(LiveState::Paused);
+        }
         let after_merge = self.work_after_merge(task, &lifecycle).is_some();
         if let Some(worker) = lifecycle.working_on_delivery() {
             return Some(LiveState::Working(if after_merge && worker == Worker::Turn { Worker::AfterMerge } else { worker }));
@@ -1899,10 +1916,13 @@ impl DomainState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, by_alondra: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
+        let forced = self.lifecycle_journal[task].iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::HostEnded { .. } | LifecycleRecord::HostStopped { .. }
+                | LifecycleRecord::TurnStarted { .. } | LifecycleRecord::TurnResumed { .. } | LifecycleRecord::TurnUnprompted { .. }))
+            .any(|record| matches!(record, LifecycleRecord::ControlRequested { operation: ControlRecord::ForceStop { .. }, .. }));
         let moving = self.moving_to(task).cloned();
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let card = session_ended_card_id(task, generation, lifecycle.cursor().unwrap_or(0) + 1);
-        let forced = lifecycle.turn_stop() == Some(alondra_domain::TurnStop::ForceRequested);
         let held: Vec<InteractionId> = lifecycle.cards().into_iter().map(|(card, _)| card.clone()).collect();
         let kept: Vec<InteractionId> = if moving.is_some() { self.questions_to_keep(lifecycle) } else { vec![] };
         let resumes = (resumes || moving.is_some()) && kept.is_empty();
@@ -1918,11 +1938,11 @@ impl DomainState {
             self.holds.remove(question);
         }
         let lifecycle = self.lifecycle(lifecycles, task)?;
-        let ended = |resume: Option<String>| LifecycleRecord::HostEnded {
+        let ended = |resume: Option<String>| if forced { LifecycleRecord::HostStopped { unheard_card: card.clone() } } else { LifecycleRecord::HostEnded {
             unheard_card: card.clone(),
             text: resume.as_ref().map(|_| resumed_text.clone()),
             resume,
-        };
+        } };
         let delivered = lifecycle.phase() == TaskPhase::Delivered && after_merge.is_none();
         let cut = matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation);
         let for_the_user = delivered && cut && self.task_handed_back(task).is_some();
@@ -1963,42 +1983,14 @@ impl DomainState {
         self.decide(lifecycles, task, LifecycleRecord::InterruptAccepted { turn: turn.into() })
     }
 
-    /// `input`, told `text`, was handed to a host that ended before it showed the input was read.
-    /// When a host that resumes the same Claude session takes its place (`resumes`), the same text
-    /// always goes to it with a note that its conversation may already have it: Claude reads its own
-    /// transcript, so it sees whether it did, and nobody is asked. A session that keeps ending is
-    /// stopped by the owner, which holds the task on a card when hosts in a row never got Claude to
-    /// run. Otherwise the task holds on a card that asks the user to send it again or take it as
-    /// received.
-    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, resumes: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// An uncertain handoff is retried with its original text and a transcript warning. The
+    /// owner bounds host recovery; a failed recovery still asks for intervention on its own card.
+    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, _resumes: bool, _effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let moving = self.moving_to(task).is_some();
-        let card = handoff_doubt_card_id(task, generation, input);
-        if self.interactions.contains_key(&card) {
-            return Err(DomainError::new("conflict", format!("The doubtful input {input} of task {task} is already recorded")));
-        }
-        let launch = self.lifecycle(lifecycles, task)?.resource() == Some(ResourceEvidence::Reserved);
-        let journal = &self.lifecycle_journal[task];
-        if moving {
-            let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text.into()) };
-            return self.decide(lifecycles, task, record);
-        }
-        if resumes {
-            let noted = journal.iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { resent, .. } if resent == input));
-            let text = if noted { text.to_owned() } else { format!("{RESENT_NOTE}\n\n{text}") };
-            let record = LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text) };
-            return self.decide(lifecycles, task, record);
-        }
-        let lifecycle = self.lifecycle(lifecycles, task)?;
-        let closing = lifecycle.phase() == TaskPhase::Finishing;
-        self.decide(lifecycles, task, LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.into() })?;
-        if closing {
-            return Ok(());
-        }
-        let title = self.tasks[task].title.clone();
-        self.interactions.insert(card.clone(), handoff_doubt_card(card.clone(), task, &title, text, launch, self.revision + 1));
-        effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
-        Ok(())
+        let noted = self.lifecycle_journal[task].iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { resent, .. } if resent == input));
+        let text = if moving || noted { text.to_owned() } else { format!("{RESENT_NOTE}\n\n{text}") };
+        self.decide(lifecycles, task, LifecycleRecord::DoubtResent { input: input.into(), resent: self.next_input(task), text: Some(text) })
     }
 
     /// The task's SDK execution could not be taken over and has no host: the task holds on a card
@@ -2754,17 +2746,15 @@ const HOST_RESUMED_INSTRUCTION: &str = "Your session was cut off when its host s
 const RESENT_NOTE: &str = "Your session was cut off when its host stopped, and Alondra resumed it. The message below was sent to you just before, and your conversation may already have it: if it does, do not act on it twice.";
 pub const RESEND: &str = "resend";
 pub const RESEND_LABEL: &str = "Send it again";
+#[cfg(test)]
 const RESEND_MEANS: &str = "It gets the message again; if it had read it, it sees it twice";
 pub const TAKE_AS_RECEIVED: &str = "take_as_received";
 pub const TAKE_AS_RECEIVED_LABEL: &str = "Take it as received";
+#[cfg(test)]
 const TAKE_AS_RECEIVED_MEANS: &str = "The message is not sent again and the task goes on";
 
 fn session_ended_card_id(task: &TaskId, generation: u64, cursor: u64) -> InteractionId {
     InteractionId(format!("{SESSION_ENDED_PREFIX}{task}-{generation}-{cursor}"))
-}
-fn handoff_doubt_card_id(task: &TaskId, generation: u64, input: &str) -> InteractionId {
-    let input: String = input.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).collect();
-    InteractionId(format!("{HANDOFF_DOUBT_PREFIX}{task}-{generation}-{input}"))
 }
 
 /// How many ends of a host in a row, with no turn finished between them, Alondra's own ends may
@@ -2780,7 +2770,7 @@ fn keeps_closing<'a>(journal: impl DoubleEndedIterator<Item = &'a LifecycleRecor
     if !by_alondra {
         return resumed_without_progress(journal);
     }
-    let ended = journal.rev().take_while(|record| !matches!(record, LifecycleRecord::TurnEnded { .. }))
+    let ended = journal.rev().take_while(|record| !matches!(record, LifecycleRecord::TurnEnded { .. } | LifecycleRecord::HostStopped { .. }))
         .filter(|record| matches!(record, LifecycleRecord::HostEnded { .. })).count();
     ended + 1 >= ALONDRA_ENDS_IN_A_ROW
 }
@@ -2792,7 +2782,7 @@ fn resumed_without_progress<'a>(journal: impl DoubleEndedIterator<Item = &'a Lif
     journal
         .rev()
         .find_map(|record| match record {
-            LifecycleRecord::TurnEnded { .. } => Some(false),
+            LifecycleRecord::TurnEnded { .. } | LifecycleRecord::HostStopped { .. } => Some(false),
             LifecycleRecord::HostEnded { resume: Some(_), .. } | LifecycleRecord::DoubtResent { .. } => Some(true),
             _ => None,
         })
@@ -2934,7 +2924,8 @@ const SESSION_ENDED_WHY: &str = "Its session closed mid-way, as when the Mac shu
 const HOST_LOST_WHY: &str = "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.";
 pub const SESSION_ENDED_AGAIN_WHY: &str = "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.";
 
-fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
+#[cfg(test)]
+pub(super) fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” closed before confirming it read your message: send it again?"));
     let mut options = vec![QuestionOption { id: RESEND.into(), label: RESEND_LABEL.into(), description: Some(RESEND_MEANS.into()) }];
     options.push(if launch {
