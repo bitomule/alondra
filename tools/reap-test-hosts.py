@@ -14,7 +14,7 @@ import shutil
 import signal
 import subprocess
 
-BAZEL_HOST = re.compile(r'/[0-9a-f]{32}/execroot/[^/]+/bazel-out/[^/]+/bin/agent-host/alondra-host$')
+BAZEL_HOST = re.compile(r'/[0-9a-f]{32}/execroot/[^/]+/bazel-out/[^/]+/bin/agent-host/alondra-(codex-)?host$')
 TEST_COPY = re.compile(r'/private/tmp/bt\.[^/]+/at-[^/]+/work/alondra-host-before$')
 FIXTURE_FOLDER = re.compile(r'(/private/tmp/as-[^/]+)/work/h/[^/]+$')
 
