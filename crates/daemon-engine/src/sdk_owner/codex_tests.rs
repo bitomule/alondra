@@ -1629,3 +1629,54 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     assert_eq!(state.lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count(),2);
     slice.domain.stop_sdk_owners();
 }
+
+#[test]
+fn a_test_that_leaves_a_codex_host_running_fails_and_the_host_ends_with_it() {
+    let slice = Slice::new();
+    configured(&slice, "complete");
+    let driver = launch(&slice);
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    drop(driver);
+    assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()), "a dropped owner leaves its host running");
+    let failure = catch_unwind(AssertUnwindSafe(|| drop(slice))).unwrap_err();
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.starts_with("the test left SDK hosts running: sdk-"), "{message}");
+    assert_eq!(survivors(&processes), Vec::<String>::new(), "the Codex host's group ended with the test");
+}
+
+/// The test process `a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder` kills.
+#[test]
+#[ignore = "started by a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder"]
+fn a_test_process_holding_a_codex_host() {
+    let slice = Slice::new();
+    configured(&slice, "complete");
+    let driver = launch(&slice);
+    println!("holding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
+    loop {
+        std::thread::park();
+    }
+}
+
+#[test]
+fn a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder() {
+    use std::io::{BufRead, Read};
+    let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "--nocapture", "sdk_owner::tests::codex_tests::a_test_process_holding_a_codex_host"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut errors = owner.stderr.take().unwrap();
+    let holding = std::io::BufReader::new(owner.stdout.take().unwrap()).lines().map(Result::unwrap)
+        .find_map(|line| line.strip_prefix("holding ").map(str::to_owned)).expect("the test process launched its Codex host");
+    let (group, root) = holding.split_once(' ').unwrap();
+    let processes = alondra_process_group::members(group.parse().unwrap()).unwrap();
+    assert!(!processes.is_empty(), "the Codex host runs");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let mut said = String::new();
+    errors.read_to_string(&mut said).unwrap();
+    assert_eq!(survivors(&processes), Vec::<String>::new(), "the reaper killed the Codex host's group: {said}");
+    assert!(!Path::new(root).parent().unwrap().exists(), "the reaper removed the hosts' folder: {said}");
+}
