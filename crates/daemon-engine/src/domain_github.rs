@@ -35,7 +35,7 @@ pub struct PrFacts {
 }
 
 impl PrFacts {
-    fn status(&self) -> OpenPrStatus {
+    pub(crate) fn status(&self) -> OpenPrStatus {
         OpenPrStatus { state: self.state, head: self.head.clone(), base: self.base.clone(),
             mergeable: self.mergeable, checks: self.checks.clone() }
     }

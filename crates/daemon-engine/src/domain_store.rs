@@ -23,6 +23,7 @@ pub(crate) use handover::{Handover, Plan as HandoverPlan, Process as HandoverPro
 mod repository;
 mod typed_cards;
 mod provider_accounts;
+mod pr_adoption;
 pub(crate) mod provider_settings;
 mod task_context;
 pub(crate) mod batch_effects;
@@ -727,6 +728,7 @@ impl DomainStore {
         tx.execute_batch(provider_transition::SCHEMA)?;
         refresh_schema_object(&tx, "view", "events", EVENTS_VIEW)?;
         retention::upgrade(&tx)?;
+        pr_adoption::upgrade(&tx)?;
         if version != 0 {
             refresh_schema_object(&tx, "trigger", "schedule_launch_transition", SCHEDULE_LAUNCH_TRANSITION)?;
         }

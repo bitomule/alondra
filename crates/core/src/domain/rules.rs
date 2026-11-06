@@ -2523,6 +2523,7 @@ impl DomainState {
             | Command::PublishStackReadiness { task_id, .. }
             | Command::CompleteTask { task_id, .. }
             | Command::CancelTask { task_id }
+            | Command::AdoptOpenPr { task_id, .. }
             | Command::SettleOpenPr { task_id, .. }
             | Command::ReopenTask { task_id }
             | Command::ConfirmCleanup { task_id, .. }
@@ -4278,7 +4279,30 @@ impl DomainState {
                 let known = self.pull_requests.values().find(|p| p.host == *host && p.repository == *repository && p.number == *number);
                 if let Some(p) = known {
                     if p.task_id != *task_id {
-                        return fail("pr_owned_by_other_task", "PR is already registered");
+                        if !self.task(&p.task_id)?.state.terminal() {
+                            return fail("pr_owned_by_other_task", "PR is already registered by a live task");
+                        }
+                        let review = p.review.clone();
+                        let old_id = p.task_id.clone();
+                        let existing = p.id.clone();
+                        let taken = existing.clone();
+                        self.invalidate(&old_id);
+                        let owners = self.pr_task_history.entry(existing.clone()).or_default();
+                        owners.insert(old_id.clone());
+                        owners.insert(task_id.clone());
+                        let old = self.tasks.get_mut(&old_id).unwrap();
+                        if old.pr_id.as_ref() == Some(&existing) { old.pr_id = old.later_prs.pop(); }
+                        old.later_prs.retain(|id| id != &existing);
+                        old.open_pr = None;
+                        self.adopt_pr(PullRequest {
+                            id: existing, task_id: task_id.clone(), host: host.clone(), repository: repository.clone(),
+                            number: *number, head: sha.clone(), base: base.clone(), state: PrState::Open,
+                            merged_head: None, allowed_methods: allowed_methods.clone(), review: None,
+                        })?;
+                        if review.is_some() {
+                            self.pull_requests.get_mut(&taken).unwrap().review = review;
+                        }
+                        return Ok(());
                     }
                     if p.head == *sha
                         && p.base == *base
@@ -4804,7 +4828,60 @@ impl DomainState {
                 self.close_task(actor, task_id, None, effects, lifecycles)?;
             }
             Command::SettleOpenPr { task_id, status } => {
-                self.settle_open_pr(actor, task_id, status, effects, created, lifecycles)?;
+                self.settle_open_pr(actor, task_id, status, None, effects, created, lifecycles)?;
+            }
+            Command::AdoptOpenPr { task_id, pr_id, branch, status } => {
+                system(actor)?;
+                nonempty(branch)?;
+                if self.branch_has_live_task(branch) { return Ok(()); }
+                if !self.task(task_id)?.state.terminal() {
+                    return fail("task_not_active", "Only a closed task's PR can be adopted");
+                }
+                if matches!(self.task(task_id)?.open_pr, Some(OpenPrPending::Close { .. })) { return Ok(()); }
+                if self.pull_requests.get(pr_id).is_none_or(|pr| pr.task_id != *task_id) {
+                    return fail("not_found", "The PR is not registered by that task");
+                }
+                let t = self.tasks.get_mut(task_id).unwrap();
+                if t.pr_id.as_ref() != Some(pr_id) {
+                    if let Some(previous) = t.pr_id.replace(pr_id.clone()) {
+                        t.later_prs.retain(|id| id != pr_id);
+                        t.later_prs.push(previous);
+                    }
+                }
+                let request = self.task(task_id)?.request_id.clone();
+                let request = self.requests.get_mut(&request).expect("the task's request exists");
+                request.closed = false;
+                request.withdrawn = false;
+                request.answer = None;
+                request.cleared = false;
+                self.invalidate(task_id);
+                let t = self.tasks.get_mut(task_id).unwrap();
+                let result = match &t.stall_closing {
+                    Some(StallClosing::Settled { result }) => Some(result.clone()),
+                    _ => None,
+                };
+                t.archived = false;
+                t.stall_closing = None;
+                t.wrap_up = WrapUp::default();
+                t.final_presentation = None;
+                t.open_pr = Some(OpenPrPending::Deliver { result });
+                self.decide(lifecycles, task_id, LifecycleRecord::Reopened { input: self.next_input(task_id) })?;
+                self.settle_open_pr(actor, task_id, status, Some(pr_id), effects, created, lifecycles)?;
+            }
+            Command::RequestPrAdoption { pr, branch } => {
+                system(actor)?;
+                nonempty(branch)?;
+                if self.branch_has_live_task(branch) { return Ok(()); }
+                canonical_pr(&pr.host, &pr.repository, pr.number)?;
+                if self.pr_adoptions.contains(pr) || self.pull_requests.values().any(|p|
+                    p.host == pr.host && p.repository == pr.repository && p.number == pr.number) { return Ok(()); }
+                let request_id = RequestId(format!("adopt-pr-{}", self.revision + 1));
+                let body = format!("Adopt the PR {}#{}: deliver it or close it with the reason. URL: https://{}/{}/pull/{}",
+                    pr.repository, pr.number, pr.host, pr.repository, pr.number);
+                self.requests.insert(request_id.clone(), Request { origin: RequestOrigin::Orchestrator, ..Request::new(request_id.clone(), body) });
+                self.pr_adoptions.insert(pr.clone());
+                effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id.clone()) });
+                created.push(request_id.0);
             }
             Command::ReopenTask { task_id } => {
                 self.reopen_guard(actor, task_id)?;
@@ -5195,6 +5272,10 @@ impl DomainState {
         }
         Ok(())
     }
+    fn pr_belonged_to(&self, pr: &PrId, task: &TaskId) -> bool {
+        self.pull_requests.get(pr).is_some_and(|pr| &pr.task_id == task)
+            || self.pr_task_history.get(pr).is_some_and(|tasks| tasks.contains(task))
+    }
     fn subject(&self, task: &TaskId, subject: &InteractionSubject) -> Result<()> {
         match subject {
             InteractionSubject::PullRequest { pr_id } => {
@@ -5331,6 +5412,13 @@ impl DomainState {
             return fail("invalid_input", "Unsafe revision or generation");
         };
         self.schedule.validate()?;
+        for (pr_id, owners) in &self.pr_task_history {
+            if self.pull_requests.get(pr_id).is_none_or(|pr| !owners.contains(&pr.task_id))
+                || owners.iter().any(|task| !self.tasks.contains_key(task))
+            {
+                return fail("invalid_input", "Invalid PR ownership history");
+            }
+        }
         self.validate_plan_reviews()?;
         if let Some(t) = self.tasks.values().find(|t| t.state.terminal() && t.open_worktrees().next().is_some()) {
             return fail("invalid_input", &format!("Task {} ended with a worktree of its own still there", t.id));
@@ -5412,7 +5500,7 @@ impl DomainState {
             }
             if let Some(s) = &t.stack {
                 let up = self.task(&s.upstream_task)?;
-                if up.pr_id.as_ref()!=Some(&s.pr_id) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:s.upstream_task.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Stack references wrong upstream presentation")}
+                if (up.pr_id.as_ref()!=Some(&s.pr_id) && !self.pr_belonged_to(&s.pr_id, &s.upstream_task)) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:s.upstream_task.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Stack references wrong upstream presentation")}
             }
         }
         self.dependency_graph()?;
@@ -5492,7 +5580,7 @@ impl DomainState {
             if k != &p.id
                 || !t.pr_ids().any(|id| id == k)
                 || !identities.insert((&p.host, &p.repository, p.number))
-                || p.review.is_some() != t.review_prs
+                || (p.review.is_some() != t.review_prs && !self.pr_task_history.contains_key(k))
                 || p.allowed_methods.is_empty()
             {
                 return fail(
@@ -5510,7 +5598,7 @@ impl DomainState {
                 for d in &r.decisions {
                     id(&d.user_id)?;
                     head(&d.head)?;
-                    if d.at_revision>self.revision || !self.interactions.get(&d.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:p.task_id.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:k.clone(),head:d.head.clone()}))){return fail("invalid_input","PR review decision does not match presentation")}
+                    if d.at_revision>self.revision || !self.interactions.get(&d.presentation_id).is_some_and(|i|matches!(&i.scope, Scope::Task { task_id } if self.pr_belonged_to(k, task_id)) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:k.clone(),head:d.head.clone()}))){return fail("invalid_input","PR review decision does not match presentation")}
                 }
             }
         }
@@ -5543,7 +5631,10 @@ impl DomainState {
                 let Scope::Task { task_id } = &i.scope else {
                     return fail("invalid_input", "Subject requires Task scope");
                 };
-                self.subject(task_id, s)?;
+                match s {
+                    InteractionSubject::PullRequest { pr_id } if self.pr_belonged_to(pr_id, task_id) => (),
+                    _ => self.subject(task_id, s)?,
+                }
             }
             match &i.payload {
                 InteractionPayload::Information { read_by } => {
@@ -5608,11 +5699,7 @@ impl DomainState {
                             }
                             DeliveryTarget::PullRequest { pr_id, head: sha } => {
                                 head(sha)?;
-                                if !self
-                                    .pull_requests
-                                    .get(pr_id)
-                                    .is_some_and(|p| &p.task_id == task_id)
-                                {
+                                if !self.pr_belonged_to(pr_id, task_id) {
                                     return fail("invalid_input", "Historical PR target mismatch");
                                 }
                             }
@@ -5644,7 +5731,7 @@ impl DomainState {
             id(&k.0)?;
             id(&a.user_id)?;
             head(&a.head)?;
-            if k!=&a.id || a.at_revision>self.revision || !self.pull_requests.get(&a.pr_id).is_some_and(|p|p.task_id==a.task_id) || !self.interactions.get(&a.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:a.task_id.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:a.pr_id.clone(),head:a.head.clone()}))){return fail("invalid_input","Merge authorization relation mismatch")};
+            if k!=&a.id || a.at_revision>self.revision || !self.pr_belonged_to(&a.pr_id, &a.task_id) || !self.interactions.get(&a.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:a.task_id.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:a.pr_id.clone(),head:a.head.clone()}))){return fail("invalid_input","Merge authorization relation mismatch")};
             if let Some(agent) = &a.claimed_by {
                 if !self.agents.contains_key(agent) {
                     return fail("not_found", "Merge attempt Agent missing");
@@ -5681,7 +5768,7 @@ impl DomainState {
             }
         }
         for (k, s) in &self.stack_readiness {
-            if k!=&s.task_id || !self.pull_requests.get(&s.pr_id).is_some_and(|p|p.task_id==s.task_id) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:k.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Invalid stack readiness relation")}
+            if k!=&s.task_id || !self.pr_belonged_to(&s.pr_id, &s.task_id) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:k.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Invalid stack readiness relation")}
         }
         Ok(())
     }

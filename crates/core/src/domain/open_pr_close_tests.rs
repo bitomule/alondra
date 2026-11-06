@@ -61,6 +61,28 @@ fn registered() -> DomainState {
     s
 }
 
+#[test]
+fn only_alondra_can_adopt_or_request_adoption_and_a_live_task_cannot_be_taken() {
+    let mut s = registered();
+    for actor in [user(), orchestrator(), node("a")] {
+        let adopt = Command::AdoptOpenPr { task_id: "t".into(), pr_id: PR.into(), branch: "feature".into(), status: status(PrState::Open, PrMergeable::Clean, PrChecks::Passed) };
+        assert_eq!(exec(&mut s, actor.clone(), adopt).unwrap_err().code, "forbidden");
+        assert_eq!(exec(&mut s, actor, Command::RequestPrAdoption { branch: "feature".into(), pr: OpenedPr {
+            host: "github.com".into(), repository: "owner/repo".into(), number: 8,
+        } }).unwrap_err().code, "forbidden");
+    }
+    let adopt = Command::AdoptOpenPr { task_id: "t".into(), pr_id: PR.into(), branch: "feature".into(), status: status(PrState::Open, PrMergeable::Clean, PrChecks::Passed) };
+    assert_eq!(exec(&mut s, Actor::System, adopt).unwrap_err().code, "task_not_active");
+    super::lifecycle_tests::task(&mut s, "new", Some("b"));
+    let unknown = OpenedPr { host: "github.com".into(), repository: "owner/repo".into(), number: 8 };
+    must(&mut s, Actor::System, Command::RequestPrAdoption { pr: unknown.clone(), branch: "worktree-new".into() });
+    assert!(!s.pr_adoptions.contains(&unknown), "the transaction rechecks a branch that acquired a live task");
+    assert_eq!(exec(&mut s, node("b"), Command::RegisterPr {
+        task_id: "new".into(), pr_id: PR.into(), host: "github.com".into(), repository: "bitomule/musts".into(), number: 113,
+        head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    }).unwrap_err().code, "pr_owned_by_other_task");
+}
+
 /// The stops of t-musts-validate-ignored-parent: its node registered musts #113 and its turns
 /// ended twice without presenting it, so the second stop became a case for the orchestrator.
 fn stalled_with_open_pr() -> DomainState {

@@ -1390,6 +1390,10 @@ pub struct DomainState {
     pub document_revisions: BTreeMap<DocumentRevisionId, DocumentRevision>,
     pub document_reviews: Vec<DocumentReview>,
     pub pull_requests: BTreeMap<PrId, PullRequest>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pr_adoptions: BTreeSet<OpenedPr>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pr_task_history: BTreeMap<PrId, BTreeSet<TaskId>>,
     pub interactions: BTreeMap<InteractionId, Interaction>,
     pub merge_authorizations: BTreeMap<AuthorizationId, MergeAuthorization>,
     pub stack_readiness: BTreeMap<TaskId, StackReadiness>,
@@ -1474,6 +1478,8 @@ impl DomainState {
             document_revisions: BTreeMap::new(),
             document_reviews: vec![],
             pull_requests: BTreeMap::new(),
+            pr_adoptions: BTreeSet::new(),
+            pr_task_history: BTreeMap::new(),
             interactions: BTreeMap::new(),
             merge_authorizations: BTreeMap::new(),
             stack_readiness: BTreeMap::new(),

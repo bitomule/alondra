@@ -3240,9 +3240,11 @@ fn variant_index(c: &Command) -> usize {
         Command::NotePrOpened { .. } => 127,
         Command::RecordOpenedPr { .. } => 128,
         Command::AskToRegisterPr { .. } => 129,
+        Command::AdoptOpenPr { .. } => 130,
+        Command::RequestPrAdoption { .. } => 131,
     }
 }
-const COMMAND_KINDS: usize = 130;
+const COMMAND_KINDS: usize = 132;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3441,6 +3443,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             model: crate::model_selection::ModelSelection { model: crate::model_selection::ModelKey { provider: crate::accounts::Provider::Codex, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "A user choice".into(),
         } }, false),
         (Command::MoveTask { task_id: ids.task.into(), expected_selection: "fixture".into(), account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex) }, false),
+        (Command::AdoptOpenPr { task_id: ids.task.into(), pr_id: ids.pr.into(), branch: "feature".into(), status: crate::domain::OpenPrStatus { state: PrState::Open, head: "a".repeat(40),
+            base: "main".into(), mergeable: crate::domain::PrMergeable::Clean, checks: crate::domain::PrChecks::Passed } }, true),
+        (Command::RequestPrAdoption { branch: "feature".into(), pr: OpenedPr { host: "github.com".into(), repository: "owner/repo".into(), number: 9 } }, true),
         (Command::SettleOpenPr { task_id: ids.task.into(), status: crate::domain::OpenPrStatus { state: PrState::Open, head: "a".repeat(40),
             base: "main".into(), mergeable: crate::domain::PrMergeable::Clean, checks: crate::domain::PrChecks::Passed } }, false),
     ];

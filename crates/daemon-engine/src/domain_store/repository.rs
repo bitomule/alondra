@@ -448,6 +448,7 @@ fn save_pull_request(c: &Connection, p: &PullRequest, before: Option<&PullReques
     let mut row = object(p)?;
     row.remove("review");
     upsert(c, "pull_requests", &["id"], row)?;
+    exec(c, "INSERT OR IGNORE INTO pull_request_tasks(task_id,pr_id) VALUES(?1,?2)", params![p.task_id.0, p.id.0])?;
     if p.review.is_some() && before.is_none_or(|b| b.review.is_none()) {
         put(c, "pull_request_reviews", &["pr_id"], json!({"pr_id":p.id}))?;
     }
@@ -966,6 +967,7 @@ pub(super) fn save_changes(
         }
     }
     super::provider_accounts::save(c, before, after)?;
+    super::pr_adoption::save(c, before, after)?;
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
 }
@@ -1499,6 +1501,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     }
     drop(usage);
     super::provider_accounts::load(c, &mut state)?;
+    super::pr_adoption::load(c, &mut state)?;
     state.schedule = load_schedule_state(c)?;
     Ok(state)
 }

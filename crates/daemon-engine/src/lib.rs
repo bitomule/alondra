@@ -56,6 +56,7 @@ pub mod database_check;
 pub mod domain_agent_lifecycle;
 pub mod domain_database_migration;
 pub mod domain_github;
+pub mod open_pr_sweep;
 pub mod domain_holds;
 pub mod domain_merges;
 pub mod domain_messages;

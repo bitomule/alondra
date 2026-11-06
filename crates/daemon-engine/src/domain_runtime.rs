@@ -1095,6 +1095,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::PublishStackReadiness { task_id, .. }
         | Command::CompleteTask { task_id, .. }
         | Command::CancelTask { task_id }
+        | Command::AdoptOpenPr { task_id, .. }
         | Command::SettleOpenPr { task_id, .. }
         | Command::ReopenTask { task_id }
         | Command::ConfirmCleanup { task_id, .. }
@@ -1229,6 +1230,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordModelProfiles { .. }
         | Command::SetModelProfile { .. }
         | Command::SetMergeMethod { .. }
+        | Command::RequestPrAdoption { .. }
         | Command::SetBranchUpdate { .. } => None,
     }
 }

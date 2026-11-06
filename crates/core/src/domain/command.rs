@@ -467,6 +467,16 @@ pub enum Command {
         task_id: TaskId,
         status: OpenPrStatus,
     },
+    AdoptOpenPr {
+        task_id: TaskId,
+        pr_id: PrId,
+        branch: String,
+        status: OpenPrStatus,
+    },
+    RequestPrAdoption {
+        pr: OpenedPr,
+        branch: String,
+    },
     ReopenTask {
         task_id: TaskId,
     },

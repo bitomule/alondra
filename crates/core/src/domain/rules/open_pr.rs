@@ -12,6 +12,12 @@ pub fn cancelled_pr_comment(title: &str) -> String {
 }
 
 impl DomainState {
+    pub fn branch_has_live_task(&self, branch: &str) -> bool {
+        branch.strip_prefix("worktree-").is_some_and(|id|
+            self.tasks.get(&TaskId::from(id)).is_some_and(|task| !task.state.terminal()))
+    }
+
+
     /// The first of the task's pull requests still open on GitHub.
     pub fn open_pr_of(&self, task: &TaskId) -> Option<&PullRequest> {
         self.open_prs(self.tasks.get(task)?).next()
@@ -47,7 +53,7 @@ impl DomainState {
     }
 
     /// What GitHub reports of the PR of a task closed while its PR was open settles it.
-    pub(in crate::domain) fn settle_open_pr(&mut self, actor: &Actor, task: &TaskId, status: &OpenPrStatus,
+    pub(in crate::domain) fn settle_open_pr(&mut self, actor: &Actor, task: &TaskId, status: &OpenPrStatus, selected: Option<&PrId>,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         system(actor)?;
         head(&status.head)?;
@@ -55,7 +61,8 @@ impl DomainState {
         let Some(OpenPrPending::Deliver { result }) = self.task(task)?.open_pr.clone() else {
             return refuse("open_pr_settled", "task_id", &format!("Task {task} has no open pull request left to deliver"));
         };
-        let pr = self.open_pr_of(task).or_else(|| self.task_prs(&self.tasks[task]).last()).cloned()
+        let pr = selected.and_then(|id| self.pull_requests.get(id))
+            .or_else(|| self.open_pr_of(task)).or_else(|| self.task_prs(&self.tasks[task]).last()).cloned()
             .ok_or_else(|| DomainError::new("not_found", "The task has no pull request"))?;
         let merged_head = (status.state == PrState::Merged).then(|| status.head.clone());
         if (&pr.head, &pr.base, pr.state, &pr.merged_head) != (&status.head, &status.base, status.state, &merged_head) {

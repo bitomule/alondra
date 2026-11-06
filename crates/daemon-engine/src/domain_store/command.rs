@@ -373,7 +373,8 @@ mod tests;
 /// A task that was over, or was left in progress with no node, and now waits for one: the queue
 /// must start it, so it goes back to its queue.
 fn needs_a_node_again(before: &Task, after: &Task) -> bool {
-    (before.state.terminal() || before.started_without_node())
+    (before.state.terminal() || before.started_without_node()
+        || (before.final_presentation.is_some() && before.agent_id.is_none()))
         && after.state == TaskState::NotStarted && after.agent_id.is_none() && !after.archived
 }
 
