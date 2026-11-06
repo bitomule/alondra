@@ -107,9 +107,15 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method != "GET", !request.isActionJournalControl else { return try await performPrepared(request) }
-        return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {
-            try await self.performPrepared(request)
+        do {
+            guard request.method != "GET", !request.isActionJournalControl else { return try await performPrepared(request) }
+            return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {
+                try await self.performPrepared(request)
+            }
+        } catch {
+            guard !(error is CancellationError) else { throw error }
+            if await account?.removedFromAccount() == true { throw AccountDeviceError.removedFromWeb }
+            throw error
         }
     }
 

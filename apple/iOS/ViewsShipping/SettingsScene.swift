@@ -31,8 +31,10 @@ struct SettingsScene: View {
 
     private func openPairing(_ unopened: () -> Void) {
         guard let store else { return unopened() }
-        store.send(.linkMac)
-        if store.pairing == nil { unopened() }
+        if let id = store.selectedMacID {
+            store.send(.pairAgain(id))
+            if store.pairingTarget != id { unopened() }
+        } else { unopened() }
     }
 
     func connect(services: Connection, owner: AccountSession, notifications: NotificationRuntime) async {

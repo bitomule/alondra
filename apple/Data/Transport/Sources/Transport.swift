@@ -30,10 +30,11 @@ public extension AlondraAPIClient {
         bearer: @escaping @Sendable () async throws -> String,
         bearerRefused: @escaping @Sendable () async -> Void = {},
         bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
+        deviceRefused: @escaping @Sendable () async -> Bool = { false },
         transport: (any HTTPTransport)? = nil,
         now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) }) throws -> any Transport {
         try makeTransport(base: base, deviceID: deviceID,
-            signer: { try signing.signature(for: $0).rawRepresentation }, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken,
+            signer: { try signing.signature(for: $0).rawRepresentation }, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, deviceRefused: deviceRefused,
             transport: transport, now: now)
     }
 
@@ -42,9 +43,10 @@ public extension AlondraAPIClient {
         bearer: @escaping @Sendable () async throws -> String,
         bearerRefused: @escaping @Sendable () async -> Void = {},
         bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
+        deviceRefused: @escaping @Sendable () async -> Bool = { false },
         transport: (any HTTPTransport)? = nil,
         now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) }) throws -> any Transport {
-        try RelayTransport(base: base, deviceID: deviceID, signer: signer, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken,
+        try RelayTransport(base: base, deviceID: deviceID, signer: signer, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, deviceRefused: deviceRefused,
                            transport: transport ?? URLSessionTransport(), now: now)
     }
 }

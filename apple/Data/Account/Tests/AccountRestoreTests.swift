@@ -193,6 +193,28 @@ struct AccountRestoreTests {
         #expect(seen.map(\.name) == ["Studio"])
     }
 
+    @Test func repeatedPairingsOfOneMacAreOneChoiceAndForgettingRemovesTheWholeGroup() async throws {
+        let original = pairing("mac-studio", relay: false)
+        func copy(_ device: String, relay: Bool = false) -> ApprovedServicePairing {
+            ApprovedServicePairing(relayURL: relay ? URL(string: "https://api.getalondra.com") : nil,
+                macID: original.macID, deviceID: device, ownerSub: relay ? "owner-a" : nil,
+                macSigningKey: original.macSigningKey, macAgreementKey: original.macAgreementKey,
+                signingPrivateKey: original.signingPrivateKey, agreementPrivateKey: original.agreementPrivateKey,
+                approvedAtMs: 1)
+        }
+        let owner = try account(credential: RefreshCredential(token: "saved-account"), pairings: [
+            original, copy("phone-older"), copy("phone-relay", relay: true), pairing("mac-mini", relay: false)])
+        await owner.store.send(.appeared).finish()
+        #expect(owner.macs.map(\.macID).sorted() == ["mac-mini", "mac-studio"])
+        let studio = try #require(owner.macs.first(where: { $0.macID == "mac-studio" }))
+        let mini = try #require(owner.macs.first(where: { $0.macID == "mac-mini" }))
+        #expect(owner.session(choice: studio.id) != nil)
+        try await owner.forgetMac(choice: studio.id)
+        #expect(owner.macs.map(\.macID) == ["mac-mini"])
+        #expect(owner.macs.first?.id == mini.id, "forgetting another Mac keeps this row's identity")
+        #expect(owner.session(choice: studio.id) == nil)
+    }
+
     @Test func aSavedMacIsOfferedAgainOnlyWhileThePersonPairsItAgain() async throws {
         let owner = try account(credential: nil, pairings: [pairing("mac-studio", relay: false), pairing("mac-mini", relay: false)],
                                 advertised: [advertised("Studio", macID: "mac-studio"), advertised("Mini", macID: "mac-mini")])
@@ -208,7 +230,11 @@ struct AccountRestoreTests {
         #expect(await pairedFlags() == ["Studio": true, "Mini": true])
         owner.pairAgain(macID: "mac-studio")
         #expect(await pairedFlags() == ["Studio": false, "Mini": true])
-        await owner.additionalMacPairing.cancel()
+        let recovery = owner.additionalMacPairing
+        let cancelAttempt = try #require(recovery.cancelAttempt)
+        await cancelAttempt()
+        #expect(await pairedFlags() == ["Studio": false, "Mini": true], "starting again still replaces the same Mac")
+        await recovery.cancel()
         #expect(await pairedFlags() == ["Studio": true, "Mini": true])
     }
 }

@@ -57,6 +57,12 @@ public actor PairingClient {
         try store.modify { $0.remove(id) }
     }
 
+    public func removePairings(_ ids: Set<ApprovedPairingID>) throws {
+        try store.modify { collection in
+            for id in ids { collection.remove(id) }
+        }
+    }
+
     /// Writes only when something new was learned, so Bonjour updates do not churn the Keychain.
     public func updateRoutes(_ id: ApprovedPairingID, routes: [DirectEndpoint], name: String?) throws {
         var probe = try store.loadCollection()

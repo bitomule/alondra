@@ -31,8 +31,9 @@ public struct MacChoice: Identifiable, Equatable, Sendable {
     public let local: Bool
     /// Every paired Mac can be forgotten from here; the Mac's own daemon is not a pairing.
     public let forgettable: Bool
-    public init(id: UUID, macID: String, name: String? = nil, local: Bool = false, forgettable: Bool = true) {
-        self.id = id; self.macID = macID; self.name = name; self.local = local; self.forgettable = forgettable
+    public let hasAlternatePairings: Bool
+    public init(id: UUID, macID: String, name: String? = nil, local: Bool = false, forgettable: Bool = true, hasAlternatePairings: Bool = false) {
+        self.id = id; self.macID = macID; self.name = name; self.local = local; self.forgettable = forgettable; self.hasAlternatePairings = hasAlternatePairings
     }
 }
 
@@ -41,6 +42,7 @@ public enum MacStatus: Equatable, Sendable {
     case route(ConnectionRoute)
     case connecting
     case problem(ConnectionProblem)
+    case paths(local: ConnectionState?, account: ConnectionState?)
 
     public init(_ state: ConnectionState) {
         switch state {
@@ -49,6 +51,39 @@ public enum MacStatus: Equatable, Sendable {
         case .unreachable(let problem): self = .problem(problem)
         }
     }
+    public static func combining(_ bindings: [(local: Bool, state: ConnectionState, removed: Bool)]) -> Self {
+        let hasCurrentAccount = bindings.contains { !$0.local && !$0.removed }
+        var paths: [(local: Bool, state: ConnectionState)] = []
+        for binding in bindings {
+            if !binding.removed { paths.append((binding.local, binding.state)); continue }
+            if !hasCurrentAccount { paths.append((false, .unreachable(.removedFromWeb))) }
+            if case .connected(let route) = binding.state, route != .irohRelay {
+                paths.append((true, binding.state))
+            }
+        }
+        return combining(paths)
+    }
+
+    public static func combining(_ paths: [(local: Bool, state: ConnectionState)]) -> Self {
+        func best(_ local: Bool) -> ConnectionState? {
+            let states = paths.filter { $0.local == local }.map(\.state)
+            return states.first(where: \.isConnected)
+                ?? states.first(where: { $0.problem?.isDeviceRevoked == true })
+                ?? states.first
+        }
+        let local = best(true), account = best(false)
+        if let local, let account, local != account { return .paths(local: local, account: account) }
+        return (local ?? account).map(Self.init) ?? .connecting
+    }
+
+    public var canPairAgain: Bool {
+        switch self {
+        case .problem(let problem): problem.isDeviceRevoked
+        case .paths(let local, let account): local?.problem?.isDeviceRevoked == true || account?.problem?.isDeviceRevoked == true
+        default: false
+        }
+    }
+
 }
 
 public struct SettingsClient: Sendable {
@@ -60,6 +95,8 @@ public struct SettingsClient: Sendable {
     public var checkConnection: @Sendable () async throws -> Void
     public var selectMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
     public var macStatuses: @Sendable () async -> [UUID: MacStatus] = { [:] }
+    public var accountName: @Sendable () async -> String? = { nil }
+    public var pairAgain: @Sendable (UUID) async -> Void = { _ in }
     public var forgetMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
     /// Reads and changes one paired Mac's own settings; nil when that Mac has no session here.
     public var macSettings: @Sendable (UUID) async -> MacSettingsClient? = { _ in nil }
@@ -95,6 +132,7 @@ public extension DependencyValues {
 @Reducer public struct SettingsFeature: Sendable {
     @ObservableState public struct State: Equatable {
         public let service: String
+        public var accountName: String?
         public let device: String
         public let supportsNotifications: Bool
         public let usesAccount: Bool
@@ -112,6 +150,7 @@ public extension DependencyValues {
         public var connectionError: ConnectionProblem?
         public var error: String?
         public var pairingCleanup = false
+        public var pairingTarget: UUID?
         @Presents public var pairing: SignInFeature.State?
         @Presents public var macSettings: MacSettingsFeature.State?
         public var macs: [MacChoice] = []
@@ -159,6 +198,8 @@ public extension DependencyValues {
         case linkMac, useAccount, pairingCleanupFinished, pairing(PresentationAction<SignInFeature.Action>)
         case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(ConnectionProblem?, UInt64)
         case loadMacStatuses, macStatusesLoaded([UUID: MacStatus])
+        case loadAccountName, accountNameLoaded(String?)
+        case pairAgain(UUID), pairAgainReady(UUID)
         case openMacSettings(UUID), macSettingsReady(UUID, MacSettingsClient), macSettings(PresentationAction<MacSettingsFeature.Action>)
         case forgetMacTapped(UUID), cancelForgetMac, confirmForgetMac, macForgotten(UUID), macForgetFailed(String)
         case loadDevices, devicesLoaded([TrustedDevice]), devicesFailed(String)
@@ -198,6 +239,29 @@ public extension DependencyValues {
                 return .run { send in
                     for await snapshot in await client.observe() { await send(.updated(snapshot)) }
                 }.cancellable(id: state.cancellation, cancelInFlight: true)
+            case .loadAccountName:
+                return .run { send in await send(.accountNameLoaded(await client.accountName())) }
+                    .cancellable(id: state.cancellation)
+            case .accountNameLoaded(let name):
+                state.accountName = name
+                return .none
+            case .pairAgain(let id):
+                guard state.macs.contains(where: { $0.id == id }), !state.pairingCleanup,
+                      state.pairingTarget == nil, state.pairing == nil else { return .none }
+                state.pairingTarget = id
+                return .run { send in
+                    await client.pairAgain(id)
+                    try Task.checkCancellation()
+                    await send(.pairAgainReady(id))
+                }.cancellable(id: state.cancellation)
+            case .pairAgainReady(let id):
+                guard state.pairingTarget == id, let mac = state.macs.first(where: { $0.id == id }),
+                      !state.pairingCleanup else { return .none }
+                state.pairingTarget = nil
+                var pairing = SignInFeature.State(additionalMac: true)
+                if !mac.local { pairing.path = .account; pairing.signedIn = true }
+                state.pairing = pairing
+                return .none
             case .loadMacStatuses:
                 return .run { send in await send(.macStatusesLoaded(await client.macStatuses())) }
                     .cancellable(id: StatusesID.statuses, cancelInFlight: true)
@@ -269,6 +333,7 @@ public extension DependencyValues {
                 if !state.automaticallySavesQuietHours { state.saving = false }
                 state.checking = false
                 state.selectingMacID = nil
+                state.pairingTarget = nil
                 return .cancel(id: state.cancellation)
             case .updated(let snapshot):
                 state.notifications = snapshot
@@ -359,6 +424,7 @@ public extension DependencyValues {
                 state.pairing = SignInFeature.State(linksAccount: true)
                 return .none
             case .pairing(.dismiss):
+                state.pairingTarget = nil
                 state.pairingCleanup = true
                 return .run { send in
                     await pairingService.cancel()
@@ -373,8 +439,9 @@ public extension DependencyValues {
                 return .none
             case .pairing: return .none
             case .selectMac(let id):
-                guard state.selectingMacID == nil, id != state.selectedMacID,
-                      state.macs.contains(where: { $0.id == id }) else { return .none }
+                guard state.selectingMacID == nil,
+                      let mac = state.macs.first(where: { $0.id == id }),
+                      id != state.selectedMacID || mac.hasAlternatePairings else { return .none }
                 state.selectingMacID = id; state.macError = nil
                 let generation = state.generation
                 return .run { send in

@@ -40,6 +40,7 @@ public enum ConnectionClassifier {
     private static func remoteProblem(_ error: any Error, networkOffline: Bool, macName: String?) -> ConnectionProblem {
         // The Mac's own sealed answer reached this device, so the network is not the problem.
         if error as? DirectSessionError == .deviceRevoked { return .deviceRevoked(macName: macName) }
+        if error as? AccountDeviceError == .removedFromWeb { return .removedFromWeb }
         if networkOffline { return .noInternet }
         switch error {
         case DirectRouteError.unreachable: return .macNotOnNetwork

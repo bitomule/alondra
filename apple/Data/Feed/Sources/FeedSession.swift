@@ -729,7 +729,7 @@ public actor FeedSession {
             }
         case let error as FeedError:
             return error == .unexpectedUnchanged
-        case is DirectSessionError, SealedRequestError.invalidRequest, SealedRequestError.operationIdentityConflict,
+        case is DirectSessionError, is AccountDeviceError, SealedRequestError.invalidRequest, SealedRequestError.operationIdentityConflict,
              RelayWireError.unauthorized, RelayWireError.invalidEndpoint, RelayWireError.invalidField,
              OperationError.invalidEndpoint:
             return false

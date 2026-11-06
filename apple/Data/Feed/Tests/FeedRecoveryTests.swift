@@ -67,6 +67,7 @@ final class FeedRecoveryTests: XCTestCase {
         XCTAssertFalse(FeedSession.isTransient(RelayWireError.unauthorized))
         XCTAssertFalse(FeedSession.isTransient(APIError.server(status: 400, kind: nil, detail: "invalid_changes_query", reasons: [])))
         XCTAssertFalse(FeedSession.isTransient(DirectSessionError.deviceRevoked))
+        XCTAssertFalse(FeedSession.isTransient(AccountDeviceError.removedFromWeb))
     }
 
     /// The changes loop ended for good on these, so the iPhone never heard of a change again until

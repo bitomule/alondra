@@ -82,6 +82,7 @@ public enum AppReportSection {
         case .sessionExpired: "sessionExpired"
         case .accessNotConfirmed: "accessNotConfirmed"
         case .deviceRevoked: "deviceRevoked"
+        case .removedFromWeb: "removedFromWeb"
         case .macNotOnNetwork: "macNotOnNetwork"
         case .macChangedIdentity: "macChangedIdentity"
         case .localNetworkDenied: "localNetworkDenied"
