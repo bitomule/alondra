@@ -68,11 +68,12 @@ opaque bytes.
 Devices on the same network connect directly; away from home they try a direct path and fall back
 to the relay.
 
-## The control plane
+## The relay
 
-`crates/relay` and `web/` are the optional server: accounts, a device registry,
-pairing invitations, push notifications through APNs and the admission check for the iroh relay.
-It stores accounts and device public keys, not content.
+`crates/relay` is the optional component devices reach when they are not on the same network: a
+device registry, pairing, push notifications through APNs and the admission check for the iroh
+relay. It stores device public keys, not content, and holds no accounts: the system that manages
+them tells it what was removed through [its operator API](relay-operator-api.md).
 
 A relay's `GET /v1/bootstrap` names the protocol, the epoch devices sign with, the iroh relay, and
 in `identity` the OIDC issuer whose tokens it accepts with the client id of the apps

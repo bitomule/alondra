@@ -1,5 +1,5 @@
 use alondra_e2e::HttpChallengeVerifier;
-use anyhow::{ensure, Context, Result, bail};
+use anyhow::{Context, Result, bail};
 use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::VerifyingKey;
@@ -28,17 +28,24 @@ pub struct Config {
     pub issuer: String,
     pub audience: String,
     pub jwks_url: String,
-    /// Permit the Docker-only Keycloak service URL on the isolated pilot network.
+    /// Permit an `http://` JWKS URL, for a key service only a private network reaches.
     #[serde(default)]
     pub allow_internal_http_jwks: bool,
-    pub owner_sub: String,
-    pub mac_id: String,
-    /// SEC1 uncompressed P-256 public key, base64url without padding.
-    pub mac_signing_key: String,
+    /// A Mac the relay imports at start. Every other Mac enrolls through `POST /v1/macs`.
+    #[serde(flatten)]
+    pub bootstrap_mac: Option<BootstrapMac>,
     pub device_registry_path: PathBuf,
     /// Optional APNs signing credential. Push endpoints fail closed when omitted.
     #[serde(default)]
     pub apns: Option<crate::push::ApnsConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct BootstrapMac {
+    pub owner_sub: String,
+    pub mac_id: String,
+    /// SEC1 uncompressed P-256 public key, base64url without padding.
+    pub mac_signing_key: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -49,7 +56,7 @@ pub struct PushRegistration {
     pub push_binding: String,
 }
 
-/// The Keycloak offline session whose token registered a push. When that session ends the
+/// The offline session whose token registered a push. When that session ends the
 /// phone can no longer act on what it is sent, so the registration ends with it.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -211,7 +218,6 @@ pub struct Identity {
 
 pub struct Auth {
     pub config: Config,
-    pub management: Option<crate::management::Management>,
     pub jwt: crate::jwt::Verifier,
     devices: Mutex<DeviceRegistry>,
     registry_poisoned: AtomicBool,
@@ -220,21 +226,20 @@ pub struct Auth {
     #[cfg(test)]
     verification_time: Mutex<Option<u64>>,
     #[cfg(test)]
-    live_route_checks: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
     registry_writes: std::sync::atomic::AtomicUsize,
 }
 
 impl Auth {
     pub async fn open(config: Config) -> Result<Self> {
-        if config.issuer.is_empty()
-            || config.audience.is_empty()
-            || config.owner_sub.is_empty()
-            || config.mac_id.is_empty()
-        {
-            bail!("issuer, audience, owner_sub and mac_id are required");
+        if config.issuer.is_empty() || config.audience.is_empty() {
+            bail!("issuer and audience are required");
         }
-        verifying_key(&config.mac_signing_key).context("invalid bootstrap Mac signing key")?;
+        if let Some(mac) = &config.bootstrap_mac {
+            if mac.owner_sub.is_empty() || mac.mac_id.is_empty() {
+                bail!("a bootstrap Mac needs owner_sub and mac_id");
+            }
+            verifying_key(&mac.mac_signing_key).context("invalid bootstrap Mac signing key")?;
+        }
         let jwt = crate::jwt::Verifier::open(
             config.issuer.clone(),
             config.audience.clone(),
@@ -334,18 +339,19 @@ impl Auth {
             if guarded && missing_bindings {
                 bail!("guarded registry is missing phone bindings");
             }
-            if missing_bindings
-                && (macs.iter().any(|mac| mac.mac_id != config.mac_id)
-                    || !revoked_mac_ids.is_empty())
-            {
-                bail!("ambiguous phone binding in multi-Mac registry");
-            }
-            for id in devices.keys() {
-                if let std::collections::hash_map::Entry::Vacant(entry) =
-                    phone_macs.entry(id.clone())
-                {
-                    entry.insert(config.mac_id.clone());
-                    migrated_registry = true;
+            if missing_bindings {
+                let Some(bootstrap) = config.bootstrap_mac.as_ref().filter(|bootstrap| {
+                    macs.iter().all(|mac| mac.mac_id == bootstrap.mac_id) && revoked_mac_ids.is_empty()
+                }) else {
+                    bail!("ambiguous phone binding in multi-Mac registry");
+                };
+                for id in devices.keys() {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        phone_macs.entry(id.clone())
+                    {
+                        entry.insert(bootstrap.mac_id.clone());
+                        migrated_registry = true;
+                    }
                 }
             }
             let revoked_ids: HashSet<_> = revoked_ids.into_iter().collect();
@@ -408,29 +414,31 @@ impl Auth {
         } else {
             DeviceRegistry::default()
         };
-        // The pre-service pilot's pinned Mac is imported without replacing any durable entry.
-        // A revoked pinned ID stays revoked across restarts.
-        if !devices.revoked_mac_ids.contains(&config.mac_id) {
-            match devices.macs.get(&config.mac_id) {
+        // The bootstrap Mac is imported without replacing any durable entry.
+        // A revoked bootstrap ID stays revoked across restarts.
+        if let Some(bootstrap) = &config.bootstrap_mac
+            && !devices.revoked_mac_ids.contains(&bootstrap.mac_id)
+        {
+            match devices.macs.get(&bootstrap.mac_id) {
                 Some(existing)
-                    if existing.owner_sub != config.owner_sub
-                        || existing.signing_key != config.mac_signing_key =>
+                    if existing.owner_sub != bootstrap.owner_sub
+                        || existing.signing_key != bootstrap.mac_signing_key =>
                 {
                     bail!("bootstrap Mac conflicts with durable registry");
                 }
                 Some(_) => {}
                 None => {
-                    if devices.devices.contains_key(&config.mac_id)
-                        || devices.revoked_ids.contains(&config.mac_id)
+                    if devices.devices.contains_key(&bootstrap.mac_id)
+                        || devices.revoked_ids.contains(&bootstrap.mac_id)
                     {
                         bail!("bootstrap Mac ID conflicts with phone registry");
                     }
                     devices.macs.insert(
-                        config.mac_id.clone(),
+                        bootstrap.mac_id.clone(),
                         MacDevice {
-                            mac_id: config.mac_id.clone(),
-                            owner_sub: config.owner_sub.clone(),
-                            signing_key: config.mac_signing_key.clone(),
+                            mac_id: bootstrap.mac_id.clone(),
+                            owner_sub: bootstrap.owner_sub.clone(),
+                            signing_key: bootstrap.mac_signing_key.clone(),
                             agreement_key: String::new(),
                         },
                     );
@@ -462,15 +470,12 @@ impl Auth {
         Ok(Self {
             config,
             jwt,
-            management: None,
             devices: Mutex::new(devices),
             registry_poisoned: AtomicBool::new(false),
             removals_pending: AtomicBool::new(false),
             verifier: Mutex::new(verifier),
             #[cfg(test)]
             verification_time: Mutex::new(None),
-            #[cfg(test)]
-            live_route_checks: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             registry_writes: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -791,7 +796,7 @@ impl Auth {
             &request.mac_id,
             &request.signing_key,
         )?;
-        self.require_live_route(&owner_sub,&request.mac_id,None).await?;
+        self.require_active_owner(&owner_sub)?;
         Ok(MacDevice {
             mac_id: request.mac_id,
             owner_sub,
@@ -851,23 +856,6 @@ impl Auth {
             (m.mac_id.clone(),clients)
         }).collect::<Vec<_>>();macs.sort_by(|a,b|a.0.cmp(&b.0));Ok(macs)
     }
-    pub fn reconcile_device_revocation(&self,owner:&str,kind:&str,id:&str,mac_id:&str)->Result<()> {
-        self.ensure_registry_ready()?;
-        let mut registry=self.devices.lock().unwrap();let before=registry.clone();
-        if remove_device(&mut registry,owner,kind,id,mac_id,true)?==Applied::Refused {bail!(RemovalConflict)}
-        if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
-        Ok(())
-    }
-
-    pub fn revoke_owner(&self,owner:&str)->Result<()> {
-        self.ensure_registry_ready()?;
-        let mut registry=self.devices.lock().unwrap();
-        let before=registry.clone();
-        if !remove_owner_devices(&mut registry,owner) {return Ok(())}
-        if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
-        Ok(())
-    }
-
     /// The account source's removals numbered after the last one held, in order. Numbers already
     /// held are skipped, so a batch sent again changes nothing; a batch that skips a number is
     /// refused whole, and one that ends below the held number means the source's numbering went
@@ -1264,7 +1252,7 @@ impl Auth {
             &mac.mac_id,
             &mac.signing_key,
         )?;
-        self.require_live_route(&mac.owner_sub,&mac.mac_id,None).await?;
+        self.require_active_owner(&mac.owner_sub)?;
         Ok(Identity {
             device_id: mac.mac_id,
             owner_sub: mac.owner_sub,
@@ -1337,8 +1325,8 @@ impl Auth {
             bail!("device does not belong to token subject");
         }
         self.verify_device(headers, method, uri, body, now_ms, id, &device.signing_key)?;
-        let mac=self.paired_mac_for_phone(id,&sub)?;
-        self.require_live_route(&sub,&mac,Some(id)).await?;
+        self.paired_mac_for_phone(id,&sub)?;
+        self.require_active_owner(&sub)?;
         Ok(Identity {
             device_id: id.into(),
             owner_sub: sub,
@@ -1367,7 +1355,7 @@ impl Auth {
             .context("expected Bearer token")?;
         let sub = self.verify_jwt(token, now_ms).await?;
         self.mac_for_owner(mac_id, &sub)?;
-        self.require_live_route(&sub,mac_id,Some(device_id)).await?;
+        self.require_active_owner(&sub)?;
         self.verify_device(headers, method, uri, body, now_ms, device_id, signing_key)?;
         Ok(Identity { device_id: device_id.to_owned(), owner_sub: sub })
     }
@@ -1388,40 +1376,13 @@ impl Auth {
 
     pub(crate) async fn verify_jwt(&self, jwt: &str, now_ms: u64) -> Result<String> {
         let subject = self.jwt.subject(jwt, now_ms).await?;
-        self.require_active_owner(&subject).await?;
+        self.require_active_owner(&subject)?;
         Ok(subject)
-    }
-
-    pub async fn require_live_route(&self,subject:&str,mac_id:&str,client_id:Option<&str>)->Result<()> {
-        #[cfg(test)]
-        self.live_route_checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.require_held_removals(subject)?;
-        if let Some(db)=&self.management {
-            db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
-                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {
-                    anyhow::anyhow!(AccountGateError::Unavailable)
-                }
-            })?;
-        }
-        Ok(())
-    }
-    pub async fn require_active_owner(&self,subject:&str)->Result<()> {
-        self.require_held_removals(subject)?;
-        if let Some(management)=&self.management {
-            management.active_identity(&self.config.issuer,subject).await.map_err(|error| {
-                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {
-                    anyhow::anyhow!(AccountGateError::Denied)
-                } else {
-                    anyhow::anyhow!(AccountGateError::Unavailable)
-                }
-            })?;
-        }
-        Ok(())
     }
 
     /// Removed devices are already gone from the registry; what is left to refuse is a closed
     /// account, and anything before the account source's list is read.
-    fn require_held_removals(&self, subject: &str) -> Result<()> {
+    pub fn require_active_owner(&self, subject: &str) -> Result<()> {
         if self.removals_pending() {
             bail!(AccountGateError::Unavailable);
         }
@@ -1434,11 +1395,6 @@ impl Auth {
     #[cfg(test)]
     pub(crate) fn registry_write_count(&self) -> usize {
         self.registry_writes.load(Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn live_route_check_count(&self) -> usize {
-        self.live_route_checks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -1716,21 +1672,17 @@ fn iroh_node_key(node: &str) -> Option<[u8; 32]> {
 #[derive(Debug, PartialEq, Eq)]
 enum Applied { Changed, Unchanged, Refused }
 
-/// `strict` refuses a client the registry pairs with another Mac than `mac_id`; otherwise that
-/// client, being of the same account, is removed all the same. A device of another account, or
-/// an ID the registry holds for the other kind of device, is never touched.
-fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str,mac_id:&str,strict:bool)->Result<Applied> {
+/// A device of another account, or an ID the registry holds for the other kind of device, is
+/// never touched.
+fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str)->Applied {
     let other_kind=if kind=="mac" {registry.devices.contains_key(id) || registry.revoked_ids.contains(id)} else {registry.macs.contains_key(id) || registry.revoked_mac_ids.contains(id)};
-    if other_kind {return Ok(Applied::Refused)}
+    if other_kind {return Applied::Refused}
     let clients=if kind=="mac" {
-        if registry.macs.get(id).is_some_and(|mac|mac.owner_sub!=owner) {return Ok(Applied::Refused)}
+        if registry.macs.get(id).is_some_and(|mac|mac.owner_sub!=owner) {return Applied::Refused}
         registry.phone_macs.iter().filter(|(_,mac)|mac.as_str()==id).map(|(client,_)|client.clone()).collect::<Vec<_>>()
     } else {vec![id.to_owned()]};
     for client in &clients {
-        if let Some(record)=registry.devices.get(client) {
-            if record.owner_sub!=owner {return Ok(Applied::Refused)}
-            ensure!(!strict || registry.phone_macs.get(client).map(String::as_str)==Some(mac_id),RemovalConflict);
-        }
+        if registry.devices.get(client).is_some_and(|record|record.owner_sub!=owner) {return Applied::Refused}
     }
     let mut changed=false;
     let now=crate::now_ms();
@@ -1745,7 +1697,7 @@ fn remove_device(registry:&mut DeviceRegistry,owner:&str,kind:&str,id:&str,mac_i
         changed|=registry.revoked_ids.insert(client);
     }
     forget_orphan_iroh_nodes(registry);
-    Ok(if changed {Applied::Changed} else {Applied::Unchanged})
+    if changed {Applied::Changed} else {Applied::Unchanged}
 }
 
 /// Whether the owner had any device to remove.
@@ -1777,18 +1729,15 @@ fn note_mac_removed(registry: &mut DeviceRegistry, mac: MacDevice) {
 }
 
 fn apply_removal(registry: &mut DeviceRegistry, removal: &Removal) -> Applied {
-    let removed = match removal {
-        Removal::Mac { owner, mac_id } => remove_device(registry, owner, "mac", mac_id, mac_id, false),
-        Removal::Client { owner, client_id, mac_id } => {
-            remove_device(registry, owner, "client", client_id, mac_id, false)
-        }
+    match removal {
+        Removal::Mac { owner, mac_id } => remove_device(registry, owner, "mac", mac_id),
+        Removal::Client { owner, client_id, .. } => remove_device(registry, owner, "client", client_id),
         Removal::Owner { owner } => {
             let devices = remove_owner_devices(registry, owner);
             let closed = registry.closed_owners.insert(owner.clone());
-            return if devices || closed { Applied::Changed } else { Applied::Unchanged };
+            if devices || closed { Applied::Changed } else { Applied::Unchanged }
         }
-    };
-    removed.unwrap_or(Applied::Refused)
+    }
 }
 
 fn forget_orphan_iroh_nodes(registry: &mut DeviceRegistry) {
@@ -1881,14 +1830,6 @@ impl std::fmt::Display for EnrollmentError {
     }
 }
 impl std::error::Error for EnrollmentError {}
-/// A removal names a device of another account or Mac than the one the registry holds.
-#[derive(Debug)]
-pub struct RemovalConflict;
-impl std::fmt::Display for RemovalConflict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {f.write_str("removal_conflict")}
-}
-impl std::error::Error for RemovalConflict {}
-
 #[derive(Debug)]
 pub struct RegistryUnavailable;
 impl std::fmt::Display for RegistryUnavailable {

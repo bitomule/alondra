@@ -5,7 +5,6 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 rust_library(
     name = "alondra_relay_lib",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
-    compile_data = glob(["migrations/*.sql"]),
     crate_name = "alondra_relay",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -27,8 +26,7 @@ rust_binary(
 low_opt_rust_test(
     name = "alondra_relay_test",
     size = "small",
-    visibility = ["//apple/Data/Feed:__pkg__"],
-    compile_data = glob(["tests/fixtures/**"]) + ["//fixtures/push", "//:docs/architecture/push-fields.md", "//:web/react-router.config.ts"],
+    compile_data = glob(["tests/fixtures/**"]) + ["//fixtures/push", "//:docs/architecture/push-fields.md"],
     crate = ":alondra_relay_lib",
     edition = "2024",
     deps = all_crate_deps(normal_dev = True),

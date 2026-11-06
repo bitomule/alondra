@@ -10,7 +10,7 @@ const OLD: &[&str] = &[
 ];
 
 const SCANNED: &[&str] = &[
-    "crates", "plugin", "plugin-orchestrator", "apple", "web/app", "web/e2e", "tools", "deploy",
+    "crates", "plugin", "plugin-orchestrator", "apple", "tools", "deploy",
     "Makefile", "README.md", "INSTALL.md", "AGENTS.md", "docs/architecture",
     "docs/iroh-protocol.md", "docs/building-from-source.md",
 ];

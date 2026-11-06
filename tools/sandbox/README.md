@@ -36,7 +36,7 @@ Mac apps browse it only when built with `--define=alondra_sandbox=1` and launche
 
 - `mac-N/`: that Mac's HOME, with `service-keys/`, `service.toml`, `config.toml`, `env`,
   `settings.json`, `alondrad.log`.
-- `relay.json`, `relay.log`: the real `alondra-relay`, without Postgres or Keycloak.
+- `relay.json`, `relay.log`: the real `alondra-relay`.
 - `issuer/`: the RSA key that signs sandbox account tokens and its `jwks.json`, served on loopback.
 - `phones/<name>/mac-N.json`: the synthetic phone's identity toward each Mac it paired with the
   account (enrolled at the relay, reached over iroh); `mac-N-direct.json` the one it paired directly.

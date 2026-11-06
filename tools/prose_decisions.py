@@ -21,7 +21,7 @@ FINDING = re.compile(r"^finding:[A-Z]-\d{2}$|^finding:codex-mcp-denial$")
 
 SCANNED = {
     "rust": ["crates"],
-    "ts": ["agent-host", "plugin/hooks", "web/app"],
+    "ts": ["agent-host", "plugin/hooks"],
     "swift": ["apple"],
 }
 EXTENSIONS = {"rust": (".rs",), "ts": (".ts", ".tsx", ".mts", ".mjs"), "swift": (".swift",)}

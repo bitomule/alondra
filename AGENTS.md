@@ -16,7 +16,6 @@
   - Rust: `make test` (`bazelisk test //crates/...`).
   - Apple: `bazelisk test --build_tests_only -- //apple/... -//apple/NativeHarness/...`.
   - A new integration test needs a Bazel target, or it does not run.
-- Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing, when `musts` is installed.
 - `musts validate` asks only for the checks whose `paths` a change touches, and a check's `paths` are
   the files its targets read (`MUSTS.yml`). Iterate with `bazelisk test <target>`; when the change is

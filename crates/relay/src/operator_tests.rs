@@ -57,9 +57,11 @@ mod operator_api {
                 audience: "alondra-relay".into(),
                 jwks_url: "http://127.0.0.1:1/jwks".into(),
                 allow_internal_http_jwks: false,
-                owner_sub: "owner".into(),
-                mac_id: "mac-1".into(),
-                mac_signing_key: key_bytes(&self.mac_key),
+                bootstrap_mac: Some(auth::BootstrapMac {
+                    owner_sub: "owner".into(),
+                    mac_id: "mac-1".into(),
+                    mac_signing_key: key_bytes(&self.mac_key),
+                }),
                 device_registry_path: self.directory.join("registry.json"),
                 apns: None,
             }
@@ -74,21 +76,16 @@ mod operator_api {
                 activity: activity::Store::open(&auth.config.device_registry_path).unwrap(),
                 epoch: URL_SAFE_NO_PAD.encode(auth.server_epoch()),
                 auth,
-                management_keycloak: None,
-                web_session: None,
-                web_assets: None,
                 apns: Some(push::Apns::test("http://127.0.0.1:1".into())),
                 pairing: pairing::Mailbox::default(),
                 requests: Arc::new(Semaphore::new(128)),
                 device_gate: Arc::new(RwLock::new(())),
-                waitlist: management::waitlist::Limiter::new(None),
                 iroh_relay: Some(TEST_IROH_RELAY.into()),
                 iroh_access_token: Some(TEST_IROH_ACCESS_TOKEN.into()),
                 report_repo: None,
                 identity: None,
-                testflight_url: None,
                 operator,
-                test_directory: None,
+                _test_directory: None,
             });
             let (url, public) = serve(router(server.clone())).await;
             let (operator_url, private) = serve(operator::router(server.clone())).await;

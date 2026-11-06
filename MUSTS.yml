@@ -481,7 +481,6 @@ checks:
       - "fixtures/push/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
-      - "web/react-router.config.ts"
     with:
       targets:
         - //crates/relay/...
@@ -553,9 +552,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/tests/test_licenses.py"
       - "tools/third_party_notices.py"
-      - "web/app/public/fonts/*.txt"
-      - "web/package-lock.json"
-      - "web/package.json"
     with:
       targets:
         - //tools:licenses_test

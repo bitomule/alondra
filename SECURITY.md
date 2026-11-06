@@ -13,7 +13,8 @@ answer within a few days, tell you what we decide, and credit you when the fix s
 ## Scope
 
 In scope: the daemon, CLI and TUI, the iPhone and Mac apps, the end-to-end protocol between devices
-and a Mac (`docs/iroh-protocol.md`), and the control-plane server in this repository.
+and a Mac (`docs/iroh-protocol.md`), and the relay.
+The relay is in this repository; Alondra Cloud's accounts are not.
 
 Out of scope: Claude Code, Codex and other provider tools, and GitHub. Report those to their
 owners. Alondra does not manage provider sign-in and never holds those credentials.

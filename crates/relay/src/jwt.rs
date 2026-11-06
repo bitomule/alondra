@@ -60,21 +60,22 @@ pub struct Verifier {
     last_unknown_refresh: Mutex<Option<Instant>>,
 }
 
+fn jwks_url_allowed(url: &str, allow_internal_http: bool) -> bool {
+    url.starts_with("https://")
+        || url.starts_with("http://127.0.0.1:")
+        || (allow_internal_http && url.starts_with("http://"))
+}
+
 impl Verifier {
-    /// `allow_internal_http` admits the Docker-only Keycloak service URL of an isolated network.
+    /// `allow_internal_http` admits an `http://` URL, for a key service only a private network reaches.
     pub async fn open(
         issuer: String,
         audience: String,
         jwks_url: String,
         allow_internal_http: bool,
     ) -> Result<Self> {
-        let jwks_url_allowed = jwks_url.starts_with("https://")
-            || jwks_url.starts_with("http://127.0.0.1:")
-            || (allow_internal_http && jwks_url.starts_with("http://keycloak:8080/"));
-        if !jwks_url_allowed {
-            bail!(
-                "JWKS URL must use HTTPS, loopback, or explicitly allowed pilot Keycloak network"
-            );
+        if !jwks_url_allowed(&jwks_url, allow_internal_http) {
+            bail!("JWKS URL must use HTTPS, loopback, or allow_internal_http_jwks");
         }
         let jwks = fetch_jwks(&jwks_url).await?;
         Self::from_jwks(issuer, audience, jwks_url, jwks)
@@ -116,7 +117,7 @@ impl Verifier {
         self.jwks.read().unwrap().refreshed_at.elapsed() <= JWKS_MAX_AGE
     }
 
-    /// Replace the complete key set; removed Keycloak keys stop validating immediately.
+    /// Replace the complete key set; removed keys stop validating immediately.
     pub async fn refresh(&self) -> Result<()> {
         let _guard = self.jwks_refresh.lock().await;
         let keys = parse_jwks(fetch_jwks(&self.jwks_url).await?)?;
@@ -249,4 +250,19 @@ async fn fetch_jwks(url: &str) -> Result<Jwks> {
         body.extend_from_slice(&chunk);
     }
     Ok(serde_json::from_slice(&body)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jwks_url_allowed;
+
+    #[test]
+    fn http_jwks_needs_the_explicit_allowance_and_any_private_host_can_have_it() {
+        assert!(jwks_url_allowed("https://id.example/jwks", false));
+        assert!(jwks_url_allowed("http://127.0.0.1:8080/jwks", false));
+        assert!(!jwks_url_allowed("http://keycloak:8080/jwks", false));
+        assert!(jwks_url_allowed("http://keycloak:8080/jwks", true));
+        assert!(jwks_url_allowed("http://id.internal:9000/jwks", true));
+        assert!(!jwks_url_allowed("ftp://id.internal/jwks", true));
+    }
 }

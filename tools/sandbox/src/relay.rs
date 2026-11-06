@@ -7,7 +7,7 @@ use p256::ecdsa::SigningKey;
 use serde_json::{Value, json};
 
 use crate::{
-    issuer::{AUDIENCE, OWNER},
+    issuer::AUDIENCE,
     sandbox::{http, now_ms, random},
 };
 
@@ -89,22 +89,12 @@ pub fn signed_headers(
     ])
 }
 
-/// The relay needs one bootstrap Mac in its config; the sandbox Macs enroll through
-/// `POST /v1/macs` like real ones, so this one is a placeholder nobody holds.
 pub fn write_config(listen: &str, issuer: &str, registry: &Path, out: &Path) -> Result<()> {
-    let placeholder = loop {
-        if let Ok(key) = SigningKey::from_slice(&random::<32>()?) {
-            break key;
-        }
-    };
     let config = json!({
         "listen": listen,
         "issuer": issuer,
         "audience": AUDIENCE,
         "jwks_url": format!("{}/jwks.json", issuer.trim_end_matches('/')),
-        "owner_sub": OWNER,
-        "mac_id": "mac-sandbox-bootstrap",
-        "mac_signing_key": B64.encode(placeholder.verifying_key().to_sec1_point(false).as_bytes()),
         "device_registry_path": registry,
     });
     std::fs::write(out, serde_json::to_vec_pretty(&config)?)?;

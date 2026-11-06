@@ -27,8 +27,7 @@ class LicenseTests(unittest.TestCase):
     def test_every_manifest_declares_elv2(self):
         workspace = (ROOT / "Cargo.toml").read_text().split("[workspace.package]", 1)[1].split("\n[", 1)[0]
         self.assertIn('\nlicense = "Elastic-2.0"\n', workspace)
-        for manifest in ("agent-host/package.json", "web/package.json"):
-            self.assertEqual(json.loads((ROOT / manifest).read_text())["license"], "Elastic-2.0", manifest)
+        self.assertEqual(json.loads((ROOT / "agent-host/package.json").read_text())["license"], "Elastic-2.0")
 
     def test_notices_were_generated_from_the_current_lockfiles(self):
         self.assertEqual(notices.stale(ROOT), [])
@@ -42,11 +41,6 @@ class LicenseTests(unittest.TestCase):
         self.assertIn("not covered by Alondra's license", section)
         self.assertIn("All rights reserved", section)
         self.assertNotIn("@anthropic-ai/claude-agent-sdk 0.3", text.split("## Agent SDK host packages", 1)[1])
-
-    def test_notices_cover_the_fonts_the_website_serves(self):
-        text = (ROOT / "THIRD_PARTY_NOTICES.md").read_text()
-        for font in notices.FONT_LICENSES:
-            self.assertIn((ROOT / f"web/app/public/fonts/OFL-{font}.txt").read_text().strip(), text)
 
     def test_node_license_matches_the_pinned_node(self):
         pinned = notices.node_version(ROOT)

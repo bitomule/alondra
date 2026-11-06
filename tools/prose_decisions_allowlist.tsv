@@ -50,7 +50,6 @@ crates/core/src/views/card.rs	let extension = extension.to_ascii_lowercase();	di
 crates/core/src/views/card.rs	markdown.lines().find_map(|line| line.strip_prefix("# ")).map(str::trim).filter(|title| !title.is_empty()).map(str::to_owned)	display	text picked or cased for display
 crates/core/src/views/card.rs	.filter(|line| !(line.trim_start().to_ascii_lowercase().starts_with("pr:") && line.contains(&marker)))	display	text picked or cased for display
 crates/core/src/views/card.rs	.filter(|text| report.as_deref().is_none_or(|report| !report.contains(*text) && !text.contains(report)))	display	text picked or cased for display
-web/app/components/device-label.tsx	{error instanceof Error && !(error instanceof ApiError) ? <p className="feedback error" role="alert">{error.message}</p> : error != null && <Feedback error={error}/>}	display	error text only shown
 apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("diff --git ") {	format	git diff headers
 apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("new file mode") { status = .added; continue }	format	git diff headers
 apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("deleted file mode") { status = .deleted; continue }	format	git diff headers
@@ -104,10 +103,6 @@ crates/core/src/markdown/images.rs	} else if text.trim_start().starts_with("<svg
 crates/core/src/secret_destination.rs	let mut lines: Vec<String> = existing.lines().filter(|old| !old.trim_start().strip_prefix("export ").unwrap_or(old.trim_start()).starts_with(&prefix)).map(str::to_owned).collect();	format	export lines of a shell file
 crates/core/src/usage.rs	let plan: String = plan.unwrap_or_default().to_lowercase().chars().filter(char::is_ascii_alphanumeric).collect();	format	plan name from claude auth status JSON
 crates/core/src/views/summary.rs	if line.starts_with("diff --git ") {	format	git diff headers
-crates/relay/src/management/keycloak.rs	admin_realm.path() == format!("/admin/realms/{realm}/")	format	URL path of the configured realm
-crates/relay/src/management/keycloak.rs	&& token_url.path() == format!("/realms/{realm}/protocol/openid-connect/token")	format	URL path of the configured realm
-crates/relay/src/management/mod.rs	let value = input.trim().to_ascii_lowercase();	format	email or flag normalised
-crates/relay/src/management/waitlist.rs	let value = value.to_ascii_lowercase();	format	email or flag normalised
 crates/relay/src/push.rs	.strip_prefix("-----BEGIN PRIVATE KEY-----")	format	PEM armour of the APNs key
 crates/relay/src/push.rs	.and_then(|s| s.trim().strip_suffix("-----END PRIVATE KEY-----"))	format	PEM armour of the APNs key
 plugin/hooks/register.ts	if (step.value.stream !== 'stdout') continue	format	stream name of the mod's process API
