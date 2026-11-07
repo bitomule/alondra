@@ -477,6 +477,7 @@ checks:
       - "crates/e2e/**"
       - "crates/relay/**"
       - "crates/test_support.rs"
+      - "docs/architecture/push-fields.md"
       - "fixtures/push/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"

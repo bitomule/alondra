@@ -1,5 +1,6 @@
 //! APNs transport for Mac-signed, per-phone encrypted notification envelopes.
-//! APNs sees a device token, routing metadata and ciphertext, never notification content.
+//! APNs sees a device token, routing metadata, ciphertext and the count of a badge push, never
+//! notification content. `docs/architecture/push-fields.md` lists every field it reads.
 
 use crate::auth::PushRegistration;
 use alondra_e2e::Envelope;
@@ -455,6 +456,7 @@ impl std::error::Error for ApnsRejection {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::{Send, payload as activity_payload};
 
     #[tokio::test]
     async fn apns_outcomes_refresh_once_and_count_every_response() {
@@ -562,6 +564,31 @@ mod tests {
         assert_eq!(expiration_for(&delivery, &envelope), "0");
         let alert = Delivery::default();
         assert_eq!(expiration_for(&alert, &envelope), (envelope.expires_at_ms / 1000).to_string());
+    }
+
+    #[test]
+    fn every_field_of_an_apns_body_is_listed_in_the_docs() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/push/retract.json")).unwrap();
+        let envelope: Envelope =
+            serde_json::from_value(fixture["apns"]["alondra"]["envelope"].clone()).unwrap();
+        let deliveries = [
+            Delivery::default(),
+            Delivery { push_type: PushType::Background, ..Delivery::default() },
+            Delivery { push_type: PushType::Badge, badge: Some(3), ..Delivery::default() },
+        ];
+        let activity = [Send::Start, Send::Update { priority: 5 }, Send::End];
+        let bodies = deliveries.iter().map(|delivery| payload_for(delivery, &envelope, "binding"))
+            .chain(activity.iter().map(|push| activity_payload(push, &json!({}), 1_000)));
+        let listed = include_str!("../../../docs/architecture/push-fields.md");
+        for body in bodies {
+            for (section, fields) in body.as_object().unwrap() {
+                for field in fields.as_object().unwrap().keys() {
+                    let path = format!("`{section}.{field}`");
+                    assert!(listed.contains(&path), "{path} goes to APNs but is not in push-fields.md");
+                }
+            }
+        }
     }
 
     #[test]

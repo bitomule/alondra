@@ -39,7 +39,10 @@ exports_files(
 
 exports_files([".bazelrc"], visibility = ["//tools:__pkg__"])
 
-exports_files(["web/react-router.config.ts"], visibility = ["//crates/relay:__pkg__"])
+exports_files(
+    ["docs/architecture/push-fields.md", "web/react-router.config.ts"],
+    visibility = ["//crates/relay:__pkg__"],
+)
 
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
 MOD_TYPES = [

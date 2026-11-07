@@ -1,8 +1,9 @@
 //! Keeps the phone's Live Activity up to date with this Mac's three counts: the cards in Waiting
 //! for You, the nodes that wait for an answer and the nodes at work. Each phone gets them sealed
-//! with its own key, so neither the relay nor Apple reads them: the relay keeps the latest
+//! with its own key, so neither the relay nor Apple reads this copy: the relay keeps the latest
 //! envelope of every Mac for the phone and hands them, unopened, to the Live Activity, whose
-//! widget extension opens and adds them up.
+//! widget extension opens and adds them up. The first count also reaches the phone's icon badge
+//! in the clear when it drops (`push_retract`).
 //!
 //! Outside the envelope travel three flags the relay acts on: `active` (something waits or works
 //! here, or did less than [`GRACE`] ago), `may_start` (the phone is outside its quiet hours, so a
