@@ -1,7 +1,9 @@
 # The iPhone Live Activity
 
 Three counts, summed over every Mac of the account, on the Lock Screen and in the Dynamic Island
-while something waits or works: Inbox, Waiting and Working. Neither Apple nor the relay reads them.
+while something waits or works: Inbox, Waiting and Working. Neither Apple nor the relay reads them
+here. The Inbox count of a Mac also sets the iPhone's icon badge, and that copy travels in the clear
+when the count drops ([push fields](push-fields.md)).
 
 ## Who does what
 
