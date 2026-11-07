@@ -683,7 +683,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
         (Workplace::Given(_), None) => mission,
     };
-    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
+    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, crate::domain_schedule_runner::MissionAuthor::Orchestrator, &resolved, &task.id, body.approach.unwrap_or_default());
     if domain.sdk().is_none() {
         return Err(DomainError::new("unavailable", crate::sdk_owner::NO_HOST));
     }
