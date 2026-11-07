@@ -7,6 +7,7 @@ apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.
 crates/core/src/domain/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/core/src/domain/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/alondra/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:G-16	crash report issues found by their GitHub title, which anyone can edit
+crates/daemon-engine/src/accounts.rs	.filter_map(|account| account.email.as_deref()).map(|email| email.trim().to_lowercase()).filter(|email| !email.is_empty()).collect();	format	emails compare without case
 crates/daemon-engine/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
 crates/daemon-engine/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns
 crates/core/src/domain/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	own-grammar	an Alondra card id built from another of its ids; decides nothing
