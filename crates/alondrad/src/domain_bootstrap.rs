@@ -524,9 +524,15 @@ async fn service_approve_device(
         auth.approve_service(&body.device_id, &body.name, &body.signing_key)
     })
     .await
-    .unwrap_or_else(|error| Err(error.to_string()));
-    if let Err(error) = approved {
-        return (StatusCode::CONFLICT, error).into_response();
+    .unwrap_or_else(|error| Err(error.to_string().into()));
+    match approved {
+        Ok(()) => {}
+        Err(crate::auth::ServiceApprovalError::Revoked) => {
+            return (StatusCode::GONE, String::from(crate::auth::ServiceApprovalError::Revoked)).into_response();
+        }
+        Err(crate::auth::ServiceApprovalError::Refused(error)) => {
+            return (StatusCode::CONFLICT, error).into_response();
+        }
     }
     match state.reload_service_devices() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -1570,6 +1576,22 @@ mod tests {
         let revoked = client.delete(format!("{base}/devices/phone-a")).send().await.unwrap();
         assert_eq!(revoked.status(), StatusCode::OK);
         assert!(!service.has_device("phone-a"), "revocation reaches the running service");
+
+        let body = json!({"device_id": "phone-a", "name": "iPhone", "signing_key": signing_wire}).to_string();
+        let now = alondra_core::now_millis() as u64;
+        let nonce = [4u8; 16];
+        let signature = alondra_e2e::sign_http_challenge(&mac, "mac-test", "POST",
+            "/service/approve-device", &epoch, body.as_bytes(), now, &nonce).unwrap();
+        let again = client.post(format!("{base}/service/approve-device"))
+            .header("x-device-id", "mac-test")
+            .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
+            .header("x-device-timestamp-ms", now.to_string())
+            .header("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce))
+            .header("x-device-signature", signature)
+            .body(body).send().await.unwrap();
+        assert_eq!(again.status(), StatusCode::GONE, "a revoked device ID is never approved again");
+        assert!(!auth.list().iter().any(|device| device.id == "phone-a"));
+        assert!(!service.has_device("phone-a"));
         server.abort();
         drop(service);
         std::fs::remove_dir_all(&home).unwrap();
