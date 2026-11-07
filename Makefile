@@ -243,6 +243,8 @@ e2e-iroh:
 
 # The real alondra over iroh against a one-Mac sandbox and a real iroh-relay in Docker (the hosted
 # relay's image): directly, then through the iroh relay only, then revoked (tools/e2e-iroh-cli.sh).
+# Requires a running local Docker daemon; the test owns its container, not the daemon.
+# IROH_RELAY_BIN uses a local relay binary instead of Docker.
 e2e-iroh-cli:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
 	tools/e2e-iroh-cli.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \

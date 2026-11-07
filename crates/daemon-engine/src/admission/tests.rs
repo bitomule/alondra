@@ -232,7 +232,7 @@ fn macos_warning_with_36_to_51_percent_free_and_up_to_3_nodes_working_admits_a_s
             if now >= to {
                 break;
             }
-            crate::machine_watch::pace(&domain, &Machine { at: now, memory_free_percent: Some(free), memory_total: 16 * GIB as u64,
+            crate::machine_watch::pace(&domain, &Machine { at: now, memory_free_percent: Some(free), memory_total: 16 * GIB as u64, memory_available: 8 << 30,
                 memory_pressure: Some(alondra_core::MemoryPressure::Warning), cpus: 11, load: [6.0; 3], ..Machine::default() });
             now += SAMPLE;
         }
@@ -391,7 +391,7 @@ fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_m
 fn free_of_18_gib(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
     let mut now = from;
     while now < to {
-        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(free), memory_total: 18 * GIB as u64,
+        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(free), memory_total: 18 * GIB as u64, memory_available: 18 * GIB as u64 * u64::from(free) / 100,
             memory_pressure: Some(alondra_core::MemoryPressure::Normal), cpus: 11, load: [5.0; 3], ..Machine::default() });
         now += SAMPLE;
     }
@@ -420,6 +420,34 @@ fn each_node_admitted_in_the_last_3_minutes_reserves_what_a_node_measured() {
     free_of_18_gib(&domain, 32, base + SAMPLE, base + 3 * MIN);
     assert_eq!(ask(&domain, "t6", base + 3 * MIN - 1), held);
     assert_eq!(ask(&domain, "t6", base + 3 * MIN), Ok(()), "the five are no longer in flight");
+}
+
+#[test]
+fn an_admitted_nodes_observed_memory_replaces_its_reserve_once_and_only_while_fresh() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
+    create(&domain, "t1");
+    create(&domain, "t2");
+    let base = alondra_core::now_millis();
+    domain.live.machine_watch.measure_nodes(base - MIN, vec![GIB as u64; 30]);
+    let sample = |at| Machine { at, memory_total: 18 << 30, memory_available: 5 << 30,
+        memory_free_percent: Some(60), ..Machine::default() };
+    crate::machine_watch::pace(&domain, &sample(base));
+    assert_eq!(ask(&domain, "t1", base), Ok(()));
+    start(&domain, "t1", base);
+    assert!(matches!(ask(&domain, "t2", base), Err(Hold::Memory { why: NoRoom::Available { .. }, .. })));
+
+    domain.live.machine_watch.measure_node_memory(base, BTreeMap::from([("agent-t1".into(), GIB as u64)]));
+    crate::machine_watch::pace(&domain, &sample(base + SAMPLE));
+    let snapshot = domain.live.gate.snapshot(&domain, base + SAMPLE).unwrap();
+    assert_eq!(snapshot.mac.observed_in_flight, GIB as u64);
+    assert_eq!(ask(&domain, "t2", base + SAMPLE), Ok(()));
+
+    domain.live.gate.lock().admitted.push((Key::Resume("agent-t1".into()), base));
+    let snapshot = domain.live.gate.snapshot(&domain, base + SAMPLE).unwrap();
+    assert_eq!(snapshot.mac.observed_in_flight, GIB as u64, "two references never credit the same node twice");
+    let snapshot = domain.live.gate.snapshot(&domain, base + MIN).unwrap();
+    assert_eq!(snapshot.mac.observed_in_flight, 0, "stale footprints cannot cancel a pending reserve");
 }
 
 #[test]
@@ -929,6 +957,7 @@ fn swap_sample_with_total(domain: &DomainRuntime, free: u64, used: u64, total: u
     let compressor = alondra_core::MemoryCompressor { swap_used: used, swap_total: Some(total),
         ..alondra_core::MemoryCompressor::default() };
     crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 64u64 << 30,
+        memory_available: 32 << 30,
         memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(compressor),
         disk_total: 500 * GB, disk_available: free, ..Machine::default() });
     domain.live.machine_watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
@@ -1017,7 +1046,7 @@ fn stable_and_shrinking_swap_leave_the_disk_gate_open_on_the_same_small_disk() {
 
 // 30 October: builds took 2 GB, swap another 2.7 GB, with memory still 29% free.
 #[test]
-fn growing_swap_holds_starts_on_the_measured_disk_but_not_with_room() {
+fn growing_swap_holds_starts_even_when_the_disk_budget_has_room() {
     for (extra_gb, roomy) in [(0, false), (0, true), (1, false), (1, true)] {
         let (_home, domain) = world();
         let gate = &domain.live.gate;
@@ -1038,6 +1067,7 @@ fn growing_swap_holds_starts_on_the_measured_disk_but_not_with_room() {
                 "swapins": 0, "swapouts": 0,
             })).unwrap();
             crate::machine_watch::pace(&domain, &Machine { at: now, memory_total: 64u64 << 30,
+                memory_available: 32 << 30,
                 memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(counters),
                 disk_total: 500 * GB, disk_available: free, ..Machine::default() });
             watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
@@ -1047,7 +1077,7 @@ fn growing_swap_holds_starts_on_the_measured_disk_but_not_with_room() {
         }
         let result = ask(&domain, "next", 10_000 + 40 * MIN);
         if roomy {
-            assert_eq!(result, Ok(()));
+            assert!(matches!(result, Err(Hold::Memory { why: NoRoom::SwapGrowth { .. }, .. })), "{result:?}");
         } else {
             assert!(matches!(result, Err(Hold::Disk { .. })), "{:?}", result);
         }

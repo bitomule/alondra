@@ -896,17 +896,37 @@ impl DomainStore {
     /// whose rows retention shrank in place once they are all done; its write-ahead log is
     /// truncated after the rebuild.
     pub(crate) fn reclaim_space(&self, pages: u32) -> Result<()> {
-        let mode: i64 = self.conn.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
-        if mode == 0 || self.owes_rebuild()? {
-            self.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;")?;
-            self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-            self.rebuilt()?;
-        } else {
-            let mut vacuum = self.conn.prepare(&format!("PRAGMA incremental_vacuum({pages})"))?;
-            let mut freed = vacuum.query([])?;
-            while freed.next()?.is_some() {}
+        let before = self.allocated_space();
+        let reclaimed = (|| -> Result<()> {
+            let mode: i64 = self.conn.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
+            if mode == 0 || self.owes_rebuild()? {
+                self.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;")?;
+                self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+                self.rebuilt()?;
+            } else {
+                let mut vacuum = self.conn.prepare(&format!("PRAGMA incremental_vacuum({pages})"))?;
+                let mut freed = vacuum.query([])?;
+                while freed.next()?.is_some() {}
+            }
+            Ok(())
+        })();
+        match before.zip(self.allocated_space()) {
+            Some((before, after)) => log!("store disk recovery: allocated before {before} bytes, after {after} bytes, released {} bytes, grew {} bytes", before.saturating_sub(after), after.saturating_sub(before)),
+            None => log!("store disk recovery: allocated space unavailable"),
         }
-        Ok(())
+        reclaimed
+    }
+
+    fn allocated_space(&self) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        let path = self.conn.path().filter(|path| !path.is_empty())?;
+        let main = std::fs::metadata(path).ok()?.blocks().saturating_mul(512);
+        let wal = match std::fs::metadata(format!("{path}-wal")) {
+            Ok(metadata) => metadata.blocks().saturating_mul(512),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(_) => return None,
+        };
+        Some(main.saturating_add(wal))
     }
 }
 
