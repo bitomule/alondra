@@ -301,6 +301,27 @@ impl Phone {
         !self.active() && self.live.as_ref().is_some_and(|live| live.update_token.is_some())
     }
 
+    /// The pushes due now, recorded as sent: `None` while the wait after the last push lasts.
+    pub fn take_pushes(&mut self, now_ms: u64) -> Option<Vec<(Send, String, Value)>> {
+        if self.last_sent_ms.is_some_and(|last| now_ms < last.saturating_add(self.spacing(now_ms))) {
+            return None;
+        }
+        let plan = self.plan(now_ms);
+        let mut pushes = Vec::new();
+        for push in &plan {
+            let token = match push {
+                Send::Start => self.start_token.clone(),
+                Send::Update { .. } | Send::End => self.live.as_ref().and_then(|live| live.update_token.clone()),
+            };
+            let Some(token) = token else { continue };
+            let content_state = self.content_state(|state| fits(push, state, now_ms));
+            pushes.push((push.clone(), token, payload(push, &content_state, now_ms)));
+        }
+        self.apply(&plan, now_ms);
+        self.unsent = false;
+        Some(pushes)
+    }
+
     /// The newest Macs first, as many as fit in one push, and how many were left out.
     pub fn content_state(&self, fits: impl Fn(&Value) -> bool) -> Value {
         let mut reports: Vec<&Report> = self.reports.values().collect();
@@ -550,22 +571,7 @@ impl Store {
         let now = self.now_ms();
         self.change(|state| {
             let Some(phone) = state.phones.get_mut(phone_id) else { return Ok(None) };
-            if phone.last_sent_ms.is_some_and(|last| now < last.saturating_add(phone.spacing(now))) {
-                return Ok(None);
-            }
-            let plan = phone.plan(now);
-            let mut pushes = Vec::new();
-            for push in &plan {
-                let token = match push {
-                    Send::Start => phone.start_token.clone(),
-                    Send::Update { .. } | Send::End => phone.live.as_ref().and_then(|live| live.update_token.clone()),
-                };
-                let Some(token) = token else { continue };
-                let content_state = phone.content_state(|state| fits(push, state, now));
-                pushes.push((push.clone(), token, payload(push, &content_state, now)));
-            }
-            phone.apply(&plan, now);
-            phone.unsent = false;
+            let Some(pushes) = phone.take_pushes(now) else { return Ok(None) };
             let outgoing = (!pushes.is_empty())
                 .then(|| Outgoing { environment: phone.environment.clone(), pushes });
             if phone.pairings.is_empty() && phone.live.is_none() {
@@ -626,6 +632,9 @@ impl Store {
         self.scheduled.lock().unwrap().remove(phone_id)
     }
 }
+
+#[cfg(test)]
+mod replay;
 
 #[derive(Debug)]
 pub struct Conflict;

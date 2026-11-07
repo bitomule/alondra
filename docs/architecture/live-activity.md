@@ -68,20 +68,44 @@ delivers when it suits it. Limits are per phone, so a second Mac does not double
 
 ### What the limits are based on
 
-A replay of 14 days of real task states through these rules, on one Mac that always had something
-active. It approximates the counts from task states, and takes quiet hours as 23:00 to 8:00.
+Two replays, both tests, chained through fixtures in `fixtures/push/`. The first drives the
+daemon's real schedule (`activity_push.rs`) with `activity_timeline.json`, two weeks of synthetic
+work (weekdays with 14 to 26 tasks that ask questions and leave results in the Inbox, quiet
+weekends, some night runs), and writes `activity_reports.json`, what a Mac tells the relay. The
+second feeds those reports to the relay's real push rules (`Phone::take_pushes`) for one phone
+that registered both tokens and whose Live Activity APNs always takes, and writes
+`activity_measurement.json`. Quiet hours are 23:00 to 8:00. A test of each fails when its output
+no longer matches the fixture; the commands that regenerate them are in the test files.
 
-| Per hour | Before | With these limits |
-|---|---|---|
-| Pushes, mean | 10.9 | 9.9 |
-| Pushes, 95th percentile | 27 | 22 |
-| Pushes, worst hour | 44 | 33 |
-| Priority 10, mean | 3.0 | 1.4 |
-| Priority 10, worst hour | 13 | 7 |
+The 14 days of real task states measured before these tests existed (9.9 pushes an hour on
+average, 22 at the 95th percentile, 33 in the worst hour, 1.4 of priority 10) came from a script
+that was never committed, so they cannot be repeated. The synthetic work is lighter than that
+Mac's, so compare only changes of the rules, never the two sets of numbers.
 
-An update with one Mac takes 792 bytes with fixture ids, and a real envelope about 800 bytes, so
-four fit in Apple's 4,096. The silent push cannot carry this: Apple suggests no more than two or
-three an hour.
+| Two weeks, one Mac and one phone | Result |
+|---|---|
+| Reports from the Mac | 1,601; 427 of them (27 %) repeat the last state, sent only so the Live Activity does not look stale |
+| Pushes to APNs | 1,556, of which 371 priority 10, 31 starts and 31 ends |
+| Pushes an hour, in the 212 hours with any | mean 7.3, 95th percentile 15, worst hour 20 |
+| Priority 10 an hour, in the 145 hours with any | mean 2.6, 95th percentile 5, worst hour 6 |
+| Wait between a report and its push | priority 5: 95th percentile 27 s, worst 54 s; priority 10: worst 49 s |
+| Largest push | 981 bytes |
+
+What this says about the limits:
+
+- The relay's spacing folds only 3 % of the reports (1,601 into 1,556), so the one-minute spacing
+  is not what costs pushes. Most pushes follow a real change of the counts.
+- The only pushes that carry nothing new are the 15 minute repeats, 27 % of the reports. Halving
+  them (repeat every 30 min, stale date after 60 min) would save about 13 % of the pushes, at the
+  price of noticing a Mac that went quiet 30 minutes later. It is not applied: that is a choice
+  about what the Live Activity tells, and the battery cost of a priority 5 push, which would show
+  whether it matters, is open below.
+- A growing Inbox waits 49 s at most for its priority 10 push, so its limit never holds back what
+  the user must act on.
+
+An update with one Mac takes 792 bytes with fixture ids and 981 with a real envelope, so four Macs
+fit in Apple's 4,096. The silent push cannot carry this: Apple suggests no more than two or three
+an hour.
 
 ## Open on a real device
 

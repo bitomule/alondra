@@ -318,6 +318,9 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
 }
 
 #[cfg(test)]
+mod replay;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
