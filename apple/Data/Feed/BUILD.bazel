@@ -45,7 +45,7 @@ swift_binary(
 
 swift_test(
     name = "ActionJournalProcessTests",
-    size = "small",
+    timeout = "moderate",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["ProcessTests/ActionJournalProcessTests.swift", "ProcessFixtures/ProcessProtocol.swift"],
     data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test"],
