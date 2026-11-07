@@ -209,7 +209,14 @@ fn the_daemon_runs_every_policy_and_gives_the_disk_every_page_it_freed() {
     drop(store);
     let runtime = crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap();
 
+    let logged = crate::save::full_disk::fill();
+    logged.free();
     let retained = runtime.retain(now).unwrap();
+    let lines = logged.lines();
+    let recovery = lines.iter().find(|line| line.contains("store disk recovery:")).expect("space recovery is measured");
+    for field in ["allocated before", "after", "released", "grew", "bytes"] {
+        assert!(recovery.contains(field), "{recovery}");
+    }
 
     let names: Vec<_> = POLICIES.iter().map(|policy| policy.name).collect();
     assert_eq!(retained.tables, names.into_iter().zip([0, 3, 0, 0, 0, 0, 0, 0]).collect::<Vec<_>>());

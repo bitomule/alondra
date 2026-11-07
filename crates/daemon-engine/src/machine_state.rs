@@ -5,11 +5,13 @@
 //! free memory, less what the node that starts and each node admitted in the last 3 minutes cost
 //! (`node_cost`), stayed at `FREE_FLOOR` or above, and at `SWAPPING_FLOOR` or above while macOS
 //! swapped out `SWAPPING` or more. macOS's warning alone never holds a start: it lingers for hours
-//! with a third or half of memory free, so it only spaces starts out (`WARNING_SPACING`). Percentages
-//! of the Mac's memory, as macOS reports it, so the rule holds on a Mac of any size.
+//! with a third or half of memory free, so it only spaces starts out (`WARNING_SPACING`). Available
+//! bytes must also cover the floor and pending nodes. Swap growth holds starts regardless of the
+//! apparent free percentage until a full minute of fresh measurements shows it stable.
 //!
 //! A daemon that just started judges the samples it has. The CPU load holds nothing.
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use alondra_core::domain::AgentId;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
 
@@ -35,11 +37,15 @@ pub enum NoRoom {
     Free { free: u32, needed: u32, floor: u32, nodes: usize, cost: i64 },
     /// What macOS swapped out in the last minute, in bytes, with `free` memory, `needed` to start.
     Swapping { swapped: u64, free: u32, needed: u32 },
+    Available { available: u64, needed: u64 },
+    SwapGrowth { used: u64, allocated: u64, swapped: u64 },
 }
 
 impl std::fmt::Display for NoRoom {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            NoRoom::Available { available, needed } => write!(out, "{available} bytes available, {needed} bytes needed including the memory floor and pending nodes"),
+            NoRoom::SwapGrowth { used, allocated, swapped } => write!(out, "positive swap growth of {used} bytes used and {allocated} bytes allocated with {swapped} bytes swapped out; waiting for a stable minute"),
             NoRoom::Pressure(pressure) => write!(out, "macOS reports {pressure:?} memory pressure"),
             NoRoom::Free { free, needed, floor, nodes, cost } => write!(out, "{free}% free, {needed}% needed to keep {floor}% free with {nodes} node(s) at {:.2} GiB each", *cost as f64 / GIB as f64),
             NoRoom::Swapping { swapped, free, needed } => write!(out, "macOS swapped out {} MiB in the last minute with {free}% free, {needed}% needed while it swaps", swapped / MIB),
@@ -51,7 +57,7 @@ impl std::fmt::Display for NoRoom {
 struct Sample {
     at: Millis,
     pressure: Option<MemoryPressure>,
-    free: u32,
+    free: Option<u32>,
     /// What macOS has swapped out since it booted, in bytes.
     swapped_out: Option<u64>,
 }
@@ -70,6 +76,17 @@ pub struct MacState {
     pub node_cost: Option<u64>,
     /// The Mac's memory, in bytes; 0 where the system does not say.
     pub memory_total: u64,
+    pub memory_available: Option<u64>,
+    available_samples: VecDeque<(Millis, u64)>,
+    pub nodes: BTreeMap<AgentId, u64>,
+    pub nodes_at: Option<Millis>,
+    /// Node footprints taken before the current system-memory sample.
+    pub observed_nodes: BTreeMap<AgentId, u64>,
+    pub observed_nodes_at: Option<Millis>,
+    /// The observed part of recent admissions, already charged to system memory.
+    pub observed_in_flight: u64,
+    swap_samples: VecDeque<(Millis, MemoryCompressor)>,
+    swap_hold: Option<NoRoom>,
     pub load: f64,
     pub cpus: usize,
     /// The samples of the last `ROOM_WINDOW` and the one before them, from which the swap-outs of
@@ -78,21 +95,40 @@ pub struct MacState {
 }
 
 impl MacState {
-    /// Takes one sample; one without a memory reading only counts for the load.
+    /// Missing readings keep the last known budget; they cannot establish recovery.
     pub(crate) fn step(&mut self, machine: &Machine, now: Millis) {
         self.step_load(machine);
-        let Some(free) = machine.memory_free_percent else { return };
+        if let Some(last) = self.samples.back() {
+            if now == last.at { return; }
+            if now < last.at {
+                let shift = last.at.saturating_sub(now);
+                for sample in &mut self.samples { sample.at = sample.at.saturating_sub(shift); }
+                for (at, _) in &mut self.available_samples { *at = at.saturating_sub(shift); }
+                self.swap_samples.clear();
+            }
+        }
+        let free = machine.memory_free_percent.filter(|free| *free <= 100);
+        let available = (machine.memory_total > 0 && machine.memory_available <= machine.memory_total)
+            .then_some(machine.memory_available);
+        if machine.memory_total > 0 { self.memory_total = machine.memory_total; }
+        self.memory_available = available.or(self.memory_available);
+        if let Some(available) = available {
+            self.available_samples.push_back((now, available));
+            while self.available_samples.get(1).is_some_and(|(at, _)| *at <= now - ROOM_WINDOW) {
+                self.available_samples.pop_front();
+            }
+        }
+        self.sample_swap(machine.compressor, now);
         let before = self.samples.back().map(|sample| sample.at).zip(self.compressor);
         self.swap_rates = machine.compressor.zip(before).filter(|&(_, (at, _))| now > at).map(|(compressor, (at, before))| {
             let seconds = (now - at) as f64 / 1000.0;
             (compressor.swapins.saturating_sub(before.swapins) as f64 / seconds, compressor.swapouts.saturating_sub(before.swapouts) as f64 / seconds)
         });
-        self.free_percent = Some(free);
-        self.pressure = machine.memory_pressure;
+        self.free_percent = free.or(self.free_percent);
+        self.pressure = machine.memory_pressure.or(self.pressure);
         self.compressor = machine.compressor;
-        self.memory_total = machine.memory_total;
         let swapped_out = machine.compressor.map(|compressor| compressor.swapouts.saturating_mul(compressor.page_size));
-        self.samples.push_back(Sample { at: now, pressure: machine.memory_pressure, free, swapped_out });
+        self.samples.push_back(Sample { at: now, pressure: self.pressure, free, swapped_out });
         while self.samples.get(1).is_some_and(|next| next.at <= now - ROOM_WINDOW) {
             self.samples.pop_front();
         }
@@ -119,8 +155,10 @@ impl MacState {
             return Err(NoRoom::Pressure(MemoryPressure::Critical));
         }
         let (nodes, cost) = (1 + in_flight, self.node_cost());
-        let reserved = self.percent_of_memory(cost.saturating_mul(nodes as i64));
-        let free = judged.iter().map(|sample| sample.free).min().unwrap_or(last.free);
+        let pending = (cost as u64).saturating_mul(in_flight as u64).saturating_sub(self.observed_in_flight);
+        let reserved_bytes = pending.saturating_add(cost as u64);
+        let reserved = self.percent_of_memory(i64::try_from(reserved_bytes).unwrap_or(i64::MAX));
+        let free = judged.iter().filter_map(|sample| sample.free).min().or(self.free_percent).unwrap_or(100);
         let needed = FREE_FLOOR + reserved;
         if free < needed {
             return Err(NoRoom::Free { free, needed, floor: FREE_FLOOR, nodes, cost });
@@ -131,7 +169,56 @@ impl MacState {
         if swapped >= SWAPPING && free < needed {
             return Err(NoRoom::Swapping { swapped, free, needed });
         }
+        if let Some(why) = self.swap_hold { return Err(why); }
+        if let Some(available) = self.available_samples.iter().map(|(_, available)| *available).min() {
+            let floor = self.memory_total / 100 * u64::from(FREE_FLOOR);
+            let needed = floor.saturating_add(reserved_bytes);
+            if available < needed { return Err(NoRoom::Available { available, needed }); }
+        }
         Ok(())
+    }
+
+    fn sample_swap(&mut self, compressor: Option<MemoryCompressor>, now: Millis) {
+        let Some(current) = compressor.filter(|c| c.page_size > 0 && c.swap_total.is_none_or(|total| c.swap_used <= total)
+            && (self.swap_hold.is_none() || c.swap_total.is_some())) else {
+            self.swap_samples.clear();
+            return;
+        };
+        if self.swap_samples.back().is_some_and(|(at, before)| now <= *at || now - at > 30_000
+            || before.page_size != current.page_size || current.swapouts < before.swapouts) {
+            self.swap_samples.clear();
+        }
+        self.swap_samples.push_back((now, current));
+        while self.swap_samples.get(1).is_some_and(|(at, _)| *at <= now - ROOM_WINDOW) {
+            self.swap_samples.pop_front();
+        }
+        let Some((at, first)) = self.swap_samples.front() else { return };
+        let (used, allocated) = self.swap_samples.iter().zip(self.swap_samples.iter().skip(1))
+            .fold((0u64, 0u64), |(used, allocated), ((_, before), (_, after))| {
+                (used.saturating_add(after.swap_used.saturating_sub(before.swap_used)),
+                    allocated.saturating_add(after.swap_total.zip(before.swap_total).map_or(0, |(after, before)| after.saturating_sub(before))))
+            });
+        let swapped = current.swapouts.saturating_sub(first.swapouts).saturating_mul(current.page_size);
+        let activity = swapped.max(used).max(if current.swap_used > 0 { allocated } else { 0 });
+        if activity >= SWAPPING && (used > 0 || allocated > 0) {
+            self.swap_hold = Some(NoRoom::SwapGrowth { used, allocated, swapped });
+        } else if now - at >= ROOM_WINDOW && used == 0 && allocated == 0 && swapped < SWAPPING {
+            self.swap_hold = None;
+        }
+    }
+
+    pub(crate) fn memory_detail(&self, in_flight: usize) -> String {
+        let pending = (self.node_cost() as u64).saturating_mul(in_flight as u64).saturating_sub(self.observed_in_flight);
+        let nodes = self.nodes.values().copied().fold(0u64, u64::saturating_add);
+        let available = self.memory_available.map_or_else(|| "unknown".into(), |bytes| bytes.to_string());
+        let swap = self.compressor.map_or_else(|| "swap unavailable".into(), |c|
+            format!("swap used {} bytes, allocated {}", c.swap_used, c.swap_total.map_or_else(|| "unknown".into(), |bytes| format!("{bytes} bytes"))));
+        let growth = self.swap_samples.front().zip(self.swap_samples.back()).map_or_else(|| "swap growth unavailable".into(), |((first_at, first), (last_at, last))| {
+            let used = i128::from(last.swap_used) - i128::from(first.swap_used);
+            let allocated = last.swap_total.zip(first.swap_total).map_or_else(|| "unknown".into(), |(last, first)| (i128::from(last) - i128::from(first)).to_string());
+            format!("swap growth (net) used {used:+} bytes, allocated {allocated} bytes over {} ms", last_at - first_at)
+        });
+        format!("system memory {} bytes, available {available} bytes, nodes {nodes} bytes (measured at {:?}), pending {pending} bytes, next node {} bytes; {swap}; {growth}", self.memory_total, self.nodes_at, self.node_cost())
     }
 
     /// `bytes` as a share of the Mac's memory, in whole percent rounded up; 0 where the system
@@ -233,11 +320,152 @@ mod tests {
     const SAMPLE: Millis = 10_000;
     const MIN: Millis = 60_000;
     const PAGE: u64 = 16_384;
+
+    #[test]
+    fn regression_real_available_memory_holds_a_start_even_with_a_healthy_percentage() {
+        let mut state = MacState::default();
+        state.step(&Machine { memory_total: 18 << 30, memory_available: 512 << 20,
+            memory_free_percent: Some(60), ..Machine::default() }, 0);
+        assert!(state.room(0, 0).is_err(), "a high percentage cannot stand in for available RAM");
+    }
+
+    #[test]
+    fn regression_growing_swap_holds_starts_with_plenty_of_memory_and_disk() {
+        let mut state = MacState::default();
+        for at in (0..=MIN).step_by(SAMPLE as usize) {
+            let growth = at as u64 * (1024 << 20) / MIN as u64;
+            state.step(&Machine { memory_total: 18 << 30, memory_available: 10 << 30,
+                memory_free_percent: Some(60), disk_total: 500 << 30, disk_available: 100 << 30,
+                compressor: Some(MemoryCompressor { page_size: 16384, swap_used: (1 << 30) + growth,
+                    swap_total: Some((2 << 30) + growth), swapouts: growth / 16384,
+                    ..MemoryCompressor::default() }), ..Machine::default() }, at);
+        }
+        assert!(state.room(0, MIN).is_err(), "one GiB of swap growth per minute holds a start despite free disk");
+    }
+
+    fn memory_sample(counters: Option<MemoryCompressor>) -> Machine {
+        Machine { memory_total: 18 << 30, memory_available: 10 << 30,
+            memory_free_percent: Some(60), compressor: counters, ..Machine::default() }
+    }
+
+    fn swap_sample(used: u64, allocated: u64, outs: u64) -> Option<MemoryCompressor> {
+        Some(MemoryCompressor { page_size: PAGE, swap_used: used, swap_total: Some(allocated),
+            swapouts: outs, ..MemoryCompressor::default() })
+    }
+
+    #[test]
+    fn swap_allocation_growth_holds_until_a_fresh_stable_minute() {
+        let mut state = MacState::default();
+        state.step(&memory_sample(swap_sample(GIB as u64, 2 << 30, 0)), 0);
+        state.step(&memory_sample(swap_sample(GIB as u64, (2 << 30) + SWAPPING, 0)), SAMPLE);
+        assert!(matches!(state.room(0, SAMPLE), Err(NoRoom::SwapGrowth { allocated: SWAPPING, .. })));
+        for at in (2 * SAMPLE..MIN + SAMPLE).step_by(SAMPLE as usize) {
+            state.step(&memory_sample(swap_sample(GIB as u64, (2 << 30) + SWAPPING, 0)), at);
+            assert!(state.room(0, at).is_err(), "not stable for a minute yet");
+        }
+        state.step(&memory_sample(swap_sample(GIB as u64, (2 << 30) + SWAPPING, 0)), MIN + SAMPLE);
+        assert_eq!(state.room(0, MIN + SAMPLE), Ok(()));
+    }
+
+    #[test]
+    fn invalid_stale_and_reset_swap_counters_do_not_prove_recovery() {
+        for invalid in [None, swap_sample(3 << 30, 2 << 30, 99), swap_sample(1 << 30, 2 << 30, 0),
+            Some(MemoryCompressor { page_size: PAGE, swap_used: 1 << 30, swapouts: 100 + SWAPPING / PAGE, ..Default::default() })] {
+            let mut state = MacState::default();
+            state.step(&memory_sample(swap_sample(1 << 30, 2 << 30, 100)), 0);
+            state.step(&memory_sample(swap_sample((1 << 30) + SWAPPING, 2 << 30, 100 + SWAPPING / PAGE)), SAMPLE);
+            assert!(state.room(0, SAMPLE).is_err());
+            state.step(&memory_sample(invalid), 2 * SAMPLE);
+            assert!(state.room(0, 10 * MIN).is_err(), "absence of fresh readings never releases a hold");
+            for at in (10 * MIN..=11 * MIN).step_by(SAMPLE as usize) {
+                state.step(&memory_sample(swap_sample(1 << 30, 2 << 30, 0)), at);
+            }
+            assert_eq!(state.room(0, 11 * MIN), Ok(()));
+        }
+    }
+
+    #[test]
+    fn stable_shrinking_and_small_swap_growth_have_room() {
+        for growth in [-1i64, 0, 1] {
+            let mut state = MacState::default();
+            for at in (0..=MIN).step_by(SAMPLE as usize) {
+                let used = (GIB + growth * at * 1024) as u64;
+                state.step(&memory_sample(swap_sample(used, 2 << 30, 0)), at);
+            }
+            assert_eq!(state.room(0, MIN), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_swap_drop_cannot_hide_growth_later_in_the_same_window() {
+        let mut state = MacState::default();
+        state.step(&memory_sample(swap_sample(1 << 30, 4 << 30, 0)), 0);
+        state.step(&memory_sample(swap_sample(1 << 30, (4 << 30) + SWAPPING, 0)), SAMPLE);
+        state.step(&memory_sample(swap_sample(1 << 30, 2 << 30, 0)), 2 * SAMPLE);
+        for at in (3 * SAMPLE..=MIN + SAMPLE).step_by(SAMPLE as usize) {
+            state.step(&memory_sample(swap_sample(1 << 30, (2 << 30) + (at as u64 / SAMPLE as u64) * SWAPPING, 0)), at);
+        }
+        assert!(state.room(0, MIN + SAMPLE).is_err(), "recent growth matters even below the window's starting allocation");
+    }
+
+    #[test]
+    fn missing_swap_allocation_for_a_minute_does_not_release_a_hold() {
+        let mut state = MacState::default();
+        state.step(&memory_sample(swap_sample(1 << 30, 2 << 30, 0)), 0);
+        state.step(&memory_sample(swap_sample(1 << 30, (2 << 30) + SWAPPING, 0)), SAMPLE);
+        for at in (2 * SAMPLE..=2 * MIN).step_by(SAMPLE as usize) {
+            let counters = MemoryCompressor { page_size: PAGE, swap_used: 1 << 30, ..Default::default() };
+            state.step(&memory_sample(Some(counters)), at);
+        }
+        assert!(state.room(0, 2 * MIN).is_err(), "unknown allocation is not a stable allocation");
+    }
+
+    #[test]
+    fn bytes_work_without_a_percentage_and_missing_readings_keep_the_last_budget() {
+        let mut state = MacState::default();
+        state.step(&Machine { memory_total: 18 << 30, memory_available: 0, ..Machine::default() }, 0);
+        assert!(matches!(state.room(0, 0), Err(NoRoom::Available { available: 0, .. })));
+        state.step(&Machine::default(), 2 * MIN);
+        assert!(state.room(0, 2 * MIN).is_err());
+        let machine = memory_sample(None);
+        for at in (3 * MIN..=4 * MIN).step_by(SAMPLE as usize) { state.step(&machine, at); }
+        assert_eq!(state.room(0, 4 * MIN), Ok(()));
+    }
+
+    #[test]
+    fn missing_bytes_do_not_age_out_a_low_reading_after_one_good_sample() {
+        let mut state = MacState::default();
+        state.step(&Machine { memory_available: 0, ..memory_sample(None) }, 0);
+        state.step(&memory_sample(None), SAMPLE);
+        state.step(&Machine { memory_free_percent: Some(60), ..Machine::default() }, 2 * MIN);
+        assert!(state.room(0, 2 * MIN).is_err(), "missing bytes cannot establish recovery");
+        state.step(&memory_sample(None), 2 * MIN + SAMPLE);
+        assert_eq!(state.room(0, 2 * MIN + SAMPLE), Ok(()));
+    }
+
+    #[test]
+    fn a_clock_step_back_cannot_hide_new_critical_pressure() {
+        let mut state = MacState::default();
+        state.step(&memory_sample(None), MIN);
+        state.step(&Machine { memory_pressure: Some(MemoryPressure::Critical), ..memory_sample(None) }, MIN - SAMPLE);
+        assert_eq!(state.room(0, MIN - SAMPLE), Err(NoRoom::Pressure(MemoryPressure::Critical)));
+    }
+
+    #[test]
+    fn observed_node_memory_is_not_reserved_twice_but_unobserved_growth_is() {
+        let mut state = MacState { node_cost: Some(1 << 30), ..MacState::default() };
+        state.step(&Machine { memory_available: 5 << 30, ..memory_sample(None) }, 0);
+        assert!(state.room(1, 0).is_err(), "two pending GiB would cross the floor");
+        state.observed_in_flight = 1 << 30;
+        assert_eq!(state.room(1, 0), Ok(()), "the existing node is already in system usage");
+        state.observed_in_flight = 128 << 20;
+        assert!(state.room(1, 0).is_err(), "a node still growing keeps the rest of its reserve");
+    }
     const GIB_PAGES: u64 = (1 << 30) / PAGE;
     const WEIGHED: u64 = 900_000;
 
     fn machine(free: u32) -> Machine {
-        Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0, 5.0, 5.0], ..Machine::default() }
+        Machine { memory_available: 8 << 30, memory_free_percent: Some(free), cpus: 11, load: [5.0, 5.0, 5.0], ..Machine::default() }
     }
 
     fn pressed(free: u32, pressure: MemoryPressure) -> Machine {

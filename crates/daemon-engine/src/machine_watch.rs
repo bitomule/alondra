@@ -63,6 +63,8 @@ struct Record {
     sampled_at: Millis,
     #[serde(skip)]
     node_cost: crate::node_cost::NodeCost,
+    #[serde(skip)]
+    nodes_failed: bool,
     /// What a node of each project takes on the disk at its peak.
     #[serde(default)]
     peaks: crate::disk_peaks::Estimates,
@@ -329,31 +331,50 @@ impl MachineWatch {
         self.record().mac.clone()
     }
 
-    /// Takes a new sample; returns whether there is room for one more node when that changed, and
-    /// `None` for a sample already taken, which changes nothing.
-    fn sample(&self, machine: &Machine, now: Millis) -> Option<Option<Result<(), NoRoom>>> {
+    /// Returns the budget before this sample, or `None` when it was already taken.
+    fn sample(&self, machine: &Machine, now: Millis) -> Option<Result<(), NoRoom>> {
         let mut record = self.record();
         if machine.at != 0 && machine.at == record.sampled_at {
             return None;
         }
         record.sampled_at = machine.at;
+        record.mac.observed_nodes = record.mac.nodes.clone();
+        record.mac.observed_nodes_at = record.mac.nodes_at.filter(|at| *at <= now);
         record.swap.sample(machine.compressor, now);
         record.boot_disk = (machine.disk_total > 0).then(|| disk_space(machine));
         let before = record.mac.room(0, now);
         record.mac.step(machine, now);
-        let after = record.mac.room(0, now);
-        Some((before.is_ok() != after.is_ok()).then_some(after))
-    }
-
-    fn nodes_due(&self, now: Millis) -> bool {
-        self.record().node_cost.due(now)
+        Some(before)
     }
 
     /// Keeps what each node measured at `now`; the gate reserves the new estimate from then on.
-    pub(crate) fn measure_nodes(&self, now: Millis, footprints: Vec<u64>) {
+    pub(crate) fn measure_node_memory(&self, now: Millis, footprints: BTreeMap<alondra_core::domain::AgentId, u64>) {
+        let mut record = self.record();
+        if record.node_cost.due(now) {
+            record.node_cost.record(now, footprints.values().copied());
+        }
+        record.mac.node_cost = Some(record.node_cost.estimate());
+        record.mac.nodes = footprints;
+        record.mac.nodes_at = Some(now);
+        if std::mem::take(&mut record.nodes_failed) {
+            log!("node memory measurements recovered");
+        }
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn measure_nodes(&self, now: Millis, footprints: Vec<u64>) {
         let mut record = self.record();
         record.node_cost.record(now, footprints);
         record.mac.node_cost = Some(record.node_cost.estimate());
+    }
+
+    fn nodes_unavailable(&self, error: &std::io::Error) {
+        let mut record = self.record();
+        record.mac.nodes_at = None;
+        record.mac.observed_nodes_at = None;
+        if !std::mem::replace(&mut record.nodes_failed, true) {
+            log!("node memory measurements unavailable; keeping admission reserves: {error}");
+        }
     }
 
     fn home(&self) -> Option<&Path> {
@@ -679,11 +700,15 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
     domain.live.machine_watch.sample_threads.lock().unwrap().push(std::thread::current().id());
     let watch = &domain.live.machine_watch;
     let now = if machine.at == 0 { now_millis() } else { machine.at };
-    if watch.nodes_due(now) {
-        let footprints = domain.node_groups().into_iter().map(|group| alondra_process_group::footprint(group).unwrap_or(0)).collect();
-        watch.measure_nodes(now, footprints);
+    let Some(before) = watch.sample(machine, now) else { return };
+    let mut seen = BTreeSet::new();
+    let footprints = domain.node_groups_by_agent().into_iter().filter(|(_, group)| seen.insert(*group))
+        .map(|(agent, group)| alondra_process_group::footprint(group).map(|bytes| (agent, bytes)))
+        .collect::<std::io::Result<BTreeMap<_, _>>>();
+    match footprints {
+        Ok(footprints) => watch.measure_node_memory(now_millis(), footprints),
+        Err(error) => watch.nodes_unavailable(&error),
     }
-    let Some(change) = watch.sample(machine, now) else { return };
     let mac = watch.mac();
     let working = domain.state().map(|state| crate::admission::working_projects(&state)).unwrap_or_default();
     let usable = disk_space(machine).usable();
@@ -697,11 +722,12 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working.len(), disk);
     }
     let working = working.len();
-    let Some(room) = change else { return };
+    let room = mac.room(0, now);
+    if before.is_ok() == room.is_ok() { return; }
     let free = mac.free_percent.map_or_else(|| "unknown".into(), |free| format!("{free}%"));
     match room {
-        Ok(()) => log!("memory has room for one more node again ({free} free, {working} node(s) working)"),
-        Err(why) => log!("memory has no room for one more node: {why} ({free} free, {working} node(s) working); running nodes go on"),
+        Ok(()) => log!("memory has room for one more node again ({free} free, {working} node(s) working); {}; disk free {} bytes, purgeable {} bytes", mac.memory_detail(0), machine.disk_available, machine.disk_purgeable),
+        Err(why) => log!("memory has no room for one more node: {why} ({free} free, {working} node(s) working); running nodes go on; {}; disk free {} bytes, purgeable {} bytes", mac.memory_detail(0), machine.disk_available, machine.disk_purgeable),
     }
     domain.live.gate.poke();
 }
@@ -1527,5 +1553,62 @@ mod tests {
         let rows: Vec<_> = csv.lines().skip(1).collect();
         assert_eq!(rows.len(), 1, "{csv}");
         assert!(rows[0].starts_with("1792662011421,"), "{csv}");
+    }
+
+    #[test]
+    fn swap_growth_and_real_memory_shortage_hold_admission_without_a_card() {
+        let (_home, domain) = world();
+        let base = now_millis();
+        for elapsed in (0..=MIN).step_by(SAMPLE as usize) {
+            let growth = elapsed as u64 * (1025 << 20) / MIN as u64;
+            let sample = Machine { at: base + elapsed, memory_total: 18 << 30,
+                memory_available: 10 << 30, memory_free_percent: Some(60),
+                compressor: Some(alondra_core::MemoryCompressor { page_size: 16384,
+                    swap_used: (1 << 30) + growth, swap_total: Some((2 << 30) + growth),
+                    swapouts: growth / 16384, ..Default::default() }),
+                ..machine(100 * GB, 60) };
+            assert!(look(&domain, sample).is_empty());
+        }
+        let mac = domain.live.machine_watch.mac();
+        assert!(matches!(mac.room(0, base + MIN), Err(NoRoom::SwapGrowth { .. })));
+        let detail = mac.memory_detail(1);
+        for expected in ["system memory", "available", "nodes", "pending", "swap used", "allocated", "swap growth"] {
+            assert!(detail.contains(expected), "{detail}");
+        }
+        assert!(domain.live.machine_watch.disk_detail(&BTreeMap::new(), None, base + MIN).unwrap().contains("container free"));
+        assert!(open_machine_cards(&domain).is_empty());
+        assert!(orchestrator_inbox(&domain).is_empty());
+        assert!(domain.live.machine_watch.incident().is_none());
+    }
+
+    #[test]
+    fn failed_node_measurements_keep_the_last_footprint_but_cannot_cancel_reserves() {
+        let watch = MachineWatch::default();
+        let footprints = BTreeMap::from([("node".into(), 1 << 30)]);
+        watch.measure_node_memory(0, footprints.clone());
+        let _ = watch.sample(&Machine { at: SAMPLE, ..machine(100 * GB, 60) }, SAMPLE);
+        assert_eq!(watch.mac().observed_nodes_at, Some(0));
+        let logged = crate::save::full_disk::fill();
+        logged.free();
+        for _ in 0..2 { watch.nodes_unavailable(&std::io::ErrorKind::PermissionDenied.into()); }
+        let mac = watch.mac();
+        assert_eq!(mac.nodes, footprints);
+        assert_eq!(mac.nodes_at, None);
+        assert_eq!(mac.observed_nodes_at, None);
+        watch.measure_node_memory(SAMPLE, footprints);
+        assert_eq!(watch.mac().nodes_at, Some(SAMPLE));
+        let lines = logged.lines();
+        assert_eq!(lines.iter().filter(|line| line.contains("node memory measurements unavailable")).count(), 1);
+        assert_eq!(lines.iter().filter(|line| line.contains("node memory measurements recovered")).count(), 1);
+    }
+
+    #[test]
+    fn a_footprint_newer_than_the_system_sample_cannot_cancel_a_reserve() {
+        let watch = MachineWatch::default();
+        watch.measure_node_memory(2 * SAMPLE, BTreeMap::from([("node".into(), 1 << 30)]));
+        let _ = watch.sample(&Machine { at: SAMPLE, ..machine(100 * GB, 60) }, SAMPLE);
+        assert_eq!(watch.mac().observed_nodes_at, None);
+        let _ = watch.sample(&Machine { at: 3 * SAMPLE, ..machine(100 * GB, 60) }, 3 * SAMPLE);
+        assert_eq!(watch.mac().observed_nodes_at, Some(2 * SAMPLE));
     }
 }

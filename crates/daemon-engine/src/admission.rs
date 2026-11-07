@@ -426,7 +426,7 @@ impl Admission {
             return Err(snapshot.hold.unwrap_or(Hold::Slots { working: snapshot.working, limit: snapshot.limit }));
         };
         hold_of(&inner, head, &snapshot, now)?;
-        log!("the admission gate lets {} start", key_text(&state, &key));
+        log!("the admission gate lets {} start; {}; {}", key_text(&state, &key), snapshot.mac.memory_detail(snapshot.in_flight), snapshot.disk_detail.as_deref().unwrap_or("disk unavailable"));
         inner.asking.remove(&key);
         if let Key::Resume(session) = &key {
             resume_locked(domain, &mut inner, session, now);
@@ -997,7 +997,18 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         }
     }
     let queue = disk_returns_first(ordered(all.into_values().collect()), &inner.saved.pauses);
-    let mac = domain.live.machine_watch.mac();
+    let mut mac = domain.live.machine_watch.mac();
+    let mut observed = BTreeSet::new();
+    mac.observed_in_flight = inner.admitted.iter()
+        .filter(|(_, at)| now - at < IN_FLIGHT && mac.observed_nodes_at.is_some_and(|measured| measured >= *at && measured <= now && now - measured <= 30_000))
+        .filter_map(|(key, _)| match key {
+            Key::Resume(session) => Some(AgentId(session.clone())),
+            _ => task_of(state, key).and_then(|task| state.tasks.get(&task)?.agent_id.clone()),
+        })
+        .filter(|agent| observed.insert(agent.clone()))
+        .filter_map(|agent| mac.observed_nodes.get(&agent))
+        .map(|bytes| (*bytes).min(mac.node_cost() as u64))
+        .fold(0u64, u64::saturating_add);
     let (setting, limits) = node_limits(domain, &mac);
     let limit = limit_setting(setting, limits, inner.tuning).count();
     let head = queue.first().and_then(|head| task_of(state, &head.key));
@@ -1136,9 +1147,9 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
             let on_user: Vec<TaskId> = state.agents.values().filter(|agent| state.node_waits_on_user(&agent.id))
                 .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();
             if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
-                let detail = snapshot.disk_detail.as_deref().filter(|_| matches!(hold, Hold::Disk { .. }))
+                let detail = snapshot.disk_detail.as_deref()
                     .map(|detail| format!("; {detail}")).unwrap_or_default();
-                log!("{line}{detail}");
+                log!("{line}{detail}; {}", snapshot.mac.memory_detail(snapshot.in_flight));
             }
         }
         let head = match (snapshot.queue.first(), snapshot.hold) {
@@ -1147,6 +1158,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 None
             }
             (Some(Waiting { key: Key::Resume(session), .. }), None) => {
+                log!("the admission gate admits a resume; {}; {}", snapshot.mac.memory_detail(snapshot.in_flight), snapshot.disk_detail.as_deref().unwrap_or("disk unavailable"));
                 let session = session.clone();
                 resume_locked(domain, &mut inner, &session, now);
                 admit(&mut inner, Key::Resume(session), now);
@@ -1154,6 +1166,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 None
             }
             (Some(head), None) => {
+                log!("the admission gate admits queued work; {}; {}", snapshot.mac.memory_detail(snapshot.in_flight), snapshot.disk_detail.as_deref().unwrap_or("disk unavailable"));
                 let key = head.key.clone();
                 admit(&mut inner, key.clone(), now);
                 gate.save_with(domain, &mut inner);
