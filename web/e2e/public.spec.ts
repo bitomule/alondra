@@ -68,6 +68,42 @@ test('the skip link and the pages are reachable with the keyboard', async ({ pag
  await expect(page.getByRole('heading', { name: 'What Alondra Cloud sees' })).toBeVisible();
 });
 
+test('the header has a GitHub icon that links to the public repository, on desktop and on a phone', async ({ page }) => {
+ for (const width of [1280, 390]) {
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto('/');
+  const icon = page.getByRole('banner').getByRole('link', { name: 'Alondra on GitHub' });
+  await expect(icon).toBeVisible();
+  await expect(icon).toHaveAttribute('href', 'https://github.com/bitomule/alondra');
+  const box = await icon.boundingBox();
+  expect(box!.width).toBeGreaterThanOrEqual(44);
+  expect(box!.height).toBeGreaterThanOrEqual(44);
+  await icon.focus();
+  expect(await icon.evaluate(node => getComputedStyle(node).outlineStyle)).not.toBe('none');
+ }
+ await page.getByText('Menu', { exact: true }).click();
+ await expect(page.getByRole('navigation', { name: 'Main, compact' }).getByRole('link', { name: 'GitHub' })).toHaveAttribute('href', 'https://github.com/bitomule/alondra');
+});
+
+test('the header has no sign-in link; existing accounts sign in from the footer', async ({ page }) => {
+ for (const width of [1280, 390]) {
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto('/');
+  await expect(page.getByRole('banner').getByRole('link', { name: 'Sign in' })).toHaveCount(0);
+ }
+ await page.getByText('Menu', { exact: true }).click();
+ await expect(page.getByRole('navigation', { name: 'Main, compact' }).getByRole('link', { name: 'Sign in' })).toHaveCount(0);
+ await expect(page.getByRole('contentinfo').getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/auth/login');
+});
+
+test('the landing says in one place that Alondra Cloud is by invitation and how to ask for one', async ({ page }) => {
+ await page.goto('/');
+ const cloud = page.locator('#cloud');
+ await expect(cloud.getByRole('heading', { name: 'Alondra Cloud is by invitation.' })).toBeVisible();
+ await expect(cloud).toContainText('An invitation lets you create your account.');
+ await expect(cloud).toContainText('To ask for one, leave your email.');
+});
+
 test('the compact menu opens and lists every page', async ({ page }) => {
  await page.setViewportSize({ width: 390, height: 844 });
  await page.goto('/');
@@ -101,7 +137,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
      return { name: link.textContent, ratio: (light + 0.05) / (dark + 0.05) };
     });
    });
-   expect(ratios.map(item => item.name)).toEqual(['How it works', 'Install', 'Documentation', 'Security and privacy', 'License', 'Sign in']);
+   expect(ratios.map(item => item.name)).toEqual(['How it works', 'Install', 'Documentation', 'Security and privacy', 'License', 'GitHub']);
    for (const { name, ratio } of ratios) expect(ratio, `${name} contrast`).toBeGreaterThanOrEqual(4.5);
    for (const link of await menu.getByRole('link').all()) await expect(link).toBeVisible();
   });

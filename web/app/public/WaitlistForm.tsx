@@ -60,7 +60,7 @@ export function WaitlistForm({ waitlist, name, tone = 'paper', submitLabel = 'Jo
     return (
       <div className={`waitlist is-done tone-${tone}`} ref={doneRef} tabIndex={-1} role={mine ? 'status' : undefined}>
         <p className="waitlist-done-title"><span className="waitlist-check" aria-hidden="true"/>You’re on the list.</p>
-        <p className="waitlist-done-body">We saved <strong>{waitlist.joined}</strong>. There is no confirmation email. Access opens little by little, and invitations go out in small batches.</p>
+        <p className="waitlist-done-body">We saved <strong>{waitlist.joined}</strong>. There is no confirmation email. When your turn comes, you will get an email with an invitation to create your Alondra Cloud account. Invitations go out in small batches.</p>
         <button type="button" className="waitlist-again" onClick={waitlist.again}>Add another email</button>
       </div>
     );
@@ -92,7 +92,7 @@ export function WaitlistForm({ waitlist, name, tone = 'paper', submitLabel = 'Jo
           {waitlist.pending && mine ? <><span className="waitlist-spinner" aria-hidden="true"/>Sending…</> : submitLabel}
         </button>
       </div>
-      <p className="waitlist-hint" id={`${id}-hint`}>Just your email, stored so we can invite you.</p>
+      <p className="waitlist-hint" id={`${id}-hint`}>Just your email, stored so we can send you an invitation to create your account.</p>
       <p className="waitlist-live" role="status">{waitlist.pending && mine ? 'Sending your email…' : ''}</p>
       {error && <p className="waitlist-error" id={`${id}-error`} role="alert">{error}</p>}
     </form>

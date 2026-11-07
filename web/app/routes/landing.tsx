@@ -99,9 +99,9 @@ export default function Landing() {
     <section className="cloud" id="cloud" aria-labelledby="cloud-title">
       <div className="wrap cloud-grid">
         <div>
-          <h2 id="cloud-title">Alondra Cloud connects your devices.</h2>
-          <p>Accounts, pairing, push notifications and the relay that reaches your Mac when your iPhone cannot connect to it directly. Your agents, your code and your tasks stay on your Mac.</p>
-          <p>Access opens little by little. Leave your email and you will be invited in a small batch. Teams are coming soon.</p>
+          <h2 id="cloud-title">Alondra Cloud is by invitation.</h2>
+          <p>Alondra runs on your Mac without an account. Alondra Cloud, which connects your iPhone to your Mac with accounts, pairing, push notifications and a relay, is invitation only for now. An invitation lets you create your account.</p>
+          <p>To ask for one, leave your email. Invitations go out by email in small batches. Your agents, your code and your tasks stay on your Mac. Teams are coming soon.</p>
         </div>
         <WaitlistForm waitlist={waitlist} name="cloud" tone="stage"/>
       </div>
