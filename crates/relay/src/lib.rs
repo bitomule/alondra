@@ -135,7 +135,7 @@ async fn bootstrap(State(server): State<Arc<Server>>, headers: HeaderMap, method
 }
 
 fn bootstrap_body(epoch: &str, iroh_relay: Option<&str>, report_repo: Option<&str>, identity: Option<&Identity>) -> Value {
-    let mut body = json!({"protocol":1,"epoch":epoch});
+    let mut body = json!({"protocol":1,"epoch":epoch,"iroh_node_proof":true});
     if let Some(iroh_relay) = iroh_relay {
         body["iroh_relay"] = json!(iroh_relay);
     }
@@ -3474,7 +3474,7 @@ mod http_tests {
 
         #[test]
         fn bootstrap_announces_the_report_repo_only_when_one_is_configured() {
-            assert_eq!(bootstrap_body("e", None, None, None), json!({"protocol": 1, "epoch": "e"}));
+            assert_eq!(bootstrap_body("e", None, None, None), json!({"protocol": 1, "epoch": "e", "iroh_node_proof": true}));
             assert_eq!(bootstrap_body("e", None, Some("owner/reports"), None)["report_repo"], "owner/reports");
             assert_eq!(report_repo(None).unwrap(), None);
             assert_eq!(report_repo(Some(" ".into())).unwrap(), None);
@@ -3600,8 +3600,150 @@ mod http_tests {
         }
 
         fn vouched(device_key: &SigningKey, device_id: &str, node: &IrohKey, mac_node: &IrohKey) -> Vec<u8> {
-            let signature = alondra_e2e::sign_iroh_hello(device_key, "mac-1", device_id, &node.bytes(), &mac_node.bytes()).unwrap();
+            vouched_to("mac-1", device_key, device_id, node, mac_node)
+        }
+
+        fn vouched_to(mac_id: &str, device_key: &SigningKey, device_id: &str, node: &IrohKey, mac_node: &IrohKey) -> Vec<u8> {
+            let signature = alondra_e2e::sign_iroh_hello(device_key, mac_id, device_id, &node.bytes(), &mac_node.bytes()).unwrap();
             serde_json::to_vec(&json!({"iroh_node_id": node.id(), "hello_signature": signature})).unwrap()
+        }
+
+        fn with_proof(vouched: Vec<u8>, node: &IrohKey, device_id: &str) -> Vec<u8> {
+            let mut body: Value = serde_json::from_slice(&vouched).unwrap();
+            let binding: Value = serde_json::from_slice(&node.binding_for(device_id)).unwrap();
+            body["proof"] = binding["proof"].clone();
+            serde_json::to_vec(&body).unwrap()
+        }
+
+        /// A second account with its own Mac, its own endpoint bound, and one device of its own.
+        struct OtherAccount {
+            mac_key: SigningKey,
+            client_key: SigningKey,
+            mac_node: IrohKey,
+        }
+
+        impl OtherAccount {
+            async fn enroll(f: &Fixture) -> Self {
+                let other = Self { mac_key: SigningKey::from_slice(&[114u8; 32]).unwrap(),
+                    client_key: SigningKey::from_slice(&[115u8; 32]).unwrap(), mac_node: IrohKey::new(41) };
+                assert!(f.server.auth.enroll_mac(auth::MacDevice { mac_id: "mac-2".into(), owner_sub: "owner-b".into(),
+                    signing_key: key_bytes(&other.mac_key), agreement_key: String::new() }).unwrap());
+                assert_eq!(other.as_mac(f, "PUT", "/v1/iroh-node", other.mac_node.binding_for("mac-2")).await,
+                    StatusCode::NO_CONTENT);
+                let client = serde_json::to_vec(&PhoneDevice { device_id: "client-x".into(), owner_sub: "owner-b".into(),
+                    signing_key: key_bytes(&other.client_key) }).unwrap();
+                assert_eq!(other.as_mac(f, "POST", "/v1/devices", client).await, StatusCode::CREATED);
+                other
+            }
+
+            async fn as_mac(&self, f: &Fixture, method: &str, path: &str, body: Vec<u8>) -> StatusCode {
+                f.signed(&self.mac_key, "mac-2", None, method, path, body).await
+            }
+
+            /// Binds `node` to its device on the Mac's word alone, without the endpoint key.
+            async fn vouch(&self, f: &Fixture, node: &IrohKey) -> StatusCode {
+                self.as_mac(f, "PUT", "/v1/devices/client-x/iroh-node",
+                    vouched_to("mac-2", &self.client_key, "client-x", node, &self.mac_node)).await
+            }
+        }
+
+        #[tokio::test]
+        async fn the_holder_of_an_endpoint_key_binds_it_even_after_another_account_named_it() {
+            let f = Fixture::new().await;
+            let other = OtherAccount::enroll(&f).await;
+            let mac_node = IrohKey::new(40);
+            assert_eq!(other.vouch(&f, &mac_node).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&mac_node).await, allowed());
+            let directory: Value = f.http.get(format!("{}/v1/macs", f.url)).bearer_auth(jwt("owner", now_ms()))
+                .send().await.unwrap().json().await.unwrap();
+            assert_eq!(directory, json!({"macs":[{"mac_id":"mac-1","iroh_endpoint":mac_node.id()}]}));
+            assert_eq!(other.vouch(&f, &mac_node).await, StatusCode::CONFLICT, "a word never takes a proven binding");
+            let restarted = Auth::test(f.server.auth.config.clone(), include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+            assert_eq!(restarted.iroh_node_holder(&mac_node.id()).unwrap(), Some(auth::IrohNodeHolder {
+                owner_sub: "owner".into(), mac_id: "mac-1".into(), client_id: None }));
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn a_device_endpoint_bound_with_its_key_is_kept_and_one_bound_on_a_word_is_not() {
+            let f = Fixture::new().await;
+            let other = OtherAccount::enroll(&f).await;
+            let (mac_node, terminal) = (IrohKey::new(42), IrohKey::new(43));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            let path = "/v1/devices/phone-1/iroh-node";
+            let hello = || vouched(&f.phone_key, "phone-1", &terminal, &mac_node);
+            assert_eq!(f.as_mac("PUT", path, hello()).await, StatusCode::NO_CONTENT);
+            assert_eq!(other.vouch(&f, &terminal).await, StatusCode::CONFLICT, "a word does not take a word");
+            let other_hello = || vouched_to("mac-2", &other.client_key, "client-x", &terminal, &other.mac_node);
+            assert_eq!(other.as_mac(&f, "PUT", "/v1/devices/client-x/iroh-node",
+                with_proof(other_hello(), &terminal, "phone-1")).await, StatusCode::BAD_REQUEST, "a proof for another device");
+            assert_eq!(other.as_mac(&f, "PUT", "/v1/devices/client-x/iroh-node",
+                with_proof(other_hello(), &IrohKey::new(44), "client-x")).await, StatusCode::BAD_REQUEST, "a proof by another key");
+            assert_eq!(other.as_mac(&f, "PUT", "/v1/devices/client-x/iroh-node",
+                with_proof(other_hello(), &terminal, "client-x")).await, StatusCode::NO_CONTENT, "the key takes a word");
+            assert_eq!(f.as_mac("PUT", path, hello()).await, StatusCode::CONFLICT);
+            assert_eq!(f.as_mac("PUT", path, with_proof(hello(), &terminal, "phone-1")).await, StatusCode::CONFLICT,
+                "nothing takes a proven binding");
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn revoking_a_mac_frees_the_endpoints_its_devices_held() {
+            let f = Fixture::new().await;
+            let other = OtherAccount::enroll(&f).await;
+            let (mac_node, terminal) = (IrohKey::new(45), IrohKey::new(46));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            assert_eq!(other.vouch(&f, &terminal).await, StatusCode::NO_CONTENT);
+            assert_eq!(other.as_mac(&f, "DELETE", "/v1/macs/mac-2", vec![]).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&terminal).await, denied());
+            assert_eq!(f.as_mac("PUT", "/v1/devices/phone-1/iroh-node", vouched(&f.phone_key, "phone-1", &terminal, &mac_node)).await,
+                StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&terminal).await, allowed());
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn a_stored_binding_whose_mac_is_gone_is_dropped_on_load() {
+            let f = Fixture::new().await;
+            let other = OtherAccount::enroll(&f).await;
+            let terminal = IrohKey::new(47);
+            assert_eq!(other.vouch(&f, &terminal).await, StatusCode::NO_CONTENT);
+            assert_eq!(other.as_mac(&f, "DELETE", "/v1/macs/mac-2", vec![]).await, StatusCode::NO_CONTENT);
+            let config = f.server.auth.config.clone();
+            f.task.abort();
+            let mut stored: Value = serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+            stored["iroh_nodes"]["client-x"] = json!(terminal.id());
+            std::fs::write(&config.device_registry_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+            let restarted = Auth::test(config.clone(), include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+            assert_eq!(restarted.iroh_node_holder(&terminal.id()).unwrap(), None);
+            let rewritten: Value = serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+            assert!(rewritten["iroh_nodes"].get("client-x").is_none(), "{rewritten}");
+        }
+
+        #[tokio::test]
+        async fn device_bindings_stored_before_proofs_existed_can_be_taken_by_the_key() {
+            let f = Fixture::new().await;
+            let node = IrohKey::new(48);
+            f.as_phone("PUT", "/v1/iroh-node", node.binding_for("phone-1")).await;
+            let config = f.server.auth.config.clone();
+            f.task.abort();
+            let jwks = include_bytes!("../tests/fixtures/jwks.json");
+            let take = |auth: &Auth| auth.bind_iroh_node(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+                serde_json::from_slice(&node.binding_for("mac-1")).unwrap());
+            let kept = Auth::test(config.clone(), jwks).unwrap();
+            assert!(matches!(take(&kept).unwrap_err().downcast_ref::<auth::EnrollmentError>(),
+                Some(auth::EnrollmentError::Conflict)), "a proven binding stays proven across a restart");
+            drop(kept);
+            let mut stored: Value = serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+            stored.as_object_mut().unwrap().remove("proven_iroh_nodes").expect("the proven binding is stored");
+            std::fs::write(&config.device_registry_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+            let older = Auth::test(config, jwks).unwrap();
+            take(&older).unwrap();
+            assert_eq!(older.iroh_node_holder(&node.id()).unwrap(), Some(auth::IrohNodeHolder {
+                owner_sub: "owner".into(), mac_id: "mac-1".into(), client_id: None }));
         }
 
         #[tokio::test]

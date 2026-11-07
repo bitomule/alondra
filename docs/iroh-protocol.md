@@ -13,16 +13,24 @@ What a client (the CLI and the apps) speaks to `alondrad`'s iroh endpoint. The d
   `direct-iroh.json` beside its pairings and learns them again when they stop working.
 - **Relay**: the Alondra relay's `GET /v1/bootstrap` names it in `iroh_relay` when it has one.
   The Mac binds its endpoint there (`PUT /v1/iroh-node`); the iroh relay admits only bound
-  endpoints. A phone with an account binds its own endpoint the same way.
+  endpoints. A phone with an account binds its own endpoint the same way. The body is
+  `{"iroh_node_id", "proof"}`, where `proof` is the endpoint key's Ed25519 signature over
+  `alondra-iroh-node-v1\0` followed by the device ID: only the holder of the key can make it.
 - **A device without an account** (a terminal paired directly) cannot bind its endpoint itself.
   The Mac does it for the device: once the device's hello succeeds, the Mac sends
   `PUT /v1/devices/{device_id}/iroh-node` with `{"iroh_node_id", "hello_signature"}`, signed as the
   Mac, after binding its own endpoint, once per relay epoch and whenever the endpoint changes. The
   relay checks that the device is enrolled for that Mac and account and that the signature is the
-  device's own hello from that endpoint to this Mac's bound endpoint, so the Mac cannot bind an
-  endpoint the device never used. Revoking the device, the Mac or the account ends the binding.
-  The device therefore reaches the iroh relay only after one hello over the LAN or Tailscale, which
-  pairing already does.
+  device's own hello from that endpoint to this Mac's bound endpoint. The body may also carry the
+  device's `proof`, as above; the relay announces that it reads it with `"iroh_node_proof": true`
+  in `GET /v1/bootstrap`. The device therefore reaches the iroh relay only after one hello over the
+  LAN or Tailscale, which pairing already does.
+- **Which binding wins**: one endpoint is bound to one device or Mac. A binding made with the
+  endpoint key's `proof` is proven; one made by a Mac with the hello alone is not, and neither is a
+  device binding stored before the relay recorded proofs. A proven binding takes the endpoint from
+  an unproven one; nothing takes a proven binding, and an unproven one takes nothing (both answer
+  `409 iroh_node_conflict`). Revoking the device, the Mac or the account ends the binding: revoking
+  a Mac also ends the bindings of the devices paired to it.
 - **ALPN**: `alondra/1`.
 
 ## Hello
