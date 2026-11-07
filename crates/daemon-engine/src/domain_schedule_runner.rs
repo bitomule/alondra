@@ -100,9 +100,18 @@ pub(crate) fn prepare_intent(
     Ok(launch)
 }
 
-/// The mission a scheduled node starts with, followed by the choices made for it.
+/// Who wrote the text a node starts with: a decision the orchestrator attributes to the user in a
+/// mission is its account of it, while a schedule's text is the user's own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MissionAuthor {
+    Orchestrator,
+    Schedule,
+}
+
+/// The mission a node starts with, followed by the choices made for it.
 pub(crate) fn producer_prompt(
     text: &str,
+    author: MissionAuthor,
     resolved: &Resolved,
     task: &TaskId,
     approach: alondra_core::options::Approach,
@@ -120,10 +129,16 @@ pub(crate) fn producer_prompt(
         String::new(),
         format!("This work is Alondra task {task}; pass it as task_id to the Alondra tools. Your terminal does not reach {user}: only the Alondra tools do, and {user}'s answers are typed into this session. Use `ask` for a decision and end your turn after it; {planning}. Use `request_action` for something {user} does outside Alondra, and `publish_information` for a finding {user} should read now. When you are done, deliver it with `present_result` and is_final true (the answer in body, files in attachments, a PR you registered or a document revision in targets) and end your turn: {user} accepts it in Alondra. A file or a final message left in this session is not a delivery."),
         String::new(),
+    ];
+    if author == MissionAuthor::Orchestrator {
+        lines.push(format!("The orchestrator wrote this mission: a decision it attributes to {user} is its account of it, not {user}'s answer. Present a decision as {user}'s only from {user}'s own answer or message; ask {user} for one you do not have."));
+        lines.push(String::new());
+    }
+    lines.extend([
         "## Choices for this work".into(),
         String::new(),
         "The user chose these options for this work:".into(),
-    ];
+    ]);
     if resolved.auto_merge {
         lines.push("- PR handling: auto-merge. Register the PR and deliver it with present_result as your final result: once its checks pass, Alondra merges it and tells you. Do not merge it yourself.".into());
     }
@@ -187,7 +202,7 @@ async fn launch_through_sdk(
         task: task.clone(),
         name: launch.name.clone(),
         directory: workplace.dir().to_string_lossy().into_owned(),
-        prompt: producer_prompt(&launch.prompt, &resolved, task, alondra_core::options::Approach::Solo),
+        prompt: producer_prompt(&launch.prompt, MissionAuthor::Schedule, &resolved, task, alondra_core::options::Approach::Solo),
         plugin,
         options,
         model: resolved.launch_model(),
@@ -804,22 +819,32 @@ mod tests {
             )
             .unwrap()
         };
-        let auto = producer_prompt("Fix it", &chosen("auto_merge"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
+        let auto = producer_prompt("Fix it", MissionAuthor::Orchestrator, &chosen("auto_merge"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
         assert!(auto.contains("once its checks pass, Alondra merges it") && auto.contains("Do not merge it yourself"), "{auto}");
         assert!(!auto.contains("gh pr merge") && !auto.contains("authorization"), "{auto}");
-        let review = producer_prompt("Fix it", &chosen("review"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
+        let review = producer_prompt("Fix it", MissionAuthor::Orchestrator, &chosen("review"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
         assert!(!review.contains("auto-merge"), "{review}");
     }
 
     #[test]
     fn the_mission_names_the_task_and_how_to_deliver_through_alondra() {
         let resolved = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap();
-        let prompt = producer_prompt("Analyse the mods", &resolved, &TaskId::from("t-mods"), alondra_core::options::Approach::Solo);
+        let prompt = producer_prompt("Analyse the mods", MissionAuthor::Orchestrator, &resolved, &TaskId::from("t-mods"), alondra_core::options::Approach::Solo);
         assert!(prompt.starts_with("Analyse the mods\n"), "{prompt}");
         assert!(prompt.contains("This work is Alondra task t-mods; pass it as task_id"), "{prompt}");
         assert!(prompt.contains("`present_result` and is_final true") && prompt.contains("`ask`")
             && prompt.contains("is not a delivery"), "{prompt}");
         assert!(!prompt.contains("`report`"), "the old tool does not exist for this session: {prompt}");
+    }
+
+    /// Task t-web-single-source-plan: the orchestrator's mission said «Decisión previa de David»
+    /// and the node took it as David's own words.
+    #[test]
+    fn only_a_mission_the_orchestrator_wrote_says_that_it_did() {
+        let resolved = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap();
+        let prompt = |author| producer_prompt("Analyse the mods", author, &resolved, &TaskId::from("t-mods"), alondra_core::options::Approach::Solo);
+        assert!(prompt(MissionAuthor::Orchestrator).contains("The orchestrator wrote this mission"));
+        assert!(!prompt(MissionAuthor::Schedule).contains("The orchestrator wrote this mission"));
     }
 
     #[test]

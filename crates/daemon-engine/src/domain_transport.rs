@@ -832,8 +832,25 @@ fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain::Inte
         let said = alondra_core::domain::answer_said(member).unwrap_or_default();
         format!("{}. {} (card {}) → {said}", index + 1, member.card.effective_title(), member.id)
     }).collect();
-    let who = if matches!(interaction.recipient, Recipient::Orchestrator) { "The orchestrator" } else { "The user" };
-    format!("{who} answered your {} cards:\n{}", lines.len(), lines.join("\n"))
+    format!("{} answered your {} cards:\n{}{}", answerer(interaction), lines.len(), lines.join("\n"), attribution(interaction))
+}
+
+/// Only a card's recipient can answer it, so the recipient says who did.
+fn answerer(interaction: &alondra_core::domain::Interaction) -> &'static str {
+    match interaction.recipient {
+        Recipient::User => "The user",
+        Recipient::Orchestrator => "The orchestrator",
+        Recipient::Agent { .. } => "Another node",
+    }
+}
+
+/// An orchestrator's answer may repeat what it believes the user decided; the node must not pass
+/// that on as a decision of the user.
+fn attribution(interaction: &alondra_core::domain::Interaction) -> &'static str {
+    match interaction.recipient {
+        Recipient::Orchestrator => "\nThis is the orchestrator's answer, not a decision of the user: never present it as theirs.",
+        Recipient::User | Recipient::Agent { .. } => "",
+    }
 }
 
 /// What the node that suggested something reads of the orchestrator's decision.
@@ -898,7 +915,7 @@ pub fn render(state: &DomainState, message: &OutboxMessage) -> String {
             }
         }
         Author::Agent { .. } if matches!(interaction.recipient, Recipient::Orchestrator) =>
-            format!("The orchestrator answered your card {} ({}): {said}", interaction.id, interaction.card.effective_title()),
+            format!("{} answered your card {} ({}): {said}{}", answerer(interaction), interaction.id, interaction.card.effective_title(), attribution(interaction)),
         Author::Agent { .. } => format!("Answer to your card {} ({}): {said}", interaction.id, interaction.card.effective_title()),
         _ => said,
     }
@@ -1263,9 +1280,65 @@ pub mod tests {
         node_with_task(&domain);
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::Orchestrator, "Which name?");
         free_text_answer(&domain, Actor::Orchestrator { generation: 0 }, "q", "Call it Atlas");
-        let rendered = rendered_for(&domain, "q", "agent");
-        assert_eq!(rendered, "The orchestrator answered your card q (Answer the question): Call it Atlas");
-        assert!(!rendered.contains("user"));
+        assert_eq!(rendered_for(&domain, "q", "agent"), format!("The orchestrator answered your card q (Answer the question): Call it Atlas{NOT_THE_USERS}"));
+    }
+
+    const NOT_THE_USERS: &str = "\nThis is the orchestrator's answer, not a decision of the user: never present it as theirs.";
+
+    fn option(id: &str) -> QuestionOption {
+        QuestionOption { id: id.into(), label: id.into(), description: None }
+    }
+
+    fn pick(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, option: &str) {
+        command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: id.into(), option_id: option.into(), inputs: BTreeMap::new(),
+        });
+    }
+
+    fn asked_together(domain: &Arc<DomainRuntime>, recipient: &Recipient) {
+        for index in 1..=2u8 {
+            let mut card = CardSpec::derived(CardKind::Decide, "Pick one");
+            card.group = Some(QuestionGroup { id: "together".into(), index, total: 2 });
+            command(domain, agent_actor(), &format!("ask-together-{index}"), Command::AskQuestion {
+                attachments: vec![], interaction_id: format!("together-{index}").into(), scope: task_scope(), recipient: recipient.clone(),
+                body: "Which one?".into(), blocking: false, options: vec![option("atlas"), option("borealis")], card,
+            });
+        }
+    }
+
+    /// Task t-web-single-source-plan: the orchestrator's answer repeated «conforme a la decisión
+    /// de David» and the node's plan copied it as David's own.
+    #[test]
+    fn an_orchestrators_option_answer_is_never_presented_as_the_users() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        command(&domain, agent_actor(), "ask-q", Command::AskQuestion {
+            attachments: vec![], interaction_id: "q".into(), scope: task_scope(), recipient: Recipient::Orchestrator,
+            body: "Which name?".into(), blocking: false, options: vec![option("atlas"), option("borealis")], card: CardSpec::derived(CardKind::Decide, "Pick one"),
+        });
+        pick(&domain, Actor::Orchestrator { generation: 0 }, "q", "atlas");
+        assert_eq!(rendered_for(&domain, "q", "agent"), format!("The orchestrator answered your card q (Pick one): atlas.{NOT_THE_USERS}"));
+    }
+
+    #[test]
+    fn answers_asked_together_name_the_one_who_answered_them() {
+        let cases: [(Recipient, Actor, &str, &str); 3] = [
+            (Recipient::User, user_actor(), "The user answered", ""),
+            (Recipient::Orchestrator, Actor::Orchestrator { generation: 0 }, "The orchestrator answered", NOT_THE_USERS),
+            (Recipient::Agent { agent_id: "agent-b".into() }, Actor::Agent { agent_id: "agent-b".into() }, "Another node answered", ""),
+        ];
+        for (recipient, actor, opening, note) in cases {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            node_with_task(&domain);
+            command(&domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "Agent B".into(), at: 0 });
+            asked_together(&domain, &recipient);
+            pick(&domain, actor.clone(), "together-1", "atlas");
+            pick(&domain, actor, "together-2", "atlas");
+            let rendered = rendered_for(&domain, "together-2", "agent");
+            assert!(rendered.starts_with(opening) && rendered.ends_with(&format!("→ atlas.{note}")), "{rendered}");
+        }
     }
 
     fn suggestion(domain: &Arc<DomainRuntime>, id: &str) {
