@@ -407,7 +407,7 @@ fn waiting_pr(number: u64, lang: super::Lang) -> Presentation {
 
 /// The open tasks this one still waits for.
 pub(super) fn open_dependencies<'a>(task: &Task, context: &RenderContext<'a>) -> Vec<&'a Task> {
-    task.dependencies.iter().chain(&task.delivered_dependencies)
+    task.dependencies.iter().chain(task.waiting_for_tasks.iter().filter(|id| !task.ended_task_waits.contains_key(*id))).chain(&task.delivered_dependencies)
         .filter(|id| **id != task.id)
         .filter_map(|id| context.domain.tasks.get(id))
         .filter(|dependency| !dependency.state.terminal())

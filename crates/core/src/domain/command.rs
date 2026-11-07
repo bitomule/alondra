@@ -169,6 +169,11 @@ pub enum Command {
         task_id: TaskId,
         title: String,
     },
+    /// The assigned node waits for these tasks to end, without asking for a card.
+    WaitForTasks {
+        task_id: TaskId,
+        tasks: BTreeSet<TaskId>,
+    },
     SetDependencies {
         task_id: TaskId,
         dependencies: BTreeSet<TaskId>,

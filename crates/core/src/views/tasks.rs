@@ -1024,6 +1024,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let deps: Vec<_> = task
         .dependencies
         .iter()
+        .chain(task.waiting_for_tasks.iter().filter(|id| !task.ended_task_waits.contains_key(*id)))
         .filter_map(|id| context.domain.tasks.get(id))
         .map(|dep| Item::Row(task_row(dep, context)))
         .collect();

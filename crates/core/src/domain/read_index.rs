@@ -524,7 +524,7 @@ impl<'a> Builder<'a> {
                 handed_back: state.task_handed_back(&t.id),
                 merge_failure: state.task_merge_failure(&t.id),
                 open_blockers: self.open_blockers.get(&t.id).cloned().unwrap_or_default(),
-                open_dependencies: t.dependencies.iter().chain(&t.delivered_dependencies)
+                open_dependencies: t.dependencies.iter().chain(t.waiting_for_tasks.iter().filter(|id| !t.ended_task_waits.contains_key(*id))).chain(&t.delivered_dependencies)
                     .filter(|id| **id != t.id && state.tasks.get(id).is_some_and(|d| !d.state.terminal()))
                     .cloned()
                     .collect(),
@@ -954,7 +954,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         assert_eq!(read.waiting, ids(&on_task), "the cards {} waits on", t.id);
         assert_eq!(read.waits_for_user, answers().next().is_some());
         assert_eq!(read.waits_for_review, answers().next().is_some() && answers().all(|item| item.kind == "delivery"));
-        let open: Vec<TaskId> = t.dependencies.iter().chain(&t.delivered_dependencies)
+        let open: Vec<TaskId> = t.dependencies.iter().chain(t.waiting_for_tasks.iter().filter(|id| !t.ended_task_waits.contains_key(*id))).chain(&t.delivered_dependencies)
             .filter(|id| **id != t.id)
             .filter_map(|id| state.tasks.get(id))
             .filter(|d| !d.state.terminal())

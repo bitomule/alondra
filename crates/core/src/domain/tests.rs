@@ -147,7 +147,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3199,6 +3199,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordMcpSignIn { .. } => 86,
         Command::CompleteMcpSignIn { .. } => 87,
         Command::WaitForMcp { .. } => 88,
+        Command::WaitForTasks { .. } => 132,
         Command::ForceStopTurn { .. } => 89,
         Command::RecordInterruptAccepted { .. } => 90,
         Command::RecordHostLost { .. } => 91,
@@ -3244,7 +3245,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RequestPrAdoption { .. } => 131,
     }
 }
-const COMMAND_KINDS: usize = 132;
+const COMMAND_KINDS: usize = 133;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3370,6 +3371,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
         (Command::ConfirmCleanup { task_id: ids.task.into(), discard: Vec::new() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
+        (Command::WaitForTasks { task_id: ids.task.into(), tasks: BTreeSet::from([ids.task.into()]) }, false),
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),

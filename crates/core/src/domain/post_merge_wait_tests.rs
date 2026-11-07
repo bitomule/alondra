@@ -190,8 +190,8 @@ fn a_wait_names_work_alondra_can_see_land() {
         WaitTarget::Task { task_id: RELEASE.into() }]))), "invalid_input", "not on itself");
     let error = refused(&mut s, node("b"), Command::DeclarePostMergeWork { task_id: FIX.into(), reason: Some("deploy".into()),
         waits_for: vec![WaitTarget::Task { task_id: RELEASE.into() }] });
-    assert_eq!(error.code, "invalid_input", "before its own PR merged, a node asks the orchestrator: {error}");
-    assert!(error.message.contains("orchestrator"), "{error}");
+    assert_eq!(error.code, "invalid_input", "before its own PR merged, a node declares wait_for_tasks: {error}");
+    assert!(error.message.contains("wait_for_tasks"), "{error}");
 
     deliver_and_merge(&mut s, FIX, "b", "Fixed");
     let error = refused(&mut s, node("a"), declare(Some("publish"), vec![fix_pr()]));

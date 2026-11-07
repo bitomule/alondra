@@ -33,7 +33,7 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} Your terminal does not reach {user}: these tools do, and {user}'s answers are typed into this session. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. Use request_plan_mode for an Alondra-managed planning turn, then end this turn. Produce the complete checklist plan in native plan mode; Alondra must receive and approve it before implementation. Native update_plan is progress, not approval. When you are done, deliver with present_result and is_final true; Alondra merges your PRs: never merge one yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Never wait out a usage limit yourself: end your turn."
+            "{common} Your terminal does not reach {user}: these tools do; answers return here. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. Use request_plan_mode for an Alondra-managed planning turn, then end this turn. Produce the complete checklist plan in native plan mode; Alondra must receive and approve it before implementation. Native update_plan is progress, not approval. When you are done, deliver with present_result and is_final true; Alondra merges your PRs: never merge one yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Tasks: wait_for_tasks, never a card. Never wait out a usage limit yourself: end your turn."
         ),
         Role::Orchestrator => format!(
             "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns every PR it opens. Answer a Request without a Task with close_request (headline and answer): Alondra writes the user's card; close one whose Tasks are over with close_request, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
@@ -373,6 +373,13 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             vec!["task_id"],
         ),
         (
+            "wait_for_tasks",
+            "wait_for_tasks",
+            "Declare that your task waits for other Alondra tasks by id. End your turn when the response says tasks remain open; if all have ended, continue working. No question or review card is created. Alondra resumes you when every named task finishes or is cancelled, with their results. Already ended tasks do not hold the wait. Use this instead of asking the user or orchestrator to arrange the wait.",
+            json!({"task_id":{"type":"string"},"tasks":{"type":"array","minItems":1,"items":{"type":"string"}}}),
+            vec!["task_id", "tasks"],
+        ),
+        (
             "wait_for_mcp",
             "wait_for_mcp",
             "Say that your task needs an MCP server that is not connected (it needs a sign-in, failed or is off), then end your turn. The user sees one card to sign in to it, however many tasks wait for it; never call its mcp__<server>__authenticate tool yourself. Alondra tells you when it is connected, or that you go on without it.",
@@ -678,6 +685,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "cleanup_done"
         | "open_cards"
         | "post_merge_work"
+        | "wait_for_tasks"
         | "wait_for_mcp"
         | "wait_for_machine" => {
             let (args, notice) = match (std::env::current_dir(), name) {
@@ -817,7 +825,8 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "cancel_task"
         | "reopen_task"
         | "cleanup_done"
-        | "post_merge_work" => submit(client, &domain_bearer()?, name, args)?,
+        | "post_merge_work"
+        | "wait_for_tasks" => submit(client, &domain_bearer()?, name, args)?,
         "wait_for_mcp" => {
             submit(client, &domain_bearer()?, name, args)?;
             let server = args.get("server").and_then(Value::as_str).unwrap_or("the server");
@@ -1124,6 +1133,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "start_task" => ("POST", format!("/tasks/{}/start", id("task_id")?)),
         "cleanup_done" => ("POST", format!("/tasks/{}/cleanup", id("task_id")?)),
         "post_merge_work" => ("PUT", format!("/tasks/{}/post-merge-work", id("task_id")?)),
+        "wait_for_tasks" => ("PUT", format!("/tasks/{}/task-wait", id("task_id")?)),
         "wait_for_mcp" => ("PUT", format!("/tasks/{}/mcp-wait", id("task_id")?)),
         "create_document" => ("POST", format!("/tasks/{}/documents", id("task_id")?)),
         "revise_document" => ("PUT", format!("/tasks/{}/documents/{}", id("task_id")?, id("document_id")?)),
@@ -1165,6 +1175,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "start_task" => "start_task",
         "cleanup_done" => "confirm_cleanup",
         "post_merge_work" => "declare_post_merge_work",
+        "wait_for_tasks" => "wait_for_tasks",
         "wait_for_mcp" => "wait_for_mcp",
         "create_document" => "create_document",
         "revise_document" => "revise_document",
@@ -2038,6 +2049,26 @@ mod tests {
         assert_eq!(body["data_epoch"], "epoch");
         let envelope = domain_envelope("cleanup_done", &json!({"task_id": "t-1"}), "epoch", "one").unwrap();
         assert_eq!(envelope["command"]["kind"], "confirm_cleanup");
+    }
+
+    #[test]
+    fn the_node_declares_a_typed_task_wait_without_a_card() {
+        let node = tools(Role::Node, "Ana");
+        let tool = node.as_array().unwrap().iter().find(|t| t["name"] == "wait_for_tasks").unwrap();
+        assert_eq!(tool["inputSchema"]["required"], json!(["task_id", "tasks"]));
+        assert_eq!(tool["inputSchema"]["properties"]["tasks"]["minItems"], 1);
+        assert!(!tools(Role::Orchestrator, "Ana").as_array().unwrap().iter().any(|t| t["name"] == "wait_for_tasks"));
+        let args = json!({"task_id":"t-1", "tasks":["t-2", "t-3"]});
+        let (method, path, body) = command_request("wait_for_tasks", &args, "epoch").unwrap();
+        assert_eq!((method, path.as_str()), ("PUT", "/tasks/t-1/task-wait"));
+        assert_eq!(body["tasks"], args["tasks"]);
+        let envelope = domain_envelope("wait_for_tasks", &args, "epoch", "one").unwrap();
+        assert_eq!(envelope["command"]["kind"], "wait_for_tasks");
+        assert_eq!(envelope["command"]["tasks"], args["tasks"]);
+        let command: alondra_core::domain::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
+        assert!(matches!(command, alondra_core::domain::Command::WaitForTasks { .. }));
+        assert!(instructions(Role::Node, "Ana").contains("wait_for_tasks"));
+        assert!(skill_text(Role::Node).contains("never open a question, action request or review card"));
     }
 
     #[test]

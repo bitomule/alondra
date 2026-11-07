@@ -109,7 +109,7 @@ impl World {
         let task = Task {
             id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
             revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
-            documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
+            documents: BTreeMap::new(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
             verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
         };
         let options = crate::options::OptionsFile::default().resolve(Some("BlurCamera"), &BTreeMap::new()).unwrap();

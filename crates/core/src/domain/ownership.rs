@@ -240,6 +240,7 @@ impl DomainState {
     pub fn pending_dependency(&self, t: &Task) -> Option<TaskId> {
         let stacked = t.stack.as_ref().map(|stack| &stack.upstream_task);
         t.dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| !self.landed(d)))
+            .chain(t.waiting_for_tasks.iter().filter(|d| !t.ended_task_waits.contains_key(*d) && self.tasks.get(*d).is_some_and(|d| !Self::task_wait_finished(d))))
             .chain(t.delivered_dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| d.cancelled() || d.final_presentation.is_none())))
             .chain(stacked.filter(|_| self.stack_ready(t).is_err()))
             .next()

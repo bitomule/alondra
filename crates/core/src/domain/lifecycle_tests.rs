@@ -268,7 +268,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
     let unjournaled = Task {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
         started: true, review_prs: false, final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
-        documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
+        documents: BTreeMap::new(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
         verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
     };
     s.tasks.insert(unjournaled.id.clone(), unjournaled);
@@ -1779,7 +1779,7 @@ fn a_delivery_held_by_a_reply_its_resting_node_is_done_with_is_the_users_again()
 
 /// An SDK task delivered while its turn runs; with `feedback`, that turn ended, the user asked it
 /// of the delivery, and the node's turn on it runs.
-fn delivered_through_the_sdk(s: &mut DomainState, feedback: Option<Instruction>) {
+pub(super) fn delivered_through_the_sdk(s: &mut DomainState, feedback: Option<Instruction>) {
     sdk_turn(s, "t", "a");
     deliver(s, "t", "a", "result");
     let Some(instruction) = feedback else { return };

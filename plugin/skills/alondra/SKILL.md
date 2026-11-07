@@ -461,21 +461,17 @@ card) is a delivery guarantee Alondra handles; this section is about their conte
 
 ## Waiting for another task
 
-When you cannot go on until another task is done (its fix is on the default branch, main is
-green again), `ask` the orchestrator (recipient kind `orchestrator`) to make your task depend on
-that task, naming it (or asking it for a task that fixes it), and end your turn without writing
-anything else. After your PR merged, wait with `post_merge_work` and `waits_for` instead, as
-above. Always name the task or pull request you wait for: a wait in words wakes nobody. When the orchestrator
-answers that your task now depends on it, end your turn again at once and write nothing: no
-summary of the wait, no "nothing to do until then". The task already shows the user what it waits
-for, and words written then reach no one. Alondra tells you when that task is done (or its pull request merged), with its result, and you go on;
-never ask the user to tell you, with a card or a `request_action` ("tell me when it is on main").
-If the orchestrator answers that you should go on without it, go on. A wait only holds back your
-work: it never holds back the merge of a PR you already presented.
+When you cannot go on until other tasks end, call `wait_for_tasks` with your `task_id`
+and `tasks`, the other tasks' ids. End your turn if the response says any remain open;
+if all have already ended, continue working. This declares the wait in the domain:
+never open a question, action request or review card asking the user or orchestrator to arrange
+it. Alondra resumes you with their results when every named task finishes or is cancelled.
+Tasks already ended do not hold the wait. A cancelled task is reported as cancelled, not as
+successful work. An unknown task or a cycle is refused: correct the ids before declaring the wait.
+After your PR merged, use `post_merge_work` with `waits_for` for work after that merge instead.
 
-While your task waits, Alondra turns down a plan you present and the user cannot approve one. If
-you see the wait is no longer needed (the PR you waited for is on the default branch), `ask` the
-orchestrator to remove it, naming that fact; present the plan once your task is running again.
+A wait only holds back your work: it never holds back the merge of a PR you already presented.
+While your task waits, Alondra turns down a plan you present and the user cannot approve one.
 
 ## The user's decisions
 
