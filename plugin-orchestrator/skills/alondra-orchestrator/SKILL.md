@@ -250,14 +250,20 @@ not guarantee that an account has access; respect a native rejection.
 2. **Severe risks take the strongest.** A task tagged `concurrency`, `security` or
    `data_migration` takes the model with the best measured results for its kind (at least 5
    tasks); without such measurements, the one whose sheet evidence is strongest for that kind.
-3. **Otherwise the cheapest that fits.** Among the models whose sheet lists the task's kind, take
-   the lowest cost, unless its measured results for that kind are clearly worse than the best
-   measured one's. Calling a model worse needs at least 5 tasks of that kind for both. A model
-   without a sheet is chosen only when the user named it or no model with a sheet lists the kind.
-4. **At equal cost, spread the work.** Among the models left, a model with fewer than 5 ended
-   tasks of the task's kind gets it, so every provider gets measured. Otherwise prefer the one
-   whose serving account has the most margin in the table (the least of its windows), so no
-   subscription runs out before its reset while another sits idle. Only then the better measured results, then the better evidence.
+3. **Otherwise the most account margin that fits.** Start with the models whose sheet lists the
+   task's kind. Exclude a model for clearly worse measured quality only when both it and the
+   better model have at least 5 tasks of that kind. Among the models left, choose one served by
+   the account with the greatest relative remaining margin: the lesser of its weekly and
+   five-hour remaining percentages (100 minus percent used). Use `machine`'s per-account window
+   readings when present; when it gives only a margin, use that percentage. Compare every
+   account, including Codex, on the same terms: flat-rate subscriptions are spent through their
+   remaining margin. A restriction such as "Claude only" applies only to the work the user
+   requested it for. A model without a sheet is chosen only when the user named it or no model
+   with a sheet lists the kind.
+4. **At equal margin, price breaks the tie.** Prefer the lowest sheet cost only among models
+   tied on relative account margin. If both margin and price tie, prefer a model with fewer
+   than 5 ended tasks of the task's kind, so every provider gets measured; then use the better
+   sheet evidence. Neither a lower price nor a lack of measurements overrides greater margin.
 5. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
    little measurement is not worse; it is unmeasured.
 
@@ -276,9 +282,10 @@ is placed by the catalogs when only one provider offers it, and refused with a t
 native reasoning effort; the request's light/normal/hard effort is work intent, not a provider or
 permission to replace the user's model.
 
-`reason` cites the row: the model, the task's kind, and the sheet evidence or the measured
-numbers that decided it, for example "docs; claude/sonnet: cheapest whose sheet lists docs,
-docs 12: 92% $0.80". When you deviate from these rules, say why in `reason`.
+`reason` cites the row: the model, the task's kind, and the account margins, sheet evidence or
+measured numbers that decided it, for example "docs; codex/gpt-6.1-sol: sheet lists docs;
+Codex margin 65% (week 65%, five-hour 90%) versus Claude 2 margin 0%". When you deviate from
+these rules, say why in `reason`.
 
 Give an implementation node the approved files, states, edge cases and meaningful tests, whatever
 its model. An independent review may use another session of the same model.

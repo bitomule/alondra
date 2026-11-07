@@ -49,3 +49,5 @@ test --run_under=//tools:test_tmpdir
 # musts: stamp every build with the scope hashes and keep the last test invocation for `musts record`.
 build --workspace_status_command=tools/musts-stamp.sh
 test --build_event_json_file=.musts/bep.json
+
+try-import %workspace%/.bazelrc.local

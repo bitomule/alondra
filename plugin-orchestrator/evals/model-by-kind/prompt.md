@@ -1,6 +1,6 @@
 ---
 name: model-by-kind
-description: A docs task goes to the cheapest model whose sheet lists docs; a concurrency task goes to the strongest model for its kind by measurement; both are tagged
+description: A docs task goes to the suitable model with the most account margin; a concurrency task goes to the strongest model for its kind by measurement; both are tagged
 tags: [skill, models]
 runs: 3
 max_turns: 20

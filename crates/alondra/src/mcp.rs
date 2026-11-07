@@ -2648,7 +2648,7 @@ mod card_tool_tests {
     fn the_orchestrator_skill_chooses_models_from_the_table_and_never_by_brand() {
         let skill = skill_text(Role::Orchestrator);
         for rule in ["Give every task `tags` on `launch` and in every launch plan", "`machine` starts with the Available models table",
-            "or one the request text names (\"use Codex\"), is the model", "Calling a model worse needs at least 5 tasks of that kind for both",
+            "or one the request text names (\"use Codex\"), is the model", "Exclude a model for clearly worse measured quality only when both it and the better model have at least 5 tasks of that kind",
             "A task tagged `concurrency`, `security` or `data_migration` takes the model with the best measured results for its kind",
             "Never by brand reputation", "`reason` cites the row"] {
             assert!(skill.contains(rule), "{rule}");
