@@ -94,6 +94,8 @@ struct DeviceRegistry {
     revoked_mac_ids: HashSet<String>,
     /// Device or Mac ID → its iroh endpoint ID (hex Ed25519 public key).
     iroh_nodes: HashMap<String, String>,
+    /// Devices whose binding was signed by the endpoint key itself. A Mac binds only that way.
+    proven_iroh_nodes: HashSet<String>,
     /// Accounts the account source closed: their tokens and enrollments are refused.
     closed_owners: HashSet<String>,
     /// The last removal of the account source this registry holds.
@@ -122,6 +124,8 @@ struct StoredDeviceRegistry {
     revoked_mac_ids: Vec<String>,
     #[serde(default)]
     iroh_nodes: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    proven_iroh_nodes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     closed_owners: Vec<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -174,11 +178,14 @@ pub struct IrohNodeBinding {
 }
 
 /// The iroh endpoint a Mac saw one of its devices say hello from, with that hello's signature.
+/// `proof`, when the device gave one, is the same endpoint-key signature as in [`IrohNodeBinding`].
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceIrohNodeBinding {
     pub iroh_node_id: String,
     pub hello_signature: String,
+    #[serde(default)]
+    pub proof: Option<String>,
 }
 
 /// Who an iroh endpoint ID speaks for, so the account gate can be checked before relaying.
@@ -268,6 +275,7 @@ impl Auth {
                 macs,
                 revoked_mac_ids,
                 iroh_nodes,
+                proven_iroh_nodes,
                 closed_owners,
                 removals_seq,
                 account_removals,
@@ -283,6 +291,7 @@ impl Auth {
                     macs,
                     revoked_mac_ids,
                     iroh_nodes,
+                    proven_iroh_nodes,
                     closed_owners,
                     removals_seq,
                     account_removals,
@@ -297,6 +306,7 @@ impl Auth {
                     macs,
                     revoked_mac_ids,
                     iroh_nodes,
+                    proven_iroh_nodes,
                     closed_owners,
                     removals_seq,
                     account_removals,
@@ -312,6 +322,7 @@ impl Auth {
                     Vec::new(),
                     Vec::new(),
                     HashMap::new(),
+                    Vec::new(),
                     Vec::new(),
                     0,
                     BTreeMap::new(),
@@ -400,6 +411,10 @@ impl Auth {
                 push_ended: push_ended.into_iter().collect(),
                 macs,
                 revoked_mac_ids,
+                proven_iroh_nodes: proven_iroh_nodes
+                    .into_iter()
+                    .filter(|id| iroh_nodes.contains_key(id))
+                    .collect(),
                 iroh_nodes,
                 closed_owners: closed_owners.into_iter().collect(),
                 removals_seq,
@@ -451,6 +466,7 @@ impl Auth {
                 bail!("phone binding references unknown Mac");
             }
         }
+        migrated_registry |= forget_orphan_iroh_nodes(&mut devices);
         if migrated_registry {
             if !guarded {
                 write_atomic(&guard_path, REGISTRY_GUARD)?;
@@ -993,36 +1009,42 @@ impl Auth {
     /// Calling again with another endpoint replaces the old one, which loses relay access.
     pub fn bind_iroh_node(&self, who: &Identity, binding: IrohNodeBinding) -> Result<()> {
         self.ensure_registry_ready()?;
-        let key = iroh_node_key(&binding.iroh_node_id)
-            .ok_or(EnrollmentError::InvalidRegistration)?;
-        let proof = URL_SAFE_NO_PAD
-            .decode(&binding.proof)
-            .map_err(|_| EnrollmentError::InvalidRegistration)?;
-        let message = [IROH_NODE_PROOF_DOMAIN, who.device_id.as_bytes()].concat();
-        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
-            .verify(&message, &proof)
-            .map_err(|_| EnrollmentError::InvalidRegistration)?;
+        verify_iroh_node_proof(&binding.iroh_node_id, &binding.proof, &who.device_id)?;
         let mut registry = self.devices.lock().unwrap();
         if !registry.devices.contains_key(&who.device_id)
             && !registry.macs.contains_key(&who.device_id)
         {
             bail!("unknown device");
         }
-        if registry
+        self.store_iroh_node(&mut registry, &who.device_id, binding.iroh_node_id, true)
+    }
+
+    /// A proven binding takes the endpoint from a device that holds it only on a Mac's word;
+    /// nothing takes a proven binding, and a binding on a Mac's word takes nothing.
+    fn store_iroh_node(&self, registry: &mut DeviceRegistry, device_id: &str, node: String, proven: bool) -> Result<()> {
+        let holder = registry
             .iroh_nodes
             .iter()
-            .any(|(id, node)| *node == binding.iroh_node_id && *id != who.device_id)
+            .find(|(id, bound)| **bound == node && id.as_str() != device_id)
+            .map(|(id, _)| id.clone());
+        if let Some(holder) = &holder
+            && (!proven || iroh_node_proven(registry, holder))
         {
             bail!(EnrollmentError::Conflict);
         }
-        let previous = registry
-            .iroh_nodes
-            .insert(who.device_id.clone(), binding.iroh_node_id);
-        if let Err(err) = self.persist_registry(&registry) {
-            match previous {
-                Some(node) => registry.iroh_nodes.insert(who.device_id.clone(), node),
-                None => registry.iroh_nodes.remove(&who.device_id),
-            };
+        let before = registry.clone();
+        if let Some(holder) = holder {
+            registry.iroh_nodes.remove(&holder);
+            registry.proven_iroh_nodes.remove(&holder);
+        }
+        registry.iroh_nodes.insert(device_id.to_owned(), node);
+        if proven {
+            registry.proven_iroh_nodes.insert(device_id.to_owned());
+        } else {
+            registry.proven_iroh_nodes.remove(device_id);
+        }
+        if let Err(err) = self.persist_registry(registry) {
+            *registry = before;
             return Err(err);
         }
         Ok(())
@@ -1030,11 +1052,15 @@ impl Auth {
 
     /// A Mac binds the iroh endpoint of one of its own devices, one that has no account to bind
     /// it with (a terminal paired directly). `hello_signature` is the device's own iroh hello to
-    /// this Mac from that endpoint, so the device itself vouches for it. Revoking the device, or
-    /// the Mac, ends the binding as for any other device.
+    /// this Mac from that endpoint, so the device itself vouches for it. With the endpoint key's
+    /// `proof` the binding is proven, as one the device made itself. Revoking the device, or the
+    /// Mac, ends the binding as for any other device.
     pub fn bind_device_iroh_node(&self, mac: &Identity, device_id: &str, binding: DeviceIrohNodeBinding) -> Result<()> {
         self.ensure_registry_ready()?;
         let node = iroh_node_key(&binding.iroh_node_id).ok_or(EnrollmentError::InvalidRegistration)?;
+        if let Some(proof) = &binding.proof {
+            verify_iroh_node_proof(&binding.iroh_node_id, proof, device_id)?;
+        }
         let mut registry = self.devices.lock().unwrap();
         let device = registry
             .devices
@@ -1056,22 +1082,8 @@ impl Auth {
             &mac_node,
         )
         .map_err(|_| EnrollmentError::InvalidRegistration)?;
-        if registry
-            .iroh_nodes
-            .iter()
-            .any(|(id, bound)| *bound == binding.iroh_node_id && id != device_id)
-        {
-            bail!(EnrollmentError::Conflict);
-        }
-        let previous = registry.iroh_nodes.insert(device_id.to_owned(), binding.iroh_node_id);
-        if let Err(err) = self.persist_registry(&registry) {
-            match previous {
-                Some(node) => registry.iroh_nodes.insert(device_id.to_owned(), node),
-                None => registry.iroh_nodes.remove(device_id),
-            };
-            return Err(err);
-        }
-        Ok(())
+        let proven = binding.proof.is_some();
+        self.store_iroh_node(&mut registry, device_id, binding.iroh_node_id, proven)
     }
 
     pub fn unbind_iroh_node(&self, who: &Identity) -> Result<()> {
@@ -1791,9 +1803,34 @@ fn apply_removal(registry: &mut DeviceRegistry, removal: &Removal) -> Applied {
     removed.unwrap_or(Applied::Refused)
 }
 
-fn forget_orphan_iroh_nodes(registry: &mut DeviceRegistry) {
-    let DeviceRegistry { iroh_nodes, devices, macs, .. } = registry;
-    iroh_nodes.retain(|id, _| devices.contains_key(id) || macs.contains_key(id));
+/// Keeps only bindings that still have a holder: an enrolled Mac, or a device whose Mac is still
+/// enrolled. Whether it dropped any.
+fn forget_orphan_iroh_nodes(registry: &mut DeviceRegistry) -> bool {
+    let DeviceRegistry { iroh_nodes, proven_iroh_nodes, devices, phone_macs, macs, .. } = registry;
+    let before = iroh_nodes.len();
+    iroh_nodes.retain(|id, _| {
+        macs.contains_key(id)
+            || (devices.contains_key(id) && phone_macs.get(id).is_some_and(|mac| macs.contains_key(mac)))
+    });
+    proven_iroh_nodes.retain(|id| iroh_nodes.contains_key(id));
+    iroh_nodes.len() != before
+}
+
+fn iroh_node_proven(registry: &DeviceRegistry, device_id: &str) -> bool {
+    registry.macs.contains_key(device_id) || registry.proven_iroh_nodes.contains(device_id)
+}
+
+/// `proof` is the endpoint key's Ed25519 signature over the proof domain and the device ID.
+fn verify_iroh_node_proof(iroh_node_id: &str, proof: &str, device_id: &str) -> Result<()> {
+    let key = iroh_node_key(iroh_node_id).ok_or(EnrollmentError::InvalidRegistration)?;
+    let proof = URL_SAFE_NO_PAD
+        .decode(proof)
+        .map_err(|_| EnrollmentError::InvalidRegistration)?;
+    let message = [IROH_NODE_PROOF_DOMAIN, device_id.as_bytes()].concat();
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(&message, &proof)
+        .map_err(|_| EnrollmentError::InvalidRegistration)?;
+    Ok(())
 }
 
 fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
@@ -1809,6 +1846,13 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     push_ended.sort();
     let mut closed_owners: Vec<_> = registry.closed_owners.iter().cloned().collect();
     closed_owners.sort();
+    let mut proven_iroh_nodes: Vec<_> = registry
+        .proven_iroh_nodes
+        .iter()
+        .filter(|id| registry.iroh_nodes.contains_key(*id))
+        .cloned()
+        .collect();
+    proven_iroh_nodes.sort();
     let push_sessions = registry
         .push_sessions
         .iter()
@@ -1828,6 +1872,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
             macs,
             revoked_mac_ids,
             iroh_nodes: registry.iroh_nodes.clone(),
+            proven_iroh_nodes,
             closed_owners,
             removals_seq: registry.removals_seq,
             account_removals: registry.account_removals.clone(),
