@@ -279,7 +279,8 @@ command that fixes it. It exits with 1 when any check is ✗.
 | `config` | `~/.alondra/config.toml` missing (! defaults) or invalid (✗) | `alondra doctor --fix`; or fix/remove the file |
 | `alondrad` | ✗ the daemon does not answer on the port. ! it answers with other settings than `config.toml` | `alondra doctor --fix`, `tail ~/.alondra/alondrad.log`; ! → `launchctl kickstart -k gui/$(id -u)/dev.alondra.alondrad` |
 | `hooks` | the port is not 47800, so the plugin's hooks miss the daemon | remove `port` from `config.toml` and `ALONDRA_PORT` |
-| `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start), disabled in launchd, or the daemon was started by hand | `alondra doctor --fix`; read `~/.alondra/alondrad.log` |
+| `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start), disabled in launchd (also while the daemon runs: it would not start after restarting the Mac), the daemon was started by hand, the daemon runs another version than the installed `alondrad`, or a daemon holds the HOME without answering and launchd has no job for it | `alondra doctor --fix`; read `~/.alondra/alondrad.log` |
+| `login-item` | ! macOS has Alondra turned off in System Settings > General > Login Items & Extensions (read from `sfltool dumpbtm`; nothing is said when that command gives no answer within 5 seconds) | turn it on under Allow in the Background; `--fix` cannot |
 | `claude` | Claude Code is not on `PATH` | install Claude Code |
 | `plugin` | ✗ the marketplace is not registered, so alondrad cannot load the plugin into its nodes; ! the plugin is enabled for every Claude session | ✗ → run from the repo: `claude plugin marketplace add "$PWD"`; ! → `alondra doctor --fix` (or the `claude plugin disable … --scope …` doctor prints) |
 | `tmux` | tmux missing: stopped nodes cannot be woken | `brew install tmux` |
@@ -305,6 +306,15 @@ doctor` warns about it. `alondra doctor --fix` puts it back under launchd with i
 it enables the job and loads it, the daemon launchd starts waits for the HOME, and only then the
 daemon started by hand leaves. If launchd refuses the job, that daemon keeps running and doctor
 shows the error.
+
+`--fix` also restarts a daemon that runs another version than the installed `alondrad`, under
+launchd too: once the installed binary passes `alondrad --preflight` it sends the daemon SIGUSR1,
+which exits with 75 and leaves the SDK hosts running for the daemon launchd starts (`launchctl
+kickstart -k` would stop them). A daemon that holds the HOME without answering, with no job loaded,
+is asked to leave the same way and ended if it does not, once you agree. Every `--fix` that starts
+the service ends by checking that `/daemon` answers with the installed version and that launchd
+runs it. Whether turning the Login Items switch off also disables the job in launchd has not been
+checked: doctor reports the switch and the launchd state separately.
 
 While the daemon is older than the CLI, as in every upgrade until it restarts, a card a node sends
 that the daemon refuses waits up to an hour and goes again, as the same command, once the daemon

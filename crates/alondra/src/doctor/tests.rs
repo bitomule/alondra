@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use super::checks::*;
-use super::system::{DaemonState, MacInfo, Memory, PluginPass, ServiceView, System, TestPush};
+use super::system::{DaemonState, MacInfo, Memory, PluginPass, ServiceView, StartupItem, System, TestPush, startup_item_in};
 use super::ui::{Plain, Recorded};
 use super::*;
 
@@ -31,6 +31,7 @@ fn running() -> ServiceView {
         label: "com.example.alondra".into(),
         installed: true,
         daemon: DaemonState::Answers,
+        job_loaded: true,
         binaries: true,
         bin: "/opt/homebrew/opt/alondra/bin".into(),
         repo: Some("/opt/homebrew/opt/alondra/libexec/alondra".into()),
@@ -231,7 +232,9 @@ impl System for Fake {
     fn apply(&self, action: Action) -> Result<()> {
         self.applied.borrow_mut().push(action);
         match action {
-            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd => {
+            Action::EnableService => self.service.borrow_mut().disabled = false,
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd
+            | Action::RestartIntoInstalled | Action::ReclaimHome => {
                 if *self.starts_failing.borrow() > 0 {
                     *self.starts_failing.borrow_mut() -= 1;
                     return Err(anyhow!("Alondra didn't start."));
@@ -1300,4 +1303,72 @@ fn provider_onboarding_uses_the_explicit_choice_including_later() {
     assert_eq!(choose_provider(&mut ui).unwrap(), Some(alondra_core::accounts::Provider::Codex));
     assert_eq!(choose_provider(&mut ui).unwrap(), Some(alondra_core::accounts::Provider::Claude));
     assert_eq!(choose_provider(&mut ui).unwrap(), None);
+}
+
+#[test]
+fn a_service_on_another_version_than_the_installed_one_restarts_into_it_under_launchd_too() {
+    english();
+    let behind = ServiceView { running_version: Some("0.3.19".into()), installed_version: Some("0.3.20".into()), ..running() };
+    let c = service_check(&behind);
+    assert_eq!(c.status, Status::Warn);
+    assert!(c.detail.contains("runs 0.3.19, but 0.3.20 is installed"), "{}", c.detail);
+    assert_eq!(c.fix, Some(Fix::Auto(Action::RestartIntoInstalled)));
+    let same = ServiceView { running_version: Some("0.3.20".into()), installed_version: Some("0.3.20".into()), ..running() };
+    assert_eq!(service_check(&same).status, Status::Pass);
+    let unknown = ServiceView { running_version: Some("0.3.20".into()), installed_version: None, ..running() };
+    assert_eq!(service_check(&unknown).status, Status::Pass);
+}
+
+#[test]
+fn a_disabled_service_is_named_while_the_daemon_runs_under_launchd() {
+    english();
+    let c = service_check(&ServiceView { disabled: true, ..running() });
+    assert_eq!(c.status, Status::Warn);
+    assert!(c.detail.contains("will not start again after this Mac restarts"), "{}", c.detail);
+    assert_eq!(c.fix, Some(Fix::Auto(Action::EnableService)));
+    let behind = ServiceView { disabled: true, running_version: Some("1".into()), installed_version: Some("2".into()), ..running() };
+    assert_eq!(service_check(&behind).fix, Some(Fix::Auto(Action::RestartIntoInstalled)));
+}
+
+#[test]
+fn a_daemon_holding_the_home_without_a_job_loaded_is_reclaimed_after_a_yes() {
+    english();
+    let holder = ServiceView { daemon: DaemonState::Silent, job_loaded: false, ..running() };
+    let c = service_check(&holder);
+    assert!(matches!(c.fix, Some(Fix::Ask { action: Action::ReclaimHome, default: true, .. })), "{:?}", c.fix);
+    let loaded = ServiceView { daemon: DaemonState::Silent, ..running() };
+    assert_eq!(service_check(&loaded).fix, Some(Fix::Auto(Action::RestartService)));
+}
+
+#[test]
+fn a_started_service_must_answer_with_the_installed_version_under_launchd() {
+    let info = |version: &str, supervised: Value| json!({"version": version, "supervised": supervised});
+    assert_eq!(served(&info("0.3.20", json!(true)), Some("0.3.20"), true), Served::Running);
+    assert_eq!(served(&info("0.3.19", json!(true)), Some("0.3.20"), true), Served::Version("0.3.19".into()));
+    assert_eq!(served(&info("0.3.20", json!(false)), Some("0.3.20"), true), Served::OutsideLaunchd);
+    assert_eq!(served(&info("0.3.20", json!(false)), Some("0.3.20"), false), Served::Running);
+    assert_eq!(served(&json!({"version": "0.3.20"}), Some("0.3.20"), true), Served::Running);
+    assert_eq!(served(&info("0.3.20", json!(true)), None, true), Served::Running);
+}
+
+#[test]
+fn the_login_item_is_read_from_the_disposition_mask_of_the_services_entry() {
+    let entry = |identifier: &str, disposition: &str| format!("    UUID: A\n    Disposition: {disposition}\n    Identifier: {identifier}\n");
+    let dump = |on: &str| format!("{}{}", entry("8.com.other", "[enabled] (0x1)"), entry("8.dev.alondra.alondrad", on));
+    assert_eq!(startup_item_in(&dump("[enabled, allowed, visible, notified] (0xf)"), "dev.alondra.alondrad"), StartupItem::Allowed);
+    assert_eq!(startup_item_in(&dump("[disabled, allowed, visible, notified] (0xe)"), "dev.alondra.alondrad"), StartupItem::Off);
+    assert_eq!(startup_item_in(&dump("[enabled]"), "dev.alondra.alondrad"), StartupItem::Unknown);
+    assert_eq!(startup_item_in(&dump("[enabled] (0x1)"), "dev.alondra.other"), StartupItem::Unknown);
+    assert_eq!(startup_item_in("", "dev.alondra.alondrad"), StartupItem::Unknown);
+}
+
+#[test]
+fn only_a_login_item_turned_off_is_reported_and_only_a_person_fixes_it() {
+    english();
+    assert!(startup_item_check(&ServiceView { startup_item: StartupItem::Allowed, ..running() }).is_none());
+    assert!(startup_item_check(&ServiceView { startup_item: StartupItem::Unknown, ..running() }).is_none());
+    assert!(startup_item_check(&ServiceView { installed: false, startup_item: StartupItem::Off, ..running() }).is_none());
+    let c = startup_item_check(&ServiceView { startup_item: StartupItem::Off, ..running() }).unwrap();
+    assert_eq!(c.status, Status::Warn);
+    assert!(matches!(c.fix, Some(Fix::Person(_))));
 }

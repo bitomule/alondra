@@ -4,7 +4,7 @@ use std::time::Duration;
 use alondra_core::config::{Config, FileConfig};
 use serde_json::{Value, json};
 
-use super::system::{DaemonState, MacInfo, Memory, ServiceView};
+use super::system::{DaemonState, MacInfo, Memory, ServiceView, StartupItem};
 use super::{Action, Check, Env, Fix, Group, Outcome, Status};
 use crate::setup;
 
@@ -229,13 +229,79 @@ pub fn service_check(view: &ServiceView) -> Outcome {
                     "{label} no ejecuta el daemon: se arrancó a mano, así que no se reinicia en una versión nueva y nada lo levanta si se para")
             },
             service_repair(view, Action::ReturnToLaunchd)),
+        DaemonState::Silent if !view.job_loaded => outcome("service", "launchd", Group::Service, Status::Warn,
+            trf!("a daemon holds this HOME but does not answer, and launchd has no job loaded for {label}",
+                "un daemon retiene este HOME pero no responde, y launchd no tiene cargado el servicio {label}"),
+            reclaim_home_fix(view)),
         _ if view.pending && !view.dev_over_brew => outcome("service", "launchd", Group::Service, Status::Warn,
             trf!("{label} runs with an outdated service file or config.toml", "{label} funciona con un archivo de servicio o un config.toml desactualizado"),
             service_repair(view, Action::InstallService)),
+        DaemonState::Answers if view.version_behind().is_some() => {
+            let (running, installed) = view.version_behind().unwrap_or_default();
+            outcome("service", "launchd", Group::Service, Status::Warn,
+                trf!("{label} runs {running}, but {installed} is installed", "{label} ejecuta {running}, pero está instalada la {installed}"),
+                service_repair(view, Action::RestartIntoInstalled))
+        }
+        DaemonState::Answers if view.disabled => outcome("service", "launchd", Group::Service, Status::Warn,
+            trf!("launchd has {label} disabled: it runs now, but it will not start again after this Mac restarts",
+                "launchd tiene {label} desactivado: funciona ahora, pero no volverá a arrancar cuando se reinicie este Mac"),
+            service_repair(view, Action::EnableService)),
         DaemonState::Answers => outcome("service", "launchd", Group::Service, Status::Pass, trf!("{label} running", "{label} en marcha"), None),
         DaemonState::Silent => outcome("service", "launchd", Group::Service, Status::Warn,
             trf!("{label} is running but does not answer", "{label} está en marcha pero no responde"), service_repair(view, Action::RestartService)),
     }
+}
+
+/// Ending a daemon that does not answer needs a yes, even though its nodes keep running.
+fn reclaim_home_fix(view: &ServiceView) -> Option<Fix> {
+    service_repair(view, Action::ReclaimHome).map(|fix| match fix {
+        Fix::Auto(action) => Fix::Ask {
+            question: tr!("Load the service and ask the daemon that does not answer to leave, ending it if it does not? Its nodes keep running.",
+                "¿Cargo el servicio y le pido al daemon que no responde que se vaya, terminándolo si no lo hace? Sus nodos siguen funcionando.").into(),
+            default: true,
+            action,
+            instead: tr!("run `alondra doctor --fix` in a terminal", "ejecuta `alondra doctor --fix` en una terminal").into(),
+        },
+        manual => manual,
+    })
+}
+
+/// What a daemon that answers `/daemon` says about itself, against the binary `--fix` installed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Served {
+    Running,
+    /// It runs another version than the installed one.
+    Version(String),
+    OutsideLaunchd,
+    /// Nothing answered yet.
+    Silent,
+}
+
+/// `installed` is unknown when `alondrad --version` gave nothing; `supervised` is read only where
+/// launchd is expected to run the daemon. A daemon too old to report `supervised` passes.
+pub fn served(info: &Value, installed: Option<&str>, supervised: bool) -> Served {
+    let running = info.get("version").and_then(Value::as_str).unwrap_or_default();
+    if installed.is_some_and(|installed| installed != running) {
+        return Served::Version(running.to_string());
+    }
+    if supervised && info.get("supervised").and_then(Value::as_bool) == Some(false) {
+        return Served::OutsideLaunchd;
+    }
+    Served::Running
+}
+
+/// macOS can keep a LaunchAgent from running with its switch in System Settings; only the person
+/// turns it back on.
+pub fn startup_item_check(view: &ServiceView) -> Option<Outcome> {
+    if !view.installed || view.startup_item != StartupItem::Off {
+        return None;
+    }
+    let label = &view.label;
+    Some(outcome("login-item", "login item", Group::Service, Status::Warn,
+        trf!("macOS has {label} turned off in System Settings > General > Login Items & Extensions",
+            "macOS tiene {label} apagado en Ajustes del Sistema > General > Ítems de inicio y extensiones"),
+        Some(Fix::Person(tr!("turn Alondra on under Allow in the Background in System Settings > General > Login Items & Extensions",
+            "activa Alondra en Permitir en segundo plano, en Ajustes del Sistema > General > Ítems de inicio y extensiones").into()))))
 }
 
 pub fn identity_check(service_config: bool) -> Outcome {
@@ -576,12 +642,20 @@ fn run_service(env: &Env) -> Option<Outcome> {
     Some(service_check(&env.sys.service()))
 }
 
+fn run_login_item(env: &Env) -> Option<Outcome> {
+    startup_item_check(&env.sys.service())
+}
+
 fn run_daemon(env: &Env) -> Option<Outcome> {
     let health = env.sys.health();
     let config = env.sys.config();
     let owner = if health.is_err() { env.sys.port_owner(config.port) } else { None };
     let view = env.sys.service();
-    let start = service_repair(&view, if view.daemon == DaemonState::Silent { Action::RestartService } else { Action::InstallService });
+    let start = match view.daemon {
+        DaemonState::Silent if !view.job_loaded => reclaim_home_fix(&view),
+        DaemonState::Silent => service_repair(&view, Action::RestartService),
+        _ => service_repair(&view, Action::InstallService),
+    };
     Some(daemon_check(health, &config, start, owner.as_deref()))
 }
 
@@ -674,6 +748,7 @@ pub const CHECKS: &[Check] = &[
     Check { id: "config", run: run_config },
     Check { id: "service", run: run_service },
     Check { id: "alondrad", run: run_daemon },
+    Check { id: "login-item", run: run_login_item },
     Check { id: "state", run: run_state },
     Check { id: "startup", run: run_startup },
     Check { id: "upgrade", run: run_upgrade },

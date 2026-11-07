@@ -198,7 +198,7 @@ fn latest_release() -> Option<String> {
     update::latest_release(&releases)
 }
 
-fn installed_version(daemon: &Path) -> Option<String> {
+pub(crate) fn installed_version(daemon: &Path) -> Option<String> {
     let out = Command::new(daemon).arg("--version").output().ok().filter(|o| o.status.success())?;
     String::from_utf8_lossy(&out.stdout).split_whitespace().last().map(str::to_string)
 }
@@ -235,15 +235,21 @@ fn daemon_info(client: &Client) -> Option<Value> {
     client.get::<Value>("/daemon").ok()
 }
 
+/// Runs the binary's own startup check on this HOME; the error is the last line it printed.
+pub(crate) fn preflight(daemon: &Path) -> Result<(), String> {
+    let out = Command::new(daemon).arg("--preflight").output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&out.stderr);
+    Err(text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("preflight failed").to_string())
+}
+
 /// A daemon older than self-relaunch never restarts on its own, and one that rejected the new
 /// binary does not try it again for a while: check the new binary the way the daemon would,
 /// so a rejection whose cause is gone does not stand, then ask launchd to restart the job.
 fn restart_old_daemon(daemon: &Path) -> Result<(), String> {
-    let out = Command::new(daemon).arg("--preflight").output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        let text = String::from_utf8_lossy(&out.stderr);
-        return Err(text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("preflight failed").to_string());
-    }
+    preflight(daemon)?;
     let label = alondra_core::config::Config::load().map(|c| c.service_label).unwrap_or_else(|_| alondra_core::config::Config::defaults().service_label);
     let uid = unsafe { libc::getuid() };
     let status = Command::new("launchctl").args(["kickstart", "-k", &format!("gui/{uid}/{label}")]).status().map_err(|e| e.to_string())?;

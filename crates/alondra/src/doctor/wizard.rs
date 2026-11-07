@@ -31,7 +31,7 @@ pub fn steps() -> Vec<Step> {
         Step { name: tr!("Projects folder", "Carpeta de proyectos"), checks: &["projects"], show: Show::Wizard },
         Step {
             name: tr!("Background service", "Servicio en segundo plano"),
-            checks: &["config", "service", "alondrad", "state", "startup", "upgrade", "update", "hooks"],
+            checks: &["config", "service", "alondrad", "login-item", "state", "startup", "upgrade", "update", "hooks"],
             show: Show::Always,
         },
         Step { name: tr!("Codex sign-in", "Sesión de Codex"), checks: &["codex.signin"], show: Show::Always },
