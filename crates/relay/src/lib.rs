@@ -5,13 +5,9 @@ mod test_support;
 mod activity;
 mod auth;
 pub mod jwt;
-mod management;
 mod operator;
 mod pairing;
 mod push;
-mod testflight;
-mod web_session;
-mod web_assets;
 
 use alondra_e2e::Envelope;
 use auth::{Auth, Config, IrohNodeBinding, MacRegistration, PhoneDevice, PushRegistration};
@@ -35,14 +31,10 @@ use tokio::sync::{RwLock, Semaphore};
 struct Server {
     auth: Auth,
     activity: activity::Store,
-    management_keycloak: Option<management::keycloak::Keycloak>,
-    web_session: Option<Arc<web_session::WebSession>>,
-    web_assets: Option<web_assets::WebAssets>,
     apns: Option<push::Apns>,
     pairing: pairing::Mailbox,
     requests: Arc<Semaphore>,
     device_gate: Arc<RwLock<()>>,
-    waitlist: management::waitlist::Limiter,
     epoch: String,
     /// Bearer the iroh relay presents to `/v1/iroh/access`; the route is absent without it.
     iroh_access_token: Option<String>,
@@ -52,17 +44,13 @@ struct Server {
     report_repo: Option<String>,
     /// The sign-in service apps and the CLI use with this relay, announced in bootstrap.
     identity: Option<Identity>,
-    testflight_url: Option<String>,
     operator: operator::Operator,
     #[cfg(test)]
-    test_directory: Option<crate::test_support::Directory>,
+    _test_directory: Option<crate::test_support::Directory>,
 }
 
 fn router(server: Arc<Server>) -> Router {
     Router::new()
-        .merge(management::http::routes())
-        .merge(management::waitlist::routes())
-        .merge(web_session::routes())
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/bootstrap", get(bootstrap))
@@ -88,9 +76,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/changes", any(mailbox_removed))
         .route("/v1/work", any(mailbox_removed))
         .route("/v1/work/{*rest}", any(mailbox_removed))
-        .fallback(web_assets::serve)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(middleware::from_fn_with_state(server.clone(),web_session::middleware))
         .layer(middleware::from_fn_with_state(
             server.clone(),
             limit_and_headers,
@@ -392,7 +378,7 @@ async fn enroll(
     }
     let device: PhoneDevice = serde_json::from_slice(&body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_device"))?;
-    server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&device.device_id)).await.map_err(authentication_error)?;
+    server.auth.require_active_owner(&mac.owner_sub).map_err(authentication_error)?;
     server
         .auth
         .enroll(&mac, device)
@@ -437,8 +423,7 @@ async fn iroh_node_owner(
             .map_err(authentication_error)?;
         server
             .auth
-            .require_live_route(&mac.owner_sub, &mac.device_id, None)
-            .await
+            .require_active_owner(&mac.owner_sub)
             .map_err(authentication_error)?;
         Ok(mac)
     } else {
@@ -490,8 +475,7 @@ async fn bind_device_iroh_node(
         .map_err(authentication_error)?;
     server
         .auth
-        .require_live_route(&mac.owner_sub, &mac.device_id, Some(&id))
-        .await
+        .require_active_owner(&mac.owner_sub)
         .map_err(authentication_error)?;
     let binding: auth::DeviceIrohNodeBinding = serde_json::from_slice(&body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_registration"))?;
@@ -547,8 +531,7 @@ async fn iroh_access(State(server): State<Arc<Server>>, headers: HeaderMap) -> R
     };
     match server
         .auth
-        .require_live_route(&holder.owner_sub, &holder.mac_id, holder.client_id.as_deref())
-        .await
+        .require_active_owner(&holder.owner_sub)
     {
         Ok(()) => (StatusCode::OK, "true").into_response(),
         Err(cause) if matches!(cause.downcast_ref(), Some(auth::AccountGateError::Denied)) => {
@@ -621,36 +604,6 @@ async fn unregister_push(State(server): State<Arc<Server>>, body: Bytes) -> ApiR
         .unregister_push(&request.push_binding)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "push_unregistration_failed"))?;
     Ok(StatusCode::NO_CONTENT.into_response())
-}
-
-const PUSH_SESSION_SWEEP: Duration = Duration::from_secs(15 * 60);
-
-/// Pushes registered by a Keycloak offline session stop once that session ends: signed out
-/// elsewhere, revoked by an administrator or expired. An unreachable Keycloak removes nothing.
-async fn sweep_ended_push_sessions(
-    server: &Server,
-    keycloak: &management::keycloak::Keycloak,
-) {
-    for ((owner, client_id), registrations) in server.auth.push_sessions() {
-        let live = match keycloak.offline_session_ids(&owner, &client_id).await {
-            Ok(live) => live,
-            Err(failure) => {
-                eprintln!("alondra-relay: could not list offline sessions: {failure:#}");
-                continue;
-            }
-        };
-        for (device_id, sid) in registrations {
-            if live.contains(&sid) {
-                continue;
-            }
-            let _gate = server.device_gate.read().await;
-            if let Err(failure) = server.auth.forget_ended_session_push(&device_id, &sid) {
-                eprintln!(
-                    "alondra-relay: could not forget the push registration of device {device_id}: {failure:#}"
-                );
-            }
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -737,7 +690,7 @@ async fn send_push(
             "apns_payload_too_large",
         ));
     }
-    server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&request.device_id)).await.map_err(authentication_error)?;
+    server.auth.require_active_owner(&mac.owner_sub).map_err(authentication_error)?;
     if let Err(failure) = apns.send(&registration, e, &delivery).await {
         eprintln!(
             "alondra-relay: APNs delivery to device {} failed: {failure:#}",
@@ -887,8 +840,7 @@ async fn report_activity(
     })?;
     server
         .auth
-        .require_live_route(&mac.owner_sub, &mac.device_id, Some(&request.device_id))
-        .await
+        .require_active_owner(&mac.owner_sub)
         .map_err(authentication_error)?;
     match server.activity.record(&mac.device_id, request) {
         Ok(activity::Recorded::Stored { phone_id }) => activity::push(&server, &phone_id).await,
@@ -925,23 +877,9 @@ pub async fn run() -> anyhow::Result<()> {
     let config: Config = serde_json::from_slice(&std::fs::read(path)?)?;
     let listen = config.listen.clone();
     let apns = config.apns.clone().map(push::Apns::open).transpose()?;
-    let mut auth = Auth::open(config).await?;
-    if let Ok(database_url)=std::env::var("ALONDRA_MANAGEMENT_DATABASE_URL") {
-        let management=management::Management::open(&database_url,auth.config.issuer.clone()).await?;
-        management.bootstrap(&std::env::var("ALONDRA_MANAGEMENT_ADMIN_SUB")?,"Administrator").await?;
-        auth.management=Some(management);
-    }
+    let auth = Auth::open(config).await?;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
-    let management_keycloak=if auth.management.is_some() {
-        let keycloak=management::keycloak::Keycloak::new(
-            auth.config.issuer.clone(),
-            std::env::var("ALONDRA_MANAGEMENT_KC_ADMIN_REALM_URL")?.parse()?,
-            std::env::var("ALONDRA_MANAGEMENT_KC_TOKEN_URL")?.parse()?,
-            std::env::var("ALONDRA_MANAGEMENT_KC_CLIENT_ID")?,
-            std::fs::read_to_string(std::env::var("ALONDRA_MANAGEMENT_KC_SECRET_FILE")?)?.trim().into())?;
-        keycloak.verify_realm().await?;Some(keycloak)
-    } else {None};
     let operator = operator::Operator::from_env()?;
     let operator_listen = std::env::var("ALONDRA_OPERATOR_LISTEN").ok();
     anyhow::ensure!(
@@ -951,8 +889,6 @@ pub async fn run() -> anyhow::Result<()> {
     if operator.follows_source() {
         auth.await_removal_source();
     }
-    let web_session = web_session::WebSession::from_env(&auth)?;
-    let web_assets = web_assets::WebAssets::from_env(web_session.is_some())?;
     let iroh_access_token = match std::env::var("ALONDRA_IROH_ACCESS_TOKEN_FILE") {
         Ok(path) => {
             let token = std::fs::read_to_string(path)?.trim().to_owned();
@@ -977,23 +913,18 @@ pub async fn run() -> anyhow::Result<()> {
     let server = Arc::new(Server {
         activity: activity::Store::open(&auth.config.device_registry_path)?,
         auth,
-        web_assets,
-        web_session,
-        management_keycloak,
         apns,
         pairing: pairing::Mailbox::default(),
         requests: Arc::new(Semaphore::new(128)),
         device_gate: Arc::new(RwLock::new(())),
-        waitlist: management::waitlist::Limiter::from_env()?,
         epoch,
         iroh_access_token,
         iroh_relay,
         report_repo: report_repo(std::env::var("ALONDRA_REPORT_REPO").ok())?,
         identity,
-        testflight_url: testflight::from_env()?,
         operator,
         #[cfg(test)]
-        test_directory: None,
+        _test_directory: None,
     });
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     let operator_listener = match &operator_listen {
@@ -1003,19 +934,7 @@ pub async fn run() -> anyhow::Result<()> {
     if server.operator.follows_source() {
         tokio::spawn(operator::follow_source(server.clone()));
     }
-    if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
     tokio::spawn(activity::retry_owed(server.clone()));
-    if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
-    if server.management_keycloak.is_some() && server.apns.is_some() {
-        let sweeping = server.clone();
-        tokio::spawn(async move {
-            let Some(keycloak) = &sweeping.management_keycloak else { return };
-            loop {
-                tokio::time::sleep(PUSH_SESSION_SWEEP).await;
-                sweep_ended_push_sessions(&sweeping, keycloak).await;
-            }
-        });
-    }
     let refreshing = server.clone();
     tokio::spawn(async move {
         loop {
@@ -1042,7 +961,6 @@ pub async fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod http_tests {
-    include!("pg_fault_tests.rs");
     include!("activity_http_tests.rs");
     include!("operator_tests.rs");
     use super::*;
@@ -1130,17 +1048,13 @@ mod http_tests {
         mac_key: &SigningKey,
         apns_endpoint: Option<String>,
     ) -> (String, Arc<Server>, tokio::task::JoinHandle<()>) {
-        test_server_with_management(mac_key,apns_endpoint,None).await
-    }
-
-    async fn test_server_with_management(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
-        test_server_with_iroh_access(mac_key,apns_endpoint,management,Some(TEST_IROH_ACCESS_TOKEN.into())).await
+        test_server_with_iroh_access(mac_key,apns_endpoint,Some(TEST_IROH_ACCESS_TOKEN.into())).await
     }
 
     const TEST_IROH_ACCESS_TOKEN: &str = "test-iroh-access-token-0123456789abcdef";
     const TEST_IROH_RELAY: &str = "https://iroh.example.com";
 
-    async fn test_server_with_iroh_access(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>,iroh_access_token:Option<String>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
+    async fn test_server_with_iroh_access(mac_key:&SigningKey,apns_endpoint:Option<String>,iroh_access_token:Option<String>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
         let directory = crate::test_support::Directory::new();
         let registry = directory.parent().unwrap().join(format!(
             "alondra-relay-test-registry-{}-{}-{}.json",
@@ -1154,35 +1068,31 @@ mod http_tests {
             audience: "alondra-relay".into(),
             jwks_url: "http://127.0.0.1:1/jwks".into(),
             allow_internal_http_jwks: false,
-            owner_sub: "owner".into(),
-            mac_id: "mac-1".into(),
-            mac_signing_key: key_bytes(mac_key),
+            bootstrap_mac: Some(auth::BootstrapMac {
+                owner_sub: "owner".into(),
+                mac_id: "mac-1".into(),
+                mac_signing_key: key_bytes(mac_key),
+            }),
             device_registry_path: registry,
             apns: None,
         };
-        let mut auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
-        auth.management=management;
+        let auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
             activity: activity::Store::open(&auth.config.device_registry_path).unwrap(),
             auth,
-            management_keycloak: None,
-            web_session: None,
-            web_assets: None,
             apns: apns_endpoint.map(push::Apns::test),
             pairing: pairing::Mailbox::default(),
             requests: Arc::new(Semaphore::new(128)),
             device_gate: Arc::new(RwLock::new(())),
-            waitlist: management::waitlist::Limiter::new(None),
             epoch,
             iroh_relay: iroh_access_token.as_ref().map(|_| TEST_IROH_RELAY.to_owned()),
             iroh_access_token,
             report_repo: None,
             identity: None,
-            testflight_url: None,
             operator: operator::Operator::default(),
             #[cfg(test)]
-            test_directory: Some(directory),
+            _test_directory: Some(directory),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1196,307 +1106,6 @@ mod http_tests {
             .unwrap();
         });
         (url, server, join)
-    }
-
-    #[tokio::test]
-    #[ignore="requires disposable local PostgreSQL"]
-    async fn management_http_device_labels_are_owned_and_do_not_change_trust()->anyhow::Result<()> {
-        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
-        for (email,subject) in [("label-first@example.com","owner"),("label-second@example.com","other")] {
-            let invite=db.create_invitation(admin.id,email,300).await?;
-            db.reserve_acceptance(&invite.token,"Owner").await?.complete(subject).await?;
-        }
-        let mac_key=SigningKey::from_slice(&[21u8;32]).unwrap();let phone_key=SigningKey::from_slice(&[22u8;32]).unwrap();
-        let (url,server,join)=test_server_with_management(&mac_key,None,Some(db.clone())).await;
-        server.auth.enroll_mac(auth::MacDevice{mac_id:"mac-other".into(),owner_sub:"other".into(),signing_key:key_bytes(&mac_key),agreement_key:key_bytes(&phone_key)})?;
-        for (mac,owner,id) in [("mac-1","owner","client-first"),("mac-other","other","client-other")] {
-            server.auth.enroll(&auth::Identity{device_id:mac.into(),owner_sub:owner.into()},PhoneDevice{device_id:id.into(),owner_sub:owner.into(),signing_key:key_bytes(&phone_key)})?;
-        }
-        let client=reqwest::Client::new();let token=jwt("owner",now_ms());
-        let rename=|kind:&str,id:&str,key:&str,body:Value|client.post(format!("{url}/v1/account/devices/{kind}/{id}/label")).bearer_auth(&token).header("Idempotency-Key",key).json(&body);
-        for (kind,id) in [("macs","mac-other"),("clients","client-other")] {
-            let response=rename(kind,id,"foreign-label-request-001",json!({"label":"Stolen","expected_revision":0})).send().await?;
-            assert_eq!(response.status(),StatusCode::NOT_FOUND,"foreign aliases must not be writable");
-        }
-        for (kind,id) in [("macs","mac-1"),("clients","client-first")] {
-            let key=format!("own-label-request-{kind}-0001");
-            let body=json!({"label":"  Cafe\u{301}  ","expected_revision":0});
-            let response=rename(kind,id,&key,body.clone()).send().await?;
-            assert_eq!(response.status(),StatusCode::OK);
-            assert_eq!(response.json::<Value>().await?,json!({"label":"Café","label_revision":1}));
-            let replay=rename(kind,id,&key,body).send().await?;
-            assert_eq!(replay.status(),StatusCode::CONFLICT);
-            assert_eq!(replay.json::<Value>().await?["error"]["code"],"action_already_applied");
-            let stale=rename(kind,id,&format!("stale-label-{kind}-request-001"),json!({"label":"Overwrite","expected_revision":0})).send().await?;
-            assert_eq!(stale.status(),StatusCode::CONFLICT);
-            assert_eq!(stale.json::<Value>().await?["error"]["code"],"state_conflict");
-        }
-        for value in [json!({"label":"hidden\u{200d}","expected_revision":1}),json!({"label":"x".repeat(129),"expected_revision":1}),json!({"expected_revision":1})] {
-            assert_eq!(rename("macs","mac-1","invalid-label-request-0001",value).send().await?.status(),StatusCode::UNPROCESSABLE_ENTITY);
-        }
-        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&token).send().await?.json().await?;
-        assert_eq!(listing["macs"][0]["label"],"Café");assert_eq!(listing["macs"][0]["label_revision"],1);
-        assert_eq!(listing["macs"][0]["clients"][0]["label"],"Café");
-        assert!(!listing.to_string().contains("other"));assert!(!listing.to_string().contains("signing_key"));
-        assert_eq!(server.auth.mac_for_owner("mac-1","owner")?.to_sec1_point(false),mac_key.verifying_key().to_sec1_point(false));
-        assert!(server.auth.phone_key("client-first").is_ok());
-        let other:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(jwt("other",now_ms())).send().await?.json().await?;
-        assert!(other["macs"][0]["label"].is_null());assert_eq!(other["macs"][0]["label_revision"],0);
-        let revoked=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&token).header("Idempotency-Key","label-revoke-client-request").send().await?;
-        assert_eq!(revoked.status(),StatusCode::ACCEPTED);
-        assert_eq!(rename("clients","client-first","label-after-revoke-request",json!({"label":"Again","expected_revision":1})).send().await?.status(),StatusCode::NOT_FOUND);
-        assert!(server.auth.phone_key("client-first").is_ok(),"PG denies before registry cleanup");
-        join.abort();management::tests::cleanup(db,schema).await
-    }
-
-    #[tokio::test]
-    #[ignore="requires disposable local PostgreSQL"]
-    async fn management_http_own_device_revocation_isolated_immediate_and_reconciled()->anyhow::Result<()> {
-        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
-        for (email,subject) in [("first@example.com","owner"),("second@example.com","other")] {
-            let invite=db.create_invitation(admin.id,email,300).await?;
-            db.reserve_acceptance(&invite.token,"Owner").await?.complete(subject).await?;
-        }
-        let mac_key=SigningKey::from_slice(&[21u8;32]).unwrap();let phone_key=SigningKey::from_slice(&[22u8;32]).unwrap();
-        let (url,server,join)=test_server_with_management(&mac_key,None,Some(db.clone())).await;
-        server.auth.enroll_mac(auth::MacDevice{mac_id:"mac-other".into(),owner_sub:"other".into(),signing_key:key_bytes(&mac_key),agreement_key:key_bytes(&phone_key)})?;
-        for (mac,owner,id) in [("mac-1","owner","client-first"),("mac-other","other","client-other")] {
-            server.auth.enroll(&auth::Identity{device_id:mac.into(),owner_sub:owner.into()},PhoneDevice{device_id:id.into(),owner_sub:owner.into(),signing_key:key_bytes(&phone_key)})?;
-        }
-        let client=reqwest::Client::new();
-        let auth=jwt("owner",now_ms());
-        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
-        assert_eq!(listing["macs"].as_array().unwrap().len(),1);assert_eq!(listing["macs"][0]["mac_id"],"mac-1");
-        assert_eq!(listing["macs"][0]["clients"][0]["device_id"],"client-first");
-        assert!(!listing.to_string().contains("signing_key"));assert!(!listing.to_string().contains("client-other"));
-        let denied=client.delete(format!("{url}/v1/account/devices/clients/client-other")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-foreign-0001").send().await?;
-        assert_eq!(denied.status(),StatusCode::NOT_FOUND);
-        let path="/v1/iroh-node";
-        let before=sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","DELETE",path,&[],180).send().await?;
-        assert_eq!(before.status(),StatusCode::NO_CONTENT);
-        let response=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
-        assert_eq!(response.status(),StatusCode::ACCEPTED);
-        let after=sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","DELETE",path,&[],181).send().await?;
-        assert_eq!(after.status(),StatusCode::FORBIDDEN);
-        assert!(server.auth.phone_key("client-first").is_ok(),"SQL tombstone must deny before registry worker runs");
-        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
-        assert_eq!(listing["macs"][0]["clients"][0]["status"],"revoked");assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"pending");
-        let body=serde_json::to_vec(&json!({"device_id":"client-first","owner_sub":"owner","signing_key":key_bytes(&phone_key)}))?;
-        let response=sign(&server.auth.server_epoch(),client.post(format!("{url}/v1/devices")).body(body.clone()),&mac_key,"mac-1","POST","/v1/devices",&body,182).send().await?;
-        assert_eq!(response.status(),StatusCode::FORBIDDEN,"a Mac signature cannot resurrect a PG-revoked binding");
-        let repeated=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
-        assert_eq!(repeated.status(),StatusCode::CONFLICT);
-        assert!(management::worker::step(&server).await?);
-        assert!(server.auth.phone_key("client-first").is_err());assert!(server.auth.phone_key("client-other").is_ok());
-        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
-        assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"completed");
-        server.auth.enroll(&auth::Identity{device_id:"mac-1".into(),owner_sub:"owner".into()},PhoneDevice{device_id:"client-descendant".into(),owner_sub:"owner".into(),signing_key:key_bytes(&phone_key)})?;
-        let response=client.delete(format!("{url}/v1/account/devices/macs/mac-1")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-mac-00001").send().await?;
-        assert_eq!(response.status(),StatusCode::ACCEPTED);
-        let response=sign(&server.auth.server_epoch(),client.delete(format!("{url}/v1/iroh-node")),&mac_key,"mac-1","DELETE","/v1/iroh-node",&[],183).send().await?;
-        assert_eq!(response.status(),StatusCode::FORBIDDEN);
-        assert!(db.require_live_device("owner","fresh-mac",Some("client-descendant")).await.is_err(),"Mac revocation persists child IDs independently from the old route");
-        while management::worker::step(&server).await? {}
-        assert!(!server.auth.is_mac_registered("mac-1"));assert!(server.auth.is_mac_registered("mac-other"));
-        let response=client.delete(format!("{url}/v1/account")).bearer_auth(&auth).header("Idempotency-Key","self-delete-confirm-0001").json(&json!({"confirm":false})).send().await?;
-        assert_eq!(response.status(),StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(db.active_identity("https://id.example/realms/alondra","owner").await.is_ok());
-        join.abort();management::tests::cleanup(db,schema).await
-    }
-
-    #[tokio::test]
-    #[ignore = "requires disposable local PostgreSQL"]
-    async fn waitlist_http_is_uniform_bounded_and_only_admins_manage_it() -> anyhow::Result<()> {
-        let (db, admin, schema) =
-            management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
-        let invitation = db.create_invitation(admin.id, "member@example.test", 300).await?;
-        db.reserve_acceptance(&invitation.token, "Member").await?.complete("member").await?;
-        let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
-        let (url, _server, join) = test_server_with_management(&key, None, Some(db.clone())).await;
-        let client = reqwest::Client::new();
-        let count = |table: &'static str| {
-            let pool = db.pool.clone();
-            async move {
-                sqlx_core::query_scalar::query_scalar::<_, i64>(&format!("SELECT count(*) FROM {table}"))
-                    .fetch_one(&pool)
-                    .await
-            }
-        };
-        let (accounts, invitations) = (count("management_accounts").await?, count("management_invitations").await?);
-        let join_waitlist = |body: Vec<u8>, content_type: &'static str| {
-            client
-                .post(format!("{url}/api/waitlist"))
-                .header("content-type", content_type)
-                .body(body)
-                .send()
-        };
-        let mut accepted = Vec::new();
-        for email in ["new.person@example.test", "  NEW.Person@Example.TEST ", "member@example.test"] {
-            let response = join_waitlist(serde_json::to_vec(&json!({"email": email}))?, "application/json").await?;
-            let status = response.status();
-            let mut headers = response.headers().clone();
-            headers.remove("date");
-            accepted.push((status, headers, response.bytes().await?));
-        }
-        assert_eq!(accepted[0].0, StatusCode::ACCEPTED);
-        assert_eq!(serde_json::from_slice::<Value>(&accepted[0].2)?, json!({"status": "accepted"}));
-        assert!(accepted.iter().all(|r| r == &accepted[0]), "new, repeated and existing-account emails are indistinguishable");
-        let invalid = join_waitlist(br#"{"email":"not-an-address"}"#.to_vec(), "application/json").await?;
-        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(invalid.json::<Value>().await?, json!({"error": "invalid_email"}));
-        let oversized = json!({"email": format!("{}@example.test", "a".repeat(2000))});
-        let oversized = join_waitlist(serde_json::to_vec(&oversized)?, "application/json").await?;
-        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let limited = join_waitlist(br#"{"email":"sixth@example.test"}"#.to_vec(), "application/json").await?;
-        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
-        let retry: u64 = limited.headers()[header::RETRY_AFTER].to_str()?.parse()?;
-        assert!((1..=600).contains(&retry));
-        assert_eq!(limited.json::<Value>().await?, json!({"error": "rate_limited"}));
-        assert_eq!(count("management_waitlist").await?, 2);
-        assert_eq!(
-            (count("management_accounts").await?, count("management_invitations").await?),
-            (accounts, invitations),
-            "joining creates no account or invitation"
-        );
-
-        let list = |bearer: Option<String>, query: &str| {
-            let request = client.get(format!("{url}/v1/admin/waitlist{query}"));
-            match bearer { Some(token) => request.bearer_auth(token), None => request }.send()
-        };
-        assert_eq!(list(None, "").await?.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(list(Some(jwt("member", now_ms())), "").await?.status(), StatusCode::FORBIDDEN);
-        let first: Value = list(Some(jwt("stable-admin-sub", now_ms())), "?limit=1").await?.json().await?;
-        assert_eq!(first["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(first["entries"][0]["email"], "new.person@example.test");
-        assert!(first["entries"][0]["created_at_ms"].as_i64().unwrap() > 1_700_000_000_000);
-        let cursor = first["next_cursor"].as_str().unwrap();
-        let second: Value = list(Some(jwt("stable-admin-sub", now_ms())), &format!("?limit=1&after={cursor}")).await?.json().await?;
-        assert_eq!(second["entries"][0]["email"], "member@example.test");
-        assert!(second["next_cursor"].is_null());
-
-        let id = first["entries"][0]["id"].as_str().unwrap();
-        let remove = |bearer: Option<String>| {
-            let request = client.delete(format!("{url}/v1/admin/waitlist/{id}"));
-            match bearer { Some(token) => request.bearer_auth(token), None => request }.send()
-        };
-        assert_eq!(remove(None).await?.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(remove(Some(jwt("member", now_ms()))).await?.status(), StatusCode::FORBIDDEN);
-        assert_eq!(count("management_waitlist").await?, 2);
-        assert_eq!(remove(Some(jwt("stable-admin-sub", now_ms()))).await?.status(), StatusCode::NO_CONTENT);
-        assert_eq!(remove(Some(jwt("stable-admin-sub", now_ms()))).await?.status(), StatusCode::NOT_FOUND);
-        assert_eq!(count("management_waitlist").await?, 1);
-        let audited: i64 = sqlx_core::query_scalar::query_scalar("SELECT count(*) FROM management_audit WHERE action='waitlist_remove' AND actor_id=$1")
-            .bind(admin.id).fetch_one(&db.pool).await?;
-        assert_eq!(audited, 1);
-        join.abort();
-        management::tests::cleanup(db, schema).await
-    }
-
-    #[tokio::test]
-    #[ignore = "requires disposable local PostgreSQL"]
-    async fn inviting_from_the_waitlist_issues_a_link_and_clears_the_request_in_one_step() -> anyhow::Result<()> {
-        let (db, admin, schema) =
-            management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
-        let invitation = db.create_invitation(admin.id, "member@example.test", 300).await?;
-        db.reserve_acceptance(&invitation.token, "Member").await?.complete("member").await?;
-        db.join_waitlist("friend@example.test").await?;
-        db.join_waitlist("member@example.test").await?;
-        let entries = db.list_waitlist(admin.id, None, 10).await?.entries;
-        let id_of = |email: &str| entries.iter().find(|entry| entry.email == email).unwrap().id;
-        let (friend, member) = (id_of("friend@example.test"), id_of("member@example.test"));
-        let key = SigningKey::from_slice(&[32u8; 32]).unwrap();
-        let (url, _server, join) = test_server_with_management(&key, None, Some(db.clone())).await;
-        let client = reqwest::Client::new();
-        let invite = |subject: &str, id: uuid::Uuid, idempotency: &str| {
-            client
-                .post(format!("{url}/v1/admin/waitlist/{id}/invite"))
-                .bearer_auth(jwt(subject, now_ms()))
-                .header("Idempotency-Key", idempotency)
-                .json(&json!({"ttl_seconds": 604800}))
-                .send()
-        };
-        let waiting = || {
-            let pool = db.pool.clone();
-            async move {
-                sqlx_core::query_scalar::query_scalar::<_, String>("SELECT email FROM management_waitlist ORDER BY email")
-                    .fetch_all(&pool)
-                    .await
-            }
-        };
-        let invited = || {
-            let pool = db.pool.clone();
-            async move {
-                sqlx_core::query_scalar::query_scalar::<_, String>("SELECT email FROM management_invitations ORDER BY email")
-                    .fetch_all(&pool)
-                    .await
-            }
-        };
-
-        assert_eq!(invite("member", friend, "member-attempt-0001").await?.status(), StatusCode::FORBIDDEN);
-        assert_eq!(waiting().await?, ["friend@example.test", "member@example.test"]);
-
-        let issued = invite("stable-admin-sub", friend, "friend-invite-0001").await?;
-        assert_eq!(issued.status(), StatusCode::CREATED);
-        let issued: Value = issued.json().await?;
-        assert_eq!(issued["invitation"]["email"], "friend@example.test");
-        assert_eq!(issued["invitation"]["status"], "pending");
-        assert_eq!(db.invitation_status(issued["token"].as_str().unwrap()).await?, "pending");
-        assert_eq!(waiting().await?, ["member@example.test"]);
-        assert_eq!(invited().await?, ["friend@example.test", "member@example.test"]);
-
-        let repeated = invite("stable-admin-sub", friend, "friend-invite-0001").await?;
-        assert_eq!(repeated.status(), StatusCode::CONFLICT);
-        assert_eq!(repeated.json::<Value>().await?["error"]["code"], "invitation_token_already_issued");
-        assert_eq!(invite("stable-admin-sub", friend, "friend-invite-0002").await?.status(), StatusCode::NOT_FOUND);
-
-        let taken = invite("stable-admin-sub", member, "member-invite-0001").await?;
-        assert_eq!(taken.status(), StatusCode::CONFLICT);
-        assert_eq!(taken.json::<Value>().await?["error"]["code"], "state_conflict");
-        assert_eq!(waiting().await?, ["member@example.test"], "a refused invitation keeps the request");
-        assert_eq!(invited().await?, ["friend@example.test", "member@example.test"]);
-
-        let audited: Vec<String> = sqlx_core::query_scalar::query_scalar(
-            "SELECT action FROM management_audit WHERE actor_id=$1 AND action IN ('invite_create','waitlist_remove') ORDER BY action",
-        )
-        .bind(admin.id)
-        .fetch_all(&db.pool)
-        .await?;
-        assert_eq!(audited, ["invite_create", "invite_create", "waitlist_remove"]);
-        join.abort();
-        management::tests::cleanup(db, schema).await
-    }
-
-    #[tokio::test]
-    #[ignore="requires disposable local PostgreSQL"]
-    async fn management_http_private_gate_blocks_unknown_disabled_and_database_outage() -> anyhow::Result<()> {
-        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
-        let invitation=db.create_invitation(admin.id,"gate@example.com",300).await?;
-        let owner=db.reserve_acceptance(&invitation.token,"Owner").await?.complete("owner").await?;
-        let key=SigningKey::from_slice(&[21u8;32]).unwrap();
-        let (url,server,join)=test_server_with_management(&key,None,Some(db.clone())).await;
-        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
-            PhoneDevice { device_id: "waiting-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&key) })?;
-        let client=reqwest::Client::new();
-        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("uninvited",now_ms())).send().await?;
-        assert_eq!(response.status(),StatusCode::FORBIDDEN);
-        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("owner",now_ms())).send().await?;
-        assert_eq!(response.status(),StatusCode::OK);
-        let path="/v1/iroh-node";
-        let as_mac=|nonce| sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")),&key,"mac-1","DELETE",path,&[],nonce).send();
-        let as_phone=|nonce| sign(&server.auth.server_epoch(),client.delete(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
-            &key,"waiting-phone","DELETE",path,&[],nonce).send();
-        assert_eq!(as_mac(211).await?.status(),StatusCode::NO_CONTENT);
-        assert_eq!(as_phone(212).await?.status(),StatusCode::NO_CONTENT);
-        let disabled = client.post(format!("{url}/v1/admin/accounts/{}/disable", owner.id))
-            .bearer_auth(jwt("stable-admin-sub", now_ms()))
-            .header("Idempotency-Key", "disable-waiting-account-0001").send().await?;
-        assert_eq!(disabled.status(), StatusCode::ACCEPTED);
-        assert_eq!(as_mac(213).await?.status(),StatusCode::FORBIDDEN,"signed Mac cannot bypass product suspension");
-        assert_eq!(as_phone(214).await?.status(),StatusCode::FORBIDDEN,"account disable denies the phone too");
-        db.pool.close().await;
-        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("stable-admin-sub",now_ms())).send().await?;
-        assert_eq!(response.status(),StatusCode::SERVICE_UNAVAILABLE,"database outage must not fall back to OIDC-only admission");
-        join.abort();management::tests::cleanup(db,schema).await
     }
 
     #[tokio::test]
@@ -1785,7 +1394,9 @@ mod http_tests {
         enroll_phones(&server, &["phone-1", "phone-2"]);
         server.auth.register_push("phone-1", push_for(1), None).unwrap();
         server.auth.register_push("phone-2", push_for(2), None).unwrap();
-        server.auth.reconcile_device_revocation("owner", "client", "phone-2", "mac-1").unwrap();
+        server.auth.apply_removals(&[(1, auth::Removal::Client {
+            owner: "owner".into(), client_id: "phone-2".into(), mac_id: "mac-1".into(),
+        })]).unwrap();
         assert!(server.auth.push_registration("phone-2").is_none());
         assert!(server.auth.push_ended("phone-2"));
         assert!(server.auth.push_registration("phone-1").is_some());
@@ -1818,50 +1429,53 @@ mod http_tests {
         assert_eq!(bearer(json!({"sid":"a/b","azp":"alondra-ios","scope":"offline_access"})), None);
     }
 
-    async fn fake_keycloak(
-        live: Option<Vec<&'static str>>,
-    ) -> (management::keycloak::Keycloak, tokio::task::JoinHandle<()>) {
-        let live = Arc::new(live);
-        let router = Router::new()
-            .route(
-                "/realms/alondra/protocol/openid-connect/token",
-                post(|| async { Json(json!({"access_token":"synthetic"})) }),
-            )
-            .route(
-                "/admin/realms/alondra/users/{sub}/consents",
-                get({
-                    let live = live.clone();
-                    move || async move {
-                        if live.is_none() {
-                            return StatusCode::BAD_GATEWAY.into_response();
-                        }
-                        Json(json!([
-                            {"clientId":"other","additionalGrants":[{"client":"other-uuid","key":"Offline Token"}]},
-                            {"clientId":"alondra-ios","additionalGrants":[{"client":"ios-uuid","key":"Offline Token"}]}
-                        ]))
-                        .into_response()
-                    }
-                }),
-            )
-            .route(
-                "/admin/realms/alondra/users/{sub}/offline-sessions/ios-uuid",
-                get(move || async move {
-                    let ids = live.as_ref().clone().unwrap_or_default();
-                    Json(ids.iter().map(|id| json!({"id": id})).collect::<Vec<_>>())
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let keycloak = management::keycloak::Keycloak::new(
-            "https://id.example/realms/alondra".into(),
-            format!("{base}/admin/realms/alondra/").parse().unwrap(),
-            format!("{base}/realms/alondra/protocol/openid-connect/token").parse().unwrap(),
-            "management".into(),
-            "secret".into(),
-        )
-        .unwrap();
-        (keycloak, task)
+    fn config_without_a_bootstrap_mac(registry: &std::path::Path) -> Value {
+        json!({"listen": "127.0.0.1:0", "issuer": "https://id.example/realms/alondra", "audience": "alondra-relay",
+            "jwks_url": "https://id.example/jwks", "device_registry_path": registry})
+    }
+
+    #[test]
+    fn a_relay_needs_no_bootstrap_mac_and_a_config_that_names_one_still_reads() {
+        let directory = crate::test_support::Directory::new();
+        let registry = directory.join("registry.json");
+        let without: Config = serde_json::from_value(config_without_a_bootstrap_mac(&registry)).unwrap();
+        assert!(without.bootstrap_mac.is_none());
+        let auth = Auth::test(without, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        assert!(!auth.is_mac_registered("mac-first"));
+        let key = key_bytes(&SigningKey::from_slice(&[61u8; 32]).unwrap());
+        auth.enroll_mac(auth::MacDevice {
+            mac_id: "mac-first".into(), owner_sub: "owner".into(), signing_key: key.clone(), agreement_key: key.clone(),
+        }).unwrap();
+        assert!(auth.is_mac_registered("mac-first"));
+
+        let mut named = config_without_a_bootstrap_mac(&directory.join("named.json"));
+        named["owner_sub"] = json!("owner");
+        named["mac_id"] = json!("mac-1");
+        named["mac_signing_key"] = json!(key);
+        let named: Config = serde_json::from_value(named).unwrap();
+        assert_eq!(named.bootstrap_mac.as_ref().map(|mac| mac.mac_id.as_str()), Some("mac-1"));
+        let auth = Auth::test(named, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        assert!(auth.is_mac_registered("mac-1"));
+    }
+
+    #[test]
+    fn phones_of_an_old_registry_without_a_mac_binding_need_the_bootstrap_mac_to_bind_to() {
+        let directory = crate::test_support::Directory::new();
+        let registry = directory.join("registry.json");
+        let key = key_bytes(&SigningKey::from_slice(&[62u8; 32]).unwrap());
+        std::fs::create_dir_all(&*directory).unwrap();
+        std::fs::write(&registry, serde_json::to_vec(&json!({
+            "devices": [{"device_id": "phone-old", "owner_sub": "owner", "signing_key": key}], "revoked_ids": [],
+        })).unwrap()).unwrap();
+        let without: Config = serde_json::from_value(config_without_a_bootstrap_mac(&registry)).unwrap();
+        assert!(Auth::test(without, include_bytes!("../tests/fixtures/jwks.json")).is_err());
+
+        let mut named = config_without_a_bootstrap_mac(&registry);
+        named["owner_sub"] = json!("owner");
+        named["mac_id"] = json!("mac-1");
+        named["mac_signing_key"] = json!(key);
+        let named: Config = serde_json::from_value(named).unwrap();
+        assert!(Auth::test(named, include_bytes!("../tests/fixtures/jwks.json")).unwrap().is_phone_registered("phone-old"));
     }
 
     #[tokio::test]
@@ -1873,14 +1487,7 @@ mod http_tests {
         server.auth.register_push("phone-ended", push_for(2), offline_session("ended")).unwrap();
         server.auth.register_push("phone-legacy", push_for(3), None).unwrap();
 
-        let (unreachable, keycloak_task) = fake_keycloak(None).await;
-        sweep_ended_push_sessions(&server, &unreachable).await;
-        keycloak_task.abort();
-        assert!(server.auth.push_registration("phone-ended").is_some());
-
-        let (keycloak, keycloak_task) = fake_keycloak(Some(vec!["live"])).await;
-        sweep_ended_push_sessions(&server, &keycloak).await;
-        keycloak_task.abort();
+        server.auth.forget_ended_session_push("phone-ended", "ended").unwrap();
         assert_eq!(server.auth.push_registration("phone-live"), Some(push_for(1)));
         assert!(server.auth.push_registration("phone-ended").is_none());
         assert!(server.auth.push_ended("phone-ended"));
@@ -2796,7 +2403,7 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn keycloak_jwks_rotation_fetches_unknown_kid_and_removes_retired_key() {
+    async fn jwks_rotation_fetches_unknown_kid_and_removes_retired_key() {
         let scratch_directory = crate::test_support::Directory::new();
         let current = Arc::new(std::sync::RwLock::new(
             include_bytes!("../tests/fixtures/jwks.json").to_vec(),
@@ -2821,9 +2428,11 @@ mod http_tests {
             audience: "alondra-relay".into(),
             jwks_url,
             allow_internal_http_jwks: false,
-            owner_sub: "owner".into(),
-            mac_id: "mac-1".into(),
-            mac_signing_key: key_bytes(&mac_key),
+            bootstrap_mac: Some(auth::BootstrapMac {
+                owner_sub: "owner".into(),
+                mac_id: "mac-1".into(),
+                mac_signing_key: key_bytes(&mac_key),
+            }),
             device_registry_path: scratch_directory.parent().unwrap().join(format!(
                 "alondra-jwks-rotation-{}-{}.json",
                 std::process::id(),
@@ -3368,7 +2977,7 @@ mod http_tests {
             async fn with_token(token: Option<String>) -> Self {
                 let mac_key = SigningKey::from_slice(&[111u8; 32]).unwrap();
                 let phone_key = SigningKey::from_slice(&[112u8; 32]).unwrap();
-                let (url, server, task) = test_server_with_iroh_access(&mac_key, None, None, token).await;
+                let (url, server, task) = test_server_with_iroh_access(&mac_key, None, token).await;
                 let fixture = Self { url, server, task, mac_key, phone_key,
                     http: reqwest::Client::new(), nonce: Default::default() };
                 let body = serde_json::to_vec(&PhoneDevice { device_id: "phone-1".into(),
@@ -3538,10 +3147,12 @@ mod http_tests {
             let (mac_node, phone_node) = (IrohKey::new(10), IrohKey::new(11));
             f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
             f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await;
-            f.server.auth.reconcile_device_revocation("owner", "client", "phone-1", "mac-1").unwrap();
+            f.server.auth.apply_removals(&[(1, auth::Removal::Client {
+                owner: "owner".into(), client_id: "phone-1".into(), mac_id: "mac-1".into(),
+            })]).unwrap();
             assert_eq!(f.access(&phone_node).await, denied());
             assert_eq!(f.access(&mac_node).await, allowed());
-            f.server.auth.revoke_owner("owner").unwrap();
+            f.server.auth.apply_removals(&[(2, auth::Removal::Owner { owner: "owner".into() })]).unwrap();
             assert_eq!(f.access(&mac_node).await, denied());
             f.assert_reloads();
             f.task.abort();
@@ -3553,7 +3164,7 @@ mod http_tests {
             let (mac_node, phone_node) = (IrohKey::new(12), IrohKey::new(13));
             f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
             f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await;
-            f.server.auth.reconcile_device_revocation("owner", "mac", "mac-1", "mac-1").unwrap();
+            f.server.auth.apply_removals(&[(1, auth::Removal::Mac { owner: "owner".into(), mac_id: "mac-1".into() })]).unwrap();
             assert_eq!(f.access(&mac_node).await, denied());
             assert_eq!(f.access(&phone_node).await, denied());
             f.assert_reloads();

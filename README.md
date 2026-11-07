@@ -131,7 +131,7 @@ relay for when your iPhone cannot reach your Mac directly. Access opens little b
 waiting list at [getalondra.com](https://getalondra.com).
 
 On the same Wi-Fi your devices connect directly to your Mac, with no account. The
-server code is in this repository under the same license.
+relay is in this repository; Alondra Cloud's accounts are not.
 
 Either way the work happens on your Mac, and the traffic between your devices is end-to-end
 encrypted.

@@ -32,7 +32,6 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."""
-FONT_LICENSES = ('archivo', 'martian-mono')
 INPUT_LINE = re.compile(r'^<!-- input (\S+) ([0-9a-f]{64}) -->$', re.M)
 
 
@@ -105,16 +104,6 @@ def host_components(root):
     return sorted({(n, v) for n, v, _ in seen.values()})
 
 
-def web_components(root):
-    lock = json.loads((root / 'web/package-lock.json').read_text())
-    result = []
-    for path, meta in lock['packages'].items():
-        if path and not meta.get('dev') and not meta.get('devOptional'):
-            name = path.split('node_modules/')[-1]
-            result.append((name, meta['version'], meta.get('license', ''), meta.get('resolved', '')))
-    return sorted(result)
-
-
 def swift_components(root):
     pins = json.loads((root / 'Package.resolved').read_text())['pins']
     return sorted((p['identity'], p['state'].get('version', ''), p['state']['revision'], p['location']) for p in pins)
@@ -128,10 +117,8 @@ def inputs(root=ROOT):
     return {
         'rust': digest(rust_components(root)),
         'agent-host': digest(f'{n}@{v}' for n, v in host_components(root)),
-        'web': digest(f'{n}@{v}' for n, v, _, _ in web_components(root)),
         'swift': digest(f'{n}@{v}@{r}' for n, v, r, _ in swift_components(root)),
         'node': digest([node_version(root), (root / 'deploy/brew/node/LICENSE').read_text()]),
-        'fonts': digest((root / f'web/app/public/fonts/OFL-{font}.txt').read_text() for font in FONT_LICENSES),
     }
 
 
@@ -205,14 +192,6 @@ def host_entries():
     return entries, anthropic
 
 
-def web_entries():
-    entries = {}
-    for name, version, spdx, url in web_components(ROOT):
-        declared, texts = npm_texts(name, version, url)
-        entries[(name, version)] = (spdx or declared, texts, [])
-    return entries
-
-
 def swift_entries():
     entries = {}
     for identity, version, revision, location in swift_components(ROOT):
@@ -267,12 +246,6 @@ Alondra's source tree never contains it: the build downloads it from npm. Its ow
 
 The Alondra name, logo and app icon are not licensed. ELv2 grants no trademark rights.
 
-## Fonts
-
-The website serves two fonts under the SIL Open Font License 1.1: Archivo and Martian Mono.
-Their license files ship next to them in `web/app/public/fonts`.
-
-{fonts}
 ## Icons and symbols
 
 The app icon, the logo and the favicon are Alondra's own artwork. The apps draw their symbols from
@@ -298,11 +271,6 @@ https://github.com/sbstp/attohttpc.
 Bundled into the Agent SDK host and the Codex host, besides the Anthropic SDK above.
 
 {host}
-## Website packages
-
-Production dependencies of the website (`web`).
-
-{web}
 ## Swift packages
 
 Linked into the iPhone and Mac apps.
@@ -313,12 +281,11 @@ Linked into the iPhone and Mac apps.
 
 def generate():
     host, anthropic = host_entries()
-    fonts = '\n'.join(f"````text\n{(ROOT / f'web/app/public/fonts/OFL-{font}.txt').read_text().strip()}\n````\n" for font in FONT_LICENSES)
     marks = ''.join(f'<!-- input {name} {value} -->\n' for name, value in inputs().items())
     body = HEADER.format(
         anthropic='\n'.join(f"````text\n{t}\n````\n" for t in sorted({texts[0] for _, texts, _ in anthropic.values() if texts})),
-        fonts=fonts, node=node_version(ROOT),
-        rust=render_groups(rust_entries()), host=render_groups(host), web=render_groups(web_entries()), swift=render_groups(swift_entries()),
+        node=node_version(ROOT),
+        rust=render_groups(rust_entries()), host=render_groups(host), swift=render_groups(swift_entries()),
     )
     (ROOT / NOTICES).write_text(marks + '\n' + body)
 

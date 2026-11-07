@@ -11,10 +11,6 @@ filegroup(
         "Cargo.lock",
         "MODULE.bazel",
         "Package.resolved",
-        "web/package.json",
-        "web/package-lock.json",
-        "web/app/public/fonts/OFL-archivo.txt",
-        "web/app/public/fonts/OFL-martian-mono.txt",
     ],
     visibility = ["//tools:__pkg__"],
 )
@@ -40,7 +36,7 @@ exports_files(
 exports_files([".bazelrc"], visibility = ["//tools:__pkg__"])
 
 exports_files(
-    ["docs/architecture/push-fields.md", "web/react-router.config.ts"],
+    ["docs/architecture/push-fields.md"],
     visibility = ["//crates/relay:__pkg__"],
 )
 

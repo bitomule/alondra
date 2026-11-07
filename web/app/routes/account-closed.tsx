@@ -1,2 +1,0 @@
-export function meta() { return [{ title: 'Baja de cuenta · Alondra' }, { name: 'robots', content: 'noindex, nofollow' }]; }
-export default function AccountClosed() { return <section className="page prose"><p className="eyebrow">Cuenta</p><h1>Has solicitado la baja.</h1><p className="lede">El acceso al servicio queda bloqueado cuando se acepta la solicitud. La limpieza de la identidad y los dispositivos continúa en segundo plano.</p><p>Tus archivos y tareas locales no se borran.</p><a className="button" href="/">Ir al inicio</a></section>; }

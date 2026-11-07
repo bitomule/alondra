@@ -9,7 +9,6 @@ own toolchains; install it with `bazelisk` (see
 | Rust crates | `make test` (`bazelisk test //crates/...`) |
 | Apple apps | `bazelisk test --build_tests_only -- //apple/... -//apple/NativeHarness/...` (the plain wildcard builds iOS-only libraries for macOS) |
 | Brew packaging | `python3 -m unittest discover -s deploy/brew/tests` |
-| Web | in `web/`: `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e` |
 
 A new integration test needs a Bazel target, or it does not run.
 

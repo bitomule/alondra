@@ -29,7 +29,7 @@ make build        # bazelisk build //crates/... //apple:AlondraMac
 make test         # bazelisk test //crates/...
 ```
 
-Apple tests, web checks and the rest are in [`docs/running-tests.md`](docs/running-tests.md); how to
+Apple tests and the rest are in [`docs/running-tests.md`](docs/running-tests.md); how to
 build from a clean Mac is in [`docs/building-from-source.md`](docs/building-from-source.md).
 
 ## What a pull request needs
