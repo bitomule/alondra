@@ -4473,6 +4473,87 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
 }
+fn ask_orchestrator_aside(s: &mut DomainState, id: &str) {
+    exec(s, agent(), Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::Orchestrator, body: "Split the follow-up into two tasks?".into(), blocking: true,
+        options: vec![QuestionOption { id: "split".into(), label: "Split it".into(), description: None },
+            QuestionOption { id: "keep".into(), label: "Keep one task".into(), description: None }],
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Decide, "Decide whether to split the follow-up"),
+    }).unwrap();
+}
+fn answer_to_orchestrator(s: &mut DomainState, id: &str) -> Result<CommandOutcome, DomainError> {
+    exec(s, orchestrator(), Command::AnswerQuestion { attachments: vec![], interaction_id: id.into(),
+        option_id: "keep".into(), inputs: BTreeMap::new() })
+}
+fn orchestrator_question_is_settled(s: &DomainState, id: &str) {
+    let q = &s.interactions[&id.into()];
+    assert!(q.withdrawn && !s.open(q), "{id} leaves with its task");
+    assert!(!pending(s, id) && notices(s).is_empty(), "nothing waits on the user, and no notice is made for the orchestrator's question");
+    assert!(s.open_cards(&agent(), Some(&"t".into())).iter().all(|card| card.id.0 != id), "{id} is not an open card of its author");
+    assert!(matches!(&q.payload, InteractionPayload::Question { answer: None, options } if options.len() == 2), "the question and its options stay");
+    assert_eq!(q.body, "Split the follow-up into two tasks?");
+}
+/// Four questions nodes had asked the orchestrator stayed open after their tasks ended: the sweep
+/// only took away what waited on the user, so they kept showing as open and answering one failed
+/// with task_not_active.
+#[test]
+fn a_task_that_ends_done_takes_a_question_to_the_orchestrator_with_it() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    ask_orchestrator_aside(&mut s, "orch");
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    orchestrator_question_is_settled(&s, "orch");
+}
+#[test]
+fn a_cancelled_task_takes_a_question_to_the_orchestrator_once_its_node_is_gone() {
+    let mut s = fixture();
+    ask_orchestrator_aside(&mut s, "orch");
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Cancelled);
+    orchestrator_question_is_settled(&s, "orch");
+}
+/// The state an older daemon left, as the real database holds it: done and cancelled tasks with a
+/// question to the orchestrator nobody answered. The next command takes them away.
+#[test]
+fn questions_to_the_orchestrator_left_on_ended_tasks_by_an_older_daemon_are_taken_away() {
+    for ended in [TaskState::Done, TaskState::Cancelled] {
+        let mut s = fixture();
+        present(&mut s, "final", text());
+        ask_orchestrator_aside(&mut s, "orch");
+        s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
+        left_by_an_older_daemon(&mut s, "t", ended);
+        assert!(s.open(&s.interactions[&"orch".into()]), "{ended:?}: the old state has it open");
+        exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+        orchestrator_question_is_settled(&s, "orch");
+    }
+}
+/// Answering a question that left with its task says it was withdrawn, and changes nothing.
+#[test]
+fn answering_a_question_of_an_ended_task_says_it_was_withdrawn() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    ask_orchestrator_aside(&mut s, "orch");
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
+    let before = s.clone();
+    let refused = answer_to_orchestrator(&mut s, "orch").unwrap_err();
+    assert_eq!(refused.code, "withdrawn", "{refused:?}");
+    assert_eq!(s, before);
+}
+/// What the user already answered stays answered when its task ends.
+#[test]
+fn a_question_answered_before_its_task_ended_keeps_its_answer() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    ask_orchestrator_aside(&mut s, "orch");
+    answer_to_orchestrator(&mut s, "orch").unwrap();
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    let q = &s.interactions[&"orch".into()];
+    assert!(!q.withdrawn && matches!(&q.payload, InteractionPayload::Question { answer: Some(a), .. } if a.option_id == "keep"));
+}
 /// PR #765: “Diseño: instalación guiada” depended on the snapshot fix only to wait before
 /// committing; its PR was accepted and the merge was refused with dependency_not_done.
 #[test]

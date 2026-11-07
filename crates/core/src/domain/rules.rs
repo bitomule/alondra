@@ -2101,6 +2101,15 @@ impl DomainState {
                 InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }
             )
     }
+    /// A question the task left unanswered when it ended: the user's, or the one its node asked the
+    /// orchestrator, which nobody can answer any more.
+    fn left_open(&self, i: &Interaction, t: &TaskId) -> bool {
+        self.unanswered_card(i, t)
+            || (matches!(&i.scope, Scope::Task { task_id } if task_id == t)
+                && Self::asks_the_orchestrator(i)
+                && !i.withdrawn
+                && matches!(i.payload, InteractionPayload::Question { answer: None, .. }))
+    }
     /// The task has a question or request the user has not answered: it neither closes nor ends
     /// with it.
     pub fn unanswered(&self, t: &TaskId) -> bool {
@@ -2239,7 +2248,7 @@ impl DomainState {
     fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
         let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
             .filter(|t| t.state.terminal() && !Self::winding_down(t))
-            .flat_map(|t| self.interactions.values().filter(|i| self.unanswered_card(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
+            .flat_map(|t| self.interactions.values().filter(|i| self.left_open(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
             .collect();
         let stale_notices: Vec<InteractionId> = self.interactions.values()
             .filter(|i| i.author == Author::System && !i.withdrawn && matches!(i.system_card, Some(SystemCard::EndedUnanswered { .. })))
@@ -2252,7 +2261,7 @@ impl DomainState {
         for (task_id, question) in left {
             self.retire(&question);
             let q = &self.interactions[&question];
-            if self.tasks[&task_id].state == TaskState::Cancelled || q.card.kind == CardKind::Review {
+            if self.tasks[&task_id].state == TaskState::Cancelled || q.card.kind == CardKind::Review || q.recipient != Recipient::User {
                 continue;
             }
             let id = InteractionId(format!("{ENDED_UNANSWERED_PREFIX}{}", question.0));
@@ -3954,11 +3963,6 @@ impl DomainState {
                     return refuse("stall_needs_outcome", "interaction_id",
                         "A stopped node is settled with settle_stall and one outcome: instruct (the node gets your instruction) or close (the task ends with your result)");
                 }
-                if let Scope::Task { task_id } = &i.scope
-                    && !self.tasks.get(task_id).is_some_and(Self::winding_down)
-                {
-                    self.active(task_id)?;
-                }
                 let (options, answer) = match &i.payload {
                     InteractionPayload::Question { options, answer }
                     | InteractionPayload::ActionRequest { options, answer } => (options, answer),
@@ -3974,6 +3978,11 @@ impl DomainState {
                 };
                 if i.withdrawn {
                     return fail("withdrawn", "Its author withdrew this question");
+                }
+                if let Scope::Task { task_id } = &i.scope
+                    && !self.tasks.get(task_id).is_some_and(Self::winding_down)
+                {
+                    self.active(task_id)?;
                 }
                 validate_answer(options, option_id, inputs, attachments)?;
                 secret_answer_guard(&i.card, option_id, inputs, attachments)?;
