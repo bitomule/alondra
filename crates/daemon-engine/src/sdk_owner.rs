@@ -1048,6 +1048,33 @@ pub(crate) fn take_if_unowned(domain: &DomainRuntime, task: &TaskId) {
     }
 }
 
+/// How long the gate waits before it tries again to take over a task it found working unowned.
+const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
+
+/// A task whose lifecycle reads a turn at work while no owner of this daemon holds its execution:
+/// its host ended and nobody told the domain, as when an owner stops on a broken connection. It is
+/// taken over, which records the host's end, so a task never reads as running with no node; one
+/// held by a pause waits for it, and is told to go on when the pause ends.
+pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
+    let working: Vec<TaskId> = state.tasks.values().filter(|task| !task.over())
+        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork)))
+        .filter(|task| to_take(domain, state, &task.id))
+        .map(|task| task.id.clone()).collect();
+    let due: Vec<TaskId> = {
+        let mut taken = domain.unowned_takes.lock_or_recover("the tasks taken over unowned");
+        taken.retain(|task, _| working.contains(task));
+        let due: Vec<TaskId> = working.into_iter().filter(|task| taken.get(task).is_none_or(|at| now - at >= UNOWNED_TAKE_EVERY)).collect();
+        for task in &due {
+            taken.insert(task.clone(), now);
+        }
+        due
+    };
+    for task in due {
+        log!("{task} reads as working with no SDK host of its own: one that resumes its session takes it over");
+        retake(domain, task);
+    }
+}
+
 /// The user chose «Try again» on the card of a task whose execution was lost: it is taken over
 /// again, on a thread of its own, as at the daemon's start; another failure puts a new card.
 pub(crate) fn retake(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,false)}

@@ -1134,3 +1134,147 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     assert!(node.prompts().iter().all(|prompt| !prompt.contains("held your next turn")), "{:?}", node.prompts());
     assert!(domain.live.gate.paused(&domain, &node.agent()).is_none());
 }
+
+fn node_pause_card(domain: &DomainRuntime) -> Option<alondra_core::domain::InteractionId> {
+    let state = domain.state().unwrap();
+    state.interactions.values().find(|card| state.node_pause_card(&card.id) && state.open(card)).map(|card| card.id.clone())
+}
+
+fn answer_resume(domain: &DomainRuntime, card: &alondra_core::domain::InteractionId) -> Result<(), String> {
+    let state = domain.state().unwrap();
+    domain.execute(&user(), &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
+        expected_revision: state.revision,
+        command: Command::AnswerQuestion { interaction_id: card.clone(), option_id: "resume".into(), inputs: Default::default(), attachments: vec![] },
+    }, None, || Ok(())).map(drop).map_err(|error| format!("{error:?}"))
+}
+
+/// 6 Nov, t-account-identity-per-profile: the disk fell under its floor while the node's turn ran,
+/// and 30 s later its host's connection broke and its owner stopped. Nothing took the task over
+/// and nothing recorded that its host had ended: it read as running, with no node, for 44 minutes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its_task_running_without_a_node() {
+    const GB: u64 = 1_000_000_000;
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+    assert!(domain.live.gate.hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    node.lose_host();
+    node.gate_look().await;
+    domain.join_retakes();
+    assert!(domain.live.gate.paused(&domain, &node.agent()).is_some(), "the disk still has no room");
+    let agent = AgentId(node.agent());
+    assert!(domain.owns_sdk_host(&agent) || node.lifecycle().activity() != alondra_domain::ActivityView::Working,
+        "the task reads as running with no node: {:?}", node.lifecycle().activity());
+    domain.stop_sdk_owners();
+}
+
+/// 6 Nov: «Resume» on the card of a node the gate held for the disk or the machine answered «no
+/// longer available» while the node was still paused. Every pause card's Resume is taken while
+/// the card is open.
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_on_the_card_of_a_paused_sdk_node_is_taken_while_the_card_is_open() {
+    const GB: u64 = 1_000_000_000;
+    for reason in [Reason::Disk, Reason::Declared { reason: "The build queue is full".into() }, Reason::ByUser] {
+        let mut node = SdkNode::working();
+        let domain = Arc::clone(&node.domain);
+        domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
+        domain.live.machine_watch.measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+        if reason == Reason::ByUser {
+            node.pause();
+        } else {
+            assert!(domain.live.gate.hold_back(&domain, &node.agent(), reason.clone(), alondra_core::now_millis()));
+            interrupt_sdk_node(&domain, &node.agent());
+            node.step_until(SdkNode::turn_ended);
+        }
+        let card = node_pause_card(&domain).unwrap_or_else(|| panic!("{reason:?}: the pause has its card"));
+        assert_eq!(answer_resume(&domain, &card), Ok(()), "{reason:?}: the card's Resume is refused while the node is paused");
+        assert!(domain.live.gate.pauses(&domain).resumed.contains_key(&node.agent()), "{reason:?}: the user's resume waits for a slot");
+    }
+}
+
+/// A turn at work always has an owner of this daemon.
+fn owned_while_working(node: &SdkNode, case: &str) {
+    let activity = node.lifecycle().activity();
+    assert!(node.domain.owns_sdk_host(&AgentId(node.agent())) || activity != alondra_domain::ActivityView::Working,
+        "{case}: the task reads as running with no node");
+}
+
+/// The running and paused states of a node of the Agent SDK, for each pause, with its host lost
+/// during the pause or not: a turn at work always has an owner; while the pause's card is open the
+/// gate holds the pause and the card's Resume is taken; once the pause ends the card goes.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_its_card_resumable() {
+    const GB: u64 = 1_000_000_000;
+    for reason in [Reason::ByUser, Reason::Disk, Reason::Declared { reason: "The build queue is full".into() }] {
+        for host_lost in [false, true] {
+            let case = format!("{reason:?}, host lost: {host_lost}");
+            let mut node = SdkNode::working();
+            let domain = Arc::clone(&node.domain);
+            domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+            domain.live.machine_watch.measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+            match &reason {
+                Reason::ByUser => node.pause(),
+                Reason::Disk => {
+                    assert!(domain.live.gate.hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+                    if !host_lost {
+                        interrupt_sdk_node(&domain, &node.agent());
+                        node.step_until(SdkNode::turn_ended);
+                    }
+                }
+                declared => {
+                    assert!(domain.live.gate.hold_back(&domain, &node.agent(), declared.clone(), alondra_core::now_millis()));
+                    interrupt_sdk_node(&domain, &node.agent());
+                    node.step_until(SdkNode::turn_ended);
+                }
+            }
+            owned_while_working(&node, &case);
+            if host_lost {
+                node.lose_host();
+            }
+            node.gate_look().await;
+            domain.join_retakes();
+            owned_while_working(&node, &case);
+            let card = node_pause_card(&domain).unwrap_or_else(|| panic!("{case}: the pause has its card"));
+            assert!(domain.live.gate.paused(&domain, &node.agent()).is_some(), "{case}: an open pause card is a pause the gate holds");
+            assert_eq!(answer_resume(&domain, &card), Ok(()), "{case}: the card's Resume is taken while it is open");
+
+            domain.live.machine_watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+            node.gate_look().await;
+            domain.join_retakes();
+            assert!(domain.live.gate.paused(&domain, &node.agent()).is_none(), "{case}: the pause ended");
+            assert!(node_pause_card(&domain).is_none(), "{case}: the card of an ended pause is retired");
+            owned_while_working(&node, &case);
+            domain.stop_sdk_owners();
+        }
+    }
+}
+
+/// 6 Nov 07:50: pausing working nodes was refused with invalid_input. The Pause a working node of
+/// the Agent SDK offers carries its revision and is taken; the same id written by hand without it
+/// is no action at all.
+#[tokio::test]
+async fn the_pause_a_working_sdk_node_offers_is_taken_and_one_without_its_revision_is_no_action() {
+    use alondra_core::views::action_id::{ActionId, Verb};
+    let mut node = SdkNode::working();
+    let agent = node.agent();
+    let tasks = {
+        let read = node.domain.read();
+        let live = alondra_core::views::live::LiveSnapshot::default();
+        serde_json::to_string(&alondra_core::views::build("tasks", alondra_core::views::RenderContext {
+            domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
+            lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
+        }).unwrap()).unwrap()
+    };
+    let start = tasks.find(&format!("\"pause:{agent}@")).unwrap_or_else(|| panic!("a working node offers Pause: {tasks}")) + 1;
+    let offered = &tasks[start..start + tasks[start..].find('"').unwrap()];
+    let action = ActionId::parse(offered).unwrap();
+    assert_eq!((action.verb, action.subject.as_str()), (Verb::Pause, agent.as_str()));
+    assert!(ActionId::parse(&format!("pause:{agent}")).is_err(), "an id without its revision is not one the apps send");
+
+    node.domain.live.gate.pause_by_user(&node.domain, &action.subject, alondra_core::now_millis()).unwrap();
+    node.step_until(SdkNode::turn_ended);
+    let card = node_pause_card(&node.domain).expect("the pause has its card");
+    assert_eq!(answer_resume(&node.domain, &card), Ok(()));
+}

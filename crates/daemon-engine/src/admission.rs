@@ -1181,6 +1181,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         crate::pauses::hold_sdk_turn(domain, &session, &paused);
     }
     send_back_stranded(domain, &state, now);
+    crate::sdk_owner::take_working_unowned(domain, &state, now);
     let Some(Key::Task(task)) = head else { return Ok(()) };
     let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());
