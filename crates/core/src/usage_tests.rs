@@ -270,7 +270,9 @@ fn usable(account: &AccountStatus, usage: &[AccountUsage], now: Millis) -> bool 
 fn absolute(account: &AccountStatus, usage: &[AccountUsage], reserve: Share, now: Millis) -> f64 {
     let measured = usage.iter().find(|u| u.account == account.id);
     let weight = f64::from(weight(&account.billing, None).unwrap());
-    weight * own_margin(account.state, measured, reserve, now, TODAY).unwrap_or(1.0)
+    let session_left = measured.and_then(|u| u.current(&WindowKind::Session, now)).map_or(1.0, |session| 1.0 - session.used.fraction());
+    let margin = weight * own_margin(account.state, measured, reserve, now, TODAY).unwrap_or(1.0);
+    if margin > 0.0 { margin * session_left } else { 0.0 }
 }
 
 proptest! {
@@ -290,7 +292,7 @@ proptest! {
     }
 
     #[test]
-    fn by_margin_the_most_absolute_margin_wins_and_the_first_of_equals((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
+    fn by_margin_the_most_absolute_margin_weighed_by_its_session_room_wins_and_the_first_of_equals((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
         let reserve = Share::of(reserve);
         let Some(chosen) = choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY) else { return Ok(()) };
         let position = accounts.iter().position(|account| account.id == chosen).unwrap();
@@ -388,6 +390,22 @@ fn a_full_session_window_hands_new_work_to_the_account_with_room_in_its_own() {
         assert_eq!(choose(&usage(session)), Some("default".into()), "claude-2 at {session} of its session window has less room than default's 64% of its week");
     }
     assert_eq!(choose(&usage(1.0)), Some("default".into()), "claude-2 ran out of its session window");
+}
+
+/// The two accounts as measured on 2026-11-07 at 07:16: default had 76% of its session window and
+/// 30% of its week left, claude-2 51% and 37%. Every launch of the next 45 minutes took claude-2,
+/// whose week had more room, until its session window ran down to 21% while default's was at 71%.
+#[test]
+fn new_work_goes_to_the_account_with_the_most_room_in_its_session_window_and_its_week_together() {
+    let accounts = [status("default", AccountState::SignedIn, AccountBilling::default()), status("claude-2", AccountState::SignedIn, AccountBilling::default())];
+    let usage = |default_session: f64, claude_2_session: f64| [
+        record(None, Provider::Claude, &id("default"), &reading(default_session, 0.70), NOW, TODAY),
+        record(None, Provider::Claude, &id("claude-2"), &reading(claude_2_session, 0.63), NOW, TODAY),
+    ];
+    let choose = |usage: &[AccountUsage]| choose_account(Policy::Margin, Provider::Claude, &accounts, usage, default_reserve(), NOW, TODAY).map(|id| id.to_string());
+    assert_eq!(choose(&usage(0.24, 0.49)), Some("default".into()), "claude-2's session window is twice as used, though its week has more room");
+    assert_eq!(choose(&usage(0.24, 0.10)), Some("claude-2".into()), "claude-2 has the room in both");
+    assert_eq!(choose(&usage(0.60, 0.40)), Some("claude-2".into()), "default's session window is the one running down");
 }
 
 #[test]
