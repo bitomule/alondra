@@ -33,3 +33,7 @@ __pycache__/
 
 # Sandboxes and other local scratch (make e2e-sandbox)
 /.scratch/
+/.bazel-output/
+/.bazelrc.local
+/.bazelrc.local.*
+/.bazel-output-disk.log
