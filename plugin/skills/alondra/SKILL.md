@@ -372,6 +372,41 @@ Pick the tool by what you need:
   proposes as `plan` (its open decisions asked before), and the file, if the user needs it, as an
   attachment.
 
+## Review public content before you deliver
+
+When a delivery holds text or images the public will see (App Store screenshots and
+metadata, store listings, a website, release notes, README prose, UI strings, marketing
+copy), review it yourself before `present_result`. The user is the last reader, never the
+first one.
+
+- Read every image you deliver as an image (Read on the PNG), at the size the public sees it.
+  Do not judge a capture from the code or the template that made it.
+- Check each language on its own terms: spelling, accents, and that language's conventions for
+  capitalization (Spanish headlines and titles take a capital only on the first word and proper
+  names, not on every word), opening and closing marks (¿? ¡!), quotation marks and number
+  formats. Do not carry English conventions into another language.
+- Check that no text is cut off, overlapped or pushed out of its frame, in every language and
+  every device size: the longest translation is the one that breaks.
+- Check the languages agree: the same screen says the same thing in each, and a screen is not
+  missing in one of them.
+- Check that every image you attach loads and shows what its caption says.
+- Say it in the delivery: in `content.body`, a short «Public content review» that names what
+  you looked at (the images and languages) and what you fixed. A delivery with public content
+  and no such line is not ready.
+
+This is your reading, not a rule in code: nothing in Alondra or in a test decides from the
+text itself.
+
+For a delivery with a lot of public content (many languages or screens, a store submission),
+ask a subagent for a second reading with a fresh context: give it only the images and the
+language list, not your conclusions, and tell it to read the images and report problems per
+language. It is worth the cost when the content is a store submission or a launch page, where a
+mistake is public and costly to correct; for a handful of strings or one screen, your own review
+is enough. The subagent supplements your review and never replaces it.
+
+Whether the attachments themselves reach the user (they exist, are attached and open in the
+card) is a delivery guarantee Alondra handles; this section is about their content.
+
 ## Your PR
 
 - A task owns every PR it opens, in any repository. Alondra sees each `gh pr create` you or a
