@@ -1,6 +1,12 @@
 use super::Failed;
 use alondra_core::accounts::{AccountBilling,AccountStatus};
-use std::path::Path;
+use std::path::{Path,PathBuf};
+
+const ACCOUNT:&str="native-account.json";
+const PROOF:&str="native-auth-account.json";
+/// The identity of each node, kept beside its host folders, under the node's name, so the
+/// relaunch that retires a folder, or one that fails right after, cannot take it with it.
+const KEPT:&str="native-identity";
 
 #[derive(Clone,Debug,serde::Serialize,serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -12,9 +18,10 @@ pub(crate) struct NativeAccountIdentity {
     #[serde(skip)]
     native_auth:Option<NativeAuthAccount>,
 }
-#[derive(Clone,Debug,serde::Serialize,serde::Deserialize)]
+#[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 struct NativeAuthAccount{auth_method:String,email:Option<String>,workspace_id:Option<String>}
+fn kept(directory:&Path)->Option<PathBuf>{Some(directory.parent()?.join(KEPT).join(directory.file_name()?))}
 impl NativeAccountIdentity {
     pub(crate) fn can_resume_managed(&self)->bool{self.native_auth.as_ref().is_some_and(|actual|actual.auth_method=="chatgpt" && actual.email.as_ref().is_some_and(|email|!email.trim().is_empty()))}
     pub(crate) fn same_known_email(&self,current:&AccountStatus)->bool{
@@ -32,71 +39,130 @@ impl NativeAccountIdentity {
         else if self.native_identity.as_deref().zip(current.native_identity.as_deref()).is_some_and(|(before,after)|before!=after){Some("identity")}
         else if self.pay_per_use!=matches!(current.billing,AccountBilling::PayPerUse){Some("billing policy")}else{None}
     }
+    fn same_account(&self,other:&Self)->bool{self.email==other.email && self.pay_per_use==other.pay_per_use && self.native_identity==other.native_identity}
+    pub(crate) fn has_proof(&self)->bool{self.native_auth.is_some()}
+    fn files(&self)->Result<Vec<(&'static str,Vec<u8>)>,Failed>{
+        let mut files=vec![(ACCOUNT,serde_json::to_vec(self).map_err(|error|Failed::new(format!("Encoding the native account identity: {error}")))?)];
+        if let Some(actual)=&self.native_auth{files.push((PROOF,serde_json::to_vec(actual).map_err(|error|Failed::new(format!("Encoding the native account proof: {error}")))?));}
+        Ok(files)
+    }
     pub(crate) fn save(directory:&Path,status:Option<&AccountStatus>)->Result<(),Failed>{
         let Some(status)=status else{return Ok(())};
         let email=status.email.as_ref().filter(|email|!email.trim().is_empty() && email.len()<=1024).map(|email|email.trim().to_owned());
         let native_identity=status.native_identity.as_ref().filter(|identity|!identity.is_empty() && identity.len()<=1024).cloned();
-        let identity=Self{email,pay_per_use:matches!(status.billing,AccountBilling::PayPerUse),native_identity,native_auth:None};
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::io::Write;
-        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(directory.join("native-account.json")).map_err(|error|Failed::written(format!("Keeping the native account identity: {error}"), &error))?;
-        let bytes=serde_json::to_vec(&identity).map_err(|error|Failed::new(format!("Encoding the native account identity: {error}")))?;
-        file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing the native account identity: {error}"), &error))?;
-        std::fs::File::open(directory).and_then(|folder|folder.sync_all()).map_err(|error|Failed::written(format!("Syncing the native account folder: {error}"), &error))
+        Self{email,pay_per_use:matches!(status.billing,AccountBilling::PayPerUse),native_identity,native_auth:None}.retain(directory)
     }
     /// The session in `directory` recorded `wrong`, another account's email, because its host ran
-    /// on that account's profile: it takes `status`'s email. Whether it changed anything.
+    /// on that account's profile: it takes `status`'s email, in the host's folder and where it is
+    /// kept. Whether it changed anything.
     pub(crate) fn correct_email(directory:&Path,wrong:&str,status:&AccountStatus)->Result<bool,Failed>{
-        use std::io::Write;use std::os::unix::fs::OpenOptionsExt;
-        let Some(mut identity)=Self::load(directory)? else{return Ok(false)};
-        if !identity.email.as_deref().is_some_and(|email|email.eq_ignore_ascii_case(wrong)){return Ok(false)}
-        identity.email=status.email.as_ref().map(|email|email.trim().to_owned());
-        let bytes=serde_json::to_vec(&identity).map_err(|error|Failed::new(format!("Encoding the corrected native identity: {error}")))?;
-        let staged=directory.join("native-account.json.corrected");
-        match std::fs::remove_file(&staged){Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(Failed::written(format!("Clearing the corrected native identity: {error}"),&error))}
-        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(&staged).map_err(|error|Failed::written(format!("Writing the corrected native identity: {error}"),&error))?;
-        file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing the corrected native identity: {error}"),&error))?;
-        std::fs::rename(&staged,directory.join("native-account.json")).map_err(|error|Failed::written(format!("Replacing the native identity: {error}"),&error))?;
-        std::fs::File::open(directory).and_then(|folder|folder.sync_all()).map_err(|error|Failed::written(format!("Syncing the native account folder: {error}"),&error))?;
-        Ok(true)
+        let mut changed=false;
+        for place in std::iter::once(directory.to_path_buf()).chain(kept(directory)){
+            let Some(mut identity)=Self::read(&place)? else{continue};
+            if !identity.email.as_deref().is_some_and(|email|email.eq_ignore_ascii_case(wrong)){continue}
+            identity.email=status.email.as_ref().map(|email|email.trim().to_owned());
+            let bytes=serde_json::to_vec(&identity).map_err(|error|Failed::new(format!("Encoding the corrected native identity: {error}")))?;
+            replace_private(&place,ACCOUNT,&bytes)?;changed=true;
+        }
+        Ok(changed)
     }
+    /// Writes this identity in a new host's folder, and where it is kept. A file the folder
+    /// already holds with the same identity stays as it is; one with another refuses.
     pub(crate) fn retain(&self,directory:&Path)->Result<(),Failed>{
         use std::io::Write;use std::os::unix::fs::OpenOptionsExt;
-        let mut files=vec![("native-account.json",serde_json::to_vec(self).map_err(|error|Failed::new(format!("Encoding retained native identity: {error}")))?)];
-        if let Some(actual)=&self.native_auth{files.push(("native-auth-account.json",serde_json::to_vec(actual).map_err(|error|Failed::new(format!("Encoding retained native proof: {error}")))?));}
-        for (name,bytes) in files{let mut file=std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(directory.join(name)).map_err(|error|Failed::written(format!("Keeping original native metadata: {error}"), &error))?;file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing original native metadata: {error}"), &error))?;}
-        std::fs::File::open(directory).and_then(|file|file.sync_all()).map_err(|error|Failed::written(format!("Syncing retained native metadata: {error}"), &error))
+        for (name,bytes) in self.files()?{
+            match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(directory.join(name)){
+                Ok(mut file)=>file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing original native metadata: {error}"), &error))?,
+                Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>{
+                    let held=read_private(&directory.join(name),directory)?.and_then(|held|serde_json::from_slice::<serde_json::Value>(&held).ok());
+                    if held!=serde_json::from_slice::<serde_json::Value>(&bytes).ok(){return Err(Failed::new(format!("This node's host folder already holds another account identity ({name})")))}
+                }
+                Err(error)=>return Err(Failed::written(format!("Keeping original native metadata: {error}"), &error)),
+            }
+        }
+        std::fs::File::open(directory).and_then(|file|file.sync_all()).map_err(|error|Failed::written(format!("Syncing retained native metadata: {error}"), &error))?;
+        self.keep(directory)
     }
+    /// Keeps this identity of the node whose host folder is `directory` apart from that folder.
+    pub(crate) fn keep(&self,directory:&Path)->Result<(),Failed>{
+        let Some(place)=kept(directory) else{return Ok(())};
+        if Self::read_observed(&place,alondra_core::accounts::Provider::Codex)?.is_some_and(|held|held.same_account(self) && (self.native_auth.is_none() || held.native_auth==self.native_auth)){return Ok(())}
+        {use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&place).map_err(|error|Failed::written(format!("Keeping the native account identity: {error}"),&error))?;}
+        for (name,bytes) in self.files()?{replace_private(&place,name,&bytes)?;}
+        Ok(())
+    }
+    /// The identity of the node whose host folder is `directory`, from that folder or, when a
+    /// relaunch left it without one, from where it is kept.
     pub(crate) fn load_observed(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
-        let mut identity=Self::load(directory)?;
-        if provider!=alondra_core::accounts::Provider::Codex{return Ok(identity)}
-        let Some(expected)=identity.as_mut() else{return Ok(None)};
-        use std::os::unix::fs::{MetadataExt,OpenOptionsExt};use std::io::Read;
-        let path=directory.join("native-auth-account.json");
-        let before=match std::fs::symlink_metadata(&path){Ok(meta)=>meta,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(identity),Err(error)=>return Err(Failed::new(format!("Reading native account proof: {error}")))};
-        let owner=std::fs::metadata(directory).map_err(|error|Failed::new(format!("Reading native account proof folder: {error}")))?;
-        if !before.is_file() || before.file_type().is_symlink() || before.nlink()!=1 || before.uid()!=owner.uid() || before.mode()&0o777!=0o600 || before.len()>4096{return Err(Failed::new("The native account proof is not private".into()))}
-        let mut file=std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK|libc::O_CLOEXEC).open(path).map_err(|error|Failed::new(format!("Opening native account proof: {error}")))?;
-        let actual=file.metadata().map_err(|error|Failed::new(format!("Checking native account proof: {error}")))?;
-        if before.ino()!=actual.ino() || before.dev()!=actual.dev(){return Err(Failed::new("The native account proof changed while opening".into()))}
-        let mut bytes=vec![];file.by_ref().take(4097).read_to_end(&mut bytes).map_err(|error|Failed::new(format!("Reading native account proof: {error}")))?;
-        if bytes.len()>4096{return Err(Failed::new("The native account proof is too large".into()))}
-        expected.native_auth=Some(serde_json::from_slice(&bytes).map_err(|error|Failed::new(format!("Decoding native account proof: {error}")))?);Ok(identity)
+        let here=Self::read_observed(directory,provider)?;
+        if here.as_ref().is_some_and(|here|here.native_auth.is_some() || provider!=alondra_core::accounts::Provider::Codex){return Ok(here)}
+        let Some(place)=kept(directory) else{return Ok(here)};
+        let there=Self::read_observed(&place,provider)?;
+        Ok(match (here,there){
+            (None,there)=>there,
+            (Some(mut here),Some(there)) if here.same_account(&there)=>{here.native_auth=there.native_auth;Some(here)}
+            (here,_)=>here,
+        })
+    }
+    /// As `load_observed`, and for a node that has no identity in either place, from the folders
+    /// of its ended hosts, when they all agree on it. What it finds is kept for the next time.
+    pub(crate) fn recover(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
+        let found=Self::load_observed(directory,provider)?;
+        if found.as_ref().is_some_and(|found|found.native_auth.is_some() || provider!=alondra_core::accounts::Provider::Codex){return Ok(found)}
+        let (Some(parent),Some(name))=(directory.parent(),directory.file_name().and_then(|name|name.to_str())) else{return Ok(found)};
+        let ended=format!("{name}.ended-");
+        let entries=match std::fs::read_dir(parent){Ok(entries)=>entries,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(found),Err(error)=>return Err(Failed::new(format!("Reading the ended hosts' folders: {error}")))};
+        let mut archived:Vec<Self>=entries.filter_map(Result::ok).filter(|entry|entry.file_name().to_str().is_some_and(|archive|archive.starts_with(&ended)))
+            .filter_map(|entry|Self::read_observed(&entry.path(),provider).ok().flatten())
+            .filter(|archived|found.as_ref().is_none_or(|found|found.same_account(archived))).collect();
+        if archived.iter().any(|archived|archived.native_auth.is_some()){archived.retain(|archived|archived.native_auth.is_some())}
+        let Some(first)=archived.first().cloned() else{return Ok(found)};
+        if archived.iter().any(|other|!other.same_account(&first) || other.native_auth!=first.native_auth){
+            return Err(Failed::new("This node's ended hosts recorded more than one account identity, so Alondra cannot tell which account its session started on".into()))
+        }
+        first.keep(directory)?;
+        Ok(Some(first))
     }
     pub(crate) fn load(directory:&Path)->Result<Option<Self>,Failed>{
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        use std::io::Read;
-        let path=directory.join("native-account.json");
-        let expected=match std::fs::symlink_metadata(&path){Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(error)=>return Err(Failed::new(format!("Reading native account identity: {error}")))};
-        let owner=std::fs::metadata(directory).map_err(|error|Failed::new(format!("Reading native account folder: {error}")))?;
-        if !expected.is_file() || expected.file_type().is_symlink() || expected.nlink()!=1 || expected.uid()!=owner.uid() || expected.mode()&0o777!=0o600 || expected.len()>4096{return Err(Failed::new("The native account identity is not a private file".into()))}
-        let mut file=std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).map_err(|error|Failed::new(format!("Reading native account identity: {error}")))?;
-        let actual=file.metadata().map_err(|error|Failed::new(format!("Checking native account identity: {error}")))?;
-        if expected.ino()!=actual.ino() || expected.dev()!=actual.dev(){return Err(Failed::new("The native account identity changed while opening it".into()))}
-        let mut bytes=vec![];file.by_ref().take(4097).read_to_end(&mut bytes).map_err(|error|Failed::new(format!("Reading native account identity: {error}")))?;
-        if bytes.len()>4096{return Err(Failed::new("The native account identity is too large".into()))}
+        match Self::read(directory)?{Some(identity)=>Ok(Some(identity)),None=>kept(directory).map_or(Ok(None),|place|Self::read(&place))}
+    }
+    fn read_observed(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
+        let mut identity=Self::read(directory)?;
+        if provider!=alondra_core::accounts::Provider::Codex{return Ok(identity)}
+        let Some(expected)=identity.as_mut() else{return Ok(None)};
+        let Some(bytes)=read_private(&directory.join(PROOF),directory).map_err(|error|Failed::new(format!("Reading native account proof: {}",error.why)))? else{return Ok(identity)};
+        expected.native_auth=Some(serde_json::from_slice(&bytes).map_err(|error|Failed::new(format!("Decoding native account proof: {error}")))?);Ok(identity)
+    }
+    fn read(directory:&Path)->Result<Option<Self>,Failed>{
+        let Some(bytes)=read_private(&directory.join(ACCOUNT),directory).map_err(|error|Failed::new(format!("Reading native account identity: {}",error.why)))? else{return Ok(None)};
         serde_json::from_slice(&bytes).map(Some).map_err(|error|Failed::new(format!("Decoding native account identity: {error}")))
     }
+}
+
+/// The bytes of `path`, a private file of `directory`'s owner, or none when it is missing.
+fn read_private(path:&Path,directory:&Path)->Result<Option<Vec<u8>>,Failed>{
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::io::Read;
+    let expected=match std::fs::symlink_metadata(path){Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(None),Err(error)=>return Err(Failed::new(format!("{error}")))};
+    let owner=std::fs::metadata(directory).map_err(|error|Failed::new(format!("its folder: {error}")))?;
+    if !expected.is_file() || expected.file_type().is_symlink() || expected.nlink()!=1 || expected.uid()!=owner.uid() || expected.mode()&0o777!=0o600 || expected.len()>4096{return Err(Failed::new("it is not a private file".into()))}
+    let mut file=std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).map_err(|error|Failed::new(format!("{error}")))?;
+    let actual=file.metadata().map_err(|error|Failed::new(format!("{error}")))?;
+    if expected.ino()!=actual.ino() || expected.dev()!=actual.dev(){return Err(Failed::new("it changed while opening it".into()))}
+    let mut bytes=vec![];file.by_ref().take(4097).read_to_end(&mut bytes).map_err(|error|Failed::new(format!("{error}")))?;
+    if bytes.len()>4096{return Err(Failed::new("it is too large".into()))}
+    Ok(Some(bytes))
+}
+
+/// Replaces `name` in `directory` with `bytes`, a private file, durably.
+fn replace_private(directory:&Path,name:&str,bytes:&[u8])->Result<(),Failed>{
+    use std::io::Write;use std::os::unix::fs::OpenOptionsExt;
+    let staged=directory.join(format!("{name}.staged"));
+    match std::fs::remove_file(&staged){Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(Failed::written(format!("Clearing the staged native identity: {error}"),&error))}
+    let mut file=std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(&staged).map_err(|error|Failed::written(format!("Writing the native identity: {error}"),&error))?;
+    file.write_all(bytes).and_then(|_|file.sync_all()).map_err(|error|Failed::written(format!("Syncing the native identity: {error}"),&error))?;
+    std::fs::rename(&staged,directory.join(name)).map_err(|error|Failed::written(format!("Replacing the native identity: {error}"),&error))?;
+    std::fs::File::open(directory).and_then(|folder|folder.sync_all()).map_err(|error|Failed::written(format!("Syncing the native identity folder: {error}"),&error))
 }
 
 #[cfg(test)]
@@ -150,6 +216,36 @@ mod tests{
         let directory=crate::test_support::Directory::new();std::fs::create_dir_all(&directory).unwrap();let mut account=status();account.native_identity=Some("old-managed-workspace".into());account.billing=AccountBilling::PayPerUse;
         NativeAccountIdentity::save(&directory,Some(&account)).unwrap();let path=directory.join("native-auth-account.json");std::fs::write(&path,br#"{"authMethod":"apikey","email":null,"workspaceId":null}"#).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
         let expected=NativeAccountIdentity::load_observed(&directory,Provider::Codex).unwrap().unwrap();assert!(expected.same_known_email(&account));assert!(!expected.same_known_native_account(Provider::Codex,&account));
+    }
+
+    fn proof(directory:&Path,bytes:&[u8]){use std::os::unix::fs::PermissionsExt;let path=directory.join("native-auth-account.json");std::fs::write(&path,bytes).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();}
+    fn host_folder(root:&Path,name:&str)->PathBuf{use std::os::unix::fs::DirBuilderExt;let path=root.join(name);std::fs::DirBuilder::new().mode(0o700).create(&path).unwrap();path}
+
+    #[test]
+    fn retaining_the_same_identity_again_keeps_it_and_another_one_refuses(){
+        use alondra_core::accounts::Provider;
+        let root=crate::test_support::Directory::new();std::fs::create_dir_all(&root).unwrap();let folder=host_folder(&root,"node");let mut account=status();
+        NativeAccountIdentity::save(&folder,Some(&account)).unwrap();proof(&folder,br#"{"authMethod":"chatgpt","email":"native@example.test","workspaceId":null}"#);
+        let identity=NativeAccountIdentity::load_observed(&folder,Provider::Codex).unwrap().unwrap();
+        identity.retain(&folder).unwrap();NativeAccountIdentity::save(&folder,Some(&account)).unwrap();
+        account.email=Some("other@example.test".into());
+        assert!(NativeAccountIdentity::save(&folder,Some(&account)).is_err(),"a folder never takes another account's identity");
+    }
+
+    #[test]
+    fn a_folder_without_an_identity_reads_the_kept_one_and_ended_hosts_must_agree(){
+        use alondra_core::accounts::Provider;
+        let root=crate::test_support::Directory::new();std::fs::create_dir_all(&root).unwrap();let account=status();
+        let first=host_folder(&root,"node.ended-first");NativeAccountIdentity::save(&first,Some(&account)).unwrap();proof(&first,br#"{"authMethod":"chatgpt","email":"native@example.test","workspaceId":null}"#);
+        std::fs::remove_dir_all(root.join("native-identity")).unwrap();host_folder(&root,"node.ended-empty");let folder=host_folder(&root,"node");
+        assert!(NativeAccountIdentity::load_observed(&folder,Provider::Codex).unwrap().is_none(),"reading never walks the ended hosts");
+        assert!(NativeAccountIdentity::recover(&folder,Provider::Codex).unwrap().unwrap().has_proof());
+        std::fs::remove_dir_all(&first).unwrap();
+        assert!(NativeAccountIdentity::load_observed(&folder,Provider::Codex).unwrap().unwrap().has_proof(),"what it recovered is kept");
+        std::fs::remove_dir_all(root.join("native-identity")).unwrap();
+        for (name,email) in [("node.ended-a","native@example.test"),("node.ended-b","other@example.test")]{let mut other=status();other.email=Some(email.into());let archived=host_folder(&root,name);NativeAccountIdentity::save(&archived,Some(&other)).unwrap();}
+        std::fs::remove_dir_all(root.join("native-identity")).unwrap();
+        assert!(NativeAccountIdentity::recover(&folder,Provider::Codex).is_err(),"ended hosts that disagree prove no identity");
     }
 
     #[test]

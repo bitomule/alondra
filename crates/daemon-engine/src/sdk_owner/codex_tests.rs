@@ -1443,6 +1443,135 @@ async fn a_codex_session_that_never_starts_ends_in_a_card_to_try_again_after_bou
     drop(slice);
 }
 
+fn private_folder(path: &Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+}
+
+fn private_file(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).unwrap().write_all(bytes).unwrap();
+}
+
+fn archive(folder: &Path, name: &str) -> PathBuf {
+    PathBuf::from(format!("{}.ended-{name}", folder.display()))
+}
+
+fn host_runs(folder: &Path) -> bool {
+    matches!(alondra_agent_runtime::owned_host::EndedHost::claim(folder).unwrap(), alondra_agent_runtime::owned_host::Retained::Held)
+}
+
+/// A Codex node is mid-turn when the Mac goes down; `meanwhile` changes its host's folder before
+/// the daemon that comes back takes it over, until the cut turn goes on or the task gets a card.
+async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> (Slice, Arc<DomainRuntime>, Owner, PathBuf, PathBuf) {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    let folder = driver.worker.state_directory().to_path_buf();
+    kill_host_and_daemon(driver);
+    meanwhile(&folder);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let mut changed = restarted.subscribe();
+    let owner = Owner::spawn(slice.take_over(&restarted));
+    let reader = Arc::clone(&restarted);
+    changed.wait_for(|_| turns_started(&reader) == 2 || open_card(&reader, "").is_some()).await.unwrap();
+    (slice, restarted, owner, trace, folder)
+}
+
+/// Its host is stopped before any assertion, so a failure leaves no host running.
+fn assert_went_on_in_its_thread(restarted: &DomainRuntime, mut owner: Owner, trace: &Path) {
+    let card = open_card(restarted, "").map(|card| card.card.title);
+    let turns = turns_started(restarted);
+    let resumed = resumed_threads(trace);
+    owner.stop().unwrap();
+    assert_eq!(card, None, "no card");
+    assert_eq!(turns, 2, "the cut turn goes on in a new one");
+    assert_eq!(resumed.len(), 1, "{resumed:?}");
+    assert_eq!(resumed[0]["params"]["threadId"], "00000000-0000-4000-8000-000000000001", "the same native thread");
+}
+
+// 2026-11-06, 0.3.21, t-kiri-vs-docker-research: with the disk full, a relaunch retired the host's
+// folder and its new host did not start, so the new folder never got the account identity. Every
+// later relaunch read the identity from that folder only, and its host refused to resume: «The
+// original Codex account identity is unavailable. Create a new node».
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_node_whose_relaunch_left_its_folder_without_its_identity_resumes_with_the_kept_one() {
+    let (_slice, restarted, owner, trace, _) = codex_node_restarted_with_its_folder(|folder| {
+        let retired = archive(folder, "retired");
+        std::fs::rename(folder, &retired).unwrap();
+        for name in ["native-account.json", "native-auth-account.json"] { std::fs::remove_file(retired.join(name)).unwrap(); }
+        private_folder(folder);
+    }).await;
+    assert_went_on_in_its_thread(&restarted, owner, &trace);
+}
+
+// The same node, stranded before Alondra kept identities apart: the folder of its first host,
+// which a relaunch retired, still holds it, and one of a host that never started holds none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_node_stranded_without_its_identity_recovers_it_from_its_ended_hosts() {
+    let (_slice, restarted, owner, trace, folder) = codex_node_restarted_with_its_folder(|folder| {
+        std::fs::remove_dir_all(folder.parent().unwrap().join("native-identity")).unwrap();
+        std::fs::rename(folder, archive(folder, "first")).unwrap();
+        private_folder(&archive(folder, "never-started"));
+        private_folder(folder);
+    }).await;
+    let kept = folder.parent().unwrap().join("native-identity").join(folder.file_name().unwrap()).join("native-auth-account.json");
+    assert_went_on_in_its_thread(&restarted, owner, &trace);
+    assert!(kept.exists(), "what it recovered is kept for the next relaunch");
+}
+
+// 2026-11-06, 0.3.21, t-security-audit-cloud: a takeover launched a host and then failed to write
+// the account identity in its folder. The host it launched went on with no owner until another
+// takeover adopted it as if it were a live one.
+#[test]
+fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running() {
+    let slice = Slice::new();
+    configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    let folder = driver.worker.state_directory().to_path_buf();
+    kill_host_and_daemon(driver);
+    std::fs::rename(&folder, archive(&folder, "first")).unwrap();
+    private_folder(&folder);
+    private_file(&folder.join("native-auth-account.json"), br#"{"authMethod":"chatgpt","email":"another@example.test","workspaceId":"another-workspace"}"#);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let taken = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin));
+    let (refused, ran) = (taken.is_err(), host_runs(&folder));
+    drop(taken);
+    if ran { alondra_agent_runtime::owned_host::EndedHost::end_holders(&folder).unwrap(); }
+    assert!(refused, "the new host's folder holds another account's proof");
+    assert!(!ran, "the host the takeover launched was ended");
+}
+
+// A host the domain already counts as ended still runs: its task ended, so no takeover will ever
+// claim it, and without the sweep at the daemon's start it would run for good with no owner.
+#[test]
+fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
+    let slice = Slice::new();
+    configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    let folder = driver.worker.state_directory().to_path_buf();
+    let generation = Slice::lifecycle(&slice.domain).execution().unwrap().generation();
+    let agent = driver.agent().clone();
+    drop(driver);
+    slice.run(&user(), "cancel-ownerless-codex", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&system(), "ended-ownerless-codex", Command::RecordHostEnded { task_id: TASK.into(), generation, resumes: false, ended_work: vec![], by_alondra: true });
+    slice.run(&system(), "gone-ownerless-codex", Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Gone, agent_id: Some(agent) });
+    assert_eq!(Slice::lifecycle(&slice.domain).phase(), alondra_domain::TaskPhase::Cancelled);
+    assert!(host_runs(&folder), "the fixture leaves the host of the cancelled task running with no owner");
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&restarted, &slice.backend);
+    let ran = host_runs(&folder);
+    if ran { alondra_agent_runtime::owned_host::EndedHost::end_holders(&folder).unwrap(); }
+    assert!(!ran, "the daemon that starts ends it");
+}
+
 
 #[test]
 fn stopping_a_codex_host_after_native_death_drains_unread_acceptance_and_final_evidence() {
