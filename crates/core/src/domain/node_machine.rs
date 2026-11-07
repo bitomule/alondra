@@ -21,6 +21,8 @@ pub(crate) const UNHEARD_WHY: &str = "Its turn ended without a result or a quest
 /// keeps: who the pause waits for and since when are in the card's id, so the journal keeps them.
 /// They stay out of Waiting for You: the task's row shows the pause and its Resume button.
 pub const NODE_PAUSE_PREFIX: &str = "node-pause-";
+/// The one option of such a card: the user resumes the node, as with the Resume of its task.
+pub const NODE_PAUSE_RESUME: &str = "resume";
 
 /// The card behind a pause of the gate of the node of `task`, which nobody sees.
 fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, system: SystemCard, revision: u64) -> Interaction {
@@ -35,7 +37,7 @@ fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, system:
         blocking: false,
         subject: None,
         payload: InteractionPayload::Question {
-            options: vec![QuestionOption { id: "resume".into(), label: "Resume".into(), description: None }],
+            options: vec![QuestionOption { id: NODE_PAUSE_RESUME.into(), label: "Resume".into(), description: None }],
             answer: None,
         },
         revision,

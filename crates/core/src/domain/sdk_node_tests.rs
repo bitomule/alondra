@@ -172,6 +172,12 @@ fn agree(s: &DomainState) -> Result<(), String> {
     if slot && s.node_waits_on_user(&agent) {
         return Err(format!("a node that waits on the user holds a slot ({live:?})"));
     }
+    let open_pause_cards: Vec<InteractionId> = s.interactions.values().filter(|i| s.node_pause_card(&i.id) && s.open(i)).map(|i| i.id.clone()).collect();
+    let held_pause_cards: Vec<InteractionId> = s.lifecycle_of(&task.id).map(|lifecycle| lifecycle.cards().into_iter()
+        .filter(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && s.node_pause_card(card)).map(|(card, _)| card.clone()).collect()).unwrap_or_default();
+    if open_pause_cards != held_pause_cards {
+        return Err(format!("open pause cards {open_pause_cards:?} are not the pause the lifecycle holds {held_pause_cards:?}"));
+    }
     let pause = s.node_pause(&agent);
     if s.paused_nodes().contains_key(&agent) != pause.is_some() {
         return Err("the gate's pauses and the node's pause disagree".into());

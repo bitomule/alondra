@@ -74,6 +74,8 @@ pub struct DomainRuntime {
     pub(crate) waiting_for_space: Mutex<std::collections::BTreeSet<TaskId>>,
     /// The tasks whose lost host the user already heard of, until a takeover works again.
     pub(crate) host_losses_told: Mutex<std::collections::BTreeSet<TaskId>>,
+    /// When the gate last took over each task it found working with no owner of this daemon.
+    pub(crate) unowned_takes: Mutex<std::collections::BTreeMap<TaskId, alondra_core::Millis>>,
     /// Makes every write of the capability registry fail as on a full disk.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) full_disk: std::sync::atomic::AtomicBool,
@@ -173,6 +175,7 @@ impl DomainRuntime {
             in_hand: Default::default(),
             waiting_for_space: Default::default(),
             host_losses_told: Default::default(),
+            unowned_takes: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             full_disk: Default::default(),
             handovers: Default::default(),
@@ -910,6 +913,11 @@ impl DomainRuntime {
                 hook(self);
             }
         }
+        if let Some(agent) = self.pause_card_resumed(actor, &envelope.command) {
+            let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
+            authorize()?;
+            return self.resume_paused(&agent);
+        }
         let mut store = self.store.lock_or_exit("the domain store");
         // Lock order is domain store → approval lease. Revocation takes only the
         // exclusive approval lease and never waits for the domain store.
@@ -949,6 +957,27 @@ impl DomainRuntime {
             self.retake_told(&prepared.envelope.command);
         }
         Ok(commit.outcome)
+    }
+
+    /// The user's Resume on the card of a pause the gate holds a node of the Agent SDK in: the
+    /// gate, not the domain, ends that pause, so it is the Resume of the node's task.
+    fn pause_card_resumed(&self, actor: &Actor, command: &Command) -> Option<AgentId> {
+        let (Actor::User { .. }, Command::AnswerQuestion { interaction_id, option_id, .. }) = (actor, command) else { return None };
+        if option_id != NODE_PAUSE_RESUME {
+            return None;
+        }
+        let state = self.state().ok()?;
+        let card = state.interactions.get(interaction_id).filter(|card| state.node_pause_card(&card.id) && state.open(card))?;
+        let Scope::Task { task_id } = &card.scope else { return None };
+        state.tasks.get(task_id)?.agent_id.clone()
+    }
+
+    fn resume_paused(&self, agent: &AgentId) -> Result<CommandOutcome, StoreError> {
+        if !self.live.gate.resume_now(self, &agent.0, alondra_core::now_millis()) {
+            return Err(StoreError::Domain(DomainError::new("conflict", "The node is no longer paused")));
+        }
+        let revision = self.state().map_err(StoreError::Storage)?.revision;
+        Ok(CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![] })
     }
 
     /// «Try again», chosen on the card of a task whose SDK execution could not be taken over and
