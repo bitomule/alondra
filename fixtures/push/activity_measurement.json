@@ -1,0 +1,38 @@
+{
+  "days": 14,
+  "ends": 31,
+  "largest_push_bytes": 981,
+  "mac_reports": {
+    "hours_with_any": 228,
+    "mean_in_those_hours": 7.0,
+    "p95_in_those_hours": 15,
+    "total": 1601,
+    "worst_hour": 20
+  },
+  "mac_reports_repeating_the_last_state": 427,
+  "priority_10": {
+    "hours_with_any": 145,
+    "mean_in_those_hours": 2.6,
+    "p95_in_those_hours": 5,
+    "total": 371,
+    "worst_hour": 6
+  },
+  "pushes": {
+    "hours_with_any": 212,
+    "mean_in_those_hours": 7.3,
+    "p95_in_those_hours": 15,
+    "total": 1556,
+    "worst_hour": 20
+  },
+  "starts": 31,
+  "wait_after_a_report": {
+    "priority_10": {
+      "p95_s": 0,
+      "worst_s": 49
+    },
+    "priority_5": {
+      "p95_s": 27,
+      "worst_s": 54
+    }
+  }
+}
