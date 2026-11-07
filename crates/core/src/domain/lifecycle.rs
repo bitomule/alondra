@@ -1776,7 +1776,7 @@ impl DomainState {
             }),
             Await::Machine | Await::Instruction => false,
             Await::Tasks(tasks) => self.tasks.get(task).is_none_or(|t| !tasks.iter().any(|dependency|
-                t.dependencies.contains(dependency) || t.delivered_dependencies.contains(dependency) || t.stack.iter().any(|s| s.upstream_task == *dependency))),
+                t.dependencies.contains(dependency) || t.waiting_for_tasks.contains(dependency) || t.delivered_dependencies.contains(dependency) || t.stack.iter().any(|s| s.upstream_task == *dependency))),
         }
     }
 
@@ -1838,7 +1838,8 @@ impl DomainState {
         } else if waits_on(&Recipient::Orchestrator) {
             Some(RecordedWait::Orchestrator)
         } else if self.tasks.get(task).is_some_and(|t| !self.unmet_dependencies(t).is_empty()
-            || t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).any(|dep| self.landed(dep) && dep.revision > revision)) {
+            || t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).any(|dep| self.landed(dep) && dep.revision > revision)
+            || t.waiting_for_tasks.iter().filter_map(|dep| self.tasks.get(dep)).any(|dep| Self::task_wait_finished(dep) && dep.revision > revision)) {
             Some(RecordedWait::Tasks)
         } else {
             None
@@ -2637,7 +2638,7 @@ impl EmptyTurn {
 }
 /// What a node is told when its turn ended empty: the first time, Alondra wakes it with this.
 pub const STRANDED_INSTRUCTION: &str = "Nothing is running for your task, and the user still waits for what they sent back on your delivery. Check where you were and go on with it, then present your result again. Whatever you ran in the background ended and will not report back: run again what you still need.";
-pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it.";
+pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, `wait_for_tasks`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it.";
 
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
 pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";

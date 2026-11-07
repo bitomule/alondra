@@ -62,7 +62,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/results", "POST"), ("/tasks/{id}/stack-readiness", "POST"),
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"), ("/tasks/{id}/plan-review", "POST"), ("/tasks/{id}/stall-settlement", "POST"),
-        ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"), ("/tasks/{id}/mcp-wait", "PUT"),
+        ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"), ("/tasks/{id}/mcp-wait", "PUT"), ("/tasks/{id}/task-wait", "PUT"),
         ("/interactions/{id}/answers", "POST"), ("/interactions/{id}/settlement", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
@@ -705,6 +705,19 @@ pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Op
     Some("This task merges automatically: present the pull request as your final result with present_result, and once its checks pass Alondra merges it and tells you; do not merge it yourself.".into())
 }
 
+fn task_wait_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
+    let Command::WaitForTasks { task_id, .. } = command else { return None };
+    let state = domain.state().ok()?;
+    let task = state.tasks.get(task_id)?;
+    Some(if task.waiting_for_tasks.iter().all(|id| task.ended_task_waits.contains_key(id)) {
+        let results: Vec<Landed> = task.ended_task_waits.values().cloned().collect();
+        format!("Every task you named has already ended. Go on with your task; there is nothing to wait for.\n\n{}",
+            dependencies_done_notice(&results, state.branch_update))
+    } else {
+        "Your task now waits for the tasks you named. End your turn; Alondra resumes you with their results when they finish or are cancelled. No question or review card was created.".into()
+    })
+}
+
 async fn resource_command<H: DomainHost>(
     State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -864,6 +877,7 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/stall-settlement") => ("settle_stall", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cleanup") => ("confirm_cleanup", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/post-merge-work") => ("declare_post_merge_work", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/task-wait") => ("wait_for_tasks", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/mcp-wait") => ("wait_for_mcp", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/settlement") => ("settle_suggestion", Some(("interaction_id", interaction?))),
@@ -959,7 +973,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "cleanup"]
             | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"] | ["interactions", _, "clarification"]
             | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
-        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "post-merge-work"] | ["tasks", _, "mcp-wait"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"] | ["tasks", _, "priority"]
+        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "post-merge-work"] | ["tasks", _, "mcp-wait"] | ["tasks", _, "task-wait"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"] | ["tasks", _, "priority"]
             | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
             | ["interactions", _, "subject"] | ["interactions", _, "read-state"]) => true,
         ("PATCH", ["tasks", _]) => true,
@@ -1113,7 +1127,7 @@ async fn execute_command<H: DomainHost>(
             match executed {
                 Ok(outcome) => {
                     let mut answer = json!(outcome);
-                    if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {
+                    if let Some(notice) = task_wait_notice(host.domain(), &envelope.command).or_else(|| auto_merge_notice(host.domain(), &envelope.command)) {
                         answer["notice"] = json!(notice);
                     }
                     Json(answer).into_response()
@@ -1292,6 +1306,56 @@ mod tests {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use sha2::{Digest as _, Sha256};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn task_wait_reply_distinguishes_a_pending_wait_and_survives_reopening_the_store() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = DomainRuntime::open(&home).unwrap();
+        let apply = |actor: Actor, command: Command| {
+            let state = domain.state().unwrap();
+            domain.execute(&actor, &CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+                command_id: format!("step-{}", state.revision).into(), expected_revision: state.revision, command,
+            }, None, || Ok(())).unwrap()
+        };
+        let user = Actor::User { user_id: "fixture".into() };
+        let orchestrator = Actor::Orchestrator { generation: 0 };
+        let node = Actor::Agent { agent_id: "node".into() };
+        apply(Actor::System, Command::RegisterAgent { agent_id: "node".into(), name: "Node".into(), at: 0 });
+        apply(user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        apply(orchestrator.clone(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+        for (id, agent) in [("t", Some("node".into())), ("d", None)] {
+            apply(orchestrator.clone(), Command::CreateTask {
+                task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: agent, review_prs: false,
+                dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+            });
+        }
+        apply(node.clone(), Command::StartTask { task_id: "t".into() });
+        let wait = Command::WaitForTasks { task_id: "t".into(), tasks: BTreeSet::from(["d".into()]) };
+        apply(node, wait.clone());
+        assert!(task_wait_notice(&domain, &wait).unwrap().contains("End your turn"));
+        drop(domain);
+        let domain = DomainRuntime::open(&home).unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
+        let state = domain.state().unwrap();
+        domain.execute(&user, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "cancel-d".into(),
+            expected_revision: state.revision, command: Command::CancelTask { task_id: "d".into() },
+        }, None, || Ok(())).unwrap();
+        if !domain.state().unwrap().tasks[&TaskId::from("d")].state.terminal() {
+            let state = domain.state().unwrap();
+            domain.execute(&Actor::System, &CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "cleanup-d".into(),
+                expected_revision: state.revision, command: Command::RecordTaskCleanup { task_id: "d".into() },
+            }, None, || Ok(())).unwrap();
+        }
+        assert!(task_wait_notice(&domain, &wait).unwrap().contains("Go on with your task"));
+        drop(domain);
+        let domain = DomainRuntime::open(&home).unwrap();
+        assert!(task_wait_notice(&domain, &wait).unwrap().contains("Go on with your task"));
+        assert_eq!(domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Running);
+    }
 
     #[test]
     fn runtime_progress_producer_capability_resolution_and_commit_run_off_worker() {
@@ -1547,7 +1611,7 @@ mod tests {
             ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"), ("POST", "/problems"),
             ("PATCH", "/tasks/t-1"), ("PUT", "/tasks/t-1/assignee"),
             ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"), ("POST", "/tasks/t-1/cleanup"), ("PUT", "/tasks/t-1/post-merge-work"),
-            ("POST", "/schedules"),
+            ("POST", "/schedules"), ("PUT", "/tasks/t-1/task-wait"),
         ] {
             let schedule = crate::domain_schedule_api::approved_mutation_path(method, path, true);
             assert!(is_resource_mutation_path(method, path) || schedule, "{method} {path}");
@@ -1646,6 +1710,10 @@ mod tests {
         assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: Some("release.sh".into()), waits_for: vec![] });
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/post-merge-work", meta.clone()).unwrap();
         assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: None, waits_for: vec![] });
+        let mut wait = meta.clone();
+        wait["tasks"] = json!(["task-2", "task-3"]);
+        let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/task-wait", wait).unwrap();
+        assert_eq!(adapted.command, Command::WaitForTasks { task_id: "task-1".into(), tasks: ["task-2".into(), "task-3".into()].into_iter().collect() });
         let mut mismatched = meta.clone();
         mismatched["task_id"] = json!("other-task");
         mismatched["title"] = json!("Build");

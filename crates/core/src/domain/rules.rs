@@ -340,7 +340,7 @@ the worktree (build caches, temporary files) with the project's own tools, never
 worktree, and call cleanup_done with task_id {task}. If it cannot be done, say so with ask.", task = task.0)
 }
 /// One Task a node waited on, as the node is told once the wait is over.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Landed {
     pub title: String,
     pub cancelled: bool,
@@ -1588,7 +1588,9 @@ impl DomainState {
         let mut restamped = vec![];
         for t in self.tasks.values() {
             let waited = before.tasks.get(&t.id).is_some_and(|b| b.state == TaskState::WaitingDependency);
-            if !waited || t.dependencies.is_empty() {
+            let declared_wait = before.tasks.get(&t.id).is_some_and(|b|
+                b.waiting_for_tasks.iter().any(|id| !b.ended_task_waits.contains_key(id)));
+            if !waited || (t.dependencies.is_empty() && !declared_wait) {
                 continue;
             }
             let landed = self.landed_dependencies(t);
@@ -1600,7 +1602,7 @@ impl DomainState {
                     restamped.push(t.id.clone());
                     post_merge_wait_over_notice(&t.id, &work.reason, &landed)
                 }
-                _ if matches!(t.state, TaskState::Running | TaskState::NeedsYou) && t.final_presentation.is_none() =>
+                _ if matches!(t.state, TaskState::Running | TaskState::NeedsYou) && (t.final_presentation.is_none() || declared_wait) =>
                     dependencies_done_notice(&landed, self.branch_update),
                 _ => continue,
             };
@@ -1623,7 +1625,7 @@ impl DomainState {
         }
         if self.merged_pr(self.task(task)?).is_none() {
             return refuse("invalid_input", "waits_for",
-                "waits_for is for work after your pull request merged; before that, ask the orchestrator to make your task depend on the other one");
+                "waits_for is for work after your pull request merged; before that, declare wait_for_tasks with the other task id");
         }
         let mut waited = BTreeSet::new();
         for target in targets {
@@ -1657,14 +1659,19 @@ impl DomainState {
         }
         Ok(waited)
     }
+    fn task_wait_result(&self, task: &Task) -> Landed {
+        Landed {
+            title: task.title.clone(),
+            cancelled: task.cancelled(),
+            result: task.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).map(|p| result_excerpt(&p.body).text),
+            merged_pr: self.merged_pr(task).map(|pr| format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)),
+        }
+    }
     /// Each Task `t` depends on, with what it left: its final result and its merged PR.
     fn landed_dependencies(&self, t: &Task) -> Vec<Landed> {
-        t.dependencies.iter().filter_map(|dep| self.tasks.get(dep)).map(|dep| Landed {
-            title: dep.title.clone(),
-            cancelled: dep.cancelled(),
-            result: dep.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).map(|p| result_excerpt(&p.body).text),
-            merged_pr: self.merged_pr(dep).map(|pr| format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)),
-        }).collect()
+        t.dependencies.iter().chain(t.waiting_for_tasks.iter().filter(|id| !t.dependencies.contains(*id)))
+            .filter_map(|id| t.ended_task_waits.get(id).cloned().or_else(|| self.tasks.get(id).map(|dep| self.task_wait_result(dep))))
+            .collect()
     }
     /// Moves one phase of an approved plan to a new Task: the points leave the Task that held
     /// them, so each point of the plan stays with exactly one Task.
@@ -1712,6 +1719,7 @@ impl DomainState {
             for d in task
                 .dependencies
                 .iter()
+                .chain(task.waiting_for_tasks.iter().filter(|id| !task.ended_task_waits.contains_key(*id)))
                 .chain(&task.delivered_dependencies)
                 .chain(task.stack.iter().map(|s| &s.upstream_task))
             {
@@ -1736,11 +1744,11 @@ impl DomainState {
                 if blocked == &blocker.id {
                     return fail("dependency_cycle", "A task cannot block itself");
                 }
-                if blocker.dependencies.contains(blocked) {
+                if blocker.dependencies.contains(blocked) || (!blocker.ended_task_waits.contains_key(blocked) && blocker.waiting_for_tasks.contains(blocked)) {
                     return fail("dependency_cycle", "A task cannot block one it waits for to be done");
                 }
                 let blocked_task = self.task(blocked)?;
-                if blocked_task.dependencies.contains(&blocker.id) || blocked_task.delivered_dependencies.contains(&blocker.id) {
+                if blocked_task.dependencies.contains(&blocker.id) || (!blocked_task.ended_task_waits.contains_key(&blocker.id) && blocked_task.waiting_for_tasks.contains(&blocker.id)) || blocked_task.delivered_dependencies.contains(&blocker.id) {
                     return fail("dependency_cycle", "A task cannot block one that depends on it: a reviewer depends on the task it reviews, never the other way round");
                 }
             }
@@ -1803,6 +1811,11 @@ impl DomainState {
         self.open_prs(t).find(|pr| !targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, .. } if *pr_id == pr.id)))
     }
     pub(super) fn waits_are_over(&self, t: &Task) -> Result<()> {
+        for waited in t.waiting_for_tasks.iter().filter(|id| !t.ended_task_waits.contains_key(*id)) {
+            if !Self::task_wait_finished(self.task(waited)?) {
+                return fail("dependency_not_done", "A task the node waits for has not ended");
+            }
+        }
         for dep in &t.dependencies {
             if !self.landed(self.task(dep)?) {
                 return fail("dependency_not_done", "Objective dependency is not done");
@@ -1830,16 +1843,20 @@ impl DomainState {
             .map(|dep| self.tasks.get(dep).map_or_else(|| dep.0.clone(), |d| d.title.clone()))
             .collect()
     }
+    pub(super) fn task_wait_finished(task: &Task) -> bool {
+        task.state.terminal()
+    }
     /// The tasks `t` still waits on, by id.
     pub fn unmet_dependency_ids<'a>(&'a self, t: &'a Task) -> Vec<&'a TaskId> {
         let undone = t.dependencies.iter().filter(|dep| self.tasks.get(*dep).is_none_or(|d| !self.landed(d)));
         let undelivered = t.delivered_dependencies.iter()
             .filter(|dep| self.tasks.get(*dep).is_none_or(|d| d.final_presentation.is_none() || d.state == TaskState::Cancelled));
         let upstream = t.stack.iter().map(|s| &s.upstream_task).filter(|_| self.stack_ready(t).is_err());
-        undone.chain(undelivered).chain(upstream).collect()
+        undone.chain(t.waiting_for_tasks.iter().filter(|dep| !t.ended_task_waits.contains_key(*dep) && self.tasks.get(*dep).is_none_or(|d| !Self::task_wait_finished(d))))
+            .chain(undelivered).chain(upstream).collect()
     }
     /// What a node is told when it presents a plan while its Task waits for others: the plan is
-    /// not reviewed, and only the orchestrator ends a wait.
+    /// not reviewed while the recorded wait remains open.
     pub fn plan_while_waiting(&self, task: &TaskId) -> Option<String> {
         let waited = self.waited_tasks(task);
         (!waited.is_empty()).then(|| plan_while_waiting_notice(&waited))
@@ -2522,6 +2539,7 @@ impl DomainState {
             Command::AssignTask { task_id, .. }
             | Command::RetitleTask { task_id, .. }
             | Command::SetDependencies { task_id, .. }
+            | Command::WaitForTasks { task_id, .. }
             | Command::StartTask { task_id }
             | Command::CreateDocument { task_id, .. }
             | Command::ReviseDocument { task_id, .. }
@@ -2704,6 +2722,17 @@ impl DomainState {
             }
         }
         next.resume_waiting_nodes(self, &mut effects);
+        let waited: BTreeSet<TaskId> = next.tasks.values().flat_map(|t| t.waiting_for_tasks.iter()
+            .filter(move |id| !t.ended_task_waits.contains_key(*id)).cloned()).collect();
+        let completed: BTreeMap<TaskId, Landed> = waited.iter().filter_map(|id| next.tasks.get(id))
+            .filter(|t| Self::task_wait_finished(t)).map(|t| (t.id.clone(), next.task_wait_result(t))).collect();
+        for task in next.tasks.values_mut() {
+            for id in &task.waiting_for_tasks {
+                if let Some(result) = completed.get(id) {
+                    task.ended_task_waits.entry(id.clone()).or_insert_with(|| result.clone());
+                }
+            }
+        }
         next.wrap_up_step(&mut effects);
         next.settle_nodes();
         // Compacting an ended task changes nothing a screen shows of it, so the buttons it already
@@ -3339,7 +3368,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -3416,6 +3445,30 @@ impl DomainState {
                 nonempty(title)?;
                 self.task(task_id)?;
                 self.tasks.get_mut(task_id).unwrap().title = title.clone();
+            }
+            Command::WaitForTasks { task_id, tasks } => {
+                let task = self.assigned(actor, task_id)?;
+                self.not_ending(task_id)?;
+                if let Some(presentation) = task.final_presentation.as_ref().and_then(|id| self.interactions.get(id))
+                    && self.handed_back(presentation).is_none() {
+                    return refuse("conflict", "task_id", "Your final result is still under review: withdraw it before declaring a task wait");
+                }
+                if tasks.is_empty() {
+                    return refuse("invalid_input", "tasks", "Name at least one task to wait for");
+                }
+                for other in tasks {
+                    id(&other.0)?;
+                    self.task(other)?;
+                    if other == task_id {
+                        return refuse("dependency_cycle", "tasks", "A task cannot wait for itself");
+                    }
+                }
+                let ended = tasks.iter().filter_map(|id| self.tasks.get(id).filter(|task| Self::task_wait_finished(task))
+                    .map(|task| (id.clone(), self.task_wait_result(task)))).collect();
+                let task = self.tasks.get_mut(task_id).unwrap();
+                task.waiting_for_tasks = tasks.clone();
+                task.ended_task_waits = ended;
+                self.dependency_graph()?;
             }
             Command::SetDependencies {
                 task_id,

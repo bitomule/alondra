@@ -589,3 +589,240 @@ fn the_stop_of_a_task_with_a_long_title_reaches_no_phone() {
     let need = s.interactions[&InteractionId::from(case.as_str())].card.effective_title();
     assert!(need.starts_with("“simpool: un") && need.chars().count() <= CardSpec::TITLED_NEED_MAX, "{need}");
 }
+
+fn declare_task_wait(s: &mut DomainState, tasks: &[&str]) -> CommandOutcome {
+    must(s, node("a"), Command::WaitForTasks {
+        task_id: "t".into(), tasks: tasks.iter().map(|id| TaskId::from(*id)).collect(),
+    })
+}
+
+fn cancel_wait_target(s: &mut DomainState, target: &str) -> CommandOutcome {
+    let cancelled = must(s, user(), Command::CancelTask { task_id: target.into() });
+    if s.tasks[&TaskId::from(target)].state.terminal() {
+        return cancelled;
+    }
+    assert!(!told(&cancelled), "cancellation has not finished its cleanup yet");
+    must(s, Actor::System, Command::RecordTaskCleanup { task_id: target.into() })
+}
+
+#[test]
+fn a_node_declares_a_task_wait_without_a_question_or_review_card() {
+    let mut s = world();
+    task(&mut s, "d", Some("b"));
+    task(&mut s, "e", None);
+    must(&mut s, node("b"), Command::StartTask { task_id: "d".into() });
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    let before = s.interactions.len();
+    let declared = declare_task_wait(&mut s, &["d", "e"]);
+    assert_eq!(s.interactions.len(), before);
+    assert!(!told(&declared));
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
+    let ended = end_turn(&mut s, "turn-1");
+    assert!(!notified(&ended, &card));
+    awaits(&s, &card, alondra_domain::Await::Tasks(alondra_domain::Several::new(["d".into(), "e".into()]).unwrap()));
+    assert!(pending(&s).is_empty());
+    shows_waiting(&s, "Task d");
+    assert_aggregate_rules(&s);
+
+    let cancelled = cancel_wait_target(&mut s, "e");
+    assert!(!told(&cancelled), "the other task is still open");
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
+    must(&mut s, node("b"), Command::PresentResult {
+        attachments: vec![], task_id: "d".into(), interaction_id: "d1".into(), body: "The audit found no issue".into(), is_final: true, nothing_to_review: false,
+        targets: vec![DeliveryTarget::Text { text: "The audit found no issue".into() }], checklist: vec![], card: CardSpec::delivery("Review the result", &[], true),
+    });
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "d1".into(), targets: vec![DeliveryTarget::Text { text: "The audit found no issue".into() }] });
+    must(&mut s, node("b"), Command::ConfirmCleanup { task_id: "d".into(), discard: Vec::new() });
+    let done = must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "d".into(), end: NodeEnd::Closed, agent_id: Some("b".into()) });
+    assert!(told(&done));
+    let messages: Vec<_> = done.effects.iter().filter_map(|e| match e {
+        DomainEffect::NotifyAgent { agent_id, message, .. } if agent_id.0 == "a" => Some(message), _ => None,
+    }).collect();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("The audit found no issue") && messages[0].contains("Task e"));
+    assert!(pending(&s).is_empty());
+    resumes(&mut s, &card);
+}
+
+#[test]
+fn cancellation_ends_a_declared_wait_and_tells_the_node_once() {
+    let mut s = world();
+    task(&mut s, "d", Some("b"));
+    must(&mut s, node("b"), Command::StartTask { task_id: "d".into() });
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    declare_task_wait(&mut s, &["d"]);
+    end_turn(&mut s, "turn-1");
+    let cancelled = must(&mut s, user(), Command::CancelTask { task_id: "d".into() });
+    assert!(!told(&cancelled));
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
+    let ended = must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "d".into(), end: NodeEnd::Closed, agent_id: Some("b".into()) });
+    assert!(told(&ended));
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert!(pending(&s).is_empty());
+    let again = must(&mut s, Actor::System, Command::ReviewWaits);
+    assert!(!told(&again));
+    resumes(&mut s, &card);
+}
+
+#[test]
+fn already_ended_tasks_do_not_hold_a_declared_wait() {
+    for cancelled in [false, true] {
+        let mut s = world();
+        task(&mut s, "d", Some("b"));
+        must(&mut s, node("b"), Command::StartTask { task_id: "d".into() });
+        if cancelled {
+            must(&mut s, user(), Command::CancelTask { task_id: "d".into() });
+        } else {
+            super::lifecycle_tests::deliver(&mut s, "d", "b", "d1");
+            must(&mut s, user(), Command::AcceptDelivery {
+                presentation_id: "d1".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }],
+            });
+        }
+        if !cancelled {
+            must(&mut s, node("b"), Command::ConfirmCleanup { task_id: "d".into(), discard: vec![] });
+        }
+        must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "d".into(), end: NodeEnd::Closed, agent_id: Some("b".into()) });
+        sdk_turn(&mut s, "t", "a");
+        let declared = declare_task_wait(&mut s, &["d"]);
+        assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+        assert!(!told(&declared));
+        assert!(s.unmet_dependency_ids(&s.tasks[&TaskId::from("t")]).is_empty());
+    }
+}
+
+#[test]
+fn a_declared_task_wait_survives_a_daemon_restart_and_ends_durably_once() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    sdk_turn(&mut s, "t", "a");
+    declare_task_wait(&mut s, &["d"]);
+    end_turn(&mut s, "turn-1");
+    let saved = serde_json::to_vec(&s).unwrap();
+    let mut loaded: DomainState = serde_json::from_slice(&saved).unwrap();
+    loaded.derive_loaded_states();
+    assert_eq!(loaded.tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
+    assert!(loaded.ended_waits().is_empty());
+    // A completed dependency observed when opening the domain must still be saved and announced.
+    loaded.tasks.get_mut(&TaskId::from("d")).unwrap().state = TaskState::Done;
+    loaded.derive_loaded_states();
+    assert_eq!(loaded.ended_waits(), vec![TaskId::from("t")]);
+    let resumed = must(&mut loaded, Actor::System, Command::ReviewWaits);
+    assert!(told(&resumed));
+    let mut reopened: DomainState = serde_json::from_slice(&serde_json::to_vec(&loaded).unwrap()).unwrap();
+    reopened.derive_loaded_states();
+    assert!(reopened.ended_waits().is_empty());
+    assert!(!told(&must(&mut reopened, Actor::System, Command::ReviewWaits)));
+}
+
+#[test]
+fn only_the_assigned_node_declares_a_nonempty_acyclic_task_wait() {
+    let mut s = world();
+    task(&mut s, "d", Some("b"));
+    sdk_turn(&mut s, "t", "a");
+    for actor in [user(), orchestrator(), node("b")] {
+        super::lifecycle_tests::refused_unchanged(&mut s, actor, Command::WaitForTasks { task_id: "t".into(), tasks: BTreeSet::from(["d".into()]) });
+    }
+    for tasks in [BTreeSet::new(), BTreeSet::from(["missing".into()]), BTreeSet::from(["t".into()])] {
+        super::lifecycle_tests::refused_unchanged(&mut s, node("a"), Command::WaitForTasks { task_id: "t".into(), tasks });
+    }
+    declare_task_wait(&mut s, &["d"]);
+    super::lifecycle_tests::refused_unchanged(&mut s, node("b"), Command::WaitForTasks { task_id: "d".into(), tasks: BTreeSet::from(["t".into()]) });
+}
+
+#[test]
+fn a_completed_task_wait_stays_closed_when_a_named_task_is_reopened() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    declare_task_wait(&mut s, &["d"]);
+    end_turn(&mut s, "turn-1");
+    let cancelled = cancel_wait_target(&mut s, "d");
+    assert!(told(&cancelled));
+    resumes(&mut s, &card);
+    must(&mut s, user(), Command::ReopenTask { task_id: "d".into() });
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert!(s.tasks[&TaskId::from("t")].ended_task_waits.contains_key(&TaskId::from("d")));
+    assert!(s.unmet_dependency_ids(&s.tasks[&TaskId::from("t")]).is_empty());
+}
+
+#[test]
+fn tasks_saved_before_task_waits_decode_without_a_wait() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    let mut value = serde_json::to_value(&s.tasks[&TaskId::from("d")]).unwrap();
+    value.as_object_mut().unwrap().remove("waiting_for_tasks");
+    value.as_object_mut().unwrap().remove("ended_task_waits");
+    let task: Task = serde_json::from_value(value).unwrap();
+    assert!(task.waiting_for_tasks.is_empty());
+    assert!(task.ended_task_waits.is_empty());
+}
+
+#[test]
+fn each_ended_target_stays_satisfied_while_other_targets_are_still_open() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    task(&mut s, "e", None);
+    let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
+    declare_task_wait(&mut s, &["d", "e"]);
+    end_turn(&mut s, "turn-1");
+    assert!(!told(&cancel_wait_target(&mut s, "d")));
+    must(&mut s, user(), Command::ReopenTask { task_id: "d".into() });
+    let ended = cancel_wait_target(&mut s, "e");
+    assert!(told(&ended));
+    assert!(ended.effects.iter().any(|effect| matches!(effect,
+        DomainEffect::NotifyAgent { agent_id, message, .. } if agent_id.0 == "a" && message.contains("It was cancelled"))));
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert!(pending(&s).is_empty());
+    resumes(&mut s, &card);
+}
+
+#[test]
+fn waiting_on_an_ended_target_creates_no_false_dependency_cycle() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    task(&mut s, "e", None);
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, orchestrator(), Command::SetDependencies {
+        task_id: "d".into(), dependencies: BTreeSet::from(["t".into()]), stack: None,
+    });
+    cancel_wait_target(&mut s, "d");
+    declare_task_wait(&mut s, &["d", "e"]);
+    assert_eq!(s.unmet_dependency_ids(&s.tasks[&TaskId::from("t")]), vec![&TaskId::from("e")]);
+}
+
+#[test]
+fn cancelling_the_waiting_task_never_resumes_it_when_its_targets_end() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    sdk_turn(&mut s, "t", "a");
+    declare_task_wait(&mut s, &["d"]);
+    end_turn(&mut s, "turn-1");
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let ended = cancel_wait_target(&mut s, "d");
+    assert!(!told(&ended));
+    assert!(s.tasks[&TaskId::from("t")].cancelled());
+}
+
+#[test]
+fn a_task_working_on_requested_changes_resumes_after_its_declared_wait() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    super::lifecycle_tests::delivered_through_the_sdk(&mut s, Some(Instruction::Changes));
+    declare_task_wait(&mut s, &["d"]);
+    let card = InteractionId::from(format!("{TURN_ENDED_PREFIX}t-1-turn-2").as_str());
+    end_turn(&mut s, "turn-2");
+    assert!(pending(&s).is_empty());
+    let ended = cancel_wait_target(&mut s, "d");
+    assert!(told(&ended));
+    resumes(&mut s, &card);
+}
+
+#[test]
+fn a_final_result_under_review_is_not_silently_turned_into_a_task_wait() {
+    let mut s = world();
+    task(&mut s, "d", None);
+    super::lifecycle_tests::delivered_through_the_sdk(&mut s, None);
+    assert_eq!(super::lifecycle_tests::refused_unchanged(&mut s, node("a"), Command::WaitForTasks {
+        task_id: "t".into(), tasks: BTreeSet::from(["d".into()]),
+    }), "conflict");
+}

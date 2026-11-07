@@ -1,4 +1,4 @@
-use super::{SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, NodeMcp, ScheduleState, TaskEnding};
+use super::{SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, Landed, NodeMcp, ScheduleState, TaskEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -144,6 +144,12 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub opened_prs: BTreeSet<OpenedPr>,
     pub dependencies: BTreeSet<TaskId>,
+    /// Tasks the node declared it waits for, until they finish or are cancelled.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub waiting_for_tasks: BTreeSet<TaskId>,
+    /// Satisfied targets stay closed even if a named task is reopened.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ended_task_waits: BTreeMap<TaskId, Landed>,
     /// Tasks this one starts after, as soon as they make their final delivery.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub delivered_dependencies: BTreeSet<TaskId>,
