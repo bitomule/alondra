@@ -274,12 +274,27 @@ pub fn options_at(home: &Path) -> Result<OptionsFile> {
     }
 }
 
-fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
+fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
+    let seconds = at.div_euclid(1000) as libc::time_t;
+    let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
+    if unsafe { libc::gmtime_r(&seconds, &mut date) }.is_null() {
+        anyhow::bail!("scheduled task date is outside the supported calendar");
+    }
+    let date = format!("{:04}-{:02}-{:02}", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday);
+    let suffix = crate::auth::random_hex(16);
+    let title = crate::launch_worktree::slug(title);
+    // Reserve the complete identity suffix before the worktree's 64-byte limit.
+    let budget = 64_usize.saturating_sub(4 + date.len() + suffix.len());
+    let title = title.chars().take(budget).collect::<String>();
+    Ok(format!("t-{}-{date}-{suffix}", title.trim_end_matches('-')))
+}
+
+fn request_task(snapshot: &ScheduleDefinitionSnapshot, at: i64) -> Result<(Request, Task)> {
     let request_id: RequestId = format!("r-{}", crate::auth::random_hex(16)).into();
     let request = Request::new(request_id.clone(), snapshot.text.clone());
     let task = Task {
         provider: Default::default(), selection: None, pending_selection: None,
-        id: format!("t-{}", crate::auth::random_hex(16)).into(),
+        id: scheduled_task_name(&snapshot.title, at)?.into(),
         request_id,
         agent_id: None,
         title: snapshot.title.clone(),
@@ -298,7 +313,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         model: None,
         delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
     };
-    (request, task)
+    Ok((request, task))
 }
 
 fn fail_run(domain: &DomainRuntime, run_id: &ScheduleRunId, reason: String) -> Result<()> {
@@ -339,14 +354,15 @@ fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId) -> 
         let root = file.projects_root(&crate::options::user_home());
         prepare_intent(&run.schedule_id, run_id, snapshot, &file, &root).map_err(anyhow::Error::msg)
     })();
-    let launch = match prepared {
+    let mut launch = match prepared {
         Ok(launch) => launch,
         Err(error) => {
             fail_run(domain, run_id, error.to_string())?;
             return Ok(());
         }
     };
-    let (mut request, task) = request_task(snapshot);
+    let (mut request, task) = request_task(snapshot, run.claimed_at.context("claimed Run has no timestamp")?)?;
+    launch.name = format!("scheduled/{}", task.id.0);
     request.auto_merge = serde_json::from_str::<Resolved>(&launch.options_json)
         .is_ok_and(|resolved| resolved.auto_merge);
     let sent = execute_system(
@@ -949,6 +965,83 @@ mod tests {
         assert!(after_time_zone_change[0].next_run.unwrap() > 1_000_000_000_000);
     }
 
+    #[test]
+    fn scheduled_names_are_readable_unique_and_persisted() {
+        let fixture = Fixture::new();
+        fixture.claim("readable");
+        finish_claim(&fixture.domain, &fixture.home, &"readable".into()).unwrap();
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("readable")];
+        let task = run.task_id.as_ref().unwrap();
+        assert!(task.0.starts_with("t-review-"), "{}", task.0);
+        assert_eq!(run.launch.as_ref().unwrap().intent.name, format!("scheduled/{}", task.0));
+        assert_eq!(crate::launch_worktree::slug(&task.0), task.0);
+        finish_claim(&fixture.domain, &fixture.home, &"readable".into()).unwrap();
+        assert_eq!(fixture.domain.state().unwrap().schedule.runs[&run.id], *run);
+        fixture.claim("another");
+        finish_claim(&fixture.domain, &fixture.home, &"another".into()).unwrap();
+        assert_ne!(fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("another")].task_id.as_ref(), Some(task));
+    }
+
+    #[test]
+    fn scheduled_names_keep_their_suffix_for_long_and_non_ascii_titles() {
+        for title in ["Weekly review ".repeat(8), "Revisión semanal".into(), "🎉 !!!".into()] {
+            let fixture = Fixture::new();
+            let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+            schedule.title = title;
+            schedule.revision += 1;
+            execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+            fixture.claim("title");
+            finish_claim(&fixture.domain, &fixture.home, &"title".into()).unwrap();
+            let state = fixture.domain.state().unwrap();
+            let task = state.schedule.runs[&ScheduleRunId::from("title")].task_id.as_ref().unwrap();
+            assert!(task.0.len() <= 64);
+            assert_eq!(crate::launch_worktree::slug(&task.0), task.0);
+            assert!(task.0.split('-').count() >= 6, "title, UTC date and unique suffix: {}", task.0);
+            assert_eq!(task.0.rsplit('-').next().unwrap().len(), 32);
+        }
+    }
+
+    #[test]
+    fn scheduled_name_uses_the_claims_utc_date() {
+        let name = scheduled_task_name("Weekly review", 1_783_036_800_000).unwrap();
+        assert!(name.starts_with("t-weekly-review-2026-07-03-"), "{name}");
+        assert_eq!(scheduled_task_name("🎉", 0).unwrap().split('-').take(5).collect::<Vec<_>>(), ["t", "node", "1970", "01", "01"]);
+    }
+
+    #[tokio::test]
+    async fn existing_scheduled_identity_survives_reopening_and_schedule_edits() {
+        let fixture = Fixture::new();
+        let project = fixture.in_project("LegacyApp");
+        let old_slug = "t-a245e78abcdef";
+        let workplace = crate::launch_worktree::isolate(&project, old_slug, None, None).await.unwrap();
+        let old_path = project.join(".claude/worktrees").join(old_slug).canonicalize().unwrap();
+        assert_eq!(workplace.dir().canonicalize().unwrap(), old_path);
+        fixture.claim("legacy");
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("legacy")];
+        let snapshot = run.definition_snapshot.as_ref().unwrap();
+        let (request, mut task) = request_task(snapshot, 0).unwrap();
+        task.id = "t-a245e78abcdef".into();
+        let file = options_at(&fixture.home).unwrap();
+        let launch = prepare_intent(&run.schedule_id, &run.id, snapshot, &file, &fixture.root.join("projects")).unwrap();
+        execute_system(&fixture.domain, Command::RecordScheduleRunSent {
+            run_id: run.id.clone(), request, task, launch, finished_at: alondra_core::now_millis(),
+        }).unwrap();
+        let saved = fixture.domain.state().unwrap().schedule.runs[&run.id].clone();
+        let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&run.schedule_id].clone();
+        schedule.title = "Changed title".into();
+        schedule.revision += 1;
+        execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+        let reopened = DomainRuntime::open(&fixture.home).unwrap();
+        finish_claim(&reopened, &fixture.home, &run.id).unwrap();
+        assert_eq!(reopened.state().unwrap().schedule.runs[&run.id], saved);
+        assert_eq!(old_path.canonicalize().unwrap(), old_path);
+        let branch = std::process::Command::new("git").arg("-C").arg(&old_path).args(["branch", "--show-current"]).output().unwrap();
+        assert!(branch.status.success());
+        assert_eq!(String::from_utf8(branch.stdout).unwrap().trim(), format!("worktree-{old_slug}"));
+    }
+
     pub struct Fixture {
         root: crate::test_support::Directory,
         home: PathBuf,
@@ -1076,7 +1169,7 @@ mod tests {
         let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
         let task = run.task_id.clone().unwrap();
         let agent = state.tasks[&task].agent_id.clone().expect("the task is its SDK node's");
-        assert_eq!(state.agents[&agent].name, "scheduled/schedule-run-1");
+        assert_eq!(state.agents[&agent].name, format!("scheduled/{}", task.0));
         assert_eq!(sdk.options(&agent.0).disallowed_tools, ["Bash"], "the Request's policy is kept for a resumed session");
         sdk.until_answered(&task.0).await;
         let starts = sdk.starts();
@@ -1086,6 +1179,9 @@ mod tests {
             project.join(".claude/worktrees").join(crate::launch_worktree::slug(&task.0)).canonicalize().unwrap(),
             "a scheduled node works in a worktree of its own, never the main checkout"
         );
+        let branch = std::process::Command::new("git").arg("-C").arg(starts[0]["cwd"].as_str().unwrap()).args(["branch", "--show-current"]).output().unwrap();
+        assert!(branch.status.success());
+        assert_eq!(String::from_utf8(branch.stdout).unwrap().trim(), format!("worktree-{}", task.0));
         assert!(sdk.flag("--disallowedTools").is_some_and(|tools| tools.contains("Bash")), "{:?}", sdk.args());
         let prompts = sdk.prompts();
         assert_eq!(prompts.len(), 1, "{prompts:?}");
