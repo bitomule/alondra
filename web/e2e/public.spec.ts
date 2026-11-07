@@ -114,6 +114,9 @@ test('the security copy says what the service sees and what it never receives, a
  expect(text).toContain('what alondra cloud never sees');
  expect(text).toContain('what alondra cloud sees');
  expect(text).toContain('the network addresses of both ends, when they talk and how much they send');
+ expect(text).toContain('apple sees that a notification was sent to a device and when');
+ expect(text).toContain('identifiers of the mac and the device, the request identifier, the kind of message and its expiry');
+ expect(text).toContain('headers for up to four macs');
  expect(text).toContain('six-character code');
  expect(text).toContain('revoke it in two places');
  expect(text).not.toContain('measure what it costs');

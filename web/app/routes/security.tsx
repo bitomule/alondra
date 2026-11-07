@@ -35,7 +35,7 @@ export default function Security() {
         <li>Your web session while you are signed in to this site, with its sign-in tokens sealed.</li>
         <li>What any relay sees when it carries a connection: the network addresses of both ends, when they talk and how much they send. It cannot read what they send.</li>
       </ul>
-      <p>Apple delivers the push notifications, so Apple sees that a notification was sent to a device.</p>
+      <p>Apple delivers the push notifications, so Apple sees that a notification was sent to a device and when. Alert and background pushes also carry, in the clear, the identifiers of the Mac and the device, the request identifier, the kind of message and its expiry. Pushes that update the status shown on the phone carry those headers for up to four Macs, whether the update starts, changes or ends that status, and the same three flags listed above. The content stays sealed.</p>
     </section>
 
     <section aria-labelledby="pairing-title">
