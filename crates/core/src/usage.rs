@@ -549,16 +549,24 @@ pub fn eligible_account_keys(order: &[AccountKey], accounts: &[AccountStatus], u
     eligible
 }
 
+struct Candidate<'a> {
+    account: &'a AccountStatus,
+    absolute: f64,
+    week: f64,
+    session_left: f64,
+}
+
 /// The account a new launch of `provider` runs on, as `policy` spreads the work over the
-/// accounts in the user's order. By margin: the one with the most absolute margin, the first of
-/// them when several have as much. In a chain: the first with margin. Today's slice only ranks
+/// accounts in the user's order. By margin: the one with the most absolute margin weighed by what
+/// is left of its session window, so that the week's room never sends every launch to one account
+/// while its session window runs down; the first of them when several rank the same. In a chain: the first with margin. Today's slice only ranks
 /// them: when every account that can work has no margin left, the one with the most of its week left (by
 /// margin) or the first (in a chain) is chosen. A session window past the reserve leaves the
 /// account no margin, and so ranks it last, but it is still chosen when no other can work. An account paid per use is never chosen here.
 /// None when no account can work: the launch waits until one can.
 pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Option<AccountId> {
     let accounts = or_implicit(accounts);
-    let candidates: Vec<(&AccountStatus, f64, f64)> = accounts
+    let candidates: Vec<Candidate> = accounts
         .iter()
         .filter(|account| account.provider == provider)
         .filter_map(|account| {
@@ -569,20 +577,21 @@ pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountSta
             let weight = f64::from(weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()))?);
             let own = own_margin(account.state, measured, reserve, now, today).unwrap_or(1.0);
             let week_left = measured.and_then(|u| u.current(&WindowKind::Weekly, now)).map_or(1.0, |week| 1.0 - week.used.fraction());
-            Some((account, weight * own, weight * week_left))
+            let session_left = measured.and_then(|u| u.current(&WindowKind::Session, now)).map_or(1.0, |session| 1.0 - session.used.fraction());
+            Some(Candidate { account, absolute: weight * own, week: weight * week_left, session_left })
         })
         .collect();
     let chosen = match policy {
         Policy::Margin => {
-            let rank = |(_, absolute, week): &(&AccountStatus, f64, f64)| (*absolute, if *absolute > 0.0 { 0.0 } else { *week });
-            candidates.iter().fold(None, |best: Option<&(&AccountStatus, f64, f64)>, candidate| match best {
+            let rank = |candidate: &Candidate| if candidate.absolute > 0.0 { (candidate.absolute * candidate.session_left, 0.0) } else { (0.0, candidate.week) };
+            candidates.iter().fold(None, |best: Option<&Candidate>, candidate| match best {
                 Some(best) if rank(candidate) <= rank(best) => Some(best),
                 _ => Some(candidate),
             })
         }
-        Policy::Chain => candidates.iter().find(|(_, absolute, _)| *absolute > 0.0).or(candidates.first()),
+        Policy::Chain => candidates.iter().find(|candidate| candidate.absolute > 0.0).or(candidates.first()),
     };
-    chosen.map(|(account, _, _)| account.id.clone())
+    chosen.map(|candidate| candidate.account.id.clone())
 }
 
 /// The account a launch of its provider took and, for every account of that provider, its margin
