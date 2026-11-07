@@ -339,6 +339,12 @@ fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope 
     CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: state.revision, command }
 }
 
+pub fn measure_healthy_machine(domain: &DomainRuntime) {
+    crate::machine_watch::pace(domain, &alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
+        memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
+}
+
 impl Slice {
     pub fn new() -> Self {
         Self::with_hosts(HostRoot::new())
@@ -356,6 +362,7 @@ impl Slice {
         let (backend, capture) = fixture_backend(&home, &state);
         let database = home.join(name);
         let domain = Arc::new(DomainRuntime::open_at(&home, &database).unwrap());
+        measure_healthy_machine(&domain);
         let slice = Self { domain, database, capture, worktree, plugin, backend, kept: Arc::default(), _home: home, _state: state };
         slice.on_acknowledge(|| {});
         slice.run(&Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
@@ -781,7 +788,7 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     assert_eq!(crash.downcast_ref::<&str>(), Some(&"the daemon stopped after the commit"));
     assert_eq!(slice.stored_cards(), 1, "the turn end committed its card");
     assert!(Slice::read_cards(&slice.domain).is_empty(), "nothing of it was published");
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let acknowledged = Arc::new(Mutex::new(0));
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
@@ -1207,7 +1214,7 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     let processes = alondra_process_group::members(group).unwrap();
     // The daemon dies: drop its driver without stopping the host, which keeps running.
     drop(driver);
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(owner_generation(&slice.database), 2, "adoption reserved the next owner generation");
     instruct(&restarted, "Add the tests first");
@@ -1473,7 +1480,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     assert_eq!(crash.downcast_ref::<&str>(), Some(&"the daemon stopped after the commit"));
     assert_eq!(slice.stored_cards(), 1, "the turn end committed its card");
     drop(driver);
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let acknowledged = Arc::new(Mutex::new(0));
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
@@ -1497,7 +1504,7 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
     drop(driver);
     assert_eq!(slice.prompts().len(), 1, "the host's Claude never got the answer");
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
@@ -1517,7 +1524,7 @@ fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_
     instruct(&slice.domain, "Add the tests first");
     assert_eq!(driver.pending_permits(), 1, "the store issued the answer's permit to this daemon");
     drop(driver);
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(adopted.pending_permits(), 1, "the adopting owner holds the permit again");
     adopted.step(&|| false).unwrap();
@@ -1539,7 +1546,7 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     instruct(&slice.domain, "Add the tests first");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     drop(driver);
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
@@ -2090,7 +2097,9 @@ impl Slice {
     }
 
     pub fn restart(&self) -> Arc<DomainRuntime> {
-        Arc::new(DomainRuntime::open_at(&self._home, &self.database).unwrap())
+        let domain = Arc::new(DomainRuntime::open_at(&self._home, &self.database).unwrap());
+        measure_healthy_machine(&domain);
+        domain
     }
 
     fn take_over(&self, domain: &Arc<DomainRuntime>) -> Driver {
@@ -3023,7 +3032,7 @@ fn a_control_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     drop(driver);
     assert!(slice.controls().is_empty(), "the host never got it");
     assert_eq!(slice.control_rows()[0].2, "claimed");
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows()[0].2, "handed", "reconciled with the host's answer");
     slice.settle(&mut adopted);
@@ -3561,7 +3570,7 @@ fn an_answer_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     assert!(driver.claim_and_record_control_without_sending(), "the owner recorded the response");
     drop(driver);
     assert!(slice.decisions().is_empty(), "the host never got it");
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows()[0].2, "handed", "reconciled with the host's answer");
     slice.rest(&mut adopted);

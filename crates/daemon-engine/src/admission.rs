@@ -83,10 +83,14 @@ pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState, in_flight: usize, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     mac.room(in_flight, now).map_err(|why| Hold::Memory { why, free: mac.free_percent })?;
+    decide_pacing(working, limit, mac.warned(), last_admission, spacing, now)
+}
+
+fn decide_pacing(working: usize, limit: u32, warned: bool, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     if working >= limit as usize {
         return Err(Hold::Slots { working, limit });
     }
-    let spacing = if mac.warned() { spacing.max(WARNING_SPACING) } else { spacing };
+    let spacing = if warned { spacing.max(WARNING_SPACING) } else { spacing };
     if let Some(until) = last_admission.map(|at| at + spacing).filter(|until| *until > now) {
         return Err(Hold::Spacing { until });
     }
@@ -553,8 +557,10 @@ fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> R
     if let Some(room) = &snapshot.disk {
         return Err(Hold::Disk { free: room.free, needed: room.needed, volume: room.volume.clone() });
     }
-    let mac = if inner.ignores_mac { MacState::default() } else { snapshot.mac.clone() };
-    decide(head, snapshot.working, snapshot.limit, &mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
+    if inner.ignores_mac {
+        return decide_pacing(snapshot.working, snapshot.limit, false, inner.saved.last_admission, inner.tuning.spacing, now);
+    }
+    decide(head, snapshot.working, snapshot.limit, &snapshot.mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
 }
 
 fn on_volume(volume: Option<&str>) -> String {

@@ -8,6 +8,89 @@ const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
 const GIB: i64 = 1 << 30;
 
+#[test]
+fn startup_admission_waits_for_the_first_memory_measurement() {
+    for key in [Key::Task("queued".into()), Key::Resume("paused".into())] {
+        let head = Waiting { resuming: matches!(&key, Key::Resume(_)), key, priority: TaskPriority::Normal, since: 0 };
+        let mut mac = MacState::default();
+        assert!(decide(&head, 0, 6, &mac, 0, None, 0, 0).is_err(), "no admission before the first measurement: {:?}", head.key);
+        mac.step(&Machine::default(), SAMPLE);
+        assert!(decide(&head, 0, 6, &mac, 0, None, 0, SAMPLE).is_err(), "an empty sample is not a memory measurement");
+        mac.step(&Machine { memory_total: 16 << 30, memory_available: 8 << 30, memory_free_percent: Some(50), ..Machine::default() }, 2 * SAMPLE);
+        assert_eq!(decide(&head, 0, 6, &mac, 0, None, 0, 2 * SAMPLE), Ok(()), "the first healthy measurement is sufficient");
+    }
+}
+
+#[test]
+fn startup_admission_keeps_starts_and_resumes_queued_until_measured() {
+    for resuming in [false, true] {
+        let (_home, domain) = unmeasured_world();
+        let now = alondra_core::now_millis();
+        let key = if resuming {
+            paused_by_user(&domain, "queued", TaskPriority::Normal, now);
+            Key::Resume("agent-queued".into())
+        } else {
+            create(&domain, "queued");
+            Key::Task("queued".into())
+        };
+        let gate = &domain.live.gate;
+        let waiting = Waiting { key, priority: TaskPriority::Normal, resuming, since: now };
+        assert!(gate.ask(&domain, waiting.clone(), now).is_err(), "the fresh gate must not admit {waiting:?}");
+        assert_eq!(gate.snapshot(&domain, now).unwrap().in_flight, 0);
+        crate::machine_watch::pace(&domain, &Machine { at: now + SAMPLE, ..Machine::default() });
+        assert!(gate.ask(&domain, waiting.clone(), now + SAMPLE).is_err(), "an empty sample cannot open the gate");
+        crate::machine_watch::pace(&domain, &Machine { at: now + 2 * SAMPLE, memory_total: 16 << 30, memory_available: 8 << 30,
+            memory_free_percent: Some(50), disk_total: 500 << 30, disk_available: 100 << 30, ..Machine::default() });
+        domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+        assert_eq!(gate.ask(&domain, waiting, now + 2 * SAMPLE), Ok(()));
+        assert_eq!(gate.snapshot(&domain, now + 2 * SAMPLE).unwrap().in_flight, 1);
+    }
+}
+
+#[test]
+fn startup_admission_explicit_memory_bypass_keeps_disk_and_slot_checks() {
+    let (_home, domain) = unmeasured_world();
+    create(&domain, "t1");
+    create(&domain, "t2");
+    let gate = &domain.live.gate;
+    gate.ignore_mac();
+    domain.live.machine_watch.ignore_peaks();
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    let now = alondra_core::now_millis();
+    assert!(matches!(ask(&domain, "t1", now), Err(Hold::Disk { .. })));
+    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    assert_eq!(ask(&domain, "t1", now), Ok(()));
+    assert!(matches!(ask(&domain, "t2", now), Err(Hold::Slots { .. })));
+}
+
+#[test]
+fn startup_admission_missing_memory_cannot_cancel_pending_reserves() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
+    for id in ["t1", "t2"] { create(&domain, id); }
+    let base = alondra_core::now_millis();
+    let watch = &domain.live.machine_watch;
+    watch.measure_nodes(base - MIN, vec![GIB as u64; 30]);
+    watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    let sample = |at| Machine { at, memory_total: 18 << 30, memory_available: 5 << 30,
+        memory_free_percent: Some(60), ..Machine::default() };
+    crate::machine_watch::pace(&domain, &sample(base));
+    assert_eq!(ask(&domain, "t1", base), Ok(()));
+    start(&domain, "t1", base);
+    assert!(matches!(ask(&domain, "t2", base), Err(Hold::Memory { why: NoRoom::Available { .. }, .. })));
+
+    let footprints = BTreeMap::from([("agent-t1".into(), GIB as u64)]);
+    watch.measure_node_memory(base + SAMPLE, footprints.clone());
+    crate::machine_watch::pace(&domain, &Machine { at: base + 2 * SAMPLE, ..Machine::default() });
+    assert_eq!(domain.live.gate.snapshot(&domain, base + 2 * SAMPLE).unwrap().mac.observed_in_flight, 0,
+        "a missing system budget cannot include a newer node footprint");
+    assert!(matches!(ask(&domain, "t2", base + 2 * SAMPLE), Err(Hold::Memory { why: NoRoom::Available { .. }, .. })));
+
+    watch.measure_node_memory(base + 2 * SAMPLE, footprints);
+    crate::machine_watch::pace(&domain, &sample(base + 3 * SAMPLE));
+    assert_eq!(ask(&domain, "t2", base + 3 * SAMPLE), Ok(()), "a valid new system budget can include the footprint");
+}
+
 fn waiting(key: &str, priority: TaskPriority, resuming: bool, since: Millis) -> Waiting {
     Waiting { key: Key::Task(key.into()), priority, resuming, since }
 }
@@ -33,7 +116,7 @@ fn the_queue_goes_by_priority_then_resumed_work_then_age() {
 
 fn fine() -> MacState {
     let mut mac = MacState::default();
-    mac.step(&Machine { memory_free_percent: Some(50), cpus: 11, load: [5.0; 3], ..Machine::default() }, 0);
+    mac.step(&Machine { memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3], ..Machine::default() }, 0);
     mac
 }
 
@@ -44,12 +127,12 @@ fn memory_holds_every_start_and_every_resume_and_the_cpu_holds_none() {
     assert_eq!(decide(&new, 0, 6, &fine(), 0, None, SPACING, MIN), Ok(()));
 
     let mut short = fine();
-    short.step(&Machine { memory_free_percent: Some(3), cpus: 11, ..Machine::default() }, SAMPLE);
+    short.step(&Machine { memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(3), cpus: 11, ..Machine::default() }, SAMPLE);
     assert!(matches!(decide(&resumed, 0, 6, &short, 0, None, SPACING, MIN), Err(Hold::Memory { why: NoRoom::Free { free: 3, .. }, free: Some(3) })));
 
     let mut busy = fine();
-    busy.step(&Machine { load: [39.0; 3], cpus: 11, memory_free_percent: Some(80), ..Machine::default() }, MIN - SAMPLE);
-    busy.step(&Machine { load: [39.0; 3], cpus: 11, memory_free_percent: Some(80), ..Machine::default() }, MIN);
+    busy.step(&Machine { memory_total: 16 << 30, memory_available: 12 << 30, load: [39.0; 3], cpus: 11, memory_free_percent: Some(80), ..Machine::default() }, MIN - SAMPLE);
+    busy.step(&Machine { memory_total: 16 << 30, memory_available: 12 << 30, load: [39.0; 3], cpus: 11, memory_free_percent: Some(80), ..Machine::default() }, MIN);
     assert_eq!((busy.load, busy.cpus), (39.0, 11), "the load is read");
     assert_eq!(decide(&new, 0, 6, &busy, 0, None, SPACING, MIN), Ok(()), "a load of 39 on 11 cores holds no start");
     assert_eq!(decide(&resumed, 0, 6, &busy, 0, None, SPACING, MIN), Ok(()), "nor a resume");
@@ -70,6 +153,7 @@ fn one_start_a_minute_and_never_past_the_limit() {
 fn memory_swinging_for_an_hour_puts_no_card_in_front_of_the_user_and_admits_only_after_a_minute_of_room() {
     const SWING: Millis = 3 * MIN;
     let mut mac = MacState::default();
+    mac.node_cost = Some(128 << 20);
     let mut incident = None;
     let mut actions = vec![];
     let mut admitted = vec![];
@@ -78,7 +162,8 @@ fn memory_swinging_for_an_hour_puts_no_card_in_front_of_the_user_and_admits_only
     let mut now = 0;
     while now < 60 * MIN {
         let free = if (now / SWING) % 2 == 0 { 9 } else { 22 };
-        let machine = Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
+        let machine = Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30,
+            memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
         mac.step(&machine, now);
         let (next, taken) = step_on(incident, &machine, None, &[], false, now);
         incident = next;
@@ -105,6 +190,18 @@ impl Drop for Home {
 }
 
 fn world() -> (Home, Arc<DomainRuntime>) {
+    let world = unmeasured_world();
+    healthy(&world.1);
+    world
+}
+
+fn healthy(domain: &DomainRuntime) {
+    crate::machine_watch::pace(domain, &Machine { at: 1, memory_total: 16 << 30, memory_available: 12 << 30,
+        memory_free_percent: Some(75), cpus: 11, ..Machine::default() });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+}
+
+fn unmeasured_world() -> (Home, Arc<DomainRuntime>) {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
@@ -272,7 +369,7 @@ fn a_daemon_that_ignores_the_mac_starts_a_task_under_critical_memory_pressure_an
         create(&domain, "t-fresh");
         let mut now = base;
         while now <= base + 2 * MIN {
-            let machine = Machine { at: now, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Critical),
+            let machine = Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Critical),
                 cpus: 11, load: [60.0; 3], ..Machine::default() };
             crate::machine_watch::pace(&domain, &machine);
             now += SAMPLE;
@@ -343,7 +440,7 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
 fn sample(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
     let mut now = from;
     while now < to {
-        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
         now += SAMPLE;
     }
 }
@@ -494,7 +591,7 @@ fn memory_coming_and_going_for_an_hour_tells_the_orchestrator_nothing() {
     let mut now = base;
     while now < base + 60 * MIN {
         let free = if ((now - base) / (6 * MIN)) % 2 == 0 { 8 } else { 40 };
-        crate::machine_watch::pace(&domain, &Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        crate::machine_watch::pace(&domain, &Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
         now += SAMPLE;
     }
     let state = domain.state().unwrap();
@@ -653,7 +750,7 @@ fn the_previous_gate_file_is_read_when_it_could_not_move() {
 /// and the most this Mac takes, also for a number over it in `options.toml`.
 #[test]
 fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
-    let (cores, memory) = machine_size();
+    let (cores, memory) = (11, 16 << 30);
     let most = NodeLimits::of(cores, memory, 0).most;
     let over_4_gb = memory.saturating_sub(4 << 30);
     for (cost, auto) in [(over_4_gb / 2, 2), (128 << 20, NodeLimits::of(cores, memory, 128 << 20).auto)] {
@@ -909,6 +1006,7 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
     drop(domain);
 
     let domain = DomainRuntime::open(&home.0).unwrap();
+    healthy(&domain);
     let gate = &domain.live.gate;
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     gate.ignore_mac();
@@ -940,7 +1038,7 @@ fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
 
 /// A sample of the Mac at `now` whose own disk has `usable` bytes free, none of them purgeable.
 fn disk_sample(domain: &DomainRuntime, usable: u64, now: Millis) {
-    crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3],
+    crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3],
         disk_total: 500 * GB, disk_available: usable, ..Machine::default() });
     domain.live.machine_watch.measure_disk(crate::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
 }

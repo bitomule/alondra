@@ -4,6 +4,23 @@ The gate (`crates/daemon-engine/src/admission.rs`) decides when a waiting task's
 paused one comes back. It measures the system's available memory and swap, and the memory of
 Alondra's nodes. Other programs affect the system totals; the daemon does not classify them.
 
+After a restart, starts and resumes wait for valid memory and system-disk budgets. Memory needs a
+positive total and available bytes no greater than that total; zero available bytes hold admission.
+A percentage, pressure level, swap counter or healthy external disk cannot stand in for those
+budgets. A first healthy measurement is enough, without a fixed warm-up delay. Optional percentage,
+pressure and swap readings need not be present.
+
+Invalid readings retain the last valid budgets and cannot establish recovery or include newer node
+footprints in an older memory budget. Disk readings require a positive total and free plus purgeable
+space no greater than that total. The system disk remains part of admission even when another
+volume is the fullest one. Fast sandboxes bypass memory explicitly for their fake nodes; their
+slot and spacing checks still apply.
+
+Independent pressure, low free percentages and swap activity can tighten admission even when the
+byte budget is missing. Such readings cannot clear a restriction or count toward swap recovery.
+Unknown, incoherent or reset swap counters retain a known swapping floor until a fresh minute of
+valid counters establishes recovery.
+
 | Check | Holds when | Source |
 | --- | --- | --- |
 | Slots | nodes at work reach the limit | `max_working_nodes`: a number is the most that may work; `auto` is the memory over 4 GiB divided by the measured cost of a node, up to two per core |

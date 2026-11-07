@@ -166,6 +166,7 @@ pub mod tests {
 
     pub fn open(home: &std::path::Path) -> DomainRuntime {
         let domain = DomainRuntime::open(home).unwrap();
+        crate::sdk_owner::tests::measure_healthy_machine(&domain);
         if domain.state().unwrap().requests.is_empty() {
             run(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
                 request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,

@@ -1151,7 +1151,9 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
 /// The last minute of the Mac as `pace` samples it: macOS at critical pressure, or normal with room.
 fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64]) {
     for &at in at {
-        let machine = alondra_core::Machine { at, memory_free_percent: Some(50), memory_pressure: Some(pressure), cpus: 11, load: [1.0; 3],
+        let machine = alondra_core::Machine { at, memory_total: 16 << 30, memory_available: 12 << 30,
+            disk_total: 500_000_000_000, disk_available: 100_000_000_000,
+            memory_free_percent: Some(50), memory_pressure: Some(pressure), cpus: 11, load: [1.0; 3],
             ..alondra_core::Machine::default() };
         crate::machine_watch::pace(&fixture.domain, &machine);
     }
@@ -1208,6 +1210,7 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     use crate::admission::{Hold, Key, Waiting};
     const GB: u64 = 1_000_000_000;
     let fixture = Fixture::start().await;
+    memory(&fixture, alondra_core::MemoryPressure::Normal, &[alondra_core::now_millis()]);
     seed_work(&fixture);
     fixture.user("title-1", Command::TitleRequest { request_id: "request-1".into(), title: "Editor".into() });
     fixture.orchestrator("task-9", Command::CreateTask { plan_items: None, continues: None,

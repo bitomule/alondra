@@ -171,11 +171,15 @@ pub(crate) enum Action {
 /// `disk::recovered_lines()` to count as fine, so a disk hovering at the line does not flap. Memory
 /// and the CPU load open none: they only pace new starts at the gate.
 pub(crate) fn failing(machine: &Machine, previous: Option<MachineCause>) -> Option<MachineCause> {
-    (machine.disk_total > 0 && disk_space(machine).low(previous == Some(MachineCause::Disk))).then_some(MachineCause::Disk)
+    (valid_disk(disk_space(machine)) && disk_space(machine).low(previous == Some(MachineCause::Disk))).then_some(MachineCause::Disk)
 }
 
 fn disk_space(machine: &Machine) -> crate::disk::Space {
     crate::disk::Space { free: machine.disk_available, purgeable: machine.disk_purgeable, total: machine.disk_total }
+}
+
+fn valid_disk(space: crate::disk::Space) -> bool {
+    space.total > 0 && space.free.checked_add(space.purgeable).is_some_and(|usable| usable <= space.total)
 }
 
 fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter]) -> MachineCard {
@@ -216,6 +220,15 @@ pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Wai
 
 /// `step` with the name of the volume the disk gauge measured, when it is not the Mac's own.
 pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
+    step_with_disk_measurement(previous, machine, disk, waiting, fixed, now, valid_disk(disk_space(machine)))
+}
+
+fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis, measured_disk: bool) -> (Option<Incident>, Vec<Action>) {
+    let mut previous = previous;
+    if let Some(incident) = previous.as_mut().filter(|incident| incident.cause == MachineCause::Disk && !measured_disk) {
+        incident.healthy = 0;
+        return (previous, vec![]);
+    }
     let measured = failing(machine, previous.as_ref().map(|incident| incident.cause));
     let Some(mut incident) = previous else {
         let Some(cause) = measured else { return (None, vec![]) };
@@ -338,12 +351,14 @@ impl MachineWatch {
             return None;
         }
         record.sampled_at = machine.at;
-        record.mac.observed_nodes = record.mac.nodes.clone();
-        record.mac.observed_nodes_at = record.mac.nodes_at.filter(|at| *at <= now);
         record.swap.sample(machine.compressor, now);
-        record.boot_disk = (machine.disk_total > 0).then(|| disk_space(machine));
+        let disk = disk_space(machine);
+        if valid_disk(disk) { record.boot_disk = Some(disk); }
         let before = record.mac.room(0, now);
-        record.mac.step(machine, now);
+        if record.mac.step(machine, now) {
+            record.mac.observed_nodes = record.mac.nodes.clone();
+            record.mac.observed_nodes_at = record.mac.nodes_at.filter(|at| *at <= now);
+        }
         Some(before)
     }
 
@@ -392,9 +407,17 @@ impl MachineWatch {
         self.incident().is_some_and(|incident| incident.cause == MachineCause::Disk)
     }
 
-    /// Takes the fullest disk's space.
+    /// Takes the Mac's own disk's space.
     pub fn measure_disk(&self, space: crate::disk::Space) {
-        self.record().disk = Some(space);
+        if valid_disk(space) {
+            let mut record = self.record();
+            record.boot_disk = Some(space);
+            record.disk = Some(space);
+        }
+    }
+
+    fn measure_fullest_disk(&self, space: crate::disk::Space) {
+        if valid_disk(space) { self.record().disk = Some(space); }
     }
 
     pub fn ignore_peaks(&self) {
@@ -519,7 +542,11 @@ impl MachineWatch {
         let mut record = self.record();
         let estimate = if record.peaks_ignored { 0 } else { record.peaks.estimate(project) };
         let needed = reserved + estimate + crate::disk::low_lines().usable;
-        let short = record.disk.and_then(|space| space.room_for(needed, record.short).err());
+        if record.boot_disk.is_none() {
+            return Some(crate::disk::Room { free: 0, needed, volume: None });
+        }
+        let short = record.boot_disk.and_then(|space| space.room_for(needed, record.short).err())
+            .or_else(|| record.disk.and_then(|space| space.room_for(needed, record.short).err()));
         record.short = short.is_some();
         let swap_short = if record.peaks_ignored { None } else {
             record.swap.reserve(now).zip(record.boot_disk).and_then(|(swap_reserve, space)| {
@@ -712,13 +739,14 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
     let mac = watch.mac();
     let working = domain.state().map(|state| crate::admission::working_projects(&state)).unwrap_or_default();
     let usable = disk_space(machine).usable();
-    let freed = machine.disk_total > 0 && watch.measure_peaks(usable, &working, now);
+    let measured_disk = valid_disk(disk_space(machine));
+    let freed = measured_disk && watch.measure_peaks(usable, &working, now);
     if watch.measure_volumes(&working, now) || freed {
         domain.live.gate.poke();
     }
     if let Some(home) = watch.home() {
         let reserving = domain.state().map(|state| crate::admission::reserving_tasks(&state, working.keys())).unwrap_or_default();
-        let disk = (machine.disk_total > 0).then(|| (usable, watch.disk_reserved(&reserving)));
+        let disk = measured_disk.then(|| (usable, watch.disk_reserved(&reserving)));
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working.len(), disk);
     }
     let working = working.len();
@@ -737,9 +765,10 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
 pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
     let watch = &domain.live.machine_watch;
     pace(domain, &machine);
+    let measured_boot_disk = valid_disk(disk_space(&machine));
     let (machine, disk) = tightest(machine, &watch.volumes());
-    if machine.disk_total > 0 {
-        watch.measure_disk(disk_space(&machine));
+    if valid_disk(disk_space(&machine)) {
+        watch.measure_fullest_disk(disk_space(&machine));
         if watch.short() {
             domain.live.gate.poke();
         }
@@ -751,8 +780,8 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
     let fixed = fixed(domain, previous.as_ref());
     let waiting = waiters(domain);
     let now = now_millis();
-    let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiting, fixed, now);
-    let space = has_space(&machine, next.as_ref());
+    let (next, actions) = step_with_disk_measurement(previous, &machine, disk.as_deref(), &waiting, fixed, now, measured_boot_disk);
+    let space = measured_boot_disk && has_space(&machine, next.as_ref());
     watch.set_incident(next);
     if fixed {
         domain.live.gate.release_declared(domain);
@@ -769,7 +798,7 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
 /// Whether the sample measured the disk with room, past the line it is low at, and no disk
 /// incident stays open.
 fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
-    machine.disk_total > 0 && failing(machine, None).is_none() && incident.is_none_or(|incident| incident.cause != MachineCause::Disk)
+    valid_disk(disk_space(machine)) && failing(machine, None).is_none() && incident.is_none_or(|incident| incident.cause != MachineCause::Disk)
 }
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
@@ -852,6 +881,84 @@ mod tests {
     }
 
     #[test]
+    fn startup_admission_disk_budget_requires_valid_measurements() {
+        let watch = MachineWatch::default();
+        let room = || watch.disk_room(&BTreeMap::new(), None, 0);
+        assert!(room().is_some(), "no disk measurement yet");
+        for space in [
+            crate::disk::Space { total: 0, free: 0, purgeable: 0 },
+            crate::disk::Space { total: 0, free: 100 * GB, purgeable: 0 },
+            crate::disk::Space { total: 50 * GB, free: 100 * GB, purgeable: 0 },
+            crate::disk::Space { total: 50 * GB, free: GB, purgeable: u64::MAX },
+        ] {
+            watch.measure_disk(space);
+            assert!(room().is_some(), "invalid disk reading: {space:?}");
+        }
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 100 * GB, purgeable: 0 });
+        assert!(room().is_none(), "the first valid measurement opens the disk gate");
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 0, purgeable: 0 });
+        assert!(room().is_some(), "zero available is a measured shortage");
+        watch.measure_disk(crate::disk::Space { total: 0, free: 100 * GB, purgeable: 0 });
+        assert!(room().is_some(), "an invalid reading does not replace the shortage");
+    }
+
+    #[test]
+    fn startup_admission_invalid_disk_samples_cannot_release_an_incident() {
+        let waiting = [waiter("s1", "Build", 0)];
+        let (mut incident, _) = step(None, &machine(0, 50), &waiting, false, 0);
+        for invalid in [Machine::default(), Machine { disk_total: GB, disk_available: 2 * GB, ..Machine::default() }] {
+            let (next, _) = step(incident, &machine(100 * GB, 50), &waiting, false, SAMPLE);
+            let (next, actions) = step(next, &invalid, &waiting, true, 2 * SAMPLE);
+            assert!(actions.is_empty(), "an invalid probe cannot release waiting nodes");
+            assert_eq!(next.as_ref().unwrap().healthy, 0);
+            incident = next;
+        }
+        let (next, _) = step(incident, &machine(100 * GB, 50), &waiting, false, 3 * SAMPLE);
+        assert!(next.is_some());
+        let (next, actions) = step(next, &machine(100 * GB, 50), &waiting, false, 4 * SAMPLE);
+        assert!(next.is_none());
+        assert!(actions.iter().any(|action| matches!(action, Action::Release(_))));
+    }
+
+    #[test]
+    fn startup_admission_missing_boot_disk_readings_keep_the_last_swap_budget() {
+        let watch = MachineWatch::default();
+        let measured = crate::disk::Space { total: 500 * GB, free: 7 * GB, purgeable: 40 * GB };
+        watch.sample(&Machine { at: SAMPLE, disk_total: measured.total, disk_available: measured.free,
+            disk_purgeable: measured.purgeable, ..Machine::default() }, SAMPLE);
+        for at in [2 * SAMPLE, 3 * SAMPLE] {
+            watch.sample(&Machine { at, ..Machine::default() }, at);
+            assert_eq!(watch.record().boot_disk, Some(measured));
+        }
+        watch.sample(&Machine { at: 4 * SAMPLE, disk_total: GB, disk_available: 2 * GB, ..Machine::default() }, 4 * SAMPLE);
+        assert_eq!(watch.record().boot_disk, Some(measured), "invalid readings cannot replace the boot budget");
+    }
+
+    #[test]
+    fn startup_admission_a_healthy_external_disk_cannot_replace_the_system_disk_budget() {
+        let (_home, domain) = world();
+        let watch = &domain.live.machine_watch;
+        let cache = PathBuf::from("/Volumes/BuildCache");
+        watch.record().volumes.insert(cache.clone());
+        watch.give_volumes(vec![(cache, space(30 * GB))]);
+        let base = now_millis();
+        let unknown = |at| Machine { at, disk_total: 0, disk_available: 0, ..machine(0, 60) };
+        let _ = look(&domain, unknown(base));
+        assert_eq!(watch.record().boot_disk, None);
+        assert!(watch.disk_room(&BTreeMap::new(), None, base).is_some(), "a healthy external volume is not a system disk measurement");
+
+        let _ = look(&domain, Machine { at: base + SAMPLE, ..machine(100 * GB, 60) });
+        assert!(watch.disk_room(&BTreeMap::new(), None, base + SAMPLE).is_none());
+        let _ = look(&domain, Machine { at: base + 2 * SAMPLE, ..machine(0, 60) });
+        assert!(watch.disk_room(&BTreeMap::new(), None, base + 2 * SAMPLE).is_some());
+        for at in [base + 3 * SAMPLE, base + 4 * SAMPLE] {
+            let _ = look(&domain, unknown(at));
+            assert_eq!(watch.incident().expect("unknown system disk cannot close its incident").healthy, 0);
+            assert!(watch.disk_room(&BTreeMap::new(), None, at).is_some(), "a missing system probe cannot recover a low system disk");
+        }
+    }
+
+    #[test]
     fn swap_uses_the_boot_container_even_when_another_volume_is_tightest() {
         let watch = MachineWatch::default();
         watch.seed_peaks("app", &[GB; 3]);
@@ -861,7 +968,7 @@ mod tests {
                 swap_total: Some(2 * GB), ..alondra_core::MemoryCompressor::default() };
             watch.sample(&Machine { at, compressor: Some(compressor), ..machine(20 * GB, 29) }, at);
         }
-        watch.measure_disk(space(8 * GB));
+        watch.measure_fullest_disk(space(8 * GB));
         let now = 10_000 + 5 * MIN;
         assert_eq!(watch.disk_room(&BTreeMap::new(), Some("app"), now), None,
             "the 8 GB on another volume is not swap's free space");
@@ -1017,6 +1124,7 @@ mod tests {
     fn a_sandbox_with_fake_nodes_reserves_nothing_for_them() {
         let watch = MachineWatch::default();
         watch.ignore_peaks();
+        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some(), "fake builds still need a system disk measurement");
         watch.measure_peaks(50 * GB, &working(&[("t1", "app")]), 0);
         watch.measure_peaks(40 * GB, &working(&[("t1", "app")]), 1);
         watch.measure_disk(crate::disk::Space { free: 8 * GB, purgeable: 0, total: 500 * GB });

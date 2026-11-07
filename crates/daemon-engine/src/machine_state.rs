@@ -31,6 +31,7 @@ const SWAPPING: u64 = 64 * MIB;
 /// Why one more node may not start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoRoom {
+    Unmeasured,
     /// macOS reports critical pressure.
     Pressure(MemoryPressure),
     /// Free memory, and what it must be for `nodes` more at `cost` each to leave `floor` free.
@@ -44,6 +45,7 @@ pub enum NoRoom {
 impl std::fmt::Display for NoRoom {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            NoRoom::Unmeasured => write!(out, "waiting for a valid system memory measurement"),
             NoRoom::Available { available, needed } => write!(out, "{available} bytes available, {needed} bytes needed including the memory floor and pending nodes"),
             NoRoom::SwapGrowth { used, allocated, swapped } => write!(out, "positive swap growth of {used} bytes used and {allocated} bytes allocated with {swapped} bytes swapped out; waiting for a stable minute"),
             NoRoom::Pressure(pressure) => write!(out, "macOS reports {pressure:?} memory pressure"),
@@ -68,6 +70,8 @@ struct Sample {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MacState {
     pub free_percent: Option<u32>,
+    /// A partial percentage cannot replace the byte floor used while swapping.
+    has_budgeted_percentage: bool,
     pub pressure: Option<MemoryPressure>,
     pub compressor: Option<MemoryCompressor>,
     pub swap_rates: Option<(f64, f64)>,
@@ -87,6 +91,8 @@ pub struct MacState {
     pub observed_in_flight: u64,
     swap_samples: VecDeque<(Millis, MemoryCompressor)>,
     swap_hold: Option<NoRoom>,
+    swap_out_hold: Option<u64>,
+    unbudgeted: bool,
     pub load: f64,
     pub cpus: usize,
     /// The samples of the last `ROOM_WINDOW` and the one before them, from which the swap-outs of
@@ -95,11 +101,17 @@ pub struct MacState {
 }
 
 impl MacState {
-    /// Missing readings keep the last known budget; they cannot establish recovery.
-    pub(crate) fn step(&mut self, machine: &Machine, now: Millis) {
+    /// Missing readings keep the last known budget; they cannot establish recovery. Returns
+    /// whether this step took a valid byte budget, which can include newer node footprints.
+    pub(crate) fn step(&mut self, machine: &Machine, now: Millis) -> bool {
         self.step_load(machine);
+        let Some(available) = (machine.memory_total > 0 && machine.memory_available <= machine.memory_total)
+            .then_some(machine.memory_available) else {
+                self.restrict_without_budget(machine, now);
+                return false;
+            };
+        if self.available_samples.back().is_some_and(|(at, _)| now == *at) { return false; }
         if let Some(last) = self.samples.back() {
-            if now == last.at { return; }
             if now < last.at {
                 let shift = last.at.saturating_sub(now);
                 for sample in &mut self.samples { sample.at = sample.at.saturating_sub(shift); }
@@ -107,19 +119,17 @@ impl MacState {
                 self.swap_samples.clear();
             }
         }
+        let before = self.available_samples.back().map(|(at, _)| *at).zip(self.compressor);
+        if std::mem::take(&mut self.unbudgeted) { self.swap_samples.clear(); }
         let free = machine.memory_free_percent.filter(|free| *free <= 100);
-        let available = (machine.memory_total > 0 && machine.memory_available <= machine.memory_total)
-            .then_some(machine.memory_available);
-        if machine.memory_total > 0 { self.memory_total = machine.memory_total; }
-        self.memory_available = available.or(self.memory_available);
-        if let Some(available) = available {
-            self.available_samples.push_back((now, available));
-            while self.available_samples.get(1).is_some_and(|(at, _)| *at <= now - ROOM_WINDOW) {
-                self.available_samples.pop_front();
-            }
+        self.has_budgeted_percentage |= free.is_some();
+        self.memory_available = Some(available);
+        self.memory_total = machine.memory_total;
+        self.available_samples.push_back((now, available));
+        while self.available_samples.get(1).is_some_and(|(at, _)| *at <= now - ROOM_WINDOW) {
+            self.available_samples.pop_front();
         }
         self.sample_swap(machine.compressor, now);
-        let before = self.samples.back().map(|sample| sample.at).zip(self.compressor);
         self.swap_rates = machine.compressor.zip(before).filter(|&(_, (at, _))| now > at).map(|(compressor, (at, before))| {
             let seconds = (now - at) as f64 / 1000.0;
             (compressor.swapins.saturating_sub(before.swapins) as f64 / seconds, compressor.swapouts.saturating_sub(before.swapouts) as f64 / seconds)
@@ -131,6 +141,43 @@ impl MacState {
         self.samples.push_back(Sample { at: now, pressure: self.pressure, free, swapped_out });
         while self.samples.get(1).is_some_and(|next| next.at <= now - ROOM_WINDOW) {
             self.samples.pop_front();
+        }
+        self.retain_swap_floor();
+        true
+    }
+
+    fn restrict_without_budget(&mut self, machine: &Machine, now: Millis) {
+        let pending = std::mem::replace(&mut self.unbudgeted, true);
+        if let Some(free) = machine.memory_free_percent.filter(|free| *free <= 100) {
+            self.free_percent = Some(self.free_percent.map_or(free, |before| before.min(free)));
+        }
+        match machine.memory_pressure {
+            Some(MemoryPressure::Critical) => self.pressure = Some(MemoryPressure::Critical),
+            Some(MemoryPressure::Warning) if self.pressure != Some(MemoryPressure::Critical) => self.pressure = Some(MemoryPressure::Warning),
+            _ => {},
+        }
+        let (hold, floor) = (self.swap_hold, self.swap_out_hold);
+        self.sample_swap(machine.compressor, now);
+        self.swap_hold = hold.or(self.swap_hold);
+        self.swap_out_hold = floor.or(self.swap_out_hold);
+        let mut sample = self.samples.back().copied().unwrap_or(Sample { at: now, pressure: None, free: None, swapped_out: None });
+        sample.at = now.max(sample.at);
+        sample.pressure = self.pressure;
+        sample.free = self.free_percent;
+        if let Some(compressor) = machine.compressor.filter(|c| c.page_size > 0 && c.swap_total.is_none_or(|total| c.swap_used <= total)) {
+            let swapped = compressor.swapouts.saturating_mul(compressor.page_size);
+            sample.swapped_out = Some(sample.swapped_out.unwrap_or(0).max(swapped));
+        }
+        if pending { self.samples.pop_back(); }
+        self.samples.push_back(sample);
+        self.retain_swap_floor();
+    }
+
+    fn retain_swap_floor(&mut self) {
+        if let Some((first, last)) = self.samples.front().and_then(|s| s.swapped_out)
+            .zip(self.samples.back().and_then(|s| s.swapped_out)) {
+            let swapped = last.saturating_sub(first);
+            if swapped >= SWAPPING { self.swap_out_hold = Some(swapped); }
         }
     }
 
@@ -145,36 +192,38 @@ impl MacState {
     }
 
     /// Whether one more node may start with `in_flight` nodes admitted in the last 3 minutes, from
-    /// the samples of the last `ROOM_WINDOW`, or the last one when none is that recent. A system
-    /// that never reported memory always has room.
-    pub(crate) fn room(&self, in_flight: usize, now: Millis) -> Result<(), NoRoom> {
-        let Some(last) = self.samples.back() else { return Ok(()) };
-        let recent: Vec<&Sample> = self.samples.iter().filter(|sample| sample.at > now - ROOM_WINDOW).collect();
+    /// the `ROOM_WINDOW` ending at the last valid measurement. A gap in readings cannot age out
+    /// a shortage. A system without a valid byte budget waits for its first measurement.
+    pub(crate) fn room(&self, in_flight: usize, _now: Millis) -> Result<(), NoRoom> {
+        let Some(last) = self.samples.back() else { return Err(NoRoom::Unmeasured) };
+        let Some((at, _)) = self.available_samples.back() else { return Err(NoRoom::Unmeasured) };
+        let recent: Vec<&Sample> = self.samples.iter().filter(|sample| sample.at > at - ROOM_WINDOW).collect();
         let judged = if recent.is_empty() { vec![last] } else { recent };
         if judged.iter().any(|sample| sample.pressure == Some(MemoryPressure::Critical)) {
             return Err(NoRoom::Pressure(MemoryPressure::Critical));
         }
+        let available = self.available_samples.iter().map(|(_, available)| *available).min()
+            .filter(|_| self.memory_total > 0).ok_or(NoRoom::Unmeasured)?;
         let (nodes, cost) = (1 + in_flight, self.node_cost());
         let pending = (cost as u64).saturating_mul(in_flight as u64).saturating_sub(self.observed_in_flight);
         let reserved_bytes = pending.saturating_add(cost as u64);
         let reserved = self.percent_of_memory(i64::try_from(reserved_bytes).unwrap_or(i64::MAX));
-        let free = judged.iter().filter_map(|sample| sample.free).min().or(self.free_percent).unwrap_or(100);
+        let free = judged.iter().filter_map(|sample| sample.free).min().or(self.free_percent);
         let needed = FREE_FLOOR + reserved;
-        if free < needed {
+        if let Some(free) = free.filter(|free| *free < needed) {
             return Err(NoRoom::Free { free, needed, floor: FREE_FLOOR, nodes, cost });
         }
         let swapped = self.samples.front().and_then(|first| first.swapped_out).zip(last.swapped_out)
-            .map_or(0, |(first, last)| last.saturating_sub(first));
+            .map_or(0, |(first, last)| last.saturating_sub(first)).max(self.swap_out_hold.unwrap_or(0));
         let needed = SWAPPING_FLOOR + reserved;
-        if swapped >= SWAPPING && free < needed {
+        if swapped >= SWAPPING && let Some(free) = free.filter(|free| *free < needed) {
             return Err(NoRoom::Swapping { swapped, free, needed });
         }
         if let Some(why) = self.swap_hold { return Err(why); }
-        if let Some(available) = self.available_samples.iter().map(|(_, available)| *available).min() {
-            let floor = self.memory_total / 100 * u64::from(FREE_FLOOR);
-            let needed = floor.saturating_add(reserved_bytes);
-            if available < needed { return Err(NoRoom::Available { available, needed }); }
-        }
+        let floor = if !self.has_budgeted_percentage && swapped >= SWAPPING { SWAPPING_FLOOR } else { FREE_FLOOR };
+        let floor = self.memory_total / 100 * u64::from(floor);
+        let needed = floor.saturating_add(reserved_bytes);
+        if available < needed { return Err(NoRoom::Available { available, needed }); }
         Ok(())
     }
 
@@ -199,6 +248,11 @@ impl MacState {
                     allocated.saturating_add(after.swap_total.zip(before.swap_total).map_or(0, |(after, before)| after.saturating_sub(before))))
             });
         let swapped = current.swapouts.saturating_sub(first.swapouts).saturating_mul(current.page_size);
+        if swapped >= SWAPPING {
+            self.swap_out_hold = Some(swapped);
+        } else if now - at >= ROOM_WINDOW {
+            self.swap_out_hold = None;
+        }
         let activity = swapped.max(used).max(if current.swap_used > 0 { allocated } else { 0 });
         if activity >= SWAPPING && (used > 0 || allocated > 0) {
             self.swap_hold = Some(NoRoom::SwapGrowth { used, allocated, swapped });
@@ -322,11 +376,235 @@ mod tests {
     const PAGE: u64 = 16_384;
 
     #[test]
-    fn regression_real_available_memory_holds_a_start_even_with_a_healthy_percentage() {
+    fn startup_admission_requires_a_coherent_memory_budget() {
+        for machine in [
+            Machine::default(),
+            Machine { memory_free_percent: Some(100), ..Machine::default() },
+            Machine { memory_free_percent: Some(101), ..Machine::default() },
+            Machine { memory_available: 8 << 30, ..Machine::default() },
+            Machine { memory_total: 16 << 30, memory_available: 17 << 30, ..Machine::default() },
+            Machine { memory_pressure: Some(MemoryPressure::Normal), cpus: 8, ..Machine::default() },
+        ] {
+            let mut state = MacState::default();
+            assert!(state.room(0, 0).is_err());
+            for at in [0, SAMPLE, 2 * MIN] {
+                state.step(&machine, at);
+                assert!(state.room(0, at).is_err(), "invalid memory budget: {machine:?}");
+            }
+            state.step(&memory_sample(None), 2 * MIN + SAMPLE);
+            assert_eq!(state.room(0, 2 * MIN + SAMPLE), Ok(()));
+        }
+    }
+
+    #[test]
+    fn startup_admission_invalid_memory_totals_cannot_reprice_a_retained_budget() {
         let mut state = MacState::default();
-        state.step(&Machine { memory_total: 18 << 30, memory_available: 512 << 20,
-            memory_free_percent: Some(60), ..Machine::default() }, 0);
-        assert!(state.room(0, 0).is_err(), "a high percentage cannot stand in for available RAM");
+        state.step(&Machine { memory_total: 16 << 30, memory_available: 2 << 30, ..Machine::default() }, 0);
+        assert!(state.room(0, 0).is_err());
+        state.step(&Machine { memory_total: 1 << 30, memory_available: 2 << 30, memory_free_percent: Some(100), ..Machine::default() }, 2 * MIN);
+        assert_eq!(state.memory_total, 16 << 30);
+        assert!(state.room(0, 2 * MIN).is_err(), "an invalid pair cannot reduce the memory floor");
+    }
+
+    #[test]
+    fn startup_admission_invalid_budgets_cannot_clear_optional_memory_holds() {
+        for first in [pressed(5, MemoryPressure::Normal), pressed(60, MemoryPressure::Critical)] {
+            let mut state = MacState::default();
+            state.step(&first, 0);
+            assert!(state.room(0, 0).is_err());
+            let invalid = Machine { memory_free_percent: Some(100), memory_pressure: Some(MemoryPressure::Normal), ..Machine::default() };
+            assert!(!state.step(&invalid, 2 * MIN));
+            assert!(state.room(0, 2 * MIN).is_err(), "invalid bytes cannot clear a measured hold");
+            state.step(&pressed(60, MemoryPressure::Normal), SAMPLE);
+            assert!(!state.step(&invalid, 2 * MIN));
+            assert!(state.room(0, 2 * MIN).is_err(), "a gap in valid readings cannot age out the measured hold");
+            state.step(&pressed(60, MemoryPressure::Normal), 3 * MIN);
+            assert_eq!(state.room(0, 3 * MIN), Ok(()));
+        }
+    }
+
+    #[test]
+    fn startup_admission_unbudgeted_signals_can_tighten_but_cannot_recover() {
+        for signal in [
+            Machine { memory_pressure: Some(MemoryPressure::Critical), ..Machine::default() },
+            Machine { memory_free_percent: Some(3), ..Machine::default() },
+        ] {
+            let mut state = MacState::default();
+            let healthy = Machine { memory_pressure: Some(MemoryPressure::Normal), ..memory_sample(None) };
+            state.step(&healthy, 0);
+            assert_eq!(state.room(0, 0), Ok(()));
+            assert!(!state.step(&signal, 2 * MIN));
+            assert!(state.room(0, 2 * MIN).is_err(), "a missing byte budget cannot hide an independent shortage: {signal:?}");
+            assert_eq!((state.memory_total, state.memory_available), (healthy.memory_total, Some(healthy.memory_available)));
+            let invalid = Machine { memory_free_percent: Some(100), memory_pressure: Some(MemoryPressure::Normal), ..Machine::default() };
+            state.step(&invalid, 2 * MIN + SAMPLE);
+            assert!(state.room(0, 2 * MIN + SAMPLE).is_err(), "an invalid healthy signal cannot clear the shortage");
+            state.step(&healthy, 2 * MIN + 2 * SAMPLE);
+            assert!(state.room(0, 2 * MIN + 2 * SAMPLE).is_err(), "a recent independent shortage keeps its actual age");
+            state.step(&healthy, 4 * MIN);
+            assert_eq!(state.room(0, 4 * MIN), Ok(()));
+        }
+        let mut state = MacState::default();
+        state.step(&memory_sample(None), 0);
+        state.step(&Machine { memory_pressure: Some(MemoryPressure::Warning), ..Machine::default() }, SAMPLE);
+        assert!(state.warned(), "a warning still spaces admissions without a new byte budget");
+        for valid_at in [2 * MIN, 2 * MIN + SAMPLE, MIN - SAMPLE] {
+            let mut state = MacState::default();
+            let healthy = Machine { memory_pressure: Some(MemoryPressure::Normal), ..memory_sample(None) };
+            state.step(&healthy, 0);
+            state.step(&Machine { memory_pressure: Some(MemoryPressure::Critical), ..Machine::default() }, 2 * MIN);
+            assert!(state.step(&healthy, valid_at), "the first valid budget after an invalid reading is accepted, even at the same timestamp");
+            assert!(state.room(0, valid_at).is_err());
+            state.step(&healthy, valid_at + MIN);
+            assert_eq!(state.room(0, valid_at + MIN), Ok(()));
+        }
+
+    }
+
+    #[test]
+    fn startup_admission_unbudgeted_percentages_cannot_replace_an_unknown_percentage() {
+        let mut state = MacState::default();
+        let budget = |compressor| Machine { memory_available: 5 << 30, memory_free_percent: None, ..memory_sample(compressor) };
+        state.step(&budget(swap_sample(1 << 30, 2 << 30, 0)), 0);
+        assert_eq!(state.room(0, 0), Ok(()));
+        let swapping = swap_sample(1 << 30, 2 << 30, SWAPPING / PAGE);
+        state.step(&Machine { memory_free_percent: Some(100), compressor: swapping, ..Machine::default() }, SAMPLE);
+        assert!(matches!(state.room(0, SAMPLE), Err(NoRoom::Available { .. })), "a percentage without a budget cannot remove the byte floor for swapping");
+        state.step(&budget(swapping), 2 * SAMPLE);
+        assert!(state.room(0, 2 * SAMPLE).is_err(), "a later byte budget without a percentage cannot inherit the unbudgeted 100%");
+
+        let mut state = MacState { node_cost: Some(6 << 30), ..MacState::default() };
+        state.step(&Machine { memory_available: 12 << 30, memory_free_percent: None, ..memory_sample(None) }, 0);
+        assert_eq!(state.room(0, 0), Ok(()));
+        state.step(&Machine { memory_free_percent: Some(40), ..Machine::default() }, SAMPLE);
+        assert!(matches!(state.room(0, SAMPLE), Err(NoRoom::Free { free: 40, .. })), "independent percentages still restrict a large pending cost");
+        state.step(&Machine { memory_available: 12 << 30, memory_free_percent: None, ..memory_sample(None) }, 2 * MIN);
+        assert!(matches!(state.room(0, 2 * MIN), Err(NoRoom::Free { free: 40, .. })), "missing percentages cannot erase the independent restriction");
+
+        let mut state = MacState::default();
+        state.step(&Machine { memory_free_percent: Some(3), ..Machine::default() }, 0);
+        assert_eq!(state.room(0, 0), Err(NoRoom::Unmeasured));
+        state.step(&Machine { memory_free_percent: None, ..memory_sample(None) }, SAMPLE);
+        assert!(matches!(state.room(0, SAMPLE), Err(NoRoom::Free { free: 3, .. })), "the first budget cannot discard an earlier restrictive percentage");
+    }
+
+    #[test]
+    fn startup_admission_preserves_partial_shortages_before_the_first_budget() {
+        let healthy = Machine { memory_pressure: Some(MemoryPressure::Normal), ..memory_sample(None) };
+        for shortage in [
+            Machine { memory_free_percent: Some(3), ..Machine::default() },
+            Machine { memory_pressure: Some(MemoryPressure::Critical), ..Machine::default() },
+        ] {
+            let mut state = MacState::default();
+            state.step(&shortage, 0);
+            assert!(state.room(0, 0).is_err());
+            state.step(&healthy, SAMPLE);
+            assert!(state.room(0, SAMPLE).is_err(), "the first byte budget cannot erase a recent independent shortage");
+            state.step(&healthy, MIN + SAMPLE);
+            assert_eq!(state.room(0, MIN + SAMPLE), Ok(()));
+        }
+    }
+
+    #[test]
+    fn startup_admission_unbudgeted_swap_growth_can_hold_but_cannot_recover() {
+        let mut state = MacState::default();
+        state.step(&memory_sample(swap_sample(1 << 30, 2 << 30, 0)), 0);
+        let growing = Machine { compressor: swap_sample((1 << 30) + SWAPPING, (2 << 30) + SWAPPING, SWAPPING / PAGE), ..Machine::default() };
+        assert!(!state.step(&growing, SAMPLE));
+        assert!(state.room(0, SAMPLE).is_err(), "swap growth remains a restriction when available bytes are missing");
+        for at in (2 * SAMPLE..=2 * MIN).step_by(SAMPLE as usize) {
+            state.step(&growing, at);
+            assert!(state.room(0, at).is_err(), "missing memory cannot establish swap recovery");
+        }
+        let healthy = memory_sample(growing.compressor);
+        for at in (2 * MIN + SAMPLE..3 * MIN + SAMPLE).step_by(SAMPLE as usize) {
+            state.step(&healthy, at);
+            assert!(state.room(0, at).is_err(), "swap recovery needs a fresh minute of valid memory measurements");
+        }
+        state.step(&healthy, 3 * MIN + SAMPLE);
+        assert_eq!(state.room(0, 3 * MIN + SAMPLE), Ok(()));
+    }
+
+    #[test]
+    fn startup_admission_unbudgeted_swapouts_still_raise_the_memory_floor() {
+        let mut state = MacState::default();
+        let healthy = Machine { memory_free_percent: Some(31), ..memory_sample(swap_sample(1 << 30, 2 << 30, 0)) };
+        state.step(&healthy, 0);
+        let swapping = Machine { compressor: swap_sample(1 << 30, 2 << 30, SWAPPING / PAGE), ..Machine::default() };
+        assert!(!state.step(&swapping, SAMPLE));
+        assert!(matches!(state.room(0, SAMPLE), Err(NoRoom::Swapping { .. })));
+        state.step(&Machine { compressor: healthy.compressor, ..Machine::default() }, 2 * MIN);
+        assert!(state.room(0, 2 * MIN).is_err(), "a missing budget cannot recover the swap-out restriction");
+        state.step(&healthy, 3 * MIN);
+        assert!(state.room(0, 3 * MIN).is_err());
+        for at in (3 * MIN + SAMPLE..=4 * MIN).step_by(SAMPLE as usize) { state.step(&healthy, at); }
+        assert_eq!(state.room(0, 4 * MIN), Ok(()));
+    }
+
+    #[test]
+    fn startup_admission_unbudgeted_swap_readings_cannot_clear_a_known_floor() {
+        for budgeted in [false, true] {
+            let mut state = MacState::default();
+            let sample = |compressor| Machine { memory_free_percent: Some(31), ..memory_sample(compressor) };
+            state.step(&sample(swap_sample(1 << 30, 2 << 30, 0)), 0);
+            let mut swapping = sample(swap_sample(1 << 30, 2 << 30, SWAPPING / PAGE));
+            if !budgeted { swapping.memory_total = 0; }
+            state.step(&swapping, 2 * MIN);
+            assert!(matches!(state.room(0, 2 * MIN), Err(NoRoom::Swapping { .. })));
+            state.step(&sample(None), 2 * MIN + SAMPLE);
+            assert!(matches!(state.room(0, 2 * MIN + SAMPLE), Err(NoRoom::Swapping { .. })), "a sampling gap cannot leave a known swapping floor unprotected");
+        }
+        for free in [31, 60] {
+            for missing in [
+                None,
+                Some(MemoryCompressor { page_size: 0, ..MemoryCompressor::default() }),
+                Some(MemoryCompressor { page_size: PAGE, swap_used: 1, swap_total: Some(0), ..MemoryCompressor::default() }),
+            ] {
+                let mut state = MacState::default();
+                let sample = |compressor| Machine { memory_free_percent: Some(free), ..memory_sample(compressor) };
+                state.step(&sample(swap_sample(1 << 30, 2 << 30, 0)), 0);
+                let stable = swap_sample(1 << 30, 2 << 30, SWAPPING / PAGE);
+                state.step(&sample(stable), SAMPLE);
+                assert_eq!(state.room(0, SAMPLE).is_err(), free == 31);
+                for at in (2 * SAMPLE..=2 * MIN).step_by(SAMPLE as usize) {
+                    state.step(&sample(missing), at);
+                    assert_eq!(state.room(0, at).is_err(), free == 31, "unknown swap counters cannot lower the floor or impose an unconditional hold");
+                }
+                for at in (2 * MIN + SAMPLE..3 * MIN + SAMPLE).step_by(SAMPLE as usize) {
+                    state.step(&sample(stable), at);
+                    assert_eq!(state.room(0, at).is_err(), free == 31);
+                }
+                state.step(&sample(stable), 3 * MIN + SAMPLE);
+                assert_eq!(state.room(0, 3 * MIN + SAMPLE), Ok(()));
+            }
+        }
+        let mut state = MacState::default();
+        let sample = |outs| Machine { memory_free_percent: Some(31), ..memory_sample(swap_sample(1 << 30, 2 << 30, outs)) };
+        state.step(&sample(0), 0);
+        state.step(&sample(SWAPPING / PAGE), SAMPLE);
+        for at in (2 * SAMPLE..MIN + 2 * SAMPLE).step_by(SAMPLE as usize) {
+            state.step(&sample(0), at);
+            assert!(state.room(0, at).is_err(), "reset counters need a fresh stable minute");
+        }
+        state.step(&sample(0), MIN + 2 * SAMPLE);
+        assert_eq!(state.room(0, MIN + 2 * SAMPLE), Ok(()));
+    }
+
+    #[test]
+    fn startup_admission_available_bytes_do_not_require_optional_percentage_or_swap() {
+        let mut state = MacState::default();
+        state.step(&Machine { memory_total: 16 << 30, memory_available: 8 << 30, ..Machine::default() }, 0);
+        assert_eq!(state.room(0, 0), Ok(()));
+    }
+
+    #[test]
+    fn regression_real_available_memory_holds_a_start_even_with_a_healthy_percentage() {
+        for available in [0, 512 << 20] {
+            let mut state = MacState::default();
+            assert!(state.step(&Machine { memory_total: 18 << 30, memory_available: available,
+                memory_free_percent: Some(60), ..Machine::default() }, 0));
+            assert!(state.room(0, 0).is_err(), "a high percentage cannot stand in for available RAM");
+        }
     }
 
     #[test]
@@ -465,7 +743,7 @@ mod tests {
     const WEIGHED: u64 = 900_000;
 
     fn machine(free: u32) -> Machine {
-        Machine { memory_available: 8 << 30, memory_free_percent: Some(free), cpus: 11, load: [5.0, 5.0, 5.0], ..Machine::default() }
+        Machine { memory_total: 18 << 30, memory_available: 8 << 30, memory_free_percent: Some(free), cpus: 11, load: [5.0, 5.0, 5.0], ..Machine::default() }
     }
 
     fn pressed(free: u32, pressure: MemoryPressure) -> Machine {
@@ -768,10 +1046,10 @@ mod tests {
     fn without_compressor_counters_free_memory_and_critical_pressure_decide() {
         let mut state = MacState::default();
         let now = feed(&mut state, &machine(19), 0, 2 * MIN);
-        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19, needed: 20, floor: 20, nodes: 1, cost: 512 << 20 }));
-        let now = feed(&mut state, &machine(20), now, now + 4 * SAMPLE);
+        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19, needed: 23, floor: 20, nodes: 1, cost: 512 << 20 }));
+        let now = feed(&mut state, &machine(23), now, now + 4 * SAMPLE);
         assert!(matches!(state.room(0, now), Err(NoRoom::Free { free: 19, .. })), "the last sample at 19 % is still within the minute");
-        let now = feed(&mut state, &machine(20), now, now + SAMPLE);
+        let now = feed(&mut state, &machine(23), now, now + 2 * SAMPLE);
         assert_eq!(state.room(0, now), Ok(()));
         let now = feed(&mut state, &pressed(50, MemoryPressure::Warning), now, now + SAMPLE);
         assert_eq!(state.room(0, now), Ok(()), "macOS's warning alone holds nothing");
@@ -783,11 +1061,11 @@ mod tests {
     /// The work Mac's daemon held starts "measuring memory for its first minute" with 61–87 % free.
     /// A daemon that just started judges the samples it has.
     #[test]
-    fn a_daemon_that_just_started_has_room_at_once_with_plenty_free_and_a_system_without_memory_readings_always_has_room() {
+    fn a_daemon_waits_for_memory_readings_and_has_room_at_once_with_a_healthy_budget() {
         let mut state = MacState::default();
-        assert_eq!(state.room(5, 0), Ok(()));
-        state.step(&Machine { memory_free_percent: None, ..machine(0) }, 0);
-        assert_eq!(state.room(0, MIN), Ok(()), "a sample without a memory reading only counts for the load");
+        assert_eq!(state.room(5, 0), Err(NoRoom::Unmeasured));
+        state.step(&Machine::default(), 0);
+        assert_eq!(state.room(0, MIN), Err(NoRoom::Unmeasured), "an empty sample cannot establish room");
         for free in [61, 87] {
             let mut state = MacState::default();
             state.step(&Machine { memory_total: 16 * GIB as u64, ..pressed(free, MemoryPressure::Warning) }, MIN);

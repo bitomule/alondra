@@ -51,6 +51,10 @@ fn bare_world() -> Fixture {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    crate::machine_watch::pace(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
+        memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
+        disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sessions = Arc::new(FakeSessions::default());
     let _ = sessions.domain.set(Arc::downgrade(&domain));
     domain.handovers.use_sessions(sessions.clone() as Arc<dyn BgSessions>);
