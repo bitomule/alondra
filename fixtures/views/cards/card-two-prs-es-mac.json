@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:final",
   "client": "mac",
-  "version": "vb029bb2fba0d4109",
+  "version": "vcb7cbed8180405d4",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -134,8 +134,8 @@
               "resolves_card": false
             },
             {
-              "id": "merge:github.com/bitomule/alondra-cloud#6@8~66666666-final",
-              "label": "Squash and merge · alondra-cloud#6",
+              "id": "merge:github.com/example/second-repo#6@8~66666666-final",
+              "label": "Squash and merge · second-repo#6",
               "style": "primary",
               "role": "advance",
               "option_id": "squash",
@@ -171,12 +171,12 @@
               }
             },
             {
-              "label": "alondra-cloud#6",
+              "label": "second-repo#6",
               "value": "Consultando GitHub…",
               "tone": "neutral",
               "link": {
                 "kind": "view",
-                "key": "pull_request:github.com/bitomule/alondra-cloud#6"
+                "key": "pull_request:github.com/example/second-repo#6"
               }
             }
           ]
