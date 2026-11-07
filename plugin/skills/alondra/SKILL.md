@@ -125,6 +125,8 @@ must be decidable by someone who sees nothing else:
   the command, the list, the numbers. Never a summary of it or "what I showed you".
 - Each option says in its `description` what happens if it is chosen, and the `recommended` one
   why.
+- The `label` of each option names what will be done, not a pronoun for it: "Fix the bug", never
+  "Fix it"; "Split into two tasks", never "Do that".
 - Nothing refers to the chat ("as I said", "the earlier one", "the plan", "option B above"):
   repeat what is needed.
 - Before sending, ask yourself: could someone who sees only this card decide? If not, add what is

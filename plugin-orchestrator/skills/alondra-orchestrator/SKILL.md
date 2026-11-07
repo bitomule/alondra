@@ -491,6 +491,8 @@ read. Every `ask`, `request_action`, `request_input`,
   the command, the list, the numbers. Never a summary of it or "what I showed you".
 - Each option says in its `description` what happens if it is chosen, and the `recommended` one
   why.
+- The `label` of each option names what will be done, not a pronoun for it: "Fix the bug", never
+  "Fix it"; "Split into two tasks", never "Do that".
 - A plan you ask the user to approve goes whole in `content`, never as a path. The user cannot
   open a file from the app, and you work outside the repositories: a path you mention is never
   read or shown. Paste the plan, or have its node send it as an Alondra document or in its card's

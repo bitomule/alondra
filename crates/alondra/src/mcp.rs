@@ -166,7 +166,7 @@ fn interaction_fields() -> Value {
             {"type":"object","properties":{"kind":{"type":"string","const":"agent"},"agent_id":{"type":"string"}},"required":["kind","agent_id"],"additionalProperties":false}
         ]},
         "body":{"type":"string","description":"Legacy alias for content.body on a notice or result: complete content only, without an opening heading repeating title"},"blocking":{"type":"boolean"},
-        "options":{"type":"array","description":"Each option is a button: pressing it answers. The user can always write on the card too, alone or with the option; to ask for a value, use request_input.","items":{"type":"object","properties":{
+        "options":{"type":"array","description":"Each option is a button: pressing it answers. Each label says what will be done (\"Fix the bug\", not \"Fix it\"). The user can always write on the card too, alone or with the option; to ask for a value, use request_input.","items":{"type":"object","properties":{
             "id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}
         },"required":["id","label"],"additionalProperties":false}},
         "attachments":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false}}
@@ -1975,6 +1975,10 @@ mod tests {
         let skill = skill_text(Role::Node);
         assert!(skill.contains("A task owns every PR it opens, in any repository"));
         assert!(skill.contains("`ask` with the decision in `body` and the approval options, then at once `link_interaction_subject`"));
+        assert!(skill.contains("The `label` of each option names what will be done, not a pronoun for it"));
+        assert!(skill_text(Role::Orchestrator).contains("The `label` of each option names what will be done, not a pronoun for it"));
+        let ask = tools(Role::Node, "Ana").as_array().unwrap().iter().find(|t| t["name"] == "ask").unwrap().clone();
+        assert!(ask["inputSchema"].to_string().contains("Each label says what will be done"));
     }
 
     #[test]
