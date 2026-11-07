@@ -49,6 +49,9 @@ impl HomeLock {
         Ok(Self { file })
     }
 }
+pub fn lock_path(home: &Path) -> std::path::PathBuf {
+    home.join(LOCK_FILE)
+}
 /// Whether a process holds a lock on `home`: a running daemon holds it shared for its whole life.
 /// A caller that holds its own lock on `home` sees itself.
 pub fn in_use(home: &Path) -> io::Result<bool> {

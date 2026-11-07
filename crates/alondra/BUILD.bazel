@@ -102,6 +102,29 @@ low_opt_rust_test(
     "no_sleep_wording",
 ]]
 
+rust_binary(
+    name = "fake_daemon",
+    testonly = True,
+    srcs = ["tests/support/fake_daemon.rs"],
+    crate_root = "tests/support/fake_daemon.rs",
+    edition = "2024",
+    deps = crate_deps(["libc"]),
+)
+
+low_opt_rust_test(
+    name = "doctor_service_test",
+    timeout = "moderate",
+    srcs = ["tests/doctor_service.rs", "//crates:test_support.rs"],
+    crate_root = "tests/doctor_service.rs",
+    data = [":alondra", ":fake_daemon"],
+    edition = "2024",
+    rustc_env = {
+        "CARGO_BIN_EXE_alondra": "$(rootpath :alondra)",
+        "CARGO_BIN_EXE_fake_daemon": "$(rootpath :fake_daemon)",
+    },
+    deps = all_crate_deps(normal = True, normal_dev = True),
+)
+
 # Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
 low_opt_rust_test(
     name = "no_old_commands_test",

@@ -56,7 +56,7 @@ impl Paths {
     fn plist(&self, label: &str) -> PathBuf {
         self.home.join("Library/LaunchAgents").join(format!("{label}.plist"))
     }
-    fn daemon(&self) -> PathBuf {
+    pub(crate) fn daemon(&self) -> PathBuf {
         self.bin.join("alondrad")
     }
     /// What launchd runs before alondrad: the launcher at its fixed path, when this build ships
@@ -506,19 +506,61 @@ fn listening_process(port: u16) -> Result<i32> {
         .ok_or_else(|| anyhow::anyhow!(trf!("nothing listens on port {port}", "nada escucha en el puerto {port}")))
 }
 
-/// SIGUSR1 makes a daemon leave its SDK hosts running for the next one. A release older than that
-/// signal ends on it at once, which leaves them running too.
-fn leave_for_launchd(daemon: i32, interval: Duration) -> Result<()> {
-    if unsafe { libc::kill(daemon, libc::SIGUSR1) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("kill");
-    }
-    for _ in 0..LEAVE_POLLS {
-        if unsafe { libc::kill(daemon, 0) } != 0 {
-            return Ok(());
+/// How long `doctor --fix` waits for a daemon to start, to leave or to answer. `ALONDRA_SERVICE_WAIT_SECS`
+/// shortens it for the tests that wait for a daemon that never does.
+pub(crate) fn service_wait() -> Duration {
+    std::env::var("ALONDRA_SERVICE_WAIT_SECS").ok().and_then(|v| v.parse::<f64>().ok())
+        .filter(|s| *s > 0.0).map(Duration::from_secs_f64).unwrap_or(Duration::from_secs(30))
+}
+
+fn send(pid: i32, signal: i32) -> std::io::Result<()> {
+    if unsafe { libc::kill(pid, signal) } == 0 { return Ok(()) }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) }
+}
+
+fn gone(pid: i32, within: Duration, interval: Duration) -> bool {
+    let polls = (within.as_millis() / interval.as_millis().max(1)).max(1);
+    for _ in 0..polls {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
         }
         std::thread::sleep(interval);
     }
+    false
+}
+
+/// SIGUSR1 makes a daemon leave its SDK hosts running for the next one. A release older than that
+/// signal ends on it at once, which leaves them running too.
+fn leave_for_launchd(daemon: i32, within: Duration, interval: Duration) -> Result<()> {
+    send(daemon, libc::SIGUSR1).context("kill")?;
+    if gone(daemon, within, interval) {
+        return Ok(());
+    }
     bail!(tr!("the daemon started by hand did not leave", "el daemon arrancado a mano no se ha ido"))
+}
+
+/// A daemon that ignores SIGUSR1 is stuck; its SDK hosts are separate processes that the daemon
+/// launchd starts adopts, so ending it with SIGKILL loses none of them.
+fn end_stuck(daemon: i32, within: Duration, interval: Duration) -> Result<()> {
+    if leave_for_launchd(daemon, within, interval).is_ok() {
+        return Ok(());
+    }
+    send(daemon, libc::SIGKILL).context("kill")?;
+    if gone(daemon, within, interval) {
+        return Ok(());
+    }
+    bail!(tr!("the daemon holding this HOME did not stop", "el daemon que retiene este HOME no se ha parado"))
+}
+
+/// The processes holding this HOME's lock file open: a running daemon holds it for its whole life.
+fn home_holders(home: &Path) -> Result<Vec<i32>> {
+    let lock = alondra_core::home_lock::lock_path(home);
+    let out = Command::new("/usr/sbin/lsof").arg("-t").arg("--").arg(&lock).output().context("lsof")?;
+    let own = std::process::id() as i32;
+    let holders: Vec<i32> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|line| line.trim().parse().ok()).filter(|pid| *pid != own).collect();
+    anyhow::ensure!(!holders.is_empty(), tr!("no process was found holding this HOME", "no se encontró ningún proceso que retenga este HOME"));
+    Ok(holders)
 }
 
 fn is_launchd_lifecycle_step(step: &Step) -> bool {
@@ -617,7 +659,7 @@ fn launcher_outdated(paths: &Paths) -> bool {
     bundled.is_some() && bundled != alondra_core::launcher::version(&installed)
 }
 
-const LEAVE_POLLS: usize = 150;
+const LEAVE_INTERVAL: Duration = Duration::from_millis(200);
 const BREW_PREFIXES: [&str; 2] = ["/opt/homebrew/opt/alondra", "/usr/local/opt/alondra"];
 
 fn dev_setup_over_brew(running_from_brew: bool, brew_installed: bool, forced: bool) -> bool {
@@ -788,20 +830,58 @@ impl Installation {
             .is_ok_and(|out| disabled_in(&String::from_utf8_lossy(&out.stdout), &self.label))
     }
 
+    fn launchctl_step(&self, args: Vec<String>) -> Result<()> {
+        execute(&Step::Run { program: "launchctl".into(), args }, &self.context)
+    }
+
+    fn bootstrap(&self) -> Result<()> {
+        self.launchctl_step(vec!["enable".into(), self.job_target()])?;
+        self.launchctl_step(vec!["bootstrap".into(), format!("gui/{}", self.paths.uid), self.paths.plist(&self.label).display().to_string()])
+    }
+
+    /// Lets launchd load the job again at login, whatever the daemon running now is.
+    pub(crate) fn enable_service(&self) -> Result<()> {
+        self.launchctl_step(vec!["enable".into(), self.job_target()])
+    }
+
     /// Puts under launchd the daemon listening on `port`, started by hand, with its SDK hosts alive.
     pub(crate) fn return_to_launchd(&self, port: u16) -> Result<()> {
         self.write_service_files()?;
         let daemon = listening_process(port)?;
-        let plist = self.paths.plist(&self.label).display().to_string();
+        if self.job_disabled() {
+            self.enable_service()?;
+        }
         hand_over_to_launchd(
             self.job_loaded(),
-            || {
-                let launchctl = |args: Vec<String>| Step::Run { program: "launchctl".into(), args };
-                execute(&launchctl(vec!["enable".into(), self.job_target()]), &self.context)?;
-                execute(&launchctl(vec!["bootstrap".into(), format!("gui/{}", self.paths.uid), plist]), &self.context)
-            },
-            || leave_for_launchd(daemon, Duration::from_millis(200)),
+            || self.bootstrap(),
+            || leave_for_launchd(daemon, service_wait(), LEAVE_INTERVAL),
         )?;
+        self.record_brew_keg()
+    }
+
+    /// Restarts the daemon under launchd into the installed binary, once that binary passed its
+    /// own startup check: the daemon exits with 75 and launchd starts the new one, with the SDK
+    /// hosts left running (`kickstart -k` would stop them).
+    pub(crate) fn restart_into_installed(&self, port: u16) -> Result<()> {
+        crate::update::preflight(&self.paths.daemon()).map_err(|reason| anyhow::anyhow!(
+            trf!("the installed alondrad failed its startup check: {reason}", "el alondrad instalado no ha pasado su comprobación de arranque: {reason}")))?;
+        self.return_to_launchd(port)
+    }
+
+    /// Loads the job beside a daemon that holds this HOME without answering, then ends that
+    /// daemon so the one launchd starts takes over.
+    pub(crate) fn reclaim_home(&self) -> Result<()> {
+        self.write_service_files()?;
+        let holders = home_holders(&self.paths.alondra_home)?;
+        if self.job_disabled() {
+            self.enable_service()?;
+        }
+        if !self.job_loaded() {
+            self.bootstrap()?;
+        }
+        for holder in holders {
+            end_stuck(holder, service_wait(), LEAVE_INTERVAL)?;
+        }
         self.record_brew_keg()
     }
 

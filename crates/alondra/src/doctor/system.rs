@@ -11,6 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::Action;
+use super::checks::{Served, served};
 use crate::client::Client;
 use crate::setup;
 
@@ -44,12 +45,71 @@ pub struct ServiceView {
     pub outside_launchd: bool,
     /// launchd has the job disabled, so it refuses to load it.
     pub disabled: bool,
+    /// launchd has the job loaded.
+    pub job_loaded: bool,
+    /// The version `/daemon` reports, when a daemon answers.
+    pub running_version: Option<String>,
+    /// The version of the `alondrad` installed next to this CLI.
+    pub installed_version: Option<String>,
+    pub startup_item: StartupItem,
     pub others: Vec<PathBuf>,
     pub binaries: bool,
     pub bin: PathBuf,
     pub dev_over_brew: bool,
     pub repo: Option<PathBuf>,
     pub marketplace_elsewhere: Option<PathBuf>,
+}
+
+/// Whether macOS lets the service run: System Settings > General > Login Items & Extensions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StartupItem {
+    Allowed,
+    Off,
+    #[default]
+    Unknown,
+}
+
+/// The bit of an entry's `Disposition` mask that is set while the item is on in System Settings.
+const BTM_ENABLED: u32 = 0x1;
+
+fn disposition_mask(value: &str) -> Option<u32> {
+    let (_, hex) = value.rsplit_once("(0x")?;
+    u32::from_str_radix(hex.trim_end_matches(')').trim(), 16).ok()
+}
+
+/// Reads the entry `8.<label>` of `sfltool dumpbtm`: only its `Disposition (0x..)` mask decides.
+/// Anything the dump does not show clearly is `Unknown`.
+pub fn startup_item_in(dump: &str, label: &str) -> StartupItem {
+    let wanted = format!("8.{label}");
+    let mut entries: Vec<(Option<&str>, Option<u32>)> = vec![];
+    for line in dump.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim();
+        match (key.trim(), entries.last_mut()) {
+            ("UUID", _) => entries.push((None, None)),
+            ("Identifier", Some(entry)) => entry.0 = Some(value),
+            ("Disposition", Some(entry)) => entry.1 = disposition_mask(value),
+            _ => {}
+        }
+    }
+    let masks: Vec<Option<u32>> = entries.iter().filter(|(identifier, _)| *identifier == Some(wanted.as_str())).map(|(_, mask)| *mask).collect();
+    if masks.is_empty() || masks.contains(&None) {
+        StartupItem::Unknown
+    } else if masks.iter().flatten().any(|mask| mask & BTM_ENABLED != 0) {
+        StartupItem::Allowed
+    } else {
+        StartupItem::Off
+    }
+}
+
+impl ServiceView {
+    /// The version a daemon runs and the one installed, when they differ.
+    pub fn version_behind(&self) -> Option<(&str, &str)> {
+        match (self.running_version.as_deref(), self.installed_version.as_deref()) {
+            (Some(running), Some(installed)) if running != installed => Some((running, installed)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -164,9 +224,6 @@ pub fn fingerprint(dir: &Path) -> Option<String> {
     Some(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// How long `doctor --fix` waits for a started daemon to answer.
-pub const START_WAIT: Duration = Duration::from_secs(30);
-
 /// `make e2e-sandbox NEW_MAC=1` stands in for launchd and the relay account, so a development
 /// build can walk a new Mac's setup without touching this Mac's service or Claude profile.
 struct Sandbox {
@@ -213,6 +270,8 @@ pub struct Real {
     sandbox: Option<Sandbox>,
     install: RefCell<Option<std::rc::Rc<setup::Installation>>>,
     health: RefCell<Option<Result<Value, String>>>,
+    installed_version: RefCell<Option<Option<String>>>,
+    startup_item: RefCell<Option<StartupItem>>,
     context: RefCell<Option<Result<crate::claude_auth::ContextEnv, String>>>,
 }
 
@@ -225,6 +284,8 @@ impl Real {
             sandbox: Sandbox::from_env(),
             install: RefCell::new(None),
             health: RefCell::new(None),
+            installed_version: RefCell::new(None),
+            startup_item: RefCell::new(None),
             context: RefCell::new(None),
         }
     }
@@ -255,19 +316,52 @@ impl Real {
     fn forget(&self) {
         *self.install.borrow_mut() = None;
         *self.health.borrow_mut() = None;
+        *self.installed_version.borrow_mut() = None;
+        *self.startup_item.borrow_mut() = None;
         *self.context.borrow_mut() = None;
     }
 
+    fn installed_version(&self) -> Option<String> {
+        self.installed_version.borrow_mut().get_or_insert_with(|| crate::update::installed_version(&self.install().paths.daemon())).clone()
+    }
+
+    /// `sfltool dumpbtm` can hang on a Mac that does not answer it: a short wait, then unknown.
+    fn startup_item(&self, label: &str) -> StartupItem {
+        *self.startup_item.borrow_mut().get_or_insert_with(|| {
+            let mut dump = Command::new("sfltool");
+            dump.arg("dumpbtm");
+            match command_output(dump, Duration::from_secs(5)) {
+                Some((true, text)) => startup_item_in(&text, label),
+                _ => StartupItem::Unknown,
+            }
+        })
+    }
+
+    /// Returns once the daemon answers with the installed version under launchd; a daemon that
+    /// answers with something else is waited for until the time runs out, then named.
     fn wait_for_daemon(&self) -> Result<()> {
         let started = Instant::now();
         let client = Client::new(Duration::from_millis(500));
-        while started.elapsed() < START_WAIT {
-            if client.get::<Value>("/daemon").is_ok() {
-                return Ok(());
+        let installed = if self.sandbox.is_some() { None } else { self.installed_version() };
+        let supervision = self.sandbox.is_none();
+        let mut last = Served::Silent;
+        while started.elapsed() < setup::service_wait() {
+            if let Ok(info) = client.get::<Value>("/daemon") {
+                last = served(&info, installed.as_deref(), supervision);
+                if last == Served::Running {
+                    return Ok(());
+                }
             }
             std::thread::sleep(Duration::from_millis(500));
         }
-        bail!(tr!("Alondra didn't start.", "Alondra no ha arrancado."))
+        match last {
+            Served::Silent | Served::Running => bail!(tr!("Alondra didn't start.", "Alondra no ha arrancado.")),
+            Served::Version(running) => {
+                let installed = installed.unwrap_or_default();
+                bail!(trf!("alondrad answers with {running}, not the installed {installed}", "alondrad responde con {running}, no con la versión instalada {installed}"))
+            }
+            Served::OutsideLaunchd => bail!(tr!("alondrad answers, but launchd does not run it", "alondrad responde, pero no lo ejecuta launchd")),
+        }
     }
 
     fn wait_if(&self, started: bool) -> Result<()> {
@@ -289,6 +383,9 @@ impl Real {
                 .and_then(|started| self.wait_if(started)),
             Action::RestartService => install.restart_service().and_then(|_| self.wait_for_daemon()),
             Action::ReturnToLaunchd => install.return_to_launchd(self.config().port).and_then(|_| self.wait_for_daemon()),
+            Action::RestartIntoInstalled => install.restart_into_installed(self.config().port).and_then(|_| self.wait_for_daemon()),
+            Action::ReclaimHome => install.reclaim_home().and_then(|_| self.wait_for_daemon()),
+            Action::EnableService => install.enable_service(),
             _ => install.install_service().and_then(|started| self.wait_if(started)),
         }
     }
@@ -432,6 +529,7 @@ impl System for Real {
             DaemonState::Stopped
         };
         let installed = install.seen.plist.is_some();
+        let startup_item = if installed { self.startup_item(&label) } else { StartupItem::Unknown };
         ServiceView {
             label,
             installed,
@@ -439,6 +537,10 @@ impl System for Real {
                 health.get("supervised").and_then(Value::as_bool).map_or_else(|| !install.job_loaded(), |supervised| !supervised)
             }),
             disabled: installed && install.job_disabled(),
+            job_loaded: installed && install.job_loaded(),
+            running_version: self.health().ok().and_then(|health| health.get("version").and_then(Value::as_str).map(str::to_string)),
+            installed_version: self.installed_version(),
+            startup_item,
             daemon,
             pending: install.service_pending(),
             others: install.seen.other_services.clone(),
@@ -540,7 +642,9 @@ impl System for Real {
 
     fn apply(&self, action: Action) -> Result<()> {
         let result = match action {
-            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd => self.start_service(action),
+            Action::EnableService if self.sandbox.is_some() => Ok(()),
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd
+            | Action::RestartIntoInstalled | Action::ReclaimHome | Action::EnableService => self.start_service(action),
             Action::PrepareIdentity => crate::service_setup::prepare_local_quietly(&self.home).map(|_| ()),
             Action::RepairPlugin if self.sandbox.is_some() => Ok(()),
             Action::RepairPlugin => self.install().repair_plugin(),

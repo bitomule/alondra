@@ -53,6 +53,9 @@ pub enum Action {
     ReplaceOtherService,
     RestartService,
     ReturnToLaunchd,
+    RestartIntoInstalled,
+    ReclaimHome,
+    EnableService,
     PrepareIdentity,
     RepairPlugin,
     SetProjects,
@@ -61,7 +64,7 @@ pub enum Action {
 
 impl Action {
     fn starts_service(self) -> bool {
-        matches!(self, Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd)
+        matches!(self, Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd | Action::RestartIntoInstalled | Action::ReclaimHome)
     }
 
     /// A browser sign-in: `--yes` cannot do it for a person who is not there.
@@ -71,8 +74,9 @@ impl Action {
 
     fn progress(self) -> Option<&'static str> {
         match self {
-            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd =>
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService | Action::ReturnToLaunchd | Action::RestartIntoInstalled | Action::ReclaimHome =>
                 Some(tr!("Starting the background service…", "Arrancando el servicio en segundo plano…")),
+            Action::EnableService => Some(tr!("Letting launchd start the service again…", "Dejando que launchd vuelva a arrancar el servicio…")),
             Action::PrepareIdentity => Some(tr!("Preparing this Mac for your devices…", "Preparando este Mac para tus dispositivos…")),
             Action::RepairPlugin => Some(tr!("Setting up the Claude plugin…", "Configurando el plugin de Claude…")),
             Action::EnableRelay => Some(tr!("Turning on notifications and access away from home…", "Activando las notificaciones y el acceso desde fuera de casa…")),
