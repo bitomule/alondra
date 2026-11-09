@@ -1,5 +1,9 @@
 # Installing Alondra
 
+Before installing, read [what Alondra does on your Mac](docs/on-your-mac.md). It inventories
+programs, files, connections, macOS permissions and credentials, cites their source, and includes
+a prompt for an agent to audit the checkout without running it.
+
 ```bash
 brew install bitomule/tap/alondra
 alondra
