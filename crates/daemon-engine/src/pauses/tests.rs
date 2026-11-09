@@ -631,6 +631,17 @@ async fn a_normal_end_or_a_wait_on_the_user_is_never_sent_back() {
 
 const SDK_TASK: &str = "t-sdk-paused";
 
+/// Drives an owner until it has nothing to send and its host owes nothing.
+fn settle(driver: &mut crate::sdk_owner::Driver) {
+    while driver.pending_permits() > 0 || driver.waits_for_host() {
+        if driver.pending_permits() > 0 {
+            driver.step(&|| false).unwrap();
+        } else {
+            driver.observe().unwrap();
+        }
+    }
+}
+
 /// A task of the Agent SDK whose turn runs, on the pinned host with the fake native Claude. Its
 /// owner is driven here step by step, so nothing reaches Claude unless a step hands it over.
 struct SdkNode {
@@ -645,6 +656,21 @@ struct SdkNode {
 impl SdkNode {
     /// A node whose first turn the fake Claude holds open.
     fn working() -> Self {
+        let mut node = Self::told("consume-and-hold");
+        while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
+            node.driver.observe().unwrap();
+        }
+        node
+    }
+
+    /// A node whose first turn ended: it rests until it is told something.
+    fn resting() -> Self {
+        let mut node = Self::told("Write the notes");
+        settle(&mut node.driver);
+        node
+    }
+
+    fn told(prompt: &str) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let state = crate::sdk_owner::tests::HostRoot::new();
@@ -661,36 +687,65 @@ impl SdkNode {
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())) });
         let driver = crate::sdk_owner::start(Arc::clone(&domain), &backend, crate::sdk_owner::Launch {
             task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
-            prompt: "consume-and-hold".into(), plugin: home.join("plugin"), options: Default::default(),
+            prompt: prompt.into(), plugin: home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
         }).unwrap();
         domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
         domain.live.gate.ignore_mac();
         domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
-        let mut node = Self { driver, domain, capture, backend, home, _state: state };
-        while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
-            node.driver.observe().unwrap();
-        }
-        node
+        Self { driver, domain, capture, backend, home, _state: state }
     }
 
     /// One more node of the same host root whose first turn the fake Claude holds open.
     fn beside(&self, task: &str) -> crate::sdk_owner::Driver {
+        let mut driver = self.beside_told(task, "consume-and-hold");
+        while self.activity(task) != alondra_domain::ActivityView::Working {
+            driver.observe().unwrap();
+        }
+        driver
+    }
+
+    /// One more node of the same host root, resting after its first turn.
+    fn beside_resting(&self, task: &str) -> crate::sdk_owner::Driver {
+        let mut driver = self.beside_told(task, "Write the notes");
+        settle(&mut driver);
+        driver
+    }
+
+    fn beside_told(&self, task: &str, prompt: &str) -> crate::sdk_owner::Driver {
         let worktree = self.home.join(task);
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let mut driver = crate::sdk_owner::start(Arc::clone(&self.domain), &self.backend, crate::sdk_owner::Launch {
+        let driver = crate::sdk_owner::start(Arc::clone(&self.domain), &self.backend, crate::sdk_owner::Launch {
             task: task.into(), name: format!("Task {task}"), directory: worktree.to_str().unwrap().into(),
-            prompt: "consume-and-hold".into(), plugin: self.home.join("plugin"), options: Default::default(),
+            prompt: prompt.into(), plugin: self.home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
         }).unwrap();
         self.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-        while self.activity(task) != alondra_domain::ActivityView::Working {
-            driver.observe().unwrap();
-        }
         driver
+    }
+
+    fn tell(&self, task: &str, text: &str) {
+        crate::domain_messages::tell_sdk_node(&self.domain, &task.into(), crate::node_push::ALONDRA, text, &format!("tell-{task}"), false).unwrap();
+    }
+
+    fn set_limit(&self, limit: u32) {
+        self.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(limit)) });
+    }
+
+    fn gate(&self) -> crate::admission::Snapshot {
+        self.domain.live.gate.snapshot(&self.domain, alondra_core::now_millis()).unwrap()
+    }
+
+    /// The tasks whose next turn waits for a slot, in the gate's order.
+    fn waiting_turns(&self) -> Vec<String> {
+        self.gate().queue.into_iter().filter_map(|waiting| match waiting.key { Key::Turn(task) => Some(task.0), _ => None }).collect()
+    }
+
+    fn cards(&self) -> Vec<alondra_core::domain::InteractionId> {
+        self.domain.state().unwrap().interactions.keys().cloned().collect()
     }
 
     fn activity(&self, task: &str) -> alondra_domain::ActivityView {
@@ -1309,4 +1364,140 @@ async fn the_pause_a_working_sdk_node_offers_is_taken_and_one_without_its_revisi
     node.step_until(SdkNode::turn_ended);
     let card = node_pause_card(&node.domain).expect("the pause has its card");
     assert_eq!(answer_resume(&node.domain, &card), Ok(()));
+}
+
+/// 7 November: with 8 as the limit, 39 nodes worked, because only starts passed the gate. Ten nodes
+/// told at once with two slots: two go on, eight wait with no card, and they enter as slots free.
+#[tokio::test(flavor = "multi_thread")]
+async fn ten_nodes_told_at_once_with_two_slots_never_work_more_than_two_and_the_rest_enter_as_slots_free() {
+    let node = SdkNode::resting();
+    let mut drivers: Vec<(String, crate::sdk_owner::Driver)> = (0..10).map(|index| {
+        let task = format!("t-turn-{index}");
+        let driver = node.beside_resting(&task);
+        (task, driver)
+    }).collect();
+    let cards = node.cards();
+    node.set_limit(2);
+    for (task, _) in &drivers {
+        run(&node.domain, Actor::System, Command::TellNode { task_id: task.as_str().into(), text: "consume-and-hold".into(), from_user: false, answers: None });
+    }
+    let now = alondra_core::now_millis();
+    std::thread::scope(|scope| {
+        for (task, _) in &drivers {
+            let (domain, task) = (&node.domain, TaskId::from(task.as_str()));
+            scope.spawn(move || domain.live.gate.may_take_turn(domain, &task, now));
+        }
+    });
+    let gate = node.gate();
+    assert_eq!((gate.working, node.waiting_turns().len()), (2, 8), "two have a slot and eight wait, however the asks interleaved");
+
+    let held = |node: &SdkNode| std::fs::read_to_string(format!("{}.prompts", node.capture.display())).unwrap().matches("consume-and-hold").count();
+    let mut rounds = 0;
+    while held(&node) < 2 || rounds < 3 {
+        for (_, driver) in &mut drivers {
+            driver.step(&|| true).unwrap();
+        }
+        node.gate_look().await;
+        assert!(node.gate().working <= 2, "{:?}", node.gate().working_tasks);
+        rounds += 1;
+    }
+    assert_eq!((held(&node), node.waiting_turns().len()), (2, 8), "the two turns run and hold their slots; the rest wait");
+    assert_eq!(node.cards().iter().filter(|card| !cards.contains(card)).count(), 0, "waiting for a slot asks the user nothing");
+
+    node.set_limit(10);
+    node.gate_look().await;
+    while held(&node) < 10 {
+        for (_, driver) in &mut drivers {
+            driver.step(&|| true).unwrap();
+        }
+        node.gate_look().await;
+    }
+    assert!(node.waiting_turns().is_empty());
+    for (_, driver) in &mut drivers {
+        driver.stop().unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slot_that_frees_goes_to_the_waiting_turn_of_highest_priority_then_to_the_oldest() {
+    let node = SdkNode::resting();
+    let mut drivers: Vec<crate::sdk_owner::Driver> = ["t-low", "t-old", "t-new", "t-high"].map(|task| node.beside_resting(task)).into_iter().collect();
+    run(&node.domain, user(), Command::SetPriority { task_id: "t-low".into(), priority: TaskPriority::Low });
+    run(&node.domain, user(), Command::SetPriority { task_id: "t-high".into(), priority: TaskPriority::High });
+    node.set_limit(0);
+    let now = alondra_core::now_millis();
+    for (age, task) in ["t-low", "t-old", "t-new", "t-high"].into_iter().enumerate() {
+        node.tell(task, "Go on");
+        assert!(!node.domain.live.gate.may_take_turn(&node.domain, &task.into(), now + age as Millis));
+    }
+    assert_eq!(node.waiting_turns(), ["t-high", "t-old", "t-new", "t-low"]);
+    node.set_limit(1);
+    node.gate_look().await;
+    assert_eq!(node.waiting_turns(), ["t-old", "t-new", "t-low"]);
+    assert!(node.domain.live.gate.may_take_turn(&node.domain, &"t-high".into(), now + 10));
+    assert!(!node.domain.live.gate.may_take_turn(&node.domain, &"t-old".into(), now + 10));
+    for driver in &mut drivers {
+        driver.stop().unwrap();
+    }
+}
+
+/// A node that waits for a slot says so with its place in the queue, and nobody is asked anything.
+#[tokio::test]
+async fn a_turn_waiting_for_a_slot_reads_waiting_for_capacity_and_raises_no_card() {
+    let mut node = SdkNode::resting();
+    node.set_limit(0);
+    let cards = node.cards();
+    let delivered = node.dispatched_inputs();
+    node.tell(SDK_TASK, "Go on");
+    node.step();
+    assert_eq!(node.dispatched_inputs(), delivered, "nothing more reached the host");
+    assert_eq!(node.cards(), cards);
+    assert_eq!(node.gate().working, 0, "an input held back takes no slot, so it never blocks what frees one");
+    let read = node.domain.read();
+    let live = alondra_core::views::live::LiveSnapshot { pacing: node.domain.live.gate.live(&node.domain, alondra_core::now_millis()), ..Default::default() };
+    let tasks = alondra_core::views::build("tasks", alondra_core::views::RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
+        lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
+    }).unwrap();
+    let tasks = serde_json::to_string(&tasks).unwrap();
+    assert!(tasks.contains("Waiting for capacity"), "{tasks}");
+    drop(read);
+
+    node.set_limit(1);
+    node.gate_look().await;
+    node.until_told("Go on");
+}
+
+/// A message to a resting node waits for a slot, and reaches Claude once one frees.
+#[tokio::test]
+async fn a_message_to_a_resting_node_waits_for_a_slot() {
+    let mut node = SdkNode::resting();
+    node.set_limit(0);
+    let delivered = node.dispatched_inputs();
+
+    node.tell(SDK_TASK, "A message for the node");
+    node.step();
+    assert_eq!((node.dispatched_inputs(), node.waiting_turns().len()), (delivered, 1), "a message waits");
+    node.set_limit(1);
+    node.gate_look().await;
+    node.until_told("A message for the node");
+}
+
+/// A resume the gate let through reserved a slot, and the turn it starts takes that slot: it never
+/// waits behind its own reservation.
+#[tokio::test]
+async fn a_node_back_from_a_pause_starts_its_turn_on_the_slot_of_its_resume() {
+    let mut node = SdkNode::working();
+    node.pause();
+    node.set_limit(1);
+    assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.gate_look().await;
+    for _ in 0..40 {
+        node.step();
+        if node.prompts().iter().any(|prompt| prompt.contains("resumed you")) {
+            break;
+        }
+    }
+    assert!(node.prompts().iter().any(|prompt| prompt.contains("resumed you")), "{:?}", node.waiting_turns());
+    assert!(node.gate().working <= 1);
 }

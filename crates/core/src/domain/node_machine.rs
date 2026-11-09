@@ -863,10 +863,24 @@ impl DomainState {
         use alondra_domain::LiveState;
         let at_work = match self.live_state(&task.id) {
             Some(LiveState::Working(_)) => true,
-            Some(LiveState::WaitingUser(cards)) => cards.iter().all(|card| task.final_presentation.as_ref() == Some(card)),
+            Some(LiveState::WaitingUser(cards)) => cards.iter().all(|card| task.final_presentation.as_ref() == Some(card))
+                && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.activity() != alondra_domain::ActivityView::OwnWork),
             _ => false,
         };
         at_work && !(facts.card || facts.held || facts.closing) && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
+    }
+
+    /// What `task`'s node goes on with passes the gate first. A node that closes does not: cleaning
+    /// up frees what the others wait for. Nor one a pause holds, which comes back through the gate.
+    pub fn turn_passes_gate(&self, task: &TaskId) -> bool {
+        let Some(t) = self.tasks.get(task).filter(|t| !t.over()) else { return false };
+        let Some(agent) = t.agent_id.as_ref().filter(|agent| Some(*agent) != self.orchestrator_session.as_ref()) else { return false };
+        self.through_sdk(agent) && !self.task_facts(agent).closing && self.node_pause(agent).is_none_or(|pause| pause.released)
+    }
+
+    /// `task`'s node has an input or an answer that waits for a slot of the gate.
+    pub fn waits_for_turn(&self, task: &TaskId) -> bool {
+        self.turn_passes_gate(task) && self.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.waits_for_slot())
     }
 
     /// A node waits on the user: a card of its task is in front of them. For a node of the Agent

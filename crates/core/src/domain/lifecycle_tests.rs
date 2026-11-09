@@ -627,7 +627,7 @@ fn a_native_turn_ends_with_a_card_clients_can_name() {
 }
 
 #[test]
-fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_frees_its_slot() {
+fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
@@ -635,10 +635,13 @@ fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_frees_its_slot() {
     ] });
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(TURN_ENDED_PREFIX)), "its own work explains the next step");
-    assert!(!holds_slot(&s, "t"), "waiting for its work takes no slot: the work's memory is measured, not counted as an agent");
+    assert!(holds_slot(&s, "t"), "work of its own keeps its process and its memory");
+    assert!(s.slots().iter().any(|agent| agent.id == AgentId::from("a")), "a node in the background counts in the limit of nodes at work");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "no work end is made up");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_aggregate_rules(&s);
+    deliver(&mut s, "t", "a", "final");
+    assert!(!s.slots().iter().any(|agent| agent.id == AgentId::from("a")), "work left running behind a delivery waits for the user, who decides what comes next");
 }
 
 // Claude Code tracks a foreground command that runs for seconds as its own work. It ends inside
@@ -2701,14 +2704,14 @@ fn a_stalled_turn_that_consumed_the_notification_it_read_leaves_the_task_to_the_
     assert_eq!(s.live_state(&"t".into()), Some(LiveState::Working(Worker::Alondra(Step::Answering))));
 }
 
-/// A journal recorded before a turn that ended on work of its own stopped holding a slot
-/// replays record for record; only what the slot rule says about it changed.
+/// A journal recorded while a turn that ended on work of its own held no slot replays record for
+/// record; only what the slot rule says about it changed.
 #[test]
-fn a_journal_recorded_before_work_of_its_own_freed_the_slot_replays_and_frees_it() {
+fn a_journal_recorded_while_work_of_its_own_held_no_slot_replays_and_holds_one() {
     let recorded = r#"[{"kind":"planned","input":"input:t:5"},{"kind":"admitted","node":"a","execution":{"conversation":"conversation-t","instance":"instance-t","host":"sdk-host"}},{"kind":"resource_available"},{"kind":"turn_started","turn":"turn-1","input":"input:t:5"},{"kind":"work_started","turn":"turn-1","work":"claude-task:build"},{"kind":"turn_ended","turn":"turn-1","unheard_card":"stalled-t-1-turn-1","stalled":true}]"#;
     let records: Vec<LifecycleRecord> = serde_json::from_str(recorded).unwrap();
     let lifecycle = replay(&"t".into(), &records).unwrap();
     assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::OwnWork, "the recorded work still runs");
-    assert!(!lifecycle.holds_slot(), "waiting for it takes no slot");
+    assert!(lifecycle.holds_slot(), "work of its own keeps its process and its memory");
     assert_eq!(serde_json::to_string(&records).unwrap(), recorded, "the records are the bytes that were recorded");
 }

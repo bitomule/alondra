@@ -872,6 +872,8 @@ impl Decisions {
 enum CallbackState {
     AwaitingAnswer(CallbackId),
     Answered(CallbackId),
+    /// The user answered it: the turn that waited on them goes on once it has a slot of the gate.
+    Decided(CallbackId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -945,14 +947,14 @@ struct Execution {
     inbox: Inputs,
 }
 impl Execution {
-    /// A node whose turn ended and only waits for work of its own to finish spends no more of the
-    /// agent's memory than a resting one, so it takes no slot; its memory is still measured.
+    /// A node whose turn ended on work of its own keeps its process and its memory while that
+    /// work runs, and goes on without passing the gate, so it keeps its slot.
     fn holds_slot(&self) -> bool {
         matches!(
             self.resource,
             ResourceEvidence::Reserved | ResourceEvidence::ObservationPending
         ) || self.activity.turn_runs_work()
-            || (self.resource == ResourceEvidence::Available && !self.activity.rests() && !self.activity.waits_for_own_work())
+            || (self.resource == ResourceEvidence::Available && !self.activity.rests())
     }
 }
 
@@ -1254,7 +1256,7 @@ impl TaskLifecycle {
     pub fn callback(&self, id: &CallbackId) -> Option<CallbackView> {
         self.session()?.callbacks.iter().find_map(|state| match state {
             CallbackState::AwaitingAnswer(callback) if callback == id => Some(CallbackView::AwaitingAnswer),
-            CallbackState::Answered(callback) if callback == id => Some(CallbackView::Answered),
+            CallbackState::Answered(callback) | CallbackState::Decided(callback) if callback == id => Some(CallbackView::Answered),
             _ => None,
         })
     }
@@ -1267,7 +1269,7 @@ impl TaskLifecycle {
             && execution.inbox.is_empty()
             && execution.effects.is_empty()
             && execution.callbacks.iter().all(|state| matches!(state,
-                CallbackState::Answered(callback) if allowed.contains(callback)))
+                CallbackState::Answered(callback) | CallbackState::Decided(callback) if allowed.contains(callback)))
             && matches!(&execution.activity, Activity::Continuation(pending)
                 if pending.iter().all(|wake| matches!(wake, Wake::Callback(callback) if allowed.contains(callback))))
     }
@@ -1299,6 +1301,18 @@ impl TaskLifecycle {
             });
         }
         self.session().is_some_and(Execution::holds_slot)
+    }
+    /// An input waits to start a turn of a session that was resting: it needs a slot of the gate.
+    pub fn input_starts_turn(&self) -> bool {
+        self.session().is_some_and(|execution| execution.resource == ResourceEvidence::Available && matches!(execution.activity, Activity::InputPending(_)))
+    }
+    /// The user answered a decision a turn held open, which took no slot while it waited on them.
+    pub fn answer_goes_on(&self) -> bool {
+        self.session().is_some_and(|execution| execution.callbacks.iter().any(|state| matches!(state, CallbackState::Decided(_))))
+    }
+    /// What the node goes on with waits for a slot of the gate.
+    pub fn waits_for_slot(&self) -> bool {
+        self.input_starts_turn() || self.answer_goes_on()
     }
     pub fn cards(&self) -> Vec<(&InteractionId, WaitReason)> {
         match &self.state {
@@ -1553,7 +1567,7 @@ fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
 
 fn callback_id(state: &CallbackState) -> &CallbackId {
     match state {
-        CallbackState::AwaitingAnswer(id) | CallbackState::Answered(id) => id,
+        CallbackState::AwaitingAnswer(id) | CallbackState::Answered(id) | CallbackState::Decided(id) => id,
     }
 }
 

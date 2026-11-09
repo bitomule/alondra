@@ -1554,6 +1554,28 @@ impl Driver {
         self.domain.read().state().node_pause(&self.agent).is_some_and(|pause| !pause.released)
     }
 
+    /// An input that starts a turn waits here for a slot of the gate, with no card: it stays the
+    /// task's, and the gate wakes this owner when its turn comes.
+    fn may_start_turn(&self) -> bool {
+        let starts = {
+            let read = self.domain.read();
+            let state = read.state();
+            state.turn_passes_gate(&self.task) && state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.input_starts_turn())
+        };
+        !starts || self.domain.live.gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
+    }
+
+    /// The user's answer to a decision lets a turn go on that held no slot while it waited on them.
+    /// An answer Alondra's policy gives goes at once: its turn never stopped holding its slot.
+    fn may_answer(&self) -> bool {
+        let goes_on = {
+            let read = self.domain.read();
+            let state = read.state();
+            state.turn_passes_gate(&self.task) && state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.answer_goes_on())
+        };
+        !goes_on || self.domain.live.gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
+    }
+
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
     /// yet, a turn or work of its own still going, or the answer of a control it took. Facts
     /// decide it, never a clock.
@@ -1655,7 +1677,8 @@ impl Driver {
             return Ok(());
         }
         let deferred = self.legacy_plan_supersessions()?;
-        if let Some(index) = self.controls.iter().position(|permit| !deferred.iter()
+        let held_answers = self.controls.iter().any(ControlPermit::responds) && !self.may_answer();
+        if let Some(index) = self.controls.iter().position(|permit| !(held_answers && permit.responds()) && !deferred.iter()
             .any(|callback| callback.as_str() == permit.control().as_str())) {
             let permit = self.controls.remove(index).expect("the control was just found");
             return self.control(permit);
@@ -1663,7 +1686,7 @@ impl Driver {
         self.wake_completed_codex_work()?;
         self.sealed();
         let paused = self.paused() || crate::provider_transition::holds_source_inputs(&self.domain,&self.task,&self.agent.0);
-        if !paused && let Some(permit) = self.permits.pop_front() {
+        if !paused && !self.permits.is_empty() && self.may_start_turn() && let Some(permit) = self.permits.pop_front() {
             return self.dispatch(permit);
         }
         if self.expects_host()? {
@@ -1796,6 +1819,7 @@ impl Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
+        self.domain.live.gate.owner_ended(&self.task);
         self.domain.contexts.forget(&self.task);
         self.domain.live.mods.sdk_ended(&self.agent.0, alondra_core::now_millis());
     }

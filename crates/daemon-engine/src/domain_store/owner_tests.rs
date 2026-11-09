@@ -971,7 +971,7 @@ fn a_turn_end_behind_work_of_its_own_commits_no_card_and_frees_the_slot() {
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
     let scope = scope_of(&reopened.load().unwrap());
     let (holds, _) = reopened.own(scope, |owner| Ok(owner.journal().load(&task())?.holds_slot())).unwrap();
-    assert!(!holds, "waiting for its work takes no slot");
+    assert!(holds, "work of its own keeps its process and its memory");
 }
 
 // 3d: the card cannot be created after the raw observation was accepted: nothing of the

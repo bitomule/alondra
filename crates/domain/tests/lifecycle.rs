@@ -79,7 +79,7 @@ fn last_child_completion_waits_for_its_correlated_root_continuation() {
         },
     );
     assert_eq!(task.activity(), ActivityView::OwnWork);
-    assert!(!task.holds_slot(), "waiting for its own work takes no slot");
+    assert!(task.holds_slot(), "work of its own keeps its process and its memory");
     assert!(task.cards().is_empty());
     fact(
         &mut task,
@@ -145,7 +145,7 @@ fn a_human_permission_and_owned_background_work_coexist_and_only_a_working_turn_
         },
     );
     assert_eq!(task.activity(), ActivityView::OwnWork);
-    assert!(!task.holds_slot(), "waiting for its own work takes no slot");
+    assert!(task.holds_slot(), "work of its own keeps its process and its memory");
     assert_eq!(
         task.cards(),
         vec![(&InteractionId::from("permission"), WaitReason::Permission)]
@@ -157,7 +157,7 @@ fn a_human_permission_and_owned_background_work_coexist_and_only_a_working_turn_
             decision: Decision::Allow,
         },
     );
-    assert!(!task.holds_slot(), "the permission answered, the work alone still takes no slot until the callback wakes a turn");
+    assert!(task.holds_slot(), "the permission answered, the work still runs");
     fact(
         &mut task,
         RuntimeFact::CallbackSettled {
@@ -1403,7 +1403,7 @@ proptest! {
                 prop_assert_eq!(task.drain().count(), 0);
             }
             if task.phase() == TaskPhase::Finishing { prop_assert!(task.drain().count() > 0); }
-            if task.activity() == ActivityView::OwnWork && task.resource() == Some(ResourceEvidence::Available) { prop_assert!(!task.holds_slot(), "a turn that ended on its own work takes no slot once its host is seen: {:?}", task); }
+            if task.activity() == ActivityView::OwnWork && task.resource() == Some(ResourceEvidence::Available) { prop_assert!(task.holds_slot(), "a turn that ended on its own work keeps its slot once its host is seen: {:?}", task); }
             if host_ended && open && users && task.revision() != revision {
                 prop_assert!(!task.pending_inputs().is_empty() || !task.cards().is_empty() || !task.dependencies().is_empty(),
                     "a session its host's end cut gets an input or a card when the user waits on it or a resumed session is told to go on: {:?}", task);
