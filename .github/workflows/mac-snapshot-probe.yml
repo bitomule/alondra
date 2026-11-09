@@ -1,0 +1,39 @@
+{
+  "name": "Temporary native Mac snapshot probe",
+  "on": {
+    "push": {
+      "branches": [
+        "worktree-t-github-actions-ci-check"
+      ]
+    },
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "native-snapshots": {
+      "runs-on": "macos-26",
+      "timeout-minutes": 90,
+      "env": {
+        "ALONDRA_SIGNING_DIR": "${{ github.workspace }}/.scratch/unsigned-signing",
+        "DEVELOPER_DIR": "/Applications/Xcode_26.6.app/Contents/Developer"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "persist-credentials": false,
+            "fetch-depth": 1
+          }
+        },
+        {
+          "run": "sw_vers\nxcodebuild -version"
+        },
+        {
+          "run": "bazelisk --nosystem_rc --nohome_rc test --config=ci --xcode_version=26.6 --test_output=errors -- //apple/Testing/MacSnapshots:AlondraMacSnapshotTests"
+        }
+      ]
+    }
+  }
+}
