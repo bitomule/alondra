@@ -1770,6 +1770,12 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     slice.domain.add_sdk_owner(Owner::spawn(resumed));
     assert!(slice.domain.state().unwrap().lifecycle_journal[&task].iter().any(|record|matches!(record,LifecycleRecord::HostEnded{..})),"the first host's end is recorded and a host that resumes the same execution runs");
     request_move(&slice);
+    // Its replacement owner queues the continuation on its next cycle after the host is ready.
+    let mut resumed_cycle=slice.domain.subscribe();
+    resumed_cycle.wait_for(|_|{
+        let lifecycle=Slice::lifecycle(&slice.domain);
+        !lifecycle.pending_inputs().is_empty() && matches!(lifecycle.live(),Some(alondra_domain::LiveState::Working(_)|alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Gate)))
+    }).await.unwrap();
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
     assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
