@@ -22,8 +22,16 @@ fn open_finished(app: &mut App, domain: &DomainState, live: &LiveSnapshot) {
 pub(super) fn task_screen(domain: &DomainState, live: &LiveSnapshot, request: &str, task: &str) -> App {
     let mut app = app_on(Screen::Tasks, build(domain, live, "tasks"));
     open_finished(&mut app, domain, live);
-    let row = if app.inbox_keys().iter().any(|key| key.0 == task) { task } else { request };
-    app.sel = Some(Key(row.into()));
+    let shown = app.shown_home().unwrap();
+    let entries = view_render::entries(&shown, &app.open_sections, &app.open_rows);
+    let row = entries.iter().find(|(_, _, link)| matches!(link,
+        Some(views::Link::View { key }) if key == &format!("task:{task}")))
+        .or_else(|| entries.iter().find(|(_, _, link)| matches!(link,
+            Some(views::Link::View { key }) if key == &format!("request:{request}"))))
+        .map(|(id, _, _)| id.clone()).unwrap();
+    drop(shown);
+    app.sel = Some(Key(row));
+    app.reconcile();
     app.on_msg(Msg::ViewCard {
         key: format!("task:{task}"),
         result: Ok(build(domain, live, &format!("task:{task}"))),
@@ -174,6 +182,91 @@ fn rendered(app: &mut App, width: u16, height: u16) -> String {
 
 fn dump(name: &str, screen: &str) {
     println!("===== {name} =====\n{screen}");
+}
+
+fn split_group_list() -> (DomainState, LiveSnapshot) {
+    let mut domain = DomainState::new("split-group");
+    domain.revision = 1;
+    let mut request = Request::new("r-group".into(), "Audit the public service".into());
+    request.title = Some("Public service audit".into());
+    domain.requests.insert(request.id.clone(), request);
+    for (id, state) in [
+        ("t-answer-a", TaskState::NeedsYou),
+        ("t-answer-b", TaskState::NeedsYou),
+        ("t-running-a", TaskState::Running),
+        ("t-running-b", TaskState::Running),
+        ("t-waiting", TaskState::NotStarted),
+    ] {
+        domain.tasks.insert(id.into(), task(id, "r-group", None, id, state));
+        if state == TaskState::NeedsYou {
+            let interaction = serde_json::from_value(serde_json::json!({
+                "id": format!("question-{id}"), "scope": {"kind":"task", "task_id":id},
+                "author":{"kind":"system"}, "recipient":{"kind":"user"},
+                "body":"Choose the next check", "blocking":true,
+                "payload":{"kind":"question", "options":[], "answer":null},
+                "revision":1, "order":1, "card":{"kind":"decide", "need":"Choose the next check"}
+            })).unwrap();
+            domain.interactions.insert(format!("question-{id}").as_str().into(), interaction);
+        }
+    }
+    for index in 0..31 {
+        let request = format!("r-filler-{index:02}");
+        let id = format!("t-filler-{index:02}");
+        domain.requests.insert(request.as_str().into(), Request::new(request.as_str().into(), id.clone()));
+        domain.tasks.insert(id.as_str().into(), task(&id, &request, None, &id, TaskState::Running));
+    }
+    let mut live = LiveSnapshot::default();
+    for task in domain.tasks.values_mut().filter(|task| task.state == TaskState::Running) {
+        let id = format!("agent-{}", task.id);
+        task.agent_id = Some(id.as_str().into());
+        domain.agents.insert(id.as_str().into(), Agent {
+            id: id.as_str().into(), name: task.title.clone(), since: 0,
+            phase: alondra_core::domain::NodePhase::Working,
+        });
+        live.nodes.push(LiveNode { agent_id: id, working: true, ..LiveNode::default() });
+    }
+    (domain, live)
+}
+
+#[test]
+fn split_group_navigation_reaches_waiting_in_both_directions() {
+    let (domain, live) = split_group_list();
+    let home = build(&domain, &live, "tasks");
+    for (down, up) in [(KeyCode::Char('j'), KeyCode::Char('k')), (KeyCode::Down, KeyCode::Up)] {
+        let mut app = app_on(Screen::Tasks, home.clone());
+        let keys = app.inbox_keys();
+        let shown = app.shown_home().unwrap();
+        let titles: Vec<_> = view_render::rows(&shown).into_iter().map(|(row, _)| row.title.clone()).collect();
+        assert_eq!(titles.iter().filter(|title| *title == "Public service audit").count(), 2);
+        assert_eq!(keys.len(), titles.len());
+        drop(shown);
+        let first = rendered(&mut app, 120, 45);
+        assert!(!first.contains("EN ESPERA"), "the list must exceed the viewport: {first}");
+        for index in (0..keys.len()).chain((0..keys.len() - 1).rev()) {
+            if index != 0 || app.sel_idx != 0 {
+                let direction = if index > app.sel_idx { down } else { up };
+                press(&mut app, direction);
+            }
+            // The main loop reconciles before every frame, including frames between key presses.
+            app.reconcile();
+            assert_eq!(app.sel_idx, index, "{down:?}: selection went backwards at {index}");
+            assert_eq!(app.sel.as_ref(), Some(&keys[index]));
+            let screen = rendered(&mut app, 120, 45);
+            let selected: Vec<_> = screen.lines().enumerate().filter(|(_, line)| line.contains('▌')).collect();
+            assert!(!selected.is_empty(), "visible selection at {index}: {screen}");
+            assert!(selected.windows(2).all(|pair| pair[1].0 == pair[0].0 + 1),
+                "one contiguous selected row at {index}: {screen}");
+            assert!(selected[0].1.contains(&titles[index]), "selected row at {index}: {screen}");
+            if index == keys.len() - 1 {
+                assert!(screen.contains("EN ESPERA") && screen.contains("t-waiting"), "{screen}");
+                assert!(app.list_scroll > 0);
+            }
+            let selected = app.sel.clone();
+            app.on_msg(Msg::ViewHome(Ok(home.clone())));
+            assert_eq!(app.sel, selected, "refresh keeps the selected occurrence");
+            assert_eq!(app.sel_idx, index, "refresh keeps its position");
+        }
+    }
 }
 
 #[test]
@@ -1373,4 +1466,29 @@ fn the_card_detail_lists_each_attachment_with_its_kind_and_size() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let drawn = view_render::document_lines(&card_with_attachments(), 100, false, false).iter().map(text).collect::<Vec<_>>().join("\n");
     assert!(drawn.contains("📷 shot.png · Imagen · 340 KB\n🎬 clip.mp4 · Vídeo · 12.4 MB\no abre la tarjeta para verlos y abrirlos"), "{drawn}");
+}
+
+#[test]
+fn split_group_selection_survives_rows_inserted_before_it() {
+    let (mut domain, live) = split_group_list();
+    let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
+    let shown = app.shown_home().unwrap();
+    let group_ids: Vec<_> = view_render::rows(&shown).into_iter()
+        .filter(|(row, _)| row.title == "Public service audit")
+        .map(|(row, _)| Key(row.id.clone())).collect();
+    drop(shown);
+    assert_ne!(group_ids[0], group_ids[1]);
+    let position = app.inbox_keys().iter().position(|key| key == &group_ids[1]).unwrap();
+    app.move_inbox(position as isize);
+    let target = app.selected_view_key();
+    let mut inserted = domain.tasks[&"t-filler-00".into()].clone();
+    inserted.id = "t-000".into();
+    inserted.request_id = "r-000".into();
+    domain.requests.insert("r-000".into(), Request::new("r-000".into(), "Earlier row".into()));
+    domain.tasks.insert(inserted.id.clone(), inserted);
+    domain.revision += 1;
+    app.on_msg(Msg::ViewHome(Ok(build(&domain, &live, "tasks"))));
+    assert_eq!(app.sel.as_ref(), Some(&group_ids[1]));
+    assert_eq!(app.sel_idx, position + 1);
+    assert_eq!(app.selected_view_key(), target, "the occurrence keeps its original destination");
 }
