@@ -15,6 +15,8 @@ spec = importlib.util.spec_from_file_location("ci", ROOT / "tools/ci.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
 
+POOL_SETUP = 'mkdir -p .scratch/ci-bin\ncurl --fail --location --output .scratch/ci-bin/simpool https://github.com/bitomule/simpool/releases/download/v0.35.0/simpool-darwin-arm64\necho "c55fbeda49955cf9c1911be4477848c66156496a9e4abc74edd2da30af5f0d8a  .scratch/ci-bin/simpool" | shasum -a 256 --check\nchmod +x .scratch/ci-bin/simpool\necho "SIMPOOL_BIN=$GITHUB_WORKSPACE/.scratch/ci-bin/simpool" >> "$GITHUB_ENV"'
+
 MANIFEST = '''version: 1
 checks:
   crate-domain:
@@ -174,6 +176,15 @@ class WorkflowTests(unittest.TestCase):
         setup = next(s for s in workflow["jobs"]["validate"]["steps"] if s.get("name") == "Install the pinned offline plugin test CLI")
         self.assertEqual(setup["if"], "${{ matrix.check == 'plugin-mod' }}")
 
+    def test_apple_tests_have_a_verified_pool_instead_of_an_unmanaged_fallback(self):
+        workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
+        steps = workflow["jobs"]["validate"]["steps"]
+        setup = next(s for s in steps if s.get("name") == "Install the pinned simulator pool")
+        self.assertEqual(setup["if"], "${{ matrix.check == 'apple-tests' }}")
+        self.assertEqual(setup["run"], POOL_SETUP)
+        self.assertLess(steps.index(setup), next(i for i, s in enumerate(steps) if s.get("name") == "Build and test affected targets"))
+        self.assertNotIn("SIMPOOL_OPTIONAL", json.dumps(workflow))
+
     def test_only_external_prs_or_explicit_manual_runs_can_reserve_a_runner(self):
         workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
         self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {
@@ -207,6 +218,7 @@ class WorkflowTests(unittest.TestCase):
                     self.assertIs(step["with"]["persist-credentials"], False)
                 else:
                     self.assertIn(step["run"], {
+                        POOL_SETUP,
                         "python3 tools/ci.py plan", "python3 tools/ci.py run --targets \"$CI_TARGETS\"",
                         "python3 tools/simulator.py",
                         "xcodebuild -version\nxcrun simctl list runtimes -j\nxcrun simctl list devicetypes -j",
@@ -219,6 +231,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("common:ci --remote_cache=", ci_flags)
         self.assertIn("common:ci --noremote_upload_local_results", ci_flags)
         self.assertIn("common:ci --bes_backend=", ci_flags)
+        self.assertIn("test:ci --test_env=SIMPOOL_BIN", ci_flags)
+        self.assertIn("test:ci --test_env=SIMPOOL_MAX_SLOTS=1", ci_flags)
         self.assertIn("test:ci --test_env=DISABLE_AUTOUPDATER=1", ci_flags)
         self.assertIn("test:ci --test_env=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", ci_flags)
         self.assertFalse(any("--config=" in line or "buildbuddy" in line for line in ci_flags))

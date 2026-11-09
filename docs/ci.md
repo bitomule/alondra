@@ -66,6 +66,11 @@ of its platform binary. It runs with the check's disposable HOME, without a logi
 CI disables auto-updates and nonessential traffic. The version initially matches the local CLI,
 2.1.291. See the [official installation and version-pinning instructions](https://code.claude.com/docs/en/setup).
 
+The Apple test job downloads simpool 0.35.0 into its disposable workspace and verifies the
+release binary SHA-256 before execution. Bazel receives its explicit path and a one-slot pool
+limit. This preserves the same pooled runner used locally, without Homebrew or a fallback
+unmanaged simulator. See the [pinned pool release](https://github.com/bitomule/simpool/releases/tag/v0.35.0).
+
 The image for macOS 27 uses the label `xcode-27`, not `macos-27` or `macos-latest`. Its contents
 are described in the [official image inventory](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
 and [image announcement](https://github.com/actions/runner-images/issues/14404).
