@@ -1312,6 +1312,68 @@ pub mod tests {
         assert_eq!(problems(&domain), 0, "the close went through");
     }
 
+    /// The task `t` the user cancelled, whose PR GitHub closed and later reopened: no close is pending.
+    fn cancelled_with_its_pr_reopened(domain: &DomainRuntime) {
+        registered(domain);
+        command(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
+        command(domain, Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, None);
+    }
+
+    fn close_cancelled(domain: &DomainRuntime) {
+        command(domain, Actor::System, "close-cancelled", Command::ClosePrOfCancelledTask {
+            task_id: "t".into(), pr_id: "pr".into(), branch: "feature".into(), status: facts(HEAD, PrState::Open).status() });
+    }
+
+    #[tokio::test]
+    async fn the_pending_close_of_a_cancelled_tasks_pr_survives_a_restart_and_closes_it_on_github() {
+        let (fixture, domain) = open("cancelled-close-restart");
+        cancelled_with_its_pr_reopened(&domain);
+        close_cancelled(&domain);
+        drop(domain);
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let state = domain.state().unwrap();
+        assert_eq!(state.tasks[&"t".into()].open_pr, Some(OpenPrPending::Close { comment: "Cancelled in Alondra: Task".into() }), "it outlives a restart");
+        assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Open);
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Cancelled in Alondra: Task".to_owned())]);
+        let state = domain.state().unwrap();
+        assert_eq!((state.pull_requests[&"pr".into()].state, state.tasks[&"t".into()].open_pr.clone()), (PrState::Closed, None));
+        assert_eq!(state.tasks[&"t".into()].state, TaskState::Cancelled);
+        assert!(state.tasks[&"t".into()].final_presentation.is_none());
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 1, "a confirmed close is not repeated");
+    }
+
+    #[tokio::test]
+    async fn a_close_github_refuses_for_a_cancelled_task_is_retried_across_a_restart_until_it_goes_through() {
+        let (fixture, domain) = open("cancelled-close-retry");
+        cancelled_with_its_pr_reopened(&domain);
+        close_cancelled(&domain);
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        *observer.2.lock().unwrap() = Some("HTTP 502".into());
+        let mut failures = ObservationFailures::default();
+        reconcile(&domain, &observer, &mut failures).await.unwrap();
+        reconcile(&domain, &observer, &mut failures).await.unwrap();
+        reconcile(&domain, &observer, &mut failures).await.unwrap();
+        assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 2, "the second refusal waits a round before trying again");
+        assert!(observer.1.lock().unwrap().is_empty());
+        drop(domain);
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        assert!(matches!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Close { .. })), "the refusals did not lose the close");
+        *observer.2.lock().unwrap() = None;
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(*observer.1.lock().unwrap(), vec![(7, "Cancelled in Alondra: Task".to_owned())]);
+        let state = domain.state().unwrap();
+        assert_eq!((state.pull_requests[&"pr".into()].state, state.tasks[&"t".into()].open_pr.clone()), (PrState::Closed, None));
+        assert_eq!(state.tasks[&"t".into()].state, TaskState::Cancelled);
+        assert!(state.tasks[&"t".into()].final_presentation.is_none());
+    }
+
     #[tokio::test]
     async fn gh_closes_a_pr_with_its_comment() {
         let (fixture, _) = open("gh-close");

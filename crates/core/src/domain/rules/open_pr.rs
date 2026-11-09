@@ -52,6 +52,43 @@ impl DomainState {
             "Task {task} delivered its pull request #{}, which waits for the user's review: only the user accepts or cancels it", pr.number))
     }
 
+    /// A cancelled task whose PR is open on GitHub, with no one closing it, ends up as if the
+    /// user's cancel had just closed it: Alondra closes the PR with the cancel's reason until
+    /// GitHub reports it closed.
+    pub(in crate::domain) fn close_pr_of_cancelled_task(&mut self, actor: &Actor, task: &TaskId, pr_id: &PrId, branch: &str, status: &OpenPrStatus,
+        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
+        system(actor)?;
+        nonempty(branch)?;
+        if self.branch_has_live_task(branch) { return Ok(()); }
+        head(&status.head)?;
+        nonempty(&status.base)?;
+        let t = self.task(task)?;
+        if t.state != TaskState::Cancelled {
+            return refuse("open_pr_close", "task_id", &format!("Task {task} is not cancelled, so Alondra does not close its pull request"));
+        }
+        if status.state != PrState::Open {
+            return refuse("open_pr_close", "status", &format!("GitHub does not report the pull request {pr_id} open"));
+        }
+        let Some(pr) = self.task_prs(t).find(|pr| pr.id == *pr_id).cloned() else {
+            return refuse("open_pr_close", "pr_id", &format!("Task {task} has no pull request {pr_id}"));
+        };
+        match &t.open_pr {
+            Some(OpenPrPending::Close { .. }) => return Ok(()),
+            Some(OpenPrPending::Deliver { .. }) => {
+                return refuse("open_pr_close", "task_id", &format!("Task {task} is already delivering its pull request"));
+            }
+            None => (),
+        }
+        let comment = cancelled_pr_comment(&t.title);
+        if (&pr.head, &pr.base, pr.state, &pr.merged_head) != (&status.head, &status.base, PrState::Open, &None) {
+            self.apply(actor, &Command::ObservePrState { pr_id: pr.id.clone(), head: status.head.clone(), base: status.base.clone(),
+                state: PrState::Open, merged_head: None }, effects, created, lifecycles)?;
+        }
+        self.tasks.get_mut(task).expect("found above").open_pr = Some(OpenPrPending::Close { comment });
+        self.invalidate(task);
+        Ok(())
+    }
+
     /// What GitHub reports of the PR of a task closed while its PR was open settles it.
     pub(in crate::domain) fn settle_open_pr(&mut self, actor: &Actor, task: &TaskId, status: &OpenPrStatus, selected: Option<&PrId>,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {

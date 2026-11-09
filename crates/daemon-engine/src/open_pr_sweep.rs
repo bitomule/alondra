@@ -1,7 +1,7 @@
 //! Find authored PRs whose work no longer has a live owner.
 use crate::domain_github::{GhCli, PrObserver, execute_system};
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest};
+use alondra_core::domain::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
 use alondra_core::options::OptionsFile;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -104,12 +104,16 @@ pub(crate) async fn sweep(domain: &DomainRuntime, gh: &GhCli, options: &OptionsF
                 Ok(facts) => facts,
                 Err(error) => { log!("open PR sweep could not read {}: {error}", found.url); continue; }
             };
-            Command::AdoptOpenPr { task_id, pr_id, branch: branch.name, status: facts.status() }
+            if state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
+                Command::ClosePrOfCancelledTask { task_id, pr_id, branch: branch.name, status: facts.status() }
+            } else {
+                Command::AdoptOpenPr { task_id, pr_id, branch: branch.name, status: facts.status() }
+            }
         } else {
             Command::RequestPrAdoption { pr, branch: branch.name }
         };
         if let Err(error) = execute_system(domain, command) {
-            log!("open PR sweep could not adopt {}: {error}", found.url);
+            log!("open PR sweep could not handle {}: {error}", found.url);
         }
     }
     Ok(())

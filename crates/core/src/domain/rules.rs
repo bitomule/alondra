@@ -2551,6 +2551,7 @@ impl DomainState {
             | Command::CompleteTask { task_id, .. }
             | Command::CancelTask { task_id }
             | Command::AdoptOpenPr { task_id, .. }
+            | Command::ClosePrOfCancelledTask { task_id, .. }
             | Command::SettleOpenPr { task_id, .. }
             | Command::ReopenTask { task_id }
             | Command::ConfirmCleanup { task_id, .. }
@@ -4891,6 +4892,9 @@ impl DomainState {
             }
             Command::SettleOpenPr { task_id, status } => {
                 self.settle_open_pr(actor, task_id, status, None, effects, created, lifecycles)?;
+            }
+            Command::ClosePrOfCancelledTask { task_id, pr_id, branch, status } => {
+                self.close_pr_of_cancelled_task(actor, task_id, pr_id, branch, status, effects, created, lifecycles)?;
             }
             Command::AdoptOpenPr { task_id, pr_id, branch, status } => {
                 system(actor)?;

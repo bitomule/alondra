@@ -134,8 +134,14 @@ async fn a_repository_outside_the_projects_root_is_ignored() {
     assert!(f.domain.state().unwrap().pr_adoptions.is_empty());
 }
 
+fn adopt(f: &Fixture, task_id: &str, checks: PrChecks) {
+    command(&f.domain, Actor::System, Command::AdoptOpenPr { task_id: task_id.into(), pr_id: hosted_pr_id("github.com", "owner/repo", 7),
+        branch: "feature".into(), status: OpenPrStatus { state: PrState::Open, head: "1".repeat(40), base: "main".into(),
+            mergeable: PrMergeable::Clean, checks } });
+}
+
 #[tokio::test]
-async fn a_cancelled_tasks_open_pr_is_reopened_and_delivered() {
+async fn adopting_a_closed_tasks_open_pr_reopens_and_delivers_it() {
     let f = Fixture::new();
     task(&f.domain, "closed", Some(7));
     command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
@@ -144,8 +150,7 @@ async fn a_cancelled_tasks_open_pr_is_reopened_and_delivered() {
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
     // GitHub reopening a PR recreates the persisted orphan from before close_task existed.
     assert_eq!(f.domain.state().unwrap().tasks[&"closed".into()].state, TaskState::Cancelled);
-    f.result(7, "owner/repo", "feature");
-    f.sweep().await;
+    adopt(&f, "closed", PrChecks::Passed);
     let state = f.domain.state().unwrap();
     let task = &state.tasks[&"closed".into()];
     assert_eq!(task.state, TaskState::ForYourReview);
@@ -153,9 +158,36 @@ async fn a_cancelled_tasks_open_pr_is_reopened_and_delivered() {
     assert!(task.final_presentation.is_some());
     assert!(task.open_pr.is_none());
     assert!(state.pr_adoptions.is_empty());
+}
+
+#[tokio::test]
+async fn the_sweep_closes_the_open_pr_of_a_cancelled_task_once_and_the_close_survives_a_restart() {
+    let f = Fixture::new();
+    let pr_id = hosted_pr_id("github.com", "owner/repo", 7);
+    task(&f.domain, "closed", Some(7));
+    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
+    command(&f.domain, Actor::System, Command::ObservePrState { pr_id: pr_id.clone(),
+        head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
+    f.result(7, "owner/repo", "feature");
+    f.sweep().await;
+    let state = f.domain.state().unwrap();
+    let task = &state.tasks[&"closed".into()];
+    assert_eq!(task.open_pr, Some(OpenPrPending::Close { comment: "Cancelled in Alondra: Work".into() }));
+    assert_eq!((task.state, state.pull_requests[&pr_id].state), (TaskState::Cancelled, PrState::Open));
+    assert!(task.final_presentation.is_none() && state.pr_adoptions.is_empty(), "it is closed, not delivered");
     drop(state);
     f.sweep().await;
-    assert_eq!(f.domain.state().unwrap().tasks[&"closed".into()].state, TaskState::ForYourReview);
+    let home = f.root.join("home");
+    drop(f.domain);
+    let domain = DomainRuntime::open(&home).unwrap();
+    assert!(matches!(domain.state().unwrap().tasks[&"closed".into()].open_pr, Some(OpenPrPending::Close { .. })));
+    let before = domain.state().unwrap();
+    sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
+    assert_eq!(domain.state().unwrap(), before, "another sweep after restart leaves the pending close alone");
+    let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+    assert_eq!(calls.lines().filter(|call| call.starts_with("pr view")).count(), 2,
+        "only the first sweep reads the branch and status");
 }
 
 #[tokio::test]
@@ -212,19 +244,14 @@ fn sweep_prefix_defaults_read_old_options_and_allow_an_empty_override() {
 }
 
 #[tokio::test]
-async fn adoption_delivers_pending_checks_without_starting_a_node() {
+async fn adopting_delivers_pending_checks_without_starting_a_node() {
     let f = Fixture::new();
     task(&f.domain, "closed", Some(7));
     command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
-    f.result(7, "owner/repo", "feature");
-    let ready = std::fs::read(f.root.join("status.json")).unwrap();
-    let mut pending: serde_json::Value = serde_json::from_slice(&ready).unwrap();
-    pending["statusCheckRollup"] = serde_json::json!([{"status":"IN_PROGRESS","name":"test"}]);
-    std::fs::write(f.root.join("status.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
-    f.sweep().await;
+    adopt(&f, "closed", PrChecks::Pending { names: vec!["test".into()] });
     let state = f.domain.state().unwrap();
     let task = &state.tasks[&"closed".into()];
     assert!(task.open_pr.is_none());
@@ -246,8 +273,7 @@ async fn an_adopted_pr_returns_to_the_launch_queue_if_its_merge_fails() {
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
-    f.result(7, "owner/repo", "feature");
-    f.sweep().await;
+    adopt(&f, "closed", PrChecks::Passed);
     let state = f.domain.state().unwrap();
     let delivery = state.tasks[&"closed".into()].final_presentation.clone().unwrap();
     let InteractionPayload::Delivery { targets, .. } = &state.interactions[&delivery].payload else { panic!("a delivery") };
