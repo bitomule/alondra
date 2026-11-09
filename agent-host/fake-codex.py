@@ -78,6 +78,7 @@ for line in sys.stdin:
             finish()
         continue
     if method == 'initialized': continue
+    if method == os.environ.get('ALONDRA_FAKE_SILENT_ON'): continue
     if method == 'thread/resume' and fixture.get('failResumes'):
         failures = os.environ.get('ALONDRA_FAKE_ACCOUNT_FILE', os.path.abspath(__file__) + '.account.json') + '.resume-failures'
         failed = os.path.getsize(failures) if os.path.exists(failures) else 0
