@@ -11,7 +11,7 @@ import ast
 import os
 from pathlib import Path
 
-SKIPPED = {".git", ".scratch", "node_modules", "target", "dist", ".build"}
+SKIPPED = {".git", ".scratch", ".bazel-output", "node_modules", "target", "dist", ".build"}
 GENEROUS_TIMEOUTS = {"long", "eternal"}
 GENEROUS_SIZES = {"large", "enormous"}
 REQUIRED_FLAGS = ["common --logging=0", "test --test_timeout=60,300,600,900"]

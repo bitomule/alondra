@@ -52,6 +52,14 @@ class GuardTest(unittest.TestCase):
     def test_a_test_with_neither_is_named(self):
         self.assertEqual(self.problems('rust_test(name = "a")\n'), ["//app:a: declares neither size nor timeout"])
 
+    def test_bazel_output_dependencies_are_skipped(self):
+        external = self.root / ".bazel-output" / "external" / "dependency"
+        external.mkdir(parents=True)
+        for name in ("BUILD", "BUILD.bazel", "rules.bzl"):
+            (external / name).write_text('sh_test(name = "third_party")\n')
+        self.assertEqual(self.problems('sh_test(name = "a", size = "small")\n'), [])
+        self.assertEqual(self.problems('sh_test(name = "a")\n'), ["//app:a: declares neither size nor timeout"])
+
     def test_a_test_made_in_a_comprehension_is_seen(self):
         self.assertEqual(len(self.problems('[sh_test(name = n) for n in ["a"]]\n')), 1)
 
