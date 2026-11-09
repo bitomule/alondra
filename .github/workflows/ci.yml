@@ -72,6 +72,11 @@
           "run": "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\""
         },
         {
+          "name": "Install the pinned simulator pool",
+          "if": "${{ matrix.check == 'apple-tests' }}",
+          "run": "mkdir -p .scratch/ci-bin\ncurl --fail --location --output .scratch/ci-bin/simpool https://github.com/bitomule/simpool/releases/download/v0.35.0/simpool-darwin-arm64\necho \"c55fbeda49955cf9c1911be4477848c66156496a9e4abc74edd2da30af5f0d8a  .scratch/ci-bin/simpool\" | shasum -a 256 --check\nchmod +x .scratch/ci-bin/simpool\necho \"SIMPOOL_BIN=$GITHUB_WORKSPACE/.scratch/ci-bin/simpool\" >> \"$GITHUB_ENV\""
+        },
+        {
           "name": "Build and test affected targets",
           "env": {"CI_TARGETS": "${{ toJSON(matrix.targets) }}"},
           "run": "python3 tools/ci.py run --targets \"$CI_TARGETS\""
