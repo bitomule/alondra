@@ -32,9 +32,10 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         pairings.first { ApprovedPairingID($0) == selectedID }
     }
 
-    /// Exact account/relay lookup. This does not claim isolation between OIDC issuers.
+    /// Account/relay lookup on the canonical relay URL. This does not claim isolation between OIDC issuers.
     public func pairings(ownerSub: String, relayURL: URL) -> [ApprovedServicePairing] {
-        pairings.filter { $0.ownerSub == ownerSub && $0.relayURL == relayURL }
+        let relayURL = RelayURL.canonical(relayURL)
+        return pairings.filter { $0.ownerSub == ownerSub && RelayURL.canonical($0.relayURL) == relayURL }
     }
 
     /// New approvals retain every other binding. Pinned Mac keys may only change
@@ -43,7 +44,8 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         let id = ApprovedPairingID(pairing)
         // A Mac paired without an account is pinned against every saved pairing of that Mac.
         for existing in pairings where existing.macID == pairing.macID && (!pairing.hasRelay || !existing.hasRelay
-            || existing.relayURL == pairing.relayURL && existing.ownerSub == pairing.ownerSub) {
+            || RelayURL.canonical(existing.relayURL) == RelayURL.canonical(pairing.relayURL)
+            && existing.ownerSub == pairing.ownerSub) {
             guard existing.macSigningKey == pairing.macSigningKey,
                   existing.macAgreementKey == pairing.macAgreementKey else {
                 throw PairingStoreError.identityConflict
@@ -116,7 +118,7 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         if !values.contains(.version) {
             // Decode old bytes in memory only. A failed read must never rewrite keys.
             var legacy = try ApprovedServicePairing(from: decoder)
-            legacy.relayURL = ServiceHosts.current(legacy.relayURL)
+            legacy.relayURL = RelayURL.canonical(ServiceHosts.current(legacy.relayURL))
             pairings = [legacy]
             selectedID = ApprovedPairingID(legacy)
             return
@@ -126,12 +128,12 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         }
         pairings = try values.decode([ApprovedServicePairing].self, forKey: .pairings).map {
             var pairing = $0
-            pairing.relayURL = ServiceHosts.current(pairing.relayURL)
+            pairing.relayURL = RelayURL.canonical(ServiceHosts.current(pairing.relayURL))
             return pairing
         }
         selectedID = try values.decodeIfPresent(ApprovedPairingID.self, forKey: .selectedID).map {
             var id = $0
-            id.relayURL = ServiceHosts.current(id.relayURL)
+            id.relayURL = RelayURL.canonical(ServiceHosts.current(id.relayURL))
             return id
         }
         let ids = pairings.map(ApprovedPairingID.init)

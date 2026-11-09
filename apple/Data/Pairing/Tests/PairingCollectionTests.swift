@@ -224,3 +224,23 @@ func malformedCollectionFailsClosedWithoutOverwriting(kind: String) throws {
     #expect(try restarted.loadCollection().pairings.count == 3)
     #expect(try restarted.loadCollection().pairings.first { $0.macID == original.macID }?.signingPrivateKey == original.signingPrivateKey)
 }
+
+@Test(arguments: ["https://relay.example/", "https://relay.example:443", "HTTPS://Relay.EXAMPLE", "https://relay.example:443/"])
+func aRelaySpelledAnotherWayKeepsTheMacPinned(relay: String) throws {
+    var collection = ApprovedPairingCollection()
+    try collection.upsert(binding())
+    #expect(throws: PairingStoreError.identityConflict) {
+        try collection.upsert(binding(device: "phone-new", relay: relay, signing: "substituted-pin"))
+    }
+    #expect(collection.pairings.count == 1)
+    #expect(collection.pairings(ownerSub: "owner-a", relayURL: URL(string: relay)!).count == 1)
+}
+
+@Test func aRelaySavedWithAnotherSpellingIsStoredCanonically() throws {
+    let saved = Data(#"{"version":1,"pairings":[{"relayURL":"HTTPS://Relay.Example:443/","macID":"mac-a","deviceID":"phone-a","ownerSub":"owner-a","macSigningKey":"pinned-signing-a","macAgreementKey":"pinned-agreement-a","signingPrivateKey":"AQIDBA==","agreementPrivateKey":"BQYHCA==","approvedAtMs":1}],"selectedID":{"relayURL":"https://relay.example/","ownerSub":"owner-a","macID":"mac-a","deviceID":"phone-a"}}"#.utf8)
+    var collection = try JSONDecoder().decode(ApprovedPairingCollection.self, from: saved)
+    #expect(collection.selected?.relayURL == URL(string: "https://relay.example"))
+    #expect(throws: PairingStoreError.identityConflict) {
+        try collection.upsert(binding(mac: "mac-a", device: "phone-new", signing: "substituted-pin"))
+    }
+}
