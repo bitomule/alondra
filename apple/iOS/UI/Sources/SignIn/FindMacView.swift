@@ -145,7 +145,7 @@ public struct FindMacView: View {
                 .buttonStyle(.plain)
                 .font(.headline)
                 .padding(.vertical, 6)
-                .accessibilityIdentifier("findMac.mac")
+                .accessibilityIdentifier("findMac.mac.\(mac.macID ?? mac.id)")
             }
         }
         notThere

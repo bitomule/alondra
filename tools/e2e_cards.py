@@ -82,6 +82,7 @@ class Sandbox:
             raise
         self.config = json.load(open(os.path.join(self.dir, "sandbox.json")))
         self.home = self.config["macs"][0]["home"]
+        self.mac_id = json.load(open(os.path.join(self.home, "service-keys", "public.json")))["mac_id"]
         self.tool = tool
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("ALONDRA_")}
         for line in open(os.path.join(self.home, "env")):

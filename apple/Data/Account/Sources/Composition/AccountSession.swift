@@ -233,7 +233,7 @@ public final class AccountSession {
         let shown = macs.filter { $0.macID == nil || $0.macID != own }
         for mac in shown { discovered[mac.id] = mac }
         let paired = Set(registry.snapshot.entries.map(\.approved.macID)).subtracting(pairAgainMacID.map { [$0] } ?? [])
-        return shown.map { FoundMac(id: $0.id, name: $0.name, paired: $0.macID.map(paired.contains) ?? false) }
+        return shown.map { FoundMac(id: $0.id, name: $0.name, paired: $0.macID.map(paired.contains) ?? false, macID: $0.macID) }
     }
 
     private func pairDirect(_ target: FindMacTarget) async throws -> DirectPairingCode {

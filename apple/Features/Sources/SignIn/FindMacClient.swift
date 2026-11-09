@@ -6,11 +6,13 @@ public struct FoundMac: Identifiable, Equatable, Sendable {
     public let id: String
     public let name: String
     public let paired: Bool
+    public let macID: String?
 
-    public init(id: String, name: String, paired: Bool) {
+    public init(id: String, name: String, paired: Bool, macID: String? = nil) {
         self.id = id
         self.name = name
         self.paired = paired
+        self.macID = macID
     }
 }
 
