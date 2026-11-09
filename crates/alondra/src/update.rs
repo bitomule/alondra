@@ -56,7 +56,7 @@ pub fn run(check: bool) -> Result<()> {
     }
     out.start(&trf!("Waiting for alondrad to run {installed}", "Esperando a que alondrad ejecute {installed}"));
     let client = Client::new(Duration::from_secs(3));
-    let outcome = wait_for_daemon(&installed, || daemon_info(&client), Instant::now, std::thread::sleep, WAIT, || restart_old_daemon(&daemon));
+    let outcome = wait_for_daemon(&installed, || daemon_info(&client), Instant::now, std::thread::sleep, WAIT, restart_old_daemon);
     match outcome {
         Waited::Running => out.pass(&describe(&outcome, &installed)),
         _ => out.fail(&describe(&outcome, &installed)),
@@ -246,14 +246,11 @@ pub(crate) fn preflight(daemon: &Path) -> Result<(), String> {
 }
 
 /// A daemon older than self-relaunch never restarts on its own, and one that rejected the new
-/// binary does not try it again for a while: check the new binary the way the daemon would,
-/// so a rejection whose cause is gone does not stand, then ask launchd to restart the job.
-fn restart_old_daemon(daemon: &Path) -> Result<(), String> {
-    preflight(daemon)?;
-    let label = alondra_core::config::Config::load().map(|c| c.service_label).unwrap_or_else(|_| alondra_core::config::Config::defaults().service_label);
-    let uid = unsafe { libc::getuid() };
-    let status = Command::new("launchctl").args(["kickstart", "-k", &format!("gui/{uid}/{label}")]).status().map_err(|e| e.to_string())?;
-    if status.success() { Ok(()) } else { Err(format!("launchctl kickstart failed ({status})")) }
+/// binary does not try it again for a while: check the new binary the way the daemon would, so a
+/// rejection whose cause is gone does not stand, then restart it leaving its SDK hosts running.
+fn restart_old_daemon() -> Result<(), String> {
+    let port = alondra_core::config::Config::load().unwrap_or_else(|_| alondra_core::config::Config::defaults()).port;
+    crate::setup::inspect().restart_into_installed(port).map_err(|e| format!("{e:#}"))
 }
 
 #[derive(Debug, PartialEq)]
