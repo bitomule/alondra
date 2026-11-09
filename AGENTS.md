@@ -24,6 +24,11 @@
   nothing changed (read the failing log first). A change that only touches prose or images no test
   loads must leave `musts validate` empty: if it does not, a `paths` entry is wrong, so fix
   `MUSTS.yml` instead of running the tests.
+- **Iterating on a failure: run the test, not the binary.** Pass the test's name or module path to
+  the test binary, `bazelisk test //crates/daemon-engine:daemon_engine_test --test_arg=domain_merges::`
+  (several `--test_arg` filters are allowed), instead of the whole target. The tests that start real
+  hosts and binaries are `//crates/daemon-engine:daemon_engine_integration_test`; every other test of
+  the crate is `daemon_engine_test`. A run you mean to record with `musts record` never has a filter.
 - **Tests already run? Record them.** After a `bazelisk test` that covers every target of the
   `bazel-test` check, record it with `musts record bazel-test-root` instead of `musts run`, which
   would run the same tests again. It reads `.musts/bep.json`, which every `bazelisk test` writes

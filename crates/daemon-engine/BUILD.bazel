@@ -59,19 +59,73 @@ rust_library(
     ],
 )
 
+# The tests that start a real alondra, alondrad or Agent SDK host, or drive their fake Claude and
+# Codex, read their paths from FIXTURE_* variables; every other test needs none of them. A
+# libtest filter selects a test by a substring of its path: the integration target runs these, the
+# unit target skips the same ones, so together they run every test once, and a change to a binary
+# or a host reopens only the integration target.
+INTEGRATION_FILTERS = [
+    "account_move::tests::",
+    "accounts::tests::",
+    "allow_always::tests::",
+    "auto_launch::tests::",
+    "domain_orchestrator::",
+    "domain_orchestrator_tools::tests::",
+    "domain_schedule_api::tests::",
+    "domain_schedule_runner::tests::",
+    "node_reconcile::tests::",
+    "node_revival::tests::",
+    "orchestrator_codex::",
+    "orchestrator_sdk::tests::",
+    "pauses::tests::",
+    "sdk_handover::tests::",
+    "sdk_owner::backend::",
+    "sdk_owner::codex_process_tests::",
+    "sdk_owner::codex_tests::",
+    "sdk_owner::node_environment::",
+    "sdk_owner::tests::",
+    "stall_context::tests::",
+    "usage_probe::tests::",
+]
+
+ENGINE_TEST_SRCS = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"]
+
+ENGINE_TEST_COMPILE_DATA = SQL + [
+    "//crates/alondrad:src/domain_api.rs",
+    "//crates/alondrad:src/service/domain_parity_tests.rs",
+    "//crates/core:src/domain/tests.rs",
+    "//crates/daemon-support:report_sources",
+    "//fixtures/client-v2",
+    "//fixtures/accounts:recorded-rows.json",
+    "//fixtures/domain-v2:acceptance.json",
+]
+
+ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    "//crates/codex-protocol:codex_protocol",
+    "//crates/daemon-support:daemon_support_test_hooks",
+]
+
 low_opt_rust_test(
     name = "daemon_engine_test",
+    size = "medium",
+    srcs = ENGINE_TEST_SRCS,
+    args = ["--skip=" + filter for filter in INTEGRATION_FILTERS],
+    compile_data = ENGINE_TEST_COMPILE_DATA,
+    crate_name = "alondra_daemon_engine",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = ENGINE_TEST_DEPS,
+)
+
+low_opt_rust_test(
+    name = "daemon_engine_integration_test",
     size = "large",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = SQL + [
-        "//crates/alondrad:src/domain_api.rs",
-        "//crates/alondrad:src/service/domain_parity_tests.rs",
-        "//crates/core:src/domain/tests.rs",
-        "//crates/daemon-support:report_sources",
-        "//fixtures/client-v2",
-        "//fixtures/accounts:recorded-rows.json",
-        "//fixtures/domain-v2:acceptance.json",
-    ],
+    srcs = ENGINE_TEST_SRCS,
+    args = INTEGRATION_FILTERS,
+    compile_data = ENGINE_TEST_COMPILE_DATA,
     crate_name = "alondra_daemon_engine",
     crate_root = "src/lib.rs",
     data = [
@@ -105,10 +159,7 @@ low_opt_rust_test(
     },
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/codex-protocol:codex_protocol",
-        "//crates/daemon-support:daemon_support_test_hooks",
-    ],
+    deps = ENGINE_TEST_DEPS,
 )
 
 rust_inputs_test(
