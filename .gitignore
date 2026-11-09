@@ -9,6 +9,8 @@ signing/signing.bzl
 
 # What sourcekit-bazel-bsp writes each time SourceKit-LSP starts it
 /.bsp/skbsp_generated/BUILD.bazel
+/.bsp/skbsp_generated/aspect.bzl
+/.bsp/skbsp_generated/rules.bzl
 /.bsp/skbsp_generated/graph.json
 
 # Python release tooling
