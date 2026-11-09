@@ -244,6 +244,28 @@ fn a_service_behind_the_installed_binary_restarts_into_it_with_sigusr1_and_never
 }
 
 #[test]
+fn update_restarts_a_daemon_that_did_not_relaunch_with_sigusr1_and_never_with_kickstart() {
+    let mac = Mac::new();
+    let installed = mac.root.join("opt/alondra/bin");
+    let keg = mac.root.join("Cellar/alondra/old/bin");
+    for folder in [&installed, &keg] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let old = keg.join("alondra");
+    std::fs::copy(env!("CARGO_BIN_EXE_alondra"), &old).unwrap();
+    script(&installed.join("alondrad"), ALONDRAD);
+    script(&installed.join("alondra"), "exit 0");
+    script(&mac.root.join("bin/brew"), "exit 0");
+    mac.installed_service("0.3.19", &["--after-usr1", "0.3.20"]);
+    mac.set_installed("0.3.20");
+
+    let output = mac.command(old.to_str().unwrap(), &["update"]).env("ALONDRA_UPDATE_URL", "http://127.0.0.1:9/none").output().unwrap();
+    assert_eq!(mac.daemon_version().as_deref(), Some("0.3.20"), "{output:?}");
+    let log = mac.launchctl_log();
+    assert!(!log.contains("kickstart") && !log.contains("bootout"), "SIGTERM would stop the SDK hosts: {log}");
+}
+
+#[test]
 fn a_binary_that_fails_its_startup_check_is_not_run_and_the_reason_is_said() {
     let mac = Mac::new();
     mac.installed_service("0.3.19", &["--after-usr1", "0.3.20"]);
