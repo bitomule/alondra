@@ -16,19 +16,24 @@ workflow through GitHub. The repository's contributor approval policy remains
 [approving runs from forks](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks).
 
 Maintainers with write access can explicitly launch `workflow_dispatch` to check the runner and
-measure every MUSTS target set, even when the chosen branch matches `main`. It has the same
+measure every MUSTS target set, even when the chosen branch matches `main`. Its optional `check`
+input selects one complete MUSTS check for diagnosis; blank runs all checks. This input never
+narrows a pull request's scope. Manual runs have separate concurrency groups, so a diagnostic run
+does not cancel an ongoing measurement. They have the same
 read-only token, no secrets and no publication steps. This manual probe does not validate an
 external contribution or the first-time fork approval path; owner-authored PRs remain excluded.
 Use `gh workflow run ci.yml --repo bitomule/alondra --ref <branch>` once GitHub has registered the
 workflow. See [manual workflow execution](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 and the [CLI reference](https://cli.github.com/manual/gh_workflow_run).
+For example, append `-f check=plugin-mod` to diagnose the plugin tests. A successful focused run
+only proves that named check, not the complete validation set.
 
 ## What runs
 
 `tools/ci.py plan` compares the checked-out PR merge commit with its merge-base, including both
 paths of a rename and the old path of a deletion. It selects checks from both the base and PR's
 `MUSTS.yml`, so narrowing a scope in the PR cannot hide the checks that previously read a changed
-file. Changes to the manifest, selector, shared glob matcher or workflow select every check.
+file. Changes to the manifest, selector, shared glob matcher, workflow or CI tool lock select every check.
 Local musts evidence is never used to skip CI.
 
 The manifest reader accepts the repository's block syntax for `bazel/test`, `paths` and
@@ -50,10 +55,16 @@ failure. This also means tests added to a previously library-only package run au
 | `xcode-27` (macOS 27, Apple Silicon) | Apple builds/tests and checks needing native macOS APIs | 120 minutes |
 
 The exact check-to-runner assignment is in `tools/ci.py`. The macOS group includes the CLI's
-Keychain dependency, the process-group crate's libproc calls, Mach-O daemon binaries, native
+Keychain dependency, core's Bonjour DNS-SD calls, the process-group crate's libproc calls, Mach-O daemon binaries, native
 system tests and the packaged Node hosts. The source-only Apple catalog and entitlement checks
 run on Linux. Both platforms use the Bazel release in `.bazelversion`; Rust and Node come from
 the pinned Bazel toolchains. CI limits Bazel to two build jobs and one local test at a time.
+
+The plugin mod check also needs Claude Code's local plugin validator and test runner. Only that
+job installs the exact version in `.github/ci-tools/package-lock.json`, including the integrity
+of its platform binary. It runs with the check's disposable HOME, without a login or model key;
+CI disables auto-updates and nonessential traffic. The version initially matches the local CLI,
+2.1.291. See the [official installation and version-pinning instructions](https://code.claude.com/docs/en/setup).
 
 The image for macOS 27 uses the label `xcode-27`, not `macos-27` or `macos-latest`. Its contents
 are described in the [official image inventory](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
@@ -105,6 +116,8 @@ Bazel command's elapsed seconds and exit code in its log and GitHub step summary
 includes compilation and tests; GitHub's job timestamps also include checkout and preparation.
 Measure queue delay separately from `created_at` to the first job's `started_at` when comparing
 the contributor's total wait with local validation.
+Failed tests print their errors into the job log, so diagnosis does not depend on downloading
+files from a discarded runner.
 
 Keep the commit and target set identical when comparing machines. Record runner image, Xcode
 and simulator builds, and distinguish a fresh GitHub VM from a warm local cache. Do not erase a
@@ -128,15 +141,3 @@ GitHub documents a six-hour execution limit per hosted job and plan-dependent co
 limits, including a separate macOS limit. This workflow's job limits are shorter. Preview image
 availability and software can differ from stable images; an image failure is evidence to report,
 not a reason to remove coverage. See [Actions limits](https://docs.github.com/en/actions/reference/limits).
-
-## Comparable maintainer workflows
-
-[RepoBar's agent instructions](https://github.com/steipete/RepoBar/blob/main/AGENTS.md) require
-local checks, while its [CI workflow](https://github.com/steipete/RepoBar/blob/main/.github/workflows/ci.yml)
-uses Xcode 27, read-only permissions, pinned actions, a timeout and cancellation of older runs.
-[LLM's agent instructions](https://github.com/simonw/llm/blob/main/AGENTS.md) also describe local
-tests; its [workflow](https://github.com/simonw/llm/blob/main/.github/workflows/test.yml) runs tests,
-analysis and builds across operating systems with read-only repository permissions.
-
-Those workflows run on both pushes and PRs. Excluding the owner is this repository's policy:
-local automation already validates its changes, and CI is provided for outside contributions.

@@ -12,14 +12,14 @@ from musts_scopes import matches, parse_checks
 
 
 MAC_CHECKS = {
-    "crate-agent-runtime", "crate-alondra", "crate-alondrad", "crate-daemon-engine",
+    "crate-agent-runtime", "crate-alondra", "crate-alondrad", "crate-core", "crate-daemon-engine",
     "crate-daemon-support", "crate-process-group", "crate-provider-claude",
     "crate-provider-codex", "local-daemon", "build-from-source",
     "sourcekit-lsp-workspace", "deploy-brew", "deploy-apple", "apple-daemon-process",
     "apple-tests", "sdk-host", "reap-test-hosts", "native-fixture-lifecycle",
 }
 LINUX_CHECKS = {
-    "crate-agent-application", "crate-agent-protocol", "crate-codex-protocol", "crate-core",
+    "crate-agent-application", "crate-agent-protocol", "crate-codex-protocol",
     "crate-domain", "crate-e2e", "crate-foundation", "crate-provider-contract", "crate-relay",
     "crate-store", "crates-root", "licenses", "prose-decisions", "bazel-artifact-paths",
     "sandbox-accounts", "low-opt-rust-tests", "sandbox-tool", "apple-scripts", "apple-catalogs",
@@ -27,7 +27,10 @@ LINUX_CHECKS = {
     "public-build-inputs", "bazel-test-tmpdir", "musts-scopes", "test-durations", "test-limits",
     "worktree-setup", "ci", "simulator", "snapshot-recording",
 }
-BOOTSTRAP = {"MUSTS.yml", "tools/ci.py", "tools/musts_scopes.py", ".github/workflows/ci.yml"}
+BOOTSTRAP = {
+    "MUSTS.yml", "tools/ci.py", "tools/musts_scopes.py", ".github/workflows/ci.yml",
+    ".github/ci-tools/BUILD.bazel", ".github/ci-tools/package.json", ".github/ci-tools/package-lock.json",
+}
 TARGET = re.compile(r"//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+$|//[A-Za-z0-9_./+-]*/\.\.\.$")
 # Bazel's documented exit status: the build succeeded but the target set contains no tests.
 NO_TESTS_FOUND = 4
@@ -126,6 +129,21 @@ def selection_base(event_name, event):
     raise ValueError("Expected an external pull request or an explicit manual dispatch")
 
 
+def manual_scope(event_name, event, current, previous):
+    if event_name != "workflow_dispatch":
+        return current, previous, ""
+    requested = event.get("inputs", {}).get("check", "")
+    if not isinstance(requested, str):
+        raise ValueError("The manual check must be a MUSTS check name")
+    requested = requested.strip()
+    if requested:
+        if requested not in current and requested not in previous:
+            raise ValueError(f"Unknown MUSTS check: {requested}")
+        current = {name: spec for name, spec in current.items() if name == requested}
+        previous = {name: spec for name, spec in previous.items() if name == requested}
+    return current, previous, requested
+
+
 def select(args):
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     event_name = os.environ["GITHUB_EVENT_NAME"]
@@ -136,16 +154,19 @@ def select(args):
     paths = changed_paths(command("git", "diff", "--name-status", "-z", "--find-renames", f"{ancestor}...HEAD", "--"))
     current = manifest(Path("MUSTS.yml").read_text())
     previous = manifest(command("git", "show", f"{ancestor}:MUSTS.yml").decode())
+    current, previous, requested = manual_scope(event_name, event, current, previous)
     probe = event_name == "workflow_dispatch"
     matrix = plan(current, previous, paths, force_all=probe)
     write_output("matrix", json.dumps(matrix, separators=(",", ":")))
     write_output("has_checks", str(bool(matrix["include"])).lower())
-    print(json.dumps({"event": event_name, "base": ancestor, "paths": sorted(paths), "matrix": matrix}, indent=2))
+    print(json.dumps({"event": event_name, "check": requested or None,
+                      "base": ancestor, "paths": sorted(paths), "matrix": matrix}, indent=2))
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
         heading = "Runner and timing probe" if probe else "External contribution validation"
         summary.write(f"## {heading}\n\n{len(matrix['include'])} target sets selected from MUSTS.yml.\n")
         if probe:
             summary.write("This runner probe does not validate the external-contributor or fork-approval path.\n")
+            summary.write(f"\nRequested scope: **{requested or 'all checks'}**.\n")
         if not matrix["include"]:
             summary.write("No MUSTS check reads the changed paths.\n")
 
@@ -157,7 +178,7 @@ def run(args):
     start = time.monotonic()
     startup = ["bazelisk", "--nosystem_rc", "--nohome_rc"]
     mode = "test"
-    result = subprocess.run([*startup, mode, "--config=ci", "--", *targets])
+    result = subprocess.run([*startup, mode, "--config=ci", "--test_output=errors", "--", *targets])
     if result.returncode == NO_TESTS_FOUND:
         mode = "build"
         result = subprocess.run([*startup, mode, "--config=ci", "--", *targets])

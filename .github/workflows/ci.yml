@@ -2,11 +2,20 @@
   "name": "External contribution checks",
   "on": {
     "pull_request": {"branches": ["main"]},
-    "workflow_dispatch": {}
+    "workflow_dispatch": {
+      "inputs": {
+        "check": {
+          "description": "MUSTS check to diagnose (blank runs every check)",
+          "type": "string",
+          "default": "",
+          "required": false
+        }
+      }
+    }
   },
   "permissions": {"contents": "read"},
   "concurrency": {
-    "group": "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}",
+    "group": "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}",
     "cancel-in-progress": true
   },
   "jobs": {
@@ -39,6 +48,7 @@
       },
       "env": {
         "ALONDRA_SIGNING_DIR": "${{ github.workspace }}/.scratch/unsigned-signing",
+        "DISABLE_AUTOUPDATER": "1",
         "DEVELOPER_DIR": "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}"
       },
       "steps": [
@@ -55,6 +65,11 @@
           "name": "Check the canonical snapshot simulator",
           "if": "${{ matrix.check == 'apple-tests' }}",
           "run": "python3 tools/simulator.py"
+        },
+        {
+          "name": "Install the pinned offline plugin test CLI",
+          "if": "${{ matrix.check == 'plugin-mod' }}",
+          "run": "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\""
         },
         {
           "name": "Build and test affected targets",
