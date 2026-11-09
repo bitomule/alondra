@@ -118,6 +118,7 @@ or in the private repository that keeps it, never here.
   approval for first-time fork contributors. Ad hoc signatures for test executables are allowed.
 - Releases run on the maintainer's Mac. Check workflows may exist; the publisher refuses to run
   inside GitHub Actions.
+- A maintainer may manually dispatch the same read-only checks to probe runners and timings.
 - Tags are never moved and published bytes are never rebuilt or replaced; release a new version.
 - Never export signing keys or copy signing credentials anywhere.
 

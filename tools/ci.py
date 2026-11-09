@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan and run the MUSTS checks of an external pull request without local evidence."""
+"""Run affected MUSTS checks for external PRs or a manual runner and timing probe."""
 import argparse
 import json
 import os
@@ -85,9 +85,9 @@ def changed_paths(raw):
     return paths
 
 
-def plan(current, previous, paths):
+def plan(current, previous, paths, force_all=False):
     selected = {}
-    all_checks = bool(paths & BOOTSTRAP)
+    all_checks = force_all or bool(paths & BOOTSTRAP)
     for checks in (previous, current):
         for name, spec in checks.items():
             if all_checks or any(matches(spec["paths"], path) for path in paths):
@@ -116,23 +116,34 @@ def write_output(name, value):
         output.write(f"{name}={value}\n")
 
 
+def selection_base(event_name, event):
+    if event_name == "workflow_dispatch":
+        branch = event["repository"]["default_branch"]
+        return command("git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}").decode().strip()
+    if event_name == "pull_request" and external_pr(event):
+        return event["pull_request"]["base"]["sha"]
+    raise ValueError("Expected an external pull request or an explicit manual dispatch")
+
+
 def select(args):
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    if not external_pr(event):
-        raise ValueError("Only external pull requests may run this workflow")
-    base = event["pull_request"]["base"]["sha"]
+    event_name = os.environ["GITHUB_EVENT_NAME"]
+    base = selection_base(event_name, event)
     if not re.fullmatch(r"[a-f0-9]{40}", base):
         raise ValueError("Invalid base SHA")
     ancestor = command("git", "merge-base", base, "HEAD").decode().strip()
     paths = changed_paths(command("git", "diff", "--name-status", "-z", "--find-renames", f"{ancestor}...HEAD", "--"))
     current = manifest(Path("MUSTS.yml").read_text())
     previous = manifest(command("git", "show", f"{ancestor}:MUSTS.yml").decode())
-    matrix = plan(current, previous, paths)
+    matrix = plan(current, previous, paths, force_all=event_name == "workflow_dispatch")
     write_output("matrix", json.dumps(matrix, separators=(",", ":")))
     write_output("has_checks", str(bool(matrix["include"])).lower())
-    print(json.dumps({"base": ancestor, "paths": sorted(paths), "matrix": matrix}, indent=2))
+    print(json.dumps({"event": event_name, "base": ancestor, "paths": sorted(paths), "matrix": matrix}, indent=2))
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-        summary.write(f"## External contribution validation\n\n{len(matrix['include'])} target sets selected from MUSTS.yml.\n")
+        heading = "Manual runner and timing probe" if event_name == "workflow_dispatch" else "External contribution validation"
+        summary.write(f"## {heading}\n\n{len(matrix['include'])} target sets selected from MUSTS.yml.\n")
+        if event_name == "workflow_dispatch":
+            summary.write("This manual run does not validate the external-contributor or fork-approval path.\n")
         if not matrix["include"]:
             summary.write("No MUSTS check reads the changed paths.\n")
 
