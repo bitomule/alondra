@@ -442,8 +442,7 @@ fn closing_with_an_answer_tells_the_user() {
     let mut s = fixture();
     ok(&mut s, user(), Command::CreateRequest { request_id: "q-r".into(), body: "Is it in review?".into(), auto_merge: false, maintenance: false, message: false });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "q-r".into(), answer: Some("Yes, since Monday".into()), withdrawn: false, title: Some("Review status".into()), headline: None,
-    });
+        request_id: "q-r".into(), answer: Some("Yes, since Monday".into()), withdrawn: false, title: Some("Review status".into()), headline: None, folded_into: None });
     let told: Vec<&Interaction> = s.interactions.values()
         .filter(|i| i.scope == Scope::Orchestrator { request_id: Some("q-r".into()) })
         .collect();
@@ -467,8 +466,7 @@ fn closing_a_request_a_node_raised_tells_the_user_nothing() {
     assert_eq!(s.requests[&"r-readme".into()].origin, RequestOrigin::Node { agent_id: "a".into() });
     ok(&mut s, orchestrator(), Command::CancelTask { task_id: "t-readme".into() });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "r-readme".into(), answer: Some("Fixed by PR #1153".into()), withdrawn: false, title: None, headline: None,
-    });
+        request_id: "r-readme".into(), answer: Some("Fixed by PR #1153".into()), withdrawn: false, title: None, headline: None, folded_into: None });
     assert_eq!(answer_cards(&s, "r-readme"), 0);
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
     assert_eq!(s.requests[&"r-readme".into()].answer.as_deref(), Some("Fixed by PR #1153"));
@@ -480,8 +478,7 @@ fn closing_a_request_the_orchestrator_raised_tells_the_user_nothing() {
     ok(&mut s, orchestrator(), Command::CreateRequest { request_id: "req-measure".into(), body: "Measure the SDK usage".into(), auto_merge: false, maintenance: false, message: false });
     assert_eq!(s.requests[&"req-measure".into()].origin, RequestOrigin::Orchestrator);
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "req-measure".into(), answer: Some("make e2e-sdk passes again".into()), withdrawn: false, title: Some("SDK e2e".into()), headline: None,
-    });
+        request_id: "req-measure".into(), answer: Some("make e2e-sdk passes again".into()), withdrawn: false, title: Some("SDK e2e".into()), headline: None, folded_into: None });
     assert_eq!(answer_cards(&s, "req-measure"), 0);
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
     assert_eq!(s.requests[&"req-measure".into()].answer.as_deref(), Some("make e2e-sdk passes again"));
@@ -493,8 +490,7 @@ fn closing_a_request_the_user_made_tells_the_user_its_answer() {
     ok(&mut s, user(), Command::CreateRequest { request_id: "mine".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
     assert_eq!(s.requests[&"mine".into()].origin, RequestOrigin::User);
     ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "mine".into(), answer: Some("Yes".into()), withdrawn: false, title: None, headline: None,
-    });
+        request_id: "mine".into(), answer: Some("Yes".into()), withdrawn: false, title: None, headline: None, folded_into: None });
     assert_eq!(answer_cards(&s, "mine"), 1);
 }
 

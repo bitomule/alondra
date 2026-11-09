@@ -145,7 +145,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             revision: 1,
             started: false,
             review_prs: false,
-            final_presentation: None,
+            created_revision: 0, final_presentation: None,
             pr_id: None,
             later_prs: vec![],
             opened_prs: Default::default(),

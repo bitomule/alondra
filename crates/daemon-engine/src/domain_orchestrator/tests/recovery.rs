@@ -126,7 +126,7 @@ async fn a_write_failure_recovers_without_a_daemon_restart(points: &[(&'static s
         let prompts = f.prompts();
         let prompt = prompts.last().unwrap();
         assert!(
-            prompt.contains("request second:"),
+            prompt.contains("request second ("),
             "{point}/{occurrence}: the native provider did not see the pending request"
         );
         let state = f.domain().read();

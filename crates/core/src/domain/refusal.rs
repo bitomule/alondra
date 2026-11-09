@@ -82,7 +82,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "maintenance_request", "outcome_card", "launch_plan_required", "too_many_suggestions", "suggestion_needs_decision",
     "plan_without_checklist", "plan_checklist_too_long", "checklist_not_final", "checklist_without_plan",
     "checklist_unknown_item", "checklist_without_evidence", "evidence_unknown_attachment", "evidence_unknown_pr",
-    "checklist_incomplete", "usage_is_not_a_stop", "plan_choice_required", "approved_plan_has_task",
+    "checklist_incomplete", "usage_is_not_a_stop", "plan_choice_required", "approved_plan_has_task", "fold_target_over", "fold_request_has_tasks", "request_has_tasks",
     "plan_review_pending", "plan_review_not_found", "not_in_plan_review", "plan_review_settled",
     "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable", "task_waiting", "continuation_request",
     "model_catalog_changed", "model_catalog_unavailable", "stall_needs_outcome", "stall_settled", "stall_limit",

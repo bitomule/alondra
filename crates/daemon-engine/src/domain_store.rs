@@ -58,6 +58,13 @@ const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT P
 const TASK_ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS task_accounts(task_id TEXT PRIMARY KEY REFERENCES tasks(id), account TEXT NOT NULL CHECK(length(account)>0));";
 /// The project each Task belongs to, set when it was created; created on every open like task_models.
 /// The task each task carries on, in the same request.
+/// The revision that created each Task, kept beside it; a Task without a row was created before
+/// it was recorded and reads as revision 0.
+const TASK_CREATIONS: &str = "CREATE TABLE IF NOT EXISTS task_creations(task_id TEXT PRIMARY KEY REFERENCES tasks(id), revision INTEGER NOT NULL CHECK(revision>0));";
+/// The open Task each closed Request was folded into, kept beside it.
+const REQUEST_FOLDS: &str = "CREATE TABLE IF NOT EXISTS request_folds(request_id TEXT PRIMARY KEY REFERENCES requests(id), task_id TEXT NOT NULL REFERENCES tasks(id));";
+/// The revision the orchestrator's current batch started from.
+const ORCHESTRATOR_BATCH: &str = "CREATE TABLE IF NOT EXISTS orchestrator_batch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), base INTEGER NOT NULL CHECK(base>0));";
 const TASK_CONTINUATIONS: &str = "CREATE TABLE IF NOT EXISTS task_continuations(task_id TEXT PRIMARY KEY REFERENCES tasks(id), continues TEXT NOT NULL REFERENCES tasks(id));";
 const TASK_PROJECTS: &str = "CREATE TABLE IF NOT EXISTS task_projects(task_id TEXT PRIMARY KEY REFERENCES tasks(id), project TEXT NOT NULL CHECK(length(trim(project))>0));";
 const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
@@ -680,6 +687,7 @@ impl DomainStore {
         tx.execute_batch(batch_effects::SCHEMA)?;
         tx.execute_batch(TASK_PROJECTS)?;
         tx.execute_batch(TASK_CONTINUATIONS)?;
+        tx.execute_batch(TASK_CREATIONS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;
@@ -698,6 +706,7 @@ impl DomainStore {
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
         tx.execute_batch(CLEARED_REQUESTS)?;
         tx.execute_batch(REQUEST_ORIGINS)?;
+        tx.execute_batch(REQUEST_FOLDS)?;
         let messages_known: bool = tx.query_row(
             "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='message_requests'", [], |r| r.get::<_, i64>(0),
         )? == 1;
@@ -706,6 +715,7 @@ impl DomainStore {
             tx.execute_batch(MESSAGE_REQUESTS_BEFORE)?;
         }
         tx.execute_batch(ORCHESTRATOR_SESSION)?;
+        tx.execute_batch(ORCHESTRATOR_BATCH)?;
         tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_POST_MERGE_TURNS)?;

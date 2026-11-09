@@ -1512,7 +1512,7 @@ fn map_action(
         }
         Verb::Withdraw => {
             if !state.requests.get(&alondra_core::domain::RequestId(action.subject.clone()))?.closed {
-                Some((Command::CloseRequest { request_id: action.subject.clone().into(), answer: None, withdrawn: true, title: None, headline: None }, stamp("Withdrawn", "Retirada")))
+                Some((Command::CloseRequest { request_id: action.subject.clone().into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None }, stamp("Withdrawn", "Retirada")))
             } else { None }
         }
         Verb::SetPriority => {

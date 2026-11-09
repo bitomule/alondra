@@ -907,7 +907,7 @@ mod tests {
         state.tasks.insert("task-a".into(), Task {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
-            started: true, review_prs: false, final_presentation: None, pr_id: None,
+            started: true, review_prs: false, created_revision: 0, final_presentation: None, pr_id: None,
             later_prs: vec![],
             opened_prs: Default::default(),
             dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, allowed: Default::default(), project: None,
@@ -1097,8 +1097,7 @@ mod tests {
             answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
             withdrawn: false,
             title: Some("Cifrar imágenes vía R2".into()),
-            headline: Some("Cifrar imágenes con R2 es posible".into()),
-        });
+            headline: Some("Cifrar imágenes con R2 es posible".into()), folded_into: None });
         let user: Vec<_> = domain.store.lock().unwrap().pending_messages().unwrap()
             .into_iter().filter(|message| message.recipient_kind == "user").collect();
         assert_eq!(user.len(), 1, "one push for the answer");

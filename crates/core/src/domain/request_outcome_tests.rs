@@ -72,8 +72,7 @@ fn cancel(s: &mut DomainState, task_id: &str) {
 }
 fn close(s: &mut DomainState, request: &str, answer: Option<&str>, headline: Option<&str>) -> CommandOutcome {
     ok(s, orchestrator(), Command::CloseRequest {
-        request_id: request.into(), answer: answer.map(String::from), withdrawn: false, title: None, headline: headline.map(String::from),
-    })
+        request_id: request.into(), answer: answer.map(String::from), withdrawn: false, title: None, headline: headline.map(String::from), folded_into: None })
 }
 fn cards(s: &DomainState, request: &str) -> Vec<Interaction> {
     s.interactions.values()
@@ -184,7 +183,7 @@ fn only_the_users_own_requests_hear_how_they_ended() {
     asked(&mut s, user(), "r", false);
     task(&mut s, "design", "r");
     cancel(&mut s, "design");
-    ok(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None });
+    ok(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
     assert!(cards(&s, "r").is_empty(), "the user withdrew it: they know how it ended");
 }
 
@@ -380,8 +379,7 @@ fn card_title_contract_request_answer_fields_are_checked_before_closing() {
     cases.push(("title", Some("Complete answer.".into()), Some(" ".into()), None));
     for (field, answer, title, headline) in cases {
         let error = exec(&mut s, orchestrator(), Command::CloseRequest {
-            request_id: "r".into(), answer, title, headline, withdrawn: false,
-        }).unwrap_err();
+            request_id: "r".into(), answer, title, headline, withdrawn: false, folded_into: None }).unwrap_err();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(error.subject.as_deref(), Some(field));
         assert!(!s.requests[&"r".into()].closed, "a malformed {field} must not close the request");
@@ -400,8 +398,7 @@ fn card_title_contract_request_subject_bounds_metadata_without_changing_the_answ
     let metadata = format!("{}\nSecond line", "Request metadata ".repeat(20));
     let body = "# A different heading\n\nKeep this answer literally.";
     ok(&mut s, orchestrator(), Command::CloseRequest {
-        request_id: "r".into(), answer: Some(body.into()), title: Some(metadata.clone()), headline: None, withdrawn: false,
-    });
+        request_id: "r".into(), answer: Some(body.into()), title: Some(metadata.clone()), headline: None, withdrawn: false, folded_into: None });
     let card = the_card(&s, "r");
     let title = card.card.title.as_deref().unwrap();
     assert!(title.starts_with("Request metadata Request metadata"));
@@ -409,4 +406,144 @@ fn card_title_contract_request_subject_bounds_metadata_without_changing_the_answ
     assert!(!title.contains(['\n', '\r']));
     assert_eq!(card.card.content.as_ref().unwrap().body, body);
     assert_eq!(s.requests[&"r".into()].title.as_deref(), Some(metadata.as_str()));
+}
+
+fn fold(s: &mut DomainState, request: &str, task: &str) -> Result<CommandOutcome, DomainError> {
+    exec(s, orchestrator(), Command::CloseRequest {
+        request_id: request.into(), answer: Some("Task «Release an idle node» already does this.".into()), withdrawn: false, title: None,
+        headline: Some("Added to an open task".into()), folded_into: Some(task.into()),
+    })
+}
+
+#[test]
+fn a_request_an_open_task_covers_closes_folded_into_it_without_a_task_of_its_own() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    asked(&mut s, user(), "r-waiting", false);
+    let out = fold(&mut s, "r-waiting", "t-idle").unwrap();
+    let request = &s.requests[&"r-waiting".into()];
+    assert!(request.closed && !request.withdrawn);
+    assert_eq!(request.folded_into, Some("t-idle".into()));
+    assert!(s.tasks.values().all(|t| t.request_id != "r-waiting".into()));
+    let card = the_card(&s, "r-waiting");
+    assert_eq!(card.card.effective_title(), "Added to an open task");
+    assert!(notified(&out, &card));
+}
+
+#[test]
+fn folding_into_a_missing_or_finished_task_is_refused() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    done(&mut s, "t-idle", None);
+    asked(&mut s, user(), "r-waiting", false);
+    for (task, code) in [("t-nobody", "not_found"), ("t-idle", "fold_target_over")] {
+        let error = fold(&mut s, "r-waiting", task).unwrap_err();
+        assert_eq!((error.code.as_str(), error.subject.as_deref()), (code, Some("folded_into")));
+    }
+    assert!(!s.requests[&"r-waiting".into()].closed);
+}
+
+#[test]
+fn a_request_with_its_own_tasks_cannot_be_folded() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    asked(&mut s, user(), "r-waiting", false);
+    task(&mut s, "t-waiting", "r-waiting");
+    cancel(&mut s, "t-waiting");
+    let error = fold(&mut s, "r-waiting", "t-idle").unwrap_err();
+    assert_eq!(error.code, "fold_request_has_tasks");
+}
+
+#[test]
+fn a_withdrawn_request_folds_into_no_task() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    asked(&mut s, user(), "r-waiting", false);
+    let error = exec(&mut s, user(), Command::CloseRequest {
+        request_id: "r-waiting".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: Some("t-idle".into()),
+    }).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("invalid_input", Some("folded_into")));
+}
+
+#[test]
+fn a_folded_request_gets_no_task_afterwards() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    asked(&mut s, user(), "r-waiting", false);
+    fold(&mut s, "r-waiting", "t-idle").unwrap();
+    let error = exec(&mut s, orchestrator(), Command::CreateTask {
+        plan_items: None, continues: None, task_id: "t-waiting".into(), request_id: "r-waiting".into(), title: "Waiting".into(), agent_id: None,
+        review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
+    }).unwrap_err();
+    assert_eq!(error.code, "not_found");
+}
+
+#[test]
+fn a_request_stored_before_folding_existed_reads_as_not_folded() {
+    let old = serde_json::json!({"id": "r", "body": "Work", "closed": true});
+    let request: Request = serde_json::from_value(old).unwrap();
+    assert_eq!(request.folded_into, None);
+    assert!(!serde_json::to_value(&request).unwrap().as_object().unwrap().contains_key("folded_into"));
+}
+
+fn new_batch(s: &mut DomainState, session: &str) {
+    ok(s, Actor::System, Command::BindOrchestratorSession { session_id: session.into() });
+}
+fn another_task(s: &mut DomainState, id: &str, request: &str, continues: Option<&str>) -> Result<CommandOutcome, DomainError> {
+    exec(s, orchestrator(), Command::CreateTask {
+        plan_items: None, continues: continues.map(Into::into), task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
+        review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
+    })
+}
+
+#[test]
+fn a_later_batch_never_gives_a_request_with_open_tasks_more_tasks() {
+    let mut s = state();
+    new_batch(&mut s, "batch-1");
+    asked(&mut s, user(), "r", false);
+    task(&mut s, "t-first", "r");
+    new_batch(&mut s, "batch-2");
+    let error = another_task(&mut s, "t-again", "r", None).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("request_has_tasks", Some("request_id")));
+    assert!(!s.tasks.contains_key(&"t-again".into()));
+}
+
+#[test]
+fn one_batch_splits_a_request_into_several_tasks() {
+    let mut s = state();
+    new_batch(&mut s, "batch-1");
+    asked(&mut s, user(), "r", false);
+    task(&mut s, "t-first", "r");
+    another_task(&mut s, "t-second", "r", None).unwrap();
+}
+
+#[test]
+fn a_later_batch_carries_on_a_task_or_follows_tasks_that_all_ended() {
+    let mut s = state();
+    new_batch(&mut s, "batch-1");
+    asked(&mut s, user(), "r", false);
+    task(&mut s, "t-first", "r");
+    new_batch(&mut s, "batch-2");
+    another_task(&mut s, "t-carry", "r", Some("t-first")).unwrap();
+    asked(&mut s, user(), "r-ended", false);
+    task(&mut s, "t-ended", "r-ended");
+    new_batch(&mut s, "batch-3");
+    done(&mut s, "t-ended", None);
+    another_task(&mut s, "t-next", "r-ended", None).unwrap();
+}
+
+#[test]
+fn a_task_stored_before_creation_was_recorded_reads_as_created_at_zero() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    task(&mut s, "t", "r");
+    let mut stored = serde_json::to_value(&s.tasks[&"t".into()]).unwrap();
+    stored.as_object_mut().unwrap().remove("created_revision");
+    let task: Task = serde_json::from_value(stored).unwrap();
+    assert_eq!(task.created_revision, 0);
 }

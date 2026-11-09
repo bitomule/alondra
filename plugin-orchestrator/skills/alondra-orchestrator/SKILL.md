@@ -98,6 +98,23 @@ user follows tasks, not nodes.
   `close_request`, its `answer` a short summary of what came of it in the user's language
   (what changed for them, the PRs that landed), or create its next tasks. Alondra then writes
   the user's «Done» card with that summary and each task's outcome.
+- A request that needs work is checked against the open tasks before it gets one, because an
+  open task may already cover it, worded differently:
+  - Look at the open tasks in your prompt and, for the ones near its subject, their mission with
+    `get_launch_plan` (or `tasks_in_progress` with `all: true`). A task covers the request when it
+    already changes the same behaviour, the same piece or reaches the same goal, even if the
+    request names it another way («a waiting node holds no memory» and «close an idle node's host
+    and provider, resume it natively» are the same work).
+  - An open task covers it: create no task. Send what the request adds to that task's node with
+    `send` and `task`, or put it in its plan with `set_launch_plan` when it has not started, then
+    close it with `close_request` and `folded_into` naming that task, its `headline` and `answer`
+    telling the user which task carries it. Never two tasks for the same work.
+  - When you cannot tell whether a task covers it, ask the user before creating one.
+- Each open request in your prompt says which tasks it has, or «no task of its own». One that
+  lists tasks has been turned into work already: never give it tasks again from a later batch.
+  The daemon refuses that (`request_has_tasks`) unless every task of it has ended, the new task
+  carries one on (`continues`) or takes points of its approved plan (`plan_items`); fold what is
+  new into the task that covers it instead.
 - A request that needs work is named first with `title_request`: a few words, at most 60
   characters, in the user's language, saying what it is about, never a copy of the prompt. The
   daemon refuses a second task on an untitled request (`request_title_required`), and the list
@@ -114,6 +131,24 @@ user follows tasks, not nodes.
   for it that no earlier card named: in the order they run, with their priority and what each
   waits on. So give each task its `dependencies` and `set_priority` in the same batch you create
   it, and never confirm the tasks with a card of your own.
+- A request is closed once it was dealt with. The prompt marks one whose tasks have all ended
+  with «every task of it has ended»: close it at once with `close_request` (its `answer`, what
+  came of it), or create its next tasks. Do it even when the notice Alondra sent for it is gone,
+  and never leave such a request open for a later batch.
+- The prompt says how long ago each open request was made. Before you turn one that is a day
+  old or older into tasks, check it is still wanted, because it may have waited while the work
+  was done elsewhere or the user decided otherwise:
+  - Look at the tasks (`tasks_in_progress` with `all: true`): finished tasks and PRs made after
+    the request that do what it asks, or part of it.
+  - Read the code in the project's checkout (`Grep`, `Read`): when main already holds the change,
+    it is done.
+  - Look for later decisions: newer requests and answered questions about the same subject that
+    replace or narrow it.
+  - Already covered, or replaced by a later decision: create no task and ask the user nothing.
+    Close it with `close_request`, a one-line `answer` naming what covers it (the task, the PR,
+    the decision). When only part is left, create tasks for that part alone and say so in the
+    `answer` or the mission.
+  - When what you can see does not settle it, handle it as a new request.
 - A report of a defect (main fails a test, a build breaks, a bug a node or the user saw) is
   checked before it becomes a task, because it may already be fixed or already have a task:
   - Look at the tasks: `tasks_in_progress` with `all: true` lists the open ones and the finished
@@ -128,7 +163,7 @@ user follows tasks, not nodes.
     same in `answer_question`.
   - An open task covers it: create no task. Fold the report into that task, with `send` and
     `task` to its node, or with `set_launch_plan` when it has not started, and close the request
-    naming it. Never two tasks for the same red main.
+    with `folded_into` naming it. Never two tasks for the same red main.
   - When what you can see does not settle it, create the task: its node first reproduces the
     defect on a fresh main and ends the task itself if it no longer happens.
 - To reopen a Task with another provider or model, first use `update_launch_plan` while the Task

@@ -219,7 +219,7 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
     let json = serde_json::to_string(unit).expect("unit serialization").replace(TOKEN, &format!("u{number:03}"));
     let copy: DomainState = serde_json::from_str(&json).expect("unit copy");
     let DomainState {
-        data_epoch: _, revision, orchestrator_generation: _, orchestrator_session: _, requests, agents, tasks, documents,
+        data_epoch: _, revision, orchestrator_generation: _, orchestrator_session: _, orchestrator_batch_base: _, requests, agents, tasks, documents,
         document_revisions, document_reviews, pull_requests, mut interactions, merge_authorizations, stack_readiness, schedule,
         holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal, mcp, ..
     } = copy;

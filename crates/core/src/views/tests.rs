@@ -43,6 +43,7 @@ fn fixture() -> DomainState {
             title: "Build a feature".into(),
             state: TaskState::NeedsYou,
             revision: 1,
+            created_revision: 0,
             started: true,
             review_prs: false,
             final_presentation: Some("i-3".into()),
@@ -5723,8 +5724,7 @@ fn answered_and_closed_request() -> DomainState {
         answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
         withdrawn: false,
         title: Some("Cifrar imágenes vía R2".into()),
-        headline: Some("Cifrar imágenes con R2 es posible".into()),
-    });
+        headline: Some("Cifrar imágenes con R2 es posible".into()), folded_into: None });
     assert_eq!(closed.effects, vec![DomainEffect::NotifyUser {
         task_id: None, interaction_id: "a7efd99d-answer".into(),
     }]);
@@ -9013,8 +9013,7 @@ fn outcome_state() -> DomainState {
         answer: Some("Para el cifrado una imagen son bytes como cualquier otro: el iPhone la cifra con la clave del usuario antes de subirla, y R2 solo guarda bytes cifrados.\n\nYa se hace así desde la versión 0.3.0, así que no hace falta ninguna tarea.".into()),
         withdrawn: false,
         title: Some("Cifrar imágenes en R2".into()),
-        headline: Some("Sí: el iPhone ya cifra las imágenes antes de subirlas".into()),
-    });
+        headline: Some("Sí: el iPhone ya cifra las imágenes antes de subirlas".into()), folded_into: None });
     run(&mut state, user.clone(), Command::CreateRequest {
         request_id: "r-accounts".into(), body: "Quiero usar dos cuentas de Claude y cambiar entre ellas".into(), auto_merge: false, maintenance: false, message: false,
     });
@@ -9049,8 +9048,7 @@ fn outcome_state() -> DomainState {
     run(&mut state, orchestrator, Command::CloseRequest {
         request_id: "r-accounts".into(),
         answer: Some("Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.".into()),
-        withdrawn: false, title: None, headline: None,
-    });
+        withdrawn: false, title: None, headline: None, folded_into: None });
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "r-sync".into(), body: "Que las notas se sincronicen entre el iPhone y el Mac".into(), auto_merge: false, maintenance: false, message: false,
     });

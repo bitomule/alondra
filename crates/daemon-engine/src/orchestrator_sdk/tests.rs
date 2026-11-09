@@ -208,7 +208,7 @@ async fn every_request_of_a_handled_batch_ends_with_a_task_an_answer_or_a_questi
         task_id: "t-2".into(), request_id: "r-2".into(), title: "Task".into(), agent_id: Some("a".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
-    f.run(Actor::Orchestrator { generation: 0 }, "answer", Command::CloseRequest { request_id: "r-3".into(), withdrawn: false, answer: Some("Already done".into()), title: None, headline: None });
+    f.run(Actor::Orchestrator { generation: 0 }, "answer", Command::CloseRequest { request_id: "r-3".into(), withdrawn: false, answer: Some("Already done".into()), title: None, headline: None, folded_into: None });
     f.run(Actor::Agent { agent_id: "a".into() }, "start", Command::StartTask { task_id: "t-2".into() });
     f.run(Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
         attachments: vec![], interaction_id: "s-1".into(), scope: Scope::Task { task_id: "t-2".into() },
