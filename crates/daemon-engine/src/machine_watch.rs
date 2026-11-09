@@ -52,6 +52,8 @@ pub(crate) struct Incident {
 #[derive(Default, Serialize, Deserialize)]
 struct Record {
     incident: Option<Incident>,
+    #[serde(default)]
+    incident_volume: Option<PathBuf>,
     declared: BTreeMap<String, Declared>,
     /// Mount points of the volumes nodes were launched on, other than the Mac's own disk.
     #[serde(default)]
@@ -72,14 +74,22 @@ struct Record {
     /// what each one took.
     #[serde(default)]
     stretches: crate::disk_peaks::Ledger,
+    #[serde(skip)]
+    disk_working: BTreeMap<crate::admission::Key, Option<String>>,
+    #[serde(skip)]
+    disk_grants: BTreeMap<crate::admission::Key, u64>,
     /// The disk was short of room for the next build when last asked.
     #[serde(skip)]
     short: bool,
+    #[serde(skip)]
+    boot_short: bool,
     /// A sandbox's fake nodes build nothing: they take nothing from the disk and reserve nothing.
     #[serde(skip)]
     peaks_ignored: bool,
     #[serde(skip)]
     disk: Option<crate::disk::Space>,
+    #[serde(skip)]
+    disk_volume: Option<PathBuf>,
     #[serde(skip)]
     boot_disk: Option<crate::disk::Space>,
     #[serde(skip)]
@@ -98,6 +108,16 @@ struct Record {
     /// The latest space of every other volume builds may write to.
     #[serde(skip)]
     volume_spaces: BTreeMap<PathBuf, crate::disk::Space>,
+    /// Only a complete mount table can suspend a restriction without a space reading.
+    #[serde(skip)]
+    volume_mounts: Option<BTreeSet<PathBuf>>,
+    #[serde(skip)]
+    volume_readings_fresh: bool,
+    /// Work not yet covered by a newer disk budget, including tasks that have since ended.
+    #[serde(skip)]
+    volume_working: BTreeMap<PathBuf, BTreeMap<crate::admission::Key, Option<String>>>,
+    #[serde(skip)]
+    volume_grants: BTreeMap<PathBuf, BTreeMap<crate::admission::Key, u64>>,
     /// The volumes builds write to that were short of room for the next build when last asked.
     #[serde(skip)]
     volumes_short: BTreeSet<PathBuf>,
@@ -114,30 +134,54 @@ enum Candidates {
     Mounted,
     #[cfg(any(test, feature = "test-hooks"))]
     Given(Vec<(PathBuf, crate::disk::Space, u64)>),
+    #[cfg(any(test, feature = "test-hooks"))]
+    Probed { mounts: Option<Vec<PathBuf>>, spaces: Vec<(PathBuf, crate::disk::Space, u64)> },
+}
+
+struct VolumeMeasurements {
+    mounts: BTreeSet<PathBuf>,
+    spaces: Vec<(PathBuf, crate::disk::Space, u64)>,
 }
 
 impl Record {
     /// The first volume builds write to short of room for the next node, of `project`, on top of
     /// what the `working` tasks may still take there.
-    fn volume_short(&mut self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>) -> Option<crate::disk::Room> {
+    fn volume_short(&mut self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>) -> Option<crate::disk::Room> {
         if self.peaks_ignored {
             return None;
         }
         let mut first = None;
         for (mount, estimates) in &self.build_volumes {
-            let Some(space) = self.volume_spaces.get(mount) else { continue };
+            if self.volume_mounts.as_ref().is_some_and(|mounts| !mounts.contains(mount)) { continue; }
+            let unobserved = self.volume_working.entry(mount.clone()).or_default();
+            for (task, project) in working {
+                unobserved.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
+            }
             let stretches = self.volume_stretches.get(mount);
-            let reserved: u64 = working.iter().map(|(task, project)| {
+            let grants = self.volume_grants.get(mount);
+            let granted = grants.map_or(0, |grants| grants.values().copied().fold(0u64, u64::saturating_add));
+            let reserved = unobserved.iter().filter(|(key, _)| Some(*key) != head && grants.is_none_or(|grants| !grants.contains_key(*key))).map(|(key, project)| {
                 let estimate = estimates.estimate_beside(project.as_deref());
-                stretches.map_or(estimate, |stretches| stretches.reserved(task, estimate))
-            }).sum();
-            let needed = reserved + estimates.estimate_beside(project) + crate::disk::low_lines().usable;
-            match space.room_for(needed, self.volumes_short.contains(mount)) {
-                Ok(()) => {
+                match key {
+                    crate::admission::Key::Task(task) => stretches.map_or(estimate, |stretches| stretches.reserved(task, estimate)),
+                    _ => estimate,
+                }
+            }).fold(granted, u64::saturating_add);
+            let needed = reserved.saturating_add(estimates.estimate_beside(project)).saturating_add(crate::disk::low_lines().usable);
+            let room = self.volume_spaces.get(mount).map(|space| space.room_for(needed, self.volumes_short.contains(mount)));
+            match room {
+                Some(Ok(())) => {
                     self.volumes_short.remove(mount);
                 }
-                Err(room) => {
-                    self.volumes_short.insert(mount.clone());
+                room => {
+                    let room = match room {
+                        Some(Err(room)) => {
+                            self.volumes_short.insert(mount.clone());
+                            room
+                        }
+                        None => crate::disk::Room { free: 0, needed, volume: None },
+                        Some(Ok(())) => unreachable!(),
+                    };
                     let name = mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned());
                     if first.is_none() {
                         first = Some(crate::disk::Room { volume: Some(name), ..room });
@@ -171,11 +215,15 @@ pub(crate) enum Action {
 /// `disk::recovered_lines()` to count as fine, so a disk hovering at the line does not flap. Memory
 /// and the CPU load open none: they only pace new starts at the gate.
 pub(crate) fn failing(machine: &Machine, previous: Option<MachineCause>) -> Option<MachineCause> {
-    (machine.disk_total > 0 && disk_space(machine).low(previous == Some(MachineCause::Disk))).then_some(MachineCause::Disk)
+    (valid_disk(disk_space(machine)) && disk_space(machine).low(previous == Some(MachineCause::Disk))).then_some(MachineCause::Disk)
 }
 
 fn disk_space(machine: &Machine) -> crate::disk::Space {
     crate::disk::Space { free: machine.disk_available, purgeable: machine.disk_purgeable, total: machine.disk_total }
+}
+
+fn valid_disk(space: crate::disk::Space) -> bool {
+    space.total > 0 && space.free.checked_add(space.purgeable).is_some_and(|usable| usable <= space.total)
 }
 
 fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter]) -> MachineCard {
@@ -198,7 +246,12 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
 /// named when it is not the Mac's own.
 /// The fullest is the one with the least usable space, or, when one is low only because macOS has
 /// not purged yet, that one.
+#[cfg(test)]
 pub(crate) fn tightest(machine: Machine, volumes: &[(String, crate::disk::Space)]) -> (Machine, Option<String>) {
+    tightest_on(machine, volumes)
+}
+
+fn tightest_on<T: Clone>(machine: Machine, volumes: &[(T, crate::disk::Space)]) -> (Machine, Option<T>) {
     let fullness = |space: &crate::disk::Space| (!space.low(false), space.usable());
     match volumes.iter().min_by_key(|(_, space)| fullness(space)) {
         Some((name, space)) if fullness(space) < fullness(&disk_space(&machine)) || machine.disk_total == 0 =>
@@ -216,6 +269,15 @@ pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Wai
 
 /// `step` with the name of the volume the disk gauge measured, when it is not the Mac's own.
 pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
+    step_with_disk_measurement(previous, machine, disk, waiting, fixed, now, valid_disk(disk_space(machine)))
+}
+
+fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis, measured_disk: bool) -> (Option<Incident>, Vec<Action>) {
+    let mut previous = previous;
+    if let Some(incident) = previous.as_mut().filter(|incident| incident.cause == MachineCause::Disk && !measured_disk) {
+        incident.healthy = 0;
+        return (previous, vec![]);
+    }
     let measured = failing(machine, previous.as_ref().map(|incident| incident.cause));
     let Some(mut incident) = previous else {
         let Some(cause) = measured else { return (None, vec![]) };
@@ -338,12 +400,14 @@ impl MachineWatch {
             return None;
         }
         record.sampled_at = machine.at;
-        record.mac.observed_nodes = record.mac.nodes.clone();
-        record.mac.observed_nodes_at = record.mac.nodes_at.filter(|at| *at <= now);
         record.swap.sample(machine.compressor, now);
-        record.boot_disk = (machine.disk_total > 0).then(|| disk_space(machine));
+        let disk = disk_space(machine);
+        if valid_disk(disk) { record.boot_disk = Some(disk); }
         let before = record.mac.room(0, now);
-        record.mac.step(machine, now);
+        if record.mac.step(machine, now) {
+            record.mac.observed_nodes = record.mac.nodes.clone();
+            record.mac.observed_nodes_at = record.mac.nodes_at.filter(|at| *at <= now);
+        }
         Some(before)
     }
 
@@ -392,9 +456,50 @@ impl MachineWatch {
         self.incident().is_some_and(|incident| incident.cause == MachineCause::Disk)
     }
 
-    /// Takes the fullest disk's space.
+    /// Takes the Mac's own disk's space.
     pub fn measure_disk(&self, space: crate::disk::Space) {
-        self.record().disk = Some(space);
+        if valid_disk(space) {
+            let mut record = self.record();
+            record.boot_disk = Some(space);
+            record.disk = Some(space);
+            record.disk_volume = None;
+            record.disk_working.clear();
+            record.disk_grants.clear();
+        }
+    }
+
+    #[cfg(test)]
+    fn measure_fullest_disk(&self, space: crate::disk::Space) {
+        self.measure_fullest_disk_on(space, None);
+    }
+
+    fn measure_fullest_disk_on(&self, space: crate::disk::Space, volume: Option<PathBuf>) {
+        if valid_disk(space) {
+            let mut record = self.record();
+            record.disk = Some(space);
+            record.disk_volume = volume;
+        }
+    }
+
+    fn suspend_unmounted(&self) -> Option<Incident> {
+        let mut record = self.record();
+        let absent = |volume: &Option<PathBuf>, mounts: &Option<BTreeSet<PathBuf>>| {
+            volume.as_ref().is_some_and(|volume| mounts.as_ref().is_some_and(|mounts| !mounts.contains(volume)))
+        };
+        if absent(&record.disk_volume, &record.volume_mounts) {
+            record.disk = None;
+            record.disk_volume = None;
+            record.short = false;
+        }
+        if record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk)
+            && absent(&record.incident_volume, &record.volume_mounts) {
+            let incident = record.incident.take();
+            record.incident_volume = None;
+            self.save(&record);
+            incident
+        } else {
+            None
+        }
     }
 
     pub fn ignore_peaks(&self) {
@@ -419,20 +524,31 @@ impl MachineWatch {
     }
 
     /// Every other volume builds may write to, its space and what it holds.
-    fn candidate_spaces(&self) -> Vec<(PathBuf, crate::disk::Space, u64)> {
-        let candidates = self.record().candidates.clone();
+    fn candidate_spaces(&self) -> Option<VolumeMeasurements> {
+        let (candidates, watched) = {
+            let record = self.record();
+            (record.candidates.clone(), record.volumes.iter().chain(record.build_volumes.keys()).cloned().collect::<BTreeSet<_>>())
+        };
         match candidates {
-            Candidates::None => vec![],
-            Candidates::Mounted => crate::disk::candidate_volumes().into_iter()
-                .filter(|mount| !crate::disk::same_volume(mount, own_disk()))
-                .filter_map(|mount| {
-                    let space = crate::disk::space(&mount)?;
-                    let held = crate::disk::held(&mount).unwrap_or_else(|| space.total.saturating_sub(space.usable()));
-                    Some((mount, space, held))
-                })
-                .collect(),
+            Candidates::None => None,
+            Candidates::Mounted => {
+                let mounts = crate::disk::mounted_volumes().ok()?;
+                let wanted: BTreeSet<_> = mounts.candidates.into_iter().chain(watched).collect();
+                let spaces = wanted.into_iter().filter(|mount| mounts.all.contains(mount))
+                    .filter(|mount| !crate::disk::same_volume(mount, own_disk()))
+                    .filter_map(|mount| {
+                        if crate::disk::mount_point(&mount).as_ref() != Some(&mount) { return None; }
+                        let space = crate::disk::space(&mount)?;
+                        let held = crate::disk::held(&mount).unwrap_or_else(|| space.total.saturating_sub(space.usable()));
+                        if crate::disk::mount_point(&mount).as_ref() != Some(&mount) { return None; }
+                        Some((mount, space, held))
+                    }).collect();
+                Some(VolumeMeasurements { mounts: mounts.all, spaces })
+            }
             #[cfg(any(test, feature = "test-hooks"))]
-            Candidates::Given(volumes) => volumes,
+            Candidates::Given(spaces) => Some(VolumeMeasurements { mounts: spaces.iter().map(|(mount, _, _)| mount.clone()).collect(), spaces }),
+            #[cfg(any(test, feature = "test-hooks"))]
+            Candidates::Probed { mounts, spaces } => Some(VolumeMeasurements { mounts: mounts?.into_iter().collect(), spaces }),
         }
     }
 
@@ -441,16 +557,31 @@ impl MachineWatch {
     /// such as the Mac's own disk, so what they write never counts as taken from it. One a
     /// stretch took `disk_peaks::LEARNED_BYTES` from becomes a volume builds write to: watched, its
     /// card raised when it runs low, and its room reserved like the Mac's own disk's. Returns
-    /// whether a stretch ended on one of them.
+    /// whether a stretch ended or the confirmed set of mounts changed.
     pub(crate) fn measure_volumes(&self, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
         if self.record().peaks_ignored {
             return false;
         }
-        let spaces = self.candidate_spaces();
+        let Some(VolumeMeasurements { mounts, spaces }) = self.candidate_spaces() else {
+            self.record().volume_readings_fresh = false;
+            return false;
+        };
+        let spaces: Vec<_> = spaces.into_iter().filter(|(mount, space, _)| mounts.contains(mount) && valid_disk(*space)).collect();
         let mut record = self.record();
+        let changed = record.volume_mounts.as_ref() != Some(&mounts);
+        record.volume_spaces.retain(|mount, _| mounts.contains(mount));
+        record.volume_stretches.retain(|mount, _| mounts.contains(mount));
+        record.volume_working.retain(|mount, _| mounts.contains(mount));
+        record.volume_grants.retain(|mount, _| mounts.contains(mount));
+        record.volume_readings_fresh = record.volumes.iter().chain(record.build_volumes.keys())
+            .filter(|mount| mounts.contains(*mount)).all(|mount| spaces.iter().any(|(measured, _, _)| measured == mount));
+        record.volume_mounts = Some(mounts);
         let mut ended = false;
         let mut learned = vec![];
         for (mount, space, held) in &spaces {
+            record.volume_working.remove(mount);
+            record.volume_grants.remove(mount);
+            if *held > space.total { continue; }
             let Record { build_volumes, candidate_peaks, volume_stretches, .. } = &mut *record;
             let known = build_volumes.contains_key(mount);
             let estimates = match build_volumes.get_mut(mount) {
@@ -463,7 +594,7 @@ impl MachineWatch {
                 learned.push(mount.clone());
             }
         }
-        record.volume_spaces = spaces.into_iter().map(|(mount, space, _)| (mount, space)).collect();
+        record.volume_spaces.extend(spaces.into_iter().map(|(mount, space, _)| (mount, space)));
         for mount in &learned {
             log!("builds write to {}: Alondra watches it and reserves the room they take there", mount.display());
             let estimates = record.candidate_peaks.remove(mount).unwrap_or_default();
@@ -473,7 +604,7 @@ impl MachineWatch {
         if ended || !learned.is_empty() {
             self.save(&record);
         }
-        ended
+        ended || changed
     }
 
     /// Takes a sample of the usable space of the Mac's own disk with the tasks at work, by
@@ -484,6 +615,8 @@ impl MachineWatch {
         if record.peaks_ignored {
             return false;
         }
+        record.disk_working.clear();
+        record.disk_grants.clear();
         let Record { stretches, peaks, swap, .. } = &mut *record;
         let freed = stretches.sample_excluding(peaks, usable, working, now, swap.allocated_change);
         if freed || !stretches.is_empty() {
@@ -502,23 +635,71 @@ impl MachineWatch {
         self.record().stretches.used(task)
     }
 
-    /// What the `working` tasks may still take from the Mac's own disk.
+    /// Writes not covered by a newer byte budget stay reserved even after their tasks end.
+    pub(crate) fn reserve_admission(&self, key: crate::admission::Key, project: Option<String>) {
+        let mut record = self.record();
+        if record.peaks_ignored { return; }
+        let cost = record.peaks.estimate(project.as_deref());
+        let grant = record.disk_grants.entry(key.clone()).or_default();
+        *grant = grant.saturating_add(cost);
+        record.disk_working.entry(key.clone()).or_insert_with(|| project.clone());
+        let mounts: Vec<_> = record.build_volumes.iter()
+            .filter(|(mount, _)| record.volume_mounts.as_ref().is_none_or(|mounts| mounts.contains(*mount)))
+            .map(|(mount, estimates)| (mount.clone(), estimates.estimate_beside(project.as_deref()))).collect();
+        for (mount, cost) in mounts {
+            let grant = record.volume_grants.entry(mount.clone()).or_default().entry(key.clone()).or_default();
+            *grant = grant.saturating_add(cost);
+            record.volume_working.entry(mount).or_default().entry(key.clone()).or_insert_with(|| project.clone());
+        }
+    }
+
     pub(crate) fn disk_reserved(&self, working: &BTreeMap<TaskId, Option<String>>) -> u64 {
+        self.disk_reserved_for(working, None)
+    }
+
+    fn disk_reserved_for(&self, working: &BTreeMap<TaskId, Option<String>>, head: Option<&crate::admission::Key>) -> u64 {
         let record = self.record();
         if record.peaks_ignored {
             return 0;
         }
-        working.iter().map(|(task, project)| record.stretches.reserved(task, record.peaks.estimate(project.as_deref()))).sum()
+        let mut unobserved = record.disk_working.clone();
+        for (task, project) in working {
+            unobserved.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
+        }
+        let granted = record.disk_grants.values().copied().fold(0u64, u64::saturating_add);
+        unobserved.iter().filter(|(key, _)| Some(*key) != head && !record.disk_grants.contains_key(*key)).map(|(key, project)| {
+            let estimate = record.peaks.estimate(project.as_deref());
+            match key {
+                crate::admission::Key::Task(task) => record.stretches.reserved(task, estimate),
+                _ => estimate,
+            }
+        }).fold(granted, u64::saturating_add)
     }
 
     /// The disk short of room for the next node, of `project`, on top of what the `working` tasks
     /// may still take: the Mac's own disk, or else a volume builds write to, named. Also while the
     /// disk's card is open, when no node starts. Once short, a disk needs margin to have room again.
     pub(crate) fn disk_room(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<crate::disk::Room> {
-        let reserved = self.disk_reserved(working);
+        self.disk_room_for(working, project, None, now)
+    }
+
+    pub(crate) fn disk_room_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<crate::disk::Room> {
+        {
+            let mut record = self.record();
+            for (task, project) in working {
+                record.disk_working.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
+            }
+        }
+        let reserved = self.disk_reserved_for(working, head);
         let mut record = self.record();
         let estimate = if record.peaks_ignored { 0 } else { record.peaks.estimate(project) };
-        let needed = reserved + estimate + crate::disk::low_lines().usable;
+        let needed = reserved.saturating_add(estimate).saturating_add(crate::disk::low_lines().usable);
+        let volume_short = record.volume_short(working, project, head);
+        if record.boot_disk.is_none() {
+            return Some(crate::disk::Room { free: 0, needed, volume: None });
+        }
+        let boot_short = record.boot_disk.and_then(|space| space.room_for(needed, record.boot_short).err());
+        record.boot_short = boot_short.is_some();
         let short = record.disk.and_then(|space| space.room_for(needed, record.short).err());
         record.short = short.is_some();
         let swap_short = if record.peaks_ignored { None } else {
@@ -532,8 +713,8 @@ impl MachineWatch {
             })
         };
         record.swap_short = swap_short.is_some();
-        let short = swap_short.or(short);
-        let short = short.or_else(|| record.volume_short(working, project));
+        let short = swap_short.or(boot_short).or(short);
+        let short = short.or(volume_short);
         let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
         short.or_else(|| carded.then(|| crate::disk::Room {
             free: record.disk.map_or(0, |space| space.shown_free()),
@@ -544,7 +725,11 @@ impl MachineWatch {
 
     /// Swap and boot-container budget beside the queue hold, for the throttled log.
     pub(crate) fn disk_detail(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<String> {
-        let reserved = self.disk_reserved(working);
+        self.disk_detail_for(working, project, None, now)
+    }
+
+    pub(crate) fn disk_detail_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<String> {
+        let reserved = self.disk_reserved_for(working, head);
         let record = self.record();
         let space = record.boot_disk?;
         let swap = record.swap.line(now).unwrap_or_else(|| "swap unavailable".into());
@@ -561,15 +746,34 @@ impl MachineWatch {
 
     fn short(&self) -> bool {
         let record = self.record();
-        record.short || record.swap_short
+        record.short || record.boot_short || record.swap_short
     }
 
     /// Why no node may start in `cwd` now, if the disk is nearly full there or on the Mac. The
-    /// folder's volume is watched from now on, and measured at once so a launch never waits for
-    /// the next sample; the watcher then puts the card in front of the user.
+    /// folder's volume is watched from now on. Any learned build volume without its own byte budget
+    /// waits for the watcher even if admission was granted before the volume appeared.
     pub(crate) fn refuse_launch(&self, cwd: &Path) -> Option<String> {
-        self.watch_volume(cwd);
-        let space = crate::disk::space(cwd);
+        let mount = crate::disk::mount_point(cwd).filter(|mount| !crate::disk::same_volume(mount, own_disk()));
+        self.refuse_launch_on(mount, crate::disk::space(cwd))
+    }
+
+    fn refuse_launch_on(&self, mount: Option<PathBuf>, space: Option<crate::disk::Space>) -> Option<String> {
+        if let Some(mount) = mount {
+            self.watch_mount(mount);
+        }
+        let unbudgeted = {
+            let record = self.record();
+            if record.peaks_ignored { None } else {
+                record.build_volumes.keys().find(|mount| {
+                    record.volume_mounts.as_ref().is_none_or(|mounts| mounts.contains(*mount))
+                        && !record.volume_spaces.get(*mount).is_some_and(|space| valid_disk(*space))
+                }).cloned()
+            }
+        };
+        if let Some(mount) = unbudgeted {
+            self.changed.notify_one();
+            return Some(format!("Waiting for a disk space measurement on {}: Alondra starts no node until that volume has a valid reading", mount.display()));
+        }
         let low_here = space.is_some_and(|space| space.low(false));
         if !self.disk_low() && !low_here {
             return None;
@@ -581,27 +785,30 @@ impl MachineWatch {
         Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", crate::domain_messages::user_name()))
     }
 
-    fn watch_volume(&self, dir: &Path) {
-        let Some(mount) = crate::disk::mount_point(dir) else { return };
-        if crate::disk::same_volume(&mount, own_disk()) {
-            return;
-        }
+    fn watch_mount(&self, mount: PathBuf) {
         let mut record = self.record();
-        if record.volumes.insert(mount) {
+        let watched = record.volumes.insert(mount.clone());
+        let newly_present = record.volume_mounts.as_mut().is_some_and(|mounts| mounts.insert(mount));
+        record.volume_readings_fresh = false;
+        if watched {
             self.save(&record);
+        }
+        drop(record);
+        if watched || newly_present {
+            self.changed.notify_one();
         }
     }
 
     /// The free space of every watched volume still mounted, by name.
-    fn volumes(&self) -> Vec<(String, crate::disk::Space)> {
-        let (volumes, measured) = {
+    fn volumes(&self) -> Vec<(PathBuf, crate::disk::Space)> {
+        let (volumes, measured, mounted) = {
             let record = self.record();
-            (record.volumes.clone(), record.volume_spaces.clone())
+            (record.volumes.clone(), record.volume_spaces.clone(), record.volume_mounts.clone())
         };
         volumes.iter().filter_map(|mount| {
-            let space = measured.get(mount).copied().or_else(|| crate::disk::space(mount))?;
-            let name = mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned());
-            Some((name, space))
+            if mounted.as_ref().is_some_and(|mounted| !mounted.contains(mount)) { return None; }
+            let space = measured.get(mount).copied()?;
+            Some((mount.clone(), space))
         }).collect()
     }
 
@@ -616,10 +823,16 @@ impl MachineWatch {
         }
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     fn set_incident(&self, incident: Option<Incident>) {
+        self.set_incident_on(incident, None);
+    }
+
+    fn set_incident_on(&self, incident: Option<Incident>, volume: Option<PathBuf>) {
         let mut record = self.record();
-        if record.incident != incident {
+        if record.incident != incident || record.incident_volume != volume {
             record.incident = incident;
+            record.incident_volume = volume;
             self.save(&record);
         }
     }
@@ -712,13 +925,14 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
     let mac = watch.mac();
     let working = domain.state().map(|state| crate::admission::working_projects(&state)).unwrap_or_default();
     let usable = disk_space(machine).usable();
-    let freed = machine.disk_total > 0 && watch.measure_peaks(usable, &working, now);
+    let measured_disk = valid_disk(disk_space(machine));
+    let freed = measured_disk && watch.measure_peaks(usable, &working, now);
     if watch.measure_volumes(&working, now) || freed {
         domain.live.gate.poke();
     }
     if let Some(home) = watch.home() {
         let reserving = domain.state().map(|state| crate::admission::reserving_tasks(&state, working.keys())).unwrap_or_default();
-        let disk = (machine.disk_total > 0).then(|| (usable, watch.disk_reserved(&reserving)));
+        let disk = measured_disk.then(|| (usable, watch.disk_reserved(&reserving)));
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working.len(), disk);
     }
     let working = working.len();
@@ -736,10 +950,18 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
 /// follow. A sample that measures space on the disk takes over the executions that found it full.
 pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
     let watch = &domain.live.machine_watch;
+    watch.record().volume_readings_fresh = false;
     pace(domain, &machine);
-    let (machine, disk) = tightest(machine, &watch.volumes());
-    if machine.disk_total > 0 {
-        watch.measure_disk(disk_space(&machine));
+    let suspended = watch.suspend_unmounted();
+    let measured_volumes = {
+        let record = watch.record();
+        record.peaks_ignored || (record.volumes.is_empty() && record.build_volumes.is_empty()) || record.volume_readings_fresh
+    };
+    let measured_boot_disk = valid_disk(disk_space(&machine)) && measured_volumes;
+    let (machine, volume) = tightest_on(machine, &watch.volumes());
+    let disk = volume.as_ref().map(|mount| mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned()));
+    if valid_disk(disk_space(&machine)) {
+        watch.measure_fullest_disk_on(disk_space(&machine), volume.clone());
         if watch.short() {
             domain.live.gate.poke();
         }
@@ -751,9 +973,22 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
     let fixed = fixed(domain, previous.as_ref());
     let waiting = waiters(domain);
     let now = now_millis();
-    let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiting, fixed, now);
-    let space = has_space(&machine, next.as_ref());
-    watch.set_incident(next);
+    let incident_volume = if failing(&machine, previous.as_ref().map(|incident| incident.cause)) == Some(MachineCause::Disk)
+        && (previous.is_none() || measured_boot_disk) {
+        volume
+    } else {
+        watch.record().incident_volume.clone()
+    };
+    let (next, mut actions) = step_with_disk_measurement(previous, &machine, disk.as_deref(), &waiting, fixed, now, measured_boot_disk);
+    let incident_volume = next.as_ref().filter(|incident| incident.cause == MachineCause::Disk).and(incident_volume);
+    if let Some(suspended) = suspended {
+        actions.extend(suspended.card.into_iter().map(Action::Withdraw));
+        if !waiting.is_empty() {
+            actions.push(Action::Release(waiting.iter().map(|waiter| waiter.session.clone()).collect()));
+        }
+    }
+    let space = measured_boot_disk && has_space(&machine, next.as_ref());
+    watch.set_incident_on(next, incident_volume);
     if fixed {
         domain.live.gate.release_declared(domain);
     }
@@ -769,7 +1004,7 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
 /// Whether the sample measured the disk with room, past the line it is low at, and no disk
 /// incident stays open.
 fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
-    machine.disk_total > 0 && failing(machine, None).is_none() && incident.is_none_or(|incident| incident.cause != MachineCause::Disk)
+    valid_disk(disk_space(machine)) && failing(machine, None).is_none() && incident.is_none_or(|incident| incident.cause != MachineCause::Disk)
 }
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
@@ -852,6 +1087,84 @@ mod tests {
     }
 
     #[test]
+    fn startup_admission_disk_budget_requires_valid_measurements() {
+        let watch = MachineWatch::default();
+        let room = || watch.disk_room(&BTreeMap::new(), None, 0);
+        assert!(room().is_some(), "no disk measurement yet");
+        for space in [
+            crate::disk::Space { total: 0, free: 0, purgeable: 0 },
+            crate::disk::Space { total: 0, free: 100 * GB, purgeable: 0 },
+            crate::disk::Space { total: 50 * GB, free: 100 * GB, purgeable: 0 },
+            crate::disk::Space { total: 50 * GB, free: GB, purgeable: u64::MAX },
+        ] {
+            watch.measure_disk(space);
+            assert!(room().is_some(), "invalid disk reading: {space:?}");
+        }
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 100 * GB, purgeable: 0 });
+        assert!(room().is_none(), "the first valid measurement opens the disk gate");
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 0, purgeable: 0 });
+        assert!(room().is_some(), "zero available is a measured shortage");
+        watch.measure_disk(crate::disk::Space { total: 0, free: 100 * GB, purgeable: 0 });
+        assert!(room().is_some(), "an invalid reading does not replace the shortage");
+    }
+
+    #[test]
+    fn startup_admission_invalid_disk_samples_cannot_release_an_incident() {
+        let waiting = [waiter("s1", "Build", 0)];
+        let (mut incident, _) = step(None, &machine(0, 50), &waiting, false, 0);
+        for invalid in [Machine::default(), Machine { disk_total: GB, disk_available: 2 * GB, ..Machine::default() }] {
+            let (next, _) = step(incident, &machine(100 * GB, 50), &waiting, false, SAMPLE);
+            let (next, actions) = step(next, &invalid, &waiting, true, 2 * SAMPLE);
+            assert!(actions.is_empty(), "an invalid probe cannot release waiting nodes");
+            assert_eq!(next.as_ref().unwrap().healthy, 0);
+            incident = next;
+        }
+        let (next, _) = step(incident, &machine(100 * GB, 50), &waiting, false, 3 * SAMPLE);
+        assert!(next.is_some());
+        let (next, actions) = step(next, &machine(100 * GB, 50), &waiting, false, 4 * SAMPLE);
+        assert!(next.is_none());
+        assert!(actions.iter().any(|action| matches!(action, Action::Release(_))));
+    }
+
+    #[test]
+    fn startup_admission_missing_boot_disk_readings_keep_the_last_swap_budget() {
+        let watch = MachineWatch::default();
+        let measured = crate::disk::Space { total: 500 * GB, free: 7 * GB, purgeable: 40 * GB };
+        watch.sample(&Machine { at: SAMPLE, disk_total: measured.total, disk_available: measured.free,
+            disk_purgeable: measured.purgeable, ..Machine::default() }, SAMPLE);
+        for at in [2 * SAMPLE, 3 * SAMPLE] {
+            watch.sample(&Machine { at, ..Machine::default() }, at);
+            assert_eq!(watch.record().boot_disk, Some(measured));
+        }
+        watch.sample(&Machine { at: 4 * SAMPLE, disk_total: GB, disk_available: 2 * GB, ..Machine::default() }, 4 * SAMPLE);
+        assert_eq!(watch.record().boot_disk, Some(measured), "invalid readings cannot replace the boot budget");
+    }
+
+    #[test]
+    fn startup_admission_a_healthy_external_disk_cannot_replace_the_system_disk_budget() {
+        let (_home, domain) = world();
+        let watch = &domain.live.machine_watch;
+        let cache = PathBuf::from("/Volumes/BuildCache");
+        watch.record().volumes.insert(cache.clone());
+        watch.give_volumes(vec![(cache, space(30 * GB))]);
+        let base = now_millis();
+        let unknown = |at| Machine { at, disk_total: 0, disk_available: 0, ..machine(0, 60) };
+        let _ = look(&domain, unknown(base));
+        assert_eq!(watch.record().boot_disk, None);
+        assert!(watch.disk_room(&BTreeMap::new(), None, base).is_some(), "a healthy external volume is not a system disk measurement");
+
+        let _ = look(&domain, Machine { at: base + SAMPLE, ..machine(100 * GB, 60) });
+        assert!(watch.disk_room(&BTreeMap::new(), None, base + SAMPLE).is_none());
+        let _ = look(&domain, Machine { at: base + 2 * SAMPLE, ..machine(0, 60) });
+        assert!(watch.disk_room(&BTreeMap::new(), None, base + 2 * SAMPLE).is_some());
+        for at in [base + 3 * SAMPLE, base + 4 * SAMPLE] {
+            let _ = look(&domain, unknown(at));
+            assert_eq!(watch.incident().expect("unknown system disk cannot close its incident").healthy, 0);
+            assert!(watch.disk_room(&BTreeMap::new(), None, at).is_some(), "a missing system probe cannot recover a low system disk");
+        }
+    }
+
+    #[test]
     fn swap_uses_the_boot_container_even_when_another_volume_is_tightest() {
         let watch = MachineWatch::default();
         watch.seed_peaks("app", &[GB; 3]);
@@ -861,7 +1174,7 @@ mod tests {
                 swap_total: Some(2 * GB), ..alondra_core::MemoryCompressor::default() };
             watch.sample(&Machine { at, compressor: Some(compressor), ..machine(20 * GB, 29) }, at);
         }
-        watch.measure_disk(space(8 * GB));
+        watch.measure_fullest_disk(space(8 * GB));
         let now = 10_000 + 5 * MIN;
         assert_eq!(watch.disk_room(&BTreeMap::new(), Some("app"), now), None,
             "the 8 GB on another volume is not swap's free space");
@@ -922,6 +1235,382 @@ mod tests {
 
     fn space(free: u64) -> crate::disk::Space {
         crate::disk::Space { free, purgeable: 0, total: 37 * GB }
+    }
+
+    #[test]
+    fn learned_volume_probe_failure_keeps_its_restriction() {
+        let watch = MachineWatch::default();
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        watch.measure_disk(crate::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
+        watch.record().build_volumes.entry(mount.clone()).or_default();
+        watch.give_volumes(vec![(mount.clone(), space(GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        let before = watch.disk_room(&BTreeMap::new(), None, 0).expect("the learned volume is short");
+        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount]), spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), Some(before), "a mounted volume without a reading has not recovered");
+    }
+
+    #[test]
+    fn startup_admission_missing_disk_cannot_cancel_unobserved_writes() {
+        let watch = MachineWatch::default();
+        let disk = |free| crate::disk::Space { free, purgeable: 0, total: 500 * GB };
+        watch.measure_disk(disk(36 * GB));
+        watch.measure_peaks(36 * GB, &BTreeMap::new(), 0);
+        let running = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
+        let before = watch.disk_room(&running, None, 0).expect("three pending builds need 37 GB");
+        assert_eq!(before.needed, 37 * GB);
+        watch.sample(&Machine { at: SAMPLE, disk_total: 0, ..Machine::default() }, SAMPLE);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, SAMPLE), Some(before), "ended tasks cannot erase writes absent from the old budget");
+        watch.measure_disk(disk(12 * GB));
+        watch.measure_peaks(12 * GB, &BTreeMap::new(), 2 * SAMPLE);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 2 * SAMPLE).is_some(), "the next valid budget includes the 24 GB consumed while probes failed");
+        watch.measure_disk(disk(36 * GB));
+        watch.measure_peaks(36 * GB, &BTreeMap::new(), 3 * SAMPLE);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 3 * SAMPLE), None);
+    }
+
+    fn learned_watch(mount: &Path) -> MachineWatch {
+        let watch = MachineWatch::default();
+        watch.measure_disk(crate::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
+        let mut record = watch.record();
+        record.build_volumes.entry(mount.to_owned()).or_default();
+        record.volumes.insert(mount.to_owned());
+        drop(record);
+        watch
+    }
+
+    #[test]
+    fn learned_volume_invalid_readings_preserve_budget_hysteresis_and_reserves() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        let working = working(&[("t1", "app")]);
+        watch.give_volumes(vec![(mount.clone(), space(GB))]);
+        watch.measure_volumes(&working, 0);
+        let before = watch.disk_room(&working, None, 0).unwrap();
+        let reserved = watch.record().volume_stretches[&mount].reserved(&TaskId::from("t1"), GB);
+        for (at, reading) in [
+            None,
+            Some(crate::disk::Space { free: 30 * GB, total: 0, purgeable: 0 }),
+            Some(crate::disk::Space { free: 30 * GB, total: GB, purgeable: 0 }),
+            Some(crate::disk::Space { free: u64::MAX, total: u64::MAX, purgeable: 1 }),
+        ].into_iter().enumerate() {
+            watch.record().candidates = Candidates::Probed {
+                mounts: Some(vec![mount.clone()]),
+                spaces: reading.into_iter().map(|space| (mount.clone(), space, 0)).collect(),
+            };
+            watch.measure_volumes(&BTreeMap::new(), at as Millis + 1);
+            assert_eq!(watch.disk_room(&working, None, at as Millis + 1), Some(before.clone()));
+            assert_eq!(watch.record().volume_stretches[&mount].reserved(&TaskId::from("t1"), GB), reserved, "failed probes cannot end a stretch or credit consumption");
+        }
+        watch.record().candidates = Candidates::Probed { mounts: None, spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 5);
+        assert_eq!(watch.disk_room(&working, None, 5), Some(before));
+        watch.give_volumes(vec![(mount.clone(), space(0))]);
+        watch.measure_volumes(&working, 6);
+        assert_eq!(watch.record().volume_spaces[&mount].free, 0, "zero available is a real shortage");
+        assert!(watch.disk_room(&working, None, 6).is_some());
+    }
+
+    #[test]
+    fn learned_volume_ended_tasks_cannot_cancel_unobserved_disk_reserves() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        let running = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
+        watch.give_volumes(vec![(mount.clone(), space(8 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        let before = watch.disk_room(&running, None, 0).expect("the three pending writes need 9 GB");
+        assert_eq!(before.needed, 9 * GB);
+        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), Some(before), "ended tasks may have consumed their reserves after the cached budget");
+        watch.give_volumes(vec![(mount, space(8 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 2);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2), None, "fresh bytes include completed writes and can release the reserves");
+    }
+
+    #[test]
+    fn learned_volume_failed_probe_keeps_reservations_seen_between_budgets() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.give_volumes(vec![(mount, space(8 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        watch.record().candidates = Candidates::Probed { mounts: None, spaces: vec![] };
+        let reserving = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
+        watch.measure_volumes(&reserving, 1);
+        assert_eq!(watch.disk_room(&reserving, None, 1).unwrap().needed, 9 * GB);
+        watch.measure_volumes(&BTreeMap::new(), 2);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2).unwrap().needed, 9 * GB, "reservations against the old budget remain after their tasks end");
+    }
+
+    #[test]
+    fn learned_volume_head_excludes_forecasts_but_not_earlier_grants() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.give_volumes(vec![(mount, space(6 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        let head = crate::admission::Key::Task("t1".into());
+        let working = BTreeMap::from([("t1".into(), None)]);
+        assert_eq!(watch.disk_room_for(&working, None, Some(&head), 0), None);
+        watch.reserve_admission(head.clone(), None);
+        assert_eq!(watch.disk_room_for(&BTreeMap::new(), None, Some(&head), 0).unwrap().needed, 7 * GB, "a new grant cannot erase the earlier grant's possible writes");
+        let watch = MachineWatch::default();
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 16 * GB, purgeable: 0 });
+        assert_eq!(watch.disk_room_for(&working, None, Some(&head), 0), None);
+        watch.reserve_admission(head.clone(), None);
+        assert_eq!(watch.disk_room_for(&BTreeMap::new(), None, Some(&head), 0).unwrap().needed, 21 * GB);
+        assert_eq!(watch.disk_reserved(&BTreeMap::new()), 8 * GB);
+    }
+
+    #[test]
+    fn learned_volume_new_grants_cannot_reuse_older_consumption_credit() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        let working = working(&[("t1", "app")]);
+        watch.measure_peaks(100 * GB, &working, 0);
+        watch.measure_peaks(92 * GB, &working, 1);
+        watch.give_volumes_holding(vec![(mount.clone(), space(10 * GB), 27 * GB)]);
+        watch.measure_volumes(&working, 0);
+        watch.give_volumes_holding(vec![(mount.clone(), space(8 * GB), 29 * GB)]);
+        watch.measure_volumes(&working, 1);
+        assert_eq!(watch.disk_used(&"t1".into()), 8 * GB);
+        let head = crate::admission::Key::Task("t1".into());
+        for _ in 0..3 { watch.reserve_admission(head.clone(), None); }
+        assert_eq!(watch.disk_reserved(&BTreeMap::new()), 24 * GB, "each grant reserves a full build despite previous ledger credit");
+        let held = watch.disk_room_for(&BTreeMap::new(), None, Some(&head), 1).unwrap();
+        assert_eq!(held.volume.as_deref(), Some("BuildCache"));
+        assert_eq!(held.needed, 9 * GB);
+    }
+
+    #[test]
+    fn learned_volume_reserves_survive_a_system_disk_hold() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.give_volumes(vec![(mount.clone(), space(8 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        watch.measure_disk(crate::disk::Space { free: 36 * GB, purgeable: 0, total: 500 * GB });
+        let running = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
+        let held = watch.disk_room(&running, None, 0).expect("system disk blocks first");
+        assert_eq!(held.volume, None);
+        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount]), spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        watch.measure_disk(crate::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
+        let held = watch.disk_room(&BTreeMap::new(), None, 1).expect("fresh system bytes cannot release unobserved external writes");
+        assert_eq!(held.volume.as_deref(), Some("BuildCache"));
+        assert_eq!(held.needed, 9 * GB);
+    }
+
+    #[test]
+    fn fresh_disk_budgets_do_not_reserve_held_turns_against_their_return() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        let held = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
+        // The ledger still observes these turns, but admission excludes their future builds.
+        watch.give_volumes(vec![(mount, space(8 * GB))]);
+        watch.measure_volumes(&held, 0);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None);
+        watch.measure_disk(crate::disk::Space { free: 36 * GB, purgeable: 0, total: 500 * GB });
+        watch.measure_peaks(36 * GB, &held, 1);
+        assert_eq!(watch.disk_reserved(&BTreeMap::new()), 0);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), None, "a fresh budget counts only the next build when returning held turns are excluded");
+    }
+
+    #[test]
+    fn learned_volume_confirmed_unmount_suspends_the_hold_and_remount_needs_a_budget() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.give_volumes(vec![(mount.clone(), space(GB))]);
+        watch.measure_volumes(&working(&[("t1", "app")]), 0);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
+        watch.give_volumes(vec![]);
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), None);
+        assert!(watch.record().build_volumes.contains_key(&mount));
+        assert!(!watch.record().volume_stretches.contains_key(&mount));
+        assert!(watch.volumes().is_empty(), "an unmounted directory cannot supply its parent's disk budget");
+        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 2);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 2).is_some(), "a remounted volume needs its own reading");
+        watch.give_volumes(vec![(mount.clone(), space(7 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 3);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 3).is_some(), "a known shortage still needs its recovery margin");
+        watch.give_volumes(vec![(mount, space(8 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 4);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 4), None);
+    }
+
+    #[test]
+    fn learned_volume_positive_remount_supersedes_an_older_absence() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.give_volumes(vec![(mount.clone(), space(GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
+        watch.give_volumes(vec![]);
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), None);
+        watch.record().candidates = Candidates::Probed { mounts: None, spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 2);
+        watch.record().volume_readings_fresh = true;
+        watch.watch_mount(mount.clone());
+        let room = watch.disk_room(&BTreeMap::new(), None, 2).expect("positive mount evidence supersedes an older absence even when enumeration fails");
+        assert_eq!(room.volume.as_deref(), Some("BuildCache"));
+        assert!(!watch.record().volume_readings_fresh);
+        watch.give_volumes(vec![(mount.clone(), space(7 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 3);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 3).is_some());
+        watch.give_volumes(vec![(mount.clone(), space(8 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 4);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 4), None);
+        watch.record().volume_mounts = None;
+        watch.watch_mount(mount);
+        assert_eq!(watch.record().volume_mounts, None, "one positive mount does not establish a complete mount table");
+    }
+
+    #[test]
+    fn learned_volume_launch_preflight_cannot_use_admission_from_before_remount() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.give_volumes(vec![]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None,
+            "admission before the volume reappears has no external budget to reserve");
+        assert_eq!(watch.refuse_launch_on(None, None), None,
+            "a confirmed absence does not block a launch on the system disk");
+        for reading in [None, Some(space(30 * GB)),
+            Some(crate::disk::Space { total: 0, free: 30 * GB, purgeable: 0 }),
+            Some(crate::disk::Space { total: GB, free: 30 * GB, purgeable: 0 }),
+            Some(crate::disk::Space { total: u64::MAX, free: u64::MAX, purgeable: 1 })] {
+            assert!(watch.refuse_launch_on(Some(mount.clone()), reading).is_some(),
+                "preflight must wait for the watcher's own coherent budget, even with a recent admission");
+            assert!(watch.refuse_launch_on(None, None).is_some(),
+                "an unknown build-volume budget also blocks a launch whose cwd is on the system disk");
+        }
+        watch.give_volumes(vec![(mount.clone(), space(30 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        assert_eq!(watch.refuse_launch_on(Some(mount), Some(space(30 * GB))), None);
+        let unlearned = MachineWatch::default();
+        assert_eq!(unlearned.refuse_launch_on(Some(PathBuf::from("/Volumes/Other")), None), None,
+            "watching a new volume does not invent build usage there");
+    }
+
+    #[test]
+    fn learned_volume_unknown_budget_waits_but_does_not_invent_a_shortage_margin() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some(), "persisted learning without readings must wait");
+        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
+        watch.measure_volumes(&BTreeMap::new(), 1);
+        assert!(watch.disk_room(&BTreeMap::new(), None, 1).is_some());
+        watch.give_volumes(vec![(mount, space(6 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 2);
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2), None, "the first healthy budget is enough when no shortage was measured");
+    }
+
+    #[test]
+    fn learned_volume_reopened_without_readings_keeps_admission_closed() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let mount = home.join("BuildCache");
+        let watch = MachineWatch::persisted_in(&home);
+        {
+            let mut record = watch.record();
+            record.build_volumes.entry(mount.clone()).or_default();
+            record.volumes.insert(mount.clone());
+            record.volume_mounts = Some(BTreeSet::new());
+            watch.save(&record);
+        }
+        drop(watch);
+        let reopened = MachineWatch::persisted_in(&home);
+        reopened.measure_disk(crate::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
+        assert!(reopened.record().build_volumes.contains_key(&mount));
+        assert_eq!(reopened.record().volume_mounts, None, "a previous unmount is not a new mount-table reading");
+        reopened.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
+        reopened.measure_volumes(&BTreeMap::new(), 0);
+        assert_eq!(reopened.disk_room(&BTreeMap::new(), None, 0).unwrap().volume.as_deref(), Some("BuildCache"));
+        reopened.give_volumes(vec![(mount, space(6 * GB))]);
+        reopened.measure_volumes(&BTreeMap::new(), 1);
+        assert_eq!(reopened.disk_room(&BTreeMap::new(), None, 1), None);
+    }
+
+    #[test]
+    fn learned_volume_unmount_retires_its_incident_without_a_new_system_probe() {
+        for (boot, other, held) in [(Some(100 * GB), false, false), (None, false, true), (Some(12 * GB), false, true), (Some(100 * GB), true, true)] {
+            let (home, domain) = world();
+            let mount = home.0.join("BuildCache");
+            let other_mount = home.0.join("OtherCache");
+            let watch = &domain.live.machine_watch;
+            watch.record().build_volumes.entry(mount.clone()).or_default();
+            watch.record().volumes.insert(mount.clone());
+            watch.give_volumes(vec![(mount.clone(), space(GB))]);
+            let reading = |at, free: Option<u64>| Machine { at, disk_total: if free.is_some() { 500 * GB } else { 0 }, disk_available: free.unwrap_or(0), ..machine(0, 60) };
+            let _ = look(&domain, reading(SAMPLE, boot));
+            assert_eq!(watch.record().incident_volume.as_ref(), Some(&mount));
+            assert!(watch.disk_room(&BTreeMap::new(), None, SAMPLE).is_some());
+            if boot == Some(12 * GB) {
+                let _ = look(&domain, reading(2 * SAMPLE, Some(14 * GB)));
+                assert!(watch.disk_room(&BTreeMap::new(), None, 2 * SAMPLE).is_some());
+            }
+            if other {
+                watch.record().build_volumes.entry(other_mount.clone()).or_default();
+                watch.record().volumes.insert(other_mount.clone());
+            }
+            watch.give_volumes(if other { vec![(other_mount, space(GB))] } else { vec![] });
+            let actions = look(&domain, reading(3 * SAMPLE, None));
+            assert!(actions.iter().any(|action| matches!(action, Action::Withdraw(_))), "confirmed absence retires only the absent volume's incident");
+            assert_eq!(watch.disk_room(&BTreeMap::new(), None, 3 * SAMPLE).is_some(), held, "own budget and other volumes retain their independent restrictions");
+            if !other { assert!(watch.incident().is_none()); }
+            if boot == Some(12 * GB) {
+                assert!(watch.record().boot_short, "unmount cannot clear the system disk's recovery margin");
+            }
+        }
+    }
+
+    #[test]
+    fn learned_volume_incident_origin_survives_reopen_without_guessing_old_records() {
+        let mut record = Record::default();
+        record.incident = step(None, &machine(GB, 60), &[], false, 0).0;
+        record.incident_volume = Some(PathBuf::from("/Volumes/BuildCache"));
+        let saved = serde_json::to_value(&record).unwrap();
+        for has_origin in [true, false] {
+            let mut saved = saved.clone();
+            if !has_origin { saved.as_object_mut().unwrap().remove("incident_volume"); }
+            let watch = MachineWatch { record: Mutex::new(serde_json::from_value(saved).unwrap()), ..MachineWatch::default() };
+            watch.give_volumes(vec![]);
+            watch.measure_volumes(&BTreeMap::new(), 1);
+            assert_eq!(watch.suspend_unmounted().is_some(), has_origin, "only a recorded origin can identify the absent incident");
+            assert!(watch.disk_room(&BTreeMap::new(), None, 1).is_some(), "reopen still needs its first system budget");
+        }
+    }
+
+    #[test]
+    fn learned_volume_cached_space_cannot_complete_incident_recovery() {
+        let (home, domain) = world();
+        let mount = home.0.join("BuildCache");
+        let watch = &domain.live.machine_watch;
+        watch.record().build_volumes.entry(mount.clone()).or_default();
+        watch.record().volumes.insert(mount.clone());
+        watch.declare("waiting-node", None, "disk full", 0, 0);
+        watch.give_volumes(vec![(mount.clone(), space(GB))]);
+        let _ = look(&domain, Machine { at: SAMPLE, ..machine(100 * GB, 60) });
+        assert_eq!(watch.incident().unwrap().healthy, 0);
+        watch.give_volumes(vec![(mount.clone(), space(30 * GB))]);
+        let _ = look(&domain, Machine { at: 2 * SAMPLE, ..machine(100 * GB, 60) });
+        assert_eq!(watch.incident().unwrap().healthy, 1);
+        for (index, mounts) in [Some(vec![mount.clone()]), None].into_iter().enumerate() {
+            watch.record().candidates = Candidates::Probed { mounts, spaces: vec![] };
+            let actions = look(&domain, Machine { at: (index as Millis + 3) * SAMPLE, ..machine(100 * GB, 60) });
+            assert_eq!(watch.incident().expect("failed readings cannot recover the incident").healthy, 0);
+            assert!(!actions.iter().any(|action| matches!(action, Action::Release(_))));
+            assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
+        }
+        watch.give_volumes(vec![(mount, space(30 * GB))]);
+        let _ = look(&domain, Machine { at: 5 * SAMPLE, ..machine(100 * GB, 60) });
+        assert_eq!(watch.incident().unwrap().healthy, 1);
+        let actions = look(&domain, Machine { at: 6 * SAMPLE, ..machine(100 * GB, 60) });
+        assert!(watch.incident().is_none());
+        assert!(actions.iter().any(|action| matches!(action, Action::Release(_))));
+        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None);
     }
 
     /// 30 October: /Volumes/BuildCache filled while the Mac's own disk had 19 GB. A volume builds
@@ -1017,6 +1706,7 @@ mod tests {
     fn a_sandbox_with_fake_nodes_reserves_nothing_for_them() {
         let watch = MachineWatch::default();
         watch.ignore_peaks();
+        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some(), "fake builds still need a system disk measurement");
         watch.measure_peaks(50 * GB, &working(&[("t1", "app")]), 0);
         watch.measure_peaks(40 * GB, &working(&[("t1", "app")]), 1);
         watch.measure_disk(crate::disk::Space { free: 8 * GB, purgeable: 0, total: 500 * GB });

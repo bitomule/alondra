@@ -92,7 +92,8 @@ impl Bench {
             domain.report(Envelope { session_id: agent.clone(), report: Report::TurnStart }, started + index as Millis * MIN);
             nodes.push((agent.clone(), Node::connect(&domain, &agent), 0));
         }
-        crate::machine_watch::pace(&domain, &Machine { at: started, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        crate::machine_watch::pace(&domain, &Machine { at: started, memory_total: 18 << 30, memory_available: 8 << 30,
+            disk_total: 500_000_000_000, disk_available: 100_000_000_000, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3], ..Machine::default() });
         Self { home: Home(home), domain, nodes, log: vec![], max_working: 0, notices: 0 }
     }
 
@@ -119,7 +120,8 @@ impl Bench {
 
     /// One sample of the Mac and one look of the gate, then what the mods do with what they got.
     async fn tick(&mut self, free: u32, now: Millis) {
-        self.tick_with(Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
+        self.tick_with(Machine { at: now, memory_total: 18 << 30, memory_available: 8 << 30,
+            disk_total: 500_000_000_000, disk_available: 100_000_000_000, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
     }
 
     async fn tick_with(&mut self, machine: Machine) {
@@ -177,7 +179,8 @@ fn building(now: Millis, margin_gib: f64, pressure: MemoryPressure) -> Machine {
     const WEIGHED: u64 = 900_000;
     let compressor = ((WEIGHED as f64 - margin_gib * ((1 << 30) / PAGE) as f64) / 2.0) as u64;
     let counters = MemoryCompressor { page_size: PAGE, uncompressed_pages: WEIGHED - compressor, compressor_pages: compressor, ..MemoryCompressor::default() };
-    Machine { at: now, memory_free_percent: Some(30), memory_pressure: Some(pressure), compressor: Some(counters), cpus: 11, load: [20.0; 3], ..Machine::default() }
+    Machine { at: now, memory_total: 18 << 30, memory_available: 8 << 30,
+            disk_total: 500_000_000_000, disk_available: 100_000_000_000, memory_free_percent: Some(30), memory_pressure: Some(pressure), compressor: Some(counters), cpus: 11, load: [20.0; 3], ..Machine::default() }
 }
 
 /// Asks the gate to start a task without a node yet, created on the first ask.
@@ -429,7 +432,8 @@ async fn two_builds_that_exhaust_memory_both_finish_without_a_cut() {
     let mut now = base;
     while now < base + BUILD {
         let pressure = if now - base < BUILD / 2 { alondra_core::MemoryPressure::Warning } else { alondra_core::MemoryPressure::Critical };
-        bench.tick_with(Machine { at: now, memory_free_percent: Some(4), memory_pressure: Some(pressure), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
+        bench.tick_with(Machine { at: now, memory_total: 18 << 30, memory_available: 8 << 30,
+            disk_total: 500_000_000_000, disk_available: 100_000_000_000, memory_free_percent: Some(4), memory_pressure: Some(pressure), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
         now += SAMPLE;
     }
     assert!(bench.events("pause").is_empty(), "{:?}", bench.log);
@@ -662,6 +666,7 @@ impl SdkNode {
         }).unwrap();
         domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
         domain.live.gate.ignore_mac();
+        domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
         let mut node = Self { driver, domain, capture, backend, home, _state: state };
         while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
             node.driver.observe().unwrap();

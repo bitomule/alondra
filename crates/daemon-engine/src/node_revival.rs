@@ -442,6 +442,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let state = crate::sdk_owner::tests::HostRoot::new();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        crate::sdk_owner::tests::measure_healthy_machine(&domain);
         domain.enable_sdk(crate::sdk_owner::tests::fixture_backend(&home, &state).0);
         *domain.handovers.crash_after.lock().unwrap() = Some(crate::domain_store::HandoverStep::Planned);
         let user = || Actor::User { user_id: "u".into() };

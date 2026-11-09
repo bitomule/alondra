@@ -293,7 +293,7 @@ fn a_codex_app_server_survives_owner_and_log_reader_loss_and_adopts_without_reof
     assert!(processes.len() >= 2, "the real persistent host and fake native app-server must both be running");
     drop(driver);
     assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()), "losing the owner and its stdout/stderr reader must not terminate native work");
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(adopted.worker.stopper().and_then(|stopper| stopper.process_group()), Some(group));
     assert_eq!(owner_generation(&slice.database), 2);
@@ -623,7 +623,7 @@ fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_acr
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
     slice.answer(revised, Hold::APPROVE, None).unwrap();
     drop(driver);
-    let restarted = Arc::new(DomainRuntime::open_at(&slice._home, &slice.database).unwrap());
+    let restarted = slice.restart();
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.rest(&mut adopted);
     let state = restarted.state().unwrap();

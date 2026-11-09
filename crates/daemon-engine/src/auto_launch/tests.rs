@@ -48,6 +48,10 @@ fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) -> Fix
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    crate::machine_watch::pace(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
+        memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
+        disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() });
+    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sdk = enable(&domain, &home);
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Rebuild the editor".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Editor".into() });

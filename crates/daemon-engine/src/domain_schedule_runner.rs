@@ -1048,6 +1048,12 @@ mod tests {
         domain: std::sync::Arc<DomainRuntime>,
     }
     impl Fixture {
+        fn open(home: &Path) -> DomainRuntime {
+            let domain = DomainRuntime::open(home).unwrap();
+            crate::sdk_owner::tests::measure_healthy_machine(&domain);
+            domain
+        }
+
         fn new() -> Self {
             let root = crate::test_support::Directory::new();
             let home = root.join("home");
@@ -1059,7 +1065,7 @@ mod tests {
                 format!("projects_root = {:?}\n", projects.to_str().unwrap()),
             )
             .unwrap();
-            let domain = std::sync::Arc::new(DomainRuntime::open(&home).unwrap());
+            let domain = std::sync::Arc::new(Self::open(&home));
             execute_system(
                 &domain,
                 Command::CreateSchedule {
@@ -1346,7 +1352,7 @@ mod tests {
         fixture.claim("pending");
         finish_claim(&fixture.domain, &fixture.home, &"pending".into()).unwrap();
         {
-            let reopened = Arc::new(DomainRuntime::open(&fixture.home).unwrap());
+            let reopened = Arc::new(Fixture::open(&fixture.home));
             let sdk = SdkLaunches::enable(&reopened, &fixture.home);
             run_cycle(&reopened, &fixture.home, false).await.unwrap();
             let state = reopened.state().unwrap();
@@ -1368,7 +1374,7 @@ mod tests {
             },
         )
         .unwrap();
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let restarted = Fixture::open(&fixture.home);
         let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("uncertain")];
         assert_eq!(run.state, ScheduleRunState::Sent);
         assert_eq!(
@@ -1397,7 +1403,7 @@ mod tests {
         .unwrap();
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed")].task_id.clone().unwrap();
         execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let restarted = Fixture::open(&fixture.home);
         run_cycle(&restarted, &fixture.home, false).await.unwrap();
 
         let state = restarted.state().unwrap();
@@ -1445,7 +1451,7 @@ mod tests {
         execute_system(&fixture.domain, Command::CancelTask { task_id: task.clone() }).unwrap();
         leave_launch_waiting(&fixture.domain, "stuck");
 
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let restarted = Fixture::open(&fixture.home);
         let state = restarted.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
         assert_eq!((run.state, run.launch.as_ref().unwrap().state), (ScheduleRunState::Sent, ScheduleLaunchState::Pending));
@@ -1478,7 +1484,7 @@ mod tests {
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")].task_id.clone().unwrap();
         execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
 
-        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let restarted = Fixture::open(&fixture.home);
         let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")];
         assert_eq!(run.state, ScheduleRunState::Failed);
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
@@ -1495,7 +1501,7 @@ mod tests {
             Command::ClaimScheduleLaunch { run_id: "lost".into(), now: alondra_core::now_millis() },
         )
         .unwrap();
-        let restarted = Arc::new(DomainRuntime::open(&fixture.home).unwrap());
+        let restarted = Arc::new(Fixture::open(&fixture.home));
         let _sdk = SdkLaunches::enable(&restarted, &fixture.home);
         run_cycle(&restarted, &fixture.home, false).await.unwrap();
 
@@ -1621,7 +1627,7 @@ mod tests {
                 .unwrap()
         );
         drop(conn);
-        let restarted = Arc::new(DomainRuntime::open(&fixture.home).unwrap());
+        let restarted = Arc::new(Fixture::open(&fixture.home));
         let sdk = SdkLaunches::enable(&restarted, &fixture.home);
         assert_eq!(
             restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("rollback")]
