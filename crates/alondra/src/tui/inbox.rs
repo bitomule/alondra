@@ -198,7 +198,7 @@ impl App {
         Some(self.press_card_action(action, option, &local_key, epoch))
     }
 
-    /// A card's keys never change: `1`-`3` press its buttons, `m` lists the rest, `r` replies.
+    /// A card's keys never change: `1`-`9` press its buttons, `m` lists the rest, `r` replies.
     fn card_button_key(
         &mut self,
         key: KeyEvent,
@@ -503,7 +503,7 @@ pub(super) fn only_option(action: &alondra_core::views::Action) -> Option<alondr
 
 fn card_button_index(key: KeyEvent) -> Option<usize> {
     match key.code {
-        KeyCode::Char(character @ '1'..='3') if (key.modifiers - crossterm::event::KeyModifiers::SHIFT).is_empty() => {
+        KeyCode::Char(character @ '1'..='9') if (key.modifiers - crossterm::event::KeyModifiers::SHIFT).is_empty() => {
             Some(character as usize - '1' as usize)
         }
         _ => None,

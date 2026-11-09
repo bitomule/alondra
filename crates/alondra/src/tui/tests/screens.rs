@@ -971,6 +971,29 @@ fn a_button_with_options_asks_which_before_it_sends() {
 }
 
 #[test]
+fn every_button_a_card_shows_answers_to_its_own_digit() {
+    for (digit, buttons) in [('4', 4), ('5', 5), ('9', 9)] {
+        let mut app = english(fixture_view("card-pr.json"));
+        app.card_view = Some(edited("card-pr.json", |card| {
+            let template = card["actions"][0].clone();
+            card["actions"] = (1..=buttons)
+                .map(|number| {
+                    let mut action = template.clone();
+                    action["id"] = format!("button-{number}").into();
+                    action["label"] = format!("Button {number}").into();
+                    action.as_object_mut().unwrap().remove("option_id");
+                    action
+                })
+                .collect();
+        }));
+        press(&mut app, KeyCode::Char(digit));
+        let sent = app.posted.borrow().clone();
+        assert_eq!(sent.len(), 1, "{digit}: {sent:?}");
+        assert_eq!(sent[0].1["action_id"], format!("button-{digit}"), "{sent:?}");
+    }
+}
+
+#[test]
 fn keys_beyond_the_buttons_do_nothing_and_a_menu_swallows_the_rest() {
     let mut app = english(fixture_view("card-information.json"));
     for key in ['2', '3', 'm', '9'] {
