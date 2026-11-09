@@ -29,6 +29,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from simulator import config as simulator_config
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LANGUAGES = {"en": "en_US", "es": "es_ES"}
 APPEARANCES = ("light", "dark")
@@ -276,7 +278,8 @@ def shoot_tui(sandbox, out, scratch):
 class Simulator:
     def __init__(self, ipa, scratch):
         self.key = f"alondra-demo-{os.getpid()}"
-        self.udid = subprocess.run(["simpool", "lease", "--device", "iPhone 17 Pro", "--os", "26.3", "--key", self.key, "--ttl", "30m"],
+        simulator = simulator_config()
+        self.udid = subprocess.run(["simpool", "lease", "--device", simulator["device"], "--os", simulator["runtime"], "--key", self.key, "--ttl", "30m"],
                                    check=True, capture_output=True, text=True).stdout.strip()
         app = os.path.join(scratch, "ios-app")
         zipfile.ZipFile(ipa).extractall(app)

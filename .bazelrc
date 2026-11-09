@@ -15,8 +15,7 @@ build --output_groups=+clippy_checks
 # BuildBuddy remote cache, opt-in: `--config=buildbuddy` reads it, `--config=upload` also writes.
 # A fresh clone builds without sending anything to a third party. On the maintainer's Mac,
 # ~/.bazelrc is read after this file and turns the cache and uploads on for every build. The API
-# key never lives here: locally it comes from ~/.bazelrc (a credential helper), in CI from
-# `--remote_header=x-buildbuddy-api-key=<secret>` on the command line.
+# key comes from a local credential helper. External contribution CI uses no remote cache.
 common:buildbuddy --remote_cache=grpcs://remote.buildbuddy.io
 common:buildbuddy --remote_cache_compression
 common:buildbuddy --noremote_upload_local_results
@@ -26,11 +25,14 @@ common:upload --remote_upload_local_results
 # Signing, linking and bundling outputs are machine-specific or cheap to redo; never cache them.
 common --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
 
-common:ci --config=upload
 common:ci --color=yes
 common:ci --announce_rc
-common:ci --bes_backend=grpcs://remote.buildbuddy.io
-common:ci --bes_results_url=https://app.buildbuddy.io/invocation/
+common:ci --remote_cache=
+common:ci --noremote_upload_local_results
+common:ci --bes_backend=
+build:ci --jobs=2
+build:ci --xcode_version=27.1
+test:ci --local_test_jobs=1
 
 common:warming --config=upload
 common:warming --remote_download_minimal

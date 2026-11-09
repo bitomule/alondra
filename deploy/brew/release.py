@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -222,6 +223,8 @@ def download_asset(asset_id, destination):
 
 
 def publish(ver, directory):
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        raise RuntimeError('Releases must run locally, never inside GitHub Actions')
     formula = render(ver, directory)  # fail closed before any external mutation
     tag = f'alondra-v{ver}'
     formula_endpoint = f'repos/{REPO}/contents/Formula/alondra.rb'

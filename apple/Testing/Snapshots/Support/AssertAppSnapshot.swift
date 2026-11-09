@@ -11,6 +11,8 @@ import XCTest
 ///    `$TEST_UNDECLARED_OUTPUTS_DIR/<SNAPSHOT_ROOT>/<file>`, which `make snapshots-record` copies back.
 ///    The renderer anti-aliases text and hairlines on glass one or two levels differently from one
 ///    test process to the next, so rewriting every baseline would change screens nobody touched.
+///  - OS migration (`make snapshots-record-all`): all references go to a unique output generation;
+///    the recorder copies them only when the whole reference set was captured.
 ///  - outside Bazel: the library's own behaviour.
 @MainActor
 func assertAppSnapshot<Value, Format>(
@@ -28,7 +30,12 @@ func assertAppSnapshot<Value, Format>(
     let directory: String?
     let record: SnapshotTestingConfiguration.Record?
 
-    if environment["SNAPSHOT_TESTING_RECORD"] == "failed",
+    if environment["SNAPSHOT_TESTING_RECORD"] == "all",
+       let outputs = environment["TEST_UNDECLARED_OUTPUTS_DIR"], let root = snapshotRoot,
+       let generation = environment["SNAPSHOT_RECORD_GENERATION"] {
+        directory = "\(outputs)/\(generation)/\(root)/\(fileName)"
+        record = .all
+    } else if environment["SNAPSHOT_TESTING_RECORD"] == "failed",
        let outputs = environment["TEST_UNDECLARED_OUTPUTS_DIR"],
        let sourceDirectory = environment["TEST_SRCDIR"],
        let root = snapshotRoot {

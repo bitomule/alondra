@@ -16,6 +16,8 @@ import tempfile
 import time
 import zipfile
 
+from simulator import config as simulator_config
+
 BUNDLE = "com.bitomule.alondra"
 SHOWN = 1.5
 DETAIL = 15
@@ -24,7 +26,8 @@ DETAIL = 15
 class Simulator:
     def __init__(self, ipa, scratch):
         self.key = f"alondra-e2e-cards-{os.getpid()}"
-        self.udid = subprocess.run(["simpool", "lease", "--device", "iPhone 17 Pro", "--os", "26.3", "--key", self.key, "--ttl", "30m"],
+        simulator = simulator_config()
+        self.udid = subprocess.run(["simpool", "lease", "--device", simulator["device"], "--os", simulator["runtime"], "--key", self.key, "--ttl", "30m"],
                                    check=True, capture_output=True, text=True).stdout.strip()
         app = os.path.join(scratch, "app")
         zipfile.ZipFile(ipa).extractall(app)
