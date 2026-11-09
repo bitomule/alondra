@@ -1651,9 +1651,10 @@ fn tasks_open_on_the_first_task_and_leave_scheduled_to_the_s_key() {
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
     app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    assert_eq!(app.sel_idx, 0);
     assert_eq!(
-        app.sel.as_ref().map(|key| key.0.as_str()),
-        Some("t-651c38484cd2f34e74d5107ba05f7f15")
+        app.selected_view_key().as_deref(),
+        Some("task:t-651c38484cd2f34e74d5107ba05f7f15")
     );
     let shown = screen(&mut app, 120, 20);
     assert!(shown.contains("Restore the native review experience") && shown.contains("Scheduled [s]"), "{shown}");

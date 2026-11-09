@@ -134,6 +134,10 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
             Some(alondra_core::views::Trailing::Text { text }) => text.parse().ok(),
             _ => None,
         };
+        let mut children = block.children;
+        for row in &mut children {
+            scope_block_row(&block.id, row);
+        }
         Section {
             id: block.id,
             title: Some(block.title),
@@ -141,13 +145,21 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
             collapsed: false,
             items: block.subtitle.map(|text| Item::Notice(alondra_core::views::Notice {
                 text, tone: alondra_core::views::Tone::Neutral, action: None,
-            })).into_iter().chain(block.children.into_iter().map(Item::Row)).collect(),
+            })).into_iter().chain(children.into_iter().map(Item::Row)).collect(),
             card_ids: vec![],
             card_waits: vec![],
             more: None, style: None, actions: vec![],
         }
     });
     sections.splice(at..at, blocks);
+}
+
+// A request can have a group in several blocks; its destination is not its list identity.
+fn scope_block_row(block: &str, row: &mut Row) {
+    row.id = serde_json::to_string(&(block, &row.id)).expect("row identity serializes");
+    for child in &mut row.children {
+        scope_block_row(block, child);
+    }
 }
 
 pub fn rows(view: &View) -> Vec<(&Row, bool)> {
