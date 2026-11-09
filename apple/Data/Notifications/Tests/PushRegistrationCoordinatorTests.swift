@@ -125,48 +125,35 @@ private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> N
     try coordinator.update(clients: [registrationClient(1, recorder: recorder)],
         token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
     await coordinator.waitForPendingRegistration()
-    #expect(coordinator.state == .failed("Alerts couldn’t be set up on this device. Alondra tries again when you reopen the app."))
-}
-
-@Test(arguments: [
-    (URLError(.timedOut) as any Error, PushRegistrationCoordinator.Problem.unreachable),
-    (URLError(.notConnectedToInternet) as any Error, .unreachable),
-    (RelayWireError.outcomeUnknown as any Error, .unreachable),
-    (SealedRequestError.outcomeUnknown as any Error, .unreachable),
-    (OperationError.outcomeUnknown as any Error, .unreachable),
-    (APIError.unavailable as any Error, .unreachable),
-    (APIError.unexpected(status: 500) as any Error, .unreachable),
-    (RelayWireError.unauthorized as any Error, .relay),
-    (RelayWireError.server(502) as any Error, .relay),
-    (RelayWireError.server(503) as any Error, .relay),
-    (RelayWireError.admissionFull as any Error, .relay),
-    (APIError.unauthorized as any Error, .rejected),
-    (APIError.forbidden(kind: nil, detail: nil, reasons: []) as any Error, .rejected),
-    (APIError.server(status: 422, kind: nil, detail: "bad binding", reasons: []) as any Error, .rejected),
-    (PushPreferencesError.stale(currentRevision: 3) as any Error, .rejected),
-    (CocoaError(.fileReadCorruptFile) as any Error, .local),
-])
-func everyRegistrationFailureIsClassifiedByWhoFailed(error: any Error, problem: PushRegistrationCoordinator.Problem) {
-    #expect(PushRegistrationCoordinator.problem(error) == problem)
-}
-
-@Test func onlyARealRefusalFromTheMacSaysTheMacDidNotAccept() {
-    #expect(PushRegistrationCoordinator.Problem.rejected.message
-        == "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app.")
-    #expect(PushRegistrationCoordinator.Problem.unreachable.message == "Can’t reach your Mac. Retrying…")
-    #expect(PushRegistrationCoordinator.Problem.relay.message == "Alondra’s relay isn’t responding. Retrying…")
-    let messages = [PushRegistrationCoordinator.Problem.unreachable, .relay, .rejected, .local].map(\.message)
-    #expect(Set(messages).count == messages.count)
+    #expect(coordinator.state == .failed([RegistrationFailure(operation: .mac, reason: .local)]))
 }
 
 @Test func retryWaitGrowsAndStopsAtFiveMinutes() {
-    let waits = (0..<9).map { PushRegistrationCoordinator.retryDelay(attempt: $0) }
+    let waits = (0..<9).map { RegistrationFailure.retryDelay(attempt: $0) }
     #expect(waits == [5, 10, 20, 40, 80, 160, 300, 300, 300].map { Duration.seconds($0) })
 }
 
 private actor Pauses {
     var waits: [Duration] = []
     func record(_ wait: Duration) { waits.append(wait) }
+}
+
+@Test @MainActor func admissionAndEnrollmentRecoverWithoutReopeningTheApp() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pauses = Pauses()
+    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")),
+        pause: { await pauses.record($0) })
+    let recorder = RegistrationRecorder()
+    await recorder.fail("mac-1", with: [
+        APIError.server(status: 429, kind: "operation_capacity", detail: nil, reasons: []),
+        APIError.conflict(kind: "device_not_enrolled", detail: nil, reasons: []),
+    ])
+    try coordinator.update(clients: [registrationClient(1, recorder: recorder)], token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    await coordinator.waitForPendingRegistration()
+    #expect(coordinator.state == .registered)
+    #expect(await pauses.waits == [.seconds(5), .seconds(10)])
+    #expect(await recorder.calls.count == 3)
 }
 
 @Test @MainActor func networkAndRelayFailuresRetryInTheBackgroundUntilTheRegistrationWorks() async throws {
@@ -178,7 +165,7 @@ private actor Pauses {
     var states: [PushRegistrationCoordinator.State] = []
     coordinator.onChange = { states.append($0) }
     let recorder = RegistrationRecorder()
-    await recorder.fail("mac-1", with: [URLError(.timedOut), RelayWireError.server(503), RelayWireError.unauthorized])
+    await recorder.fail("mac-1", with: [IrohCarrierError.unavailable, RelayWireError.server(503), RelayWireError.admissionFull])
     try coordinator.update(clients: [registrationClient(1, recorder: recorder), registrationClient(2, recorder: recorder)],
         token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
     await coordinator.waitForPendingRegistration()
@@ -187,8 +174,9 @@ private actor Pauses {
     #expect(await recorder.calls.map(\.mac) == ["mac-1", "mac-2", "mac-1", "mac-1", "mac-1"])
     #expect(states == [
         .sending,
-        .failed("Can’t reach your Mac. Retrying…"),
-        .failed("Alondra’s relay isn’t responding. Retrying…"),
+        .failed([RegistrationFailure(operation: .mac, reason: .unavailable)]),
+        .failed([RegistrationFailure(operation: .relay, reason: .unavailable)]),
+        .failed([RegistrationFailure(operation: .relay, reason: .capacity)]),
         .registered,
     ])
 }
@@ -204,24 +192,83 @@ private actor Pauses {
     try coordinator.update(clients: [registrationClient(1, recorder: recorder)],
         token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
     await coordinator.waitForPendingRegistration()
-    #expect(coordinator.state == .failed("Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app."))
+    #expect(coordinator.state == .failed([RegistrationFailure(operation: .mac, reason: .approvalRequired)]))
     #expect(await pauses.waits.isEmpty)
     #expect(await recorder.calls.count == 1)
+}
+
+private actor RegistrationPauseGate {
+    private var entered = false
+    private var observer: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<Void, Never>?
+    func pause() async {
+        entered = true
+        observer?.resume(); observer = nil
+        await withCheckedContinuation { release = $0 }
+    }
+    func waitUntilEntered() async {
+        if !entered { await withCheckedContinuation { observer = $0 } }
+    }
+    func resume() { release?.resume(); release = nil }
 }
 
 @Test @MainActor func signingOutStopsAPendingRetry() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
-    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")))
+    let gate = RegistrationPauseGate()
+    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")),
+        pause: { _ in await gate.pause() })
     let recorder = RegistrationRecorder()
     await recorder.fail("mac-1", with: [URLError(.timedOut)])
     try coordinator.update(clients: [registrationClient(1, recorder: recorder)],
         token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
-    while coordinator.state != .failed("Can’t reach your Mac. Retrying…") { await Task.yield() }
+    await gate.waitUntilEntered()
     coordinator.clear()
+    await gate.resume()
     await coordinator.waitForPendingRegistration()
     #expect(coordinator.state == .idle)
     #expect(await recorder.calls.count == 1)
+}
+
+@Test @MainActor func repeatedStalePreferencesAdvanceTheLedgerAndPreserveQuietHours() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pauses = Pauses()
+    let ledger = PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json"))
+    let coordinator = PushRegistrationCoordinator(preferences: ledger, pause: { await pauses.record($0) })
+    let recorder = RegistrationRecorder()
+    await recorder.fail("mac-1", with: [
+        RegistrationFailure(operation: .mac, reason: .stalePreferences(77)),
+        RegistrationFailure(operation: .mac, reason: .stalePreferences(90)),
+    ])
+    let client = registrationClient(1, recorder: recorder)
+    try coordinator.update(clients: [client], token: "token", environment: "sandbox", quietStart: "23:00", quietEnd: "08:00")
+    await coordinator.waitForPendingRegistration()
+    #expect(coordinator.state == .registered)
+    #expect(await recorder.calls.map(\.revision) == [1, 78, 91])
+    #expect(await recorder.calls.allSatisfy { $0.quiet == "23:00" })
+    #expect(await pauses.waits == [.seconds(5), .seconds(10)])
+    let restored = PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json"))
+    #expect(try await restored.reserve(identity: client.identity, binding: client.binding.value, quietStart: "23:00", quietEnd: "08:00") == 91)
+}
+
+@Test @MainActor func aRejectedMacIsNotRetriedWhenAnotherMacRecovers() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")), pause: { _ in })
+    let recorder = RegistrationRecorder()
+    let failure = RegistrationFailure(operation: .mac, reason: .approvalRequired)
+    await recorder.fail("mac-1", with: [failure])
+    await recorder.fail("mac-2", with: [URLError(.timedOut)])
+    let clients = [registrationClient(1, recorder: recorder), registrationClient(2, recorder: recorder)]
+    try coordinator.update(clients: clients, token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    await coordinator.waitForPendingRegistration()
+    #expect(await recorder.calls.map(\.mac) == ["mac-1", "mac-2", "mac-2"])
+    #expect(coordinator.state == .failed([failure]))
+    try coordinator.update(clients: clients, token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    await coordinator.waitForPendingRegistration()
+    #expect(coordinator.state == .registered)
+    #expect(await recorder.calls.map(\.mac) == ["mac-1", "mac-2", "mac-2", "mac-1"])
 }
 
 @Test @MainActor func duplicateMacsAreRejectedWithAReadableReason() throws {

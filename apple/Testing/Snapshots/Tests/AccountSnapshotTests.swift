@@ -377,15 +377,30 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_settings_alertsMacUnreachable_spanish() {
-        alertsFailure("No se puede contactar con tu Mac. Reintentando…")
+        alertsFailure("Avisos en tu Mac: No hay conexión. Se reintentará automáticamente…")
     }
 
     func test_settings_alertsRelayDown_spanish() {
-        alertsFailure("El relay de Alondra no responde. Reintentando…")
+        alertsFailure("Relay de Alondra: No hay conexión. Se reintentará automáticamente…")
     }
 
     func test_settings_alertsRefusedByTheMac_spanish() {
-        alertsFailure("Tu Mac no aceptó los avisos de este dispositivo. Alondra lo vuelve a intentar cuando abras la app de nuevo.")
+        alertsFailure("Avisos en tu Mac: Vuelve a vincular este iPhone desde Ajustes y apruébalo en Alondra en tu Mac.")
+    }
+
+    func test_settings_liveActivityIncompatibleWithAlertsDenied_spanish() {
+        let store = settings {
+            $0.notifications = NotificationSettings(permission: .denied,
+                delivery: .failed("Clave de la actividad en directo en tu Mac: Actualiza Alondra en tu Mac y en tu iPhone y vuelve a intentarlo."),
+                quietHours: QuietHours())
+        }
+        assertScreen([.light, .ax3], language: .spanish, inWindow: true) {
+            ScreenFrame(height: 1200) { SettingsView(store: store) }
+        }
+    }
+
+    func test_settings_alertsAndLiveActivityFailures_spanish() {
+        alertsFailure("Avisos en tu Mac: Esperando a que tu Mac termine de vincularse con el relay. Se reintentará automáticamente…\nClave de la actividad en directo en tu Mac: Vuelve a vincular este iPhone desde Ajustes y apruébalo en Alondra en tu Mac.")
     }
 
     private func alertsFailure(_ message: String, file: StaticString = #filePath, testName: String = #function, line: UInt = #line) {

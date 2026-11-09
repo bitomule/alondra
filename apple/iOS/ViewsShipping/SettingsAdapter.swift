@@ -86,7 +86,10 @@ extension NotificationRuntime {
             case .registered: .registered
             case .failed(let message): .failed(message)
             }
-            if let error = runtime.error { delivery = .failed(error) }
+            var messages = runtime.activityRegistrationFailures.map(\.message)
+            if case .failed(let message) = delivery { messages.insert(message, at: 0) }
+            if let error = runtime.error { messages.append(error) }
+            if !messages.isEmpty { delivery = .failed(messages.joined(separator: "\n")) }
             return NotificationSettings(permission: permission, delivery: delivery,
                 quietHours: QuietHours(enabled: self.push.quietHours.enabled, start: self.push.quietHours.start, end: self.push.quietHours.end))
         } onChange: { [weak self] in

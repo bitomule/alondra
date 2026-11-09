@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     lazy var cloudPairing = makeAccountSession(notifications: notifications)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        liveActivity.onRegistrationChange = { [weak notifications] failures in
+            notifications?.activityRegistrationFailures = failures
+        }
         liveActivity.start()
         notifications.pairingsChanged = { [liveActivity] clients, contexts in liveActivity.relayPairings(clients, contexts) }
         let owner = cloudPairing

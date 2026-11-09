@@ -80,8 +80,8 @@ import Testing
             try await api.registerServicePush(token: "abcd", environment: "sandbox",
                 binding: String(repeating: "A", count: 43), preferencesRevision: 1)
             Issue.record("Stale configuration was accepted")
-        } catch PushPreferencesError.stale(let revision) {
-            #expect(revision == 77)
+        } catch let failure as RegistrationFailure {
+            #expect(failure == RegistrationFailure(operation: .mac, reason: .stalePreferences(77)))
         }
     }
 
