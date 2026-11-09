@@ -754,7 +754,16 @@ impl MachineWatch {
     /// waits for the watcher even if admission was granted before the volume appeared.
     pub(crate) fn refuse_launch(&self, cwd: &Path) -> Option<String> {
         let mount = crate::disk::mount_point(cwd).filter(|mount| !crate::disk::same_volume(mount, own_disk()));
-        self.refuse_launch_on(mount, crate::disk::space(cwd))
+        self.refuse_launch_on(mount, self.space_where_it_works(cwd))
+    }
+
+    /// With test hooks a launch sees the space the watch measured, never the free space of the Mac running the tests.
+    fn space_where_it_works(&self, cwd: &Path) -> Option<crate::disk::Space> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(measured) = self.record().boot_disk {
+            return Some(measured);
+        }
+        crate::disk::space(cwd)
     }
 
     fn refuse_launch_on(&self, mount: Option<PathBuf>, space: Option<crate::disk::Space>) -> Option<String> {
@@ -1792,6 +1801,7 @@ mod tests {
         let watch = MachineWatch::default();
         let here = crate::test_support::Directory::new();
         std::fs::create_dir(&here).unwrap();
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 400 * GB, purgeable: 0 });
         assert_eq!(watch.refuse_launch(&here), None, "a healthy disk starts nodes");
         let (incident, _) = step(None, &machine(GB, 50), &[], false, 0);
         watch.set_incident(incident);
@@ -1800,6 +1810,17 @@ mod tests {
         assert!(refused.ends_with(" has a card about it"), "{refused}");
         watch.set_incident(None);
         assert_eq!(watch.refuse_launch(&here), None);
+    }
+
+    #[test]
+    fn a_launch_sees_the_space_the_watch_measured_not_the_free_space_of_the_machine_running_the_test() {
+        let watch = MachineWatch::default();
+        let here = crate::test_support::Directory::new();
+        std::fs::create_dir(&here).unwrap();
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: GB, purgeable: 0 });
+        assert!(watch.refuse_launch(&here).is_some_and(|why| why.contains("nearly full")), "a measured full disk refuses the launch");
+        watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 400 * GB, purgeable: 0 });
+        assert_eq!(watch.refuse_launch(&here), None, "a measured roomy disk starts it");
     }
 
     #[test]
