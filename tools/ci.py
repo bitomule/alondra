@@ -118,9 +118,7 @@ def write_output(name, value):
 
 
 def selection_base(event_name, event):
-    if event_name == "workflow_dispatch" or (
-        event_name == "push" and event.get("ref") == "refs/heads/worktree-t-github-actions-ci-check"
-    ):
+    if event_name == "workflow_dispatch":
         branch = event["repository"]["default_branch"]
         return command("git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}").decode().strip()
     if event_name == "pull_request" and external_pr(event):
@@ -138,7 +136,7 @@ def select(args):
     paths = changed_paths(command("git", "diff", "--name-status", "-z", "--find-renames", f"{ancestor}...HEAD", "--"))
     current = manifest(Path("MUSTS.yml").read_text())
     previous = manifest(command("git", "show", f"{ancestor}:MUSTS.yml").decode())
-    probe = event_name in ("workflow_dispatch", "push")
+    probe = event_name == "workflow_dispatch"
     matrix = plan(current, previous, paths, force_all=probe)
     write_output("matrix", json.dumps(matrix, separators=(",", ":")))
     write_output("has_checks", str(bool(matrix["include"])).lower())
