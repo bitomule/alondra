@@ -217,43 +217,52 @@ fn register(identity: &PublicMac, signing: &SigningKey, token: &str) -> Result<(
     register_at(identity, signing, token, RELAY)
 }
 
+struct MacProof {
+    epoch: [u8; 16],
+    timestamp: u64,
+    nonce: [u8; 16],
+    signature: String,
+}
+
+impl MacProof {
+    fn new(http: &ureq::Agent, relay: &str, identity: &PublicMac, signing: &SigningKey, method: &str, path: &str, body: &[u8]) -> Result<Self> {
+        let mut bootstrap = http.get(format!("{relay}/v1/bootstrap")).call()?;
+        if bootstrap.status().as_u16() != 200 {
+            let status = bootstrap.status();
+            bail!(trf!("relay bootstrap failed ({status})", "falló el arranque del relay ({status})"));
+        }
+        let bootstrap: Bootstrap = bootstrap.body_mut().with_config().limit(4096).read_json()?;
+        let epoch: [u8; 16] = URL_SAFE_NO_PAD
+            .decode(bootstrap.epoch)?
+            .try_into()
+            .map_err(|_| anyhow!("invalid relay epoch"))?;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        let nonce = random::<16>()?;
+        let signature = sign_http_challenge(signing, &identity.mac_id, method, path, &epoch, body, timestamp, &nonce)
+            .map_err(|e| anyhow!("sign Mac request: {e}"))?;
+        Ok(Self { epoch, timestamp, nonce, signature })
+    }
+
+    fn apply<B>(&self, mac_id: &str, request: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        request
+            .header("x-device-id", mac_id)
+            .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(self.epoch))
+            .header("x-device-timestamp-ms", self.timestamp.to_string())
+            .header("x-device-nonce", URL_SAFE_NO_PAD.encode(self.nonce))
+            .header("x-device-signature", &self.signature)
+    }
+}
+
 // Explicit function argument enables isolated test transport; production callers
 // always pass the fixed service origin above. No runtime URL/token override.
 fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &str) -> Result<()> {
     let http = http();
-    let mut bootstrap = http.get(format!("{relay}/v1/bootstrap")).call()?;
-    if bootstrap.status().as_u16() != 200 {
-        let status = bootstrap.status();
-        bail!(trf!("relay bootstrap failed ({status})", "falló el arranque del relay ({status})"));
-    }
-    let bootstrap: Bootstrap = bootstrap.body_mut().with_config().limit(4096).read_json()?;
-    let epoch: [u8; 16] = URL_SAFE_NO_PAD
-        .decode(bootstrap.epoch)?
-        .try_into()
-        .map_err(|_| anyhow!("invalid relay epoch"))?;
     let body = serde_json::to_vec(identity)?;
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
-    let nonce = random::<16>()?;
-    let signature = sign_http_challenge(
-        signing,
-        &identity.mac_id,
-        "POST",
-        "/v1/macs",
-        &epoch,
-        &body,
-        timestamp,
-        &nonce,
-    )
-    .map_err(|e| anyhow!("sign Mac enrollment: {e}"))?;
-    let response = http
-        .post(format!("{relay}/v1/macs"))
+    let proof = MacProof::new(&http, relay, identity, signing, "POST", "/v1/macs", &body)?;
+    let response = proof
+        .apply(&identity.mac_id, http.post(format!("{relay}/v1/macs")))
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
-        .header("x-device-id", &identity.mac_id)
-        .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
-        .header("x-device-timestamp-ms", timestamp.to_string())
-        .header("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce))
-        .header("x-device-signature", signature)
         .send(&body[..])?;
     match response.status().as_u16() {
         200 | 201 => Ok(()),
@@ -266,6 +275,72 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
             "la identidad del Mac ya pertenece a otra clave o cuenta; hace falta una recuperación explícita"
         )),
         status => bail!(trf!("Mac enrollment failed ({status})", "falló el registro del Mac ({status})")),
+    }
+}
+
+fn revoke_mac(identity: &PublicMac, signing: &SigningKey, token: &str) -> Result<()> {
+    revoke_mac_at(identity, signing, token, RELAY)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Revocation {
+    Done,
+    CheckDirectory,
+    Failed,
+}
+
+/// The relay forgets a revoked Mac, so a repeated request is refused as an unknown device;
+/// only the owner's Mac directory tells that apart from a refused signature.
+fn revocation(status: u16, error: Option<&str>) -> Revocation {
+    match (status, error) {
+        (204, _) | (403, Some("account_access_denied")) => Revocation::Done,
+        (401, Some("unauthorized")) => Revocation::CheckDirectory,
+        _ => Revocation::Failed,
+    }
+}
+
+fn listed(directory: &serde_json::Value, mac_id: &str) -> Result<bool> {
+    let macs = directory["macs"].as_array().context("invalid Mac directory")?;
+    Ok(macs.iter().any(|mac| mac["mac_id"].as_str() == Some(mac_id)))
+}
+
+/// Signed with the identity being revoked: the relay lets only a Mac revoke itself, which also
+/// ends the push registrations of the phones linked to it.
+fn revoke_mac_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &str) -> Result<()> {
+    let http = http();
+    let path = format!("/v1/macs/{}", identity.mac_id);
+    let proof = MacProof::new(&http, relay, identity, signing, "DELETE", &path, &[])?;
+    let mut response = proof.apply(&identity.mac_id, http.delete(format!("{relay}{path}"))).call()?;
+    let status = response.status().as_u16();
+    let body: Option<serde_json::Value> = response.body_mut().with_config().limit(4096).read_json().ok();
+    let error = body.as_ref().and_then(|body| body["error"].as_str());
+    match revocation(status, error) {
+        Revocation::Done => Ok(()),
+        Revocation::Failed => bail!(trf!(
+            "the relay did not retire this Mac's previous identity ({status}); run the recovery again",
+            "el relay no dio de baja la identidad anterior de este Mac ({status}); vuelve a ejecutar la recuperación"
+        )),
+        Revocation::CheckDirectory => {
+            let mut directory = http
+                .get(format!("{relay}/v1/macs"))
+                .header("authorization", format!("Bearer {token}"))
+                .call()?;
+            let status = directory.status().as_u16();
+            if status != 200 {
+                bail!(trf!(
+                    "could not confirm with the relay that this Mac's previous identity is retired ({status}); run the recovery again",
+                    "no se pudo confirmar con el relay que la identidad anterior de este Mac está dada de baja ({status}); vuelve a ejecutar la recuperación"
+                ));
+            }
+            let directory: serde_json::Value = directory.body_mut().with_config().limit(65536).read_json()?;
+            if listed(&directory, &identity.mac_id)? {
+                bail!(tr!(
+                    "the relay still accepts this Mac's previous identity and refused its signed retirement; check this Mac's clock and run the recovery again",
+                    "el relay aún acepta la identidad anterior de este Mac y rechazó su baja firmada; revisa la hora de este Mac y vuelve a ejecutar la recuperación"
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -604,12 +679,30 @@ mod tests {
         assert_eq!(table["relay_url"].as_str(), Some(RELAY));
         fs::remove_dir_all(home).unwrap();
     }
+
+    #[test]
+    fn revocation_is_confirmed_only_by_the_relay() {
+        assert_eq!(revocation(204, None), Revocation::Done);
+        assert_eq!(revocation(403, Some("account_access_denied")), Revocation::Done);
+        assert_eq!(revocation(401, Some("unauthorized")), Revocation::CheckDirectory);
+        assert_eq!(revocation(401, Some("relay_epoch_changed")), Revocation::Failed);
+        assert_eq!(revocation(503, Some("mac_revocation_failed")), Revocation::Failed);
+        assert_eq!(revocation(403, Some("forbidden")), Revocation::Failed);
+        let directory = serde_json::json!({"macs":[{"mac_id":"mac-new"}]});
+        assert!(listed(&directory, "mac-new").unwrap());
+        assert!(!listed(&directory, "mac-old").unwrap());
+        assert!(listed(&serde_json::json!({}), "mac-old").is_err());
+    }
 }
 
 fn identity_base(home: &Path) -> Result<std::path::PathBuf> {
     let path = home.join(SERVICE_FILE);
     if !path.try_exists()? { return Ok(home.to_owned()); }
-    let config: KeyPaths = toml::from_str(&fs::read_to_string(path)?)?;
+    identity_base_for(home, &fs::read_to_string(path)?)
+}
+
+fn identity_base_for(home: &Path, config: &str) -> Result<std::path::PathBuf> {
+    let config: KeyPaths = toml::from_str(config)?;
     if config.signing_key_path == "service-keys/signing.key" && config.agreement_key_path == "service-keys/agreement.key" && config.journal_path.is_none() {
         return Ok(home.to_owned());
     }

@@ -205,6 +205,7 @@ fn cli_recovery_against_restored_service() -> Result<()> {
         LOCAL_CONFIG_ORIGIN,
         || Ok((fixture.owner.clone(), fixture.token.clone())),
         &mut |identity, key, token| register_at(identity, key, token, relay),
+        &mut |identity, key, token| revoke_mac_at(identity, key, token, relay),
     )?;
     assert_eq!(outcome, RecoveryOutcome::Committed);
     let config: ServiceConfig = toml::from_str(&fs::read_to_string(home.join(SERVICE_FILE))?)?;
@@ -226,6 +227,8 @@ fn cli_recovery_against_restored_service() -> Result<()> {
             .iter()
             .any(|v| v["mac_id"] == new_identity.mac_id)
     );
+    assert!(!listed(&after, &old_identity.mac_id)?);
+    revoke_mac_at(&old_identity, &old_key, &fixture.token, relay)?;
     // The signed registrar itself is idempotent; a new key does not revive IDs.
     register_at(&new_identity, &new_key, &fixture.token, relay)?;
     assert_eq!(macs(&fixture)?, after);
@@ -272,7 +275,8 @@ fn cli_recovery_against_restored_service() -> Result<()> {
             &mut output,
             LOCAL_CONFIG_ORIGIN,
             || panic!("cancel must not authenticate"),
-            &mut |_, _, _| panic!("cancel must not register")
+            &mut |_, _, _| panic!("cancel must not register"),
+            &mut |_, _, _| panic!("cancel must not revoke")
         )?,
         RecoveryOutcome::Cancelled
     );

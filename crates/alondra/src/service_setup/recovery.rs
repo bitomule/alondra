@@ -83,7 +83,13 @@ fn read_operation(home: &Path) -> Result<Option<Operation>> {
     anyhow::ensure!(
         op.version == 1
             && valid_id(&op.id)
-            && ["prepared", "enrollment_attempted", "enrolled", "committed"]
+            && [
+                "prepared",
+                "enrollment_attempted",
+                "enrolled",
+                "old_revoked",
+                "committed"
+            ]
                 .contains(&op.phase.as_str()),
         "invalid recovery operation"
     );
@@ -208,6 +214,7 @@ fn execute(
     owner: &str,
     mut op: Operation,
     register: &mut impl FnMut(&PublicMac, &SigningKey) -> Result<()>,
+    revoke: &mut impl FnMut(&PublicMac, &SigningKey) -> Result<()>,
     checkpoint: &mut impl FnMut(&str) -> Result<()>,
 ) -> Result<Operation> {
     if op.phase == "committed" {
@@ -240,6 +247,12 @@ fn execute(
         identity.mac_id == new.mac_id,
         "recovery generation identity mismatch"
     );
+    let (old_identity, old_signing) =
+        load_or_create_keys(&identity_base_for(home, &op.old_config)?)?;
+    anyhow::ensure!(
+        old_identity.mac_id == old.mac_id,
+        "recovery previous identity mismatch"
+    );
     checkpoint("prepared")?;
     if op.phase == "prepared" || op.phase == "enrollment_attempted" {
         op.phase = "enrollment_attempted".into();
@@ -251,6 +264,14 @@ fn execute(
         persist(home, &op)?;
     }
     checkpoint("enrolled")?;
+    if op.phase == "enrolled" {
+        checkpoint("before_revoke")?;
+        revoke(&old_identity, &old_signing)?;
+        checkpoint("after_revoke")?;
+        op.phase = "old_revoked".into();
+        persist(home, &op)?;
+    }
+    checkpoint("old_revoked")?;
     atomic(&home.join("devices.json"), op.new_devices.as_bytes())?;
     checkpoint("approvals_removed")?;
     if pending.is_some() {
@@ -288,6 +309,7 @@ pub(super) fn interactive(
             Ok((account.sub, account.access_token))
         },
         &mut |identity, signing, token| register(identity, signing, token),
+        &mut |identity, signing, token| revoke_mac(identity, signing, token),
     )
 }
 
@@ -302,6 +324,7 @@ fn interactive_with(
     expected_relay: &str,
     account: impl FnOnce() -> Result<(String, String)>,
     registrar: &mut impl FnMut(&PublicMac, &SigningKey, &str) -> Result<()>,
+    revoker: &mut impl FnMut(&PublicMac, &SigningKey, &str) -> Result<()>,
 ) -> Result<RecoveryOutcome> {
     let existing = read_operation(home)?;
     if let Some(op) = &existing {
@@ -391,11 +414,12 @@ fn interactive_with(
         &owner,
         op,
         &mut |identity, signing| registrar(identity, signing, &token),
+        &mut |identity, signing| revoker(identity, signing, &token),
         &mut |_| Ok(()),
     )?;
     writeln!(
         output,
-        "Service recovery {} committed. Old clients remain unpaired. Run setup to start the daemon and create a new pairing.",
+        "Service recovery {} committed. The relay no longer accepts the previous identity and old clients remain unpaired. Run setup to start the daemon and create a new pairing.",
         op.id
     )?;
     Ok(RecoveryOutcome::Committed) // exclusive lock drops before setup can launch a daemon
@@ -465,6 +489,9 @@ mod tests {
             "before_register",
             "after_register",
             "enrolled",
+            "before_revoke",
+            "after_revoke",
+            "old_revoked",
             "approvals_removed",
             "config_published",
             "committed",
@@ -477,25 +504,46 @@ mod tests {
             let old: ServiceConfig = toml::from_str(&op.old_config).unwrap();
             let expected: ServiceConfig = toml::from_str(&op.new_config).unwrap();
             assert_ne!(old.mac_id, expected.mac_id);
+            let (_, old_key) = load_or_create_keys(home).unwrap();
             let mut calls = Vec::new();
             let mut registrar = |identity: &PublicMac, _: &SigningKey| {
                 calls.push(identity.mac_id.clone());
                 Ok(())
             };
-            let result = execute(home, "owner", op, &mut registrar, &mut |point| {
-                if point == phase {
-                    bail!("injected interruption")
-                }
+            let mut revoked = Vec::new();
+            let mut revoker = |identity: &PublicMac, signing: &SigningKey| {
+                assert_eq!(signing.verifying_key(), old_key.verifying_key());
+                revoked.push(identity.mac_id.clone());
                 Ok(())
-            });
+            };
+            let result = execute(
+                home,
+                "owner",
+                op,
+                &mut registrar,
+                &mut revoker,
+                &mut |point| {
+                    if point == phase {
+                        bail!("injected interruption")
+                    }
+                    Ok(())
+                },
+            );
             assert!(result.is_err());
             let pending = read_operation(home).unwrap().unwrap();
             assert_eq!(pending.id, id);
             if phase != "committed" {
                 assert!(alondra_core::home_lock::ensure_ready(home).is_err());
             }
-            let completed =
-                execute(home, "owner", pending, &mut registrar, &mut |_| Ok(())).unwrap();
+            let completed = execute(
+                home,
+                "owner",
+                pending,
+                &mut registrar,
+                &mut revoker,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
             assert_eq!(completed.phase, "committed");
             assert_eq!(completed.id, id);
             // Repeating an already-completed operation performs no network call.
@@ -504,10 +552,17 @@ mod tests {
                 "owner",
                 completed,
                 &mut |_, _| panic!("completed operation must not register again"),
+                &mut |_, _| panic!("completed operation must not revoke again"),
                 &mut |_| Ok(()),
             )
             .unwrap();
             assert!(calls.iter().all(|mac| mac == &expected.mac_id));
+            assert!(revoked.iter().all(|mac| mac == &old.mac_id));
+            assert_eq!(
+                revoked.len(),
+                if phase == "after_revoke" { 2 } else { 1 },
+                "interrupted at {phase}: only a lost response sends the old identity's revocation again"
+            );
             if phase == "after_register" {
                 assert_eq!(
                     calls.len(),
@@ -544,6 +599,7 @@ mod tests {
                     "owner",
                     op.clone(),
                     &mut |_, _| Ok(()),
+                    &mut |_, _| Ok(()),
                     &mut |phase| {
                         if phase == "config_published" {
                             bail!("injected crash after new config")
@@ -555,7 +611,7 @@ mod tests {
             );
             op
         };
-        assert_eq!(read_operation(home).unwrap().unwrap().phase, "enrolled");
+        assert_eq!(read_operation(home).unwrap().unwrap().phase, "old_revoked");
         assert_eq!(
             read_optional(&home.join(SERVICE_FILE)).unwrap().unwrap(),
             op.new_config
@@ -574,6 +630,7 @@ mod tests {
             RELAY,
             || Ok(("owner".into(), "synthetic-token".into())),
             &mut |_, _, _| panic!("enrolled recovery must not register again"),
+            &mut |_, _, _| panic!("revoked old identity must not be revoked again"),
         )
         .unwrap();
         assert_eq!(outcome, RecoveryOutcome::Committed);
@@ -592,6 +649,7 @@ mod tests {
             RELAY,
             || panic!("cancel must not read credentials"),
             &mut |_, _, _| panic!("cancel must not register"),
+            &mut |_, _, _| panic!("cancel must not revoke"),
         )
         .unwrap();
         assert_eq!(outcome, RecoveryOutcome::Cancelled);
@@ -631,6 +689,7 @@ mod tests {
                 "other-owner",
                 op.clone(),
                 &mut |_, _| panic!("wrong owner must not contact relay"),
+                &mut |_, _| panic!("wrong owner must not contact relay"),
                 &mut |_| Ok(())
             )
             .is_err()
@@ -641,6 +700,7 @@ mod tests {
                 "owner",
                 op,
                 &mut |_, _| bail!("service unavailable or denied"),
+                &mut |_, _| panic!("unenrolled recovery must not revoke the old identity"),
                 &mut |_| Ok(())
             )
             .is_err()
@@ -651,6 +711,49 @@ mod tests {
         assert_eq!(read_optional(&home.join(SERVICE_FILE)).unwrap(), Some(old));
         assert_eq!(read_optional(&home.join("devices.json")).unwrap(), devices);
         assert!(alondra_core::home_lock::ensure_ready(home).is_err());
+        assert_preserved(home);
+    }
+    #[test]
+    fn refused_revocation_keeps_old_trust_and_resumes_without_registering_again() {
+        let fixture = fixture();
+        let home = &fixture.0;
+        let _lock = HomeLock::recovery(home).unwrap();
+        let op = prepare(home, false).unwrap();
+        let old = op.old_config.clone();
+        let devices = op.old_devices.clone();
+        assert!(
+            execute(
+                home,
+                "owner",
+                op,
+                &mut |_, _| Ok(()),
+                &mut |_, _| bail!("relay unavailable"),
+                &mut |_| Ok(())
+            )
+            .is_err()
+        );
+        let pending = read_operation(home).unwrap().unwrap();
+        assert_eq!(pending.phase, "enrolled");
+        assert_eq!(read_optional(&home.join(SERVICE_FILE)).unwrap(), Some(old.clone()));
+        assert_eq!(read_optional(&home.join("devices.json")).unwrap(), devices);
+        assert!(alondra_core::home_lock::ensure_ready(home).is_err());
+        let mut revoked = Vec::new();
+        let completed = execute(
+            home,
+            "owner",
+            pending,
+            &mut |_, _| panic!("enrolled recovery must not register again"),
+            &mut |identity, _| {
+                revoked.push(identity.mac_id.clone());
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(completed.phase, "committed");
+        let old: ServiceConfig = toml::from_str(&old).unwrap();
+        assert_eq!(revoked, vec![old.mac_id]);
+        alondra_core::home_lock::ensure_ready(home).unwrap();
         assert_preserved(home);
     }
     #[test]
@@ -666,6 +769,7 @@ mod tests {
                 "owner",
                 op,
                 &mut |_, _| panic!("changed approvals must block registration"),
+                &mut |_, _| panic!("changed approvals must block revocation"),
                 &mut |_| Ok(())
             )
             .is_err()
