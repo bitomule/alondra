@@ -83,6 +83,84 @@ fn only_alondra_can_adopt_or_request_adoption_and_a_live_task_cannot_be_taken() 
     }).unwrap_err().code, "pr_owned_by_other_task");
 }
 
+/// The user cancelled `t`, GitHub closed its PR, and GitHub later reopened it: nothing closes it now.
+fn cancelled_with_its_pr_reopened() -> DomainState {
+    let mut s = registered();
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::Cancelled, None));
+    s
+}
+fn close_cancelled(s: &mut DomainState, actor: Actor, status: OpenPrStatus) -> Result<CommandOutcome, DomainError> {
+    exec(s, actor, Command::ClosePrOfCancelledTask { task_id: "t".into(), pr_id: PR.into(), branch: "feature".into(), status })
+}
+
+#[test]
+fn a_cancelled_tasks_open_pr_is_closed_with_the_cancels_reason() {
+    let mut s = cancelled_with_its_pr_reopened();
+    close_cancelled(&mut s, Actor::System, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap();
+    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Cancelled in Alondra: {}", task(&s).title) }));
+    assert_eq!((pr(&s).state, pr(&s).head.as_str()), (PrState::Open, PUSHED), "Alondra holds the PR as GitHub reports it");
+    assert_eq!(task(&s).state, TaskState::Cancelled);
+    let settled = s.clone();
+    close_cancelled(&mut s, Actor::System, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap();
+    assert_eq!(s, settled, "asking twice changes nothing");
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: PUSHED.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
+    assert_eq!(task(&s).open_pr, None, "GitHub reporting it closed ends the pending close");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn only_alondra_closes_the_pr_of_a_cancelled_task_and_only_while_github_reports_it_open() {
+    let mut s = cancelled_with_its_pr_reopened();
+    for actor in [user(), orchestrator(), node("a")] {
+        assert_eq!(close_cancelled(&mut s, actor, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap_err().code, "forbidden");
+    }
+    for state in [PrState::Closed, PrState::Merged] {
+        let before = s.clone();
+        assert_eq!(close_cancelled(&mut s, Actor::System, status(state, PrMergeable::Clean, PrChecks::Passed)).unwrap_err().code, "open_pr_close");
+        assert_eq!(s, before);
+    }
+    let mut running = registered();
+    assert_eq!(close_cancelled(&mut running, Actor::System, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap_err().code, "open_pr_close",
+        "a task still working keeps its PR");
+    let before = s.clone();
+    let command = Command::ClosePrOfCancelledTask { task_id: "t".into(), pr_id: "github.com/owner/repo#1".into(), branch: "feature".into(),
+        status: status(PrState::Open, PrMergeable::Clean, PrChecks::Passed) };
+    assert_eq!(exec(&mut s, Actor::System, command).unwrap_err().code, "open_pr_close");
+    assert_eq!(s, before);
+    let mut ownership = registered();
+    super::lifecycle_tests::task(&mut ownership, "other", Some("b"));
+    must(&mut ownership, user(), Command::CancelTask { task_id: "other".into() });
+    must(&mut ownership, Actor::System, Command::RecordNodeEnd { task_id: "other".into(), end: NodeEnd::Closed, agent_id: None });
+    assert_eq!(ownership.tasks[&TaskId::from("other")].state, TaskState::Cancelled);
+    let before = ownership.clone();
+    let command = Command::ClosePrOfCancelledTask { task_id: "other".into(), pr_id: PR.into(), branch: "feature".into(),
+        status: status(PrState::Open, PrMergeable::Clean, PrChecks::Passed) };
+    assert_eq!(exec(&mut ownership, Actor::System, command).unwrap_err().code, "open_pr_close");
+    assert_eq!(ownership, before, "a cancelled task cannot close another task's PR");
+}
+
+#[test]
+fn a_cancelled_tasks_pr_is_not_closed_if_its_branch_acquired_a_live_task_since_the_sweep() {
+    let mut s = registered();
+    let branch = "worktree-new";
+    assert!(!s.branch_has_live_task(branch));
+    let github = status(PrState::Open, PrMergeable::Clean, PrChecks::Passed);
+    super::lifecycle_tests::task(&mut s, "new", Some("b"));
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::Cancelled, None));
+    assert!(s.branch_has_live_task(branch));
+    let before = s.clone();
+    exec(&mut s, Actor::System, Command::ClosePrOfCancelledTask {
+        task_id: "t".into(), pr_id: PR.into(), branch: branch.into(), status: github,
+    }).unwrap();
+    assert_eq!(s, before, "the transaction rechecks the branch before scheduling a close");
+}
+
 /// The stops of t-musts-validate-ignored-parent: its node registered musts #113 and its turns
 /// ended twice without presenting it, so the second stop became a case for the orchestrator.
 fn stalled_with_open_pr() -> DomainState {
