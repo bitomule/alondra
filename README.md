@@ -43,6 +43,10 @@ You need a Mac on Apple Silicon with macOS 26 or later, and Claude Code, Codex o
 installed and signed in. [`INSTALL.md`](INSTALL.md) has the details, the iPhone and Mac apps, and
 what to do when something fails.
 
+Before installing, read [what Alondra does on your Mac](docs/on-your-mac.md): installed programs,
+files, connections, permissions and credentials, with source links and a prompt you can give an
+agent to audit the checkout.
+
 ## What it does
 
 1. **You write a request** in the TUI, the Mac app or the iPhone: "add rate limiting to the API".
@@ -120,9 +124,10 @@ screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.
 Alondra supports **Claude** (through Claude Code) and **Codex**, alone or together, with several
 accounts of each.
 
-**Alondra does not manage provider sign-in.** You use your own Claude Code or Codex login, the one
-already on your Mac. Alondra never sees your credentials, never stores them and never asks you for
-them: the agent sessions it launches use the login the provider's own tool holds.
+Agent sessions use your Claude Code or Codex login. You can use an existing profile or add an
+account through the provider's native sign-in. Claude Code owns its tokens; Alondra's Codex
+sign-in flow can publish credentials to the selected profile and Keychain. The
+[credential inventory](docs/on-your-mac.md#credentials-and-authority) explains those boundaries.
 
 ## Alondra Cloud
 
@@ -148,12 +153,14 @@ What passes through it:
   fallback text is used when a device cannot open them);
 - connection metadata the relay sees by necessity: addresses, timing and how many bytes it carried.
 
-What never leaves your Mac:
+What Alondra Cloud cannot read:
 
 - your code, repositories and worktrees;
 - task and card contents, plans, diffs, transcripts and attachments, which travel between your
   devices end to end, as sealed envelopes the relay carries without being able to open them;
-- your Claude and Codex credentials: Alondra never sees them.
+- your Claude and Codex credentials: local provider profiles and Keychain hold them, and the
+  provider tools use them to authenticate directly with their services. See the
+  [credential inventory](docs/on-your-mac.md#credentials-and-authority).
 
 How devices talk to a Mac is in [the device protocol](docs/iroh-protocol.md); report anything that looks
 wrong under [`SECURITY.md`](SECURITY.md).
@@ -164,8 +171,9 @@ wrong under [`SECURITY.md`](SECURITY.md).
 sessions: one place for all the questions, a state per task, pull requests and worktrees handled
 for you.
 
-**Does my code leave my Mac?** Only to the providers you already use (Anthropic, OpenAI) and to
-GitHub, exactly as if you ran those tools yourself. Alondra Cloud never receives it.
+**Does my code leave my Mac?** Agents can send it to your providers (Anthropic, OpenAI), GitHub
+and the integrations you configure, as if you ran those tools yourself. Alondra Cloud cannot
+read your code. See the [connection inventory](docs/on-your-mac.md#connections).
 
 **Do I need an account with Alondra?** Not on the same network. Reaching your Mac from your iPhone
 away from home goes through Alondra Cloud.
@@ -180,6 +188,7 @@ fix what does not.
 ## Documentation
 
 - [`INSTALL.md`](INSTALL.md): install, apps, troubleshooting
+- [What Alondra does on your Mac](docs/on-your-mac.md): programs, files, connections and an audit prompt
 - [`docs/architecture/overview.md`](docs/architecture/overview.md): how the pieces fit
 - [The device protocol](docs/iroh-protocol.md): how devices talk to a Mac
 - [`docs/building-from-source.md`](docs/building-from-source.md): build it yourself
