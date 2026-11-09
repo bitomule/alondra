@@ -127,9 +127,15 @@ pub fn mounted_volumes() -> std::io::Result<Mounts> {
 }
 
 pub fn space(path: &Path) -> Option<Space> {
-    let free = free_space(path)?;
-    let purgeable = platform::usable(path).map_or(0, |usable| usable.saturating_sub(free.free));
-    Some(Space { purgeable, ..free })
+    Some(with_usable(free_space(path)?, platform::usable(path)))
+}
+
+/// macOS measures "available for important usage" on the whole APFS container, ignoring a
+/// volume's quota, so on a volume with a quota it can exceed the volume's own size. Purgeable
+/// space is only what still fits in the volume.
+fn with_usable(free: Space, usable: Option<u64>) -> Space {
+    let purgeable = usable.map_or(0, |usable| usable.saturating_sub(free.free)).min(free.total.saturating_sub(free.free));
+    Space { purgeable, ..free }
 }
 
 /// What the volume of `path` itself holds, `df`'s Used: on APFS the free space is the whole
@@ -335,6 +341,17 @@ mod tests {
 
     fn disk(free: f64, purgeable: f64) -> Space {
         Space { free: (free * GB as f64) as u64, purgeable: (purgeable * GB as f64) as u64, total: 500 * GB }
+    }
+
+    #[test]
+    fn a_volume_with_a_quota_never_counts_more_purgeable_space_than_it_can_hold() {
+        let quota = Space { free: 31_442_436_096, purgeable: 0, total: 40 * GB };
+        let measured = with_usable(quota, Some(42_562_916_416));
+        assert!(measured.usable() <= measured.total, "9 November: a 40 GB Bazel cache volume read 42.6 GB usable and the gate saw 0 B free");
+        assert_eq!(measured.usable(), 40 * GB);
+        let plain = with_usable(disk(4.8, 0.0), Some(21_400_000_000));
+        assert_eq!(plain.purgeable, 16_600_000_000, "a volume without a quota keeps its purgeable space");
+        assert_eq!(with_usable(disk(4.8, 0.0), None).purgeable, 0);
     }
 
     #[test]
