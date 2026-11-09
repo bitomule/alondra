@@ -61,6 +61,9 @@ pub struct FileConfig {
     /// Names of daemon environment variables every node receives besides the built-in ones.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_environment: Option<Vec<String>>,
+    /// Literal names that must not appear in a public pull request delivered by a node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_names: Option<Vec<String>>,
 }
 
 /// `[report]` in `config.toml`.
@@ -111,6 +114,9 @@ impl FileConfig {
         if file.node_environment.as_ref().is_some_and(|names| !names.iter().all(|name| is_variable_name(name))) {
             return Err("node_environment: variable names".into());
         }
+        if file.private_names.as_ref().is_some_and(|names| names.iter().any(|name| name.trim().is_empty())) {
+            return Err("private_names: non-empty literal names".into());
+        }
         Ok(file)
     }
 
@@ -123,7 +129,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update, report, node_environment);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update, report, node_environment, private_names);
         self
     }
 }
@@ -189,6 +195,7 @@ pub struct Config {
     pub report_repo: Option<String>,
     /// Daemon environment variables every node receives besides the built-in ones (`node_environment`).
     pub node_environment: Vec<String>,
+    pub private_names: Vec<String>,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -285,6 +292,7 @@ impl Config {
                 .filter(|repo| is_github_repo(repo))
                 .or_else(|| file.report.as_ref().and_then(|r| r.repo.clone())),
             node_environment: file.node_environment.clone().unwrap_or_default(),
+            private_names: file.private_names.clone().unwrap_or_default(),
             home,
         }
     }
@@ -386,6 +394,17 @@ pub fn set_key(home: &Path, key: &str, value: Option<&str>) -> Result<(), SetErr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_names_accepts_a_personal_list_without_built_in_names() {
+        let file = FileConfig::parse("private_names = [\"example-private-project\", \"Example Device\"]\n").unwrap();
+        assert!(file.render().contains("example-private-project"));
+        assert_eq!(resolve(&file, &[]).private_names, ["example-private-project", "Example Device"]);
+        assert!(resolve(&FileConfig::default(), &[]).private_names.is_empty());
+        let empty = FileConfig::parse("private_names = []").unwrap();
+        assert!(resolve(&file.overlay(&empty), &[]).private_names.is_empty());
+        assert!(FileConfig::parse("private_names = [\" \"]\n").is_err());
+    }
+
     #[test]
     fn node_environment_takes_variable_names_only_and_defaults_to_none() {
         let dir = crate::test_support::Directory::new();

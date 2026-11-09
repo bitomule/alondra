@@ -126,6 +126,39 @@ answer has the same values; `alondra doctor` shows ✓ for `config`, `alondrad`,
 `apns` (step 4) and `pairing` (step 5). Only the sessions Alondra launches load the plugin;
 any other Claude session never talks to Alondra.
 
+### Keep private names out of public pull requests
+
+Add a top-level `private_names` list to your personal `~/.alondra/config.toml`
+(`$ALONDRA_HOME/config.toml` when that variable is set), before any TOML table.
+For example, these names are fictional:
+
+```toml
+private_names = ["example-private-project", "Example Device"]
+```
+
+Use names of repositories, apps or machines that must stay private. Keep this list in
+your personal configuration, outside the repositories your nodes work on. The default
+is an empty list; remove the key or set `private_names = []` to clear it. Entries must
+not be blank. Edit the file directly; this setting is not a `config set` key.
+Changes apply to the next delivery without restarting the daemon.
+
+Before accepting a node's final delivery, Alondra checks every open PR included in it.
+For repositories GitHub identifies as public, it searches the PR title, description,
+changed paths and added diff lines for each literal name, ignoring case and surrounding
+whitespace in the configured entry. A substring is enough to match, including a name
+inside a URL. Deleted and unchanged lines are not searched, so a node can remove a name
+already present in the repository.
+
+A match returns `private_names_in_public_content` to the node, naming what to remove
+and where. An unreadable configuration, unknown visibility, failed or incomplete read,
+or a diff larger than 2 MiB also prevents delivery. If the PR changes while it is read,
+the node must deliver again. With an empty list, no extra GitHub reads are made;
+private and internal repositories are not checked for names.
+
+This check runs when the node delivers its work in Alondra. It does not prevent an
+earlier push or PR creation from publishing the content, remove previous disclosures,
+or detect names absent from the list. It supplements the node's editorial review.
+
 ## 4. Notifications with your own Apple developer account
 
 This needs a paid Apple Developer Program membership. Pick a bundle ID prefix you own, e.g.
