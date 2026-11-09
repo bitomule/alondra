@@ -251,11 +251,32 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
         #expect(await !f.router.isProven(lan))
     }
 
-    @Test func anAddressProvedOnThisNetworkReportingAnIdempotencyConflictIsAnIdentityConflict() async throws {
+    @Test(arguments: [409, 400, 421, 429, 503])
+    func aBareStatusFromAnAddressProvedOnThisNetworkSaysNothingAboutTheMac(status: Int) async throws {
         let f = try await Fixture()
         _ = try await f.session.perform(f.read())
-        await f.mac.answer(on: lan.host, with: 409)
-        await #expect(throws: SealedRequestError.operationIdentityConflict) { try await f.session.perform(f.action("op-1")) }
+        #expect(await f.router.isProven(lan))
+        await f.mac.answer(on: lan.host, with: status)
+        await #expect(throws: DirectRouteError.unreachable, "\(status) must not decide the outcome") {
+            try await f.session.perform(f.action("op-1"))
+        }
+        #expect(await !f.router.isProven(lan))
+    }
+
+    @Test(arguments: [409, 400])
+    func aBareStatusFromAProvedAddressResendsTheSameEnvelopeOnTheNextRoute(status: Int) async throws {
+        let f = try await Fixture(saved: [lan, tailnetIP])
+        _ = try await f.session.perform(f.read())
+        #expect(await f.router.isProven(lan))
+        await f.mac.answer(on: lan.host, with: status)
+
+        #expect(try await f.session.perform(f.action("op-1")) == answered)
+        let bodies = await f.mac.requestBodies
+        try #require(bodies.count == 3)
+        #expect(bodies[1] == bodies[2], "fallback must reuse the sealed operation")
+        #expect(await f.mac.executions(of: "op-1") == 1)
+        #expect(await !f.router.isProven(lan))
+        #expect(await f.router.isProven(tailnetIP))
     }
 
     @Test func anUnsealedStatusNeverBecomesAnExpiredSessionOrALogin() async throws {
@@ -313,7 +334,7 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
             try await f.session.perform(f.action("op-0", body: #"{"command":"later"}"#))
         }
         for index in 1...DirectSession.maxSealed { _ = try await f.session.perform(f.action("op-\(index)")) }
-        await #expect(throws: SealedRequestError.operationIdentityConflict) {
+        await #expect(throws: DirectRouteError.unreachable, "the Mac's unsealed 409 is no answer") {
             try await f.session.perform(f.action("op-0", body: #"{"command":"later"}"#))
         }
         #expect(await f.mac.executions(of: "op-0") == 1)

@@ -485,22 +485,16 @@ impl Connection {
                     continue;
                 }
             };
-            *self.current.lock().expect("route lock poisoned") = Some(route.clone());
             let status = response.status().as_u16();
             let text = response.body_mut().with_config().limit(2 * 1024 * 1024).read_to_vec()?;
-            return match status {
-                200 => self.open(&text, request_id),
-                401 => Err(not_accepted(name)),
-                409 => Ok((409, json!({"error": "idempotency_conflict"}))),
-                421 => {
-                    *self.current.lock().expect("route lock poisoned") = None;
-                    continue;
-                }
-                other => Err(anyhow::Error::new(Answered {
-                    status: other,
-                    message: String::from_utf8_lossy(&text).trim().to_owned(),
-                })),
-            };
+            if status == 200
+                && let Ok(answer) = self.open(&text, request_id)
+            {
+                *self.current.lock().expect("route lock poisoned") = Some(route.clone());
+                return Ok(answer);
+            }
+            sent = true;
+            *self.current.lock().expect("route lock poisoned") = None;
         }
         if sent {
             return Err(anyhow::Error::new(Unanswered(trf!(
