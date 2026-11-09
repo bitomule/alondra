@@ -93,6 +93,7 @@ public actor FeedSession {
     private var eventSubscribers: [UUID: AsyncStream<FeedEvent>.Continuation] = [:]
     private var reconnectionSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     private let retryDelay: @Sendable (Int) async throws -> Void
+    private let restartCoalescing: Duration
     private let reconcileActions: (@Sendable (String, @escaping @Sendable () async -> Bool) async -> Void)?
     private var recoveryTask: Task<Void, Never>?
     private var recoveryID: UUID?
@@ -102,8 +103,10 @@ public actor FeedSession {
 
     public init(transport: any ViewTransport, client: ViewClient, lang: String,
                 retryDelay: @escaping @Sendable (Int) async throws -> Void = FeedSession.backoff,
+                restartCoalescing: Duration = .milliseconds(150),
                 reconcileActions: (@Sendable (String, @escaping @Sendable () async -> Bool) async -> Void)? = nil) {
         self.transport = transport; self.client = client; self.lang = lang; self.retryDelay = retryDelay
+        self.restartCoalescing = restartCoalescing
         self.reconcileActions = reconcileActions
     }
 
@@ -618,7 +621,15 @@ public actor FeedSession {
         scheduleRecovery()
         guard active, !openKeys.isEmpty, (!subscribers.isEmpty || !eventSubscribers.isEmpty) else { return }
         let currentGeneration = generation
-        feedTask = Task { [weak self] in await self?.runFeed(generation: currentGeneration) }
+        let coalescing = restartCoalescing
+        feedTask = Task { [weak self] in
+            // Views opening one after another each restart the poll: only the last one's is sent.
+            if coalescing > .zero {
+                try? await Task.sleep(for: coalescing)
+                guard !Task.isCancelled else { return }
+            }
+            await self?.runFeed(generation: currentGeneration)
+        }
     }
 
     private func runFeed(generation current: UInt64) async {

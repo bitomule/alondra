@@ -175,8 +175,15 @@ private final class FakeDialer: IrohDialer {
     private let network = Mutex(IrohPath.relay)
     private let moves = Mutex(0)
     private let delay = Mutex(Duration.zero)
+    private let stuck = Mutex(0)
+    private let failing = Mutex(0)
 
     init(mac: FakeIrohMac) { self.mac = mac }
+
+    /// The next `count` dials never answer, as the first ones on a fresh mobile network did.
+    func stickFor(_ count: Int) { stuck.withLock { $0 = count } }
+    /// The next `count` dials fail at once.
+    func failFor(_ count: Int) { failing.withLock { $0 = count } }
 
     var dials: Int { links.withLock { $0.count } }
     var last: FakeLink? { links.withLock { $0.last } }
@@ -186,6 +193,8 @@ private final class FakeDialer: IrohDialer {
     func takes(_ duration: Duration) { delay.withLock { $0 = duration } }
 
     func dial(_ address: IrohMacAddress) async throws -> any IrohLink {
+        if failing.withLock({ state in defer { state = max(0, state - 1) }; return state > 0 }) { throw IrohLinkError.notSent }
+        if stuck.withLock({ state in defer { state = max(0, state - 1) }; return state > 0 }) { try await Task.sleep(for: .seconds(3600)) }
         try await Task.sleep(for: delay.withLock { $0 })
         let link = FakeLink(mac: mac, path: network.withLock { $0 })
         links.withLock { $0.append(link) }
@@ -220,7 +229,8 @@ private struct Fixture {
     let journal: EnvelopeJournal?
 
     init(address: Bool = true, journal: EnvelopeJournal? = nil, quickSlack: Duration = .seconds(8),
-         lingerAfterUse: Duration = .seconds(60), retryDelays: [Duration] = [.milliseconds(10)]) async throws {
+         lingerAfterUse: Duration = .seconds(60), retryDelays: [Duration] = [.milliseconds(10)],
+         dialTimeout: Duration = .seconds(10), attemptTimeouts: [Duration] = [.seconds(4), .seconds(6)]) async throws {
         self.journal = journal
         dialer = FakeDialer(mac: mac)
         let macEndpoint = await mac.endpoint.endpointIDHex
@@ -229,7 +239,8 @@ private struct Fixture {
         carrier = IrohCarrier(dialer: dialer, macID: "mac-1", deviceID: "phone-1", signing: mac.device,
             address: { address ? IrohMacAddress(endpointID: macEndpoint, relay: relay) : nil },
             prepare: { _ in prepared.increment() },
-            connectWait: .seconds(5), lingerAfterUse: lingerAfterUse, retryDelays: retryDelays)
+            connectWait: .seconds(5), dialTimeout: dialTimeout, attemptTimeouts: attemptTimeouts,
+            lingerAfterUse: lingerAfterUse, retryDelays: retryDelays)
         session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device, agreement: mac.deviceAgreement,
             macSigning: mac.macSigning.publicKey, macAgreement: mac.macAgreement.publicKey, carrier: carrier,
             journal: journal, now: { UInt64(Date().timeIntervalSince1970 * 1000) }, requestClock: .continuous,
@@ -508,6 +519,26 @@ struct IrohCarrierTests {
         await f.carrier.networkMoved()
         #expect(try await cutOff.value == answered)
         #expect(f.dialer.dials == 2)
+    }
+
+    /// 7 Nov, iPhone on mobile data: the first two dials never answered and the third took 1.5 s,
+    /// so the first request waited 26 s behind two 10 s timeouts. The early attempts give up sooner.
+    @Test func dialsThatNeverAnswerGiveUpEarlyAndTheNextOneConnects() async throws {
+        let f = try await Fixture(dialTimeout: .seconds(60), attemptTimeouts: [.milliseconds(20), .milliseconds(20)])
+        f.dialer.stickFor(2)
+        await f.carrier.start()
+        try await waitUntil { await f.carrier.isConnected }
+        #expect(f.dialer.dials == 1, "only the third dial answered")
+    }
+
+    /// A restarted app connects where the running one did not: after repeated failures the
+    /// endpoint binds again on a fresh socket, as a restart would.
+    @Test func repeatedFailuresBindTheEndpointAgainBeforeTheNextAttempt() async throws {
+        let f = try await Fixture()
+        f.dialer.failFor(3)
+        await f.carrier.start()
+        try await waitUntil { await f.carrier.isConnected }
+        #expect(f.dialer.rebinds == 1)
     }
 
     @Test func aMoveInTheBackgroundOpensNothing() async throws {
