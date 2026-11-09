@@ -104,6 +104,7 @@ def plan(current, previous, paths, force_all=False):
             if targets:
                 jobs.append({"check": name, "runner": runner, "targets": targets,
                              "timeout": 120 if platform == "macos" else 90})
+    jobs.sort(key=lambda job: job["check"] != "apple-tests")
     return {"include": jobs}
 
 
@@ -117,7 +118,9 @@ def write_output(name, value):
 
 
 def selection_base(event_name, event):
-    if event_name == "workflow_dispatch":
+    if event_name == "workflow_dispatch" or (
+        event_name == "push" and event.get("ref") == "refs/heads/worktree-t-github-actions-ci-check"
+    ):
         branch = event["repository"]["default_branch"]
         return command("git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}").decode().strip()
     if event_name == "pull_request" and external_pr(event):
@@ -135,15 +138,16 @@ def select(args):
     paths = changed_paths(command("git", "diff", "--name-status", "-z", "--find-renames", f"{ancestor}...HEAD", "--"))
     current = manifest(Path("MUSTS.yml").read_text())
     previous = manifest(command("git", "show", f"{ancestor}:MUSTS.yml").decode())
-    matrix = plan(current, previous, paths, force_all=event_name == "workflow_dispatch")
+    probe = event_name in ("workflow_dispatch", "push")
+    matrix = plan(current, previous, paths, force_all=probe)
     write_output("matrix", json.dumps(matrix, separators=(",", ":")))
     write_output("has_checks", str(bool(matrix["include"])).lower())
     print(json.dumps({"event": event_name, "base": ancestor, "paths": sorted(paths), "matrix": matrix}, indent=2))
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-        heading = "Manual runner and timing probe" if event_name == "workflow_dispatch" else "External contribution validation"
+        heading = "Runner and timing probe" if probe else "External contribution validation"
         summary.write(f"## {heading}\n\n{len(matrix['include'])} target sets selected from MUSTS.yml.\n")
-        if event_name == "workflow_dispatch":
-            summary.write("This manual run does not validate the external-contributor or fork-approval path.\n")
+        if probe:
+            summary.write("This runner probe does not validate the external-contributor or fork-approval path.\n")
         if not matrix["include"]:
             summary.write("No MUSTS check reads the changed paths.\n")
 

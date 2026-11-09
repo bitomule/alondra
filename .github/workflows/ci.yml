@@ -1,6 +1,10 @@
 {
   "name": "External contribution checks",
-  "on": {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {}},
+  "on": {
+    "pull_request": {"branches": ["main"]},
+    "workflow_dispatch": {},
+    "push": {"branches": ["worktree-t-github-actions-ci-check"]}
+  },
   "permissions": {"contents": "read"},
   "concurrency": {
     "group": "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}",
@@ -8,7 +12,7 @@
   },
   "jobs": {
     "select": {
-      "if": "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}",
+      "if": "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/worktree-t-github-actions-ci-check') || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 5,
       "outputs": {
