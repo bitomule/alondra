@@ -1207,3 +1207,18 @@ checks:
     with:
       targets:
         - //tools:test_limits_test
+
+  worktree-setup:
+    uses: bazel/test
+    paths:
+      - ".bazelignore"
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/worktree-bazel-setup"
+      - "tools/worktree_setup_test/**"
+    with:
+      targets:
+        - //tools/worktree_setup_test:setup_test
