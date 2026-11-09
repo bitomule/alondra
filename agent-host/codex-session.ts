@@ -10,6 +10,9 @@ export const CODEX_VERSION = 'codex-app-server-0.163.0';
 export const CODEX_CAPABILITIES = ['streaming_input', 'exact_decisions', 'owner_attach', 'commit_ack', 'interrupt', 'force_stop', 'set_model', 'set_permission_mode', 'mcp_status', 'mcp_sign_in', 'native_account_policy', 'causal_child_continuations', 'plan_supersession'] as const;
 const MAX_NATIVE_LINE = 4 * 1024 * 1024;
 const MAX_PENDING = 64;
+/** Codex answers its startup in about a second; past this its session is not going to open. */
+const OPENING_TIMEOUT_MS = 90_000;
+type OpeningStep = 'initialize' | 'account' | 'thread_resume' | 'thread_start';
 type Json = Record<string, unknown>;
 type RequestId = string | number;
 type Pending = { method: string; resolve: (value: Json) => void; reject: (error: Error) => void };
@@ -80,6 +83,8 @@ export class CodexSession implements HostSession {
   private closed = false;
   private closing = false;
   private stopDeadline?: ReturnType<typeof setTimeout>;
+  private openingDeadline?: ReturnType<typeof setTimeout>;
+  private opening: OpeningStep = 'initialize';
   /** Why the native session ended without being asked to. */
   failure?: string;
   private pumping = false;
@@ -128,7 +133,7 @@ export class CodexSession implements HostSession {
           this.rejectPending();
           for (const timer of this.childPolls.values()) clearTimeout(timer); this.childPolls.clear();
           for (const [key, asked] of this.asked) this.settled(key, asked, 'cancelled');
-          if (this.failure) this.emit('alondra/transportFailed', { code: this.failure }, 'diagnostic');
+          if (this.failure) this.emit('alondra/transportFailed', { code: this.failure, ...(this.failure === 'native_initialization_timeout' ? { step: this.opening } : {}) }, 'diagnostic');
           this.config.observe({ type: 'process_exited', exit_code: code, signal });
           this.finish();
         });
@@ -152,6 +157,8 @@ export class CodexSession implements HostSession {
     this.child.stdout.on('error', () => this.fail('native_output_closed'));
     this.child.stderr.on('error', () => {});
     this.ready = this.initialize();
+    this.openingDeadline = setTimeout(() => { if (!this.thread) this.fail('native_initialization_timeout'); }, config.openingTimeoutMs ?? OPENING_TIMEOUT_MS);
+    this.openingDeadline.unref();
     void this.ready.catch((error: unknown) => { if (error instanceof NativeAccountRefusal) {if(this.queue.length===0)this.emit('alondra/accountBlocked', { code: error.code }, 'diagnostic');} else this.fail('native_initialization_failed'); });
   }
 
@@ -309,8 +316,10 @@ export class CodexSession implements HostSession {
     } catch (error) { if (error instanceof NativeAccountRefusal) throw error; throw new NativeAccountRefusal('native_auth_unavailable'); }
   }
   private async initialize(): Promise<void> {
+    this.opening = 'initialize';
     await this.rpc('initialize', { clientInfo: { name: 'alondra', title: 'Alondra', version: this.config.hostRelease ?? 'development' }, capabilities: { experimentalApi: true } });
     await this.send({ method: 'initialized' });
+    this.opening = 'account';
     await this.verifyAccount();
     const settings = object(this.config.worker?.settings.codex ?? this.config.orchestrator?.settings.codex);
     const overrides: Json = { ...object(settings.config), 'features.goals': false };
@@ -355,12 +364,14 @@ export class CodexSession implements HostSession {
     };
     const existing = this.readMapping();
     if (this.config.resume && !existing) throw new Error('Codex native identity unavailable');
+    this.opening = existing ? 'thread_resume' : 'thread_start';
     const result = existing ? await this.rpc('thread/resume', { ...args, threadId: existing, excludeTurns: true }) :
       await this.rpc('thread/start', { ...args, ephemeral: false, environments: this.config.orchestrator ? [] : null });
     if (result.modelProvider !== 'openai') throw new NativeAccountRefusal('native_model_provider_unsupported');
     const id = text(object(result.thread).id);
     if (!id || (existing && existing !== id)) throw new Error('Codex thread identity differs');
     this.thread = id;
+    clearTimeout(this.openingDeadline);
     this.model ??= text(result.model);
     this.writeMapping(id);
     this.emit('alondra/threadReady', { threadId: id, logicalConversationId: this.config.sessionId, cwd: this.config.cwd, ...(this.model ? { model: this.model } : {}), processGeneration: this.config.processGeneration ?? this.config.sessionId }, 'initialized');
@@ -404,7 +415,7 @@ export class CodexSession implements HostSession {
     if (Buffer.byteLength(prompt) > 900_000) throw new Error('Codex input capacity');
     this.inputs.add(inputId); this.queue.push({ id: inputId, prompt });
     void this.pump();
-    if(this.config.worker && !this.thread)return this.ready.catch((error: unknown) => { throw error instanceof InputNotOffered ? error : new InputNotOffered('native_initialization_failed'); });
+    if(this.config.worker && !this.thread)return this.ready.catch((error: unknown) => { throw error instanceof InputNotOffered ? error : new InputNotOffered(this.failure === 'native_initialization_timeout' ? this.failure : 'native_initialization_failed'); });
   }
   private async pump(): Promise<void> {
     if (this.pumping || this.closed || this.closing || this.turn || this.queue.length === 0) return;
@@ -706,6 +717,7 @@ export class CodexSession implements HostSession {
   }
   mcpClearAuth(_server: string): Promise<unknown> { return Promise.reject(new Error('Codex MCP clear authentication is unavailable')); }
   close(): void {
+    clearTimeout(this.openingDeadline);
     for (const timer of this.childPolls.values()) clearTimeout(timer); this.childPolls.clear();
     if (this.closing || this.closed) return;
     this.closing = true;

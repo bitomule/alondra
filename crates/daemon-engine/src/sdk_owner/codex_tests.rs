@@ -737,6 +737,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
     let controls = std::mem::take(&mut adopted.controls);
     let mut renewed = adopted.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert!(alondra_process_group::members(group).unwrap().iter().all(|member| member.zombie), "the legacy host and its app-server ended before a host of this release took the same thread");
     renewed.controls.extend(controls);
     slice.rest(&mut renewed);
     let state = restarted.state().unwrap();
@@ -1425,22 +1426,41 @@ async fn a_codex_host_that_could_not_start_its_session_is_relaunched_and_the_nod
     owner.stop().unwrap();
 }
 
-// A Codex session that can never start again is relaunched a bounded number of times, then the
-// task gets the card to try again: it never stands still with its input in doubt.
+// 2026-11-09, after the update to 0.3.24: three Codex sessions that would not open ran out of
+// relaunches and each put a host-lost card in front of the user. A session that cannot open is a
+// technical end: its host is relaunched again and again, waiting longer each time, and nobody is
+// asked.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_codex_session_that_never_starts_ends_in_a_card_to_try_again_after_bounded_relaunches() {
-    let (slice, restarted, owner, trace) = codex_node_after_a_restart(|slice| {
-        for saved in std::fs::read_dir(slice.backend.state_root.join("native-threads")).unwrap() {
-            std::fs::remove_file(saved.unwrap().path()).unwrap();
-        }
-    }).await;
-    let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has a card to try again");
-    assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("Its new host stopped before it could take the task's next message"));
-    assert!(owner.ended(), "the owner owns nothing any more");
-    let initialized = transcript(&trace).into_iter().filter(|message| message["method"] == "initialize").count();
-    assert_eq!(initialized, 2 + RELAUNCH_WAITS.len(), "the first host, the one the restart put in its place and one per relaunch");
+async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_without_a_card() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "hold");
+    let mut driver = launch(&slice);
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    kill_host_and_daemon(driver);
+    for saved in std::fs::read_dir(slice.backend.state_root.join("native-threads")).unwrap() {
+        std::fs::remove_file(saved.unwrap().path()).unwrap();
+    }
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let mut changed = restarted.subscribe();
+    let owner = Owner::spawn(slice.take_over(&restarted));
+    let reader = Arc::clone(&restarted);
+    let relaunched = |trace: &Path| transcript(trace).into_iter().filter(|message| message["method"] == "initialize").count();
+    let past_the_old_limit = 2 + 3 + 3;
+    changed.wait_for(|_| {
+        assert!(open_card(&reader, HOST_LOST_PREFIX).is_none(), "a session that cannot open never asks the user");
+        relaunched(&trace) >= past_the_old_limit
+    }).await.unwrap();
+    assert!(!owner.ended(), "the owner keeps relaunching its host");
     assert_eq!(turns_started(&restarted), 1, "no turn ran after the restart");
+    drop(owner);
     drop(slice);
+}
+
+#[test]
+fn relaunches_wait_longer_each_time_up_to_five_minutes_and_then_keep_that_pace() {
+    let waits: Vec<u64> = (0..8).map(|earlier| relaunch_wait(earlier).as_secs()).collect();
+    assert_eq!(waits, [2, 10, 30, 120, 300, 300, 300, 300]);
 }
 
 fn private_folder(path: &Path) {

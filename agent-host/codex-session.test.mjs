@@ -445,6 +445,28 @@ test('an input whose session could not start is refused as never offered, and th
   } finally { later.close(); await later.finished; }
 });
 
+for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', 'thread_start'], ['thread/resume', 'thread_resume']]) {
+  test(`a Codex that never answers ${silentOn} refuses the input as never offered and says which step did not answer`, { timeout: 15000 }, async (t) => {
+    const resume = silentOn === 'thread/resume';
+    const f = fixture(t, resume ? { config: { worker: workerProfile('Instructions') } } : { config: { worker: workerProfile('Instructions'), openingTimeoutMs: 200 }, env: { ALONDRA_FAKE_SILENT_ON: silentOn } });
+    let session = f.session;
+    if (resume) {
+      await f.session.ready;
+      f.session.close(); await f.session.finished;
+      session = new CodexSession({ ...f.config, env: { ...f.config.env, ALONDRA_FAKE_SILENT_ON: silentOn }, resume: true, processGeneration: 'silent', openingTimeoutMs: 200 });
+    }
+    const firstEvent = f.events.length;
+    try {
+      await assert.rejects(session.offer('00000000-0000-4000-8000-000000000081', 'Continue'), (error) => error instanceof InputNotOffered && error.code === 'native_initialization_timeout');
+      await session.finished;
+      assert.equal(session.failure, 'native_initialization_timeout');
+      const failed = f.events.slice(firstEvent).find(method('alondra/transportFailed'));
+      assert.deepEqual(failed.payload.params, { code: 'native_initialization_timeout', step });
+      assert.equal(f.messages().filter((message) => message.method === 'turn/start').length, 0);
+    } finally { session.close(); await session.finished; }
+  });
+}
+
 for (const mode of ['complete', 'child']) {
   test(`a cold resume never reads Codex's history file and keeps ${mode} turns going`, { timeout: 15000 }, async (t) => {
     const f = fixture(t, { env: { ALONDRA_FAKE_MODE: mode } });

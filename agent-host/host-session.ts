@@ -23,6 +23,8 @@ export type HostConfiguration = {
   hostRelease?: string;
   orchestrator?: OrchestratorProfile;
   worker?: WorkerProfile;
+  /** How long the native session may take to open before its input is refused as never offered. */
+  openingTimeoutMs?: number;
 };
 /** Positive adapter proof that this input was never submitted to the native model. */
 export class InputNotOffered extends Error {

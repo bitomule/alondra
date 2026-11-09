@@ -28,6 +28,29 @@ pub fn context_event(observation: &OrderedObservation) -> Option<ContextEvent> {
     }
 }
 
+/// Why a Codex session ended without being asked to, as its host reports it in
+/// `alondra/transportFailed`: the failure code and, when Codex never opened the session, the step
+/// it did not answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionFailure { pub code: String, pub step: Option<String> }
+
+impl std::fmt::Display for SessionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.step { Some(step) => write!(formatter, "{} at {step}", self.code), None => formatter.write_str(&self.code) }
+    }
+}
+
+pub fn session_failure(observation: &OrderedObservation) -> Option<SessionFailure> {
+    failure_of(&native_message(observation)?)
+}
+
+fn failure_of(message: &Value) -> Option<SessionFailure> {
+    if message.get("method")?.as_str()? != "alondra/transportFailed" { return None; }
+    let code = message.pointer("/params/code")?.as_str()?.to_owned();
+    let step = message.pointer("/params/step").and_then(Value::as_str).map(str::to_owned);
+    Some(SessionFailure { code, step })
+}
+
 /// A positive local guard rejection: no `turn/start` was sent for this input.
 pub fn account_refusal(observation:&OrderedObservation)->Option<&'static str>{
     let message=native_message(observation)?;
@@ -42,4 +65,20 @@ pub fn account_refusal(observation:&OrderedObservation)->Option<&'static str>{
         "native_auth_policy_invalid"|"native_account_identity_invalid"=>"The private Codex account policy could not be verified. No native input was submitted",
         _=>return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_session_that_never_opened_names_the_step_codex_did_not_answer() {
+        let failure = failure_of(&json!({"method": "alondra/transportFailed", "params": {"code": "native_initialization_timeout", "step": "initialize"}})).unwrap();
+        assert_eq!(failure, SessionFailure { code: "native_initialization_timeout".into(), step: Some("initialize".into()) });
+        assert_eq!(failure.to_string(), "native_initialization_timeout at initialize");
+        let exited = failure_of(&json!({"method": "alondra/transportFailed", "params": {"code": "native_process_exited"}})).unwrap();
+        assert_eq!(exited.step, None);
+        assert_eq!(failure_of(&json!({"method": "alondra/accountBlocked", "params": {"code": "native_auth_unavailable"}})), None);
+    }
 }

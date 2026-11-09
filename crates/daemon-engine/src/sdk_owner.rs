@@ -38,12 +38,22 @@ const DRIVER: &str = "claude-agent-sdk";
 /// turn never holds back an interrupt.
 const WAKE: Duration = Duration::from_millis(250);
 /// How long the owner waits before each new host it puts in place of a replacement that ended
-/// without taking its input; past the last, the task gets a card to try again, unless its session
-/// never opened: then it goes on, waiting the last each time.
-#[cfg(not(any(test, feature = "test-hooks")))]
-const RELAUNCH_WAITS: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(30)];
-#[cfg(any(test, feature = "test-hooks"))]
-const RELAUNCH_WAITS: [Duration; 3] = [Duration::ZERO; 3];
+/// without taking its input: a technical end never asks the user, and past the last wait every
+/// new host waits the last again, so a host that keeps failing is never relaunched in a loop.
+const RELAUNCH_WAITS: [Duration; 5] = [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(30), Duration::from_secs(120), Duration::from_secs(300)];
+/// Hosts in a row whose Claude never showed it ran before the task holds on the card that says its
+/// session could not be resumed.
+const SILENT_HOSTS: usize = 3;
+
+/// The wait before the new host of relaunch `earlier` + 1.
+fn relaunch_wait(earlier: usize) -> Duration {
+    RELAUNCH_WAITS[earlier.min(RELAUNCH_WAITS.len() - 1)]
+}
+
+/// Tests relaunch at once: what they check is that a relaunch happens, never how long it waits.
+fn pause_before_relaunch(earlier: usize) -> Duration {
+    if cfg!(any(test, feature = "test-hooks")) { Duration::ZERO } else { relaunch_wait(earlier) }
+}
 
 /// What an SDK execution's binding lets the domain ask of it.
 fn capabilities() -> BTreeSet<Capability> {
@@ -235,6 +245,8 @@ pub struct Driver {
     /// A step of this owner failed: its host is stopped and replaced like one that closed.
     owner_failed: bool,
     native_account_refusal:Option<String>,
+    /// Why the Codex session of this host ended on its own, as its host said it.
+    native_failure: Option<alondra_provider_codex::SessionFailure>,
     /// The proof of the native account the host recorded is kept apart from its folder.
     identity_kept: bool,
     /// The Claude session the host last said it runs, so the log names each one once.
@@ -243,7 +255,7 @@ pub struct Driver {
     /// resumes the same session takes its place.
     moves_to_this_release: bool,
     /// This replacement was handed an input and did not take it: its end is watched and its place
-    /// taken by another host, up to `RELAUNCH_WAITS` once its session opened.
+    /// taken by another host after `relaunch_wait`.
     untaken: bool,
     /// Earlier replacements in this recovery chain.
     relaunches: usize,
@@ -1298,7 +1310,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1494,6 +1506,10 @@ impl Driver {
             #[cfg(any(test, feature = "test-hooks"))]
             self.domain.before_acknowledge();
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
+        }
+        if self.worker.provider()==Provider::Codex && let Some(failure)=alondra_provider_codex::session_failure(&batch){
+            log!("the Codex session of {} ended on its own: {failure}", self.task);
+            self.native_failure=Some(failure);
         }
         if self.worker.provider()==Provider::Codex && let Some(reason)=alondra_provider_codex::account_refusal(&batch){self.native_account_refusal=Some(reason.into());return Err(Failed::new(reason.into()))}
         if !unrecorded.is_empty() {
@@ -1759,22 +1775,22 @@ impl Driver {
         adopt(domain, backend, task, plugin)
     }
 
-    /// Whether `RELAUNCH_WAITS` hosts in a row ended without their Claude showing it ran, in a
+    /// Whether `SILENT_HOSTS` hosts in a row ended without their Claude showing it ran, in a
     /// session that had opened before: another one would end the same way. A Codex host is bounded
     /// by its own relaunches.
     fn gave_up_starting(&self) -> bool {
-        self.worker.provider() == Provider::Claude && self.claude_session.is_none() && self.silent_hosts >= RELAUNCH_WAITS.len() && !self.unopened().unwrap_or(false)
+        self.worker.provider() == Provider::Claude && self.claude_session.is_none() && self.silent_hosts >= SILENT_HOSTS && !self.unopened().unwrap_or(false)
     }
 
     /// Whether the owner should put a host that resumes the session in place of its own: its host
     /// closed or its connection to it failed, which a host that is dying shows before its exit, or
     /// a step of the owner itself failed. A replacement positively observed dead, or one that
-    /// ended without taking its input, is replaced while `RELAUNCH_WAITS` lasts, and for as long as
-    /// its session has not opened. The
+    /// ended without taking its input, is replaced again after `relaunch_wait`, however many ended
+    /// before. The
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     pub fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || (self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && (self.relaunches < RELAUNCH_WAITS.len() || self.unopened().unwrap_or(false))) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 
@@ -1947,12 +1963,12 @@ impl Owner {
                     let relaunches = if driver.replacement { driver.relaunches + 1 } else { 0 };
                     let silent_hosts = if driver.claude_session.is_some() { 0 } else { driver.silent_hosts + 1 };
                     if driver.replacement {
-                        driver.domain.seals.pause(RELAUNCH_WAITS[driver.relaunches.min(RELAUNCH_WAITS.len() - 1)], &told);
+                        driver.domain.seals.pause(pause_before_relaunch(driver.relaunches), &told);
                         if told() {
                             break;
                         }
                     } else if driver.silent_hosts > 0 {
-                        driver.domain.seals.pause(RELAUNCH_WAITS[(driver.silent_hosts - 1).min(RELAUNCH_WAITS.len() - 1)], &told);
+                        driver.domain.seals.pause(pause_before_relaunch(driver.silent_hosts - 1), &told);
                         if told() {
                             break;
                         }
@@ -1960,6 +1976,8 @@ impl Owner {
                     let task = driver.task.clone();
                     let plugin = driver.plugin.clone().or_else(|| crate::plugins::node_in(driver.domain.home()));
                     let moved = driver.moves_to_this_release;
+                    let ended = driver.native_failure.take();
+                    let waited = relaunch_wait(driver.relaunches);
                     let controls = std::mem::take(&mut driver.controls);
                     match driver.replace_ended_host(&backend, plugin.as_deref()) {
                         Ok(mut next) => {
@@ -1967,7 +1985,8 @@ impl Owner {
                             next.relaunches = relaunches;
                             next.silent_hosts = silent_hosts;
                             if relaunches > 0 {
-                                log!("the new SDK host of {task} ended: another host that resumes the same session took its place (attempt {relaunches} of {})", RELAUNCH_WAITS.len());
+                                let why = ended.map_or_else(|| "before taking its input".to_owned(), |failure| format!("before taking its input ({failure})"));
+                                log!("the new SDK host of {task} ended {why}: after {}s a new host that resumes the same session took its place (relaunch {relaunches})", waited.as_secs());
                             } else if moved {
                                 next.controls.extend(controls);
                                 log!("{task} rested on the SDK host of the release before: a host of this release that resumes the same Claude session took its place");
