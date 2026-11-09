@@ -224,7 +224,7 @@ def own_turn_ended():
 # process in the host's process group, whose PID is kept next to the capture. The command ends once
 # the test writes a line to the FIFO beside it; its notification, which names no run, wakes a turn
 # of Claude's own that opens with init, takes it up and ends, and the node rests.
-def background_command(message):
+def background_command(message, opens_turn=True):
     global serial
     release = capture + '.release'
     if not os.path.exists(release):
@@ -245,6 +245,8 @@ def background_command(message):
         serial += 1
         send(dict(type='system', subtype='task_notification', task_id='fixture-command', tool_use_id='toolu_fixture_background', status=status,
                   output_file='fixture-output', summary='read line < release', uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), session_id=session_id))
+        if not opens_turn:
+            return
         serial += 1
         send(dict(type='system', subtype='init', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12), claude_code_version='2.1.300-fixture', model='fixture', cwd=os.getcwd(), tools=['Bash'], mcp_servers=[], permissionMode='default', slash_commands=[], output_style='default', skills=[], plugins=[], apiKeySource='none'))
         serial += 1
@@ -485,7 +487,7 @@ for raw in sys.stdin:
             time.sleep(3600)
         elif text == 'failed-delivery':
             result(message, failed=True)
-        elif text == 'max-turns':
+        elif text.endswith('max-turns'):
             consume(message)
             result(message, subtype='error_max_turns')
         elif text == 'consume-and-hold':
@@ -589,6 +591,9 @@ for raw in sys.stdin:
             result(message)
         elif text.endswith('background-command'):
             background_command(message)
+        elif text.endswith('background-command-silent'):
+            # The notification stays for the next turn to read, instead of opening one of its own.
+            background_command(message, opens_turn=False)
         elif text.startswith('[From ') and len(pending) > 1:
             # Like the native Claude 2.1.300 with a turn open: a message that arrives meanwhile is
             # taken into that same turn, which then ends.

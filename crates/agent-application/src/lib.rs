@@ -183,6 +183,32 @@ pub trait ObservationNormalizer {
         batch: &OrderedObservation,
         metadata: &ObservationMetadata<'_, '_>,
     ) -> std::result::Result<Normalization, AdapterError>;
+    /// The checkpoint moved past `batch` with no fact and nothing of its evidence read: the
+    /// observation is discarded, and the next one folds from where the earlier ones left it.
+    fn skip(
+        &self,
+        batch: &OrderedObservation,
+        metadata: &ObservationMetadata<'_, '_>,
+    ) -> std::result::Result<Normalization, AdapterError>;
+}
+
+/// Normalizes every observation by skipping it: what a discarded observation is staged with.
+pub struct Skipping<'normalizer, N>(pub &'normalizer N);
+impl<N: ObservationNormalizer> ObservationNormalizer for Skipping<'_, N> {
+    fn normalize(
+        &self,
+        batch: &OrderedObservation,
+        metadata: &ObservationMetadata<'_, '_>,
+    ) -> std::result::Result<Normalization, AdapterError> {
+        self.0.skip(batch, metadata)
+    }
+    fn skip(
+        &self,
+        batch: &OrderedObservation,
+        metadata: &ObservationMetadata<'_, '_>,
+    ) -> std::result::Result<Normalization, AdapterError> {
+        self.0.skip(batch, metadata)
+    }
 }
 
 pub trait DurableAdapter: Adapter {

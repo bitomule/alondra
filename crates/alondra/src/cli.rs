@@ -110,19 +110,10 @@ pub fn set_node_limit(value: &str) -> Result<()> {
 /// Cancels each task, one command each against the revision the previous one left; a reason
 /// is recorded beside a cancelled task.
 pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
-    let client = user();
+    let client = Client::for_user(Duration::from_secs(60));
     let mut failed = 0;
     for task in tasks {
-        let done = client.views(&format!("task:{task}"), None).and_then(|view| {
-            let action = view_action(&view, |action| action.id.starts_with("cancel:")).context("Task cannot be cancelled")?;
-            submit(&client, &view, &action, None, serde_json::json!({}))?;
-            if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
-                let (path, body) = ops::cancel_reason(&TaskId::from(task.as_str()), reason);
-                client.put(&path, &body).map_err(|e| anyhow!(trf!("cancelled, but the reason was not recorded: {e:#}", "descartada, pero no se guardó el motivo: {e:#}")))?;
-            }
-            Ok(())
-        });
-        match done {
+        match cancel_task(&client, task, reason) {
             Ok(()) => println!("{}", trf!("Cancelled {task}", "Cancelada {task}")),
             Err(error) => {
                 failed += 1;
@@ -131,6 +122,26 @@ pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
         }
     }
     anyhow::ensure!(failed == 0, "{failed} of {} tasks not cancelled", tasks.len());
+    Ok(())
+}
+
+/// A daemon that answers late may still have applied the cancel: the task's view, read again, says
+/// whether it did.
+fn cancel_task(client: &Client, task: &str, reason: Option<&str>) -> Result<()> {
+    let key = format!("task:{task}");
+    let view = client.views(&key, None)?;
+    let action = view_action(&view, |action| action.id.starts_with("cancel:")).context("Task cannot be cancelled")?;
+    if let Err(error) = submit(client, &view, &action, None, serde_json::json!({})) {
+        let applied = action.enabled && client.views(&key, None)
+            .is_ok_and(|view| view_action(&view, |action| action.id.starts_with("cancel:") && action.enabled).is_none());
+        if !applied {
+            return Err(error);
+        }
+    }
+    if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+        let (path, body) = ops::cancel_reason(&TaskId::from(task), reason);
+        client.put(&path, &body).map_err(|e| anyhow!(trf!("cancelled, but the reason was not recorded: {e:#}", "descartada, pero no se guardó el motivo: {e:#}")))?;
+    }
     Ok(())
 }
 
@@ -266,6 +277,58 @@ mod tests {
         ];
         run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question") });
         s
+    }
+
+    /// A daemon too busy to answer the cancel: it takes it and waits until the client gives up,
+    /// and reads out the task's view as `before`, then as `after` once the cancel came.
+    fn busy_daemon(before: Vec<u8>, after: Vec<u8>) -> (Client, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut view = before;
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut chunk = [0; 4096];
+                let read = stream.read(&mut chunk).unwrap();
+                if chunk[..read].starts_with(b"POST") {
+                    while stream.read(&mut chunk).unwrap() > 0 {}
+                    view = after.clone();
+                    continue;
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", view.len()).unwrap();
+                stream.write_all(&view).unwrap();
+            }
+        });
+        (Client::at(base).bounded(Duration::from_millis(100)), server)
+    }
+
+    fn task_view(s: &DomainState) -> Vec<u8> {
+        let index = alondra_core::domain::ReadIndex::build(s);
+        let live = alondra_core::views::LiveSnapshot::default();
+        let context = alondra_core::views::RenderContext { domain: s, index: &index, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
+        serde_json::to_vec(&alondra_core::views::build("task:t", context).unwrap()).unwrap()
+    }
+
+    // Production: the daemon took 24 s to apply a cancel, and the CLI said after its 15 s that the
+    // task was not cancelled.
+    #[test]
+    fn a_cancel_the_daemon_applied_without_answering_in_time_counts_as_cancelled() {
+        let mut s = world();
+        let before = task_view(&s);
+        let cancel = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "cancel".into(), expected_revision: s.revision, command: Command::CancelTask { task_id: "t".into() } };
+        s.execute(&Actor::User { user_id: "u".into() }, &cancel).unwrap();
+        let (client, server) = busy_daemon(before, task_view(&s));
+        cancel_task(&client, "t", None).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_cancel_the_task_s_view_does_not_show_stays_a_failure() {
+        let view = task_view(&world());
+        let (client, server) = busy_daemon(view.clone(), view);
+        assert!(cancel_task(&client, "t", None).is_err(), "the task can still be cancelled: it was not");
+        server.join().unwrap();
     }
 
     #[test]

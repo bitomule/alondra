@@ -104,7 +104,7 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
             RuntimeObservation::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }
         }
         RuntimeFact::ContinuationConsumed { continuation } => RuntimeObservation::WorkContinued { continuation: continuation.as_str().into() },
-        other => return Err(StoreError::Storage(anyhow::anyhow!("provider observation refused: the domain does not record {other:?} yet"))),
+        other => return Err(ObservationRefusal::Unrecordable(format!("the domain does not record {other:?} yet")).into()),
     })
 }
 /// What a test has the domain refuse, once, as it refuses what it cannot record.
@@ -114,6 +114,8 @@ pub enum Refuse {
     TurnEnd,
     DecisionRequest,
     InterruptAccepted,
+    /// The provider's adapter refuses the next observation, as one it cannot read.
+    Observation,
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -151,6 +153,25 @@ fn refused_for_test(_: &Command, _: bool) -> Option<StoreError> {
     None
 }
 
+/// What this thread was asked to refuse, handed to a thread it starts, which refuses it instead.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn carried_refusal() -> impl FnOnce() + Send {
+    let what = REFUSE.with(|refuse| refuse.replace(None));
+    move || if let Some(what) = what { refuse_next(what) }
+}
+
+/// The adapter's refusal of an observation the test asked for, taken once.
+#[cfg(any(test, feature = "test-hooks"))]
+fn observation_refused_for_test() -> Option<StoreError> {
+    let asked = REFUSE.with(|refuse| refuse.get() == Some(Refuse::Observation) && refuse.replace(None).is_some());
+    asked.then(|| ObservationRefusal::Provider(alondra_agent_application::Error::Adapter(AdapterError::Storage("the test refuses it".into()))).into())
+}
+
+#[cfg(not(any(test, feature = "test-hooks")))]
+fn observation_refused_for_test() -> Option<StoreError> {
+    None
+}
+
 fn command_name(command: &Command) -> &'static str {
     match command {
         Command::RecordRuntimeFacts { .. } => "its runtime facts",
@@ -173,7 +194,30 @@ fn moves_lifecycle(command: &Command) -> bool {
 fn application_error(error: alondra_agent_application::Error) -> StoreError {
     match error {
         alondra_agent_application::Error::Store(error) => error.into(),
-        other => StoreError::Storage(anyhow::anyhow!("provider observation refused: {other:?}")),
+        other => ObservationRefusal::Provider(other).into(),
+    }
+}
+
+/// Why the owner cannot record an observation, kept typed so that whether it is discarded is
+/// decided on its kind.
+#[derive(Debug)]
+pub(crate) enum ObservationRefusal {
+    Provider(alondra_agent_application::Error),
+    /// A fact the domain has no command for, or one that names what the task does not hold.
+    Unrecordable(String),
+}
+impl std::fmt::Display for ObservationRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provider(error) => write!(f, "provider observation refused: {error:?}"),
+            Self::Unrecordable(what) => write!(f, "provider observation refused: {what}"),
+        }
+    }
+}
+impl std::error::Error for ObservationRefusal {}
+impl From<ObservationRefusal> for StoreError {
+    fn from(refusal: ObservationRefusal) -> Self {
+        Self::Storage(refusal.into())
     }
 }
 
@@ -277,6 +321,9 @@ impl<'connection> OwnerTransaction<'connection> {
         self.stage_observation_with_identity(binding,owner_generation,batch,normalizer,home,probe,None)
     }
     pub(crate) fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&crate::sdk_owner::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
+        if let Some(refusal) = observation_refused_for_test() {
+            return Err(refusal);
+        }
         let pending = alondra_agent_application::stage_observation(
             &mut self.journal,
             binding,
@@ -305,7 +352,6 @@ impl<'connection> OwnerTransaction<'connection> {
             Ok((lifecycle.execution() == Some(&execution)).then(|| lifecycle.cursor().unwrap_or(0)))
         };
         let before = cursor(&self.journal)?;
-        let mut reconciled = false;
         let mut commands = vec![];
         let mut continuations=std::collections::BTreeMap::new();
         let mut read_status = false;
@@ -372,7 +418,7 @@ impl<'connection> OwnerTransaction<'connection> {
                             .optional()
                             .map_err(|error| StoreError::Storage(error.into()))
                     })?;
-                    let text = text.flatten().ok_or_else(|| StoreError::Storage(anyhow::anyhow!("task {task_id} has no text for its dropped input {}", input.as_str())))?;
+                    let text = text.flatten().ok_or_else(|| ObservationRefusal::Unrecordable(format!("task {task_id} has no text for its dropped input {}", input.as_str())))?;
                     commands.push(Command::RecordDroppedInput { task_id: task_id.clone(), generation, input: input.as_str().into(), text });
                 }
                 ObservedFact::Asked { request, epoch, kind, tool_use, payload } => {
@@ -446,7 +492,7 @@ impl<'connection> OwnerTransaction<'connection> {
                             .map_err(|error| StoreError::Storage(error.into()))
                     })?;
                     let path = own.as_deref().and_then(|own| crate::worktree::subagent_worktree(std::path::Path::new(own), agent));
-                    let path = path.ok_or_else(|| StoreError::Storage(anyhow::anyhow!("task {task_id} has no worktree of its own to place subagent {agent}'s")))?;
+                    let path = path.ok_or_else(|| ObservationRefusal::Unrecordable(format!("task {task_id} has no worktree of its own to place subagent {agent}'s")))?;
                     commands.push(Command::RecordTaskWorktree {
                         task_id: task_id.clone(),
                         path: path.display().to_string(),
@@ -516,7 +562,6 @@ impl<'connection> OwnerTransaction<'connection> {
                     .take_while(|record| !matches!(record, alondra_core::domain::LifecycleRecord::Admitted { .. }))
                     .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::DecisionSettled { epoch: known } | alondra_core::domain::LifecycleRecord::DecisionAborted { epoch: known, .. } if known == epoch)));
                 if ended {
-                    reconciled = true;
                     continue;
                 }
             }
@@ -560,8 +605,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 if let Some(refusal) = refused_for_test(&envelope.command, false) {
                     return Err(refusal);
                 }
-                let changed = self.stage_command(&Actor::System, &envelope, Attached::None)?.changed;
-                reconciled |= !changed && matches!(envelope.command, Command::RecordDecisionRequest { .. });
+                self.stage_command(&Actor::System, &envelope, Attached::None)?;
                 continue;
             }
             // What Alondra cannot record never stops the node's owner or its host: each command is
@@ -613,12 +657,32 @@ impl<'connection> OwnerTransaction<'connection> {
                 self.journal.inspect(|| super::codex_metrics::stage(self.conn, &account, &task_id.0, &message, alondra_core::now_millis()).map_err(|error| StoreError::Storage(error.into())))?;
             }
         }
-        let accepted = if !probe && !reconciled {
-            pending.settle(&mut self.journal).map_err(application_error)?
-        } else {
-            let moved = match (before, cursor(&self.journal)?) { (Some(before), Some(after)) => after.saturating_sub(before), _ => 0 };
-            pending.settle_recorded(&mut self.journal, usize::try_from(moved).unwrap_or(usize::MAX)).map_err(application_error)?
-        };
+        // The domain decides how far its commands move the task: the end of a turn also consumes
+        // the notifications it read, and evidence it already holds moves nothing.
+        let moved = match (before, cursor(&self.journal)?) { (Some(before), Some(after)) => after.saturating_sub(before), _ => 0 };
+        let accepted = pending.settle_recorded(&mut self.journal, usize::try_from(moved).unwrap_or(usize::MAX)).map_err(application_error)?;
+        self.observe_provider_transition(&execution, batch.cursor)?;
+        Ok(accepted)
+    }
+
+    /// Stages `batch` discarded for `reason`: its evidence is kept, the provider's checkpoint moves
+    /// past it with no fact, and the discard is recorded with why. The task goes on from the next.
+    pub(crate) fn discard_observation<N: ObservationNormalizer>(
+        &mut self,
+        binding: &ProviderBinding,
+        owner_generation: u64,
+        batch: &OrderedObservation,
+        normalizer: &N,
+        reason: super::DiscardReason,
+    ) -> std::result::Result<ObservationAcceptance, StoreError> {
+        let skipping = alondra_agent_application::Skipping(normalizer);
+        let pending = alondra_agent_application::stage_observation(&mut self.journal, binding, owner_generation, batch, &skipping)
+            .map_err(application_error)?;
+        let execution = pending.execution().clone();
+        let accepted = pending.settle_recorded(&mut self.journal, 0).map_err(application_error)?;
+        if accepted == ObservationAcceptance::Accepted {
+            self.sql(|conn| super::discarded_observations::record(conn, &execution, batch.cursor, reason))?;
+        }
         self.observe_provider_transition(&execution, batch.cursor)?;
         Ok(accepted)
     }

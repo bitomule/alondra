@@ -1175,6 +1175,33 @@ async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its
     domain.stop_sdk_owners();
 }
 
+/// Production, 2026-11-08 (t-agents-md-review-public-audit, t-security-audit-local-daemon and
+/// t-usage-limit-no-cards): each read as working with no host, and every gate pass tried to take it
+/// over and failed on the same observation of its ended host, for good. Here the host ends its turn
+/// and dies before its owner reads that end, which its adapter then refuses: the observation is
+/// discarded, the first pass takes the task over, and the next has nothing to take.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_working_task_whose_ended_host_left_an_observation_no_owner_can_settle_leaves_the_loop() {
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    run(&domain, Actor::System, Command::TellNode { task_id: SDK_TASK.into(), text: "Carry on".into(), from_user: false, answers: None });
+    node.driver.step(&|| false).unwrap();
+    let outbox = node.backend.state_root.join(node.agent()).join("outbox");
+    while !String::from_utf8_lossy(&std::fs::read(&outbox).unwrap()).contains("\"type\":\"result\"") {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    node.lose_host();
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::Observation);
+    crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis());
+    domain.join_retakes();
+    let agent = AgentId(node.agent());
+    assert!(domain.owns_sdk_host(&agent), "the first pass takes the task over");
+    crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis() + 2 * MIN);
+    domain.join_retakes();
+    assert!(domain.owns_sdk_host(&agent), "and the task stays owned");
+    domain.stop_sdk_owners();
+}
+
 /// 6 Nov: «Resume» on the card of a node the gate held for the disk or the machine answered «no
 /// longer available» while the node was still paused. Every pause card's Resume is taken while
 /// the card is open.

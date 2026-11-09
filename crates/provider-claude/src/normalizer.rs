@@ -152,7 +152,33 @@ pub fn background_left(checkpoint: &[u8]) -> Vec<String> {
     running.chain(unread).collect()
 }
 
+/// The checkpoint the observation before `batch` left, which `batch` must follow.
+fn prior_checkpoint(batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Checkpoint, AdapterError> {
+    let Some(prior) = metadata.checkpoint().map_err(storage)? else {
+        if batch.cursor != 1 {
+            return Err(AdapterError::InvalidObservation);
+        }
+        return Ok(Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() });
+    };
+    let decoded: Checkpoint = serde_json::from_slice(prior.bytes()).map_err(|_| AdapterError::InvalidObservation)?;
+    if decoded.format != CHECKPOINT_FORMAT
+        || decoded.cursor != prior.cursor()
+        || decoded.cursor.checked_add(1) != Some(batch.cursor)
+    {
+        return Err(AdapterError::InvalidObservation);
+    }
+    Ok(decoded)
+}
+
 impl ObservationNormalizer for Normalizer {
+    fn skip(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
+        if &batch.execution != metadata.execution() || batch.cursor != metadata.cursor() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        let mut checkpoint = prior_checkpoint(batch, metadata)?;
+        checkpoint.cursor = batch.cursor;
+        Normalization::new(Vec::new(), serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?)
+    }
     fn normalize(
         &self,
         batch: &OrderedObservation,
@@ -193,26 +219,7 @@ impl ObservationNormalizer for Normalizer {
             &event.observation,
             WireObservation::Sdk { kind: SdkEventKind::Unsupported, .. }
         );
-        let prior = metadata.checkpoint().map_err(storage)?;
-        let mut checkpoint = if let Some(prior) = prior {
-            let decoded: Checkpoint = serde_json::from_slice(prior.bytes())
-                .map_err(|_| AdapterError::InvalidObservation)?;
-            if decoded.format != CHECKPOINT_FORMAT
-                || decoded.cursor != prior.cursor()
-                || decoded.cursor.checked_add(1) != Some(batch.cursor)
-            {
-                return Err(AdapterError::InvalidObservation);
-            }
-            decoded
-        } else {
-            if batch.cursor != 1 {
-                return Err(AdapterError::InvalidObservation);
-            }
-            Checkpoint {
-                format: CHECKPOINT_FORMAT,
-                ..Checkpoint::default()
-            }
-        };
+        let mut checkpoint = prior_checkpoint(batch, metadata)?;
         if self.first_cursor == Some(batch.cursor) {
             checkpoint.forget_ended_host();
         }
@@ -424,17 +431,21 @@ fn fold(
             return Ok(facts);
         };
         match payload.get("state").and_then(Value::as_str) {
-            Some("started") => {
-                lookup(std::slice::from_ref(&command))?;
-                take(state, command);
-            }
+            Some("started") => match lookup(std::slice::from_ref(&command)) {
+                Ok(_) => take(state, command),
+                Err(AdapterError::UnknownInput) => {}
+                Err(error) => return Err(error),
+            },
             Some("completed" | "cancelled") => {
                 if let Some(index) = state.taken.iter().position(|taken| *taken == command) {
                     state.taken.remove(index);
                     remember(&mut state.finished, command);
                 } else if state.initialized {
-                    let input = lookup(std::slice::from_ref(&command))?.remove(0);
-                    facts.push(Observation::InputDropped { input });
+                    match lookup(std::slice::from_ref(&command)) {
+                        Ok(mut inputs) => facts.push(Observation::InputDropped { input: inputs.remove(0) }),
+                        Err(AdapterError::UnknownInput) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
             _ => {}
@@ -948,7 +959,10 @@ fn string<'a>(payload: &'a Value, key: &str) -> Result<&'a str, AdapterError> {
     Ok(value)
 }
 fn storage(error: alondra_store::Error) -> AdapterError {
-    AdapterError::Storage(error.to_string())
+    match error {
+        alondra_store::Error::MissingAdapterInput => AdapterError::UnknownInput,
+        error => AdapterError::Storage(error.to_string()),
+    }
 }
 
 fn optional_string(payload: &Value, key: &str) -> Result<Option<String>, AdapterError> {
@@ -1101,6 +1115,34 @@ mod tests {
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap(), vec![
             Observation::TurnUnprompted { turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap() },
         ], "init with no prompt of ours started opens a turn of Claude's own");
+    }
+    // Production, 2026-11-07 (t-idle-node-release-processes, observations 1340-1345): after the
+    // turn our input opened ended, the native Claude started a command of its own, one Alondra
+    // never handed over. Its lifecycle is evidence, and the init that follows opens the turn
+    // Claude goes on with by itself.
+    #[test]
+    fn a_command_the_native_claude_starts_by_itself_is_evidence_and_its_init_opens_claudes_own_turn() {
+        const OWN_COMMAND: &str = "10000000-0000-4000-8000-000000000010";
+        const OWN_PROMPT: &str = "10000000-0000-4000-8000-000000000011";
+        let ours = |ids: &[MessageUuid]| if ids.iter().all(|id| id.as_str() == FIRST) { input(ids) } else { Err(AdapterError::UnknownInput) };
+        let mut state = state();
+        let started = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"started","uuid":REPLY}));
+        assert_eq!(fold(&started, &session(), &mut state, ours).unwrap(), vec![]);
+        let answer = event(json!({"type":"assistant","uuid":SECOND,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&answer, &session(), &mut state, ours).unwrap();
+        let result = event(json!({"type":"result","uuid":THIRD,"subtype":"success","user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        let ended = fold(&result, &session(), &mut state, ours).unwrap();
+        assert!(matches!(ended.last(), Some(Observation::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{ended:?}");
+        let completed = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"completed","uuid":FOURTH}));
+        assert_eq!(fold(&completed, &session(), &mut state, ours).unwrap(), vec![]);
+        let own = event(json!({"type":"command_lifecycle","command_uuid":OWN_COMMAND,"state":"started","uuid":NOTIFIED}));
+        assert_eq!(fold(&own, &session(), &mut state, ours).unwrap(), vec![], "a command Claude starts by itself is evidence");
+        let init = event(json!({"type":"system","subtype":"init","uuid":OWN_PROMPT}));
+        assert_eq!(fold(&init, &session(), &mut state, ours).unwrap(), vec![
+            Observation::TurnUnprompted { turn: TurnId::new(format!("claude-message:{OWN_PROMPT}")).unwrap() },
+        ], "its prompt is a turn of Claude's own");
+        let finished = event(json!({"type":"command_lifecycle","command_uuid":OWN_COMMAND,"state":"completed","uuid":SESSION}));
+        assert_eq!(fold(&finished, &session(), &mut state, ours).unwrap(), vec![], "and its end drops no input of ours");
     }
     // A subagent hands its report back after the turn ended: Claude takes it up in a turn of its
     // own, which its next result ends whatever it names, and a message of ours that arrives
