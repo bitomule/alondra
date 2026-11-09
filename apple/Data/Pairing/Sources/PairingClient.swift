@@ -94,7 +94,7 @@ public actor PairingClient {
         let replacesExisting = invitation.macID == replacedMacID
         if rejectExistingMac, !replacesExisting, try store.loadCollection().pairings.contains(where: {
             $0.ownerSub == authorization.ownerSub && $0.macID == invitation.macID &&
-                $0.relayURL.map { Self.sameRelay($0, invitation.url) } == true
+                RelayURL.canonical($0.relayURL) == RelayURL.canonical(invitation.url)
         }) { throw PairingError.alreadyLinked }
         let signing = P256.Signing.PrivateKey()
         let agreement = P256.KeyAgreement.PrivateKey()
@@ -131,17 +131,6 @@ public actor PairingClient {
             signingPublicKey: signingPublic, agreementPublicKey: agreementPublic, replacesExisting: replacesExisting)
         return PairingPending(attemptID: id, comparisonCode: comparisonCode,
             expiresAtMs: invitation.expiresAtMs)
-    }
-
-    private static func sameRelay(_ lhs: URL, _ rhs: URL) -> Bool {
-        func normalized(_ url: URL) -> URLComponents? {
-            guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-            parts.scheme = parts.scheme?.lowercased(); parts.host = parts.host?.lowercased()
-            if parts.scheme == "https", parts.port == 443 { parts.port = nil }
-            while parts.path.hasSuffix("/") { parts.path.removeLast() }
-            return parts
-        }
-        return normalized(lhs) == normalized(rhs)
     }
 
     /// Polls until the Mac approves or the QR expires. Cancellation stops the poll without saving keys.
@@ -185,7 +174,7 @@ public actor PairingClient {
                 try store.modify { collection in
                     if attempt.replacesExisting {
                         for old in collection.pairings where old.macID == approved.macID && old.hasRelay
-                            && old.ownerSub == approved.ownerSub && old.relayURL.map({ Self.sameRelay($0, approved.relayURL!) }) == true {
+                            && old.ownerSub == approved.ownerSub && RelayURL.canonical(old.relayURL) == approved.relayURL {
                             collection.remove(ApprovedPairingID(old))
                         }
                     }

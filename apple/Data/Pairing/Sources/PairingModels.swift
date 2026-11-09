@@ -124,7 +124,7 @@ public struct ApprovedServicePairing: Codable, Sendable {
 
     public init(relayURL: URL?, macID: String, deviceID: String, ownerSub: String?, macSigningKey: String,
                 macAgreementKey: String, signingPrivateKey: Data, agreementPrivateKey: Data, approvedAtMs: UInt64) {
-        self.relayURL = relayURL; self.macID = macID; self.deviceID = deviceID; self.ownerSub = ownerSub
+        self.relayURL = RelayURL.canonical(relayURL); self.macID = macID; self.deviceID = deviceID; self.ownerSub = ownerSub
         self.macSigningKey = macSigningKey; self.macAgreementKey = macAgreementKey
         self.signingPrivateKey = signingPrivateKey; self.agreementPrivateKey = agreementPrivateKey
         self.approvedAtMs = approvedAtMs
