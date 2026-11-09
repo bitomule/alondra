@@ -11,6 +11,8 @@ sh_test(
     name = "local_release_test",
     srcs = ["tests/test_local_release.py"],
     size = "small",
+    # The publisher needs modern Python (tomllib), not Apple's bundled Python 3.9.
+    env_inherit = ["PATH"],
     data = [
         "local-release.py",
         "release.py",

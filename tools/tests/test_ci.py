@@ -75,6 +75,24 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci.changed_paths(b"R100\0old.rs\0")
 
+    def test_manual_diagnosis_selects_the_whole_named_check_without_narrowing_prs(self):
+        checks = ci.manifest(MANIFEST)
+        checks["crate-foundation"] = checks["crate-domain"]
+        value = {"inputs": {"check": "crate-foundation"}}
+        current, previous, requested = ci.manual_scope("workflow_dispatch", value, checks, checks)
+        jobs = ci.plan(current, previous, set(), force_all=True)["include"]
+        self.assertEqual(jobs[0]["targets"], ["//crates/domain/..."])
+        self.assertEqual([j["check"] for j in jobs], ["crate-foundation"])
+        self.assertEqual(requested, "crate-foundation")
+        current, previous, requested = ci.manual_scope("pull_request", value, checks, checks)
+        self.assertIs(current, checks)
+        self.assertIs(previous, checks)
+        self.assertEqual(requested, "")
+        for check in ("missing", "--test_filter=skip", ["crate-domain"]):
+            with self.subTest(check=check), self.assertRaises(ValueError):
+                ci.manual_scope("workflow_dispatch", {"inputs": {"check": check}}, checks, checks)
+        self.assertEqual(ci.manual_scope("workflow_dispatch", {}, checks, checks), (checks, checks, ""))
+
     def test_docs_rust_apple_and_mixed_changes_select_the_union_without_running_unrelated_checks(self):
         checks = ci.manifest(MANIFEST)
         self.assertEqual(ci.plan(checks, checks, {"docs/guide.md"}), {"include": []})
@@ -112,12 +130,17 @@ class SelectionTests(unittest.TestCase):
             targets = [t for job in jobs if job["runner"] == runner for t in job["targets"]]
             self.assertEqual(len(targets), len(set(targets)))
 
+    def test_core_bonjour_checks_run_with_the_native_dns_sd_library(self):
+        checks = ci.manifest((ROOT / "MUSTS.yml").read_text())
+        jobs = ci.plan(checks, checks, {"crates/core/src/bonjour.rs"})["include"]
+        self.assertEqual(next(j["runner"] for j in jobs if j["check"] == "crate-core"), "xcode-27")
+
     def test_bazel_failure_is_reported_without_retry_or_personal_rc_files(self):
         args = type("Args", (), {"targets": '["//crates/domain/..."]'})()
         with patch.object(ci.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as run:
             with patch.dict(os.environ, {}, clear=True):
                 self.assertEqual(ci.run(args), 1)
-            run.assert_called_once_with(["bazelisk", "--nosystem_rc", "--nohome_rc", "test", "--config=ci", "--", "//crates/domain/..."])
+            run.assert_called_once_with(["bazelisk", "--nosystem_rc", "--nohome_rc", "test", "--config=ci", "--test_output=errors", "--", "//crates/domain/..."])
         args.targets = '["--test_filter=skip"]'
         with self.assertRaises(ValueError):
             ci.run(args)
@@ -133,14 +156,34 @@ class SelectionTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_plugin_cli_is_private_pinned_and_installed_only_for_its_offline_tests(self):
+        directory = ROOT / ".github/ci-tools"
+        package = json.loads((directory / "package.json").read_text())
+        lock = json.loads((directory / "package-lock.json").read_text())
+        self.assertIs(package["private"], True)
+        self.assertEqual(set(package["dependencies"]), {"@anthropic-ai/claude-code"})
+        version = package["dependencies"]["@anthropic-ai/claude-code"]
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(lock["packages"][""]["dependencies"], package["dependencies"])
+        for path, dependency in lock["packages"].items():
+            if path:
+                self.assertEqual(dependency["version"], version)
+                self.assertTrue(dependency["resolved"].startswith("https://registry.npmjs.org/@anthropic-ai/"))
+                self.assertTrue(dependency["integrity"].startswith("sha512-"))
+        workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
+        setup = next(s for s in workflow["jobs"]["validate"]["steps"] if s.get("name") == "Install the pinned offline plugin test CLI")
+        self.assertEqual(setup["if"], "${{ matrix.check == 'plugin-mod' }}")
+
     def test_only_external_prs_or_explicit_manual_runs_can_reserve_a_runner(self):
         workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
-        self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {}})
+        self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {
+            "inputs": {"check": {"description": "MUSTS check to diagnose (blank runs every check)",
+                                  "type": "string", "default": "", "required": False}}}})
         self.assertEqual(set(workflow["jobs"]), {"select", "validate"})
         select = workflow["jobs"]["select"]
         self.assertEqual(select["if"], "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}")
         self.assertEqual(workflow["concurrency"]["group"],
-                         "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}")
+                         "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}")
         validate = workflow["jobs"]["validate"]
         self.assertEqual(validate["needs"], "select")
         self.assertEqual(validate["if"], "${{ needs.select.outputs.has_checks == 'true' }}")
@@ -167,6 +210,7 @@ class WorkflowTests(unittest.TestCase):
                         "python3 tools/ci.py plan", "python3 tools/ci.py run --targets \"$CI_TARGETS\"",
                         "python3 tools/simulator.py",
                         "xcodebuild -version\nxcrun simctl list runtimes -j\nxcrun simctl list devicetypes -j",
+                        "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\"",
                     })
 
     def test_ci_config_does_not_enable_uploads_or_buildbuddy(self):
@@ -175,6 +219,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("common:ci --remote_cache=", ci_flags)
         self.assertIn("common:ci --noremote_upload_local_results", ci_flags)
         self.assertIn("common:ci --bes_backend=", ci_flags)
+        self.assertIn("test:ci --test_env=DISABLE_AUTOUPDATER=1", ci_flags)
+        self.assertIn("test:ci --test_env=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", ci_flags)
         self.assertFalse(any("--config=" in line or "buildbuddy" in line for line in ci_flags))
 
 

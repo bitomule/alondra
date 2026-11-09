@@ -11,7 +11,10 @@ sh_test(
     name = "ci_test",
     size = "small",
     srcs = ["tests/test_ci.py"],
-    data = ["ci.py", "musts_scopes.py", "//:MUSTS.yml", "//:.bazelrc", "//.github/workflows:ci.yml"],
+    data = [
+        "ci.py", "musts_scopes.py", "//:MUSTS.yml", "//:.bazelrc", "//.github/workflows:ci.yml",
+        "//.github/ci-tools:package.json", "//.github/ci-tools:package-lock.json",
+    ],
 )
 
 sh_test(

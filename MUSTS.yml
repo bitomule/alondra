@@ -120,6 +120,7 @@ checks:
       - ".bazelversion"
       - ".github/workflows/BUILD.bazel"
       - ".github/workflows/ci.yml"
+      - ".github/ci-tools/**"
       - "BUILD.bazel"
       - "MODULE.bazel"
       - "MUSTS.yml"
