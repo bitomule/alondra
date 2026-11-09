@@ -4,6 +4,8 @@ load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//:version.bzl", "VERSION")
 
+exports_files(["Info.plist"], visibility = ["//deploy/brew:__pkg__"])
+
 exports_files(
     ["src/domain_store/schema.sql", "src/domain_store/schedule_launch_transition.sql"],
     visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__", "//crates/daemon-engine:__pkg__"],

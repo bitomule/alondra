@@ -84,6 +84,52 @@ checks:
       facts:
         - "Read the changed installation/runtime sources against docs/on-your-mac.md. Update that inventory for every changed installed or launched program, file read/write/delete, network connection/listener, macOS permission, credential or environment handoff; check README.md and INSTALL.md agree. Record source paths and what changed, or why the inventory remains accurate."
         - "Review the paths of mac-inventory-review in MUSTS.yml against the changed sources, including new files, so every installation/runtime surface still requires inventory review."
+  snapshot-recording:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/record_snapshots.py"
+      - "tools/simulator.py"
+      - "tools/tests/test_record_snapshots.py"
+    with:
+      targets:
+        - //tools:record_snapshots_test
+
+  simulator:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/simulator.py"
+      - "tools/tests/test_simulator.py"
+      - "apple/Testing/Simulator/BUILD.bazel"
+      - "apple/Testing/Simulator/config.bzl"
+    with:
+      targets:
+        - //tools:simulator_test
+
+  ci:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - ".github/workflows/BUILD.bazel"
+      - ".github/workflows/ci.yml"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "MUSTS.yml"
+      - "tools/BUILD.bazel"
+      - "tools/ci.py"
+      - "tools/musts_scopes.py"
+      - "tools/tests/test_ci.py"
+    with:
+      targets:
+        - //tools:ci_test
 
   crate-agent-application:
     uses: bazel/test
@@ -898,6 +944,26 @@ checks:
       - "deploy/brew/BUILD.bazel"
       - "deploy/brew/plugin_payload_test.py"
       - "deploy/brew/release.py"
+      - "deploy/brew/release.sh"
+      - "deploy/brew/local-release.py"
+      - "deploy/brew/alondra.rb.in"
+      - "deploy/brew/tests/test_local_release.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/*/Cargo.toml"
+      - "crates/*/BUILD.bazel"
+      - "crates/alondrad/Info.plist"
+      - "crates/alondrad/build_inputs_test.bzl"
+      - "crates/provider-claude/build_inputs_test.bzl"
+      - "crates/BUILD.bazel"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/persistent-main.ts"
+      - "agent-host/codex-main.ts"
+      - "agent-host/host-entitlements.plist"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
       - "deploy/brew/tests/test_upgrade_rehearsal.py"
       - "deploy/brew/upgrade-rehearsal.py"
       - "launchd/**"
@@ -914,6 +980,7 @@ checks:
       targets:
         - //deploy/brew:plugin_payload_test
         - //deploy/brew:upgrade_rehearsal_test
+        - //deploy/brew:local_release_test
 
   deploy-apple:
     uses: bazel/test

@@ -285,7 +285,7 @@ E2E_CAPTURES=.scratch/cards make e2e-cards-tui # keeps what the client showed at
 ```
 
 The iOS run builds `//apple:AlondraiOS` for the simulator with `--define=alondra_sandbox=1`,
-leases an iPhone 17 Pro on iOS 26.3 from `simpool`, finds the sandbox Mac on Bonjour
+leases the iPhone and iOS runtime pinned in `apple/Testing/Simulator/config.bzl` from `simpool`, finds the sandbox Mac on Bonjour
 (`SANDBOX_LAN=1`, so its direct listener answers on the LAN address Bonjour gives) and approves the
 pairing through the Mac's local route. It covers the direct connection only: the app signs in to
 the relay with the production account server, which the sandbox does not have, so the relay is

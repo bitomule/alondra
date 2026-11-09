@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import importlib.util
 import io
 import json
@@ -12,8 +13,9 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
-SCRIPT = pathlib.Path(__file__).parents[1] / 'local-release.py'
-REPO_ROOT = SCRIPT.parents[2]
+REPO_ROOT = (pathlib.Path(os.environ['TEST_SRCDIR']) / os.environ['TEST_WORKSPACE']
+             if 'TEST_SRCDIR' in os.environ else pathlib.Path(__file__).resolve().parents[3])
+SCRIPT = REPO_ROOT / 'deploy/brew/local-release.py'
 sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location('local_release', SCRIPT)
 l = importlib.util.module_from_spec(SPEC)
@@ -111,6 +113,7 @@ class LocalReleaseTests(unittest.TestCase):
         (self.root / 'Cargo.toml').write_text('[workspace.package]\nversion="0.1.2"\n')
         self.addCleanup(patch.stopall)
         patch.object(l, 'ROOT', self.root).start()
+        patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}).start()
 
     def git(self, *args, **kwargs):
         values = {('git', 'status', '--porcelain'): '',
@@ -138,16 +141,31 @@ class LocalReleaseTests(unittest.TestCase):
             l.preflight('0.1.3')
         runner.assert_not_called()
 
-    def test_any_returning_automatic_workflow_blocks_release_without_api_or_build(self):
+    def test_check_workflows_do_not_block_a_local_release(self):
         directory = self.root / '.github/workflows'
         directory.mkdir(parents=True)
-        for name in ('brew-release.yml', 'brew-release-check.yml', 'new-check.yaml'):
-            path = directory / name
-            path.write_text('name: unexpected automation')
-            with patch.object(l, 'run') as runner, self.assertRaises(RuntimeError): l.workflow_guard()
+        (directory / 'ci.yml').write_text('on: pull_request')
+        with patch.object(l, 'run', side_effect=self.git):
+            self.assertEqual(l.preflight('0.1.2'), 'source')
+
+    def test_actions_cannot_enter_any_release_path_or_create_artifacts(self):
+        output = self.root / 'artifacts'
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), patch.object(l, 'run') as runner:
+            for action in (lambda: l.main(), lambda: l.preflight('0.1.2'),
+                           lambda: l.prepare('0.1.2', 'source', output),
+                           lambda: l.publish('0.1.2', 'source', output),
+                           lambda: l.release.publish('0.1.2', output)):
+                with self.subTest(action=action), self.assertRaisesRegex(RuntimeError, 'never inside GitHub Actions'):
+                    action()
             runner.assert_not_called()
-            path.unlink()
-        l.workflow_guard()
+        self.assertFalse(output.exists())
+
+    def test_shell_entry_refuses_actions_before_invoking_the_publisher(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}):
+            result = subprocess.run(['bash', str(SCRIPT.with_name('release.sh')), '0.1.2'],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('never inside GitHub Actions', result.stderr)
 
     def test_existing_tags_never_rebuild_and_retry_checks_source(self):
         with patch.object(l, 'run', return_value='tag'):
@@ -433,4 +451,8 @@ class LocalReleaseTests(unittest.TestCase):
         rehearsed(output)
         l.verify_prepared('0.1.2', 'source', output)
         self.assertTrue(archive.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
 

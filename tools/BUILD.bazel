@@ -1,6 +1,27 @@
 exports_files(["shared.bzl"])
 
 sh_test(
+    name = "record_snapshots_test",
+    size = "small",
+    srcs = ["tests/test_record_snapshots.py"],
+    data = ["record_snapshots.py", "simulator.py"],
+)
+
+sh_test(
+    name = "ci_test",
+    size = "small",
+    srcs = ["tests/test_ci.py"],
+    data = ["ci.py", "musts_scopes.py", "//:MUSTS.yml", "//:.bazelrc", "//.github/workflows:ci.yml"],
+)
+
+sh_test(
+    name = "simulator_test",
+    size = "small",
+    srcs = ["tests/test_simulator.py"],
+    data = ["simulator.py", "//apple/Testing/Simulator:config.bzl"],
+)
+
+sh_test(
     name = "bazel_artifact_paths_test",
     srcs = ["tests/test_bazel_artifact_paths.py"],
     data = ["//:Makefile"],

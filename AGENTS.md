@@ -64,8 +64,14 @@
 
 ## Release
 
-- No GitHub Actions: releases run on the maintainer's Mac, and the release refuses to run while
-  workflow files exist. Never add `.github/workflows`.
+- GitHub Actions checks external contributions on free standard runners. Owner PRs, including
+  Alondra's, keep validating locally with musts and Bazel. CI results are not required checks;
+  this workflow does not change branch protection or Alondra's merge behavior.
+- CI has no secrets, distribution signing or publishing, and never uses `pull_request_target`.
+  Keep token permissions read-only, pin actions by full commit SHA and preserve GitHub's manual
+  approval for first-time fork contributors. Ad hoc signatures for test executables are allowed.
+- Releases run on the maintainer's Mac. Check workflows may exist; the publisher refuses to run
+  inside GitHub Actions.
 
 ## Code
 

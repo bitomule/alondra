@@ -47,15 +47,13 @@ def run(*args, capture=False, env=None):
                           text=True, stdout=subprocess.PIPE if capture else None).stdout
 
 
-def workflow_guard():
-    # Tags use workflows from their source commit. Fail closed if automatic
-    # workflows return; never infer zero cost from a presumed included allowance.
-    workflows = ROOT / '.github/workflows'
-    if any(workflows.glob('*.yml')) or any(workflows.glob('*.yaml')):
-        raise RuntimeError('Remove automatic GitHub workflows from the release source; this pipeline is local only')
+def local_guard():
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        raise RuntimeError('Releases must run locally, never inside GitHub Actions')
 
 
 def preflight(ver, retry_source=None):
+    local_guard()
     release.version(ver)
     data = tomllib.loads((ROOT / 'Cargo.toml').read_text())
     if data['workspace']['package']['version'] != ver:
@@ -70,7 +68,6 @@ def preflight(ver, retry_source=None):
         run('git', 'merge-base', '--is-ancestor', 'HEAD', 'origin/main')
     except subprocess.CalledProcessError:
         raise RuntimeError('Release source must be a commit already on origin/main') from None
-    workflow_guard()
     return source
 
 
@@ -268,6 +265,7 @@ def sign(binary, identifier, entitlements=None):
 
 
 def prepare(ver, source, output):
+    local_guard()
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise RuntimeError('Preparation requires this Apple Silicon Mac')
     # Check the destination volume before creating artifacts or starting tests/builds.
@@ -305,8 +303,9 @@ def prepare(ver, source, output):
 
 
 def publish(ver, source, output, retry=False):
+    local_guard()
     verify_prepared(ver, source, output)
-    # Repeat immediately before tag creation: the source or workflow may have changed during builds.
+    # Repeat immediately before tag creation: the source may have changed during builds.
     if preflight(ver, retry_source=source if retry else None) != source:
         raise RuntimeError('Source changed during preparation')
     local, remote = tag_state(ver, source, retry=retry)
@@ -319,6 +318,7 @@ def publish(ver, source, output, retry=False):
 
 
 def main():
+    local_guard()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('version')
     modes = parser.add_mutually_exclusive_group()

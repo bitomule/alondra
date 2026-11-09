@@ -1,0 +1,64 @@
+{
+  "name": "External contribution checks",
+  "on": {"pull_request": {"branches": ["main"]}},
+  "permissions": {"contents": "read"},
+  "concurrency": {
+    "group": "external-ci-${{ github.event.pull_request.number }}",
+    "cancel-in-progress": true
+  },
+  "jobs": {
+    "select": {
+      "if": "${{ github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork) }}",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 5,
+      "outputs": {
+        "matrix": "${{ steps.plan.outputs.matrix }}",
+        "has_checks": "${{ steps.plan.outputs.has_checks }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {"fetch-depth": 0, "persist-credentials": false}
+        },
+        {"id": "plan", "name": "Select MUSTS target sets", "run": "python3 tools/ci.py plan"}
+      ]
+    },
+    "validate": {
+      "needs": "select",
+      "if": "${{ needs.select.outputs.has_checks == 'true' }}",
+      "name": "${{ matrix.check }}",
+      "runs-on": "${{ matrix.runner }}",
+      "timeout-minutes": "${{ matrix.timeout }}",
+      "strategy": {
+        "fail-fast": false,
+        "max-parallel": 4,
+        "matrix": "${{ fromJSON(needs.select.outputs.matrix) }}"
+      },
+      "env": {
+        "ALONDRA_SIGNING_DIR": "${{ github.workspace }}/.scratch/unsigned-signing",
+        "DEVELOPER_DIR": "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {"fetch-depth": 0, "persist-credentials": false}
+        },
+        {
+          "name": "Show toolchain and simulator inventory",
+          "if": "${{ runner.os == 'macOS' }}",
+          "run": "xcodebuild -version\nxcrun simctl list runtimes -j\nxcrun simctl list devicetypes -j"
+        },
+        {
+          "name": "Check the canonical snapshot simulator",
+          "if": "${{ matrix.check == 'apple-tests' }}",
+          "run": "python3 tools/simulator.py"
+        },
+        {
+          "name": "Build and test affected targets",
+          "env": {"CI_TARGETS": "${{ toJSON(matrix.targets) }}"},
+          "run": "python3 tools/ci.py run --targets \"$CI_TARGETS\""
+        }
+      ]
+    }
+  }
+}

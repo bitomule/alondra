@@ -2,6 +2,7 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test"
 load("@build_bazel_rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+load("//apple/Testing/Simulator:config.bzl", "SIMULATOR")
 
 # rules_apple's runner, not simpool's: with Xcode 27 the XCTRunner.app a UI test needs ships a
 # binary Info.plist, which simpool edits with sed and leaves without a bundle ID, so the runner
@@ -11,8 +12,8 @@ load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 ios_xctestrun_runner(
     name = "iphone_17_pro_runner",
     create_xcresult_bundle = True,
-    device_type = "iPhone 17 Pro",
-    os_version = "26.3.1",
+    device_type = SIMULATOR["device"],
+    os_version = SIMULATOR["runtime"],
     reuse_simulator = False,
     xcodebuild_args = [
         "-collect-test-diagnostics",

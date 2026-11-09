@@ -3,6 +3,18 @@ load("//tools:rust_test.bzl", "low_opt_rust_test")
 
 exports_files(["test_support.rs"], visibility = ["//visibility:public"])
 
+WORKSPACE_CRATES = [
+    "agent-application", "agent-protocol", "codex-protocol", "agent-runtime", "alondra",
+    "alondrad", "core", "daemon-engine", "daemon-support", "domain", "e2e", "foundation",
+    "process-group", "provider-claude", "provider-codex", "provider-contract", "relay", "store",
+]
+
+filegroup(
+    name = "workspace_manifests",
+    srcs = ["//crates/{0}:Cargo.toml".format(crate) for crate in WORKSPACE_CRATES],
+    visibility = ["//deploy/brew:__pkg__"],
+)
+
 low_opt_rust_test(
     name = "test_directory_test",
     size = "small",
@@ -18,26 +30,7 @@ sh_test(
     srcs = ["cargo_bazel_deps_test.py"],
     data = ["//:Cargo.toml"] + [
         "//crates/{}:{}".format(member, file)
-        for member in [
-            "agent-application",
-            "agent-protocol",
-            "codex-protocol",
-            "agent-runtime",
-            "alondra",
-            "alondrad",
-            "core",
-            "daemon-engine",
-            "daemon-support",
-            "domain",
-            "e2e",
-            "foundation",
-            "process-group",
-            "provider-claude",
-            "provider-codex",
-            "provider-contract",
-            "relay",
-            "store",
-        ]
+        for member in WORKSPACE_CRATES
         for file in ["BUILD.bazel", "Cargo.toml"]
     ],
     size = "small",

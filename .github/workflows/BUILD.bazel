@@ -1,0 +1,1 @@
+exports_files(["ci.yml"], visibility = ["//tools:__pkg__"])

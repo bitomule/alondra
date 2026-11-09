@@ -43,6 +43,10 @@ test:
 SNAPSHOT_TARGET := //apple/Testing/Snapshots:AlondraSnapshotTests
 SNAPSHOT_ROOT := apple/Testing/Snapshots/Tests/__Snapshots__
 
+.PHONY: snapshots-record-all
+snapshots-record-all:
+	python3 tools/record_snapshots.py
+
 # Only a screen that no longer matches its baseline (or has none) is recorded and reported FAILED;
 # its image lands in the test outputs and is copied back. Every other baseline keeps its bytes.
 snapshots-record:
