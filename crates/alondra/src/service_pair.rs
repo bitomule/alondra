@@ -333,13 +333,19 @@ fn wait_for_daemon(mut ready: impl FnMut() -> bool, pause: impl Fn()) -> Result<
     bail!(tr!("alondrad is not answering on this Mac; check ~/.alondra/alondrad.log, then run alondra device invite again", "alondrad no responde en este Mac; revisa ~/.alondra/alondrad.log y vuelve a ejecutar alondra device invite"))
 }
 
+enum LocalApproval {
+    Approved,
+    /// This Mac revoked the device ID after the operator confirmed it.
+    Revoked,
+}
+
 fn local_approve(
     agent: &ureq::Agent,
     local_origin: &str,
     public: &PublicMac,
     signing: &SigningKey,
     phone: &CandidatePlain,
-) -> Result<()> {
+) -> Result<LocalApproval> {
     let mut local_boot = agent
         .get(format!("{local_origin}/service/bootstrap"))
         .call()?;
@@ -369,11 +375,14 @@ fn local_approve(
         signing,
         &local_epoch,
     )?;
-    if status != 204 {
-        let detail = String::from_utf8_lossy(&detail);
-        bail!(trf!("Mac rejected local device approval: {detail}", "el Mac rechazó la aprobación local del dispositivo: {detail}"));
+    match status {
+        204 => Ok(LocalApproval::Approved),
+        410 => Ok(LocalApproval::Revoked),
+        _ => {
+            let detail = String::from_utf8_lossy(&detail);
+            bail!(trf!("Mac rejected local device approval: {detail}", "el Mac rechazó la aprobación local del dispositivo: {detail}"));
+        }
     }
-    Ok(())
 }
 
 fn complete_pending(
@@ -423,7 +432,13 @@ fn complete_pending(
             });
         }
     }
-    local_approve(agent, local_origin, public, signing, phone)?;
+    if let LocalApproval::Revoked = local_approve(agent, local_origin, public, signing, phone)? {
+        abandon_pending(home, local_origin, config, public, signing, agent, epoch, pending)?;
+        bail!(tr!(
+            "this device was removed from this Mac, so its pending pairing was discarded; scan a new QR",
+            "este dispositivo se quitó de este Mac, así que se descartó su emparejamiento pendiente; escanea un QR nuevo"
+        ));
+    }
     let registration = serde_json::to_vec(&PhoneRegistration {
         device_id: &phone.device_id,
         owner_sub: &config.owner_sub,
@@ -479,7 +494,7 @@ fn complete_pending(
     Ok(())
 }
 
-fn abandon_expired(
+fn abandon_pending(
     home: &Path,
     local_origin: &str,
     config: &mut ServiceConfig,
@@ -648,7 +663,7 @@ pub fn run(home: &Path) -> Result<()> {
     if pending_path.exists() {
         let pending: Pending = serde_json::from_slice(&fs::read(&pending_path)?)?;
         if now_ms()? >= pending.expires_at_ms {
-            abandon_expired(
+            abandon_pending(
                 home,
                 &local,
                 &mut config,
@@ -822,7 +837,7 @@ mod tests {
     /// Answers every request on its own connection and records `METHOD path`.
     fn fake_server(
         requests: usize,
-        answer: impl Fn(&str) -> &'static str + Send + 'static,
+        answer: impl Fn(&str) -> (&'static str, &'static str) + Send + 'static,
         seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     ) -> (String, std::thread::JoinHandle<()>) {
         use std::io::{BufRead, BufReader};
@@ -842,10 +857,10 @@ mod tests {
                         break;
                     }
                 }
-                let status = answer(&request);
+                let (status, body) = answer(&request);
                 seen.lock().unwrap().push(request);
                 (&stream)
-                    .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+                    .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
                     .unwrap();
             }
         });
@@ -859,8 +874,8 @@ mod tests {
         let (origin, relay) = fake_server(
             1,
             |request| match request {
-                "DELETE /v1/devices/phone-test" => "204 No Content",
-                _ => "404 Not Found",
+                "DELETE /v1/devices/phone-test" => ("204 No Content", ""),
+                _ => ("404 Not Found", ""),
             },
             seen.clone(),
         );
@@ -868,8 +883,8 @@ mod tests {
         let (local, daemon_server) = fake_server(
             1,
             |request| match request {
-                "DELETE /devices/phone-test" => "200 OK",
-                _ => "404 Not Found",
+                "DELETE /devices/phone-test" => ("200 OK", ""),
+                _ => ("404 Not Found", ""),
             },
             seen.clone(),
         );
@@ -908,7 +923,7 @@ mod tests {
         };
         fs::write(home.join("service-pairing-pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
         fs::write(home.join("service.toml"), toml::to_string(&config).unwrap()).unwrap();
-        abandon_expired(&home, &local, &mut config, &public, &mac, &http(), &[3; 16], &pending).unwrap();
+        abandon_pending(&home, &local, &mut config, &public, &mac, &http(), &[3; 16], &pending).unwrap();
         relay.join().unwrap();
         daemon_server.join().unwrap();
         assert_eq!(
@@ -918,6 +933,81 @@ mod tests {
         assert!(!home.join("service-pairing-pending.json").exists());
         let saved: ServiceConfig = toml::from_str(&fs::read_to_string(home.join("service.toml")).unwrap()).unwrap();
         assert!(saved.devices.is_empty());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn pending_pairing_of_a_device_revoked_since_is_discarded_not_resumed() {
+        let home = temp_home("pair-revoked");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (origin, relay) = fake_server(
+            1,
+            |request| match request {
+                "DELETE /v1/devices/phone-test" => ("204 No Content", ""),
+                _ => ("500 Internal Server Error", ""),
+            },
+            seen.clone(),
+        );
+        let (local, daemon_server) = fake_server(
+            3,
+            |request| match request {
+                "GET /service/bootstrap" => ("200 OK", r#"{"epoch":"AAAAAAAAAAAAAAAAAAAAAA"}"#),
+                "POST /service/approve-device" => ("410 Gone", ""),
+                "DELETE /devices/phone-test" => ("404 Not Found", ""),
+                _ => ("500 Internal Server Error", ""),
+            },
+            seen.clone(),
+        );
+        let mac = SigningKey::from_slice(&[21; 32]).unwrap();
+        let public = PublicMac {
+            mac_id: "mac-test".into(),
+            signing_key: URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes()),
+            agreement_key: "unused".into(),
+        };
+        let mut config = ServiceConfig {
+            journal_path: None,
+            relay_url: origin.clone(),
+            mac_id: "mac-test".into(),
+            owner_sub: "owner".into(),
+            signing_key_path: "signing.key".into(),
+            agreement_key_path: "agreement.key".into(),
+            devices: vec![ServiceDevice {
+                device_id: "phone-test".into(),
+                signing_key: "key".into(),
+                agreement_key: "key".into(),
+            }],
+            direct: None,
+        };
+        let pending = Pending {
+            session_id: "pair-test".into(),
+            mac_id: "mac-test".into(),
+            expires_at_ms: u64::MAX,
+            phone: CandidatePlain {
+                device_id: "phone-test".into(),
+                signing_key: "key".into(),
+                agreement_key: "key".into(),
+                display_name: "iPhone".into(),
+                owner_sub: "owner".into(),
+                session_id: "pair-test".into(),
+            },
+        };
+        fs::write(home.join("service-pairing-pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
+        fs::write(home.join("service.toml"), toml::to_string(&config).unwrap()).unwrap();
+        assert!(complete_pending(&home, &local, &mut config, &public, &mac, &http(), &[3; 16], &pending).is_err());
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "GET /service/bootstrap",
+                "POST /service/approve-device",
+                "DELETE /v1/devices/phone-test",
+                "DELETE /devices/phone-test",
+            ]
+        );
+        assert!(!home.join("service-pairing-pending.json").exists());
+        let saved: ServiceConfig = toml::from_str(&fs::read_to_string(home.join("service.toml")).unwrap()).unwrap();
+        assert!(saved.devices.is_empty());
+        relay.join().unwrap();
+        daemon_server.join().unwrap();
         fs::remove_dir_all(home).unwrap();
     }
 

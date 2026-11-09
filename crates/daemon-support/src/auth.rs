@@ -36,6 +36,35 @@ pub struct Device {
     pub last_seen: Option<i64>,
 }
 
+/// Why `approve_service` refused a device.
+#[derive(Debug, PartialEq)]
+pub enum ServiceApprovalError {
+    /// This Mac revoked that device ID; pairing again needs a new device ID.
+    Revoked,
+    Refused(String),
+}
+
+impl From<String> for ServiceApprovalError {
+    fn from(reason: String) -> Self {
+        Self::Refused(reason)
+    }
+}
+
+impl From<&str> for ServiceApprovalError {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.into())
+    }
+}
+
+impl From<ServiceApprovalError> for String {
+    fn from(error: ServiceApprovalError) -> Self {
+        match error {
+            ServiceApprovalError::Revoked => "device was revoked on this Mac; pair again with a new device ID".into(),
+            ServiceApprovalError::Refused(reason) => reason,
+        }
+    }
+}
+
 pub struct Auth {
     path: PathBuf,
     /// A holder that panics leaves it whole, so it is recovered: each writer saves the file first
@@ -176,7 +205,8 @@ impl Auth {
 
     /// The service CLI calls this only after a human accepts the encrypted candidate on
     /// this Mac. Reuse the daemon's registry lock, avoiding concurrent file rewrites.
-    pub fn approve_service(&self, id: &str, name: &str, signing_key: &str) -> Result<(), String> {
+    /// A device ID this Mac revoked is refused for good, so a stale confirmation cannot bring it back.
+    pub fn approve_service(&self, id: &str, name: &str, signing_key: &str) -> Result<(), ServiceApprovalError> {
         if !(id.starts_with("phone-") || id.starts_with("client-")) || id.len() > 128
             || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             || name.len() > 80 || name.chars().any(char::is_control)
@@ -187,8 +217,12 @@ impl Auth {
             return Err("noncanonical service signing key".into());
         }
         let public_key = B64.encode(key.to_sec1_bytes());
-        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().ok_or("approval home missing")?)
+        let home = self.path.parent().ok_or("approval home missing")?;
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(home)
             .map_err(|error| error.to_string())?;
+        if crate::revoked_devices::RevokedDevices::open(home).signing_key(id).is_some() {
+            return Err(ServiceApprovalError::Revoked);
+        }
         let mut devices = self.devices.lock_or_recover("the paired devices");
         let mut next = self.persisted().map_err(|error| error.to_string())?;
         if let Some(existing) = next.iter().find(|d| d.id == id) {
@@ -488,6 +522,26 @@ mod tests {
         auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
         assert!(auth.approve_service("phone-test", "other", &second_key).is_err());
         assert_eq!(Auth::open(&dir).unwrap().list().len(), 2);
+    }
+
+    #[test]
+    fn service_approval_refuses_a_device_this_mac_revoked() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-service-revoked-{}", random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = Auth::open(&dir).unwrap();
+        let phone = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let agreement = p256::SecretKey::from_slice(&[6u8; 32]).unwrap().public_key();
+        let key = URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes());
+        auth.approve_service("phone-test", "iPhone", &key).unwrap();
+        assert!(auth.revoke("phone-test").unwrap());
+        crate::revoked_devices::RevokedDevices::open(&dir)
+            .add(vec![crate::revoked_devices::Tombstone::new("phone-test", phone.verifying_key(), &agreement, 1)])
+            .unwrap();
+        assert_eq!(auth.approve_service("phone-test", "iPhone", &key), Err(ServiceApprovalError::Revoked));
+        assert!(Auth::open(&dir).unwrap().list().is_empty());
+        auth.approve_service("phone-other", "iPhone", &key).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
