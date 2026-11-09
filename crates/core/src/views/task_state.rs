@@ -88,6 +88,9 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
     if let Some(queued) = common::resume_queued(task, context) {
         return in_queue(task, queued, lang);
     }
+    if let Some(queued) = common::turn_queued(task, context) {
+        return Presentation { queue: Some(queued.position), ..Presentation::new(t!(lang, "Waiting for capacity", "Esperando capacidad"), Tone::Neutral, Waiting, in_queue(task, queued, lang).fact) };
+    }
     let read = context.reading(&task.id);
     if let Some((_, reason)) = read.and_then(|read| read.merge_failure.clone()) {
         return Presentation::new(t!(lang, "Couldn't merge", "No se pudo hacer merge"), Tone::Warning, InProgress, Some(reason));

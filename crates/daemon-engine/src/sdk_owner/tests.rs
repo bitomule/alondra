@@ -3740,9 +3740,8 @@ impl Slice {
 /// The nodes of 2026-10-22: five nodes of the Agent SDK wait inside their turn for the user to
 /// approve a plan or answer a question, one works, and a High task waits in the queue with a limit
 /// of 6. They hold no slot, so it starts, and the gate, the log's "waiting on the user" and the
-/// apps' count agree on who works. A plan approved once every slot is taken again goes on at once
-/// over the limit, as an answer never passes the gate; nothing more starts until the count is
-/// back under it.
+/// apps' count agree on who works. A plan approved once every slot is taken again waits for a
+/// slot like any turn, and goes on when one frees.
 #[test]
 fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() {
     use crate::admission::{Hold as Held, Key, Limit, Tuning, Waiting};
@@ -3779,11 +3778,17 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(2)) });
     let plan = slice.domain.state().unwrap().lifecycle_of(&"p1".into()).unwrap().cards()[0].0.clone();
     slice.answer(&plan.0, Hold::APPROVE, None).unwrap();
-    let state = slice.domain.state().unwrap();
-    assert!(crate::admission::working_tasks(&state).contains(&TaskId::from("p1")), "approved, p1 goes on without waiting for a slot");
+    let p1 = &mut drivers[0];
+    for _ in 0..3 {
+        p1.step(&|| false).unwrap();
+    }
+    assert!(!slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow"), "the approval waits for a slot");
     slice.task("next");
     let next = Waiting { key: Key::Task("next".into()), priority: TaskPriority::High, resuming: false, since: now };
-    assert_eq!(gate.ask(&slice.domain, next, now), Err(Held::Slots { working: 3, limit: 2 }), "nothing more starts while 3 of 2 work");
+    assert_eq!(gate.ask(&slice.domain, next, now), Err(Held::Slots { working: 2, limit: 2 }), "the waiting approval takes no slot");
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(3)) });
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), now)).unwrap();
     let p1 = &mut drivers[0];
     while !slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow") {
         p1.step(&|| false).unwrap();
@@ -4573,4 +4578,70 @@ async fn a_claude_that_never_starts_in_its_resumed_session_ends_on_the_lost_host
     assert!(card.body.contains("Claude did not start in its session"), "{}", card.body);
     assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none(), "no card asks about a message");
     drop(owner);
+}
+
+/// The answer to a decision lets a turn go on that took no slot while it waited on the user: the
+/// answer waits for one with the turn held, an interrupt never does.
+#[test]
+fn an_approved_plan_reaches_claude_only_when_the_gate_has_a_slot() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:plan");
+    slice.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
+    slice.answer(&card, Hold::APPROVE, None).unwrap();
+    for _ in 0..3 {
+        driver.step(&|| true).unwrap();
+    }
+    assert!(slice.control_rows().iter().all(|(kind, _, status)| kind != "respond" || status == "prepared"), "{:?}", slice.control_rows());
+    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice)["behavior"], "allow");
+    driver.stop().unwrap();
+}
+
+/// The owner of a turn the gate gave a slot ends before it starts it: the slot goes back.
+#[test]
+fn a_host_that_ends_with_a_slot_it_never_used_gives_it_back() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let gate = &slice.domain.live.gate;
+    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
+    slice.run(&Actor::System, "tell", Command::TellNode { task_id: TASK.into(), text: "Go on".into(), from_user: false, answers: None });
+    assert!(!gate.may_take_turn(&slice.domain, &TASK.into(), alondra_core::now_millis()));
+    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
+    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot is given and not taken yet");
+    kill_host(&driver);
+    drop(driver);
+    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 0);
+}
+
+/// The orchestrator's answer to a node that stopped is one more input: it waits for a slot like any
+/// turn, and reaches Claude as written once one frees.
+#[test]
+fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let (case, _) = Slice::read_cards(&slice.domain).pop().unwrap();
+    let gate = &slice.domain.live.gate;
+    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
+    let state = slice.domain.state().unwrap();
+    let settle = Command::SettleStall { case_id: case.as_str().into(), task_id: TASK.into(), outcome: StallOutcome::Instruct { text: "Add the tests first".into() } };
+    let orchestrator = Actor::Orchestrator { generation: state.orchestrator_generation };
+    slice.domain.execute_with(&orchestrator, &envelope(&state, "orchestrator-instructs", settle), None, None, || Ok(())).unwrap();
+    for _ in 0..3 {
+        driver.step(&|| false).unwrap();
+    }
+    assert_eq!(slice.prompts(), ["Write the release notes"], "nothing reaches Claude without a slot");
+    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
+    slice.settle(&mut driver);
+    assert_eq!(slice.prompts(), ["Write the release notes", "Add the tests first"]);
+    driver.stop().unwrap();
 }

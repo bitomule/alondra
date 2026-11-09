@@ -106,7 +106,7 @@ fn kind_of(name: &str) -> Result<DecisionKind> {
 /// use alondra_domain::OperationId;
 /// use alondra_store::{AuthorityScope, ControlPermit};
 /// fn fabricate(scope: AuthorityScope, stamp: ExecutionStamp, control: OperationId) -> ControlPermit {
-///     ControlPermit { id: 1, scope, stamp, control }
+///     ControlPermit { id: 1, scope, stamp, control, responds: false }
 /// }
 /// ```
 ///
@@ -121,6 +121,7 @@ pub struct ControlPermit {
     scope: AuthorityScope,
     stamp: ExecutionStamp,
     control: OperationId,
+    responds: bool,
 }
 impl ControlPermit {
     pub fn id(&self) -> i64 {
@@ -134,6 +135,10 @@ impl ControlPermit {
     }
     pub fn scope(&self) -> &AuthorityScope {
         &self.scope
+    }
+    /// It carries the answer to a decision Claude waits for, which lets its turn go on.
+    pub fn responds(&self) -> bool {
+        self.responds
     }
 }
 
@@ -628,11 +633,11 @@ impl LifecycleTransaction<'_> {
         let Some(stamp) = aggregate.execution().filter(|stamp| through_sdk(stamp).is_ok()) else {
             return Ok(vec![]);
         };
-        let mut statement = self.transaction.prepare("SELECT id,control_id FROM lifecycle_controls WHERE task_id=?1 AND generation=?2 AND status='prepared' ORDER BY id")?;
-        let rows = statement.query_map(params![aggregate.task().0, sql_number(stamp.generation())?], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut statement = self.transaction.prepare("SELECT id,control_id,kind FROM lifecycle_controls WHERE task_id=?1 AND generation=?2 AND status='prepared' ORDER BY id")?;
+        let rows = statement.query_map(params![aggregate.task().0, sql_number(stamp.generation())?], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?;
         rows.map(|row| {
-            let (id, control) = row?;
-            Ok(ControlPermit { id, scope: self.scope.clone(), stamp: stamp.clone(), control: OperationId::new(control)? })
+            let (id, control, kind) = row?;
+            Ok(ControlPermit { id, scope: self.scope.clone(), stamp: stamp.clone(), control: OperationId::new(control)?, responds: kind == "respond" })
         })
         .collect()
     }

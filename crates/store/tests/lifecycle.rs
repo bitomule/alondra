@@ -1142,7 +1142,7 @@ fn replay_preserves_own_background_work_while_permission_waits_without_a_slot() 
     );
     let tx = fixture.transaction();
     let aggregate = tx.load(&"task".into()).unwrap();
-    assert!(!aggregate.holds_slot(), "waiting for its own work takes no slot");
+    assert!(aggregate.holds_slot(), "work of its own keeps its process and its memory");
     assert_eq!(aggregate.activity(), ActivityView::OwnWork);
     assert_eq!(
         aggregate.cards(),

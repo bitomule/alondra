@@ -761,7 +761,7 @@ impl TaskLifecycle {
                 if *state != CallbackState::AwaitingAnswer(callback.clone()) {
                     return Err(Refusal::InvalidState);
                 }
-                *state = CallbackState::Answered(callback.clone());
+                *state = CallbackState::Decided(callback.clone());
                 add_callback_wake(&mut execution.activity, callback.clone())?;
                 None
             }

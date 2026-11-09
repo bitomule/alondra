@@ -351,7 +351,7 @@ impl TaskLifecycle {
                 let index = execution
                     .callbacks
                     .iter()
-                    .position(|state| *state == CallbackState::Answered(callback.clone()))
+                    .position(|state| matches!(state, CallbackState::Answered(id) | CallbackState::Decided(id) if *id == callback))
                     .ok_or(Refusal::UnknownObligation)?;
                 execution.callbacks.remove(index);
                 remove_callback_wake(&mut execution.activity, &callback)?;

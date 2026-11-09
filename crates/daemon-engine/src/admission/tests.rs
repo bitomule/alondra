@@ -133,7 +133,7 @@ fn waiting(key: &str, priority: TaskPriority, resuming: bool, since: Millis) -> 
 
 fn keys(queue: &[Waiting]) -> Vec<String> {
     queue.iter().map(|waiting| match &waiting.key {
-        Key::Task(task) => task.0.clone(),
+        Key::Task(task) | Key::Turn(task) => task.0.clone(),
         Key::Run(run) | Key::Resume(run) => run.clone(),
     }).collect()
 }
@@ -148,6 +148,44 @@ fn the_queue_goes_by_priority_then_resumed_work_then_age() {
         waiting("high-new", TaskPriority::High, false, 50),
     ]);
     assert_eq!(keys(&queue), ["high-new", "normal-resumed", "normal-old", "normal-new", "low-old"]);
+}
+
+fn turn(task: &str, priority: TaskPriority, since: Millis) -> Waiting {
+    Waiting { key: Key::Turn(task.into()), priority, resuming: true, since }
+}
+
+#[test]
+fn free_slots_go_to_the_first_turns_of_the_queue_by_priority_then_age() {
+    let queue = ordered(vec![
+        turn("low-oldest", TaskPriority::Low, 0),
+        turn("normal-new", TaskPriority::Normal, 30),
+        turn("normal-old", TaskPriority::Normal, 10),
+        turn("high-newest", TaskPriority::High, 50),
+    ]);
+    assert_eq!(turns_to_grant(&queue, 2, false), [TaskId::from("high-newest"), TaskId::from("normal-old")]);
+    assert!(turns_to_grant(&queue, 0, false).is_empty());
+}
+
+#[test]
+fn a_start_ahead_of_a_turn_keeps_its_slot_only_if_nothing_but_the_spacing_holds_it() {
+    let queue = ordered(vec![waiting("start", TaskPriority::High, false, 0), turn("turn", TaskPriority::Normal, 10)]);
+    assert!(turns_to_grant(&queue, 1, true).is_empty(), "the slot is the start's, a minute away at most");
+    assert_eq!(turns_to_grant(&queue, 2, true), [TaskId::from("turn")]);
+    assert_eq!(turns_to_grant(&queue, 1, false), [TaskId::from("turn")], "a start the Mac holds cannot use the slot");
+    let behind = ordered(vec![waiting("start", TaskPriority::Low, false, 0), turn("turn", TaskPriority::Normal, 10)]);
+    assert_eq!(turns_to_grant(&behind, 1, true), [TaskId::from("turn")], "a turn ahead of the start goes first");
+}
+
+#[test]
+fn the_age_of_a_waiting_turn_survives_a_restart_and_an_older_file_has_none() {
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join(FILE), r#"{"last_admission":7,"pauses":{"paused":{},"owed":{},"held":{},"resumed":{}}}"#).unwrap();
+    assert!(Admission::persisted_in(&home).lock().saved.turn_waits.is_empty(), "a file of an older daemon still reads");
+    let gate = Admission::persisted_in(&home);
+    gate.lock().saved.turn_waits.insert("t".into(), 1_000);
+    gate.save(&gate.lock());
+    assert_eq!(Admission::persisted_in(&home).lock().saved.turn_waits.get(&TaskId::from("t")), Some(&1_000));
 }
 
 fn fine() -> MacState {
