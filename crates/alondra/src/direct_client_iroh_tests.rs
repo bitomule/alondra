@@ -50,20 +50,35 @@ pub(crate) fn answer(request: &[u8], routes: &Value) -> Vec<u8> {
     serde_json::to_vec(&sealed).unwrap()
 }
 
+/// What the direct HTTP listener answers to a request, as the Mac or as whoever sits in its path.
+#[derive(Clone, Copy)]
+enum Reply {
+    Sealed,
+    Bare(u16, &'static str),
+    /// A response envelope for the request whose ciphertext does not open.
+    Tampered,
+}
+
 /// The fake Mac's direct HTTP listener; it records every request envelope.
 struct Http {
     address: String,
     received: Arc<Mutex<Vec<Vec<u8>>>>,
     routes: Arc<Mutex<Value>>,
+    reply: Arc<Mutex<Reply>>,
 }
 
 impl Http {
     fn start() -> Self {
+        Self::replying(Reply::Sealed)
+    }
+
+    fn replying(first: Reply) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let received = Arc::new(Mutex::new(Vec::new()));
         let routes = Arc::new(Mutex::new(json!({"lan": []})));
-        let (seen, routes_given) = (received.clone(), routes.clone());
+        let reply = Arc::new(Mutex::new(first));
+        let (seen, routes_given, reply_with) = (received.clone(), routes.clone(), reply.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
@@ -83,19 +98,28 @@ impl Http {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
-                let reply = if line.starts_with("GET /direct/hello") {
-                    serde_json::to_vec(&json!({"mac_id": MAC, "name": "Fake", "signing_key": wire(mac_signing().verifying_key()),
-                        "agreement_key": B64.encode(mac_agreement().public_key().to_sec1_point(false).as_bytes())})).unwrap()
+                let (status, reply) = if line.starts_with("GET /direct/hello") {
+                    (200, serde_json::to_vec(&json!({"mac_id": MAC, "name": "Fake", "signing_key": wire(mac_signing().verifying_key()),
+                        "agreement_key": B64.encode(mac_agreement().public_key().to_sec1_point(false).as_bytes())})).unwrap())
                 } else {
                     seen.lock().unwrap().push(body.clone());
-                    answer(&body, &routes_given.lock().unwrap())
+                    let current = *reply_with.lock().unwrap();
+                    match current {
+                        Reply::Sealed => (200, answer(&body, &routes_given.lock().unwrap())),
+                        Reply::Bare(status, text) => (status, text.as_bytes().to_vec()),
+                        Reply::Tampered => {
+                            let mut sealed: Value = serde_json::from_slice(&answer(&body, &Value::Null)).unwrap();
+                            sealed["ciphertext"] = json!(B64.encode([0u8; 48]));
+                            (200, serde_json::to_vec(&sealed).unwrap())
+                        }
+                    }
                 };
-                let head = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", reply.len());
+                let head = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", reply.len());
                 let _ = stream.write_all(head.as_bytes());
                 let _ = stream.write_all(&reply);
             }
         });
-        Self { address, received, routes }
+        Self { address, received, routes, reply }
     }
 
     fn received(&self) -> Vec<Vec<u8>> {
@@ -275,4 +299,40 @@ fn forgetting_a_mac_forgets_how_to_dial_it() {
     let terminal = terminal(&http, Some(iroh.dial()));
     assert_eq!(forget(&terminal.home, MAC).unwrap(), [MAC]);
     assert_eq!(crate::iroh_client::load_dial(&terminal.home, MAC), None);
+}
+
+#[test]
+fn only_a_sealed_answer_speaks_for_the_mac_over_http() {
+    for reply in [
+        Reply::Bare(400, r#"{"error":"rejected","detail":"forged refusal"}"#),
+        Reply::Bare(401, r#"{"error":"unauthorized"}"#),
+        Reply::Bare(409, r#"{"error":"idempotency_conflict"}"#),
+        Reply::Bare(503, r#"{"error":"busy"}"#),
+        Reply::Tampered,
+    ] {
+        let http = Http::replying(reply);
+        let terminal = terminal(&http, None);
+        let failure = read(&terminal).expect_err("nothing the Mac sealed came back");
+        assert_eq!(crate::client::delivery(&failure), crate::client::Delivery::Unanswered, "{failure:#}");
+        assert!(!format!("{failure:#}").contains("--repair"), "{failure:#}");
+        assert_eq!(terminal.connection.route(), None, "the route that gave it is not kept");
+        assert_eq!(http.received().len(), 1);
+    }
+    let http = Http::start();
+    let terminal = terminal(&http, None);
+    assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
+}
+
+#[test]
+fn a_bare_status_from_a_route_the_mac_already_answered_on_is_no_answer_either() {
+    for status in [409, 400, 421] {
+        let http = Http::start();
+        let terminal = terminal(&http, None);
+        assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
+        assert!(terminal.connection.route().is_some());
+        *http.reply.lock().unwrap() = Reply::Bare(status, "{}");
+        let failure = read(&terminal).expect_err("a bare status is not the Mac's answer");
+        assert_eq!(crate::client::delivery(&failure), crate::client::Delivery::Unanswered, "{status}: {failure:#}");
+        assert_eq!(terminal.connection.route(), None, "{status} rules the route out");
+    }
 }
