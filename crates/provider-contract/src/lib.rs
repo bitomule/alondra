@@ -347,6 +347,8 @@ pub enum AdapterError {
     Disconnected,
     InvalidObservation,
     Unsupported,
+    /// The observation names an input Alondra never handed over: the native process's own.
+    UnknownInput,
     Storage(String),
     Protocol(String),
 }

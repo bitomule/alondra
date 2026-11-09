@@ -7,9 +7,11 @@ mod connection;
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod live_read_trace;
 mod owner;
+mod discarded_observations;
+pub use discarded_observations::{AdapterRefusal, DiscardReason};
 pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
 #[cfg(any(test, feature = "test-hooks"))]
-pub use owner::{Refuse, refuse_next};
+pub use owner::{Refuse, carried_refusal, refuse_next};
 pub mod model_metrics;
 mod codex_metrics;
 pub(crate) mod metrics_fold;
@@ -726,6 +728,7 @@ impl DomainStore {
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
+        tx.execute_batch(discarded_observations::SCHEMA)?;
         repository::allow_handed_over_worktrees(&tx, TASK_WORKTREE_RECORDS)?;
         tx.execute_batch(TASK_GRANTS)?;
         tx.execute_batch(handover::SDK_HANDOVER_STEPS)?;

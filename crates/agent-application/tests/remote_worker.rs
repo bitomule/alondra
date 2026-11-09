@@ -235,6 +235,9 @@ impl Adapter for RemoteAdapter {
 }
 struct RemoteNormalizer;
 impl ObservationNormalizer for RemoteNormalizer {
+    fn skip(&self, _: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
+        Normalization::new(vec![], metadata.cursor().to_be_bytes().to_vec())
+    }
     fn normalize(
         &self,
         batch: &OrderedObservation,
@@ -477,6 +480,9 @@ enum Probe {
 }
 struct ProbeNormalizer(Probe);
 impl ObservationNormalizer for ProbeNormalizer {
+    fn skip(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
+        RemoteNormalizer.skip(batch, metadata)
+    }
     fn normalize(
         &self,
         batch: &OrderedObservation,

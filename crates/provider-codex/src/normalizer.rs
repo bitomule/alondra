@@ -96,7 +96,26 @@ fn lookup(metadata: &ObservationMetadata<'_, '_>, id: &str) -> Result<InputId, A
     Ok(records[0].input().clone())
 }
 
+/// The checkpoint the observation before `batch` left, which `batch` must follow.
+fn prior_checkpoint(batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Checkpoint, AdapterError> {
+    match metadata.checkpoint().map_err(storage)? {
+        Some(prior) => {
+            let state: Checkpoint = serde_json::from_slice(prior.bytes()).map_err(|_| AdapterError::InvalidObservation)?;
+            if state.cursor != prior.cursor() || state.cursor.checked_add(1) != Some(batch.cursor) { return invalid(); }
+            Ok(state)
+        }
+        None if batch.cursor == 1 => Ok(Checkpoint::default()),
+        None => invalid(),
+    }
+}
+
 impl ObservationNormalizer for Normalizer {
+    fn skip(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
+        if &batch.execution != metadata.execution() || batch.cursor != metadata.cursor() { return invalid(); }
+        let mut state = prior_checkpoint(batch, metadata)?;
+        state.cursor = batch.cursor;
+        Normalization::new(Vec::new(), serde_json::to_vec(&state).map_err(|_| AdapterError::InvalidObservation)?)
+    }
     fn normalize(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
         if &batch.execution != metadata.execution() || batch.cursor != metadata.cursor() || self.session.is_none() || batch.evidence.is_empty() || batch.evidence.len() > alondra_codex_protocol::MAX_FRAME_BYTES { return invalid(); }
         let mut framed = (batch.evidence.len() as u32).to_be_bytes().to_vec(); framed.extend_from_slice(&batch.evidence);
@@ -109,16 +128,7 @@ impl ObservationNormalizer for Normalizer {
             || execution.process_instance_id != batch.execution.instance().as_str()
             || execution.generation != batch.execution.generation() || event.fence.host_id != batch.execution.host().as_str() { return invalid(); }
         event.validate().map_err(|_| AdapterError::InvalidObservation)?;
-        let prior = metadata.checkpoint().map_err(storage)?;
-        let mut state = match prior {
-            Some(ref prior) => {
-                let state: Checkpoint = serde_json::from_slice(prior.bytes()).map_err(|_| AdapterError::InvalidObservation)?;
-                if state.cursor != prior.cursor() || state.cursor.checked_add(1) != Some(batch.cursor) { return invalid(); }
-                state
-            }
-            None if batch.cursor == 1 => Checkpoint::default(),
-            None => return invalid(),
-        };
+        let mut state = prior_checkpoint(batch, metadata)?;
         if self.first_cursor == Some(batch.cursor) { state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear(); }
         let mut facts = Vec::new();
         end_legacy_cells(batch, &mut state, &mut facts)?;

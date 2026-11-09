@@ -1459,6 +1459,40 @@ fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_wh
 }
 
 
+/// A host whose failed turn read the notification of its background command, with the end of that
+/// turn still unread by its owner: a turn end that moves the task's runtime twice.
+fn ending_on_a_read_notification(slice: &Slice) -> Driver {
+    let mut driver = slice.launch_with("background-command-silent");
+    until_own_work(slice, &mut driver);
+    slice.release_background_command();
+    while slice.observations_with("\"subtype\":\"task_notification\"") == 0 {
+        driver.observe().unwrap();
+    }
+    slice.run(&system(), "tell-after-notification", Command::TellNode { task_id: TASK.into(), text: "max-turns".into(), from_user: false, answers: None });
+    driver.step(&|| false).unwrap();
+    let outbox = slice.backend.state_root.join(&driver.agent().0).join("outbox");
+    while !String::from_utf8_lossy(&std::fs::read(&outbox).unwrap()).contains("error_max_turns") {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    driver
+}
+
+// Production, 2026-11-07 (t-main-red-accounts-email-lowercase): a host stopped at the end of a turn
+// that read a notification, cancelled. The cancel applies, and taking the execution over commits
+// what the task no longer waits for.
+#[test]
+fn a_task_cancelled_with_a_turn_end_unread_is_cancelled_and_its_host_is_taken_over() {
+    let slice = Slice::new();
+    let driver = ending_on_a_read_notification(&slice);
+    let (_, stranded) = strand_host(&slice, driver);
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].cancelled() || lifecycle(&slice.domain).phase() == alondra_domain::TaskPhase::Finishing, "the cancel applies");
+    let mut replaced = slice.take_over(&slice.domain);
+    assert!(stranded.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the stopped host is gone");
+    assert_eq!(lifecycle(&slice.domain).phase(), alondra_domain::TaskPhase::Finishing, "the cancel stands");
+    replaced.stop().unwrap();
+}
+
 // B2: the writer crashes between the turn-end commit and its publication. A fresh daemon adopts the
 // live host, which re-sends the unacknowledged event; the adopting owner sees the store already has
 // it (Duplicate), acknowledges it once and publishes exactly one card.
@@ -2176,6 +2210,26 @@ fn a_turn_cut_by_the_end_of_its_host_goes_on_by_itself_in_the_resumed_session() 
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
     assert_goes_on_by_itself(&slice, &restarted, &mut resumed, &session);
+    resumed.stop().unwrap();
+}
+
+// Production, 2026-11-07 (t-idle-node-release-processes): the adapter refused an observation the
+// ended host left, and every takeover stopped on it. The observation is discarded with why, and
+// the resumed session goes on by itself.
+#[test]
+fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::Observation);
+    let mut resumed = slice.take_over(&restarted);
+    assert_goes_on_by_itself(&slice, &restarted, &mut resumed, &session);
+    let discarded: Vec<String> = slice.observer().prepare("SELECT reason FROM provider_discarded_observations").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(discarded, vec!["adapter_storage".to_owned()], "the refused observation is discarded with why");
     resumed.stop().unwrap();
 }
 

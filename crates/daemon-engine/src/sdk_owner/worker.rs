@@ -105,4 +105,7 @@ impl ObservationNormalizer for Worker {
     fn normalize(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
         match self { Self::Claude(worker) => worker.normalizer().normalize(batch, metadata), Self::Codex(worker) => worker.normalizer().normalize(batch, metadata) }
     }
+    fn skip(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
+        match self { Self::Claude(worker) => worker.normalizer().skip(batch, metadata), Self::Codex(worker) => worker.normalizer().skip(batch, metadata) }
+    }
 }

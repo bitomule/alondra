@@ -5,7 +5,7 @@ use super::*;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::tests::{Fixture, seeded};
 use alondra_agent_application::{Normalization, ObservationMetadata};
-use alondra_foundation::{ExecutionStamp, InputId, TurnId, WorkId};
+use alondra_foundation::{ContinuationId, ExecutionStamp, InputId, TurnId, WorkId};
 use alondra_store::InputPayload;
 use alondra_provider_contract::{AdapterError, Capability, Observation, Placement};
 use std::collections::{BTreeMap, BTreeSet};
@@ -115,8 +115,13 @@ enum Normalizer {
     /// `work`.
     Turn { input: InputId, work: bool },
     Facts(Vec<Observation>),
+    /// Refuses every observation, as the Claude adapter refused a command it found no input for.
+    Refuses,
 }
 impl ObservationNormalizer for Normalizer {
+    fn skip(&self, _: &OrderedObservation, _: &ObservationMetadata<'_, '_>) -> std::result::Result<Normalization, AdapterError> {
+        Normalization::new(vec![], b"normalized".to_vec())
+    }
     fn normalize(
         &self,
         _: &OrderedObservation,
@@ -124,6 +129,9 @@ impl ObservationNormalizer for Normalizer {
     ) -> std::result::Result<Normalization, AdapterError> {
         if let Self::SwallowsMetadataError = self {
             assert!(metadata.lookup_inputs(&vec![b"native".to_vec(); 65]).is_err());
+        }
+        if let Self::Refuses = self {
+            return Err(AdapterError::Storage("MissingAdapterInput".into()));
         }
         let facts = match self {
             Self::Released => vec![Observation::ResourceReleased],
@@ -1425,4 +1433,163 @@ fn a_live_native_cell_continuation_is_one_durable_input_without_retiring_own_wor
     let state=runtime.state().unwrap();let before=counts(&observer(&fixture));assert!(runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,6),&late,no_home(),false)).is_err());assert_eq!(counts(&observer(&fixture)),before);
     let state=runtime.state().unwrap();assert_eq!(runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,6),&late,no_home(),true)).unwrap().0,ObservationAcceptance::Accepted);
     drop(runtime);let reopened=DomainRuntime::open_at(&fixture.0,&fixture.path()).unwrap();let state=reopened.state().unwrap();let remaining=state.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();assert_eq!(remaining,after,"the real durable input queue survives restart without a second store");
+}
+
+/// The running execution as t-main-red-accounts-email-lowercase stood on 2026-11-07 at 02:08:
+/// its first turn left two works behind, both ended while no turn was open, and the second turn,
+/// which the first notification opened, started work of its own. Returns the runtime and that
+/// turn, still open, with the second notification waiting.
+fn resumed_with_a_notification_waiting() -> (Fixture, DomainRuntime, ExecutionStamp, TurnId) {
+    let (fixture, mut store, execution) = running();
+    let state = store.load().unwrap();
+    let withdraw = Command::Withdraw { interaction_id: "composite-card".into() };
+    store.execute_filling_revision(&agent(), &envelope(&state, "withdraw-composite", withdraw)).unwrap();
+    let input = pending_input(&mut store);
+    let runtime = runtime(&fixture, store);
+    let (first, second) = (TurnId::new("turn-1").unwrap(), TurnId::new("turn-2").unwrap());
+    let work = |id: &str| WorkId::new(id).unwrap();
+    let notified = |id: &str| ContinuationId::new(format!("claude-notification:{id}")).unwrap();
+    let observations = [
+        vec![
+            Observation::Available,
+            Observation::TurnStarted { input, turn: first.clone() },
+            Observation::WorkStarted { turn: first.clone(), work: work("work-a") },
+            Observation::WorkStarted { turn: first.clone(), work: work("work-b") },
+            Observation::TurnEnded { turn: first, outcome: alondra_provider_contract::TurnOutcome::Completed },
+        ],
+        vec![Observation::WorkEnded { work: work("work-a"), continuation: notified("a") }],
+        vec![Observation::WorkEnded { work: work("work-b"), continuation: notified("b") }],
+        vec![
+            Observation::TurnResumed { continuation: notified("a"), turn: second.clone() },
+            Observation::WorkStarted { turn: second.clone(), work: work("work-c") },
+        ],
+    ];
+    for (at, facts) in (1..).zip(observations) {
+        let state = Arc::clone(runtime.read().state());
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, at), &Normalizer::Facts(facts), no_home(), false)).unwrap();
+    }
+    (fixture, runtime, execution, second)
+}
+
+fn cursor_of(runtime: &DomainRuntime) -> u64 {
+    runtime.read().state().lifecycle_of(&task()).unwrap().cursor().unwrap()
+}
+
+/// Production, 2026-11-07 (t-main-red-accounts-email-lowercase, observation 139): the end of a
+/// turn that read a notification still waiting. The domain consumes that notification as the
+/// turn ends, a fact the observation did not name: the observation commits, its owner goes on, and
+/// the task's cursor moves past both.
+#[test]
+fn a_turn_end_that_consumes_a_notification_it_read_commits() {
+    let (_fixture, runtime, execution, turn) = resumed_with_a_notification_waiting();
+    let before = cursor_of(&runtime);
+    let state = Arc::clone(runtime.read().state());
+    let end = Normalizer::Facts(vec![Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed }]);
+    let (acceptance, _) = runtime
+        .own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, 5), &end, no_home(), false))
+        .expect("the end of the turn commits");
+    assert_eq!(acceptance, ObservationAcceptance::Accepted);
+    assert_eq!(cursor_of(&runtime), before + 2, "the end of the turn and the notification it read");
+    let records = runtime.read().state().lifecycle_journal.get(&task()).cloned().unwrap_or_default();
+    assert!(
+        records.iter().any(|record| matches!(record, alondra_core::domain::LifecycleRecord::WorkContinued { continuation } if continuation == "claude-notification:b")),
+        "the notification the turn read is consumed: {records:?}"
+    );
+}
+
+/// Evidence of the end of a turn the domain already recorded is left out of what it records: the
+/// observation that repeats it commits with nothing recorded and is not discarded.
+#[test]
+fn a_repeated_turn_end_commits_with_nothing_recorded() {
+    let (fixture, runtime, execution, turn) = resumed_with_a_notification_waiting();
+    let end = Normalizer::Facts(vec![Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed }]);
+    commit(&runtime, &batch(&execution, 5), &end).unwrap();
+    let before = cursor_of(&runtime);
+    assert_eq!(commit(&runtime, &batch(&execution, 6), &end).expect("the repeated end commits"), ObservationAcceptance::Accepted);
+    assert_eq!(cursor_of(&runtime), before, "nothing new was recorded");
+    assert!(discarded(&fixture).is_empty(), "and nothing was discarded");
+}
+
+fn discarded(fixture: &Fixture) -> Vec<(i64, String)> {
+    let observer = observer(fixture);
+    let mut rows = observer.prepare("SELECT cursor,reason FROM provider_discarded_observations WHERE task_id=?1 ORDER BY cursor").unwrap();
+    rows.query_map([TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap()
+}
+
+fn commit(runtime: &DomainRuntime, batch: &OrderedObservation, normalizer: &Normalizer) -> std::result::Result<ObservationAcceptance, StoreError> {
+    let state = Arc::clone(runtime.read().state());
+    crate::sdk_owner::commit_observation(runtime, &scope_of(&state), &binding(), 1, batch, normalizer, no_home(), None).map(|(acceptance, _)| acceptance)
+}
+
+/// Production, 2026-11-07 (t-idle-node-release-processes, observation 1342): the provider's
+/// adapter refused an observation, and the owner stopped on it at every takeover. Now it is
+/// discarded with why: its checkpoint moves past it, and the next observation settles as usual.
+#[test]
+fn an_observation_the_adapter_refuses_is_discarded_with_why_and_the_next_one_settles() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    assert_eq!(commit(&runtime, &batch(&execution, 1), &Normalizer::Refuses).expect("the refused observation is discarded"), ObservationAcceptance::Accepted);
+    assert_eq!(discarded(&fixture), vec![(1, "adapter_storage".to_owned())]);
+    assert_eq!(runtime.read().state().lifecycle_of(&task()).unwrap().cursor(), Some(0), "it recorded nothing");
+    assert_eq!(runtime.take_acknowledgements().len(), 1, "it is acknowledged, so the host goes on");
+    assert_eq!(commit(&runtime, &batch(&execution, 1), &Normalizer::Refuses).unwrap(), ObservationAcceptance::Duplicate);
+    assert_eq!(commit(&runtime, &batch(&execution, 2), &Normalizer::Available).unwrap(), ObservationAcceptance::Accepted);
+    assert_eq!(cursor_of(&runtime), 1, "the next observation is recorded");
+    assert_eq!(discarded(&fixture).len(), 1, "and nothing else is discarded");
+}
+
+/// An observation of an owner another one replaced is not the observation's own failure: it is
+/// refused as before, and nothing is discarded.
+#[test]
+fn an_observation_of_a_stale_owner_is_refused_not_discarded() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let stale = OrderedObservation { owner_generation: 2, ..batch(&execution, 1) };
+    let state = Arc::clone(runtime.read().state());
+    let refused = crate::sdk_owner::commit_observation(&runtime, &scope_of(&state), &binding(), 2, &stale, &Normalizer::Refuses, no_home(), None);
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(discarded(&fixture).is_empty());
+}
+
+/// Which failures discard an observation is decided on their type.
+#[test]
+fn only_the_observation_s_own_failures_discard_it() {
+    use crate::domain_store::{AdapterRefusal, DiscardReason};
+    use alondra_agent_application::Error;
+    let refused = |error: Error| DiscardReason::of(&super::ObservationRefusal::Provider(error).into());
+    let stored = |error: alondra_store::Error| DiscardReason::of(&StoreError::from(error));
+    assert_eq!(stored(alondra_store::Error::UnsettledObservation), Some(DiscardReason::Unsettled));
+    assert_eq!(refused(Error::Adapter(AdapterError::UnknownInput)), Some(DiscardReason::AdapterRefused(AdapterRefusal::UnknownInput)));
+    assert_eq!(refused(Error::Adapter(AdapterError::Storage("MissingAdapterInput".into()))), Some(DiscardReason::AdapterRefused(AdapterRefusal::Storage)));
+    assert_eq!(refused(Error::ObservationCapacity), Some(DiscardReason::Capacity));
+    assert_eq!(refused(Error::RequiresDomainCommand), Some(DiscardReason::Unrecordable));
+    assert_eq!(DiscardReason::of(&super::ObservationRefusal::Unrecordable("a fact".into()).into()), Some(DiscardReason::Unrecordable));
+    assert_eq!(DiscardReason::of(&DomainError::new("conflict", "refused").into()), Some(DiscardReason::DomainRefused));
+    for kept in [alondra_store::Error::StaleOwner, alondra_store::Error::StalePermit, alondra_store::Error::ObservationConflict, alondra_store::Error::CheckpointConflict, alondra_store::Error::CorruptJournal] {
+        assert_eq!(stored(kept), None);
+    }
+    assert_eq!(refused(Error::Adapter(AdapterError::Disconnected)), None);
+    assert_eq!(refused(Error::BindingMismatch), None);
+    assert_eq!(DiscardReason::of(&StoreError::Storage(anyhow::anyhow!("the disk is full"))), None);
+}
+
+/// Property: whatever sequence of observations a host reports, and whichever of them its adapter
+/// refuses, each one ends settled or discarded with why, the checkpoint reaches the last one, and
+/// none the adapter read is discarded.
+#[test]
+fn every_observation_ends_settled_or_discarded_and_none_settleable_is_lost() {
+    use proptest::prelude::*;
+    proptest!(ProptestConfig::with_cases(12), |(refused in proptest::collection::vec(any::<bool>(), 1..8))| {
+        let (fixture, store, execution) = running();
+        let runtime = runtime(&fixture, store);
+        for (cursor, refuses) in (1..).zip(&refused) {
+            let normalizer = if *refuses { Normalizer::Refuses } else { Normalizer::Facts(vec![]) };
+            prop_assert_eq!(commit(&runtime, &batch(&execution, cursor), &normalizer).unwrap(), ObservationAcceptance::Accepted);
+        }
+        let expected: Vec<i64> = (1..).zip(&refused).filter(|(_, refuses)| **refuses).map(|(cursor, _)| cursor).collect();
+        prop_assert_eq!(discarded(&fixture).into_iter().map(|(cursor, _)| cursor).collect::<Vec<_>>(), expected);
+        let state = Arc::clone(runtime.read().state());
+        let (checkpoint, _) = runtime.own(scope_of(&state), |owner| Ok(owner.journal().normalization_checkpoint(&execution)?.map(|checkpoint| checkpoint.cursor()))).unwrap();
+        prop_assert_eq!(checkpoint, Some(refused.len() as u64));
+    });
 }

@@ -1091,7 +1091,13 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
     }
-    retakes.push((task.clone(), std::thread::spawn(move || take_again(&runtime, &backend, &task, explicit_account_retry))));
+    #[cfg(any(test, feature = "test-hooks"))]
+    let refusal = crate::domain_store::carried_refusal();
+    retakes.push((task.clone(), std::thread::spawn(move || {
+        #[cfg(any(test, feature = "test-hooks"))]
+        refusal();
+        take_again(&runtime, &backend, &task, explicit_account_retry)
+    })));
 }
 
 fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId, explicit_account_retry: bool) {
@@ -1815,7 +1821,7 @@ fn remove_stop_mark(mark: &std::path::Path) {
 /// Commits what the host observed. What the domain refuses never stops the node: the observation
 /// commits again without it, and the second value says what of the task's lifecycle it left out.
 #[allow(clippy::too_many_arguments)]
-fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domain: &DomainRuntime, scope: &AuthorityScope, binding: &ProviderBinding,
+pub(crate) fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domain: &DomainRuntime, scope: &AuthorityScope, binding: &ProviderBinding,
     generation: u64, batch: &OrderedObservation, normalizer: &N, home: &std::path::Path,identity:Option<&NativeAccountIdentity>) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
     let stage = |probe: bool| domain
         .own(scope.clone(), |owner| {
@@ -1823,13 +1829,22 @@ fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domai
             Ok((acceptance, owner.unrecorded().to_vec()))
         })
         .map(|(staged, _)| staged);
-    match stage(false) {
+    let staged = match stage(false) {
         Err(StoreError::Domain(refusal)) => {
             log!("the domain refused part of what an SDK host observed ({}): it commits without it", refusal.message);
             stage(true)
         }
         staged => staged,
-    }
+    };
+    let error = match staged {
+        Err(error) => error,
+        staged => return staged,
+    };
+    let Some(reason) = crate::domain_store::DiscardReason::of(&error) else { return Err(error) };
+    log!("observation {} of {} could not be settled ({}: {}): it is discarded and the task goes on", batch.cursor, batch.execution.task(), reason.code(), store_text(&error));
+    domain
+        .own(scope.clone(), |owner| Ok((owner.discard_observation(binding, generation, batch, normalizer, reason)?, Vec::new())))
+        .map(|(staged, _)| staged)
 }
 
 /// The log line of what the host's Claude did, for the steps of its life: the session it runs,
