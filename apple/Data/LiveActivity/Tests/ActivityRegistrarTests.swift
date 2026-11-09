@@ -37,7 +37,7 @@ private final class Forgetful: Sendable {
     init() {
         let forgetful = forgetful
         registrar = ActivityRegistrar(phoneID: { "phone-install-0123456789" }, forgetPhoneID: { forgetful.forgotten.withLock { $0 = true } },
-                                      environment: "sandbox")
+                                      environment: "sandbox", pause: { _ in throw CancellationError() })
         registrar.handle(.ready)
     }
 

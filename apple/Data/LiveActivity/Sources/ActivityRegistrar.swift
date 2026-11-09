@@ -31,8 +31,7 @@ public struct ActivityRelayPairing: Sendable {
 }
 
 /// Keeps every relay pairing told of this phone's tokens. Each pairing is told only what it has
-/// not heard yet; one that fails is told again at the next change or the next `retry`, so a relay
-/// older than these routes costs nothing but the silent attempt.
+/// not heard yet. Temporary failures retry independently of the key delivery to each Mac.
 @MainActor
 public final class ActivityRegistrar {
     private struct Update: Equatable {
@@ -56,13 +55,19 @@ public final class ActivityRegistrar {
     private var tail: Task<Void, Never>?
     private var keyTail: Task<Void, Never>?
 
-    /// `forgetPhoneID` runs when the account ends: the relay keeps a phone to the account that
-    /// registered it, so the next account needs another id.
-    public init(phoneID: @escaping () throws -> String, forgetPhoneID: @escaping () -> Void = {}, environment: String) {
-        self.phoneID = phoneID; self.forgetPhoneID = forgetPhoneID; self.environment = environment
+    public var onChange: (@MainActor () -> Void)?
+    public private(set) var relayState: RegistrationState = .idle { didSet { onChange?() } }
+    public private(set) var keyState: RegistrationState = .idle { didSet { onChange?() } }
+    private var generation = 0
+    private var cleanupTask: Task<Void, Never>?
+    private let pause: @Sendable (Duration) async throws -> Void
+
+    /// `forgetPhoneID` runs when the account ends: the next account needs another id.
+    public init(phoneID: @escaping () throws -> String, forgetPhoneID: @escaping () -> Void = {}, environment: String,
+                pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.phoneID = phoneID; self.forgetPhoneID = forgetPhoneID; self.environment = environment; self.pause = pause
     }
 
-    /// While a duplicate waits to be ended, the relay speaks to the newest activity, the one kept.
     private var update: Update? { updates.values.max { $0.startedAtMs < $1.startedAtMs } }
 
     public func handle(_ event: ActivityRegistrationEvent) {
@@ -80,13 +85,8 @@ public final class ActivityRegistrar {
         sync()
     }
 
-    /// The pairings of the account now. With none left the phone leaves the relay through the
-    /// last ones it had.
     public func set(_ pairings: [ActivityRelayPairing]) {
-        if pairings.isEmpty {
-            stop()
-            return
-        }
+        if pairings.isEmpty { stop(); return }
         self.pairings = pairings
         told = told.filter { id, _ in pairings.contains { $0.id == id } }
         keysGiven = keysGiven.filter { id, _ in pairings.contains { $0.id == id } }
@@ -94,72 +94,122 @@ public final class ActivityRegistrar {
         sync()
     }
 
-    /// The account is ending: the relay hears it while the pairings can still sign.
     public func stop() {
+        generation += 1
         let leaving = pairings
-        pairings = []
-        told = [:]
-        keysGiven = [:]
-        enqueue { [self] in
-            await unregister(through: leaving)
-            forgetPhoneID()
-            saidGone = false
+        let id = leaving.isEmpty ? nil : try? phoneID()
+        pairings = []; told = [:]; keysGiven = [:]
+        tail?.cancel(); keyTail?.cancel()
+        relayState = .idle; keyState = .idle
+        if !leaving.isEmpty { forgetPhoneID() }
+        saidGone = false
+        let previous = tail
+        let previousCleanup = cleanupTask
+        cleanupTask = Task {
+            await previousCleanup?.value
+            await previous?.value
+            guard let id else { return }
+            // Clean up the old account using its captured id, even if a new account has started.
+            for pairing in leaving {
+                if (try? await pairing.unregister(id)) != nil { return }
+            }
         }
     }
 
     public func retry() { sync() }
 
-    /// Waits until every change made so far has reached the relay.
     public func settled() async {
         await tail?.value
         await keyTail?.value
+        await cleanupTask?.value
     }
 
     private func sync() {
-        giveKeys()
-        enqueue { [self] in
-            guard ready else { return }
-            if enabled { await register() } else { await unregister(through: pairings) }
-        }
-    }
-
-    private func enqueue(_ work: @escaping @MainActor () async -> Void) {
-        let previous = tail
-        tail = Task {
-            await previous?.value
-            await work()
-        }
-    }
-
-    /// A Mac asleep takes minutes to answer: its key never holds back the relay's registration.
-    private func giveKeys() {
-        let previous = keyTail
+        generation += 1
+        let current = generation
+        let active = pairings
+        let previousKey = keyTail
+        previousKey?.cancel()
         keyTail = Task { [self] in
+            await previousKey?.value
+            guard isCurrent(current) else { return }
+            let keyed = active.filter { $0.publicKey != nil }
+            await repeatRegistration(keyed, operation: .activityKey, generation: current) { pairing in
+                guard let key = pairing.publicKey, keysGiven[pairing.id] != key else { return }
+                try await pairing.giveKey(key)
+                guard isCurrent(current) else { return }
+                keysGiven[pairing.id] = key
+            }
+        }
+        let previous = tail
+        let cleanup = cleanupTask
+        previous?.cancel()
+        tail = Task { [self] in
             await previous?.value
-            for pairing in pairings {
-                guard let key = pairing.publicKey, keysGiven[pairing.id] != key else { continue }
-                if (try? await pairing.giveKey(key)) != nil { keysGiven[pairing.id] = key }
+            await cleanup?.value
+            guard isCurrent(current) else { return }
+            guard ready, !active.isEmpty else { relayState = .idle; return }
+            do {
+                let id = try phoneID()
+                let registration = try RelayActivityRegistration(phoneID: id, startToken: startToken, updateToken: update?.token,
+                    activityID: update?.activityID, startedAtMs: update?.startedAtMs, environment: environment,
+                    frequentUpdates: frequentUpdates)
+                let registering = enabled
+                await repeatRegistration(active, operation: .relay, generation: current,
+                    isComplete: { !registering && saidGone }) { pairing in
+                    if registering {
+                        guard told[pairing.id] != registration else { return }
+                        try await pairing.register(registration)
+                        guard isCurrent(current) else { return }
+                        told[pairing.id] = registration
+                    } else {
+                        guard !saidGone else { return }
+                        try await pairing.unregister(id)
+                        guard isCurrent(current) else { return }
+                        told = [:]; saidGone = true
+                    }
+                }
+            } catch {
+                guard isCurrent(current) else { return }
+                relayState = .failed([RegistrationFailure.classify(error, operation: .relay)])
             }
         }
     }
 
-    private func register() async {
-        guard let id = try? phoneID(),
-              let registration = try? RelayActivityRegistration(phoneID: id, startToken: startToken, updateToken: update?.token,
-                  activityID: update?.activityID, startedAtMs: update?.startedAtMs, environment: environment,
-                  frequentUpdates: frequentUpdates) else { return }
-        for pairing in pairings where told[pairing.id] != registration {
-            if (try? await pairing.register(registration)) != nil { told[pairing.id] = registration }
-        }
-    }
+    private func isCurrent(_ current: Int) -> Bool { current == generation && !Task.isCancelled }
 
-    /// The relay forgets the whole phone through any one pairing.
-    private func unregister(through pairings: [ActivityRelayPairing]) async {
-        guard !saidGone, let id = try? phoneID() else { return }
-        for pairing in pairings where (try? await pairing.unregister(id)) != nil {
-            told = [:]
-            saidGone = true
-            return
+    /// The key and token loops are independent: a sleeping Mac never holds back the relay.
+    private func repeatRegistration(_ active: [ActivityRelayPairing], operation: RegistrationFailure.Operation, generation current: Int,
+                                    isComplete: @MainActor () -> Bool = { false },
+                                    send: @MainActor (ActivityRelayPairing) async throws -> Void) async {
+        func state(_ value: RegistrationState) {
+            if operation == .activityKey { keyState = value } else { relayState = value }
+        }
+        guard !active.isEmpty else { state(.idle); return }
+        state(.sending)
+        var failures: [String: RegistrationFailure] = [:]
+        var attempt = 0
+        while isCurrent(current) {
+            for pairing in active {
+                guard isCurrent(current) else { return }
+                if let failure = failures[pairing.id], !failure.retries { continue }
+                do {
+                    try await send(pairing)
+                    guard isCurrent(current) else { return }
+                    failures[pairing.id] = nil
+                    if isComplete() { state(.registered); return }
+                } catch {
+                    guard isCurrent(current) else { return }
+                    failures[pairing.id] = RegistrationFailure.classify(error, operation: operation)
+                }
+            }
+            guard isCurrent(current) else { return }
+            let remaining = active.compactMap { failures[$0.id] }
+            if remaining.isEmpty { state(.registered); return }
+            state(.failed(remaining))
+            guard remaining.contains(where: \.retries) else { return }
+            do { try await pause(RegistrationFailure.retryDelay(attempt: attempt)) } catch { return }
+            attempt = min(attempt + 1, 6)
         }
     }
 }

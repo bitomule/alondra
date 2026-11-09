@@ -2,6 +2,7 @@ import AlondraDesign
 import AlondraAccount
 import AlondraFeatures
 import AlondraNotifications
+import AlondraTransport
 import AlondraPairing
 import CryptoKit
 import Foundation
@@ -32,6 +33,7 @@ final class NotificationRuntime {
     @ObservationIgnored private let activation = DeferredPushActivation()
     private var generation = 0
     private(set) var error: String?
+    var activityRegistrationFailures: [RegistrationFailure] = []
 
     init() {
         let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String

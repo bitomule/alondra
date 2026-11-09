@@ -176,7 +176,9 @@ public struct SettingsView: View {
                             .foregroundStyle(Palette.rose)
                     }
                 }
-                if notification.permission == .authorized {
+                if case .failed = notification.delivery {
+                    registration(notification.delivery)
+                } else if notification.permission == .authorized {
                     LabeledContent("On the Mac") { registration(notification.delivery) }
                 }
                 Toggle("Quiet Hours", isOn: Binding(get: { store.draft.enabled }, set: { store.send(.quietEnabled($0), animation: .default) }))

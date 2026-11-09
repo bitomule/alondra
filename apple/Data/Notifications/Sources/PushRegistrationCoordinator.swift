@@ -5,9 +5,7 @@ import Foundation
 /// replace another Mac's registration; logout cancels the whole generation.
 @MainActor
 public final class PushRegistrationCoordinator {
-    public enum State: Equatable, Sendable {
-        case idle, sending, registered, failed(String)
-    }
+    public typealias State = RegistrationState
     public private(set) var state: State = .idle
     public var onChange: (@MainActor (State) -> Void)?
     private let preferences: PushPreferencesLedger
@@ -40,39 +38,37 @@ public final class PushRegistrationCoordinator {
             guard current == generation, !Task.isCancelled else { return }
             setState(.sending)
             var attempt = 0
+            var problems: [NotificationPayload.Binding: RegistrationFailure] = [:]
+            var minimums: [NotificationPayload.Binding: UInt64] = [:]
             while true {
-                var problems: [Problem] = []
                 for client in next {
                     guard current == generation, !Task.isCancelled else { return }
+                    if let problem = problems[client.binding], !problem.retries { continue }
                     let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(environment)|\(quietStart ?? "off")|\(quietEnd ?? "off")"
                     if registered[client.binding] == fingerprint { continue }
                     do {
                         let revision = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
-                            quietStart: quietStart, quietEnd: quietEnd)
+                            quietStart: quietStart, quietEnd: quietEnd, newerThan: minimums[client.binding] ?? 0)
                         try Task.checkCancellation()
-                        do { try await client.register(token, environment, quietStart, quietEnd, revision) }
-                        catch PushPreferencesError.stale(let minimum) {
-                            try Task.checkCancellation()
-                            let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
-                                quietStart: quietStart, quietEnd: quietEnd, newerThan: minimum)
-                            try Task.checkCancellation()
-                            try await client.register(token, environment, quietStart, quietEnd, newer)
-                        }
+                        try await client.register(token, environment, quietStart, quietEnd, revision)
                         guard current == generation, !Task.isCancelled,
                               clients[client.binding]?.identity == client.identity else { return }
                         registered[client.binding] = fingerprint
+                        problems[client.binding] = nil
                     } catch {
                         guard current == generation, !Task.isCancelled else { return }
-                        let problem = Self.problem(error)
-                        if !problems.contains(problem) { problems.append(problem) }
+                        let problem = RegistrationFailure.classify(error, operation: .mac)
+                        if case .stalePreferences(let revision) = problem.reason { minimums[client.binding] = revision }
+                        problems[client.binding] = problem
                     }
                 }
                 guard current == generation, !Task.isCancelled else { return }
-                if problems.isEmpty { setState(.registered); return }
-                setState(.failed(problems.map(\.message).joined(separator: "\n")))
-                guard problems.contains(where: \.retries) else { return }
-                do { try await pause(Self.retryDelay(attempt: attempt)) } catch { return }
-                attempt += 1
+                let remaining = next.compactMap { problems[$0.binding] }
+                if remaining.isEmpty { setState(.registered); return }
+                setState(.failed(remaining))
+                guard remaining.contains(where: \.retries) else { return }
+                do { try await pause(RegistrationFailure.retryDelay(attempt: attempt)) } catch { return }
+                attempt = min(attempt + 1, 6)
             }
         }
     }
@@ -93,49 +89,6 @@ public final class PushRegistrationCoordinator {
         guard state != self.state else { return }
         self.state = state
         onChange?(state)
-    }
-
-    /// Network and relay trouble clears on its own, so it is retried in the background;
-    /// a refusal from the Mac or a fault on this device waits for the app to open again.
-    enum Problem: Equatable, Sendable {
-        case unreachable, relay, rejected, local
-
-        var retries: Bool { self == .unreachable || self == .relay }
-
-        var message: String {
-            switch self {
-            case .unreachable: String(localized: "Can’t reach your Mac. Retrying…")
-            case .relay: String(localized: "Alondra’s relay isn’t responding. Retrying…")
-            case .rejected:
-                String(localized: "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app.")
-            case .local:
-                String(localized: "Alerts couldn’t be set up on this device. Alondra tries again when you reopen the app.")
-            }
-        }
-    }
-
-    nonisolated static func problem(_ error: any Error) -> Problem {
-        switch error {
-        case is URLError, RelayWireError.outcomeUnknown, SealedRequestError.outcomeUnknown, OperationError.outcomeUnknown:
-            return .unreachable
-        case is RelayWireError, SealedRequestError.invalidResponse:
-            return .relay
-        case let error as APIError:
-            switch error {
-            case .unavailable: return .unreachable
-            case .unexpected(let status) where status >= 500: return .unreachable
-            case .server(let status, _, _, _) where status >= 500: return .unreachable
-            case .unauthorized, .forbidden, .conflict, .server, .unexpected: return .rejected
-            }
-        case is PushPreferencesError:
-            return .rejected
-        default:
-            return .local
-        }
-    }
-
-    nonisolated static func retryDelay(attempt: Int) -> Duration {
-        .seconds(min(5 * (1 << min(attempt, 6)), 300))
     }
 
     enum Failure: LocalizedError, Equatable {

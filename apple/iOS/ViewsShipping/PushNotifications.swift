@@ -98,7 +98,7 @@ final class PushCenter: PushAuthorizing {
             case .idle: .idle
             case .sending: .sending
             case .registered: .registered
-            case .failed(let message): .failed(message)
+            case .failed(let failures): .failed(failures.map(\.message).joined(separator: "\n"))
             }
             if state == .registered { self?.onRegistered?() }
         }
