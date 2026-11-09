@@ -54,6 +54,21 @@ class SelectionTests(unittest.TestCase):
             for fork in (False, True):
                 self.assertTrue(ci.external_pr(event("contributor", association, fork)))
 
+    def test_manual_dispatch_uses_the_default_branch_and_never_changes_pr_author_filtering(self):
+        value = event()
+        value["repository"]["default_branch"] = "main"
+        with patch.object(ci, "command", return_value=b"a" * 40 + b"\n") as command:
+            self.assertEqual(ci.selection_base("workflow_dispatch", value), "a" * 40)
+            command.assert_called_once_with("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}")
+        for name in ("pull_request", "push", "pull_request_target"):
+            with self.subTest(event=name), self.assertRaises(ValueError):
+                ci.selection_base(name, value)
+        external = event("contributor", "NONE", True)
+        external["pull_request"]["base"] = {"sha": "b" * 40}
+        self.assertEqual(ci.selection_base("pull_request", external), "b" * 40)
+        checks = ci.manifest(MANIFEST)
+        self.assertEqual(len(ci.plan(checks, checks, set(), force_all=True)["include"]), 2)
+
     def test_rename_and_delete_include_old_paths_even_when_names_contain_newlines(self):
         self.assertEqual(ci.changed_paths(b"R100\0crates/domain/old.rs\0docs/new.rs\0D\0file\nname\0"),
                          {"crates/domain/old.rs", "docs/new.rs", "file\nname"})
@@ -118,12 +133,14 @@ class SelectionTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_only_external_pr_jobs_can_reserve_a_runner(self):
+    def test_only_external_prs_or_explicit_manual_runs_can_reserve_a_runner(self):
         workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
-        self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}})
+        self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {}})
         self.assertEqual(set(workflow["jobs"]), {"select", "validate"})
         select = workflow["jobs"]["select"]
-        self.assertEqual(select["if"], "${{ github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork) }}")
+        self.assertEqual(select["if"], "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}")
+        self.assertEqual(workflow["concurrency"]["group"],
+                         "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}")
         validate = workflow["jobs"]["validate"]
         self.assertEqual(validate["needs"], "select")
         self.assertEqual(validate["if"], "${{ needs.select.outputs.has_checks == 'true' }}")

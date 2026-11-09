@@ -72,6 +72,8 @@
   approval for first-time fork contributors. Ad hoc signatures for test executables are allowed.
 - Releases run on the maintainer's Mac. Check workflows may exist; the publisher refuses to run
   inside GitHub Actions.
+- A maintainer may manually dispatch the same read-only checks to probe runners and timings.
+  A manual run does not validate an external contribution or change the owner PR exclusion.
 
 ## Code
 

@@ -1,14 +1,14 @@
 {
   "name": "External contribution checks",
-  "on": {"pull_request": {"branches": ["main"]}},
+  "on": {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {}},
   "permissions": {"contents": "read"},
   "concurrency": {
-    "group": "external-ci-${{ github.event.pull_request.number }}",
+    "group": "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}",
     "cancel-in-progress": true
   },
   "jobs": {
     "select": {
-      "if": "${{ github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork) }}",
+      "if": "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 5,
       "outputs": {

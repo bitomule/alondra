@@ -15,6 +15,14 @@ workflow through GitHub. The repository's contributor approval policy remains
 `first_time_contributors`. No job grants that approval automatically. See
 [approving runs from forks](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks).
 
+Maintainers with write access can explicitly launch `workflow_dispatch` to check the runner and
+measure every MUSTS target set, even when the chosen branch matches `main`. It has the same
+read-only token, no secrets and no publication steps. This manual probe does not validate an
+external contribution or the first-time fork approval path; owner-authored PRs remain excluded.
+Use `gh workflow run ci.yml --repo bitomule/alondra --ref <branch>` once GitHub has registered the
+workflow. See [manual workflow execution](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+and the [CLI reference](https://cli.github.com/manual/gh_workflow_run).
+
 ## What runs
 
 `tools/ci.py plan` compares the checked-out PR merge commit with its merge-base, including both
@@ -72,7 +80,8 @@ snapshot targets and Mermaid before committing the images.
 
 ## Credentials, cache and releases
 
-The workflow uses `pull_request` and grants `GITHUB_TOKEN` only `contents: read`. Checkout does
+The workflow uses `pull_request` and explicit `workflow_dispatch`, and grants `GITHUB_TOKEN`
+only `contents: read`. Checkout does
 not persist its credential. No repository secrets are referenced or passed to commands, and
 there is no `pull_request_target`, environment with deployment secrets, self-hosted runner or
 publication step. Actions use full commit SHAs. The workflow is written as JSON, a valid YAML
