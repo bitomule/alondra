@@ -94,3 +94,8 @@ sh_test(
     size = "small",
     tags = ["no-sandbox"],
 )
+
+exports_files(
+    ['.bazelignore'],
+    visibility = ["//tools/worktree_setup_test:__pkg__"],
+)

@@ -1,0 +1,6 @@
+sh_test(
+    name = "setup_test",
+    srcs = ["setup_test.py"],
+    data = ["//:.bazelignore", "//tools:worktree-bazel-setup"],
+    size = "small",
+)

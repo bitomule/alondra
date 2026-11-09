@@ -154,3 +154,8 @@ sh_test(
     ],
     size = "small",
 )
+
+exports_files(
+    ['worktree-bazel-setup'],
+    visibility = ["//tools/worktree_setup_test:__pkg__"],
+)
