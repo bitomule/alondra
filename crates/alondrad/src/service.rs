@@ -29,6 +29,8 @@ use std::{
 };
 
 mod relay;
+mod registration;
+use registration::{Operation as RegistrationOperation, Rejection as RegistrationRejection};
 pub(crate) mod operation_results;
 
 // Base64 adds ~33%; 760 KiB plus encryption and envelope metadata stays below 1 MiB.
@@ -368,66 +370,59 @@ const ACTIVITY_KEY_ROUTE: &str = "/device/activity-key";
 /// The public half of the key the Live Activity opens reports with. The process that draws it has
 /// no Keychain, so that key lives in a file and is never the pairing's own agreement key.
 fn parse_activity_key(request: &LocalRequest) -> Result<String> {
-    let map = request.body.as_ref().and_then(Value::as_object).context("activity key body required")?;
+    let map = registration::object(request)?;
     if map.keys().any(|key| key != "public_key") {
-        bail!("unknown activity key field");
+        return Err(RegistrationRejection::UnknownField.into());
     }
-    let key = map.get("public_key").and_then(Value::as_str).context("activity key required")?;
-    PublicKey::from_sec1_bytes(&decoded(key)?)?;
+    let key = map.get("public_key").and_then(Value::as_str).ok_or(RegistrationRejection::InvalidActivityKey)?;
+    let bytes = decoded(key).map_err(|_| RegistrationRejection::InvalidActivityKey)?;
+    PublicKey::from_sec1_bytes(&bytes).map_err(|_| RegistrationRejection::InvalidActivityKey)?;
     Ok(key.to_owned())
 }
 
 fn parse_push_binding_removal(request: &LocalRequest) -> Result<String> {
-    let map = request
-        .body
-        .as_ref()
-        .and_then(Value::as_object)
-        .context("push binding removal body required")?;
+    let map = registration::object(request)?;
     if map.keys().any(|key| key != "push_binding") {
-        bail!("unknown push binding removal field");
+        return Err(RegistrationRejection::UnknownField.into());
     }
     Ok(map
         .get("push_binding")
         .and_then(Value::as_str)
         .filter(|value| valid_push_binding(value))
-        .context("invalid push binding")?
+        .ok_or(RegistrationRejection::InvalidBinding)?
         .to_owned())
 }
 
 fn parse_push_preferences(
     request: &LocalRequest,
 ) -> Result<(String, Option<QuietHours>, Option<i64>)> {
-    let body = request
-        .body
-        .as_ref()
-        .context("push binding body required")?;
-    let map = body.as_object().context("invalid push binding body")?;
+    let map = registration::object(request)?;
     if map.keys().any(|key| {
         !matches!(
             key.as_str(),
             "push_binding" | "quiet_start" | "quiet_end" | "preferences_revision"
         )
     }) {
-        bail!("unknown push binding field");
+        return Err(RegistrationRejection::UnknownField.into());
     }
     let binding = map
         .get("push_binding")
         .and_then(Value::as_str)
         .filter(|value| valid_push_binding(value))
-        .context("invalid push binding")?;
-    let quiet = QuietHours::parse_update(map.get("quiet_start"), map.get("quiet_end"))?;
+        .ok_or(RegistrationRejection::InvalidBinding)?;
+    let quiet = registration::quiet_hours(map)?;
     let revision = match map.get("preferences_revision") {
         None => None,
         Some(value) => Some(
             value
                 .as_u64()
                 .filter(|v| (1..=9_007_199_254_740_991).contains(v))
-                .context("preferences_revision must be an integer from 1 to 9007199254740991")?
+                .ok_or(RegistrationRejection::InvalidRevision)?
                 as i64,
         ),
     };
     if revision.is_some() && quiet.is_none() {
-        bail!("versioned preferences require quiet_start and quiet_end");
+        return Err(RegistrationRejection::MissingQuietHours.into());
     }
     Ok((binding.to_owned(), quiet, revision))
 }
@@ -552,6 +547,9 @@ impl Service {
     }
 
     fn atomic_local(&self, request: &LocalRequest) -> bool {
+        if RegistrationOperation::for_request(request).is_some() {
+            return true;
+        }
         if self.domain.is_some() {
             return crate::domain_api::is_resource_mutation_path(&request.method, &request.path)
                 || crate::views::actions::approved_path(&request.method, &request.path)
@@ -583,13 +581,29 @@ impl Service {
         receipt: Arc<ReceiptAdmission>,
     ) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device, transport)?;
+        if let Some(operation) = RegistrationOperation::for_request(request) {
+            let rejection = if request.method != "POST" {
+                Some(RegistrationRejection::InvalidMethod)
+            } else if (self.domain.is_some() && request.path == "/v1/service/push-binding")
+                || (self.domain.is_none() && request.path != "/v1/service/push-binding")
+            {
+                Some(RegistrationRejection::UnsupportedRoute)
+            } else {
+                None
+            };
+            if let Some(rejection) = rejection {
+                rejection.log(operation, transport);
+                let bytes = self.encode_response(envelope, device, &rejection.response(), request)?;
+                return self.journal.complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt).await;
+            }
+        }
         if self.domain.is_some() && request.path == PUSH_BINDING_REMOVE_ROUTE {
             let result = match parse_push_binding_removal(request) {
                 Ok(binding) => {
                     self.journal.forget_push_binding(&envelope.sender, &binding)?;
                     json!({"status":204})
                 }
-                Err(_) => json!({"status":422,"body":{"error":"invalid push binding removal"}}),
+                Err(error) => registration::response(&error, RegistrationOperation::RemoveBinding, transport)?,
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
             let bytes = self.journal
@@ -602,8 +616,12 @@ impl Service {
                     self.journal.activity_keys.notify_one();
                     json!({"status":204})
                 }
-                Ok(_) => json!({"status":409,"body":{"error":"device not enrolled"}}),
-                Err(_) => json!({"status":422,"body":{"error":"invalid activity key"}}),
+                Ok(_) => {
+                    let rejection = RegistrationRejection::NotEnrolled;
+                    rejection.log(RegistrationOperation::ActivityKey, transport);
+                    rejection.response()
+                }
+                Err(error) => registration::response(&error, RegistrationOperation::ActivityKey, transport)?,
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
             let bytes = self.journal
@@ -615,11 +633,11 @@ impl Service {
         {
             let (binding, quiet, revision) = match parse_push_preferences(request) {
                 Ok(parsed) => parsed,
-                Err(_) => {
+                Err(error) => {
                     let bytes = self.encode_response(
                         envelope,
                         device,
-                        &json!({"status":422,"body":{"error":"invalid push preferences"}}),
+                        &registration::response(&error, RegistrationOperation::PushBinding, transport)?,
                         request,
                     )?;
                     let bytes = self.journal
@@ -641,10 +659,11 @@ impl Service {
                     || Self::require_approval(&auth, &home, journal, &envelope.sender, &device, transport),
                     || journal.complete_push_preferences(
                         &envelope.sender, &envelope.request_id, &digest, &binding, quiet, revision,
-                        |mut result| {
-                            if request.path == PUSH_BINDING_ROUTE && result["error"] == "stale_push_preferences" {
-                                result["kind"] = json!("stale_push_preferences");
+                        |outcome| {
+                            if let registration::PreferencesOutcome::Rejected(rejection) = outcome {
+                                rejection.log(RegistrationOperation::PushBinding, transport);
                             }
+                            let result = outcome.response();
                             let now = now_ms();
                             #[cfg(test)]
                             let now = clock.as_ref().map_or(now, |clock| clock.load(std::sync::atomic::Ordering::Relaxed));
@@ -1069,7 +1088,7 @@ impl Service {
             request.path != "/commands",
             "generic command endpoint is not part of the service contract"
         );
-        if self.domain.is_some() {
+        if self.domain.is_some() && RegistrationOperation::for_request(&request).is_none() {
             anyhow::ensure!(
                 (crate::domain_api::approved_resource_read_path(&request.path)
                     || operation_results::lookup(&request.path).is_some()
@@ -1099,11 +1118,6 @@ impl Service {
                     || crate::views::actions::approved_path(&request.method, &request.path))
                     && approved_method(&request).is_ok(),
                 "domain service route is not approved"
-            );
-        } else {
-            anyhow::ensure!(
-                request.path != PUSH_BINDING_ROUTE,
-                "a domain route is not served by the legacy daemon"
             );
         }
         let body = serde_json::to_vec(e)?;
@@ -1205,12 +1219,23 @@ impl Service {
             Err(error) if error.is::<crate::operation_journal::Capacity>()=>{
                 accepted().await?;
                 self.require_device_approval(&e.sender,&device,transport)?;
-                let response = self.encode_response(e,&device,&json!({"status":429,"body":{"error":"operation_capacity"}}),&request)?;
+                let result = match RegistrationOperation::for_request(&request) {
+                    Some(operation) => {
+                        let rejection = RegistrationRejection::Capacity;
+                        rejection.log(operation, transport);
+                        rejection.response()
+                    }
+                    None => json!({"status":429,"body":{"error":"operation_capacity"}}),
+                };
+                let response = self.encode_response(e,&device,&result,&request)?;
                 return Ok((response,device,guard));
             },
             Err(error) if error.is::<crate::operation_journal::Retired>()=>{
                 accepted().await?;
                 self.require_device_approval(&e.sender,&device,transport)?;
+                if let Some(operation) = RegistrationOperation::for_request(&request) {
+                    RegistrationRejection::Expired.log(operation, transport);
+                }
                 let response=self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?;
                 return Ok((response,device,guard));
             },
@@ -1232,7 +1257,12 @@ impl Service {
             && request.method == "GET"
             && request.body.is_none();
         let response = match disposition {
-            Disposition::Retired => self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?,
+            Disposition::Retired => {
+                if let Some(operation) = RegistrationOperation::for_request(&request) {
+                    RegistrationRejection::Expired.log(operation, transport);
+                }
+                self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?
+            }
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
                 self.execute_atomic_local(e, &device, &request, &digest, transport, receipt.clone())
@@ -1302,6 +1332,25 @@ impl Service {
         &self,
         envelope: Envelope,
     ) -> std::result::Result<(Vec<u8>, crate::approval_lease::ApprovalLease), DirectRefusal> {
+        let result = self.handle_direct_inner(envelope).await;
+        if let Err(refusal) = &result {
+            let (status, reason) = match refusal {
+                DirectRefusal::Misdirected => (421, "wrong_mac"),
+                DirectRefusal::Unauthorized => (401, "unauthorized_envelope"),
+                DirectRefusal::Conflict => (409, "idempotency_conflict"),
+                DirectRefusal::Rejected(_) => (400, "request_rejected"),
+                DirectRefusal::Revoked(_) => (403, "device_revoked"),
+            };
+            // An envelope refused before it can be opened has no trustworthy operation name.
+            log!("device request rejected: operation=encrypted_request transport=Direct status={status} reason={reason}");
+        }
+        result
+    }
+
+    async fn handle_direct_inner(
+        &self,
+        envelope: Envelope,
+    ) -> std::result::Result<(Vec<u8>, crate::approval_lease::ApprovalLease), DirectRefusal> {
         if envelope.kind != "request" || envelope.route != self.mac_id || envelope.recipient != self.mac_id {
             return Err(DirectRefusal::Misdirected);
         }
@@ -1334,10 +1383,16 @@ impl Service {
         if Self::ordinary_read(&prepared.request) {
             prepared.execution = ExecutionLane::Read;
         }
+        let registration = RegistrationOperation::for_request(&prepared.request);
         let (response, device, _guard) = self
             .execute(&work.envelope, prepared, Transport::Direct, || async { Ok(()) })
             .await
-            .map_err(refusal)?;
+            .map_err(|error| {
+                if let (Some(operation), Some(rejection)) = (registration, error.downcast_ref::<RegistrationRejection>()) {
+                    rejection.log_with_status(operation, Transport::Direct, 400);
+                }
+                refusal(error)
+            })?;
         let lease = crate::approval_lease::ApprovalLease::shared(&self.home)
             .map_err(|error| DirectRefusal::Rejected(format!("{error:#}")))?;
         self.require_device_approval(&work.envelope.sender, &device, Transport::Direct)
@@ -1826,10 +1881,10 @@ impl Service {
         if !auth.approved_key_matches(id, &device.signing)
             || !Auth::open(home)?.approved_key_matches(id, &device.signing)
         {
-            bail!("device is not locally approved");
+            return Err(RegistrationRejection::ApprovalRevoked.into());
         }
         if transport == Transport::Relay && !journal.enrollment_active(id)? {
-            bail!("device is not actively enrolled with the relay");
+            return Err(RegistrationRejection::NotEnrolled.into());
         }
         Ok(())
     }
@@ -2716,13 +2771,13 @@ impl Journal {
                 return Ok(Some(current));
             }
             if revision == Some(current) {
-                let saved: (String, Option<String>, Option<String>) = tx.query_row(
+                let saved: Option<(String, Option<String>, Option<String>)> = tx.query_row(
                     "SELECT b.binding,p.quiet_start,p.quiet_end FROM service_push_bindings b JOIN service_push_preferences p USING(device_id) JOIN service_enrollments e USING(device_id) WHERE b.device_id=?1 AND e.state='active'",
-                    params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                    params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
                 return Ok(
-                    if quiet.as_ref().is_some_and(|quiet| {
+                    if saved.as_ref().is_some_and(|saved| quiet.as_ref().is_some_and(|quiet| {
                         saved.0 == binding && saved.1 == quiet.start && saved.2 == quiet.end
-                    }) {
+                    })) {
                         None
                     } else {
                         Some(current)
@@ -2735,7 +2790,7 @@ impl Journal {
             params![id, binding],
         )?;
         if updated != 1 {
-            bail!("push device is not enrolled");
+            return Err(RegistrationRejection::NotEnrolled.into());
         }
         if let Some(quiet) = quiet {
             tx.execute("INSERT INTO service_push_preferences(device_id,quiet_start,quiet_end) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET quiet_start=excluded.quiet_start,quiet_end=excluded.quiet_end", params![id, quiet.start, quiet.end])?;
@@ -2754,7 +2809,7 @@ impl Journal {
         binding: &str,
         quiet: Option<QuietHours>,
         revision: Option<i64>,
-        encode: impl FnOnce(Value) -> Result<Vec<u8>>,
+        encode: impl FnOnce(registration::PreferencesOutcome) -> Result<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         let mut c = self.db()?;
         #[cfg(test)]
@@ -2774,11 +2829,13 @@ impl Journal {
             state == "executing" && mode == "local",
             "operation is not an atomic local execution"
         );
-        let result = match Self::write_push_preferences(&tx, sender, binding, quiet, revision)? {
-            Some(current) => {
-                json!({"status":409,"error":"stale_push_preferences","current_revision":current})
-            }
-            None => json!({"status":204}),
+        let result = match Self::write_push_preferences(&tx, sender, binding, quiet, revision) {
+            Ok(Some(current)) => registration::PreferencesOutcome::Rejected(RegistrationRejection::StalePreferences(current)),
+            Ok(None) => registration::PreferencesOutcome::Accepted,
+            Err(error) => match error.downcast_ref::<RegistrationRejection>() {
+                Some(rejection) => registration::PreferencesOutcome::Rejected(*rejection),
+                None => return Err(error),
+            },
         };
         let bytes = encode(result)?;
         tx.execute("UPDATE service_receipts SET state='completed',response=?3 WHERE sender=?1 AND request_id=?2",
@@ -2962,6 +3019,7 @@ mod tests {
     mod journal_admission_tests;
     mod journal_transition_tests;
     mod push_commit_tests;
+    mod registration_tests;
     mod operation_result_tests;
     mod approval_lease_deadlock_tests;
     mod iroh_tests;
@@ -3152,7 +3210,7 @@ mod tests {
                         &binding,
                         None,
                         None,
-                        |result| Ok(serde_json::to_vec(&result)?),
+                        |result| Ok(serde_json::to_vec(&result.response())?),
                     )
                 },
             )
@@ -3305,7 +3363,7 @@ mod tests {
                 &binding,
                 Some(QuietHours::default()),
                 Some(1),
-                |v| Ok(serde_json::to_vec(&v)?),
+                |v| Ok(serde_json::to_vec(&v.response())?),
             )
         };
         journal.db().unwrap().execute_batch("CREATE TRIGGER fail_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'injected commit failure'); END;").unwrap();
@@ -4630,8 +4688,8 @@ agreement_key = "{}"
                     "legacy", PUSH_BINDING_ROUTE,
                     json!({"push_binding": binding})
                 ), Transport::Relay)
-                .is_err(),
-            "the legacy daemon does not serve domain routes"
+                .is_ok(),
+            "known registrations receive a typed compatibility response from the legacy daemon"
         );
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let service = service.with_domain(domain);
