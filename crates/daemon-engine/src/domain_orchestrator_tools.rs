@@ -591,6 +591,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
     if let Some(why) = domain.live.machine_watch.refuse_launch(Path::new(&cwd)) {
+        domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
         if origin == Origin::Orchestrator && replaced.is_none() {
             return queue_at_gate(domain, &body, &task.id, &task.title);
         }

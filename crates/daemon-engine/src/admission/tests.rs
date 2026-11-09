@@ -64,6 +64,42 @@ fn startup_admission_explicit_memory_bypass_keeps_disk_and_slot_checks() {
 }
 
 #[test]
+fn startup_admission_granted_work_keeps_disk_reserves_until_new_bytes() {
+    const GB: u64 = 1_000_000_000;
+    for resuming in [false, true] {
+        let (_home, domain) = world();
+        let gate = &domain.live.gate;
+        gate.ignore_mac();
+        let watch = &domain.live.machine_watch;
+        let disk = |free| crate::disk::Space { total: 500 * GB, free, purgeable: 0 };
+        watch.measure_disk(disk(36 * GB));
+        let base = alondra_core::now_millis();
+        for (index, id) in ["t1", "t2", "t3"].into_iter().enumerate() {
+            let now = base + index as Millis * SAMPLE;
+            if resuming { paused_by_user(&domain, id, TaskPriority::Normal, now); }
+            else { create(&domain, id); }
+            let key = if resuming { Key::Resume(format!("agent-{id}")) } else { Key::Task(id.into()) };
+            let waiting = Waiting { key, priority: TaskPriority::Normal, resuming, since: now };
+            assert_eq!(gate.ask(&domain, waiting.clone(), now), Ok(()));
+            let reserved = watch.disk_reserved(&BTreeMap::new());
+            assert_eq!(gate.ask(&domain, waiting, now), Ok(()));
+            assert_eq!(watch.disk_reserved(&BTreeMap::new()), reserved, "reading the same grant again creates no charge");
+            if resuming { goes_on(&domain, id, now); }
+            else { start(&domain, id, now); }
+            finish(&domain, id, now + 1);
+            crate::machine_watch::pace(&domain, &Machine { at: now + 2, ..Machine::default() });
+        }
+        create(&domain, "t4");
+        assert!(matches!(ask(&domain, "t4", base + 4 * SAMPLE), Err(Hold::Disk { needed, .. }) if needed == 37 * GB), "completed grants cannot disappear between failed measurements");
+        assert_eq!(watch.disk_reserved(&BTreeMap::new()), 24 * GB, "a rejected head creates no additional reservation");
+        watch.measure_disk(disk(12 * GB));
+        assert!(matches!(ask(&domain, "t4", base + 5 * SAMPLE), Err(Hold::Disk { .. })));
+        watch.measure_disk(disk(36 * GB));
+        assert_eq!(ask(&domain, "t4", base + 6 * SAMPLE), Ok(()));
+    }
+}
+
+#[test]
 fn startup_admission_missing_memory_cannot_cancel_pending_reserves() {
     let (_home, domain) = world();
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
@@ -946,6 +982,7 @@ proptest::proptest! {
         while back.len() < ids.len() {
             proptest::prop_assert!(step < 400, "{} of {} came back", back.len(), ids.len());
             let now = resumed_at + step as Millis * SAMPLE;
+            domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
             look(&domain, &home.0, now);
             let gone_on: Vec<&String> = ids.iter().filter(|id| !back.contains(id) && !still_paused(&domain, id)).collect();
             for id in gone_on {

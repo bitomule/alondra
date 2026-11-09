@@ -9,6 +9,7 @@
 //! (`disk_peaks`), above the low line, so the builds never take the disk under it. Under the floor
 //! (`under_floor`), lower than the low line, the estimates fell short: the nodes' next turns wait.
 use std::ffi::CString;
+use std::collections::BTreeSet;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -111,10 +112,18 @@ pub struct Lines {
     pub free: u64,
 }
 
-/// The volumes mounted on this Mac a build may write to besides its own disk: local, writable and
-/// shown in Finder, so never `/`, the system's own volumes or the simulators' images.
-pub fn candidate_volumes() -> Vec<PathBuf> {
-    platform::mounted().into_iter().filter(|mount| !matches!(mount.to_str(), Some("/" | BOOT_DATA))).collect()
+#[derive(Debug)]
+pub struct Mounts {
+    pub all: BTreeSet<PathBuf>,
+    pub candidates: Vec<PathBuf>,
+}
+
+/// A complete mount table, with the local, writable volumes shown in Finder separated for
+/// learning. A known volume stays present even when it becomes read-only or hidden.
+pub fn mounted_volumes() -> std::io::Result<Mounts> {
+    let mut mounts = platform::mounted()?;
+    mounts.candidates.retain(|mount| !matches!(mount.to_str(), Some("/" | BOOT_DATA)));
+    Ok(mounts)
 }
 
 pub fn space(path: &Path) -> Option<Space> {
@@ -179,21 +188,45 @@ mod platform {
         u64::try_from(used).ok()
     }
 
-    /// Every mount point that is local, writable and not hidden from Finder.
-    pub fn mounted() -> Vec<std::path::PathBuf> {
+    fn complete_count(filled: libc::c_int, capacity: usize) -> std::io::Result<usize> {
+        let filled = usize::try_from(filled).map_err(|_| std::io::Error::last_os_error())?;
+        if filled >= capacity {
+            return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "mount table changed while reading"));
+        }
+        Ok(filled)
+    }
+
+    pub fn mounted() -> std::io::Result<super::Mounts> {
         use std::os::unix::ffi::OsStrExt as _;
         let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-        let Ok(count) = usize::try_from(count) else { return vec![] };
+        let count = usize::try_from(count).map_err(|_| std::io::Error::last_os_error())?;
         let mut mounts: Vec<libc::statfs> = Vec::with_capacity(count + 4);
-        let size = libc::c_int::try_from(mounts.capacity() * std::mem::size_of::<libc::statfs>()).unwrap_or(libc::c_int::MAX);
+        let size = libc::c_int::try_from(mounts.capacity() * std::mem::size_of::<libc::statfs>())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "mount table is too large"))?;
         let filled = unsafe { libc::getfsstat(mounts.as_mut_ptr(), size, libc::MNT_NOWAIT) };
-        let Ok(filled) = usize::try_from(filled) else { return vec![] };
-        unsafe { mounts.set_len(filled.min(mounts.capacity())) };
+        let filled = complete_count(filled, mounts.capacity())?;
+        unsafe { mounts.set_len(filled) };
         let wanted = |flags: u32| flags & libc::MNT_LOCAL as u32 != 0 && flags & (libc::MNT_RDONLY | libc::MNT_DONTBROWSE) as u32 == 0;
-        mounts.iter().filter(|mount| wanted(mount.f_flags)).map(|mount| {
+        let mut all = std::collections::BTreeSet::new();
+        let mut candidates = vec![];
+        for mount in &mounts {
             let name = unsafe { std::ffi::CStr::from_ptr(mount.f_mntonname.as_ptr()) };
-            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes()))
-        }).collect()
+            let path = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes()));
+            all.insert(path.clone());
+            if wanted(mount.f_flags) { candidates.push(path); }
+        }
+        if !all.contains(Path::new("/")) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "mount table has no root filesystem"));
+        }
+        Ok(super::Mounts { all, candidates })
+    }
+
+    #[test]
+    fn a_failed_or_possibly_truncated_mount_table_cannot_confirm_an_unmount() {
+        assert!(complete_count(-1, 8).is_err());
+        assert!(complete_count(8, 8).is_err());
+        assert!(complete_count(9, 8).is_err());
+        assert_eq!(complete_count(7, 8).unwrap(), 7);
     }
 }
 
@@ -203,8 +236,8 @@ mod platform {
         None
     }
 
-    pub fn mounted() -> Vec<std::path::PathBuf> {
-        vec![]
+    pub fn mounted() -> std::io::Result<super::Mounts> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "mount table is unavailable"))
     }
 
     pub(super) fn held(_path: &std::path::Path) -> Option<u64> {
@@ -352,7 +385,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_volumes_builds_may_write_to_are_local_writable_and_shown_in_finder() {
-        let candidates = candidate_volumes();
+        let candidates = mounted_volumes().map(|mounts| mounts.candidates).unwrap_or_default();
         let path = |name: &str| PathBuf::from(name);
         for system in ["/", BOOT_DATA, "/System/Volumes/VM", "/System/Volumes/Preboot", "/System/Volumes/Update"] {
             assert!(!candidates.contains(&path(system)), "{system} in {candidates:?}");

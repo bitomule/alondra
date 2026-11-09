@@ -4,10 +4,10 @@ The gate (`crates/daemon-engine/src/admission.rs`) decides when a waiting task's
 paused one comes back. It measures the system's available memory and swap, and the memory of
 Alondra's nodes. Other programs affect the system totals; the daemon does not classify them.
 
-After a restart, starts and resumes wait for valid memory and system-disk budgets. Memory needs a
-positive total and available bytes no greater than that total; zero available bytes hold admission.
+After a restart, starts and resumes wait for valid budgets of memory and the system disk. Memory
+needs a positive total and available bytes no greater than that total; zero available bytes hold admission.
 A percentage, pressure level, swap counter or healthy external disk cannot stand in for those
-budgets. A first healthy measurement is enough, without a fixed warm-up delay. Optional percentage,
+budgets. A first healthy measurement is enough, without a fixed delay at startup. Optional percentage,
 pressure and swap readings need not be present.
 
 Invalid readings retain the last valid budgets and cannot establish recovery or include newer node
@@ -20,6 +20,28 @@ Independent pressure, low free percentages and swap activity can tighten admissi
 byte budget is missing. Such readings cannot clear a restriction or count toward swap recovery.
 Unknown, incoherent or reset swap counters retain a known swapping floor until a fresh minute of
 valid counters establishes recovery.
+
+Learned build volumes retain their last valid space budget and recovery margin when a probe fails.
+Reservations against each budget remain after work ends, until a valid space reading accounts for
+its writes. Every successful admission records its estimated writes, including work that finishes
+between samples. Repeated queries of one admission add no charge. A new admission cannot erase
+earlier writes or reuse older consumption credit, even for the same task. Forecasts exclude the
+task at the front of the queue and turns held for disk; earlier grants remain counted.
+
+An error reading the mount table cannot confirm an unmount, and cached space cannot establish
+incident recovery. A complete table suspends the restriction of an absent volume without forgetting
+its learned peaks. The aggregate budget and incident retain the mount that caused them, so confirmed
+absence retires that volume's hold even if the system probe fails. The system disk's own recovery
+margin and other volumes' restrictions remain independent. Positive mount evidence supersedes an
+older confirmed absence, even if the next mount-table read fails. A remounted volume waits for a
+valid reading of its own filesystem; space from the directory's parent filesystem cannot replace it.
+Launch preflight also waits for that budget, including a launch admitted before the volume appeared.
+This applies to every learned build volume, even when the project's directory is on the system disk.
+Its immediate space probe cannot publish a new budget or discard reservations; the watcher measures
+the volume's identity and publishes its own coherent budget before preflight can proceed.
+Disk preflight refusals invalidate the unused admission, so retries evaluate and reserve against
+the current budgets instead of reusing a grant made while the volume was absent.
+Waiting for a first reading does not invent a measured shortage or an additional recovery margin.
 
 | Check | Holds when | Source |
 | --- | --- | --- |

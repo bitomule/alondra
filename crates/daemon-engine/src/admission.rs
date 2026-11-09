@@ -435,7 +435,7 @@ impl Admission {
         if let Key::Resume(session) = &key {
             resume_locked(domain, &mut inner, session, now);
         }
-        admit(&mut inner, key, now);
+        admit(domain, &state, &mut inner, key, now);
         self.save_with(domain, &mut inner);
         Ok(())
     }
@@ -724,7 +724,11 @@ fn deliver_owed(domain: &DomainRuntime, inner: &mut Inner) {
     inner.saved.pauses.owed.retain(|session, text| !tell_to_go_on(domain, session, text));
 }
 
-fn admit(inner: &mut Inner, key: Key, now: Millis) {
+fn admit(domain: &DomainRuntime, state: &DomainState, inner: &mut Inner, key: Key, now: Millis) {
+    let task = task_of(state, &key);
+    let project = task.as_ref().and_then(|task| state.tasks.get(task)).and_then(|task| task.project.clone());
+    let reservation = task.map(Key::Task).unwrap_or_else(|| key.clone());
+    domain.live.machine_watch.reserve_admission(reservation, project);
     inner.admitted.retain(|(_, at)| now - at < IN_FLIGHT);
     inner.at_work.remove(&key);
     let admitted: BTreeSet<&Key> = inner.admitted.iter().map(|(key, _)| key).collect();
@@ -1020,8 +1024,9 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let head = queue.first().and_then(|head| task_of(state, &head.key));
     let reserving = reserving_tasks(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
     let project = head.and_then(|task| state.tasks.get(&task)).and_then(|task| task.project.as_deref());
-    let disk = domain.live.machine_watch.disk_room(&reserving, project, now);
-    let disk_detail = domain.live.machine_watch.disk_detail(&reserving, project, now);
+    let reservation_head = queue.first().map(|head| task_of(state, &head.key).map(Key::Task).unwrap_or_else(|| head.key.clone()));
+    let disk = domain.live.machine_watch.disk_room_for(&reserving, project, reservation_head.as_ref(), now);
+    let disk_detail = domain.live.machine_watch.disk_detail_for(&reserving, project, reservation_head.as_ref(), now);
     let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk, disk_detail };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
@@ -1167,14 +1172,14 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
                 log!("the admission gate admits a resume; {}; {}", snapshot.mac.memory_detail(snapshot.in_flight), snapshot.disk_detail.as_deref().unwrap_or("disk unavailable"));
                 let session = session.clone();
                 resume_locked(domain, &mut inner, &session, now);
-                admit(&mut inner, Key::Resume(session), now);
+                admit(domain, &state, &mut inner, Key::Resume(session), now);
                 gate.save_with(domain, &mut inner);
                 None
             }
             (Some(head), None) => {
                 log!("the admission gate admits queued work; {}; {}", snapshot.mac.memory_detail(snapshot.in_flight), snapshot.disk_detail.as_deref().unwrap_or("disk unavailable"));
                 let key = head.key.clone();
-                admit(&mut inner, key.clone(), now);
+                admit(domain, &state, &mut inner, key.clone(), now);
                 gate.save_with(domain, &mut inner);
                 Some(key)
             }
