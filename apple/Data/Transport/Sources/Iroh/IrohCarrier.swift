@@ -24,6 +24,8 @@ public actor IrohCarrier: EnvelopeCarrier {
     private let prepare: @Sendable (IrohMacAddress) async throws -> Void
     private let connectWait: Duration
     private let dialTimeout: Duration
+    private let attemptTimeouts: [Duration]
+    private let rebindAfterFailures: Int
     private let lingerAfterUse: Duration
     private let retryDelays: [Duration]
     private let clock = ContinuousClock()
@@ -48,6 +50,7 @@ public actor IrohCarrier: EnvelopeCarrier {
                 address: @escaping @Sendable () async -> IrohMacAddress?,
                 prepare: @escaping @Sendable (IrohMacAddress) async throws -> Void = { _ in },
                 connectWait: Duration = .seconds(5), dialTimeout: Duration = .seconds(10),
+                attemptTimeouts: [Duration] = [.seconds(4), .seconds(6)], rebindAfterFailures: Int = 3,
                 lingerAfterUse: Duration = .seconds(3),
                 retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(5), .seconds(15), .seconds(30)]) {
         self.dialer = dialer
@@ -58,6 +61,8 @@ public actor IrohCarrier: EnvelopeCarrier {
         self.prepare = prepare
         self.connectWait = connectWait
         self.dialTimeout = dialTimeout
+        self.attemptTimeouts = attemptTimeouts
+        self.rebindAfterFailures = rebindAfterFailures
         self.lingerAfterUse = lingerAfterUse
         self.retryDelays = retryDelays
     }
@@ -336,7 +341,10 @@ public actor IrohCarrier: EnvelopeCarrier {
         while running || inUse > 0, generation == current, !shut, !Task.isCancelled {
             if liveLink == nil {
                 connectingNow = true
-                let connected = await connectOnce()
+                if failures >= rebindAfterFailures, failures % rebindAfterFailures == 0 {
+                    await dialer.networkMoved()
+                }
+                let connected = await connectOnce(timeout: attemptTimeouts.indices.contains(failures) ? attemptTimeouts[failures] : nil)
                 guard running || inUse > 0, generation == current, !shut else {
                     if generation == current {
                         connectingNow = false
@@ -382,7 +390,10 @@ public actor IrohCarrier: EnvelopeCarrier {
         }
     }
 
-    private func connectOnce() async -> (any IrohLink)? {
+    /// A dial that has not answered in a few seconds is stuck more often than slow: the ones that
+    /// worked on mobile data answered in under two, so the first attempts give up early.
+    private func connectOnce(timeout: Duration? = nil) async -> (any IrohLink)? {
+        let timeout = min(timeout ?? dialTimeout, dialTimeout)
         guard let mac = await address(), let macEndpoint = IrohIdentity.endpointBytes(mac.endpointID) else { return nil }
         if mac.relay != nil, prepared != mac {
             do { try await prepare(mac) } catch { return nil }
@@ -395,10 +406,10 @@ public actor IrohCarrier: EnvelopeCarrier {
         } catch { return nil }
         let dialer = dialer
         let link: any IrohLink
-        do { link = try await Deadline.run(within: dialTimeout) { try await dialer.dial(mac) } }
+        do { link = try await Deadline.run(within: timeout) { try await dialer.dial(mac) } }
         catch { return nil }
         do {
-            let reply = try await Deadline.run(within: dialTimeout) {
+            let reply = try await Deadline.run(within: timeout) {
                 try await link.exchange(hello, answerLimit: 4096)
             }
             if IrohHello.accepted(reply) { return link }
