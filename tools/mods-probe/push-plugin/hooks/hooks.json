@@ -1,4 +1,0 @@
-{
-  "description": "Push probe hooks module",
-  "modules": ["./register.js"]
-}

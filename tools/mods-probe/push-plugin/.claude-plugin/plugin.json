@@ -1,6 +1,0 @@
-{
-  "name": "alondra-push-probe",
-  "version": "0.1.0",
-  "description": "Proves daemon-to-node push for Alondra's mods plan: a helper the mod spawns holds a Unix socket open and the mod submits each pushed message",
-  "author": { "name": "Alondra" }
-}
