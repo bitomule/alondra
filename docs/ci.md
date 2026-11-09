@@ -124,7 +124,8 @@ includes compilation and tests; GitHub's job timestamps also include checkout an
 Measure queue delay separately from `created_at` to the first job's `started_at` when comparing
 the contributor's total wait with local validation.
 Failed tests print their errors into the job log, so diagnosis does not depend on downloading
-files from a discarded runner.
+files from a discarded runner. CI raises Bazel's per-test output limit to 16 MiB: a diagnostic
+run produced a 1.2 MB daemon-engine failure log that Bazel omitted at its default 1 MiB limit.
 
 Keep the commit and target set identical when comparing machines. Record runner image, Xcode
 and simulator builds, and distinguish a fresh GitHub VM from a warm local cache. Do not erase a
@@ -135,6 +136,24 @@ Failures and timeouts stay visible. There is no automatic retry to turn a flaky 
 A maintainer can investigate and deliberately rerun the same commit; retain the failed attempt
 in the evidence rather than reporting only the successful rerun. Jobs awaiting fork approval
 remain GitHub's responsibility; this workflow introduces no Alondra waiting card or merge gate.
+
+## Runner measurements
+
+These manual probes measure runner behavior; they do not validate an external contribution.
+The times below are the Bazel command durations printed by `tools/ci.py`, including compilation
+and tests on fresh GitHub VMs. They exclude selection, runner queueing and checkout.
+
+| Scope | Runner | Bazel duration | Result | Evidence |
+| --- | --- | --- | --- | --- |
+| CI selector and policy tests | `ubuntu-24.04` | 13.776 s | Passed | [Run 42713464331](https://github.com/bitomule/alondra/actions/runs/42713464331) |
+| Offline plugin validation | `ubuntu-24.04` | 15.346 s | Passed | [Run 42712322608](https://github.com/bitomule/alondra/actions/runs/42712322608) |
+| Local publication safety tests | `xcode-27` | 34.754 s | Three targets passed | [Run 42713472365](https://github.com/bitomule/alondra/actions/runs/42713472365) |
+
+The first full probe, [run 42648436515](https://github.com/bitomule/alondra/actions/runs/42648436515),
+finished with 42 successful target groups and eight failures; selection also passed. Its Apple Bazel command took
+2,738.850 s (45 min 38.9 s); 20 of 25 tests passed. The canonical iPhone 17 / iOS 27.0 creation
+and boot probe succeeded before that command. This failed attempt remains part of the record;
+it is not a successful validation or a speed comparison with local execution.
 
 ## Cost and limits
 

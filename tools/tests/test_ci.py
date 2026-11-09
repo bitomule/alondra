@@ -254,6 +254,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("common:ci --remote_cache=", ci_flags)
         self.assertIn("common:ci --noremote_upload_local_results", ci_flags)
         self.assertIn("common:ci --bes_backend=", ci_flags)
+        self.assertIn("test:ci --experimental_ui_max_stdouterr_bytes=16777216", ci_flags)
         self.assertIn("test:ci --test_env=SIMPOOL_BIN", ci_flags)
         self.assertIn("test:ci --test_env=SIMPOOL_MAX_SLOTS=1", ci_flags)
         self.assertIn("test:ci --test_env=DISABLE_AUTOUPDATER=1", ci_flags)
