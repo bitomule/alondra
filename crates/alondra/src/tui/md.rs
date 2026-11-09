@@ -1729,20 +1729,26 @@ mod tests {
 
     #[test]
     fn a_local_image_says_it_cannot_be_shown_here() {
-        assert_eq!(
-            rendered("![main screen](docs/main.png)", 80),
-            vec!["📷 main screen (imagen local, no disponible aquí)"]
-        );
-        let target = &parse("<img src=\"docs/main.png\">")[0].targets[0];
-        assert!(target.local() && !target.openable());
-        assert_eq!(target.label, "main.png");
+        for (lang, expected) in [
+            (crate::i18n::Lang::En, "📷 main screen (local image, not available here)"),
+            (crate::i18n::Lang::Es, "📷 main screen (imagen local, no disponible aquí)"),
+        ] {
+            crate::i18n::set_for_this_thread(lang);
+            assert_eq!(rendered("![main screen](docs/main.png)", 80), vec![expected]);
+            let target = &parse("<img src=\"docs/main.png\">")[0].targets[0];
+            assert!(target.local() && !target.openable());
+            assert_eq!(target.label, "main.png");
+        }
     }
 
     #[test]
     fn an_image_alondra_copied_shows_as_an_image_and_opens_from_the_daemon() {
         let route = format!("/files?path=files/images/{}.png", "a".repeat(64));
-        assert_eq!(rendered(&format!("![main screen]({route})"), 80), vec!["📷 main screen"]);
-        assert_eq!(rendered(&format!("<img src=\"{route}\">"), 80), vec!["📷 imagen"]);
+        for (lang, expected) in [(crate::i18n::Lang::En, "📷 image"), (crate::i18n::Lang::Es, "📷 imagen")] {
+            crate::i18n::set_for_this_thread(lang);
+            assert_eq!(rendered(&format!("![main screen]({route})"), 80), vec!["📷 main screen"]);
+            assert_eq!(rendered(&format!("<img src=\"{route}\">"), 80), vec![expected]);
+        }
         let target = &parse(&format!("![main screen]({route})"))[0].targets[0];
         assert!(!target.local() && target.openable());
         assert_eq!(target.stored(), Some(route.as_str()));
