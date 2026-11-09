@@ -37,8 +37,10 @@ file. Changes to the manifest, selector, shared glob matcher, workflow or CI too
 Local musts evidence is never used to skip CI.
 
 The manifest reader accepts the repository's block syntax for `bazel/test`, `paths` and
-`with.targets`. An unsupported check type, YAML construct or unmapped check name fails selection
-with an error. Extend the parser and runner map with tests when introducing such a change.
+`with.targets`. The explicit `mac-inventory-review` judgment check is listed, with its review
+facts, in the selection summary when affected. CI neither performs nor approves that review;
+a maintainer still checks the Mac inventory. Base scopes remain effective if a PR narrows them.
+An unsupported check type, YAML construct or unmapped check name fails selection with an error. Extend the parser and runner map with tests when introducing such a change.
 
 Each selected check gets a fresh runner. Identical target patterns assigned to the same operating
 system run once. At most four jobs run concurrently; other jobs wait in GitHub's queue. A new

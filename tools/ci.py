@@ -34,13 +34,29 @@ BOOTSTRAP = {
 TARGET = re.compile(r"//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+$|//[A-Za-z0-9_./+-]*/\.\.\.$")
 # Bazel's documented exit status: the build succeeded but the target set contains no tests.
 NO_TESTS_FOUND = 4
+MANUAL_CHECKS = {"mac-inventory-review"}
+
+
+def manual_reviews(text):
+    reviews = {}
+    blocks = re.finditer(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)", text, re.M | re.S)
+    for block in blocks:
+        name, body = block.groups()
+        if "    uses: agent\n" not in body:
+            continue
+        paths = re.findall(r'^      - (".*")$', body, re.M)
+        facts = re.findall(r'^        - (".*")$', body, re.M)
+        if name not in MANUAL_CHECKS or not paths or not facts or "      targets:" in body:
+            raise ValueError(f"Unsupported manual review check: {name}")
+        reviews[name] = {"paths": [json.loads(p) for p in paths], "facts": [json.loads(f) for f in facts]}
+    return reviews
 
 
 def manifest(text):
     """Accept the manifest's current block syntax; refuse extensions instead of losing checks."""
     grammar = re.compile(
-        r'version: 1|checks:|  [\w-]+:|    uses: bazel/test|    paths:|    with:|'
-        r'      targets:|      - "[^"\\#\n]+"|        - //[^\s#]+'
+        r'version: 1|checks:|  [\w-]+:|    uses: (?:bazel/test|agent)|    paths:|    with:|'
+        r'      targets:|      facts:|      - "[^"\\#\n]+"|        - "[^"\\\n]+"|        - //[^\s#]+'
     )
     lines = []
     for line in text.splitlines():
@@ -55,14 +71,24 @@ def manifest(text):
     if len(names) != len(set(names)):
         raise ValueError("Duplicate MUSTS check")
     checks = parse_checks(text)
-    if not checks or set(checks) != set(names):
-        raise ValueError("Every MUSTS check must use bazel/test")
+    reviews = manual_reviews(text)
+    if not checks or set(checks) | set(reviews) != set(names):
+        raise ValueError("Every MUSTS check must be a Bazel check or an explicit manual review")
     if unknown := set(checks) - MAC_CHECKS - LINUX_CHECKS:
         raise ValueError(f"Assign a CI runner to new MUSTS checks: {sorted(unknown)}")
     for name, spec in checks.items():
         if not spec["paths"] or not spec["targets"] or any(not TARGET.fullmatch(t) for t in spec["targets"]):
             raise ValueError(f"Missing paths or invalid targets in {name}")
     return checks
+
+
+def affected_reviews(current, previous, paths, force_all=False):
+    selected = {}
+    for reviews in (previous, current):
+        for name, spec in reviews.items():
+            if force_all or paths & BOOTSTRAP or any(matches(spec["paths"], path) for path in paths):
+                selected.setdefault(name, set()).update(spec["facts"])
+    return {name: sorted(facts) for name, facts in sorted(selected.items())}
 
 
 def external_pr(event):
@@ -152,15 +178,20 @@ def select(args):
         raise ValueError("Invalid base SHA")
     ancestor = command("git", "merge-base", base, "HEAD").decode().strip()
     paths = changed_paths(command("git", "diff", "--name-status", "-z", "--find-renames", f"{ancestor}...HEAD", "--"))
-    current = manifest(Path("MUSTS.yml").read_text())
-    previous = manifest(command("git", "show", f"{ancestor}:MUSTS.yml").decode())
+    current_text = Path("MUSTS.yml").read_text()
+    previous_text = command("git", "show", f"{ancestor}:MUSTS.yml").decode()
+    current = manifest(current_text)
+    previous = manifest(previous_text)
     current, previous, requested = manual_scope(event_name, event, current, previous)
     probe = event_name == "workflow_dispatch"
     matrix = plan(current, previous, paths, force_all=probe)
+    reviews = affected_reviews(manual_reviews(current_text), manual_reviews(previous_text), paths,
+                               force_all=probe and not requested)
     write_output("matrix", json.dumps(matrix, separators=(",", ":")))
     write_output("has_checks", str(bool(matrix["include"])).lower())
     print(json.dumps({"event": event_name, "check": requested or None,
-                      "base": ancestor, "paths": sorted(paths), "matrix": matrix}, indent=2))
+                      "base": ancestor, "paths": sorted(paths), "matrix": matrix,
+                      "manual_reviews": reviews}, indent=2))
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
         heading = "Runner and timing probe" if probe else "External contribution validation"
         summary.write(f"## {heading}\n\n{len(matrix['include'])} target sets selected from MUSTS.yml.\n")
@@ -168,7 +199,11 @@ def select(args):
             summary.write("This runner probe does not validate the external-contributor or fork-approval path.\n")
             summary.write(f"\nRequested scope: **{requested or 'all checks'}**.\n")
         if not matrix["include"]:
-            summary.write("No MUSTS check reads the changed paths.\n")
+            summary.write("No deterministic Bazel check reads the changed paths.\n")
+        for name, facts in reviews.items():
+            summary.write(f"\n### Manual review required: {name}\n\nCI does not perform or approve this judgment check.\n")
+            for fact in facts:
+                summary.write(f"\n- {fact}\n")
 
 
 def run(args):

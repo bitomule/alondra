@@ -45,6 +45,29 @@ def event(author="owner", association="OWNER", fork=False):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_judgment_checks_are_reported_for_review_without_becoming_a_ci_approval(self):
+        manual = '''  mac-inventory-review:
+    uses: agent
+    paths:
+      - "runtime/**"
+    with:
+      facts:
+        - "Review installed programs and permissions."
+'''
+        current = MANIFEST + manual
+        self.assertEqual(ci.manifest(current), ci.manifest(MANIFEST))
+        reviews = ci.manual_reviews(current)
+        self.assertEqual(ci.affected_reviews(reviews, {}, {"docs/unrelated.md"}), {})
+        expected = {"mac-inventory-review": ["Review installed programs and permissions."]}
+        self.assertEqual(ci.affected_reviews(reviews, {}, {"runtime/entry.py"}), expected)
+        narrowed = ci.manual_reviews(current.replace('"runtime/**"', '"new/**"'))
+        self.assertEqual(ci.affected_reviews(narrowed, reviews, {"runtime/deleted.py"}), expected)
+        self.assertEqual(ci.affected_reviews(reviews, {}, set(), force_all=True), expected)
+        for invalid in (current.replace("mac-inventory-review:", "unknown-review:"),
+                        current.replace('        - "Review installed programs and permissions."', "")):
+            with self.assertRaises(ValueError):
+                ci.manifest(invalid)
+
     def test_owner_is_excluded_including_an_owner_fork_and_reruns_by_another_actor(self):
         for fork in (False, True):
             value = event(fork=fork)
