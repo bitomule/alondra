@@ -65,15 +65,21 @@ const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeState
 
 pub struct GhCli {
     program: PathBuf,
+    branch_pr_limit: Duration,
 }
 
 impl GhCli {
     pub fn new() -> Self {
-        Self { program: "gh".into() }
+        Self { program: "gh".into(), branch_pr_limit: BRANCH_PR_LIMIT }
     }
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn at(program: PathBuf) -> Self {
-        Self { program }
+        Self { program, branch_pr_limit: BRANCH_PR_LIMIT }
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn with_branch_pr_limit(mut self, limit: Duration) -> Self {
+        self.branch_pr_limit = limit;
+        self
     }
     pub fn program(&self) -> &std::path::Path {
         &self.program
@@ -397,7 +403,7 @@ pub async fn catch_up_task(domain: &DomainRuntime, gh: &GhCli, task_id: &TaskId,
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     if is_final {
         for (path, _) in task.open_worktrees() {
-            let Some((host, repository, number)) = gh.branch_pr(std::path::Path::new(path), BRANCH_PR_LIMIT).await else { continue };
+            let Some((host, repository, number)) = gh.branch_pr(std::path::Path::new(path), gh.branch_pr_limit).await else { continue };
             match execute_system(domain, Command::NotePrOpened { task_id: task_id.clone(), host, repository, number }) {
                 Ok(()) => (),
                 Err(StoreError::Domain(error)) => log!("the open PR of {path} was refused: {error}"),
@@ -885,12 +891,23 @@ pub mod tests {
             *\"repo view\"*) printf '%s' '{{\"mergeCommitAllowed\":false,\"squashMergeAllowed\":true,\"rebaseMergeAllowed\":false}}' ;;\n\
             *) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}' ;;\nesac\n")).unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let gh = GhCli::at(program);
+        let gh = GhCli::at(program).with_branch_pr_limit(Duration::from_secs(600));
 
         catch_up_task(&domain, &gh, &"t".into(), false).await.unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs.len(), 0, "only a final delivery looks at the branches");
         catch_up_task(&domain, &gh, &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
+    }
+
+    #[tokio::test]
+    async fn a_branch_gh_does_not_name_within_the_limit_is_left_out() {
+        let (fixture, _) = open("branch-pr-limit");
+        let program = fixture.0.join("gh");
+        std::fs::write(&program, "#!/bin/sh\nprintf '%s' '{\"url\":\"https://github.com/owner/site/pull/6\",\"state\":\"OPEN\"}'\n").unwrap();
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let gh = GhCli::at(program);
+        assert_eq!(gh.branch_pr(&fixture.0, Duration::from_secs(600)).await, Some(("github.com".into(), "owner/site".into(), 6)));
+        assert_eq!(gh.branch_pr(&fixture.0, Duration::ZERO).await, None);
     }
 
     #[tokio::test]
