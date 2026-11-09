@@ -33,6 +33,7 @@ common:ci --bes_backend=
 build:ci --jobs=2
 build:ci --xcode_version=27.1
 test:ci --local_test_jobs=1
+test:ci --experimental_ui_max_stdouterr_bytes=16777216
 test:ci --test_env=SIMPOOL_BIN
 test:ci --test_env=SIMPOOL_MAX_SLOTS=1
 test:ci --test_env=DISABLE_AUTOUPDATER=1
