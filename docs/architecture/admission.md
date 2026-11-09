@@ -53,6 +53,12 @@ Waiting for a first reading does not invent a measured shortage or an additional
 The CPU load is shown and recorded in the machine samples, and holds nothing: running tools spend the
 CPU, and each tool limits its own work.
 
+Nodes paused or waiting reserve no disk: only the nodes at work, the admissions since the last
+disk reading and the next node do. When nothing but the next node reserves a disk, it needs only
+that disk's line (5 GB, plus the 2 GB recovery margin once the disk was short), whatever its
+estimate, so one node can always work while the disk stays over its line. The floor that holds the
+next turns of all but the lightest node and the disk card remain the backstop if it fills the disk.
+
 A node whose turn ended and only waits for work of its own to finish takes no slot. Its memory is
 still measured in the node cost, and it needs no admission to wake up when the work ends.
 

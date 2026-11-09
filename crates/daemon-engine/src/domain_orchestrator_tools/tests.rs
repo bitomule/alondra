@@ -550,7 +550,7 @@ async fn a_disk_preflight_refusal_invalidates_admission_before_a_remounted_volum
         assert_eq!(refused.code, "disk_low");
         assert!(f.task_node().is_none());
         watch.set_disk_low(false);
-        watch.give_volumes(vec![(mount.clone(), space(6 * GB))]);
+        watch.give_volumes(vec![(mount.clone(), space(4 * GB))]);
         watch.measure_volumes(&BTreeMap::new(), 5);
         assert!(matches!(gate.ask(&f.domain, waiting.clone(), now), Err(Hold::Disk { .. })),
             "an unused admission from before preflight cannot bypass the first insufficient volume budget");
@@ -604,7 +604,7 @@ async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_on
     f.domain.live.machine_watch.set_disk_low(true);
     let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(queued["queued"], true, "{queued}");
-    assert!(queued["message"].as_str().unwrap().contains("the disk has no room for one more build (1.0 GB free of 13.0 GB needed)"), "{queued}");
+    assert!(queued["message"].as_str().unwrap().contains("the disk has no room for one more build (1.0 GB free of 5.0 GB needed)"), "{queued}");
     assert!(f.sdk().starts().is_empty());
     assert!(f.task_node().is_none(), "the task waits as it was");
     assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
