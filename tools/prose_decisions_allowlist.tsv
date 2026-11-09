@@ -213,3 +213,8 @@ crates/alondra/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_l
 crates/daemon-engine/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
 crates/daemon-engine/src/sdk_owner/node_environment.rs	WITHHELD.contains(&name) || name.starts_with(WITHHELD_PREFIX)	format	Environment variable names are a documented format, not prose.
 crates/core/src/domain/rules.rs	if need.is_empty() || card.need.contains(['\n', '\r']) {	format	a card's request is one line: a field shape check, not an interpretation of what it says
+crates/alondrad/src/public_content.rs	let lower = text.to_lowercase();	security-parse	case-insensitive matching of configured private identifiers before a public PR delivery
+crates/alondrad/src/public_content.rs	if findings.len() < MAX_FINDINGS && lower.contains(&name.trim().to_lowercase()) {	security-parse	literal configured private identifiers are forbidden content, not interpreted error or model prose
+crates/alondrad/src/public_content.rs	if let Some(header) = line.strip_prefix("diff --git ") {	format	Git unified diff file header
+crates/alondrad/src/public_content.rs	} else if line.starts_with("@@ ") {	format	Git unified diff hunk header
+apple/Data/Transport/Sources/Errors/RegistrationFailure.swift	if status == 410, decoded?.kind == "outcome_unknown", decoded?.reason == "expired" {	own-grammar	HTTP 410 and documented JSON kind/reason tokens identify an expired registration outcome

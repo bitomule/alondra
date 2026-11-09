@@ -110,6 +110,7 @@ mod reachability;
 mod device_expiry;
 mod notices;
 mod preflight;
+mod public_content;
 mod push_gate;
 mod activity_push;
 mod push_alerts;

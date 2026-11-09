@@ -348,7 +348,7 @@ pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, g
     let (diff, marks) = tokio::join!(bounded_diff(gh, &url), crate::pr_viewed::read(gh, pr));
     let (bytes, truncated) = match diff {
         Ok(result) => result,
-        Err(error) => return error,
+        Err(error) => return domain_error(error),
     };
     let marks = match marks {
         Ok(marks) if marks.head == before => Some(marks.files),
@@ -436,7 +436,7 @@ fn diff_paths(diff: &str) -> std::collections::HashSet<String> {
     paths
 }
 
-async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Vec<u8>, bool), Response> {
+pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
     let mut child = tokio::process::Command::new(gh.program())
         .args(["pr", "diff", url])
         .stdout(Stdio::piped())
@@ -444,10 +444,10 @@ async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Ve
         .kill_on_drop(true)
         .spawn()
         .map_err(|_| {
-            domain_error(DomainError::new(
+            DomainError::new(
                 "external_read_failed",
                 "could not start PR diff",
-            ))
+            )
         })?;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut bytes = Vec::new();
@@ -460,10 +460,10 @@ async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Ve
     .await;
     if !matches!(read, Ok(Ok(_))) {
         let _ = child.kill().await;
-        return Err(domain_error(DomainError::new(
+        return Err(DomainError::new(
             "external_read_failed",
             "PR diff timed out",
-        )));
+        ));
     }
     let truncated = bytes.len() > MAX_DIFF_BYTES;
     if truncated {
@@ -472,10 +472,10 @@ async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Ve
     } else {
         let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
         if !matches!(status, Ok(Ok(status)) if status.success()) {
-            return Err(domain_error(DomainError::new(
+            return Err(DomainError::new(
                 "external_read_failed",
                 "could not load PR diff",
-            )));
+            ));
         }
     }
     Ok((bytes, truncated))
@@ -1109,6 +1109,16 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
+        let reviewed = if matches!(principal, Principal::Agent { .. }) {
+            let state = match host.domain().state() {
+                Ok(state) => state,
+                Err(_) => return storage_error(),
+            };
+            match crate::public_content::check(host.home(), &state, &envelope.command, &crate::domain_github::GhCli::new()).await {
+                Ok(reviewed) => reviewed,
+                Err(error) => return domain_error(error),
+            }
+        } else { None };
         let work = host.domain().producer_work.clone();
         let mut envelope = envelope;
         return work.run(move || {
@@ -1120,7 +1130,9 @@ async fn execute_command<H: DomainHost>(
                 Ok(kept) => kept,
                 Err(error) => return domain_error(error),
             };
-            let executed = host.domain().execute_bearer(&token, &envelope);
+            let executed = host.domain().execute_bearer_checked(&token, &envelope, |state| {
+                reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
+            });
             if executed.is_err() && let Some(file) = kept {
                 let _ = std::fs::remove_file(file);
             }

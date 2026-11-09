@@ -269,3 +269,38 @@ fn the_orchestrator_gives_a_task_to_a_fresh_node_and_cannot_hand_the_same_node_a
     fixture.manager(json!({"kind":"cancel_task", "task_id":"first"})).unwrap();
     assert_eq!(domain_code(fixture.manager(create("second")).unwrap_err()), "agent_used", "a node works on one task for its whole life");
 }
+
+#[test]
+fn a_checked_delivery_rejects_a_changed_pr_without_consuming_its_receipt() {
+    let mut fixture = Fixture::new();
+    fixture.task("privacy-task", false);
+    let original = "a".repeat(40);
+    let changed = "b".repeat(40);
+    let register = |head: &str| json!({"kind":"register_pr", "task_id":"privacy-task", "pr_id":"privacy-pr",
+        "host":"github.com", "repository":"example/project", "number":7,
+        "head":head, "base":"main", "allowed_methods":["squash"]});
+    fixture.agent(register(&original)).unwrap();
+    let mut envelope = fixture.envelope(json!({"kind":"present_result", "task_id":"privacy-task",
+        "interaction_id":"privacy-delivery", "body":"Ready",
+        "targets":[{"kind":"pull_request", "pr_id":"privacy-pr", "head":""}], "is_final":true}));
+    envelope.expected_revision = 0;
+    fixture.agent(register(&changed)).unwrap();
+    let revision = fixture.runtime.state().unwrap().revision;
+    let guard = |state: &DomainState| {
+        if state.pull_requests[&PrId::from("privacy-pr")].head != original {
+            Err(DomainError::new("public_content_review_changed", "The reviewed PR changed"))
+        } else {
+            Ok(())
+        }
+    };
+    let error = fixture.runtime.execute_bearer_checked(&fixture.agent, &envelope, guard).unwrap_err();
+    assert_eq!(domain_code(error), "public_content_review_changed");
+    let state = fixture.runtime.state().unwrap();
+    assert_eq!(state.revision, revision);
+    assert!(!state.interactions.contains_key(&"privacy-delivery".into()));
+    fixture.agent(register(&original)).unwrap();
+    let accepted = fixture.runtime.execute_bearer_checked(&fixture.agent, &envelope, guard).unwrap();
+    assert!(fixture.runtime.state().unwrap().interactions.contains_key(&"privacy-delivery".into()));
+    let replayed = fixture.runtime.execute_bearer_checked(&fixture.agent, &envelope, guard).unwrap();
+    assert_eq!(replayed, accepted, "the refused attempt must not consume or rewrite the receipt");
+}

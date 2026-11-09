@@ -399,12 +399,20 @@ first one.
 - Check the languages agree: the same screen says the same thing in each, and a screen is not
   missing in one of them.
 - Check that every image you attach loads and shows what its caption says.
+- Before delivering a public PR, remove private names from its title, description,
+  changed paths and added lines. The user's personal `private_names` configuration
+  supplies names you cannot infer from the work. Alondra checks every open PR of the
+  final delivery against that list and returns `private_names_in_public_content`
+  with the names and locations to remove. Correct them and deliver again. Never copy
+  the list or the refusal into a public comment, commit or PR description. A failed,
+  incomplete or stale read is not a completed review: fix the read and deliver again.
+  This check happens at delivery, so review the content before pushing or opening a PR.
 - Say it in the delivery: in `content.body`, a short «Public content review» that names what
   you looked at (the images and languages) and what you fixed. A delivery with public content
   and no such line is not ready.
 
-This is your reading, not a rule in code: nothing in Alondra or in a test decides from the
-text itself.
+The editorial review is your reading. The automatic private-name check complements it;
+an empty list or a successful check does not establish that all content is public.
 
 For a delivery with a lot of public content (many languages or screens, a store submission),
 ask a subagent for a second reading with a fresh context: give it only the images and the

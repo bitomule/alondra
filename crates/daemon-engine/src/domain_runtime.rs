@@ -1025,7 +1025,17 @@ impl DomainRuntime {
         bearer: &str,
         envelope: &CommandEnvelope,
     ) -> Result<CommandOutcome, StoreError> {
-        let result = self.execute_bearer_once(bearer, envelope);
+        self.execute_bearer_checked(bearer, envelope, |_| Ok(()))
+    }
+
+    /// Rechecks external preflight facts against the state protected by the command writer.
+    pub fn execute_bearer_checked(
+        &self,
+        bearer: &str,
+        envelope: &CommandEnvelope,
+        check: impl FnOnce(&DomainState) -> Result<(), DomainError>,
+    ) -> Result<CommandOutcome, StoreError> {
+        let result = self.execute_bearer_once(bearer, envelope, check);
         self.count_rejections(bearer, envelope, &result);
         result
     }
@@ -1034,6 +1044,7 @@ impl DomainRuntime {
         &self,
         bearer: &str,
         envelope: &CommandEnvelope,
+        check: impl FnOnce(&DomainState) -> Result<(), DomainError>,
     ) -> Result<CommandOutcome, StoreError> {
         // Keep the capability lease until commit: concurrent revocation cannot pass this write.
         let mut authority = self.authority.lock_or_recover("the domain authority");
@@ -1042,6 +1053,7 @@ impl DomainRuntime {
             .map_err(|message| DomainError::new("forbidden", message))?;
         let mut store = self.store.lock_or_exit("the domain store");
         let state = store.load()?;
+        check(&state)?;
         let actor = match principal.clone() {
             Principal::Agent {
                 session_id,
