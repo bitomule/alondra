@@ -92,8 +92,8 @@ fn startup_admission_granted_work_keeps_disk_reserves_until_new_bytes() {
         create(&domain, "t4");
         assert!(matches!(ask(&domain, "t4", base + 4 * SAMPLE), Err(Hold::Disk { needed, .. }) if needed == 37 * GB), "completed grants cannot disappear between failed measurements");
         assert_eq!(watch.disk_reserved(&BTreeMap::new()), 24 * GB, "a rejected head creates no additional reservation");
-        watch.measure_disk(disk(12 * GB));
-        assert!(matches!(ask(&domain, "t4", base + 5 * SAMPLE), Err(Hold::Disk { .. })));
+        watch.measure_disk(disk(4 * GB));
+        assert!(matches!(ask(&domain, "t4", base + 5 * SAMPLE), Err(Hold::Disk { .. })), "alone, it still needs the disk's line");
         watch.measure_disk(disk(36 * GB));
         assert_eq!(ask(&domain, "t4", base + 6 * SAMPLE), Ok(()));
     }
@@ -1012,13 +1012,13 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     let base = alondra_core::now_millis();
     paused_by_user(&domain, "t1", TaskPriority::Normal, base);
     let watch = &domain.live.machine_watch;
-    watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 0, total: 500 * GB });
     assert!(gate.resume_now(&domain, "agent-t1", base + MIN));
     look(&domain, &home.0, base + MIN);
-    assert!(still_paused(&domain, "t1"), "the disk has no room for its build");
+    assert!(still_paused(&domain, "t1"), "the disk is under its line");
     let queued = gate.live(&domain, base + MIN).unwrap().queued;
     assert_eq!(queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_core::views::LiveHold::Disk { free: 6 * GB, needed: 13 * GB, volume: None })], "it waits in the queue, and says why");
+        [("t1", &alondra_core::views::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue, and says why");
     assert!(gate.live(&domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
 
     watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
@@ -1283,12 +1283,12 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     gate.ignore_mac();
     let now = base + MIN;
-    disk_sample(&domain, 9 * GB, now);
+    disk_sample(&domain, 4 * GB, now);
     look(&domain, &home.0, now);
-    assert!(still_paused(&domain, "t1"), "8 GB for a project measured less than 3 times, on top of the 5 GB line, do not fit in 9");
+    assert!(still_paused(&domain, "t1"), "4 GB are under the 5 GB line");
     let pacing = gate.live(&domain, now).unwrap();
     assert_eq!(pacing.queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_core::views::LiveHold::Disk { free: 9 * GB, needed: 13 * GB, volume: None })], "it waits in the queue for the disk");
+        [("t1", &alondra_core::views::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue for the disk");
     assert!(pacing.paused.is_empty(), "not shown as paused");
 
     disk_sample(&domain, 16 * GB, now + SAMPLE);
@@ -1385,4 +1385,98 @@ proptest::proptest! {
         }
         proptest::prop_assert_eq!(machine_cards(&domain), 0);
     }
+}
+
+/// 6 November: 44 waited and 18 nodes stayed paused with 14.5 GB free while the disk's "needed"
+/// climbed with every node (10, 15, 21 GB). The nodes paused or waiting reserve nothing: with the
+/// limit at 8 and builds of 1 GB, the paused come back first, 8 work at a time, the disk never
+/// holds them, and every one of the 44 gets to work.
+#[test]
+fn eighteen_paused_and_forty_four_waiting_with_14_5_gb_free_all_get_to_work() {
+    const FREE: u64 = 14_500_000_000;
+    let (home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(8)) });
+    gate.ignore_mac();
+    let watch = &domain.live.machine_watch;
+    watch.seed_peaks("app", &[GB; 3]);
+    let base = alondra_core::now_millis();
+    disk_sample(&domain, FREE, base);
+    let paused: Vec<String> = (0..18).map(|index| format!("p{index}")).collect();
+    for id in &paused {
+        create_in(&domain, id, "app");
+        start(&domain, id, base);
+        assert!(gate.hold_back(&domain, &format!("agent-{id}"), Reason::Disk, base));
+        finish(&domain, id, base);
+    }
+    let fresh: Vec<String> = (0..26).map(|index| format!("q{index}")).collect();
+    for id in &fresh {
+        create_in(&domain, id, "app");
+    }
+    let mut started: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ended: BTreeSet<String> = BTreeSet::new();
+    let mut order = vec![];
+    for step in 1..=400usize {
+        let now = base + step as Millis * SAMPLE;
+        disk_sample(&domain, FREE, now);
+        let state = domain.state().unwrap();
+        let working = working_projects(&state);
+        assert!(working.len() <= 8, "step {step}: {} working", working.len());
+        assert!(watch.disk_reserved(&working) <= working.len() as u64 * GB,
+            "step {step}: the reserve covers only the {} at work", working.len());
+        let snapshot = gate.snapshot(&domain, now).unwrap();
+        assert!(!matches!(snapshot.hold, Some(Hold::Disk { .. })), "step {step}: {:?} with {} working", snapshot.hold, working.len());
+        look(&domain, &home.0, now);
+        for id in &paused {
+            if !started.contains_key(id) && !still_paused(&domain, id) {
+                goes_on(&domain, id, now);
+                started.insert(id.clone(), step);
+                order.push(id.clone());
+            }
+        }
+        for (index, id) in fresh.iter().enumerate() {
+            if !started.contains_key(id) && gate.ask(&domain, Waiting { key: Key::Task(id.as_str().into()), priority: TaskPriority::Normal, resuming: false, since: base + index as Millis }, now).is_ok() {
+                start(&domain, id, now);
+                started.insert(id.clone(), step);
+                order.push(id.clone());
+            }
+        }
+        for (id, at) in &started {
+            if !ended.contains(id) && step >= at + 3 {
+                finish(&domain, id, now);
+                ended.insert(id.clone());
+            }
+        }
+        if ended.len() == 44 {
+            break;
+        }
+    }
+    assert_eq!(ended.len(), 44, "{} of 44 got to work and ended", ended.len());
+    assert!(order[..18].iter().all(|id| id.starts_with('p')), "the paused come back before new work: {order:?}");
+    assert_eq!(machine_cards(&domain), 0);
+}
+
+/// 6 November, 08:31: the next node's estimate was 7.85 GB, the disk had been short once and so
+/// asked 2 GB more to recover, and 14.5 GB were free: 7.85 + 5 + 2 never fit, so with no node at
+/// work nothing ever started again. With no other work reserving the disk, the next node needs
+/// only the disk's line.
+#[test]
+fn with_no_other_node_at_work_the_next_one_comes_back_whatever_its_estimate() {
+    let (home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(8)) });
+    gate.ignore_mac();
+    domain.live.machine_watch.seed_peaks("app", &[7_850_000_000; 3]);
+    let base = alondra_core::now_millis();
+    create_in(&domain, "t1", "app");
+    start(&domain, "t1", base);
+    assert!(gate.hold_back(&domain, "agent-t1", Reason::Disk, base));
+    finish(&domain, "t1", base);
+    disk_sample(&domain, 4 * GB, base + SAMPLE);
+    look(&domain, &home.0, base + SAMPLE);
+    assert!(still_paused(&domain, "t1"), "4 GB are under the disk's 5 GB line");
+    disk_sample(&domain, 14_500_000_000, base + 2 * SAMPLE);
+    look(&domain, &home.0, base + 2 * SAMPLE);
+    assert!(!still_paused(&domain, "t1"), "14.5 GB free and nothing else at work: it comes back");
+    assert_eq!(machine_cards(&domain), 0);
 }

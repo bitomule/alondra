@@ -167,7 +167,9 @@ impl Record {
                     _ => estimate,
                 }
             }).fold(granted, u64::saturating_add);
-            let needed = reserved.saturating_add(estimates.estimate_beside(project)).saturating_add(crate::disk::low_lines().usable);
+            let alone = head.is_some() && grants.is_none_or(BTreeMap::is_empty) && unobserved.keys().all(|key| Some(key) == head);
+            let next = if alone { 0 } else { estimates.estimate_beside(project) };
+            let needed = reserved.saturating_add(next).saturating_add(crate::disk::low_lines().usable);
             let room = self.volume_spaces.get(mount).map(|space| space.room_for(needed, self.volumes_short.contains(mount)));
             match room {
                 Some(Ok(())) => {
@@ -683,6 +685,8 @@ impl MachineWatch {
         self.disk_room_for(working, project, None, now)
     }
 
+    /// The gate's `head` needs only a disk's line when nothing else reserves that disk, no other node
+    /// at work nor an admission since its last reading, so one node can always work over the line.
     pub(crate) fn disk_room_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<crate::disk::Room> {
         {
             let mut record = self.record();
@@ -692,7 +696,8 @@ impl MachineWatch {
         }
         let reserved = self.disk_reserved_for(working, head);
         let mut record = self.record();
-        let estimate = if record.peaks_ignored { 0 } else { record.peaks.estimate(project) };
+        let alone = head.is_some() && record.disk_grants.is_empty() && record.disk_working.keys().all(|key| Some(key) == head);
+        let estimate = if record.peaks_ignored || alone { 0 } else { record.peaks.estimate(project) };
         let needed = reserved.saturating_add(estimate).saturating_add(crate::disk::low_lines().usable);
         let volume_short = record.volume_short(working, project, head);
         if record.boot_disk.is_none() {
@@ -1350,6 +1355,19 @@ mod tests {
         assert_eq!(watch.disk_room(&reserving, None, 1).unwrap().needed, 9 * GB);
         watch.measure_volumes(&BTreeMap::new(), 2);
         assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2).unwrap().needed, 9 * GB, "reservations against the old budget remain after their tasks end");
+    }
+
+    #[test]
+    fn the_head_alone_needs_only_the_line_of_a_build_volume() {
+        let mount = PathBuf::from("/Volumes/BuildCache");
+        let watch = learned_watch(&mount);
+        watch.record().build_volumes.get_mut(&mount).unwrap().seed("app", &[8 * GB; 3]);
+        watch.give_volumes(vec![(mount.clone(), space(10 * GB))]);
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        let head = crate::admission::Key::Task("t1".into());
+        assert_eq!(watch.disk_room_for(&BTreeMap::new(), Some("app"), Some(&head), 0), None, "nothing else at work: 10 GB are over the 5 GB line");
+        assert_eq!(watch.disk_room_for(&working(&[("t2", "app")]), Some("app"), Some(&head), 0).and_then(|room| room.volume), Some("BuildCache".into()),
+            "t2 may still take 8 GB there");
     }
 
     #[test]
