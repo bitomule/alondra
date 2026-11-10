@@ -66,6 +66,7 @@ mod tests {
         assert_eq!(model_label("claude-opus-5-5[1m]"), "Opus 5.5");
         assert_eq!(model_label("claude-haiku-4-5-20251001"), "Haiku 4.5");
         assert_eq!(model_label("claude-fable-5-1"), "Fable 5.1");
+        assert_eq!(model_label("claude-fable-5-2"), "Fable 5.2");
         assert_eq!(model_label("claude-opus-5"), "Opus 5");
     }
 

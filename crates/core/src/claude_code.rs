@@ -1,10 +1,10 @@
 //! The Claude Code release Alondra runs through the Agent SDK, as `alondra doctor` and alondrad
-//! read it: the pinned SDK needs 2.1.287 or later.
+//! read it: the pinned SDK needs 2.1.321 or later.
 
-pub const MIN: [u32; 3] = [2, 1, 287];
-pub const MIN_TEXT: &str = "2.1.287";
+pub const MIN: [u32; 3] = [2, 1, 321];
+pub const MIN_TEXT: &str = "2.1.321";
 
-/// The release `claude --version` prints, as in `2.1.287 (Claude Code)`.
+/// The release `claude --version` prints, as in `2.1.321 (Claude Code)`.
 pub fn version(text: &str) -> Option<[u32; 3]> {
     let word = text.split_whitespace().next()?;
     let core = word.split(['-', '+']).next()?;
@@ -28,12 +28,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alondra_needs_claude_code_2_1_287_or_later() {
-        assert_eq!(version("2.1.287 (Claude Code)\n"), Some([2, 1, 287]));
+    fn alondra_needs_claude_code_2_1_321_or_later() {
+        assert_eq!(version("2.1.321 (Claude Code)\n"), Some([2, 1, 321]));
         assert_eq!(version("2.1.290-dev.20261001.t101500.sha1a2b3c4 (Claude Code)"), Some([2, 1, 290]));
-        assert!(compatible("2.1.287 (Claude Code)"));
+        assert!(compatible("2.1.321 (Claude Code)"));
         assert!(compatible("2.2.0 (Claude Code)"));
-        assert!(!compatible("2.1.286 (Claude Code)"));
+        assert!(!compatible("2.1.320 (Claude Code)"));
         assert!(!compatible("2.1.112 (Claude Code)"));
         assert!(!compatible("Claude Code"));
         assert_eq!(version("2.1"), None);

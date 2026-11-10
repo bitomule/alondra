@@ -123,7 +123,7 @@ impl World {
             let bin = home.join("bin");
             std::fs::create_dir(&bin).unwrap();
             let claude = bin.join("claude");
-            std::fs::write(&claude, format!("#!/bin/sh\n[ \"$1\" = --version ] && {{ echo '2.1.300 (Claude Code)'; exit 0; }}\nexec {} \"$@\"\n", backend.native.display())).unwrap();
+            std::fs::write(&claude, format!("#!/bin/sh\n[ \"$1\" = --version ] && {{ echo '2.1.321 (Claude Code)'; exit 0; }}\nexec {} \"$@\"\n", backend.native.display())).unwrap();
             std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o700)).unwrap();
             backend.native_environment.insert("PATH".into(), format!("{}:/usr/bin:/bin", bin.display()));
             backend.native = PathBuf::new();

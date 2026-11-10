@@ -32,7 +32,7 @@ def call(tool, arguments):
 def main():
     args = sys.argv[1:]
     if "--version" in args:
-        print("2.1.287 (Claude Code)")
+        print("2.1.321 (Claude Code)")
         return 0
     if os.environ.get("ALONDRA_ORCHESTRATOR") != "1":
         return 0

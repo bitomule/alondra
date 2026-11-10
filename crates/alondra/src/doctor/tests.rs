@@ -76,7 +76,7 @@ struct Fake {
 impl Fake {
     fn healthy() -> Self {
         let claude = [
-            ("--version", (true, "2.1.291 (Claude Code)".to_string())),
+            ("--version", (true, "2.1.321 (Claude Code)".to_string())),
             ("plugin validate --strict /m/plugin", (true, String::new())),
         ];
         Fake {
@@ -498,10 +498,10 @@ fn devices_identity_config_and_tools() {
 #[test]
 fn claude_must_be_new_enough_for_the_agent_sdk() {
     english();
-    assert_eq!(claude_version_check(Some("2.1.287 (Claude Code)\n")).detail, "2.1.287 (Claude Code)");
+    assert_eq!(claude_version_check(Some("2.1.321 (Claude Code)\n")).detail, "2.1.321 (Claude Code)");
     let old = claude_version_check(Some("2.1.280 (Claude Code)\n"));
     assert_eq!((old.status, old.fix), (Status::Fail, Some(Fix::Manual("claude update".into()))), "the SDK host needs a newer Claude Code");
-    assert!(old.detail.contains("2.1.287"), "{}", old.detail);
+    assert!(old.detail.contains("2.1.321"), "{}", old.detail);
     assert_eq!(claude_version_check(None).status, Status::Fail);
 }
 
@@ -713,7 +713,7 @@ fn without_a_terminal_nothing_is_asked_and_json_says_the_next_step() {
     assert_eq!(doc["next_step"], "run claude in Terminal and sign in with /login, then alondra doctor");
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("✗ Claude Code sign-in: not signed in\n  → run claude in Terminal and sign in with /login, then alondra doctor"), "{text}");
-    assert!(text.contains("✓ Claude Code: 2.1.291"), "{text}");
+    assert!(text.contains("✓ Claude Code: 2.1.321"), "{text}");
 }
 
 #[test]
@@ -1108,7 +1108,7 @@ fn an_install_like_this_macs_has_nothing_to_change() {
     assert!(!ui.lines.iter().any(|l| l.starts_with("ask") || l.starts_with("select") || l.starts_with("input")), "{:?}", ui.lines);
     assert_eq!(ui.lines, vec![
         "✓ This Mac: already set",
-        "✓ Claude Code: 2.1.291",
+        "✓ Claude Code: 2.1.321",
         "✓ Claude Code sign-in: signed in",
         "✓ Background service: running (com.bitomule.alondra)",
         "✓ Claude plugin: already set",

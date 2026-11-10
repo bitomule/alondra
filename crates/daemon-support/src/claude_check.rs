@@ -1,5 +1,5 @@
 //! At start, alondrad checks that the Claude Code its Agent SDK host runs can run Alondra's node
-//! plugin: version 2.1.287 or later, and the plugin passes `claude plugin validate --strict`. A
+//! plugin: version 2.1.321 or later, and the plugin passes `claude plugin validate --strict`. A
 //! failure is logged and reported by `/daemon`, and re-checked every ten minutes until it passes;
 //! each host start checks the version again for itself.
 use crate::locks::Poisonable as _;
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn a_failing_check_is_retried_every_ten_minutes_until_it_passes() {
-        let failing = Status { ok: false, detail: "Claude Code 2.1.200 is older than 2.1.287".into() };
+        let failing = Status { ok: false, detail: "Claude Code 2.1.200 is older than 2.1.321".into() };
         let passing = Status { ok: true, detail: "runs".into() };
         assert_eq!(next_check(&failing), Some(Duration::from_secs(600)));
         assert_eq!(next_check(&passing), None);
@@ -124,11 +124,11 @@ mod tests {
     #[test]
     fn every_step_must_pass_and_the_first_failure_says_why() {
         let plugin = Path::new("/r/plugin");
-        let passing = || Outcomes { version: ran("2.1.287 (Claude Code)"), validate: ran("✔ Validation passed") };
+        let passing = || Outcomes { version: ran("2.1.321 (Claude Code)"), validate: ran("✔ Validation passed") };
         assert!(judge(Some(plugin), &passing()).ok);
 
-        let old = judge(Some(plugin), &Outcomes { version: ran("2.1.286 (Claude Code)"), ..passing() });
-        assert!(!old.ok && old.detail.contains("2.1.286") && old.detail.contains("2.1.287") && old.detail.contains("claude update"), "{}", old.detail);
+        let old = judge(Some(plugin), &Outcomes { version: ran("2.1.320 (Claude Code)"), ..passing() });
+        assert!(!old.ok && old.detail.contains("2.1.320") && old.detail.contains("2.1.321") && old.detail.contains("claude update"), "{}", old.detail);
         let invalid = judge(Some(plugin), &Outcomes { validate: Some((false, "✘ Validation failed (--strict treats warnings as errors)".into())), ..passing() });
         assert!(!invalid.ok && invalid.detail.contains("validate --strict /r/plugin") && invalid.detail.contains("Validation failed"), "{}", invalid.detail);
         assert!(!judge(Some(plugin), &Outcomes { validate: None, ..passing() }).ok);
