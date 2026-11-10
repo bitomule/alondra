@@ -153,7 +153,7 @@ low_opt_rust_test(
     name = "lock_policy_test",
     size = "small",
     srcs = ["tests/lock_policy.rs"],
-    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-support:report_sources"],
+    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/daemon-support:report_sources"],
     edition = "2024",
 )
 

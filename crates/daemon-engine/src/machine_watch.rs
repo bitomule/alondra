@@ -2277,7 +2277,7 @@ mod tests {
         let sample = Machine { at: 1_792_662_011_421, ..machine(400 * GB, 50) };
         pace(&domain, &sample);
         pace(&domain, &sample);
-        let day = crate::node_reports::local_day(sample.at);
+        let day = alondra_daemon_engine_model::local_day(sample.at);
         let csv = std::fs::read_to_string(home.0.join(crate::machine_state::SAMPLES_DIR).join(format!("{day}.csv"))).unwrap();
         let rows: Vec<_> = csv.lines().skip(1).collect();
         assert_eq!(rows.len(), 1, "{csv}");

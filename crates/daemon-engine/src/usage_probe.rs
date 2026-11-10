@@ -25,16 +25,7 @@ use crate::sdk_owner::SdkBackend;
 
 pub(crate) const EVERY: Millis = 15 * 60_000;
 const TIMEOUT: Duration = Duration::from_secs(60);
-/// The credential of the bindings that run on the provider's own sign-in on this Mac.
-const NATIVE_LOGIN: &str = "native-login";
-
-/// The account a provider binding's executions run on: its credential names it.
-pub(crate) fn account_of(credential: &str) -> AccountId {
-    match credential {
-        NATIVE_LOGIN => AccountId::default_account(),
-        other => AccountId::parse(other).unwrap_or_else(|_| AccountId::default_account()),
-    }
-}
+pub(crate) use alondra_daemon_engine_model::account_of;
 
 /// The accounts' readings as the domain last committed them, kept where the live view, which has
 /// no domain, reads when a limit Claude reported without a time ends.
@@ -63,7 +54,7 @@ impl Measured {
 
 /// The accounts' usage together at `now`, as the gauges and the pace card read it.
 pub(crate) fn usage(domain: &DomainRuntime, now: Millis) -> Option<alondra_core::usage::Usage> {
-    domain.read().index().usage(now, &crate::node_reports::local_day(now))
+    domain.read().index().usage(now, &alondra_daemon_engine_model::local_day(now))
 }
 
 /// Records what `account` said of its usage, unless the domain already holds it.
@@ -77,7 +68,7 @@ pub(crate) fn record_for_provider(domain: &DomainRuntime, account: &alondra_core
         data_epoch: domain.read().state().data_epoch.clone(),
         command_id: format!("account-usage-{}", crate::auth::random_hex(16)).into(),
         expected_revision: 0,
-        command: DomainCommand::RecordAccountUsage { provider: account.provider, account: account.account.clone(), reading, at: now, day: crate::node_reports::local_day(now) },
+        command: DomainCommand::RecordAccountUsage { provider: account.provider, account: account.account.clone(), reading, at: now, day: alondra_daemon_engine_model::local_day(now) },
     };
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("could not record the usage of account {}: {error}", account.wire_id());
@@ -209,7 +200,7 @@ fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<
 fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::accounts::AccountKey> {
     let mut eligible = alondra_core::usage::eligible_account_keys(&state.account_order, &state.accounts, &state.account_usage, now);
     if state.account_policy == Policy::Margin {
-        let day = crate::node_reports::local_day(now);
+        let day = alondra_daemon_engine_model::local_day(now);
         let chosen = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
         eligible.retain(|key| key.provider != Provider::Claude || chosen.as_ref() == Some(&key.account));
     }
@@ -361,7 +352,7 @@ async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountI
     let measured_at = now_millis();
     match tokio::task::spawn_blocking(move || probe(&backend, folder.as_deref())).await {
         Ok(Ok(reading)) => {
-            let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: crate::node_reports::local_day(measured_at) };
+            let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: alondra_daemon_engine_model::local_day(measured_at) };
             match crate::accounts::publish_current_probe(domain, home, fence, vec![command]) {
                 Ok(()) => crate::accounts::answered(domain),
                 Err(why) => {

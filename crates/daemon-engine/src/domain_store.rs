@@ -1182,14 +1182,14 @@ impl DomainStore {
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(times)
     }
-    pub(crate) fn api_failures(&self) -> Result<std::collections::BTreeMap<AgentId, crate::api_failures::Streak>> {
+    pub(crate) fn api_failures(&self) -> Result<std::collections::BTreeMap<AgentId, alondra_daemon_engine_model::Streak>> {
         let mut statement = self.conn.prepare("SELECT agent_id,failures,first_at,last_at,card FROM api_failures")?;
-        let rows = statement.query_map([], |row| Ok((AgentId(row.get(0)?), crate::api_failures::Streak {
+        let rows = statement.query_map([], |row| Ok((AgentId(row.get(0)?), alondra_daemon_engine_model::Streak {
             failures: row.get(1)?, first_at: row.get(2)?, last_at: row.get(3)?, card: row.get::<_, Option<String>>(4)?.map(InteractionId),
         })))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
-    pub(crate) fn set_api_failures(&self, agent: &AgentId, streak: Option<&crate::api_failures::Streak>) -> Result<()> {
+    pub(crate) fn set_api_failures(&self, agent: &AgentId, streak: Option<&alondra_daemon_engine_model::Streak>) -> Result<()> {
         match streak {
             None => self.conn.execute("DELETE FROM api_failures WHERE agent_id=?1", [&agent.0])?,
             Some(streak) => self.conn.execute(
@@ -1198,22 +1198,22 @@ impl DomainStore {
         };
         Ok(())
     }
-    pub(crate) fn record_allowed_rule(&self, rule: &crate::allow_always::AllowedRule) -> Result<()> {
+    pub(crate) fn record_allowed_rule(&self, rule: &alondra_daemon_engine_model::AllowedRule) -> Result<()> {
         self.conn.execute(
             "INSERT INTO allowed_rules(repo,settings,rule,added_at,task_id,interaction_id,machine,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(settings,rule) DO UPDATE SET repo=excluded.repo,added_at=excluded.added_at,task_id=excluded.task_id,interaction_id=excluded.interaction_id,machine=excluded.machine,state=excluded.state",
             params![rule.repo, rule.settings, rule.rule, rule.added_at, rule.task_id, rule.interaction_id, rule.machine, rule.state.as_str()])?;
         Ok(())
     }
-    pub fn allowed_rules(&self) -> Result<Vec<crate::allow_always::AllowedRule>> {
+    pub fn allowed_rules(&self) -> Result<Vec<alondra_daemon_engine_model::AllowedRule>> {
         let mut statement = self.conn.prepare("SELECT id,repo,settings,rule,added_at,task_id,interaction_id,machine,state FROM allowed_rules ORDER BY repo,rule")?;
-        let rows = statement.query_map([], |row| Ok(crate::allow_always::AllowedRule {
+        let rows = statement.query_map([], |row| Ok(alondra_daemon_engine_model::AllowedRule {
             id: row.get(0)?, repo: row.get(1)?, settings: row.get(2)?, rule: row.get(3)?, added_at: row.get(4)?, task_id: row.get(5)?,
             interaction_id: row.get(6)?, machine: row.get(7)?,
-            state: crate::allow_always::RuleState::parse(&row.get::<_, String>(8)?),
+            state: alondra_daemon_engine_model::RuleState::parse(&row.get::<_, String>(8)?),
         }))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
-    pub(crate) fn set_allowed_rule_state(&self, id: i64, state: crate::allow_always::RuleState) -> Result<()> {
+    pub(crate) fn set_allowed_rule_state(&self, id: i64, state: alondra_daemon_engine_model::RuleState) -> Result<()> {
         self.conn.execute("UPDATE allowed_rules SET state=?2 WHERE id=?1", params![id, state.as_str()])?;
         Ok(())
     }
@@ -1275,12 +1275,12 @@ impl DomainStore {
         tx.commit()?;
         Ok(filled)
     }
-    pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
+    pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<alondra_daemon_engine_model::LaunchPlan>> {
         let plan: Option<String> = self.conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;
         plan.map(|plan| serde_json::from_str(&plan).context("stored launch plan")).transpose()
     }
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn set_launch_plan(&mut self, task_id: &TaskId, plan: &crate::launch_plans::LaunchPlan, now: i64) -> Result<()> {
+    pub(crate) fn set_launch_plan(&mut self, task_id: &TaskId, plan: &alondra_daemon_engine_model::LaunchPlan, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role,at=excluded.at",
             params![task_id.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), now])?;
@@ -1288,7 +1288,7 @@ impl DomainStore {
         Ok(())
     }
     /// Updates the queued fields in the same transaction as the stored plan, preserving queue context.
-    pub(crate) fn change_launch_plan(&mut self, task_id: &TaskId, plan: &crate::launch_plans::LaunchPlan,
+    pub(crate) fn change_launch_plan(&mut self, task_id: &TaskId, plan: &alondra_daemon_engine_model::LaunchPlan,
         changes: Option<&serde_json::Value>, now: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute(
@@ -1304,7 +1304,7 @@ impl DomainStore {
                     fields.remove("provider");
                 }
             } else {
-                body = crate::domain_orchestrator_tools::LaunchBody::from_plan(task_id.clone(), plan).to_queue();
+                body = alondra_daemon_engine_model::LaunchBody::from_plan(task_id.clone(), plan).to_queue();
             }
             tx.execute("UPDATE launch_queue SET body=?2 WHERE task_id=?1", params![task_id.0, serde_json::to_string(&body)?])?;
         }
@@ -1730,7 +1730,7 @@ impl DomainStore {
     pub(crate) fn claim_selected_orchestrator_batch(
         &mut self, ids: &[i64], run: &str, session: &str,
         epoch: alondra_core::domain::DataEpoch,
-        selection: Option<&crate::orchestrator_provider::BatchSelection>,
+        selection: Option<&alondra_daemon_engine_model::BatchSelection>,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("claim")?;
@@ -1773,7 +1773,7 @@ impl DomainStore {
         }
         let owner = BatchOwner::issued(run, session, epoch);
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "claim_commit")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "claim_commit")?;
         tx.commit()?;
         if changed || recorded > 0 {
             self.note_side_write();
@@ -1809,7 +1809,7 @@ impl DomainStore {
             params![id, status],
         )?;
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "delivery_commit")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "delivery_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(true)

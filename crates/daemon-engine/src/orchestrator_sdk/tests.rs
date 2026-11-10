@@ -369,10 +369,10 @@ async fn a_turn_cancelled_after_a_change_the_run_never_read_is_the_users_call() 
     assert_eq!(alondra_core::orchestrator_batch::BatchProblem::from_body(body).unwrap().calls, ["create_request"]);
 }
 
-fn fixture_selection() -> crate::orchestrator_provider::BatchSelection {
+fn fixture_selection() -> alondra_daemon_engine_model::BatchSelection {
     use alondra_core::accounts::{AccountKey, Provider};
     use alondra_core::model_selection::{ModelKey, ModelSelection};
-    crate::orchestrator_provider::BatchSelection {
+    alondra_daemon_engine_model::BatchSelection {
         account: AccountKey::native(Provider::Claude), account_status: None,
         model: ModelSelection { model: ModelKey { provider: Provider::Claude, model: "opus".into() }, reasoning_effort: None, catalog_revision: "fixture-catalog".into() },
         policy_revision: "fixture-policy".into(), reason: "This test explicitly selects the native alias it advertises".into(), rejected_candidates: vec![],

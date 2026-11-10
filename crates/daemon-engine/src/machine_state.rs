@@ -330,7 +330,7 @@ const GB: f64 = (1u64 << 30) as f64;
 
 pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) {
     use std::io::Write;
-    let day = crate::node_reports::local_day(now);
+    let day = alondra_daemon_engine_model::local_day(now);
     let file = dir.join(format!("{day}.csv"));
     let new_day = !file.exists();
     let written = std::fs::create_dir_all(dir).and_then(|()| {
@@ -357,7 +357,7 @@ pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working
         return;
     }
     if new_day {
-        let oldest = format!("{}.csv", crate::node_reports::local_day(now - KEEP_DAYS));
+        let oldest = format!("{}.csv", alondra_daemon_engine_model::local_day(now - KEEP_DAYS));
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.ends_with(".csv") && name < oldest {
@@ -1093,7 +1093,7 @@ mod tests {
     fn the_compressor_counters_go_into_the_samples_file_and_an_older_file_moves_to_the_current_columns() {
         let dir = crate::test_support::Directory::new();
         let now = 1_791_500_000_000;
-        let day = dir.join(format!("{}.csv", crate::node_reports::local_day(now)));
+        let day = dir.join(format!("{}.csv", alondra_daemon_engine_model::local_day(now)));
         std::fs::create_dir_all(&*dir).unwrap();
         std::fs::write(&day, "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,burst_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s\n\
             1,40,1.00,11,tight,false,2,normal,0.318,5.00,0.89,286160,613840,0,6700,30,0\n").unwrap();

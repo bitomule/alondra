@@ -82,19 +82,19 @@ impl ProcessOwner {
         use std::io::Write;
         let written = (|| -> Result<()> {
             #[cfg(any(test, feature = "test-hooks"))]
-            crate::domain_orchestrator::faults::owner_write(directory, "owner_create")?;
+            alondra_daemon_engine_model::faults::owner_write(directory, "owner_create")?;
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
             #[cfg(any(test, feature = "test-hooks"))]
-            crate::domain_orchestrator::faults::owner_write(directory, "owner_write")?;
+            alondra_daemon_engine_model::faults::owner_write(directory, "owner_write")?;
             file.write_all(&serde_json::to_vec(&owner)?)?;
             #[cfg(any(test, feature = "test-hooks"))]
-            crate::domain_orchestrator::faults::owner_write(directory, "owner_sync")?;
+            alondra_daemon_engine_model::faults::owner_write(directory, "owner_sync")?;
             file.sync_all()?;
             #[cfg(any(test, feature = "test-hooks"))]
-            crate::domain_orchestrator::faults::owner_write(directory, "owner_rename")?;
+            alondra_daemon_engine_model::faults::owner_write(directory, "owner_rename")?;
             std::fs::rename(&temporary, directory.join("owner.json"))?;
             #[cfg(any(test, feature = "test-hooks"))]
-            crate::domain_orchestrator::faults::owner_write(directory, "owner_directory_sync")?;
+            alondra_daemon_engine_model::faults::owner_write(directory, "owner_directory_sync")?;
             std::fs::File::open(directory)?.sync_all()?;
             Ok(())
         })();

@@ -3,7 +3,7 @@ use crate::domain_store::HandoverProcess;
 use crate::node_close::Answer;
 use crate::node_push::testing::Node;
 use crate::sdk_handover::BgSessions;
-use crate::sdk_owner::LaunchOptions;
+use alondra_daemon_engine_model::LaunchOptions;
 use crate::sdk_owner::tests::SdkLaunches;
 use crate::test_support::Directory;
 use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
@@ -859,7 +859,7 @@ fn a_task_moves_to_another_provider_by_what_compaction_cut_never_by_a_marker_in_
 #[tokio::test]
 async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
     let f = world();
-    let plan = crate::launch_plans::LaunchPlan {
+    let plan = alondra_daemon_engine_model::LaunchPlan {
         name: "app/editor".into(), cwd: f.project.to_str().unwrap().into(), mission: Some("Make the colours tokens".into()),
         model: Some("sonnet".into()), effort: None, approach: Some(alondra_core::options::Approach::Solo),
         reason: Some("Colour tokens in one file".into()), role: None, tags: None, project: None,
@@ -878,8 +878,8 @@ async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
 async fn a_decision_keeps_the_provider_and_the_tags_of_the_plan_or_of_the_launch() {
     let f = world();
     let tags = serde_json::from_value(json!({"kind": "docs", "areas": ["ui"], "risks": ["user_visible"]})).unwrap();
-    let plan = crate::launch_plans::LaunchPlan { model: Some("sonnet".into()), reason: Some("Docs only".into()), tags: Some(tags),
-        ..crate::launch_plans::LaunchPlan::new("app/docs", f.project.to_str().unwrap()) };
+    let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("sonnet".into()), reason: Some("Docs only".into()), tags: Some(tags),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/docs", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     launch(&f.domain, &f.home, serde_json::from_value(json!({"task": "t"})).unwrap(), |_| None).await.unwrap();
     let routing = f.domain.store.lock().unwrap().model_decision_routing().unwrap();
@@ -1611,9 +1611,9 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
         plan_items: Some(PlanItems { from_task: "t".into(), items: vec!["2".into(), "3".into()] }), continues: None });
 
     connect_claude_and_codex(&f);
-    let original = crate::launch_plans::LaunchPlan { mission: Some("Implement the read index; preserve the approved scope.".into()),
+    let original = alondra_daemon_engine_model::LaunchPlan { mission: Some("Implement the read index; preserve the approved scope.".into()),
         model: Some("claude/opus".into()), reason: Some("Implementation".into()),
-        ..crate::launch_plans::LaunchPlan::new("app/index", f.project.to_str().unwrap()) };
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/index", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().set_launch_plan(&"index".into(), &original, 1).unwrap();
     let checklist = f.domain.state().unwrap().checklists[&TaskId::from("index")].clone();
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("index")].state, TaskState::WaitingDependency);
@@ -2017,8 +2017,8 @@ async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_pr
     intent.requested_reasoning_effort = Some("medium".into());
     intent.allow_model_substitution = false;
     command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent.clone(), pending: None });
-    let plan = crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("medium".into()),
-        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("medium".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
     let cards = f.domain.state().unwrap().interactions.len();
@@ -2102,7 +2102,7 @@ async fn an_unstarted_selection_keeps_the_fallback_account_when_the_original_req
         std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\"]\n[[accounts.claude]]\nid = \"default\"\nname = \"Default\"\nenabled = false\n[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n").unwrap();
         let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
         command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude), work.clone()], version: alondra_core::accounts::config_version(&file.accounts) });
-        let plan = crate::launch_plans::LaunchPlan { model: Some("opus".into()), ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+        let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("opus".into()), ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
         f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
         launch(&f.domain, &f.home, launch_body(&f, json!({})), |_| Some(choices.clone())).await.unwrap();
         f.launched(1).await;
@@ -2125,8 +2125,8 @@ async fn an_unstarted_selection_keeps_the_fallback_account_when_the_original_req
 async fn a_plan_naming_opus_without_provider_starts_on_claude_when_claude_and_codex_are_connected() {
     let f = world();
     connect_claude_and_codex(&f);
-    let plan = crate::launch_plans::LaunchPlan { model: Some("opus".into()), effort: Some("medium".into()), reason: Some("Design work".into()),
-        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("opus".into()), effort: Some("medium".into()), reason: Some("Design work".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
     launch(&f.domain, &f.home, body, |_| None).await.unwrap();
@@ -2138,8 +2138,8 @@ async fn a_plan_naming_opus_without_provider_starts_on_claude_when_claude_and_co
 async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_unique_one_is_not() {
     let f = world();
     connect_claude_and_codex(&f);
-    let plan = |model: &str| crate::launch_plans::LaunchPlan { model: Some(model.into()), reason: Some("Design work".into()),
-        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    let plan = |model: &str| alondra_daemon_engine_model::LaunchPlan { model: Some(model.into()), reason: Some("Design work".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
     let request = RequestId::from("r");
     for model in ["opus", "gpt-6", "claude/twin", "codex/twin"] {
         crate::launch_plans::validate(&f.domain, &f.home, &request, &plan(model)).unwrap_or_else(|error| panic!("{model}: {}", error.message));
@@ -2155,7 +2155,7 @@ fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, Domain
 }
 
 
-fn cancelled_launch_plan_with_history(f: &Fixture) -> crate::launch_plans::LaunchPlan {
+fn cancelled_launch_plan_with_history(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
     connect_claude_and_codex(f);
     let before = stored_selection(f);
     give(f, "t", "agent-b");
@@ -2183,9 +2183,9 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
     git_in(&f.project, &["worktree", "add", "-q", "-b", "worktree-t", original.to_str().unwrap()]);
     let options = alondra_core::options::path_in(&f.home);
     std::fs::write(&options, format!("projects_root = {:?}\n[projects.App]\ndefaults = {{ effort = \"hard\" }}\n", f.root.to_str().unwrap())).unwrap();
-    let saved = crate::launch_plans::LaunchPlan {
+    let saved = alondra_daemon_engine_model::LaunchPlan {
         project: Some("App".into()), mission: Some("Preserve the approved editor colours and contrast.".into()),
-        ..crate::launch_plans::LaunchPlan::new("app/editor", original.to_str().unwrap())
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", original.to_str().unwrap())
     };
     crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &saved).unwrap();
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &saved, 1).unwrap();
@@ -2235,7 +2235,7 @@ async fn terminal_launch_choices_can_be_prepared_without_enqueuing_or_starting_t
     partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high", "reason": "Use Codex for the approved implementation"})).unwrap();
     assert_eq!(*f.domain.state().unwrap(), *state, "preparing choices does not reopen or rewrite the task and its approvals");
     let prepared = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
-    assert_eq!(prepared, crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()),
+    assert_eq!(prepared, alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()),
         reason: Some("Use Codex for the approved implementation".into()), ..before });
     crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
     crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
@@ -2296,7 +2296,7 @@ async fn preparing_terminal_choices_preserves_a_deleted_launch_directory_without
     std::fs::remove_dir(&f.project).unwrap();
     partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high"})).unwrap();
     let after = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
-    assert_eq!(after, crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()), ..before });
+    assert_eq!(after, alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()), ..before });
     crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
     assert!(!f.project.exists(), "only the reopened admission reconstructs its workspace");
     assert!(f.sdk().starts().is_empty());
@@ -2305,12 +2305,12 @@ async fn preparing_terminal_choices_preserves_a_deleted_launch_directory_without
     assert!(store.start_retries().unwrap().is_empty());
 }
 
-fn stored_selection(f: &Fixture) -> crate::launch_plans::LaunchPlan {
-    let plan = crate::launch_plans::LaunchPlan {
+fn stored_selection(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
+    let plan = alondra_daemon_engine_model::LaunchPlan {
         mission: Some("Keep the full mission\n\nAdded context: preserve colours.".into()),
         model: Some("claude/sonnet".into()), effort: Some("medium".into()), reason: Some("Implementation".into()),
         role: Some(alondra_core::domain::TaskRole::Implementation), project: Some("App".into()),
-        ..crate::launch_plans::LaunchPlan::new("app/editor", f.project.to_str().unwrap())
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap())
     };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     plan
@@ -2328,7 +2328,7 @@ fn partial_launch_plan_changes_only_the_model_and_preserves_queued_context() {
     let before_state = f.domain.state().unwrap();
     assert_eq!(partial_plan(&f, "t", json!({"model": "codex/gpt-6"})).unwrap(), json!({"task": "t", "stored": true}));
     let after = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
-    assert_eq!(after, crate::launch_plans::LaunchPlan { model: Some("codex/gpt-6".into()), ..before });
+    assert_eq!(after, alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), ..before });
     assert_eq!(*f.domain.state().unwrap(), *before_state, "the task, checklist and lifecycle context are untouched");
     let store = f.domain.store.lock().unwrap();
     let queue = store.launch_queue().unwrap();
@@ -2411,7 +2411,7 @@ fn partial_launch_plan_refuses_the_users_fixed_work_effort_even_for_a_native_mod
     }, None, Some(&choices), || Ok(())).unwrap();
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: "scheduled".into(), request_id: "scheduled".into(), title: "Scheduled".into(), agent_id: None, review_prs: false,
-        dependencies: Default::default(), stack: None, launch: Some(crate::launch_plans::LaunchPlan::new("scheduled", f.project.to_str().unwrap())) });
+        dependencies: Default::default(), stack: None, launch: Some(alondra_daemon_engine_model::LaunchPlan::new("scheduled", f.project.to_str().unwrap())) });
     let before = get_launch_plan(&f.domain, &"scheduled".into()).unwrap();
     let error = partial_plan(&f, "scheduled", json!({"model": "codex/gpt-6"})).unwrap_err();
     assert_eq!(error.code, "invalid_input");

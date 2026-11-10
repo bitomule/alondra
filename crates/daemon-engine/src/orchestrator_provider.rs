@@ -3,16 +3,7 @@ use alondra_core::accounts::AccountKey;
 use alondra_core::model_selection::ModelSelection;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BatchSelection {
-    pub account: AccountKey,
-    #[serde(default)]
-    pub account_status: Option<alondra_core::accounts::AccountStatus>,
-    pub model: ModelSelection,
-    pub policy_revision: String,
-    pub reason: String,
-    pub rejected_candidates: Vec<String>,
-}
+pub(crate) use alondra_daemon_engine_model::BatchSelection;
 
 impl alondra_provider_claude::HostOwner for BatchOwner {
     fn owner_generation(&self) -> u64 { 1 }
@@ -95,7 +86,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
         protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
         command_id: format!("native-limit-{}", crate::auth::random_hex(8)).into(), expected_revision: 0,
         command: Command::RecordAccountUsage { provider: account.provider, account: account.account.clone(), at: now,
-            day: crate::node_reports::local_day(now), reading: UsageReading { plan: None, complete: false,
+            day: alondra_daemon_engine_model::local_day(now), reading: UsageReading { plan: None, complete: false,
                 windows: vec![WindowReading { kind: if account.provider == alondra_core::accounts::Provider::Codex { WindowKind::Other("codex:account:limit".into()) } else { WindowKind::Session }, used: if account.provider == alondra_core::accounts::Provider::Codex { Share::NONE } else { Share::FULL }, resets_at: reset, exhausted: true }] } },
     };
     drop(read);

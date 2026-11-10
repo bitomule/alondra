@@ -6,10 +6,9 @@ use crate::locks::Poisonable as _;
 pub mod backend;
 pub(crate) mod seals;
 mod worker;
-mod account_identity;
 mod claude_history;
 mod node_environment;
-pub(crate) use account_identity::NativeAccountIdentity;
+pub(crate) use alondra_daemon_engine_model::NativeAccountIdentity;
 use worker::{Worker, Found};
 use alondra_core::accounts::{AccountKey, Provider};
 pub use backend::SdkBackend;
@@ -107,72 +106,9 @@ pub struct Launch {
     pub account: alondra_core::accounts::AccountId,
 }
 
-/// What the task's Claude is launched with besides its prompt: the model and effort the launch
-/// resolved and the tools its request denies. Kept beside the execution's host, so a host that
-/// resumes the session launches Claude the same way.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct LaunchOptions {
-    #[serde(default)]
-    pub provider: Provider,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection: Option<alondra_core::model_selection::TaskSelection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-}
+pub use alondra_daemon_engine_model::{Failed, LaunchOptions};
+pub(crate) use alondra_daemon_engine_model::retain_selection_options;
 
-pub(crate) fn retain_selection_options(directory:&std::path::Path,selection:alondra_core::model_selection::TaskSelection)->Result<(),Failed>{
-    let mut options=LaunchOptions::load(directory)?;
-    let effective=selection.effective.as_ref().ok_or_else(||Failed::new("The effective selection is unknown".into()))?;
-    options.model=Some(effective.model.model.clone());options.effort=effective.reasoning_effort.clone();options.selection=Some(selection);
-    options.save(directory)
-}
-
-const LAUNCH_OPTIONS: &str = "launch-options.json";
-
-impl LaunchOptions {
-    /// The effort levels the Agent SDK takes; any other a launch resolved is left to Claude.
-    fn effort(&self) -> Option<String> {
-        self.effort.clone().filter(|effort| matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max"))
-    }
-
-    fn save(&self, state_directory: &std::path::Path) -> Result<(), Failed> {
-        let text = serde_json::to_vec(self).map_err(|error| Failed::new(format!("the launch options: {error}")))?;
-        crate::save::atomic(&state_directory.join(LAUNCH_OPTIONS), &text).map_err(|error| Failed::written(format!("keeping the launch options: {error}"), &error))
-    }
-
-    pub(crate) fn load(state_directory: &std::path::Path) -> Result<Self, Failed> {
-        match std::fs::read(state_directory.join(LAUNCH_OPTIONS)) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| Failed::new(format!("reading the launch options: {error}"))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(Failed::new(format!("reading the launch options: {error}"))),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Failed {
-    pub why: String,
-    /// A write it needed found the disk full: once there is space it can go on as it was.
-    pub(crate) no_space: bool,
-}
-impl Failed {
-    pub(crate) fn new(why: String) -> Self {
-        Self { why, no_space: false }
-    }
-
-    fn written(why: String, error: &std::io::Error) -> Self {
-        Self { why, no_space: crate::disk::io_no_space(error) }
-    }
-}
-impl std::fmt::Display for Failed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.why)
-    }
-}
 fn failed(what: &str) -> impl Fn(StoreError) -> Failed + '_ {
     move |error| Failed {
         why: format!("{what}: {}", store_text(&error)),
@@ -640,7 +576,7 @@ fn provider_capabilities(provider: Provider) -> BTreeSet<Capability> {
 
 /// The account an execution's binding runs it on.
 fn account_of(binding: &ProviderBinding) -> alondra_core::accounts::AccountId {
-    crate::usage_probe::account_of(binding.credential())
+    alondra_daemon_engine_model::account_of(binding.credential())
 }
 
 /// The launch of a daemon with an SDK backend: the task runs through the SDK or does not

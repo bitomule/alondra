@@ -191,7 +191,7 @@ async fn launch_through_sdk(
     let (workplace, plugin, resolved) = prepare_claimed(&selected_launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
     crate::domain_orchestrator_tools::own_worktree(domain, task, &workplace).await.map_err(|error| error.message)?;
     let selected = resolved.selection.as_ref().and_then(|selection| selection.effective.as_ref());
-    let options = crate::sdk_owner::LaunchOptions {
+    let options = alondra_daemon_engine_model::LaunchOptions {
         provider: account.provider,
         selection: resolved.selection.clone(),
         model: selected.map(|selection| selection.model.model.clone()).or_else(|| resolved.flags.model.clone()),

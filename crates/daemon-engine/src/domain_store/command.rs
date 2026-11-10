@@ -394,7 +394,7 @@ fn store_launch_plan(conn: &Connection, task: &TaskId, plan: &LaunchPlan) -> std
     repository::exec(conn,
         "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role",
         params![task.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), alondra_core::now_millis()])?;
-    let body = crate::domain_orchestrator_tools::LaunchBody::from_plan(task.clone(), plan).to_queue();
+    let body = alondra_daemon_engine_model::LaunchBody::from_plan(task.clone(), plan).to_queue();
     repository::exec(conn, "UPDATE launch_queue SET body=?2 WHERE task_id=?1", params![task.0, serde_json::to_string(&body)?])?;
     Ok(())
 }
@@ -419,8 +419,8 @@ fn queue_for_a_node(conn: &Connection, task: &TaskId, reopened: bool) -> std::re
         }
         return Ok(());
     };
-    let plan: crate::launch_plans::LaunchPlan = serde_json::from_str(&plan).context("stored launch plan")?;
-    let body = crate::domain_orchestrator_tools::LaunchBody::from_plan(task.clone(), &plan).to_queue();
+    let plan: alondra_daemon_engine_model::LaunchPlan = serde_json::from_str(&plan).context("stored launch plan")?;
+    let body = alondra_daemon_engine_model::LaunchBody::from_plan(task.clone(), &plan).to_queue();
     repository::exec(conn,
         "INSERT INTO launch_queue(task_id,body,origin,enqueued_at) VALUES(?1,?2,'reopen',?3) ON CONFLICT(task_id) DO UPDATE SET body=excluded.body,enqueued_at=min(enqueued_at,excluded.enqueued_at)",
         params![task.0, serde_json::to_string(&body)?, since])?;

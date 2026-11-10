@@ -326,7 +326,7 @@ impl<'connection> OwnerTransaction<'connection> {
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
         self.stage_observation_with_identity(binding,owner_generation,batch,normalizer,home,probe,None)
     }
-    pub(crate) fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&crate::sdk_owner::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
+    pub(crate) fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
         if let Some(refusal) = observation_refused_for_test() {
             return Err(refusal);
         }
@@ -342,7 +342,7 @@ impl<'connection> OwnerTransaction<'connection> {
         let (task_id, generation) = (execution.task().clone(), execution.generation());
         let proven_same_identity=|provider:alondra_core::accounts::Provider,status:&alondra_core::accounts::AccountStatus|identity.is_some_and(|expected|expected.change(status).is_none() && expected.same_known_native_account(provider,status));
         let account_fresh=alondra_core::accounts::Provider::from_driver(binding.driver()).is_none_or(|provider|{
-            let account=crate::usage_probe::account_of(binding.credential());let key=alondra_core::accounts::AccountKey::new(provider,account.clone());
+            let account=alondra_daemon_engine_model::account_of(binding.credential());let key=alondra_core::accounts::AccountKey::new(provider,account.clone());
             let status=self.draft.state.accounts.iter().find(|status|status.provider==provider && status.id==account);
             if provider==alondra_core::accounts::Provider::Codex{return status.is_some_and(|status|proven_same_identity(provider,status))}
             let generation_matches=binding.credential_generation()==crate::accounts::generation_provider(&self.draft.state,&key);
@@ -350,7 +350,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 && identity.is_none_or(|expected|status.is_none_or(|status|expected.change(status)!=Some("identity")))
         });
         let same_known_identity=identity.is_some_and(|_|alondra_core::accounts::Provider::from_driver(binding.driver()).is_some_and(|provider|{
-            let account=crate::usage_probe::account_of(binding.credential());
+            let account=alondra_daemon_engine_model::account_of(binding.credential());
             self.draft.state.accounts.iter().find(|status|status.provider==provider && status.id==account).is_some_and(|status|proven_same_identity(provider,status))
         }));
         let cursor = |journal: &LifecycleTransaction<'_>| -> std::result::Result<Option<u64>, StoreError> {
@@ -392,7 +392,7 @@ impl<'connection> OwnerTransaction<'connection> {
                         let at=alondra_core::now_millis();
                         let kind=if provider==alondra_core::accounts::Provider::Codex{WindowKind::Other("codex:account:limit".into())}else{WindowKind::Session};
                         let resets_at=failure.resets_at.and_then(|seconds|i64::try_from(seconds).ok()?.checked_mul(1000)).filter(|reset|*reset>at);
-                        commands.push(Command::RecordAccountUsage{provider,account:account.account,at,day:crate::node_reports::local_day(at),reading:UsageReading{plan:None,complete:false,windows:vec![WindowReading{kind,used:Share::NONE,exhausted:true,resets_at}]}});
+                        commands.push(Command::RecordAccountUsage{provider,account:account.account,at,day:alondra_daemon_engine_model::local_day(at),reading:UsageReading{plan:None,complete:false,windows:vec![WindowReading{kind,used:Share::NONE,exhausted:true,resets_at}]}});
                     }
                     if matches!(outcome,TurnOutcome::Completed)
                         && account_fresh
@@ -403,7 +403,7 @@ impl<'connection> OwnerTransaction<'connection> {
                             &&usage.windows.iter().any(|window|window.reading.kind.is_native_limit_marker()&&window.reading.exhausted));
                         if account.provider==alondra_core::accounts::Provider::Codex && limited {
                             let at=alondra_core::now_millis();
-                            commands.push(Command::RecordAccountUsage{provider:account.provider,account:account.account,at,day:crate::node_reports::local_day(at),reading:alondra_core::usage::native_turn_worked()});
+                            commands.push(Command::RecordAccountUsage{provider:account.provider,account:account.account,at,day:alondra_daemon_engine_model::local_day(at),reading:alondra_core::usage::native_turn_worked()});
                         }
                     }
                     let (failure, failed) = match outcome {
@@ -548,11 +548,11 @@ impl<'connection> OwnerTransaction<'connection> {
                     if !account_fresh{continue}
                     flush(&mut commands, &mut technical);
                     let Some(provider) = alondra_core::accounts::Provider::from_driver(binding.driver()) else { continue };
-                    let account = crate::usage_probe::account_of(binding.credential());
+                    let account = alondra_daemon_engine_model::account_of(binding.credential());
                     let reading = usage_reading(report);
                     let at = alondra_core::now_millis();
                     if !reading.is_empty() && reading.check().is_ok() && self.usage_changes(provider, &account, &reading, at) {
-                        let day = crate::node_reports::local_day(at);
+                        let day = alondra_daemon_engine_model::local_day(at);
                         commands.push(Command::RecordAccountUsage { provider, account, reading, at, day });
                     }
                 }
@@ -659,7 +659,7 @@ impl<'connection> OwnerTransaction<'connection> {
         }
         if account_fresh && binding.driver() == "codex-app-server" {
             if let Some(message) = alondra_provider_codex::native_message(batch) {
-                let account = alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Codex, crate::usage_probe::account_of(binding.credential())).wire_id();
+                let account = alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Codex, alondra_daemon_engine_model::account_of(binding.credential())).wire_id();
                 self.journal.inspect(|| super::codex_metrics::stage(self.conn, &account, &task_id.0, &message, alondra_core::now_millis()).map_err(|error| StoreError::Storage(error.into())))?;
             }
         }
@@ -857,10 +857,10 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// The commit hands back the attempt; `false` when the control was revoked instead, an
     /// interrupt whose turn or work already ended. A permit some later commit made stale is refused.
-    pub(crate) fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&crate::sdk_owner::NativeAccountIdentity>)->std::result::Result<(),StoreError>{
+    pub(crate) fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<(),StoreError>{
         let Some(expected)=expected else{return Ok(())};
         let Some(provider)=alondra_core::accounts::Provider::from_driver(binding.driver()) else{return Ok(())};
-        let id=crate::usage_probe::account_of(binding.credential());
+        let id=alondra_daemon_engine_model::account_of(binding.credential());
         let account=self.state().accounts.iter().find(|account|account.provider==provider && account.id==id);
         if let Some((account,change))=account.and_then(|account|expected.change(account).map(|change|(account,change))){
             return Err(if change=="identity"{DomainError::new("native_account_changed",format!("the account {} now has a different known identity. Sign that account in again with the identity this session started on, then try again, or cancel the task",account.name))}else{DomainError::new("native_billing_policy_changed","Billing policy changed for this account. Restore the original policy or create a new node with an explicit paid account selection")}.into())
@@ -872,7 +872,7 @@ impl<'connection> OwnerTransaction<'connection> {
         let Some((kind,argument))=kind else{return Ok(false)};
         let safe=matches!(kind.as_str(),"interrupt"|"force_stop") || (kind=="respond" && argument.as_deref().and_then(|argument|serde_json::from_str::<serde_json::Value>(argument).ok()).and_then(|value|value.get("kind").and_then(serde_json::Value::as_str).map(str::to_owned)).is_some_and(|kind|matches!(kind.as_str(),"deny"|"decline")));
         if !safe{
-            let expected=crate::sdk_owner::NativeAccountIdentity::load(directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
+            let expected=alondra_daemon_engine_model::NativeAccountIdentity::load(directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
             let binding=self.execution_binding(permit.execution())?;self.require_native_identity(&binding,expected.as_ref())?;
         }
         self.claim_control(permit)

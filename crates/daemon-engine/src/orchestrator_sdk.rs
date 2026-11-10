@@ -97,7 +97,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
             output.stream.error=Some(bounded(format!("The batch report was not committed; its host evidence remains unacknowledged: {error:#}")));break;
         }
         #[cfg(any(test, feature = "test-hooks"))]
-        if let Err(error) = crate::domain_orchestrator::faults::write(&batch.home, "ack") {
+        if let Err(error) = alondra_daemon_engine_model::faults::write(&batch.home, "ack") {
             output.stream.storage_failure = true;
             output.stream.error = Some(format!("The batch ACK could not be written: {error}"));
             break;

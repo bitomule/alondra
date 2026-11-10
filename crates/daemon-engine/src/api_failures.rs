@@ -21,14 +21,7 @@ use std::sync::Mutex;
 /// Failures of several nodes this close together, with no answer since, mean the API is down.
 const OUTAGE_WINDOW: Millis = 10 * 60_000;
 
-/// A node's turns an API error ended in a row, and the card raised once Alondra gave up.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Streak {
-    pub failures: u8,
-    pub first_at: Millis,
-    pub last_at: Millis,
-    pub card: Option<InteractionId>,
-}
+pub(crate) use alondra_daemon_engine_model::Streak;
 
 /// When the model last answered each node, and when an API error last cut each one's turn.
 #[derive(Default)]

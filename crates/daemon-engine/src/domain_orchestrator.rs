@@ -119,8 +119,7 @@ pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
-#[path = "domain_orchestrator/tests/faults.rs"]
-pub mod faults;
+pub use alondra_daemon_engine_model::faults;
 #[path = "domain_orchestrator/recovery.rs"]
 mod recovery;
 #[path = "domain_orchestrator/watchdog.rs"]

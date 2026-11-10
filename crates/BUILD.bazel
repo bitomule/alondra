@@ -27,6 +27,7 @@ sh_test(
             "alondrad",
             "core",
             "daemon-engine",
+            "daemon-engine-model",
             "daemon-support",
             "domain",
             "e2e",

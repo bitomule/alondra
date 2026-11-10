@@ -95,49 +95,7 @@ pub(crate) fn assess(tool: Option<&str>, input: &Value, cwd: Option<&str>, mode:
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuleState {
-    /// Chosen; Claude Code has not been seen writing it yet.
-    Pending,
-    Active,
-    /// Claude Code never wrote it: it is not listed, and its card says so.
-    Missing,
-    Removed,
-}
-impl RuleState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RuleState::Pending => "pending",
-            RuleState::Active => "active",
-            RuleState::Missing => "missing",
-            RuleState::Removed => "removed",
-        }
-    }
-    pub fn parse(text: &str) -> Self {
-        match text {
-            "active" => RuleState::Active,
-            "missing" => RuleState::Missing,
-            "removed" => RuleState::Removed,
-            _ => RuleState::Pending,
-        }
-    }
-}
-
-/// A rule «allow always» added on this Mac.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AllowedRule {
-    pub id: i64,
-    /// The main checkout's folder.
-    pub repo: String,
-    pub settings: String,
-    /// As Claude Code matches it: `make build *`.
-    pub rule: String,
-    pub added_at: i64,
-    pub task_id: Option<String>,
-    pub interaction_id: String,
-    pub machine: String,
-    pub state: RuleState,
-}
+pub use alondra_daemon_engine_model::{AllowedRule, RuleState};
 
 fn machine() -> String {
     let mut name = [0u8; 256];

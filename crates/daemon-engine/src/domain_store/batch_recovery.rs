@@ -100,13 +100,13 @@ impl DomainStore {
             tx.execute("INSERT INTO orchestrator_batch_decisions(run,target) VALUES(?1,?2) ON CONFLICT(run) DO UPDATE SET target=excluded.target", params![run, target])?;
         }
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "delivery_finish")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "delivery_finish")?;
         tx.execute("UPDATE domain_outbox SET state=?2 WHERE message_id IN(SELECT a.message_id FROM delivery_attempts a JOIN orchestrator_deliveries d ON d.attempt_id=a.id JOIN orchestrator_batch_runs r ON r.session=d.session_id WHERE r.run=?1 AND (a.state IN('dispatching','uncertain') OR (?3 AND a.reason='explicit_user_reconciliation' AND a.state IN('discarded','retryable') AND a.state<>?2)) AND NOT EXISTS(SELECT 1 FROM delivery_attempts newer WHERE newer.message_id=a.message_id AND newer.id>a.id))", params![run, target, explicit])?;
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "delivery_finish")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "delivery_finish")?;
         tx.execute("UPDATE delivery_attempts SET state=?2,version=version+1,reason=?3 WHERE (state IN('dispatching','uncertain') OR (?4 AND reason='explicit_user_reconciliation' AND state IN('discarded','retryable') AND state<>?2)) AND id IN(SELECT d.attempt_id FROM orchestrator_deliveries d JOIN orchestrator_batch_runs r ON r.session=d.session_id WHERE r.run=?1)", params![run, target, reason, explicit])?;
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "delivery_commit")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "delivery_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(true)
@@ -115,7 +115,7 @@ impl DomainStore {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn orchestrator_write_fault(&self, point: &'static str) -> Result<()> {
         if let Some(home) = self.conn.path().map(Path::new).and_then(Path::parent) {
-            crate::domain_orchestrator::faults::write(home, point)?;
+            alondra_daemon_engine_model::faults::write(home, point)?;
         }
         Ok(())
     }

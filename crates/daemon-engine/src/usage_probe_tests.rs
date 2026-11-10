@@ -9,13 +9,6 @@ fn id(text: &str) -> AccountId {
 }
 
 #[test]
-fn a_binding_on_the_native_sign_in_runs_on_the_default_account() {
-    assert!(account_of("native-login").is_default());
-    assert_eq!(account_of("work"), id("work"));
-    assert!(account_of("Not An Id").is_default());
-}
-
-#[test]
 fn the_probes_answer_is_a_complete_reading_of_the_session_and_the_week() {
     let report: ProbeReport = serde_json::from_value(serde_json::json!({
         "plan": "max", "rate_limits_available": true,
@@ -266,7 +259,7 @@ fn a_probe_that_fails_keeps_the_last_good_reading_and_its_age() {
     assert!(probe(&backend, None).is_err());
     assert_eq!(domain.read().state().account_usage, before, "nothing recorded");
     assert_eq!(before[0].measured_at(), Some(NOW), "the reading says how old it is");
-    let usage = domain.read().index().usage(NOW + 3_600_000, &crate::node_reports::local_day(NOW)).unwrap();
+    let usage = domain.read().index().usage(NOW + 3_600_000, &alondra_daemon_engine_model::local_day(NOW)).unwrap();
     assert_eq!((usage.week_percent, usage.measured_at), (40.0, NOW));
 }
 
@@ -286,7 +279,7 @@ fn the_readings_and_the_days_start_survive_a_restart() {
     };
     let restarted = DomainRuntime::open(&home).unwrap();
     assert_eq!(restarted.read().state().account_usage, before);
-    let usage = restarted.read().index().usage(NOW + 120_000, &crate::node_reports::local_day(NOW)).unwrap();
+    let usage = restarted.read().index().usage(NOW + 120_000, &alondra_daemon_engine_model::local_day(NOW)).unwrap();
     assert_eq!(usage.today_spent.map(f64::round), Some(18.0), "today still counts from its first reading");
 }
 
@@ -400,7 +393,7 @@ fn codex_native_quota_uses_its_actual_reset() {
     let reading = UsageReading { plan: None, complete: true, windows: vec![window] };
     let read = domain.read();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: "native-quota".into(),
-        expected_revision: read.state().revision, command: DomainCommand::RecordAccountUsage { provider: Provider::Codex, account: id("default"), reading, at: NOW, day: crate::node_reports::local_day(NOW) } };
+        expected_revision: read.state().revision, command: DomainCommand::RecordAccountUsage { provider: Provider::Codex, account: id("default"), reading, at: NOW, day: alondra_daemon_engine_model::local_day(NOW) } };
     drop(read);
     domain.execute_as_system(envelope).unwrap();
     follow(&domain, NOW);
@@ -419,7 +412,7 @@ fn an_unknown_native_quota_marker_never_fabricates_a_future_reset() {
     let reading = UsageReading { plan: None, complete: false, windows: vec![window] };
     let read = domain.read();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: "unknown-native-quota".into(),
-        expected_revision: read.state().revision, command: DomainCommand::RecordAccountUsage { provider: Provider::Codex, account: id("default"), reading, at: NOW, day: crate::node_reports::local_day(NOW) } };
+        expected_revision: read.state().revision, command: DomainCommand::RecordAccountUsage { provider: Provider::Codex, account: id("default"), reading, at: NOW, day: alondra_daemon_engine_model::local_day(NOW) } };
     drop(read);
     domain.execute_as_system(envelope).unwrap();
     follow(&domain, NOW);

@@ -1,6 +1,6 @@
 //! What the orchestrator reads when a decision of the user holds the tasks that wait for the one
 //! decided on, and why a launch of one of them is refused until it reviews their plans.
-use crate::launch_plans::LaunchPlan;
+use alondra_daemon_engine_model::LaunchPlan;
 use alondra_core::domain::{ANSWER_TEXT, DomainState, InputValue, InteractionId, InteractionPayload, TaskId};
 
 /// Why a held task does not start now, or nothing if no decision holds it.
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn a_hold_survives_a_restart_and_a_new_plan_is_stored_with_its_settlement() {
         let (home, domain) = redraft();
-        let queued = crate::domain_orchestrator_tools::LaunchBody::from_plan("c".into(), &plan("c", "old")).to_queue();
+        let queued = alondra_daemon_engine_model::LaunchBody::from_plan("c".into(), &plan("c", "old")).to_queue();
         domain.store.lock().unwrap().enqueue_launch(&"c".into(), &queued, "reopen", 1).unwrap();
         drop(domain);
         let domain = DomainRuntime::open(&home).unwrap();
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(domain.launch_plan(&"c".into()).unwrap().unwrap().mission.as_deref(), Some("Phase C: group with 512 px prints"));
         assert_eq!(domain.store.lock().unwrap().planned_tasks().unwrap()[&TaskId::from("c")], at_before, "a new plan keeps the task's place");
         let queue = domain.store.lock().unwrap().launch_queue().unwrap();
-        let body = crate::domain_orchestrator_tools::LaunchBody::from_queue(&queue[0].body).unwrap();
+        let body = alondra_daemon_engine_model::LaunchBody::from_queue(&queue[0].body).unwrap();
         assert_eq!(body.to_queue()["body"]["prompt"], "Phase C: group with 512 px prints", "the queued launch starts with the new plan");
         assert!(held(&domain.state().unwrap(), &"c".into()).is_none());
         assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "each dependent is settled on its own");

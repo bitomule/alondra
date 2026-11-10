@@ -349,7 +349,7 @@ pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime
     use alondra_core::usage::{OVER_PACE_KEEP_OPTION, OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PaceNumbers};
     let Some(usage) = crate::usage_probe::usage(domain, now).filter(|usage| usage.over_pace) else { return };
     let numbers = PaceNumbers::of(&usage);
-    let day = crate::node_reports::local_day(now);
+    let day = alondra_daemon_engine_model::local_day(now);
     let id = format!("{OVER_PACE_PREFIX}{day}");
     let options = vec![option(OVER_PACE_PAUSE_OPTION, "Pause until tomorrow"), option(OVER_PACE_KEEP_OPTION, "Keep going")];
     let raised = domain.ask_user(&id, Some(SystemCard::OverPace { day: day.clone() }), "Today is over its share of the weekly Claude usage".into(),
@@ -378,11 +378,11 @@ pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, n
     let pause = &domain.live.usage_pause;
     for (id, interaction) in state.interactions.iter().filter(|(_, interaction)| !interaction.withdrawn) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
-        let today = crate::node_reports::local_day(now);
+        let today = alondra_daemon_engine_model::local_day(now);
         let over_today = matches!(&interaction.system_card, Some(SystemCard::OverPace { day }) if *day == today);
         if over_today && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {
             pause.pause_by_user(next_local_midnight(now), now);
-            let day = crate::node_reports::local_day(now);
+            let day = alondra_daemon_engine_model::local_day(now);
             let resume = format!("{PACE_RESUME_PREFIX}{day}");
             let options = vec![option(PACE_RESUME_OPTION, "Resume now"), option(PACE_STAY_OPTION, "Stay paused")];
             let raised = domain.ask_user(&resume, Some(SystemCard::PaceResume { day: day.clone() }), "Resume Claude work now?".into(),
@@ -883,7 +883,7 @@ mod tests {
         let (domain, home) = over_pace_domain();
         raise_over_pace_card(&domain, now_millis());
         let card = the_card(&domain, "over-pace-").expect("a card for the day");
-        assert_eq!(card.id.0, format!("over-pace-{}", crate::node_reports::local_day(now_millis())));
+        assert_eq!(card.id.0, format!("over-pace-{}", alondra_daemon_engine_model::local_day(now_millis())));
         assert_eq!(card.card.kind, alondra_core::domain::CardKind::Decide);
         assert_eq!(card.author, alondra_core::domain::Author::System);
         assert!(!card.blocking);

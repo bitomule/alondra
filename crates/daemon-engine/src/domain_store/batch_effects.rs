@@ -167,7 +167,7 @@ impl DomainStore {
         Ok(serde_json::json!({"run_id":run,"entries":entries,"next":next,"excerpts_only":true,"instruction":"Read current domain state before continuing; an admitted or uncertain operation is not confirmed success"}))
     }
 
-    pub(crate) fn batch_selection(&self, run: &str) -> Result<Option<crate::orchestrator_provider::BatchSelection>> {
+    pub(crate) fn batch_selection(&self, run: &str) -> Result<Option<alondra_daemon_engine_model::BatchSelection>> {
         let encoded: Option<String> = self.conn.query_row("SELECT selection FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0)).optional()?.flatten();
         encoded.as_deref().map(serde_json::from_str).transpose().map_err(Into::into)
     }
@@ -198,7 +198,7 @@ impl DomainStore {
             tx.execute("INSERT INTO orchestrator_batch_reports(run,cursor,digest,report) VALUES(?1,?2,?3,?4)", params![run,i64::try_from(cursor)?,digest,encoded])?;
         }
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "report_commit")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "report_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(())
@@ -264,7 +264,7 @@ impl DomainStore {
         tx.execute("UPDATE orchestrator_batch_runs SET ended=1 WHERE run=?1", [run])?;
         tx.execute("UPDATE orchestrator_batch_effects SET pinned=0 WHERE run=?1", [run])?;
         #[cfg(any(test, feature = "test-hooks"))]
-        crate::domain_orchestrator::faults::database_write(&tx, "finish_batch_commit")?;
+        alondra_daemon_engine_model::faults::database_write(&tx, "finish_batch_commit")?;
         tx.commit()?;
         self.note_side_write();
         Ok(())
