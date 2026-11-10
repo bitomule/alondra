@@ -504,7 +504,8 @@ pub enum Command {
         discard: Vec<String>,
     },
     /// Someone tells the node of an SDK task `text` outside a card: the orchestrator, the user, or
-    /// Alondra itself. It reaches the node's Claude inside the turn that runs, or as a turn of its own.
+    /// Alondra itself. It reaches the node's Claude inside the turn that runs, or as a turn of its own;
+    /// told to a task no node runs, it waits in order for the node that starts it.
     TellNode {
         task_id: TaskId,
         text: String,

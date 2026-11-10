@@ -21,7 +21,7 @@ impl TaskLifecycle {
                     return Err(Refusal::InvalidState);
                 }
                 let input = match &self.state {
-                    State::Unstarted(input) => input.clone(),
+                    State::Unstarted { input, .. } => input.clone(),
                     State::InProgress(Progress::Queued { input, .. }) => input.clone(),
                     State::Delivered(Delivered {
                         gate,
@@ -66,7 +66,7 @@ impl TaskLifecycle {
                     callbacks: vec![],
                     effects: BTreeSet::new(),
                     inbox: match &self.state {
-                        State::InProgress(Progress::Queued { remaining, .. }) => remaining.clone(),
+                        State::Unstarted { remaining, .. } | State::InProgress(Progress::Queued { remaining, .. }) => remaining.clone(),
                         State::Delivered(Delivered {
                             session: Session::Absent(pending),
                             ..
@@ -149,18 +149,12 @@ impl TaskLifecycle {
                     return Err(Refusal::DuplicateObligation);
                 }
                 match &mut self.state {
-                    // Cards that only ask how the task goes on are answered by what the node is told.
-                    State::InProgress(Progress::Waiting { stage, cards, session }) if cards.iter().all(|card| card.reason == WaitReason::Unheard) => {
-                        let (stage, mut session) = (*stage, session.clone());
-                        tell(&mut session, input)?;
-                        self.state = State::InProgress(match session {
-                            Session::Absent(mut pending) => Progress::Queued {
-                                stage,
-                                input: pending.pop_front().ok_or(Refusal::EmptyObligation)?,
-                                remaining: pending,
-                            },
-                            Session::Present(execution) => Progress::Executing { stage, execution: ActiveExecution::new(execution)? },
-                        });
+                    // Cards that only ask how a running session goes on are answered by what the node is told;
+                    // with no session they still decide how it starts again, and the input waits for it.
+                    State::InProgress(Progress::Waiting { stage, cards, session: Session::Present(execution) }) if cards.iter().all(|card| card.reason == WaitReason::Unheard) => {
+                        let (stage, mut execution) = (*stage, execution.clone());
+                        queue_input(&mut execution, input)?;
+                        self.state = State::InProgress(Progress::Executing { stage, execution: ActiveExecution::new(execution)? });
                     }
                     State::InProgress(Progress::Executing { execution, .. }) => queue_input(&mut execution.0, input)?,
                     State::InProgress(Progress::Queued { remaining, .. }) => remaining.push_back(input),
@@ -170,7 +164,8 @@ impl TaskLifecycle {
                         tell(&mut delivered.session, input)?;
                     }
                     State::Finishing(finishing) => tell(&mut finishing.session, input)?,
-                    State::Unstarted(_) | State::Completed | State::Cancelled => return Err(Refusal::InvalidState),
+                    State::Unstarted { remaining, .. } => remaining.push_back(input),
+                    State::Completed | State::Cancelled => return Err(Refusal::InvalidState),
                 }
             }
             Event::Answer { card, input } => self.answer(card, Reply::Input(input), false)?,
@@ -313,11 +308,11 @@ impl TaskLifecycle {
                 }
                 let tasks = NonEmpty::new(dependencies)?;
                 let (stage, decisions, session) = match &self.state {
-                    State::Unstarted(input) => (
-                        WorkStage::Plan,
-                        BTreeMap::new(),
-                        Session::Absent(Inputs::one(input.clone())),
-                    ),
+                    State::Unstarted { input, remaining } => (WorkStage::Plan, BTreeMap::new(), {
+                        let mut pending = remaining.clone();
+                        pending.push_front(input.clone());
+                        Session::Absent(pending)
+                    }),
                     State::InProgress(Progress::Queued {
                         stage,
                         input,
@@ -368,7 +363,7 @@ impl TaskLifecycle {
                 post_merge,
             } => self.finish(intent, cleanup, post_merge)?,
             Event::PostMergeDeclared { operation } => {
-                if matches!(self.state, State::Unstarted(_) | State::Finishing(_) | State::Completed | State::Cancelled) {
+                if matches!(self.state, State::Unstarted { .. } | State::Finishing(_) | State::Completed | State::Cancelled) {
                     return Err(Refusal::InvalidState);
                 }
                 if self.post_merge.is_some() {
@@ -516,7 +511,7 @@ impl TaskLifecycle {
             }
             Event::HoldForPlanReview { review } => {
                 valid_id(&review.0)?;
-                let not_admitted = matches!(self.state, State::Unstarted(_)
+                let not_admitted = matches!(self.state, State::Unstarted { .. }
                     | State::InProgress(Progress::Queued { .. } | Progress::Dependency { session: Session::Absent(_), .. }));
                 if !not_admitted {
                     return Err(Refusal::InvalidState);
@@ -603,11 +598,11 @@ impl TaskLifecycle {
             callback: None,
         };
         let (stage, mut cards, session) = match &self.state {
-            State::Unstarted(input) => (
-                WorkStage::Plan,
-                BTreeMap::new(),
-                Session::Absent(Inputs::one(input.clone())),
-            ),
+            State::Unstarted { input, remaining } => (WorkStage::Plan, BTreeMap::new(), {
+                let mut pending = remaining.clone();
+                pending.push_front(input.clone());
+                Session::Absent(pending)
+            }),
             State::InProgress(Progress::Queued {
                 stage,
                 input,

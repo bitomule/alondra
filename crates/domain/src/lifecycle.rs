@@ -564,7 +564,8 @@ pub enum Event {
     },
     /// Someone tells the task's node something outside a card: the input reaches its execution
     /// as it is, inside the turn that runs or as a turn of its own, and waits for the host that
-    /// resumes the session when the execution has none. `answers` names the node's own card
+    /// resumes the session when the execution has none, or for the first execution of a task
+    /// no node started yet. `answers` names the node's own card
     /// the input answers, when it is one.
     Tell {
         input: InputId,
@@ -1084,7 +1085,8 @@ struct Finishing {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum State {
-    Unstarted(InputId),
+    /// No node started the task: `input` starts it, and what it was told meanwhile follows.
+    Unstarted { input: InputId, remaining: Inputs },
     InProgress(Progress),
     Delivered(Delivered),
     Finishing(Finishing),
@@ -1138,7 +1140,7 @@ impl TaskLifecycle {
             task,
             revision: 0,
             generation: 0,
-            state: State::Unstarted(input),
+            state: State::Unstarted { input, remaining: Inputs::new() },
             plan_revision: 0,
             plan_reviews: BTreeMap::new(),
             post_merge: None,
@@ -1166,7 +1168,7 @@ impl TaskLifecycle {
     }
     pub fn phase(&self) -> TaskPhase {
         match self.state {
-            State::Unstarted(_) => TaskPhase::Unstarted,
+            State::Unstarted { .. } => TaskPhase::Unstarted,
             State::InProgress(_) => TaskPhase::InProgress,
             State::Delivered(_) => TaskPhase::Delivered,
             State::Finishing(_) => TaskPhase::Finishing,
@@ -1182,7 +1184,7 @@ impl TaskLifecycle {
             ) => session.execution(),
             State::Delivered(delivered) => delivered.session.execution(),
             State::Finishing(finishing) => finishing.session.execution(),
-            State::Unstarted(_)
+            State::Unstarted { .. }
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => None,
@@ -1196,7 +1198,7 @@ impl TaskLifecycle {
             ) => session.execution_mut(),
             State::Delivered(delivered) => delivered.session.execution_mut(),
             State::Finishing(finishing) => finishing.session.execution_mut(),
-            State::Unstarted(_)
+            State::Unstarted { .. }
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => None,
@@ -1342,7 +1344,7 @@ impl TaskLifecycle {
     /// What the task is doing, or who it waits on. `None` only before it starts and once it ended.
     pub fn live(&self) -> Option<LiveState> {
         match &self.state {
-            State::Unstarted(_) | State::Completed | State::Cancelled => None,
+            State::Unstarted { .. } | State::Completed | State::Cancelled => None,
             State::InProgress(Progress::Queued { .. }) => Some(LiveState::WaitingCapacity(Capacity::Gate)),
             State::InProgress(Progress::Executing { execution, .. }) => execution.0.live(),
             State::InProgress(Progress::Waiting { cards, .. }) => waits_on(cards.iter()),
@@ -1375,7 +1377,7 @@ impl TaskLifecycle {
     }
     pub fn stage(&self) -> Option<WorkStage> {
         match &self.state {
-            State::Unstarted(_) => Some(WorkStage::Plan),
+            State::Unstarted { .. } => Some(WorkStage::Plan),
             State::InProgress(
                 Progress::Queued { stage, .. }
                 | Progress::Executing { stage, .. }
@@ -1411,7 +1413,7 @@ impl TaskLifecycle {
     /// The pending inputs: the one the task starts or resumes with, then the queue behind it.
     fn waiting(&self) -> (Option<&InputId>, Option<&Inputs>) {
         let session = match &self.state {
-            State::Unstarted(input) => return (Some(input), None),
+            State::Unstarted { input, remaining } => return (Some(input), Some(remaining)),
             State::InProgress(Progress::Queued {
                 input, remaining, ..
             }) => return (Some(input), Some(remaining)),

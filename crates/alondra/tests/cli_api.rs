@@ -182,3 +182,70 @@ fn stopped_daemon_fixture_uses_an_unclaimable_endpoint() {
         "offline destination must be rejected locally: {connection:?}"
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn send_to_a_task_with_no_node_submits_the_task_action_and_prints_its_receipt() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use serde_json::{Value, json};
+
+    let mut mac = Mac::new();
+    let key = p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap();
+    std::fs::write(mac.root.join("home/tui-key.pem"), key.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes()).unwrap();
+    std::fs::write(mac.root.join("home/tui-device"), "test-terminal").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    mac.port = address.port();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let done = stopped.clone();
+    let server = std::thread::spawn(move || {
+        let mut submitted = vec![];
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            if done.load(Ordering::SeqCst) { break; }
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                assert!(reader.read_line(&mut header).unwrap() > 0);
+                if header.trim().is_empty() { break; }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let response = if line.starts_with("GET /views/task%3At-queued?") {
+                json!({"protocol":1,"data_epoch":"epoch","view":"task","key":"task:t-queued","client":"tui",
+                    "version":"v1","cursor":"c1","status":{"version":"s1","summary":"1 task","badge":0,
+                    "counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},
+                    "sections":[{"id":"task","collapsed":false,"items":[{"type":"actions","actions":[{
+                        "id":"task_msg:t-queued@7","label":"Message","style":"secondary","presentation":"button",
+                        "input":{"kind":"text","placeholder":"Write to this task…","required":true,"multiline":true},
+                        "attachments":true,"enabled":true,"resolves_card":false}]}]}]})
+            } else {
+                assert_eq!(line.trim(), "POST /actions HTTP/1.1");
+                submitted.push(serde_json::from_slice::<Value>(&bytes).unwrap());
+                json!({"protocol":1,"outcome":"applied","stamp":"Message kept: the task's node reads it when it starts"})
+            }.to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+        }
+        submitted
+    });
+    let output = mac.run(&["send", "t-queued", "Keep the old API"]);
+    stopped.store(true, Ordering::SeqCst);
+    let _ = TcpStream::connect(address);
+    let submitted = server.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "Message kept: the task's node reads it when it starts");
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0]["action_id"], "task_msg:t-queued@7");
+    assert_eq!(submitted[0]["data_epoch"], "epoch");
+    assert_eq!(submitted[0]["input"]["text"], "Keep the old API");
+    assert_eq!(submitted[0]["input"]["fields"]["from_cli"], true);
+}

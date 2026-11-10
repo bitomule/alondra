@@ -357,3 +357,52 @@ fn any_commit_moves_an_older_phase_of_a_node_of_the_agent_sdk() {
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
 }
 
+
+#[test]
+fn a_message_to_a_task_with_no_node_waits_in_order_for_the_node_that_starts_it() {
+    let mut s = world();
+    task(&mut s, "queued", None);
+    let id = TaskId::from("queued");
+    for text in ["Use the new API", "Then update the docs"] {
+        must(&mut s, Actor::System, Command::TellNode { task_id: id.clone(), text: text.into(), from_user: true, answers: None });
+    }
+    assert!(s.tasks[&id].agent_id.is_none(), "telling it starts no node");
+    assert_aggregate_rules(&s);
+    let told: Vec<(String, String)> = s.lifecycle_journal[&id].iter().filter_map(|record| match record {
+        LifecycleRecord::Told { input, text: Some(text), .. } => Some((input.clone(), text.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(told.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>(), ["Use the new API", "Then update the docs"], "kept on the task");
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Default::default(), task_id: id.clone(), agent_id: "a".into(),
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    let LifecycleRecord::Planned { input: planned } = s.lifecycle_journal[&id][0].clone() else { panic!("planned first") };
+    let pending = |s: &DomainState| s.lifecycle_of(&id).unwrap().pending_inputs().into_iter().map(|input| input.as_str().to_owned()).collect::<Vec<_>>();
+    assert_eq!(pending(&s), [planned.clone(), told[0].0.clone(), told[1].0.clone()], "the node starts with its plan, then what it was told, in order");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: id.clone(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable,
+        RuntimeObservation::TurnStarted { turn: "turn-1".into(), input: planned },
+        RuntimeObservation::InputConsumed { input: told[0].0.clone() },
+        RuntimeObservation::InputConsumed { input: told[1].0.clone() },
+    ] });
+    assert!(pending(&s).is_empty(), "each message reaches the node once");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_user_message_to_a_closing_task_with_no_node_is_refused_at_commit() {
+    let mut s = world();
+    task(&mut s, "queued", None);
+    let before_cancel = s.revision;
+    must(&mut s, user(), Command::CancelTask { task_id: "queued".into() });
+    assert!(!s.tasks[&TaskId::from("queued")].state.terminal(), "cleanup has not ended yet");
+    let journal = s.lifecycle_journal.clone();
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(),
+        command_id: "late-message".into(), expected_revision: s.revision,
+        command: Command::TellNode { task_id: "queued".into(), text: "Too late".into(), from_user: true, answers: None },
+    };
+    assert!(s.revision > before_cancel, "cancellation can commit after the sender read the task");
+    assert_eq!(s.execute(&Actor::System, &envelope).unwrap_err().code, "task_not_active");
+    assert_eq!(s.lifecycle_journal, journal, "no undeliverable input is kept");
+    assert_aggregate_rules(&s);
+}

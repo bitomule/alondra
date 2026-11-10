@@ -5259,14 +5259,15 @@ impl DomainState {
             Command::TellNode { task_id, text, from_user, answers } => {
                 system(actor)?;
                 nonempty(text)?;
-                if self.task(task_id)?.state.terminal() {
-                    return fail("task_not_active", &format!("Task {task_id} has ended: its node is gone"));
+                let task = self.task(task_id)?;
+                if task.state.terminal() || (*from_user && task.ending.is_some()) {
+                    return fail("task_not_active", &format!("Task {task_id} has ended or is closing"));
                 }
                 if let Some(card) = answers {
                     self.node_answer(task_id, card)?;
                 }
-                if self.lifecycle(lifecycles, task_id)?.execution().is_none_or(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST) {
-                    return fail("conflict", &format!("Task {task_id} has no node running through the Agent SDK"));
+                if self.lifecycle(lifecycles, task_id)?.execution().is_some_and(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST) {
+                    return fail("conflict", &format!("Task {task_id} has a node that does not run through the Agent SDK"));
                 }
                 let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
                 // The user writing to a task whose host was lost is their «Try again», with what they wrote.

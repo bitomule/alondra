@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v4aa2d944b7e6d2dd",
+  "version": "va5dbffcbdcbe2be2",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -517,6 +517,22 @@
         {
           "type": "actions",
           "actions": [
+            {
+              "id": "task_msg:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Message",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Write to this task: its node reads it when it starts…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "resolves_card": false
+            },
             {
               "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Priority",
