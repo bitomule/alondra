@@ -254,6 +254,44 @@ fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() 
     assert!(TcpStream::connect(("127.0.0.1", fixture.port)).is_err());
 }
 
+/// A package manager can swap the binary while the daemon is still starting: its port already
+/// answers but recovery has not finished. The swap still counts as an upgrade.
+#[test]
+fn a_binary_replaced_as_soon_as_the_port_opens_is_still_noticed() {
+    let mut fixture = Fixture::new("early");
+    let staged = fixture.bin.with_extension("staged");
+    std::fs::copy(env!("CARGO_BIN_EXE_alondrad"), &staged).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut daemon = None;
+    for _ in 0..5 {
+        let mut started = Running(fixture.command(true).spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let opened = loop {
+            if TcpStream::connect(("127.0.0.1", fixture.port)).is_ok() {
+                break true;
+            }
+            if let Some(status) = started.0.try_wait().unwrap() {
+                let log = stderr(&mut started.0);
+                assert!(log.contains("Address already in use"), "daemon exited {status}: {log}");
+                break false;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for the port to open");
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        if opened {
+            std::fs::rename(&staged, &fixture.bin).unwrap();
+            daemon = Some(started);
+            break;
+        }
+        fixture.port = free_port();
+    }
+    let mut daemon = daemon.expect("no free port after 5 attempts");
+    let status = until(Duration::from_secs(60), "the daemon to exit for relaunch", || daemon.0.try_wait().unwrap());
+    let log = stderr(&mut daemon.0);
+    assert_eq!(status.code(), Some(75), "{log}");
+    assert!(log.contains("passed preflight"), "{log}");
+}
+
 #[test]
 fn the_daemon_says_which_views_protocols_it_serves() {
     let mut fixture = Fixture::new("protocol");

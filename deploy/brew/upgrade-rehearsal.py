@@ -40,6 +40,8 @@ SQLITE_HEADER = b'SQLite format 3\0'
 SIDECARS = ('-wal', '-shm', '-journal')
 LAUNCHER = 'alondrad-launcher'
 RELAUNCH = 75
+START_RECORD = 'startup-failures.json'
+FIRST_WATCHING_BEFORE_ANSWERING = (0, 3, 31)
 SERVE_WITHIN = 60
 EXIT_WITHIN = 120
 STAY_UP = 10
@@ -360,6 +362,18 @@ class Daemon:
             time.sleep(0.02)
         raise Failed(f'the daemon did not answer as {ver} within {within} s: {last_line(self.log.read_text())}')
 
+    def wait_until_started(self, home, within):
+        """A daemon under launchd records its start in HOME and removes the record once it has
+        recovered and started its workers, the moment it begins watching its binary."""
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise Failed(f'the daemon exited {self.process.returncode}: {last_line(self.log.read_text())}')
+            if not (home / START_RECORD).exists():
+                return
+            time.sleep(0.02)
+        raise Failed(f'the daemon did not finish starting within {within} s: {last_line(self.log.read_text())}')
+
     def stop(self):
         if self.process.poll() is None:
             self.process.send_signal(signal.SIGTERM)
@@ -407,6 +421,12 @@ def check_launcher(rehearsal, home, ver, bundled, installed, before):
         raise Failed(f'{ver} put a launcher at {installed} that is not the one it ships')
 
 
+def watches_from_first_answer(version):
+    """A published daemon before 0.3.31 answers before it watches its binary and never notices one
+    replaced in between; it cannot be fixed, so the rehearsal swaps it only once it finished starting."""
+    return version_key(version) >= FIRST_WATCHING_BEFORE_ANSWERING
+
+
 def link(path, target):
     staged = path.with_name(path.name + '.next')
     staged.unlink(missing_ok=True)
@@ -434,6 +454,8 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
     daemon = Daemon(rehearsal, launch_path, home, log)
     try:
         daemon.wait_for_version(old['version'], SERVE_WITHIN)
+        if not watches_from_first_answer(old['version']):
+            daemon.wait_until_started(home, SERVE_WITHIN)
         if while_running:
             while_running(home)
         link(opt, kegs[new['version']])
