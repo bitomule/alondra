@@ -1745,8 +1745,8 @@ async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node
         working_on_codex(&slice);
         request_move(&slice);
         *slice.domain.selection_changes.crash_at.lock().unwrap()=Some(died);
-        let _=crate::provider_transition::advance(&slice.domain,&task).await;
-        assert_eq!(move_steps(&slice).last().map(String::as_str),Some(died.key()),"the daemon died right after {died:?}");
+        let advanced=crate::provider_transition::advance(&slice.domain,&task).await;
+        assert_eq!(move_steps(&slice).last().map(String::as_str),Some(died.key()),"the daemon died right after {died:?}: {advanced:?}");
         slice.domain.stop_sdk_owners();slice.domain.selection_changes.die();
         let domain=slice.restart();domain.enable_sdk(slice.backend.clone());
         let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
@@ -1777,7 +1777,12 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
         !lifecycle.pending_inputs().is_empty() && matches!(lifecycle.live(),Some(alondra_domain::LiveState::Working(_)|alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Gate)))
     }).await.unwrap();
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
+    let mut advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
+    while advanced==Phase::ContextReady{
+        tokio::select!{_=resumed_cycle.changed()=>{},_=tokio::time::sleep(std::time::Duration::from_millis(250))=>{}}
+        advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
+    }
+    assert_eq!(advanced,Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
     let state=slice.domain.state().unwrap();
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));

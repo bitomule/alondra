@@ -1040,7 +1040,7 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> 
 /// What `options.toml` sets and what this Mac takes with its nodes measured at what `mac` says.
 fn node_limits(domain: &DomainRuntime, mac: &MacState) -> (NodeLimit, NodeLimits) {
     let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
-    let (cores, memory) = machine_size();
+    let (cores, memory) = if mac.cpus > 0 && mac.memory_total > 0 { (mac.cpus, mac.memory_total) } else { machine_size() };
     (file.max_working_nodes, NodeLimits::of(cores, memory, mac.node_cost.unwrap_or(crate::node_cost::DEFAULT)))
 }
 
