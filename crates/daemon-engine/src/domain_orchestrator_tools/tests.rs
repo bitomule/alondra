@@ -2150,6 +2150,49 @@ async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_uniqu
     assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
 }
 
+/// What kept “Triage legible en AX3” from ever starting on 2026-11-10: its plan held a native effort
+/// with the model on Automatic, every write took it and every start refused it.
+#[tokio::test]
+async fn a_plan_with_a_native_effort_and_no_model_is_refused_when_it_is_written() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let plan = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    let refused = crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &plan).unwrap_err();
+    assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", crate::launch_plans::EFFORT_WITHOUT_MODEL));
+    let body: LaunchPlanBody = serde_json::from_value(json!({"task_id": "t", "launch": plan})).unwrap();
+    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
+    assert_eq!(partial_plan(&f, "t", json!({"effort": "medium"})).unwrap_err().message, refused.message);
+    let named = alondra_daemon_engine_model::LaunchPlan { model: Some("claude/sonnet".into()), ..plan };
+    crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &named).unwrap();
+}
+
+/// The same task with the plan an older daemon stored: its start was promised again at 16:37 and
+/// would have been refused the same way. A refused plan is never retried: the user sees it at once,
+/// the orchestrator is told, and the plan it fixes starts the task and withdraws the card.
+#[tokio::test]
+async fn a_start_refused_for_its_plan_is_a_problem_at_once_and_fixing_the_plan_starts_it() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let stored = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &stored, 1).unwrap();
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    assert!(f.sdk().starts().is_empty());
+    assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
+    assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().in_flight, 0,
+        "a start that did not start holds no slot, so the next try asks the gate again");
+    let state = f.domain.state().unwrap();
+    let card = state.open_start_problem(&"t".into()).cloned().expect("the user sees the refused start at once");
+    assert!(card.body.contains("Choose a model before its native reasoning effort"), "{}", card.body);
+    assert!(state.interactions.keys().any(|id| id.0.starts_with("plan-refused-t-")), "the orchestrator, who owns plans, is told");
+
+    partial_plan(&f, "t", json!({"model": "claude/sonnet"})).unwrap();
+    assert!(f.domain.state().unwrap().open_start_problem(&"t".into()).is_none(), "the fixed plan withdraws the card");
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    f.launched(1).await;
+}
+
 fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, DomainError> {
     update_launch_plan(&f.domain, &f.home, serde_json::from_value(json!({"task_id": task, "changes": changes})).unwrap())
 }

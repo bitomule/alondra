@@ -341,7 +341,7 @@ async fn gather_inner(
         waiting.into_iter()
             .filter(|task| launched.as_ref().is_ok_and(|launched| !launched.contains(&task.id)))
             .map(|task| {
-                let wait = match retries.get(&task.id) {
+                let wait = match retries.get(&task.id).filter(|(_, at)| *at > now) {
                     Some((_, at)) => alondra_core::views::LiveStartWait::Retry { at: crate::usage_pause::clock_text(*at, now, lang == Lang::Es) },
                     None => alondra_core::views::LiveStartWait::Room,
                 };
@@ -1201,8 +1201,8 @@ mod cache_tests {
         assert_eq!(launched.iter().map(|read| (read.statement_attempts, read.rows)).collect::<Vec<_>>(), [(1, 2)],
             "one statement for every waiting task, the live-closed one left out of it");
         let later = gather_at(&client, &state, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
-        assert_eq!(later.start_waits["retry"], LiveStartWait::Retry { at: crate::usage_pause::clock_text(now + 60_000, now + 2 * 86_400_000, true) });
-        assert_ne!(changed.start_waits["retry"], later.start_waits["retry"], "moving clock/language remain live inputs");
+        assert_eq!(later.start_waits["retry"], LiveStartWait::Room,
+            "a retry whose time has passed waits for room at the gate, never «Reintento a las» an hour gone by");
         domain.live.forget_closed_task("closed");
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
         let restored = gather_at(&client, &state, Lang::En, &[], false, false, now).await;

@@ -1167,6 +1167,10 @@ fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
         return Err(DomainError::new("conflict", "the task or its launch plan changed; read it again before updating"));
     }
     store.change_launch_plan(task_id, &plan, changes.as_ref(), alondra_core::now_millis()).map_err(plan_storage)?;
+    drop(store);
+    if let Err(error) = crate::start_failures::plan_changed(domain, task_id) {
+        log!("could not withdraw the refused start of {task_id} after its plan changed: {error:#}");
+    }
     Ok(json!({"task": task_id, "stored": true}))
 }
 

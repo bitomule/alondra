@@ -7,13 +7,20 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestError, TestRng, TestRunner};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, Debug)]
+enum Failure {
+    Launch,
+    Untrusted,
+    PlanRefused,
+}
+
 #[derive(Clone, Debug)]
 enum Step {
     SdkOpening,
     UncertainOpening(usize),
     Create { scheduled: bool, plan: bool, deps: Vec<usize> },
     Admit(usize),
-    LaunchFails { pick: usize, untrusted: bool },
+    LaunchFails { pick: usize, failure: Failure },
     Tick(i64),
     NodeDies(usize),
     NodeBack(usize),
@@ -38,7 +45,7 @@ fn step() -> impl Strategy<Value = Step> {
         3 => (any::<bool>(), prop::bool::weighted(0.8), prop::collection::vec(0usize..8, 0..3))
             .prop_map(|(scheduled, plan, deps)| Step::Create { scheduled, plan, deps }),
         3 => (0usize..8).prop_map(Step::Admit),
-        2 => (0usize..8, prop::bool::weighted(0.2)).prop_map(|(pick, untrusted)| Step::LaunchFails { pick, untrusted }),
+        2 => (0usize..8, 0u8..10).prop_map(|(pick, kind)| Step::LaunchFails { pick, failure: match kind { 0 | 1 => Failure::Untrusted, 2 => Failure::PlanRefused, _ => Failure::Launch } }),
         2 => (1i64..30).prop_map(|minutes| Step::Tick(minutes * 60_000)),
         1 => (0usize..8).prop_map(Step::NodeDies),
         1 => (0usize..8).prop_map(Step::NodeBack),
@@ -214,12 +221,12 @@ impl World {
                     self.start_node(&task);
                 }
             }
-            Step::LaunchFails { pick, untrusted } => {
+            Step::LaunchFails { pick, failure } => {
                 let Some(task) = self.pick(pick, |t, f| Self::unstarted(t) && matches!(f.start, Start::Ready | Start::Launching)) else { return };
-                let problem = if untrusted {
-                    StartProblem::Untrusted { folder: "/synthetic/Projects/BlurCamera".into(), error: None }
-                } else {
-                    StartProblem::LaunchFailed { error: "claude exited with status 1".into() }
+                let problem = match failure {
+                    Failure::Untrusted => StartProblem::Untrusted { folder: "/synthetic/Projects/BlurCamera".into(), error: None },
+                    Failure::PlanRefused => StartProblem::PlanRefused { error: "Choose a model before its native reasoning effort".into() },
+                    Failure::Launch => StartProblem::LaunchFailed { error: "claude exited with status 1".into() },
                 };
                 let attempts = self.attempts.get(&task).copied().unwrap_or(0);
                 match after_failure(attempts, problem, self.now) {
@@ -520,12 +527,12 @@ fn a_start_that_keeps_failing_is_retried_then_put_to_the_user() {
     w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
     let task: TaskId = "t1".into();
     for attempt in 1..=START_RETRIES.len() as u8 {
-        w.apply(&Step::LaunchFails { pick: 0, untrusted: false });
+        w.apply(&Step::LaunchFails { pick: 0, failure: Failure::Launch });
         assert!(matches!(w.facts[&task].start, Start::Retry { attempt: a, .. } if a == attempt), "{:?}", w.facts[&task]);
         assert!(matches!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::Gate(GateCause::Retry { .. }))));
         w.apply(&Step::Tick(START_RETRIES[usize::from(attempt) - 1]));
     }
-    w.apply(&Step::LaunchFails { pick: 0, untrusted: false });
+    w.apply(&Step::LaunchFails { pick: 0, failure: Failure::Launch });
     let card = w.s.open_start_problem(&task).expect("the user is asked").clone();
     assert_eq!(card.card.effective_title(), "“Task t1” does not start");
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card.id.clone()))));
@@ -650,4 +657,11 @@ fn a_node_stopped_without_a_result_or_a_question_is_sent_back_then_put_to_the_us
     w.stop_without_delivering(&task);
     let card = w.s.open_user_card(&task).expect("the user is told").id.clone();
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card))));
+}
+
+#[test]
+fn a_refused_plan_goes_to_the_user_at_once_while_a_failed_launch_is_tried_again_first() {
+    let refused = StartProblem::PlanRefused { error: "Choose a model before its native reasoning effort".into() };
+    assert_eq!(after_failure(0, refused.clone(), 0), AfterFailure::Ask(refused));
+    assert!(matches!(after_failure(0, StartProblem::LaunchFailed { error: "claude exited".into() }, 0), AfterFailure::Retry { attempt: 1, .. }));
 }

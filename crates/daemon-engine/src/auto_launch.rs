@@ -206,6 +206,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
                 }
             }
             code => {
+                domain.live.gate.not_started(&crate::admission::Key::Task(task.clone()));
                 if let Some(problem) = crate::start_failures::problem_of(code, &error.message, cwd) {
                     crate::start_failures::failed(domain, task, problem, now)?;
                 }

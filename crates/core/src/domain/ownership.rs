@@ -88,6 +88,9 @@ pub enum NodeFact {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StartProblem {
     LaunchFailed { error: String },
+    /// The launch refused the task's own plan or choices: the same start gets the same refusal, so
+    /// it is never tried again by itself.
+    PlanRefused { error: String },
     Untrusted {
         folder: String,
         /// Why Alondra could not trust it when the user asked it to.
@@ -128,7 +131,8 @@ pub enum AfterFailure {
 }
 
 /// A start that failed is tried again by itself a few times, then put in front of the user. A
-/// folder Claude Code does not trust goes to the user at once: only they can trust it.
+/// folder Claude Code does not trust, or a plan the launch refuses, goes to the user at once: trying
+/// again changes neither.
 pub fn after_failure(attempts: u8, problem: StartProblem, now: i64) -> AfterFailure {
     match (&problem, START_RETRIES.get(usize::from(attempts))) {
         (StartProblem::LaunchFailed { .. }, Some(wait)) => AfterFailure::Retry { attempt: attempts + 1, at: now + wait },

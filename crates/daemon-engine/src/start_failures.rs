@@ -33,14 +33,43 @@ pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProble
                 store.set_start_retry(task, None)?;
                 let (reason, detail) = match &problem {
                     StartProblem::Untrusted { folder, .. } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
-                    StartProblem::LaunchFailed { error } => (AutoLaunchReason::LaunchFailed, Some(error.as_str())),
+                    StartProblem::LaunchFailed { error } | StartProblem::PlanRefused { error } => (AutoLaunchReason::LaunchFailed, Some(error.as_str())),
                     StartProblem::NodeClosed | StartProblem::DependencyCancelled { .. } | StartProblem::ApiFailed { .. } => (AutoLaunchReason::LaunchFailed, None),
                 };
                 store.set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), detail, now)?;
             }
+            if let StartProblem::PlanRefused { error } = &problem {
+                tell_plan_refused(domain, task, error);
+            }
             raise(domain, task, problem)?;
         }
     }
+    Ok(())
+}
+
+/// The orchestrator owns launch plans, so it hears of one the launch refused and can fix it.
+fn tell_plan_refused(domain: &DomainRuntime, task: &TaskId, error: &str) {
+    let title = domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone());
+    let body = format!("“{title}” ({task}) cannot start: its launch was refused with “{}”, and the same plan gets the same refusal. Fix its plan with update_launch_plan: that withdraws the user's card about it and starts the task with the new plan.", error.trim());
+    if let Err(error) = domain.tell_orchestrator(&format!("plan-refused-{task}-{}", crate::auth::random_hex(4)), None, body) {
+        log!("could not tell the orchestrator that the plan of {task} is refused: {error:?}");
+    }
+}
+
+/// The plan a start was refused for changed: the card about it no longer holds, and the task goes
+/// back to the gate to start with the new plan.
+pub(crate) fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> {
+    let state = domain.state()?;
+    let Some(card) = state.open_start_problem(task)
+        .filter(|card| matches!(alondra_core::start_problem::from_body(&card.body), Some(StartProblem::PlanRefused { .. }))) else { return Ok(()) };
+    domain.withdraw_problem(&card.id).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    {
+        let mut store = domain.store.lock_or_exit("the domain store");
+        store.forget_auto_launch(task)?;
+        store.set_start_retry(task, None)?;
+        store.set_launch_refusal(task, None, alondra_core::now_millis())?;
+    }
+    domain.live.gate.poke();
     Ok(())
 }
 
@@ -66,10 +95,13 @@ pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
 }
 
 /// The problem a refused launch is, by the code it was refused with; none for refusals that clear
-/// by themselves (usage, disk, a launch already under way).
+/// by themselves (usage, disk, a launch already under way). A refusal of the task's own plan or
+/// choices is the same on every try.
 pub(crate) fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
     match code {
         "usage_exhausted" | "disk_low" | "conflict" => None,
+        "invalid_input" | "model_is_binding" | "unsupported_capability" | "selection_transition_required" | "active_account_immutable" =>
+            Some(StartProblem::PlanRefused { error: message.trim().to_owned() }),
         "workspace_untrusted" => {
             let folder = cwd.map(|cwd| crate::claude_trust::check(Path::new(cwd)).map_or_else(|| cwd.to_owned(), |repo| repo.to_string_lossy().into_owned()));
             Some(StartProblem::Untrusted { folder: folder.unwrap_or_else(|| message.to_owned()), error: None })
@@ -104,7 +136,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
         let auto = autos.iter().find(|row| row.task_id == task.id);
         let closed = domain.live.closed_task(&task.id.0).map(|node| node.relaunch);
         let relaunching = closed == Some(Relaunch::ByItself);
-        let start = match (retries.get(&task.id), auto.map(|row| (row.state, row.reason))) {
+        let start = match (retries.get(&task.id).filter(|(_, at)| *at > now), auto.map(|row| (row.state, row.reason))) {
             (Some((attempt, at)), _) => Start::Retry { attempt: *attempt, at: *at },
             (None, Some((AutoLaunchState::Blocked, Some(AutoLaunchReason::UsageExhausted)))) => Start::Ready,
             (None, Some((AutoLaunchState::Blocked, _))) => Start::Blocked,
