@@ -275,8 +275,8 @@ fn ensure_domain_protocol(home: &std::path::Path) -> Result<()> {
 }
 
 /// Resolves once the launchd job's binary was replaced by one that passed preflight.
-async fn replaced(config: &Config) {
-    match relaunch::watcher(&config.service_label) {
+async fn replaced(watcher: Option<relaunch::Watcher>) {
+    match watcher {
         Some(watcher) => relaunch::watch(watcher, relaunch::every()).await,
         None => std::future::pending().await,
     }
@@ -510,6 +510,8 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
 async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> Result<()> {
+    // Taken before the port opens: whoever sees this daemon answer may replace its binary at once.
+    let upgrades = relaunch::watcher(&config.service_label);
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?.map(|service| {
@@ -559,7 +561,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     };
     accounts::begin_initial_check(&domain);
     let recovery = prepare_workers(config, domain.clone(), backend, &node_close::Machine);
-    serve_domain(config, state, domain, recovery, service).await
+    serve_domain(config, state, domain, recovery, service, upgrades).await
 }
 
 /// Only a recovered domain may activate the workers that claim deliveries, launch or resume nodes.
@@ -601,6 +603,7 @@ async fn serve_domain(
     domain: Arc<domain_runtime::DomainRuntime>,
     recovery: impl std::future::Future<Output = PreparedWorkers>,
     service: Option<Arc<service::Service>>,
+    upgrades: Option<relaunch::Watcher>,
 ) -> Result<()> {
     let auth = state.auth();
     let state_domain = domain.clone();
@@ -732,7 +735,7 @@ async fn serve_domain(
                 log!("could not record this release's first start: {error:#}");
             }
         }, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
-        () = replaced(config) => relaunch_now(),
+        () = replaced(upgrades) => relaunch_now(),
         () = handed_over() => exit::now(relaunch::RELAUNCH, || log!(
             "leaving the SDK hosts to the daemon launchd started"
         )),

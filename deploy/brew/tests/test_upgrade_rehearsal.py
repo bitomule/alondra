@@ -146,10 +146,11 @@ class DaemonFixtureTests(unittest.TestCase):
 
 
 class UpgradeMachine:
-    def __init__(self, readiness_delay=0.2, installs_launcher=True, readiness_delays=None):
+    def __init__(self, readiness_delay=0.2, installs_launcher=True, readiness_delays=None, started_delays=None):
         self.now = 0.0
         self.readiness_delay = readiness_delay
         self.readiness_delays = readiness_delays or {}
+        self.started_delays = started_delays or {}
         self.installs_launcher = installs_launcher
         self.processes = []
         self.waits = []
@@ -168,15 +169,20 @@ class UpgradeMachine:
         if self.installs_launcher and bundled.exists() and printed_version(bundled) != printed_version(installed):
             installed.parent.mkdir(exist_ok=True)
             shutil.copy(bundled, installed)
-        process = SimpleNamespace(launch=launch, version=version, mode=mode,
-                                  inode=launch.stat().st_ino, port=int(kwargs['env']['ALONDRA_PORT']),
-                                  ready=self.now + self.readiness_delays.get(version, self.readiness_delay),
+        record = pathlib.Path(kwargs['env']['ALONDRA_HOME']) / u.START_RECORD
+        record.write_text('{}')
+        ready = self.now + self.readiness_delays.get(version, self.readiness_delay)
+        process = SimpleNamespace(launch=launch, version=version, mode=mode, record=record,
+                                  inode=launch.stat().st_ino if u.watches_from_first_answer(version) else None,
+                                  port=int(kwargs['env']['ALONDRA_PORT']), ready=ready,
+                                  started=ready + self.started_delays.get(version, 0),
                                   returncode=1 if mode == 'crash' else None)
         process.poll = lambda: process.returncode
         def wait(timeout=None):
+            self.finish_starting()
             if process.returncode is not None:
                 return process.returncode
-            if mode == 'relaunch' and launch.stat().st_ino != process.inode:
+            if mode == 'relaunch' and process.inode not in (None, launch.stat().st_ino):
                 process.returncode = u.RELAUNCH
                 return process.returncode
             raise subprocess.TimeoutExpired(str(launch), timeout)
@@ -196,12 +202,22 @@ class UpgradeMachine:
         if self.now < process.ready:
             raise OSError('synthetic startup is not ready')
         status = {'version': process.version}
-        if process.mode == 'reject' and process.launch.stat().st_ino != process.inode:
+        if process.mode == 'reject' and process.inode not in (None, process.launch.stat().st_ino):
             status['preflight_rejected'] = {'reason': 'synthetic: bootstrap failed integrity audit'}
         return io.BytesIO(json.dumps(status).encode())
 
     def sleep(self, duration):
         self.now += duration
+        self.finish_starting()
+
+    def finish_starting(self):
+        """The watcher's baseline is the binary found when it starts, which a daemon before the fix
+        did only once it finished starting."""
+        for process in self.processes:
+            if process.returncode is None and self.now >= process.started and process.record.exists():
+                process.record.unlink()
+                if process.inode is None:
+                    process.inode = process.launch.stat().st_ino
 
     def boundaries(self):
         from contextlib import ExitStack
@@ -685,6 +701,33 @@ class UpgradeTests(Fixture):
         self.assertEqual(machine.processes[0].launch, machine.processes[1].launch)
         self.assertEqual(machine.processes[0].port, machine.processes[1].port)
         self.assertEqual(machine.processes[0].returncode, 75)
+        self.assertTrue(all(process.returncode is not None for process in machine.processes))
+
+    def test_a_release_that_answers_before_it_watches_its_binary_is_replaced_once_it_finished_starting(self):
+        (self.root / 'bin').mkdir()
+        old = {'version': '0.3.29', 'binary': fake_daemon(self.root / 'bin/old', '0.3.29', 'relaunch')}
+        new = {'version': '0.3.31', 'binary': fake_daemon(self.root / 'bin/new', '0.3.31', 'serve')}
+        machine = UpgradeMachine(started_delays={'0.3.29': 3})
+        with machine.boundaries(), patch.object(u, 'STAY_UP', 1):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
+        self.assertEqual(machine.processes[0].returncode, u.RELAUNCH)
+
+    def test_a_release_that_watches_its_binary_before_answering_is_replaced_at_its_first_answer(self):
+        (self.root / 'bin').mkdir()
+        old = {'version': '0.3.31', 'binary': fake_daemon(self.root / 'bin/old', '0.3.31', 'relaunch')}
+        new = {'version': '0.3.32', 'binary': fake_daemon(self.root / 'bin/new', '0.3.32', 'serve')}
+        machine = UpgradeMachine(started_delays={'0.3.31': u.SERVE_WITHIN + 1})
+        with machine.boundaries(), patch.object(u, 'STAY_UP', 1):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
+        self.assertEqual(machine.processes[0].returncode, u.RELAUNCH)
+
+    def test_a_previous_release_that_never_finishes_starting_fails(self):
+        (self.root / 'bin').mkdir()
+        old = {'version': '0.3.29', 'binary': fake_daemon(self.root / 'bin/old', '0.3.29', 'relaunch')}
+        new = {'version': '0.3.31', 'binary': fake_daemon(self.root / 'bin/new', '0.3.31', 'serve')}
+        machine = UpgradeMachine(started_delays={'0.3.29': u.SERVE_WITHIN + 1})
+        with machine.boundaries(), self.assertRaisesRegex(u.Failed, f'did not finish starting within {u.SERVE_WITHIN} s'):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
         self.assertTrue(all(process.returncode is not None for process in machine.processes))
 
     def test_a_new_daemon_slowed_by_a_loaded_mac_passes_and_reports_how_long_it_took(self):
