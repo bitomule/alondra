@@ -66,7 +66,10 @@ pub(crate) async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Re
     let mut held = CancelledWorktree { task_id: task.id.0.clone(), title: task.title.clone(), files: 0, paths: vec![] };
     let mut ends = vec![];
     for (path, recorded) in paths {
-        let end = if crate::task_worktrees::heir(domain, task, &path)?.is_some() {
+        let end = if let Err(why) = crate::task_worktrees::may_handle(domain, &path) {
+            log!("leaving {path} of the cancelled task {} as it is: {why}", task.id);
+            WorktreeEnd::UsersOwn
+        } else if crate::task_worktrees::heir(domain, task, &path)?.is_some() {
             WorktreeEnd::HandedOver
         } else {
             match settle_path(domain, task, &path).await? {
@@ -122,7 +125,7 @@ pub(crate) async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
         for entry in listed.deleted_by(&answer.option_id, answer.form_values()) {
             let task_id = TaskId(entry.task_id.clone());
             let keeps_branch = state.tasks.get(&task_id).is_some_and(|task| keeps_branch(&state, task));
-            for path in entry.paths.iter().filter(|path| !in_use(domain, &state, &task_id, path)) {
+            for path in entry.paths.iter().filter(|path| !in_use(domain, &state, &task_id, path) && crate::task_worktrees::may_handle(domain, path).is_ok()) {
                 match crate::worktree::discard_worktree(Path::new(path), keeps_branch).await {
                     Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {path} of {task_id}, as the user asked, freed {}",
                         alondra_core::machine_incident::bytes_text(freed, Lang::En)),

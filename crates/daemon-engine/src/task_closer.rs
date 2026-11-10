@@ -147,7 +147,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
         return Ok(());
     }
     let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
-    if let Some(dir) = dir.filter(|dir| crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) {
+    if let Some(dir) = dir.filter(|dir| crate::task_worktrees::may_handle(domain, dir).is_ok() && crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En)),
@@ -527,7 +527,7 @@ async fn finish_with_worktree(
         return failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &detail.join("\n")), cleanup);
     }
     let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
-    let Some(dir) = dir.filter(|dir| crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) else {
+    let Some(dir) = dir.filter(|dir| crate::task_worktrees::may_handle(domain, dir).is_ok() && crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) else {
         return finish(domain, &row, Some(agent), end);
     };
     match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {

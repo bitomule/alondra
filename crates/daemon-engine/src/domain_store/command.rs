@@ -11,6 +11,7 @@ pub(super) struct PreparedCommit {
 pub(super) fn stage(
     conn: &Connection,
     cached: &Option<Cached>,
+    protected: &crate::worktree::Protected,
     actor: &Actor,
     envelope: &CommandEnvelope,
     transport: Option<TransportIdentity<'_>>,
@@ -117,6 +118,9 @@ pub(super) fn stage(
     } else {
         envelope
     };
+    if let Command::RecordTaskWorktree { path, .. } = &envelope.command {
+        crate::worktree::registrable(std::path::Path::new(path), protected).map_err(|why| DomainError::new("invalid_input", why))?;
+    }
     let mut next = DomainState::clone(&state);
     let outcome = next.execute(actor, envelope)?;
     if outcome.changed {

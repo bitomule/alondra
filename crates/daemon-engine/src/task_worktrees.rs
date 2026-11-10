@@ -73,11 +73,16 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
 }
 
 /// The open task that goes on working in the worktree at `path` once `task` lets it go: one that
-/// holds it, or one whose launch plan starts it there, which then takes it.
+/// holds it, or one whose launch plan starts it there, which then takes it. A folder that cannot
+/// be a worktree, as a projects root other tasks were launched in, is nobody's to take.
 pub(crate) fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<TaskId>> {
     let state = domain.state()?;
     if let Some(heir) = state.worktree_held_by_other(path, &task.id) {
         return Ok(Some(heir.clone()));
+    }
+    if let Err(why) = domain.registrable_worktree(Path::new(path)) {
+        log!("no task takes {path} from {}: {why}", task.id);
+        return Ok(None);
     }
     let mut launched_there = None;
     for other in state.tasks.values().filter(|other| other.id != task.id && !other.over()) {
@@ -100,6 +105,9 @@ pub(crate) fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Op
 pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, String)> {
     let mut left = vec![];
     for (path, _) in task.open_worktrees().filter(|(path, worktree)| !worktree.discard && Path::new(path).exists()) {
+        if domain.registrable_worktree(Path::new(path)).is_err() {
+            continue;
+        }
         match heir(domain, task, path) {
             Ok(Some(_)) => continue,
             Ok(None) => {}
@@ -122,7 +130,10 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
 pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
     let mut left = vec![];
     for (path, worktree) in task.open_worktrees() {
-        let end = if let Some(heir) = heir(domain, task, path)? {
+        let end = if let Err(why) = may_handle(domain, path) {
+            log!("leaving {path} of {} as it is: {why}", task.id);
+            WorktreeEnd::UsersOwn
+        } else if let Some(heir) = heir(domain, task, path)? {
             log!("leaving the worktree {path} of {} to {heir}, which goes on working in it", task.id);
             WorktreeEnd::HandedOver
         } else {
@@ -147,6 +158,15 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
         crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))?;
     }
     Ok(left)
+}
+
+/// Whether Alondra may look into or delete the recorded `path`: it is gone, or still a worktree.
+/// Why not, otherwise.
+pub(crate) fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(), String> {
+    match Path::new(path).exists() {
+        true => domain.registrable_worktree(Path::new(path)),
+        false => Ok(()),
+    }
 }
 
 /// What the node of a task that cannot close yet is told: each worktree with work left, and how

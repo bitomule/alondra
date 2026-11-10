@@ -2289,7 +2289,9 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let orchestrator = Actor::Orchestrator { generation: 0 };
-    let worktree = "/synthetic/app/.claude/worktrees/t";
+    let root = crate::test_support::Directory::new();
+    let worktree = crate::worktree::testing::task_worktree(&root, "t");
+    let worktree = worktree.to_str().unwrap();
     execute(&mut store, &user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
     let create = |id: &str, continues: Option<&str>| Command::CreateTask {

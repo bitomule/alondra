@@ -4392,8 +4392,7 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
         task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
     });
     slice.run(&user(), "reopen-directory-original", Command::ReopenTask { task_id: TASK.into() });
-    let failed_workspace = slice._home.join("failed-reopening-workspace");
-    std::fs::create_dir(&failed_workspace).unwrap();
+    let failed_workspace = crate::worktree::testing::task_worktree(&slice._home.join("failed-reopening"), "failed-reopening-workspace");
     slice.domain.set_task_worktree(&TASK.into(), failed_workspace.to_str().unwrap()).unwrap();
     assert_eq!(original_directory(&slice.domain, &TASK.into()).unwrap().as_deref(), slice.worktree.to_str(),
         "only the admitted launch placement identifies the original native session's directory");

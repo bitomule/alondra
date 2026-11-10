@@ -130,7 +130,10 @@ impl DomainRuntime {
         let reads = DomainStore::open_readonly(database)?;
         crate::domain_store::provider_settings::recover_store(&mut store, home)?;
         let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
-        store.fill_task_projects(&options.projects_root(&crate::options::user_home()))?;
+        let home_of_user = crate::options::user_home();
+        let projects_root = options.projects_root(&home_of_user);
+        store.fill_task_projects(&projects_root)?;
+        store.protect(crate::worktree::Protected { home: home_of_user, projects_root });
         store.fill_task_models()?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
@@ -808,6 +811,11 @@ impl DomainRuntime {
     }
     pub(crate) fn set_inherited_worktree(&self, agent: &str, dir: &str, from_agent: &str) -> Result<()> {
         self.store.lock_or_exit("the domain store").set_inherited_worktree(agent, dir, from_agent, alondra_core::now_millis())
+    }
+    /// Why `path` cannot be a task's worktree, if it cannot.
+    pub(crate) fn registrable_worktree(&self, path: &Path) -> std::result::Result<(), String> {
+        let protected = self.store.lock_or_exit("the domain store").protected().clone();
+        crate::worktree::registrable(path, &protected)
     }
     pub(crate) fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
         self.store.lock_or_exit("the domain store").task_worktree(task)

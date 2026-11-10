@@ -5,6 +5,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 thread_local! {
     static WRITES: Cell<u64> = const { Cell::new(0) };
@@ -387,6 +388,11 @@ fn save_grants(c: &Connection, t: &Task) -> Result<()> {
         )?;
     }
     Ok(())
+}
+/// A recorded folder that is there but holds no git checkout, as a projects root recorded before
+/// worktrees were checked: read as no worktree of the task, and its row and its files stay.
+fn never_a_worktree(path: &Path) -> bool {
+    path.is_dir() && std::fs::symlink_metadata(path.join(".git")).is_err()
 }
 fn save_worktrees(c: &Connection, t: &Task) -> Result<()> {
     for (path, w) in &t.worktrees {
@@ -1421,7 +1427,11 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             discard: row.get::<_, i64>(4)? != 0,
             end: end.map(|end| decode(Value::String(end))).transpose()?,
         };
-        state.tasks.get_mut(&TaskId::from(id)).context("worktree task missing")?.worktrees.insert(row.get(1)?, worktree);
+        let path: String = row.get(1)?;
+        if worktree.end.is_none() && never_a_worktree(Path::new(&path)) {
+            continue;
+        }
+        state.tasks.get_mut(&TaskId::from(id)).context("worktree task missing")?.worktrees.insert(path, worktree);
     }
     drop(stored);
     let mut grants = c.prepare("SELECT task_id, card, allows, uses FROM task_permission_grants")?;

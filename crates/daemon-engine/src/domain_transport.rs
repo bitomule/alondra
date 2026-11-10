@@ -1637,7 +1637,9 @@ pub mod tests {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("session-a".into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
-        let path = "/repo/.claude/worktrees/agent-a9e1782746c156d58";
+        let root = crate::test_support::Directory::new();
+        let made = crate::worktree::testing::task_worktree(&root, "agent-a9e1782746c156d58");
+        let path = made.to_str().unwrap();
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Agent",
             "tool_input": {"isolation": "worktree", "prompt": "Fix it"},
             "tool_response": {"status": "completed", "agentId": "a9e1782746c156d58", "worktreePath": path, "worktreeBranch": "worktree-agent-a9e1782746c156d58"}}), Some(6)).await.1.unwrap();

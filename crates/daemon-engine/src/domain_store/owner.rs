@@ -35,6 +35,7 @@ pub(crate) struct Adoption {
 pub(crate) struct OwnerTransaction<'connection> {
     conn: &'connection Connection,
     cached: &'connection Option<Cached>,
+    protected: &'connection crate::worktree::Protected,
     journal: LifecycleTransaction<'connection>,
     draft: OwnerDraft,
     /// What the host observed that moves the task's lifecycle and the domain refused to record,
@@ -231,6 +232,7 @@ impl<'connection> OwnerTransaction<'connection> {
     fn begin(
         conn: &'connection Connection,
         cached: &'connection Option<Cached>,
+        protected: &'connection crate::worktree::Protected,
         aggregates: &'connection alondra_store::AggregateCache,
         scope: AuthorityScope,
     ) -> std::result::Result<Self, StoreError> {
@@ -244,6 +246,7 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(Self {
             conn,
             cached,
+            protected,
             journal,
             draft: OwnerDraft {
                 state,
@@ -291,7 +294,7 @@ impl<'connection> OwnerTransaction<'connection> {
         if let Some(refusal) = refused_for_test(&envelope.command, true) {
             return Err(refusal);
         }
-        let (conn, cached) = (self.conn, self.cached);
+        let (conn, cached, protected) = (self.conn, self.cached, self.protected);
         let prepared = self.journal.inspect_mut(|journal| {
             if matches!(envelope.command, Command::CreateDocument { .. } | Command::ReviseDocument { .. }) {
                 return Err(DomainError::new(
@@ -300,7 +303,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 )
                 .into());
             }
-            command::stage(conn, cached, actor, envelope, None, true, attached, journal)
+            command::stage(conn, cached, protected, actor, envelope, None, true, attached, journal)
         })?;
         self.draft.record(&envelope.command, &envelope.command_id, prepared.commit);
         Ok(&self.draft.outcomes.last().expect("outcome just recorded").outcome)
@@ -486,6 +489,10 @@ impl<'connection> OwnerTransaction<'connection> {
                 }
                 ObservedFact::Worktree { path, branch, subagent } => {
                     flush(&mut commands, &mut technical);
+                    if let Err(why) = crate::worktree::registrable(std::path::Path::new(path), self.protected) {
+                        log!("{task_id} does not take {path} as a worktree: {why}");
+                        continue;
+                    }
                     let origin = if *subagent { WorktreeOrigin::Subagent } else { WorktreeOrigin::Entered };
                     commands.push(Command::RecordTaskWorktree { task_id: task_id.clone(), path: path.clone(), origin, branch: branch.clone() });
                 }
@@ -499,6 +506,10 @@ impl<'connection> OwnerTransaction<'connection> {
                     })?;
                     let path = own.as_deref().and_then(|own| crate::worktree::subagent_worktree(std::path::Path::new(own), agent));
                     let path = path.ok_or_else(|| ObservationRefusal::Unrecordable(format!("task {task_id} has no worktree of its own to place subagent {agent}'s")))?;
+                    if let Err(why) = crate::worktree::registrable(&path, self.protected) {
+                        log!("{task_id} does not take {} as subagent {agent}'s worktree: {why}", path.display());
+                        continue;
+                    }
                     commands.push(Command::RecordTaskWorktree {
                         task_id: task_id.clone(),
                         path: path.display().to_string(),
@@ -771,7 +782,7 @@ impl<'connection> OwnerTransaction<'connection> {
             }
         }
         self.journal.reserve_owner(&execution, 0)?;
-        if std::path::Path::new(directory).join(".git").is_file() {
+        if std::path::Path::new(directory).join(".git").is_file() && crate::worktree::registrable(std::path::Path::new(directory), self.protected).is_ok() {
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
                 data_epoch: self.draft.state.data_epoch.clone(),
@@ -949,7 +960,7 @@ impl DomainStore {
         stage: impl FnOnce(&mut OwnerTransaction<'_>) -> std::result::Result<T, StoreError>,
     ) -> std::result::Result<(T, OwnerCommit), StoreError> {
         let (value, committed) = {
-            let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, &self.aggregates, scope)?;
+            let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, &self.protected, &self.aggregates, scope)?;
             let value = stage(&mut owner)?;
             (value, owner.commit()?)
         };
