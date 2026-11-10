@@ -1,6 +1,6 @@
 //! A task never ends with its pull request open and nobody to answer for it: the user's cancel
-//! closes the PR on GitHub, and anyone else's close hands the PR to the user as a delivery, decided
-//! on what GitHub reports of it.
+//! closes the PR on GitHub, and anyone else's close hands the PR to the user as a delivery in the
+//! same command.
 use super::lifecycle_tests::{assert_aggregate_rules, exec, must, node, sdk_turn, user, world};
 use super::*;
 use crate::open_pr_delivery::{OpenPrDelivery, PrReadiness};
@@ -44,6 +44,10 @@ fn running(names: &[&str]) -> PrChecks {
 }
 fn settle_pr(s: &mut DomainState, status: OpenPrStatus) -> Result<CommandOutcome, DomainError> {
     exec(s, Actor::System, Command::SettleOpenPr { task_id: "t".into(), status })
+}
+/// The close an older build stored to deliver the PR once GitHub reported it.
+fn held(s: &mut DomainState, result: &str) {
+    s.tasks.get_mut(&TaskId::from("t")).unwrap().open_pr = Some(OpenPrPending::Deliver { result: Some(result.into()) });
 }
 fn alondras_delivery(s: &DomainState) -> &Interaction {
     let id = task(s).final_presentation.as_ref().expect("a delivery");
@@ -181,32 +185,36 @@ fn the_recorded_settle_stall_of_a_task_with_its_pr_open_delivers_the_pr_instead_
     let result = "The fix and its test are in PR #113, green.";
     let case = open_case(&s);
     settle_case(&mut s, orchestrator(), StallOutcome::Close { result: result.into() });
-    assert!(!task(&s).state.terminal() && task(&s).ending.is_none(), "the task stays: {:?}", task(&s).state);
-    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Deliver { result: Some(result.into()) }));
-    assert_eq!(pr(&s).state, PrState::Open);
-    assert!(!s.unsettled_stall(&s.interactions[&case]), "nobody settles the case again");
-    let again = exec(&mut s, orchestrator(), Command::SettleStall { case_id: case.clone(), task_id: "t".into(),
-        outcome: StallOutcome::Close { result: result.into() } }).unwrap_err();
-    assert_eq!(again.code, "stall_settled");
-
-    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap();
     assert!(!s.open(&s.interactions[&case]), "the delivery ends the case");
+    assert!(exec(&mut s, orchestrator(), Command::SettleStall { case_id: case.clone(), task_id: "t".into(),
+        outcome: StallOutcome::Close { result: result.into() } }).is_err(), "nobody settles the case again");
     let delivery = alondras_delivery(&s);
     assert_eq!((delivery.author.clone(), delivery.system_card.clone(), delivery.card.kind),
         (Author::System, Some(SystemCard::OpenPrDelivery), CardKind::Review));
     assert!(matches!(&delivery.payload, InteractionPayload::Delivery { targets, is_final: true, .. }
-        if *targets == vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: PUSHED.into() }]));
+        if *targets == vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: HEAD.into() }]));
     let card = OpenPrDelivery::from_body(&delivery.body).expect("the card's body");
-    assert_eq!((card.number, card.readiness, card.result.as_deref()), (113, PrReadiness::Ready, Some(result)));
+    assert_eq!((card.number, card.readiness, card.result.as_deref()), (113, PrReadiness::Unconfirmed, Some(result)));
     assert_eq!(task(&s).open_pr, None);
     assert_eq!(task(&s).state, TaskState::ForYourReview);
-    assert_eq!(pr(&s).head, PUSHED, "the delivery is of the head GitHub reported");
 
     let presentation = task(&s).final_presentation.clone().unwrap();
     must(&mut s, user(), Command::AcceptDelivery { presentation_id: presentation,
-        targets: vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: PUSHED.into() }] });
-    assert!(s.merge_authorizations.values().any(|a| a.pr_id == PrId::from(PR) && a.head == PUSHED && a.valid),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: HEAD.into() }] });
+    assert!(s.merge_authorizations.values().any(|a| a.pr_id == PrId::from(PR) && a.head == HEAD && a.valid),
         "accepting it lets Alondra merge it");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_close_an_older_build_held_for_github_is_delivered_as_github_reports_the_pr() {
+    let mut s = stalled_with_open_pr();
+    held(&mut s, "Done");
+    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap();
+    let card = OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap();
+    assert_eq!((card.readiness, card.result.as_deref()), (PrReadiness::Ready, Some("Done")));
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
+    assert_eq!(pr(&s).head, PUSHED, "the delivery is of the head GitHub reported");
     assert_aggregate_rules(&s);
 }
 
@@ -217,7 +225,7 @@ fn a_pr_with_conflicts_or_failing_checks_reaches_the_user_saying_what_keeps_it_f
         (PrMergeable::Clean, PrChecks::Failed { names: vec!["test".into()] }, PrReadiness::ChecksFailed { names: vec!["test".into()] }),
     ] {
         let mut s = stalled_with_open_pr();
-        settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Unfinished".into() });
+        held(&mut s, "Unfinished");
         settle_pr(&mut s, status(PrState::Open, mergeable, checks)).unwrap();
         assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, readiness);
         assert_eq!(task(&s).state, TaskState::ForYourReview);
@@ -232,7 +240,7 @@ fn the_pr_is_delivered_at_once_whatever_its_checks_and_merge_state_still_do() {
         (PrMergeable::Computing, PrChecks::Passed, PrReadiness::Unconfirmed),
     ] {
         let mut s = stalled_with_open_pr();
-        settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Done".into() });
+        held(&mut s, "Done");
         settle_pr(&mut s, status(PrState::Open, mergeable, checks)).unwrap();
         assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, readiness);
         assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
@@ -243,7 +251,7 @@ fn the_pr_is_delivered_at_once_whatever_its_checks_and_merge_state_still_do() {
 #[test]
 fn a_pr_closed_on_github_lets_the_task_be_cancelled_with_its_result() {
     let mut s = stalled_with_open_pr();
-    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Superseded".into() });
+    held(&mut s, "Superseded");
     settle_pr(&mut s, status(PrState::Closed, PrMergeable::Clean, PrChecks::None)).unwrap();
     assert_eq!(pr(&s).state, PrState::Closed);
     assert_eq!(task(&s).ending, Some(TaskEnding::Cancelling));
@@ -254,7 +262,7 @@ fn a_pr_closed_on_github_lets_the_task_be_cancelled_with_its_result() {
 #[test]
 fn a_pr_merged_on_github_finishes_the_task_instead_of_cancelling_it() {
     let mut s = stalled_with_open_pr();
-    settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "Done".into() });
+    held(&mut s, "Done");
     settle_pr(&mut s, status(PrState::Merged, PrMergeable::Clean, PrChecks::Passed)).unwrap();
     assert_eq!(pr(&s).state, PrState::Merged);
     assert_eq!(alondras_delivery(&s).card.kind, CardKind::Know);
@@ -267,17 +275,39 @@ fn a_pr_merged_on_github_finishes_the_task_instead_of_cancelling_it() {
 fn alondra_leaving_the_case_unsettled_also_delivers_the_open_pr() {
     let mut s = stalled_with_open_pr();
     settle_case(&mut s, Actor::System, StallOutcome::Unsettled);
-    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Deliver { result: None }));
-    assert!(!task(&s).state.terminal());
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
+    assert_eq!(alondras_delivery(&s).system_card, Some(SystemCard::OpenPrDelivery));
 }
 
 #[test]
 fn the_orchestrators_cancel_of_a_task_with_its_pr_open_delivers_the_pr() {
     let mut s = registered();
     must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
-    assert_eq!(task(&s).open_pr, Some(OpenPrPending::Deliver { result: None }));
-    settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::None)).unwrap();
-    assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, PrReadiness::NoChecks);
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
+    assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, PrReadiness::Unconfirmed);
+}
+
+/// The orchestrator closed t-plan-pstack-phase-2 three times while its PR #22759 was open, and
+/// each close answered Recorded with the task still running: none of them may leave it running.
+#[test]
+fn closing_a_running_task_with_its_pr_open_delivers_the_pr_in_the_same_command_and_refuses_a_repeat() {
+    let mut s = registered();
+    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
+    let delivery = alondras_delivery(&s);
+    assert_eq!((delivery.author.clone(), delivery.system_card.clone(), delivery.card.kind),
+        (Author::System, Some(SystemCard::OpenPrDelivery), CardKind::Review));
+    assert!(matches!(&delivery.payload, InteractionPayload::Delivery { targets, is_final: true, .. }
+        if *targets == vec![DeliveryTarget::PullRequest { pr_id: PR.into(), head: HEAD.into() }]));
+    assert_eq!(OpenPrDelivery::from_body(&delivery.body).unwrap().readiness, PrReadiness::Unconfirmed,
+        "nothing waits for GitHub: what keeps it from merging is read when the user merges it");
+    let delivered = s.clone();
+    for _ in 0..2 {
+        let refused = exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap_err();
+        assert_eq!(refused.code, "open_pr_delivered", "{}", refused.message);
+        assert_eq!(s, delivered, "a repeated close is refused and changes nothing");
+    }
+    assert_aggregate_rules(&s);
 }
 
 #[test]
@@ -303,7 +333,6 @@ fn a_task_closed_with_two_prs_open_delivers_both_and_a_cancel_closes_both() {
     let mut delivered = registered();
     with_a_second_pr(&mut delivered);
     must(&mut delivered, orchestrator(), Command::CancelTask { task_id: "t".into() });
-    settle_pr(&mut delivered, status(PrState::Open, PrMergeable::Clean, PrChecks::None)).unwrap();
     let InteractionPayload::Delivery { targets, .. } = &alondras_delivery(&delivered).payload else { panic!("a delivery") };
     assert_eq!(targets.len(), 2, "{targets:?}");
 
@@ -379,6 +408,8 @@ proptest! {
             "cancelled with its PR open and nothing to close it: {:?} {:?}", t.state, t.open_pr);
         prop_assert!(matches!(closer, Closer::UserCancel) || !cancelled || pr(&s).state == PrState::Closed,
             "only the user, or a PR closed on GitHub, cancels it: {:?}", t.state);
+        prop_assert!(matches!(closer, Closer::UserCancel) || t.state == TaskState::ForYourReview,
+            "anyone else's close delivers the PR in the same command: {:?} {:?}", t.state, t.open_pr);
         assert_aggregate_rules(&s);
     }
 }

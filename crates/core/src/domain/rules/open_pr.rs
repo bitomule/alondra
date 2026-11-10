@@ -1,8 +1,8 @@
 //! A task never ends with its pull request open and nobody to answer for it. When the user cancels
 //! it, Alondra closes the PR on GitHub with the reason. When the orchestrator or Alondra closes it,
-//! Alondra reads the PR on GitHub and decides on what GitHub reports, never on words: a merged PR
-//! finishes the task, a closed one lets it be cancelled, and an open one reaches the user as a
-//! delivery, with what keeps it from merging, if anything.
+//! the close itself delivers the PR to the user, who merges or closes it: nothing waits for GitHub.
+//! A close an older build left waiting is settled on what GitHub reports: a merged PR finishes the
+//! task, a closed one lets it be cancelled, and an open one reaches the user as a delivery.
 use super::*;
 use crate::open_pr_delivery::{OPEN_PR_DELIVERY_PREFIX, OpenPrDelivery, PrReadiness};
 
@@ -24,23 +24,22 @@ impl DomainState {
     }
 
     /// Ends `task` for `actor`, who closes it without a delivery. With its PR open, the user's
-    /// cancel also closes the PR on GitHub, and anyone else's leaves the task for Alondra to read
-    /// the PR and deliver it.
+    /// cancel also closes the PR on GitHub, and anyone else's delivers the PR to the user in the
+    /// same command: a task with its PR open ends only with the user's merge or close of it.
     pub(in crate::domain) fn close_task(&mut self, actor: &Actor, task: &TaskId, result: Option<String>,
-        effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        if self.open_pr_of(task).is_none() {
+        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some(pr) = self.open_pr_of(task).cloned() else {
             return self.cancel(task, effects, lifecycles);
-        }
+        };
         if matches!(actor, Actor::User { .. }) {
             let t = self.tasks.get_mut(task).expect("the PR's task exists");
             t.open_pr = Some(OpenPrPending::Close { comment: cancelled_pr_comment(&t.title) });
             return self.cancel(task, effects, lifecycles);
         }
         self.delivered_pr_stays(actor, task, self.lifecycle(lifecycles, task)?.phase())?;
-        let t = self.tasks.get_mut(task).expect("the PR's task exists");
-        t.open_pr = Some(OpenPrPending::Deliver { result });
-        self.invalidate(task);
-        Ok(())
+        let known = OpenPrStatus { state: pr.state, head: pr.head.clone(), base: pr.base.clone(),
+            mergeable: PrMergeable::Computing, checks: PrChecks::None };
+        self.deliver_open_pr(task, &pr, &known, result, created, lifecycles)
     }
 
     /// A PR the task delivered waits for the user's review: only the user accepts or cancels it.
@@ -113,6 +112,12 @@ impl DomainState {
             }
             return self.cancel(task, effects, lifecycles);
         }
+        self.deliver_open_pr(task, &pr, status, result, created, lifecycles)
+    }
+
+    /// Alondra's delivery of the open `pr` of `task` to the user, as `status` reports it.
+    fn deliver_open_pr(&mut self, task: &TaskId, pr: &PullRequest, status: &OpenPrStatus, result: Option<String>,
+        created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         let t = &self.tasks[task];
         let card = OpenPrDelivery { title: t.title.clone(), repository: pr.repository.clone(), number: pr.number,
             readiness: PrReadiness::of(status), result };
@@ -123,7 +128,7 @@ impl DomainState {
         let spec = CardSpec { system: Some(SystemCard::OpenPrDelivery), need, why, content: Some(content),
             ..CardSpec::new(kind, clip(&t.title, CardSpec::TITLE_MAX)) };
         let targets = self.with_open_prs(task, &[DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: status.head.clone() }]);
-        self.insert_interaction(actor, &id, &Scope::Task { task_id: task.clone() }, &Recipient::User, &card.to_body(), false, &[],
+        self.insert_interaction(&Actor::System, &id, &Scope::Task { task_id: task.clone() }, &Recipient::User, &card.to_body(), false, &[],
             InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] }, &spec, Source::Delivery)?;
         self.invalidate(task);
         self.decide(lifecycles, task, LifecycleRecord::Presented { delivery: id.clone() })?;

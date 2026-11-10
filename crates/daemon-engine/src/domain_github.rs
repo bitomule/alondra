@@ -431,6 +431,7 @@ pub async fn catch_up_task(domain: &DomainRuntime, gh: &GhCli, task_id: &TaskId,
 pub(crate) async fn reconcile(
     domain: &DomainRuntime, observer: &impl PrObserver, failures: &mut ObservationFailures,
 ) -> Result<()> {
+    deliver_held(domain, observer).await?;
     read_opened(domain, observer, None).await?;
     let state = domain.state()?;
     for pr in watched(&state) {
@@ -471,11 +472,34 @@ fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPen
     })
 }
 
+/// A close an older build left waiting for GitHub reaches the user now: as GitHub reports the PR
+/// when it answers, as Alondra last knew it when it does not.
+async fn deliver_held(domain: &DomainRuntime, observer: &impl PrObserver) -> Result<()> {
+    let state = domain.state()?;
+    for pr in watched(&state).into_iter().filter(|pr| matches!(pending(&state, pr), Some(OpenPrPending::Deliver { .. }))) {
+        let status = match observer.observe(&pr.host, &pr.repository, pr.number).await {
+            Ok(facts) => {
+                apply(domain, &*domain.state()?, &pr, &facts)?;
+                facts.status()
+            }
+            Err(reason) => {
+                log!("delivering the open PR {} as last known: GitHub did not report it: {reason}", pr.id);
+                OpenPrStatus { state: pr.state, head: pr.head.clone(), base: pr.base.clone(), mergeable: PrMergeable::Computing, checks: PrChecks::None }
+            }
+        };
+        settle_status(domain, &pr, status)?;
+    }
+    Ok(())
+}
+
 /// Hands what GitHub reported to the task closed while its PR was open, without waiting for its
 /// checks: only the merge depends on them.
 fn settle(domain: &DomainRuntime, pr: &PullRequest, facts: &PrFacts) -> Result<()> {
+    settle_status(domain, pr, facts.status())
+}
+
+fn settle_status(domain: &DomainRuntime, pr: &PullRequest, status: OpenPrStatus) -> Result<()> {
     let state = domain.state()?;
-    let status = facts.status();
     if !matches!(pending(&state, pr), Some(OpenPrPending::Deliver { .. })) {
         return Ok(());
     }
@@ -1214,14 +1238,50 @@ pub mod tests {
         });
     }
 
+    /// Task `t` with its PR open, closed by the orchestrator under a build that left the close
+    /// waiting for GitHub to deliver the PR.
+    fn held_by_an_older_build(fixture: &Fixture) -> DomainRuntime {
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        registered(&domain);
+        drop(domain);
+        let held = serde_json::to_string(&OpenPrPending::Deliver { result: None }).unwrap();
+        rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.0)).unwrap()
+            .execute("INSERT INTO task_open_prs(task_id,pending) VALUES('t',?1)", [held]).unwrap();
+        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }));
+        domain
+    }
+
+    #[tokio::test]
+    async fn the_orchestrators_close_of_a_task_with_its_pr_open_delivers_it_without_github() {
+        let (_fixture, domain) = open("open-pr-deliver-now");
+        registered(&domain);
+        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let state = domain.state().unwrap();
+        let t = &state.tasks[&"t".into()];
+        assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None), "delivered in the close itself");
+    }
+
+    #[tokio::test]
+    async fn a_close_an_older_build_held_for_github_is_delivered_as_last_known_when_github_does_not_answer() {
+        let (fixture, domain) = open("open-pr-held-unread");
+        drop(domain);
+        let domain = held_by_an_older_build(&fixture);
+        let observer = FakeObserver::new();
+        observer.set(7, Err("error connecting to github".into()));
+        let _ = reconcile(&domain, &observer, &mut ObservationFailures::default()).await;
+        let state = domain.state().unwrap();
+        let t = &state.tasks[&"t".into()];
+        assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None), "an unreadable GitHub holds nothing");
+        let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
+        assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::Unconfirmed);
+    }
+
     #[tokio::test]
     async fn the_open_pr_of_a_task_the_orchestrator_cancelled_reaches_the_user_without_waiting_for_its_checks() {
         let (fixture, domain) = open("open-pr-deliver");
-        registered(&domain);
-        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
         drop(domain);
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
-        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }), "it outlives a restart");
+        let domain = held_by_an_older_build(&fixture);
         let observer = FakeObserver::new();
         let mut github = facts(HEAD, PrState::Open);
         github.checks = PrChecks::Pending { names: vec!["lint".into()] };
@@ -1239,9 +1299,9 @@ pub mod tests {
 
     #[tokio::test]
     async fn the_open_pr_of_a_task_with_failing_checks_reaches_the_user_saying_which() {
-        let (_fixture, domain) = open("open-pr-failed");
-        registered(&domain);
-        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let (fixture, domain) = open("open-pr-failed");
+        drop(domain);
+        let domain = held_by_an_older_build(&fixture);
         let observer = FakeObserver::new();
         let mut github = facts(HEAD, PrState::Open);
         github.checks = PrChecks::Failed { names: vec!["test".into()] };
