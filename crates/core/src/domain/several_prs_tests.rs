@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 const AGENT: &str = "a";
 const TASK: &str = "t";
 const PUBLIC: &str = "github.com/bitomule/alondra#17";
-const CLOUD: &str = "github.com/bitomule/alondra-cloud#6";
+const CLOUD: &str = "github.com/acme/storefront#6";
 const FIRST_HEAD: &str = "1111111111111111111111111111111111111111";
 const CLOUD_HEAD: &str = "6666666666666666666666666666666666666666";
 
@@ -56,13 +56,13 @@ fn register(s: &mut DomainState, repository: &str, number: u64, head: &str) {
 
 fn opened(s: &mut DomainState) {
     must(s, Actor::System, Command::NotePrOpened {
-        task_id: TASK.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6,
+        task_id: TASK.into(), host: "github.com".into(), repository: "acme/storefront".into(), number: 6,
     });
 }
 
 fn read(s: &mut DomainState) {
     must(s, Actor::System, Command::RecordOpenedPr {
-        task_id: TASK.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6,
+        task_id: TASK.into(), host: "github.com".into(), repository: "acme/storefront".into(), number: 6,
         head: CLOUD_HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![MergeMethod::Squash],
     });
 }
@@ -81,7 +81,7 @@ fn result(id: &str, targets: Vec<DeliveryTarget>, is_final: bool) -> Command {
 }
 
 fn text() -> Vec<DeliveryTarget> {
-    vec![DeliveryTarget::Text { text: "What you need to do: merge alondra-cloud PR #6".into() }]
+    vec![DeliveryTarget::Text { text: "What you need to do: merge storefront PR #6".into() }]
 }
 
 fn pr(id: &str, head: &str) -> DeliveryTarget {
@@ -111,7 +111,7 @@ fn merges_in(s: &DomainState, key: &str) -> Vec<(String, String)> {
 #[test]
 fn a_pull_request_screen_offers_only_the_merge_of_its_own_pr() {
     let s = two_open_prs();
-    for (pr, name) in [(PUBLIC, "alondra#17"), (CLOUD, "alondra-cloud#6")] {
+    for (pr, name) in [(PUBLIC, "alondra#17"), (CLOUD, "storefront#6")] {
         let merges = merges_in(&s, &format!("pull_request:{pr}"));
         assert_eq!(merges.len(), 1, "{pr}: {merges:?}");
         assert!(merges[0].1.ends_with(name), "{merges:?}");
@@ -179,7 +179,7 @@ fn the_second_pr_of_the_mobile_menu_fix_reaches_the_user_with_its_merge() {
 pub(crate) fn two_open_prs() -> DomainState {
     let mut s = at_work();
     register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
-    register(&mut s, "bitomule/alondra-cloud", 6, CLOUD_HEAD);
+    register(&mut s, "acme/storefront", 6, CLOUD_HEAD);
     must(&mut s, node(), result("final", vec![pr(PUBLIC, "")], true));
     s
 }
@@ -192,7 +192,7 @@ fn a_delivery_of_a_pr_carries_every_open_pr_and_each_has_its_own_merge() {
 
     let mut labels: Vec<String> = card_actions(&s, "final").into_iter().map(|(_, label)| label).collect();
     labels.sort();
-    assert_eq!(labels, ["Squash and merge · alondra#17", "Squash and merge · alondra-cloud#6"]);
+    assert_eq!(labels, ["Squash and merge · alondra#17", "Squash and merge · storefront#6"]);
 
     must(&mut s, user(), Command::AuthorizeMerge {
         authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash,
@@ -221,7 +221,7 @@ fn accepting_merges_every_pr_and_a_task_with_one_pr_keeps_its_card() {
 
     let mut s = at_work();
     register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
-    register(&mut s, "bitomule/alondra-cloud", 6, CLOUD_HEAD);
+    register(&mut s, "acme/storefront", 6, CLOUD_HEAD);
     let both = vec![pr(PUBLIC, FIRST_HEAD), pr(CLOUD, CLOUD_HEAD)];
     must(&mut s, node(), result("final", both.clone(), true));
     must(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: both });
@@ -236,10 +236,10 @@ fn a_pr_registered_after_the_delivery_holds_the_task_open_and_tells_the_node() {
     must(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: vec![pr(PUBLIC, FIRST_HEAD)] });
     opened(&mut s);
     let outcome = exec(&mut s, Actor::System, Command::RecordOpenedPr {
-        task_id: TASK.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6,
+        task_id: TASK.into(), host: "github.com".into(), repository: "acme/storefront".into(), number: 6,
         head: CLOUD_HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![MergeMethod::Squash],
     }).unwrap();
-    assert!(outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyAgent { message, .. } if message.contains("alondra-cloud#6"))), "{:?}", outcome.effects);
+    assert!(outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyAgent { message, .. } if message.contains("storefront#6"))), "{:?}", outcome.effects);
     merged(&mut s, PUBLIC, FIRST_HEAD);
     let task = &s.tasks[&TASK.into()];
     assert!(!s.finished(task), "the other PR is still open");
@@ -256,14 +256,14 @@ fn a_pr_merged_by_hand_on_github_counts_as_merged_wherever_the_task_is() {
     assert!(delivered.finished(&delivered.tasks[&TASK.into()]), "nobody pressed anything in Alondra");
 
     let mut undelivered = at_work();
-    register(&mut undelivered, "bitomule/alondra-cloud", 6, CLOUD_HEAD);
+    register(&mut undelivered, "acme/storefront", 6, CLOUD_HEAD);
     merged(&mut undelivered, CLOUD, CLOUD_HEAD);
     must(&mut undelivered, node(), result("final", text(), true));
 
     let mut unread = at_work();
     opened(&mut unread);
     must(&mut unread, Actor::System, Command::RecordOpenedPr {
-        task_id: TASK.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6,
+        task_id: TASK.into(), host: "github.com".into(), repository: "acme/storefront".into(), number: 6,
         head: CLOUD_HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(CLOUD_HEAD.into()), allowed_methods: vec![MergeMethod::Squash],
     });
     must(&mut unread, node(), result("final", text(), true));
@@ -300,7 +300,7 @@ fn a_noted_pr_is_read_once_and_a_pr_of_another_task_stays_there() {
     });
     must(&mut s, Actor::Agent { agent_id: "b".into() }, Command::StartTask { task_id: "other".into() });
     let taken = exec(&mut s, Actor::Agent { agent_id: "b".into() }, Command::RegisterPr {
-        task_id: "other".into(), pr_id: CLOUD.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(),
+        task_id: "other".into(), pr_id: CLOUD.into(), host: "github.com".into(), repository: "acme/storefront".into(),
         number: 6, head: CLOUD_HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     }).unwrap_err();
     assert_eq!(taken.code, "pr_owned_by_other_task");
@@ -310,13 +310,13 @@ fn a_noted_pr_is_read_once_and_a_pr_of_another_task_stays_there() {
 fn the_node_can_register_a_pr_alondra_only_noted_and_a_closed_pr_is_not_corrected() {
     let mut s = at_work();
     opened(&mut s);
-    register(&mut s, "bitomule/alondra-cloud", 6, CLOUD_HEAD);
+    register(&mut s, "acme/storefront", 6, CLOUD_HEAD);
     let task = &s.tasks[&TASK.into()];
     assert!(task.opened_prs.is_empty(), "register_pr settles the note");
     assert_eq!(task.pr_ids().count(), 1);
     merged(&mut s, CLOUD, CLOUD_HEAD);
     let moved = Command::RegisterPr {
-        task_id: TASK.into(), pr_id: CLOUD.into(), host: "github.com".into(), repository: "bitomule/alondra-cloud".into(),
+        task_id: TASK.into(), pr_id: CLOUD.into(), host: "github.com".into(), repository: "acme/storefront".into(),
         number: 6, head: FIRST_HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     };
     assert_eq!(refusal(&mut s, moved), "pr_not_open");
@@ -325,7 +325,7 @@ fn the_node_can_register_a_pr_alondra_only_noted_and_a_closed_pr_is_not_correcte
 #[test]
 fn nothing_to_review_and_a_plan_cannot_stand_in_for_an_open_pr() {
     let mut s = at_work();
-    register(&mut s, "bitomule/alondra-cloud", 6, CLOUD_HEAD);
+    register(&mut s, "acme/storefront", 6, CLOUD_HEAD);
     let Command::PresentResult { checklist, attachments, task_id, interaction_id, body, targets, is_final, card, .. } = result("final", text(), true) else { unreachable!() };
     let silent = Command::PresentResult { checklist, attachments, task_id, interaction_id, body, targets, is_final, nothing_to_review: true, card };
     assert_eq!(refusal(&mut s, silent), "pr_missing");

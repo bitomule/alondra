@@ -47,7 +47,7 @@ struct ConnectionMeasurementTests {
         #expect(RequestObservation.kind(of: "/views/t-secret-task/answer?token=abc") == "views")
         #expect(RequestObservation.kind(of: "/changes?since=4") == "changes")
         #expect(RequestObservation.kind(of: "/Secret%20Name") == "other")
-        let server = APIError.server(status: 500, kind: "boom", detail: "/Users/david/private", reasons: [])
+        let server = APIError.server(status: 500, kind: "boom", detail: "/Users/ana/private", reasons: [])
         #expect(RequestObservation.label(server) == "APIError.server(500)")
         let mac = ConnectionMeasurement.macReference("mac-1234-private-id")
         #expect(mac.count == 6)

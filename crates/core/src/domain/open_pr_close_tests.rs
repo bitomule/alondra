@@ -293,7 +293,7 @@ fn the_users_cancel_closes_the_pr_with_the_reason_until_github_reports_it_closed
 
 fn with_a_second_pr(s: &mut DomainState) {
     must(s, node("a"), Command::RegisterPr {
-        task_id: "t".into(), pr_id: "github.com/bitomule/site#6".into(), host: "github.com".into(), repository: "bitomule/site".into(), number: 6,
+        task_id: "t".into(), pr_id: "github.com/acme/site#6".into(), host: "github.com".into(), repository: "acme/site".into(), number: 6,
         head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
 }
@@ -313,7 +313,7 @@ fn a_task_closed_with_two_prs_open_delivers_both_and_a_cancel_closes_both() {
     let closed = |pr: &str, head: &str| Command::ObservePrState { pr_id: pr.into(), head: head.into(), base: "main".into(), state: PrState::Closed, merged_head: None };
     must(&mut cancelled, Actor::System, closed(PR, HEAD));
     assert!(task(&cancelled).open_pr.is_some(), "the other PR is still to close");
-    must(&mut cancelled, Actor::System, closed("github.com/bitomule/site#6", HEAD));
+    must(&mut cancelled, Actor::System, closed("github.com/acme/site#6", HEAD));
     assert!(task(&cancelled).open_pr.is_none());
 }
 

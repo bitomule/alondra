@@ -112,7 +112,7 @@ class RunnerContracts(unittest.TestCase):
     def test_interrupted_create_reconciles_only_reserved_uuid_name(self):
         name = 'Alondra-native-7f8f1667-bae7-4432-9f05-4b9c9db991ea'
         owned = '67D20E42-75C7-4C21-AFA7-986FF4C7FC94'
-        devices = [{'name': 'Personal iPhone', 'udid': 'DD7B9A9D-E186-4849-8EF0-798526E07EC9'},
+        devices = [{'name': 'Personal iPhone', 'udid': '00000000-0000-0000-0000-000000000001'},
                    {'name': name, 'udid': owned}]
         commands = Mock()
         commands.run.side_effect = [json.dumps({'devices': {'runtime': devices}}), '']
@@ -139,7 +139,7 @@ class RunnerContracts(unittest.TestCase):
                 output = root / 'result'
                 binary = root / 'synthetic-executable'
                 binary.write_bytes(b'synthetic test artifact')
-                personal = {'name': 'Personal iPhone', 'udid': 'e0fb6c6d-8969-4e0d-86dd-e945b91c5b9f'}
+                personal = {'name': 'Personal iPhone', 'udid': '00000000-0000-0000-0000-000000000002'}
                 devices = [personal.copy()]
                 reserved_before_create = []
                 commands = Mock()
@@ -149,7 +149,7 @@ class RunnerContracts(unittest.TestCase):
                     if argv[:3] == ['xcrun', 'simctl', 'create']:
                         persisted = json.loads((output / 'manifest.json').read_text())
                         reserved_before_create.append(persisted.get('ownedSimulatorName') == argv[3])
-                        devices.append({'name': argv[3], 'udid': '67d20e42-75c7-4c21-afa7-986ff4c7fc94'})
+                        devices.append({'name': argv[3], 'udid': '00000000-0000-0000-0000-000000000003'})
                         if interruption == 'timeout':
                             raise runner.subprocess.TimeoutExpired(argv, 1)
                         raise InterruptedError('synthetic SIGTERM after creation')

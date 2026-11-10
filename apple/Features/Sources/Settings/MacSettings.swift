@@ -116,7 +116,7 @@ public struct MacSettingsClient: Sendable {
 }
 
 public enum FolderPath {
-    /// `/Users/david/Projects` as `~/Projects`, the way the Mac's owner reads it.
+    /// `/Users/ana/Projects` as `~/Projects`, the way the Mac's owner reads it.
     public static func display(_ path: String) -> String {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count >= 3, parts[0].isEmpty, parts[1] == "Users", !parts[2].isEmpty else { return path }

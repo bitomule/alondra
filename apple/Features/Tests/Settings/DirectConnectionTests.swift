@@ -13,12 +13,12 @@ final class DirectConnectionTests: XCTestCase {
     func testReadsTheDiagnosisInTheShapeTheDaemonSends() throws {
         let read = try decoded(settings + #"""
         ,"direct_connection":{"verdict":"reachable","confirmed":false,"reasons":[],
-         "port_mapping":{"upnp":true,"nat_pmp":false,"pcp":false,"mapped":"81.40.12.7:61022"},
-         "public_ipv4":"81.40.12.7","public_ipv6":null,"nat":"easy","port":47811,"port_fixed":true,
+         "port_mapping":{"upnp":true,"nat_pmp":false,"pcp":false,"mapped":"203.0.113.7:61022"},
+         "public_ipv4":"203.0.113.7","public_ipv6":null,"nat":"easy","port":47811,"port_fixed":true,
          "lan_ip":"192.168.1.20","sessions":{"lan":0,"internet":0,"relay":0}}}
         """#)
         XCTAssertEqual(read.directConnection, DirectConnection(
-            verdict: .reachable, portMapping: .init(upnp: true, mapped: "81.40.12.7:61022"), publicIpv4: "81.40.12.7",
+            verdict: .reachable, portMapping: .init(upnp: true, mapped: "203.0.113.7:61022"), publicIpv4: "203.0.113.7",
             nat: .easy, port: 47811, lanIp: "192.168.1.20"))
     }
 
@@ -80,8 +80,8 @@ final class DirectConnectionTests: XCTestCase {
     func testTheFactsReadPlainly() {
         let offered = DirectConnection(verdict: .relayOnly, portMapping: .init(upnp: true, natPmp: true))
         XCTAssertEqual(offered.portMappingText.map { String(localized: $0) }, "Offered (UPnP, NAT-PMP), no port open")
-        XCTAssertEqual(DirectConnection(verdict: .reachable, portMapping: .init(mapped: "81.40.12.7:61022")).portMappingText.map { String(localized: $0) },
-                       "Open (81.40.12.7:61022)")
+        XCTAssertEqual(DirectConnection(verdict: .reachable, portMapping: .init(mapped: "203.0.113.7:61022")).portMappingText.map { String(localized: $0) },
+                       "Open (203.0.113.7:61022)")
         XCTAssertNil(DirectConnection(verdict: .checking).portMappingText)
         XCTAssertEqual(DirectConnection(verdict: .relayOnly, sessions: .init(lan: 2, internet: 1, relay: 4)).sessionsText.map { String(localized: $0) },
                        "3 direct · 4 via the relay")

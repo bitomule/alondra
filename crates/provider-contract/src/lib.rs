@@ -426,9 +426,9 @@ mod pull_request_tests {
 
     #[test]
     fn only_a_pull_request_address_is_named_and_each_once() {
-        let output = "Creating pull request\nhttps://github.com/bitomule/alondra-cloud/pull/6\nsee https://github.com/bitomule/alondra-cloud/pull/6.\nhttps://github.com/o/r/issues/2 https://example/o/r/pull/3 https://ghe.corp.io/O/R/pull/4/";
+        let output = "Creating pull request\nhttps://github.com/acme/storefront/pull/6\nsee https://github.com/acme/storefront/pull/6.\nhttps://github.com/o/r/issues/2 https://example/o/r/pull/3 https://ghe.corp.io/O/R/pull/4/";
         assert_eq!(pull_requests_named(output), vec![
-            OpenedPullRequest { host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6 },
+            OpenedPullRequest { host: "github.com".into(), repository: "acme/storefront".into(), number: 6 },
             OpenedPullRequest { host: "ghe.corp.io".into(), repository: "O/R".into(), number: 4 },
         ]);
     }

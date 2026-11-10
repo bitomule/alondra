@@ -1230,8 +1230,8 @@ mod tests {
     fn a_pr_a_command_opened_is_a_fact_of_its_task_in_any_repository() {
         let mut state = state();
         fold(&shell_call("toolu_pr", "cd ../cloud && gh pr create --base main --head fix --title Fix | tail -1"), &session(), &mut state, input).unwrap();
-        let facts = fold(&shell_result("toolu_pr", "https://github.com/bitomule/alondra-cloud/pull/6\n", false), &session(), &mut state, input).unwrap();
-        assert_eq!(facts, vec![Observation::PullRequestOpened(alondra_provider_contract::OpenedPullRequest { host: "github.com".into(), repository: "bitomule/alondra-cloud".into(), number: 6 })]);
+        let facts = fold(&shell_result("toolu_pr", "https://github.com/acme/storefront/pull/6\n", false), &session(), &mut state, input).unwrap();
+        assert_eq!(facts, vec![Observation::PullRequestOpened(alondra_provider_contract::OpenedPullRequest { host: "github.com".into(), repository: "acme/storefront".into(), number: 6 })]);
         assert!(state.pr_commands.is_empty(), "the call is settled");
 
         fold(&shell_call("toolu_hidden", "gh pr create --fill > /dev/null"), &session(), &mut state, input).unwrap();

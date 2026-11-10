@@ -105,9 +105,9 @@ mod tests {
 
     #[test]
     fn a_registered_pr_is_named_by_its_host_repository_and_number_whatever_id_the_node_sent() {
-        let mut body = json!({"pr_id":"pr-163","host":"https://GitHub.com/","repository":"bitomule/lumo","number":163});
+        let mut body = json!({"pr_id":"pr-163","host":"https://GitHub.com/","repository":"acme/lumo","number":163});
         assign(&DomainState::new("epoch"), "POST", "/tasks/lumo/pull-requests", Some("lumo"), &mut body).unwrap();
-        assert_eq!(body["pr_id"], "github.com/bitomule/lumo#163");
+        assert_eq!(body["pr_id"], "github.com/acme/lumo#163");
         assert_eq!(body["host"], "github.com");
     }
 

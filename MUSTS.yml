@@ -702,6 +702,14 @@ checks:
       targets:
         - //tools:bazel_artifact_paths_test
 
+  public-data-guard:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
+        - //tools:public_data_guard_test
+
   sandbox-accounts:
     uses: bazel/test
     paths:

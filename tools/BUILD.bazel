@@ -50,6 +50,21 @@ sh_test(
     tags = ["external", "local"],
 )
 
+# Reads the checkout itself through the Makefile's runfiles link, so it is never cached: tracked files
+# of every package are no data a glob here can reach.
+sh_test(
+    name = "public_data_guard_test",
+    srcs = ["tests/test_public_data_guard.py"],
+    data = [
+        "public_data_guard.py",
+        "public_data_allowlist.tsv",
+        "//:Makefile",
+    ],
+    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
+    size = "small",
+    tags = ["external", "local"],
+)
+
 sh_test(
     name = "load_bench_test",
     srcs = ["tests/test_load_bench.py"],
