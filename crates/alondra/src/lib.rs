@@ -443,10 +443,7 @@ pub fn main() -> Result<()> {
             .error(clap::error::ErrorKind::ArgumentConflict, trf!("--json is not available for `{name}`", "--json no está disponible para `{name}`"))
             .exit();
     }
-    let warns = match &cli.command {
-        None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys) => false,
-        Some(_) => !cli.json,
-    };
+    let warns = warns_when_older(cli.command.as_ref(), cli.json);
     let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. }
         | Cmd::Cancel { .. } | Cmd::Move { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
     let result = run(cli.command, cli.json, cli.no_input);
@@ -463,6 +460,14 @@ pub fn main() -> Result<()> {
             std::process::exit(4)
         }
         result => result,
+    }
+}
+
+/// `update` has just replaced this binary, so the service it installed is never newer than the release it ran.
+fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
+    match command {
+        None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys | Cmd::Update { .. }) => false,
+        Some(_) => !json,
     }
 }
 
@@ -752,6 +757,22 @@ fn short_session_poll(payload: &serde_json::Value) -> bool {
     // Any minute field with more than one value can fire more than once an hour,
     // including lists and ranges on specific weekdays. Alondra cannot express it.
     !parts[0].parse::<u8>().is_ok_and(|minute| minute <= 59)
+}
+
+#[cfg(test)]
+mod older_warning_tests {
+    use clap::Parser as _;
+
+    fn command(args: &[&str]) -> Option<crate::Cmd> {
+        crate::Cli::try_parse_from(std::iter::once("alondra").chain(args.iter().copied())).unwrap().command
+    }
+
+    #[test]
+    fn update_never_warns_the_binary_it_just_replaced_is_older() {
+        assert!(!crate::warns_when_older(command(&["update"]).as_ref(), false));
+        assert!(crate::warns_when_older(command(&["status"]).as_ref(), false));
+        assert!(!crate::warns_when_older(command(&["status"]).as_ref(), true));
+    }
 }
 
 #[cfg(test)]
