@@ -103,12 +103,12 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.problems("the examplename release\n"), [])
         self.assertEqual(self.rules("write to maria.garcia@gmail.com\n"), ["personal-email"])
 
-    def test_a_private_literal_entry_allows_the_file_and_is_only_checked_when_the_file_exists(self):
+    def test_a_private_literal_entry_allows_the_file_and_is_never_reported_as_unused(self):
         self.allow("notes.txt\tprivate-literal\t*\tkept for the migration\n")
         self.assertEqual(self.problems("nothing private here\n"), [])
         self.literals("examplename")
         self.assertEqual(self.problems("the examplename release\n"), [])
-        self.assertIn("unused entry", self.problems("nothing private here\n")[0])
+        self.assertEqual(self.problems("nothing private here\n"), [])
 
     def test_an_allowed_match_passes_and_an_unused_entry_fails(self):
         self.allow("notes.txt\tpersonal-email\tmaria.garcia@gmail.com\tthe reviewer's own test address\n")

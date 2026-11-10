@@ -10,8 +10,10 @@ the list only shrinks.
 Literals that must not be written down in a public file at all (the maintainer's name, names of
 private apps or repositories, hosts) are not in this repository: they go in a file outside the
 checkout that ALONDRA_PRIVATE_LITERALS points to, one case-insensitive literal per line. A finding
-from that file never prints the literal. When the variable is unset or the file is missing, as on a
-contributor's Mac, the generic rules above still run and the check passes or fails on them alone.
+from that file never prints the literal, and allowlist entries for that rule are never reported as
+unused, because no one can tell from another Mac's file whether they still match. When the variable
+is unset or the file is missing, as on a contributor's Mac, the generic rules above still run and the
+check passes or fails on them alone.
 """
 import ipaddress
 import os
@@ -199,7 +201,7 @@ def report(root, against=None):
                 else:
                     problems.append(f"{relative}:{number}: {rule}: {text}")
     if not against:
-        unverifiable = {key for key in allowlist if key[1] == PRIVATE_RULE and not literals}
+        unverifiable = {key for key in allowlist if key[1] == PRIVATE_RULE}
         for key in sorted(set(allowlist) - used - unverifiable):
             problems.append(f"{ALLOWLIST}: unused entry {'  '.join(key)}")
     return problems

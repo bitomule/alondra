@@ -1,8 +1,8 @@
 # Matches the public-data guard (//tools:public_data_guard_test) allows.
 # path<TAB>rule<TAB>matched text<TAB>reason it is harmless
 # The text may be * to allow the rule in that file (always so for private-literal, whose value is never written here).
-# An entry that matches nothing fails the test, so the list only shrinks; private-literal entries cannot be
-# checked without the private literals file, so they are skipped when it is absent.
+# An entry that matches nothing fails the test, so the list only shrinks; private-literal entries are never
+# reported, because they depend on a private file that differs from one Mac to another.
 apple/Data/Pairing/Sources/ServiceHosts.swift	private-literal	*	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
 apple/Data/Pairing/Tests/DirectPairingTests.swift	private-literal	*	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
 apple/Features/Sources/Settings/CrashReport/AppLogs.swift	private-literal	*	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
