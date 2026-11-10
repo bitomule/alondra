@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::json;
 
-const HOME_PUBLIC: Ipv4Addr = Ipv4Addr::new(81, 40, 12, 7);
+const HOME_PUBLIC: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
 const MAC_LAN: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
 
 fn v4(ip: Ipv4Addr, port: u16) -> SocketAddrV4 {
@@ -79,17 +79,17 @@ fn a_public_ipv6_address_with_udp_is_a_way_in() {
     let mut inputs = home();
     let report = inputs.report.as_mut().unwrap();
     report.udp_v6 = true;
-    report.global_v6 = Some(SocketAddrV6::new("2a0c:5a80::7".parse().unwrap(), 47811, 0, 0));
+    report.global_v6 = Some(SocketAddrV6::new("2001:db8::7".parse().unwrap(), 47811, 0, 0));
     report.varies_v6 = Some(false);
     let found = diagnose(&inputs);
     assert_eq!(found.verdict, Verdict::Reachable);
-    assert_eq!(found.public_ipv6, Some("2a0c:5a80::7".parse().unwrap()));
+    assert_eq!(found.public_ipv6, Some("2001:db8::7".parse().unwrap()));
 }
 
 #[test]
 fn an_ipv6_address_without_udp_is_not_shown_as_a_way_in() {
     let mut inputs = home();
-    inputs.report.as_mut().unwrap().global_v6 = Some(SocketAddrV6::new("2a0c:5a80::7".parse().unwrap(), 47811, 0, 0));
+    inputs.report.as_mut().unwrap().global_v6 = Some(SocketAddrV6::new("2001:db8::7".parse().unwrap(), 47811, 0, 0));
     let found = diagnose(&inputs);
     assert_eq!(found.verdict, Verdict::RelayOnly);
     assert_eq!(found.public_ipv6, None);
@@ -164,7 +164,7 @@ fn a_direct_session_stays_confirmed_after_the_sessions_kept_move_on_until_the_pu
     assert_eq!(found.verdict, Verdict::Reachable);
     assert!(found.confirmed);
 
-    let moved_to = v4(Ipv4Addr::new(81, 40, 12, 8), 47811);
+    let moved_to = v4(Ipv4Addr::new(203, 0, 113, 8), 47811);
     live.inputs.report = Some(NetFacts { global_v4: Some(moved_to), ..live.inputs.report.unwrap() });
     live.inputs.endpoint_addrs = vec![SocketAddr::V4(v4(MAC_LAN, 47811)), SocketAddr::V4(moved_to)];
     let moved = diagnose(&live.inputs);
@@ -237,7 +237,7 @@ fn paths_are_classified_as_lan_internet_or_relay() {
     assert_eq!(path_kind(&TransportAddr::Ip("[fe80::1]:5000".parse().unwrap())), PathKind::Lan);
     assert_eq!(path_kind(&TransportAddr::Ip("100.101.7.9:5000".parse().unwrap())), PathKind::Lan);
     assert_eq!(path_kind(&TransportAddr::Ip("88.1.2.3:5000".parse().unwrap())), PathKind::Internet);
-    assert_eq!(path_kind(&TransportAddr::Ip("[2a0c:5a80::9]:5000".parse().unwrap())), PathKind::Internet);
+    assert_eq!(path_kind(&TransportAddr::Ip("[2001:db8::9]:5000".parse().unwrap())), PathKind::Internet);
     assert_eq!(path_kind(&TransportAddr::Relay("https://relay.example.com".parse().unwrap())), PathKind::Relay);
 }
 
@@ -280,8 +280,8 @@ fn the_apps_read_this_exact_shape() {
         serde_json::to_value(diagnose(&inputs)).unwrap(),
         json!({
             "verdict": "reachable", "confirmed": false, "reasons": [],
-            "port_mapping": {"upnp": true, "nat_pmp": false, "pcp": false, "mapped": "81.40.12.7:61022"},
-            "public_ipv4": "81.40.12.7", "public_ipv6": null, "nat": "easy",
+            "port_mapping": {"upnp": true, "nat_pmp": false, "pcp": false, "mapped": "203.0.113.7:61022"},
+            "public_ipv4": "203.0.113.7", "public_ipv6": null, "nat": "easy",
             "port": 47811, "port_fixed": true, "lan_ip": "192.168.1.20",
             "sessions": {"lan": 0, "internet": 0, "relay": 0, "bytes": {"lan": 0, "internet": 0, "relay": 0}},
         })

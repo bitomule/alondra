@@ -57,6 +57,22 @@ disk on purpose: no `yes` processes, spawners, `stress`, busy loops or filling t
 that only shows under load is reproduced inside the test, with fake clocks, injected limits and
 deterministic fixtures, never by stressing the Mac.
 
+## A public repository
+
+When the repository you work in is public (`gh repo view --json visibility` says PUBLIC, or its
+instructions say so), everything you write there can be read by anyone and stays in git history:
+commits, pull request titles, descriptions and comments, branch names, code, tests, fixtures and
+captures. Never put in them the user's personal data (emails, home paths such as `/Users/<name>`,
+ids of their Mac, devices or accounts, public IP addresses), the names of their private apps or
+repositories, security problems not yet published, the infrastructure or configuration of a hosted
+service, secrets, or the ids of a private tracker. Use synthetic values (`ana@example.com`,
+`/Users/ana`, `203.0.113.7`). That context belongs on the cards you send to the user, or in the
+private repository the project keeps for it.
+
+Title pull requests and name branches by what changes, link issues as `#N`, and commit with the
+user's GitHub `noreply` email. When you find private data already published, tell the user with a
+card; never rewrite history, close or delete anything on your own.
+
 ## Your task
 
 The work you were launched for is an Alondra task; its id (`t-…`) is in your mission. Pass it as

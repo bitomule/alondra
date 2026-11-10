@@ -655,26 +655,26 @@ async fn http_a_pr_number_another_repository_already_used_is_registered_and_pres
         "launch":{"name":"app/skills", "cwd":cwd, "model":"sonnet", "reason":"clear change"}})).await;
     fixture.user(json!({"kind":"assign_task", "task_id":"skills-task", "agent_id":"agent-b"}));
     let legacy: CommandEnvelope = serde_json::from_value(fixture.envelope(json!({"kind":"register_pr",
-        "task_id":"skills-task", "pr_id":"pr-163", "host":"github.com", "repository":"bitomule/agent-skills",
+        "task_id":"skills-task", "pr_id":"pr-163", "host":"github.com", "repository":"acme/skills",
         "number":163, "head":head, "base":"main", "allowed_methods":["squash"]}))).unwrap();
     fixture.domain.execute(&Actor::Agent { agent_id: "agent-b".into() }, &legacy, None, || Ok(())).unwrap();
 
     fixture.producer(false, json!({"kind":"register_pr", "task_id":"lumo-task", "pr_id":"pr-163",
-        "host":"github.com", "repository":"bitomule/lumo", "number":163, "head":head, "base":"main",
+        "host":"github.com", "repository":"acme/lumo", "number":163, "head":head, "base":"main",
         "allowed_methods":["squash"]})).await;
     fixture.producer(false, json!({"kind":"present_result", "task_id":"lumo-task",
         "interaction_id":"lumo-delivery", "body":"Code ready", "is_final":true,
         "targets":[{"kind":"pull_request", "pr_id":"pr-163"}]})).await;
 
     let state = fixture.domain.state().unwrap();
-    let lumo = PrId::from("github.com/bitomule/lumo#163");
+    let lumo = PrId::from("github.com/acme/lumo#163");
     assert_eq!(state.pull_requests[&lumo].task_id.0, "lumo-task");
-    assert_eq!(state.pull_requests[&PrId::from("pr-163")].repository, "bitomule/agent-skills");
+    assert_eq!(state.pull_requests[&PrId::from("pr-163")].repository, "acme/skills");
     assert_eq!(state.tasks[&"lumo-task".into()].pr_id.as_ref(), Some(&lumo));
     let InteractionPayload::Delivery { targets, .. } = &state.interactions[&"lumo-delivery".into()].payload else {
         panic!("the result is a delivery");
     };
     assert_eq!(targets, &vec![DeliveryTarget::PullRequest { pr_id: lumo, head: head.into() }],
-        "the node's pr-163 is its own Lumo PR, not agent-skills' #163");
+        "the node's pr-163 is its own Lumo PR, not skills' #163");
     fixture.finish().await;
 }

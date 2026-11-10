@@ -62,7 +62,7 @@ final class MacCardTests: XCTestCase {
 
     func test_aDeliveryOfTwoPullRequests_offersTheMergeOfEach() throws {
         let buttons = MacCardButtons(try card("card-two-prs-es-mac"))
-        XCTAssertEqual(buttons.visible.map(\.label), ["Squash and merge · alondra#17", "Squash and merge · alondra-cloud#6"])
+        XCTAssertEqual(buttons.visible.map(\.label), ["Squash and merge · alondra#17", "Squash and merge · storefront#6"])
         XCTAssertEqual(buttons.visible.map(\.paintedRole), [.advance, .advance])
     }
 

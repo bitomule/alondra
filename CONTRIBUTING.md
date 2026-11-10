@@ -17,8 +17,12 @@ copyright assignment: you keep your copyright.
 - **Security problems** never go in a public issue: follow [`SECURITY.md`](SECURITY.md).
 - A big feature starts as an issue, so we agree on the approach before you write it.
 
-Everything you commit, comment or attach to a pull request is public. Do not include secrets,
-personal data, private repository names or internal reports.
+Everything you commit, comment or attach to a pull request is public and stays in git history. Do
+not include secrets, personal data (real emails, home paths such as `/Users/<name>`, device or account
+ids, public IP addresses), names of private repositories or apps, unpublished security problems or
+internal reports. Use synthetic values such as `ana@example.com` and `/Users/ana`, and commit with
+your GitHub `noreply` email. `//tools:public_data_guard_test` fails when a tracked file carries such
+data.
 
 ## Build and test
 
@@ -50,7 +54,9 @@ build from a clean Mac is in [`docs/building-from-source.md`](docs/building-from
 
 ## Pull request flow
 
-1. Fork, branch from `main`, keep the change small and focused.
+1. Fork, branch from `main`, keep the change small and focused. Name the branch and title the pull
+   request by what changes (`Reselect disabled providers before first launch`); link the issue it
+   closes as `Closes #N` in the description.
 2. Make `make build` and `make test` pass; run `musts validate` if you have `musts` installed. It asks
    only for the checks whose files your change touches, and a change to prose or images no test
    loads asks for nothing. Adding a test or fixture? Run `make musts-scopes` to keep the check's

@@ -439,8 +439,8 @@ mod tests {
             facts.retain(|fact|matches!(fact,Observation::PullRequestOpened(_)|Observation::PullRequestNotNamed));
             facts
         };
-        assert_eq!(finished(&mut state,"bash -lc 'gh pr create --fill'",0,"https://github.com/bitomule/alondra-cloud/pull/6\n"),
-            vec![Observation::PullRequestOpened(alondra_provider_contract::OpenedPullRequest{host:"github.com".into(),repository:"bitomule/alondra-cloud".into(),number:6})]);
+        assert_eq!(finished(&mut state,"bash -lc 'gh pr create --fill'",0,"https://github.com/acme/storefront/pull/6\n"),
+            vec![Observation::PullRequestOpened(alondra_provider_contract::OpenedPullRequest{host:"github.com".into(),repository:"acme/storefront".into(),number:6})]);
         assert_eq!(finished(&mut state,"gh pr create --fill",0,""),vec![Observation::PullRequestNotNamed]);
         assert_eq!(finished(&mut state,"gh pr create --fill",1,"https://github.com/o/r/pull/1"),vec![],"a command that failed opened nothing");
         assert_eq!(finished(&mut state,"gh pr view 1",0,"https://github.com/o/r/pull/1"),vec![],"naming a PR is not opening it");

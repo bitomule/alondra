@@ -1,12 +1,41 @@
 # Alondra agent instructions
 
+This is the only agent instruction file of the repository: Claude Code reads `AGENTS.md` by itself
+(version 2.1.277 or later) when there is no `CLAUDE.md`, so do not add one. A `CLAUDE.local.md`
+would hide this file from whoever has it.
+
 ## Public repository
 
-- **Everything you commit is public**: code, comments, tests, fixtures, pull request descriptions
-  and their captures. Never include secrets, personal data, private repository names, device
-  identifiers or addresses of a private network.
+**Everything you commit is public and stays in git history**: code, comments, tests, fixtures,
+commit messages, branch names, pull request titles, descriptions and comments, and their captures.
+Never include:
+
+- **Personal data of the maintainer or anyone else**: real emails, home paths (`/Users/<name>`),
+  ids of a Mac, device or account, public IP addresses, names of their private apps or repositories
+  (unless the repository is already public).
+- **Secrets**: keys, tokens, passwords, certificates, `.env` files, in code, examples or history.
+- **Security details not yet published**, and the infrastructure or configuration of a hosted
+  service (hosts, servers, accounts, deploy steps).
+- **Plans, business reports and tracker ids** of a private tracker.
+
+Use synthetic values: `ana@example.com`, `/Users/ana`, `203.0.113.7`, `2001:db8::7`,
+`00000000-0000-0000-0000-000000000001`. Private context goes on the cards Alondra sends to the user
+or in the private repository that keeps it, never here.
+
+- Commit with the GitHub `noreply` email. A captured screen shows only the invented demo world.
+- Pull request titles and branch names say what changes, with no tracker ids, task ids or people:
+  `Reselect disabled providers before first launch`, `fix-reselect-providers`. Link issues as `#N`.
 - **Plans and internal reports go to Alondra's own files, not to the repository.** A plan, a
   research report or a review log is shared through the task that produced it, never committed.
+  Scratch files go in `.scratch/` (git-ignored).
+- `//tools:public_data_guard_test` fails when a tracked file carries a real email, home path, the
+  maintainer's name, a public IP, a device id, a credential or a private name. Replace the value; add
+  a line to `tools/public_data_allowlist.tsv` only with the reason it is harmless.
+  `python3 tools/public_data_guard.py --against origin/main` checks just the lines a branch adds.
+  Names that cannot be written even in the guard go one per line in a file outside the checkout that
+  `ALONDRA_PRIVATE_LITERALS` points to.
+- Found something private already published? Tell the user with a card. Never rewrite history, close
+  or delete anything on your own.
 
 ## Build and test
 
@@ -52,6 +81,8 @@
 
 - Every behavior change ships with a test that fails without the change and passes with it. Show it
   in the pull request: remove the fix, see the test fail, put it back, see it pass.
+- Fixing a bug starts by reproducing it on a fresh `origin/main`; if it no longer happens, there is
+  nothing to fix.
 - No flaky tests: no wall-clock assertions, no sleeps racing other work, no retries to hide failures.
 - Every test target declares `size` or `timeout`, at least three times what it takes under load
   (`docs/running-tests.md`). `//tools:test_limits_test` fails on one that does not.
@@ -65,8 +96,10 @@
 - Never load the shared Mac on purpose: no `yes` processes, spawners, `stress`, busy loops or
   filling the disk. A failure that only appears under load is reproduced inside the test with fake
   clocks, injected limits and deterministic fixtures.
-- A test that starts a host owns it: its folder comes from `Directory::for_unix_socket` or
-  `socketRoot()`, inside the test's TMPDIR, and `make reap-test-hosts` ends what an older cut left.
+- A test that starts a host owns it: its folder comes from `Directory::for_unix_socket` (Rust) or
+  `socketRoot()` in `agent-host/owned-host.mjs`, inside the test's TMPDIR, and
+  `make reap-test-hosts` ends what an older cut left.
+- Kill only a process you started and still hold the PID of; never `pkill -f` a name.
 - A change to what the user sees is tried in the real TUI inside tmux against a sandbox daemon
   (`make tui-sandbox SESSION=<name>`, `make tui-sandbox-stop SESSION=<name>`), and its captures go
   in the pull request.

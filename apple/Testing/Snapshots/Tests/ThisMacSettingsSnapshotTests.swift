@@ -100,7 +100,7 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
     }
 
     private let relayOnly = DirectConnection(
-        verdict: .relayOnly, reasons: [.routerOffersNoMapping, .noIpv6], portMapping: .init(), publicIpv4: "81.40.12.7",
+        verdict: .relayOnly, reasons: [.routerOffersNoMapping, .noIpv6], portMapping: .init(), publicIpv4: "203.0.113.7",
         nat: .easy, port: 47811, lanIp: "192.168.1.20", sessions: .init(lan: 3, internet: 0, relay: 5))
 
     func test_directConnection_relayOnlyWithTheRouterGuide() {
@@ -113,14 +113,14 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
 
     func test_directConnection_reachable() {
         let reachable = DirectConnection(
-            verdict: .reachable, confirmed: true, portMapping: .init(upnp: true, mapped: "81.40.12.7:61022"),
-            publicIpv4: "81.40.12.7", publicIpv6: "2a0c:5a80::7", nat: .easy, port: 47811, lanIp: "192.168.1.20",
+            verdict: .reachable, confirmed: true, portMapping: .init(upnp: true, mapped: "203.0.113.7:61022"),
+            publicIpv4: "203.0.113.7", publicIpv6: "2001:db8::7", nat: .easy, port: 47811, lanIp: "192.168.1.20",
             sessions: .init(lan: 2, internet: 4, relay: 1))
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { direct(reachable) } }
     }
 
     private let localNetworkDenied = DirectConnection(
-        verdict: .relayOnly, reasons: [.localNetworkDenied], portMapping: .init(), publicIpv4: "81.40.12.7",
+        verdict: .relayOnly, reasons: [.localNetworkDenied], portMapping: .init(), publicIpv4: "203.0.113.7",
         nat: .easy, port: 47811, lanIp: "192.168.1.20", sessions: .init(lan: 0, internet: 0, relay: 4))
 
     func test_directConnection_localNetworkDenied() {

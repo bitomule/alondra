@@ -1,0 +1,19 @@
+# Matches the public-data guard (//tools:public_data_guard_test) allows.
+# path<TAB>rule<TAB>matched text<TAB>reason it is harmless
+# An entry that matches nothing fails the test, so the list only shrinks.
+apple/Data/Pairing/Sources/ServiceHosts.swift	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+apple/Data/Pairing/Tests/DirectPairingTests.swift	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+apple/Features/Sources/Settings/CrashReport/AppLogs.swift	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+crates/alondra/src/account.rs	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+crates/alondra/src/account_native_smoke.rs	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+crates/alondra/src/report/tests.rs	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows
+crates/alondra/src/service_setup.rs	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+crates/alondrad/src/direct/tests.rs	public-ip	100.128.0.1	Boundary address of a private-range test, not a real host
+crates/alondrad/src/direct/tests.rs	public-ip	100.63.255.255	Boundary address of a private-range test, not a real host
+crates/alondrad/src/direct/tests.rs	public-ip	172.32.0.1	Boundary address of a private-range test, not a real host
+crates/alondrad/src/reachability_tests.rs	public-ip	88.1.2.3	Boundary address of a private-range test, not a real host
+crates/core/src/service_config.rs	owner-name	davidcollado	Hosts and identifiers of an earlier release that the migration still has to recognise; replacing them breaks upgrades
+crates/relay/src/management/waitlist.rs	personal-email	ana@-example.com	Deliberately invalid address of a validation test
+crates/relay/src/management/waitlist.rs	personal-email	ana@example-.com	Deliberately invalid address of a validation test
+crates/relay/src/push.rs	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows
+tools/prose_decisions_allowlist.tsv	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows

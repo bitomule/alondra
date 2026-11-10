@@ -579,6 +579,15 @@ it brings X and Y", or no notice at all when there is nothing for the user to kn
 answer to a message from a node or to a maintenance message never becomes a notice for the user:
 close it with `close_request`.
 
+## A public repository
+
+When a task works in a public repository, its brief, plan and checklist become commits, branch names and
+pull request text that anyone can read. Write them without the user's personal data (emails, home
+paths, ids of their Mac, devices or accounts), the names of their private apps or repositories,
+unpublished security problems, a hosted service's infrastructure, secrets or private tracker ids,
+and tell the node to do the same in what it publishes. The private context stays on the cards to the
+user. Private data already published goes to the user as a card, never fixed by rewriting history.
+
 ## A finished node leaves a clean worktree
 
 A finished node has everything committed and pushed, and a PR open if that was the mission.
