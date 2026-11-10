@@ -76,7 +76,7 @@ fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() 
     let mut transaction = journal(&store);
     let staged = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &envelope,
         Some(("phone", "transaction-op", &[7; 32])),
@@ -130,7 +130,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
     let mut transaction = journal(&store);
     let staged = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &envelope,
         Some(("phone", "replayed-op", &[2; 32])),
@@ -150,7 +150,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
     let mut transaction = journal(&store);
     let transported = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &envelope,
         Some(("phone", "first-op", &[1; 32])),
@@ -188,7 +188,7 @@ fn rejected_command_leaves_the_callers_transaction_owned_and_rollbackable() {
         .execute("INSERT INTO command_outer_witness VALUES(1)", [])
         .unwrap();
     assert!(
-        matches!(stage(&store.conn, &store.cached, &user(), &envelope, None, false, Attached::None, &mut transaction), Err(StoreError::Domain(error)) if error.code == "stale_revision")
+        matches!(stage(&store.conn, &store.cached, &store.protected, &user(), &envelope, None, false, Attached::None, &mut transaction), Err(StoreError::Domain(error)) if error.code == "stale_revision")
     );
     assert!(!store.conn.is_autocommit());
     assert_eq!(rows(&store.conn, "command_outer_witness"), 1);
@@ -211,7 +211,7 @@ fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
     let mut transaction = journal(&store);
     let error = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &envelope,
         None,
@@ -249,7 +249,7 @@ fn failed_nested_begin_does_not_commit_or_destroy_the_existing_transaction() {
     assert!(!store.conn.is_autocommit());
     let staged = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &envelope,
         None,
@@ -275,7 +275,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
     let mut transaction = journal(&store);
     let first = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &first_envelope,
         None,
@@ -299,7 +299,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
     }
     let second = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &second_envelope,
         None,
@@ -358,7 +358,7 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
         .unwrap();
     let staged = stage(
         &store.conn,
-        &store.cached,
+        &store.cached, &store.protected,
         &Actor::System,
         &envelope,
         None,

@@ -437,6 +437,8 @@ pub struct DomainStore {
     before_live_read: Option<Box<dyn Fn(&str) + Send>>,
     cached: Option<Cached>,
     aggregates: alondra_store::AggregateCache,
+    /// The folders no task's worktree can be: a worktree is recorded only once git lists it.
+    protected: crate::worktree::Protected,
     #[cfg(any(test, feature = "test-hooks"))]
     after_commit: Option<Box<dyn FnMut() + Send>>,
 }
@@ -784,11 +786,18 @@ impl DomainStore {
         store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         Ok(store)
     }
+    pub fn protect(&mut self, protected: crate::worktree::Protected) {
+        self.protected = protected;
+    }
+    pub(crate) fn protected(&self) -> &crate::worktree::Protected {
+        &self.protected
+    }
     fn from_connection(conn: Connection) -> Self {
         Self {
             conn,
             cached: None,
             aggregates: Default::default(),
+            protected: crate::worktree::Protected { home: crate::options::user_home(), projects_root: crate::options::user_home().join("Projects") },
             #[cfg(any(test, feature = "test-hooks"))]
             live_read_trace: None,
             #[cfg(any(test, feature = "test-hooks"))]
@@ -925,9 +934,9 @@ impl DomainStore {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let scope = alondra_store::AuthorityScope::new(epoch_of(&self.conn)?)?;
         let mut journal = alondra_store::LifecycleTransaction::attach_cached(tx, scope, &self.aggregates)?;
-        let (conn, cached) = (&self.conn, &self.cached);
+        let (conn, cached, protected) = (&self.conn, &self.cached, &self.protected);
         let staged = journal.inspect_mut(|journal| {
-            command::stage(conn, cached, actor, envelope, transport, fill_revision, attached, journal)
+            command::stage(conn, cached, protected, actor, envelope, transport, fill_revision, attached, journal)
         })?;
         let mut staged = staged;
         staged.commit.sealed = Some(journal.commit()?);

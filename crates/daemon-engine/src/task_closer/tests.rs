@@ -1280,3 +1280,125 @@ async fn deciding_the_existing_worktrees_one_by_one_deletes_only_the_ticked_and_
     assert!(c.join("three.txt").exists(), "and nobody asks about it again");
     assert_eq!(rig.discard_cards().len(), 1);
 }
+
+/// A home and a projects root of the test's own, the projects root a git repository and each with
+/// a file of the user's, which the domain keeps from ever being a task's worktree.
+struct UsersFolders {
+    _scratch: crate::test_support::Directory,
+    home: std::path::PathBuf,
+    projects: std::path::PathBuf,
+    plain: std::path::PathBuf,
+}
+
+impl UsersFolders {
+    fn protecting(domain: &DomainRuntime) -> Self {
+        let scratch = crate::test_support::Directory::new();
+        let (home, plain) = (scratch.join("home"), scratch.join("plain"));
+        let projects = home.join("Projects");
+        for dir in [&home, &projects, &plain] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+        }
+        git(&projects, &["init", "-q"]);
+        domain.store.lock().unwrap().protect(crate::worktree::Protected { home: home.clone(), projects_root: projects.clone() });
+        Self { _scratch: scratch, home, projects, plain }
+    }
+
+    fn untouched(&self) -> bool {
+        [&self.home, &self.projects, &self.plain].iter().all(|dir| dir.join("notes.txt").exists())
+    }
+
+    /// A row a daemon before this check wrote, straight into the store.
+    fn stored_as_worktree_of(&self, domain: &DomainRuntime, task: &str, path: &std::path::Path) {
+        domain.store.lock().unwrap().conn.execute(
+            "INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES(?1,?2,'inherited',NULL,0,NULL)",
+            rusqlite::params![task, path.to_str().unwrap()],
+        ).unwrap();
+        domain.reload();
+    }
+}
+
+fn record_worktree(domain: &DomainRuntime, task: &str, path: &std::path::Path) -> Result<(), crate::domain_store::StoreError> {
+    crate::domain_github::execute_system(domain, Command::RecordTaskWorktree {
+        task_id: task.into(), path: path.to_str().unwrap().into(), origin: alondra_core::domain::WorktreeOrigin::Entered, branch: None,
+    })
+}
+
+#[tokio::test]
+async fn the_domain_refuses_home_the_projects_root_and_a_folder_git_does_not_know_as_a_worktree() {
+    let rig = Rig::new(thirty_minutes());
+    let folders = UsersFolders::protecting(&rig.domain);
+    for path in [&folders.home, &folders.projects, &folders.plain] {
+        let refused = record_worktree(&rig.domain, "t", path).expect_err("only a git worktree is recorded");
+        assert!(matches!(&refused, crate::domain_store::StoreError::Domain(error) if error.code == "invalid_input"), "{}: {refused:?}", path.display());
+    }
+    assert!(rig.domain.set_task_worktree(&"t".into(), folders.projects.to_str().unwrap()).is_err(), "the task's own folder is no exception");
+    let root = crate::test_support::Directory::new();
+    let worktree = crate::worktree::testing::task_worktree(&root, "t");
+    record_worktree(&rig.domain, "t", &worktree).unwrap();
+    assert_eq!(rig.task().worktrees.keys().cloned().collect::<Vec<_>>(), [worktree.to_str().unwrap().to_owned()]);
+    assert!(folders.untouched());
+}
+
+#[tokio::test]
+async fn closing_a_task_launched_in_the_projects_root_hands_it_to_no_other_task_launched_there_and_deletes_nothing() {
+    let rig = Rig::new(thirty_minutes());
+    let folders = UsersFolders::protecting(&rig.domain);
+    rig.domain.store.lock().unwrap().set_task_worktree(&"t".into(), folders.projects.to_str().unwrap(), T0).unwrap();
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other", Command::CreateTask {
+        plan_items: None, continues: None, task_id: "t-other".into(), request_id: "r".into(), title: "Other".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", folders.projects.to_str().unwrap())),
+    });
+    rig.confirm();
+    rig.pass(T0).await;
+    rig.assert_done(NodeEnd::Closed);
+    assert!(rig.domain.state().unwrap().tasks[&TaskId::from("t-other")].worktrees.is_empty(), "the projects root is nobody's worktree");
+    assert!(folders.untouched());
+}
+
+#[tokio::test]
+async fn stored_records_of_folders_that_are_no_worktree_are_ignored_and_the_task_closes_deleting_nothing() {
+    let rig = Rig::new(thirty_minutes());
+    let folders = UsersFolders::protecting(&rig.domain);
+    folders.stored_as_worktree_of(&rig.domain, "t", &folders.plain);
+    folders.stored_as_worktree_of(&rig.domain, "t", &folders.projects);
+    let state = rig.domain.state().unwrap();
+    let id = format!("confirm-discard-{}", crate::auth::random_hex(6));
+    let discard = rig.domain.execute(&agent(), &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.as_str().into(), expected_revision: state.revision,
+        command: Command::ConfirmCleanup { task_id: "t".into(), discard: vec![folders.plain.to_str().unwrap().into()] },
+    }, None, || Ok(()));
+    assert!(discard.is_err(), "a folder without git is read as no worktree of the task, so the node cannot give it up");
+    assert!(!rig.task().worktrees.contains_key(folders.plain.to_str().unwrap()), "the folder without git is ignored when read");
+    rig.confirm();
+    rig.pass(T0).await;
+    rig.assert_done(NodeEnd::Closed);
+    assert_eq!(rig.task().worktrees[folders.projects.to_str().unwrap()].end, Some(alondra_core::domain::WorktreeEnd::UsersOwn),
+        "the projects root, a git repository, is left as the user's own");
+    let rows: i64 = rig.domain.store.lock().unwrap().conn
+        .query_row("SELECT count(*) FROM task_worktree_records WHERE task_id='t'", [], |row| row.get(0)).unwrap();
+    assert_eq!(rows, 2, "no stored row is deleted for them");
+    assert!(folders.untouched());
+}
+
+#[tokio::test]
+async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root_deletes_nothing_and_asks_nothing() {
+    let rig = Rig::new(thirty_minutes());
+    let folders = UsersFolders::protecting(&rig.domain);
+    git(&folders.home, &["init", "-q"]);
+    folders.stored_as_worktree_of(&rig.domain, "t", &folders.home);
+    folders.stored_as_worktree_of(&rig.domain, "t", &folders.projects);
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    for minutes in [0, 5, 10] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    assert_eq!(rig.task().state, TaskState::Cancelled);
+    assert!(rig.discard_cards().is_empty(), "nobody is asked to delete the home or the projects root");
+    for dir in [&folders.home, &folders.projects] {
+        assert_eq!(rig.task().worktrees[dir.to_str().unwrap()].end, Some(alondra_core::domain::WorktreeEnd::UsersOwn));
+    }
+    assert!(folders.untouched());
+}

@@ -53,6 +53,48 @@ pub fn subagent_worktree(own: &Path, agent: &str) -> Option<PathBuf> {
     Some(repository.join(".claude").join("worktrees").join(format!("agent-{agent}")))
 }
 
+/// The folders a task's worktree can never be, whatever git says of them: the user's home and the
+/// projects root, and every folder above them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Protected {
+    pub home: PathBuf,
+    pub projects_root: PathBuf,
+}
+
+impl Protected {
+    pub fn covers(&self, path: &Path) -> bool {
+        let forms = |path: &Path| [Some(path.to_path_buf()), path.canonicalize().ok()].into_iter().flatten().collect::<Vec<_>>();
+        let kept: Vec<PathBuf> = forms(&self.home).into_iter().chain(forms(&self.projects_root)).collect();
+        forms(path).iter().any(|path| path.parent().is_none() || kept.iter().any(|kept| kept.starts_with(path)))
+    }
+}
+
+/// Why `path` cannot be a task's worktree, if it cannot: only the top of a worktree git lists for
+/// its repository can, and never a folder `protected` covers.
+pub fn registrable(path: &Path, protected: &Protected) -> Result<(), String> {
+    let shown = path.display();
+    if !path.is_absolute() {
+        return Err(format!("{shown} is not an absolute path"));
+    }
+    if protected.covers(path) {
+        return Err(format!("{shown} is the user's home, the projects folder or a folder above them, never a task's worktree"));
+    }
+    let canonical = path.canonicalize().map_err(|e| format!("{shown} cannot be read: {e}"))?;
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(path).args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let top = git(&["rev-parse", "--path-format=absolute", "--show-toplevel"]).ok_or_else(|| format!("{shown} is not in a git repository"))?;
+    if Path::new(&top).canonicalize().ok().as_ref() != Some(&canonical) {
+        return Err(format!("{shown} is not the top of a git worktree: its worktree is {top}"));
+    }
+    let listed = git(&["worktree", "list", "--porcelain"]).unwrap_or_default();
+    if !listed.lines().filter_map(|line| line.strip_prefix("worktree ")).any(|dir| Path::new(dir).canonicalize().ok().as_ref() == Some(&canonical)) {
+        return Err(format!("git does not list {shown} among the worktrees of its repository"));
+    }
+    Ok(())
+}
+
 /// The branch checked out in `dir`.
 pub async fn branch_in(dir: &Path) -> Option<String> {
     git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await.filter(|branch| branch != "HEAD")
@@ -853,5 +895,46 @@ mod tests {
         testing::git(&root.join("repo"), &["worktree", "add", "-q", "-b", "elsewhere", elsewhere.to_str().unwrap()]);
         assert_eq!(release_task_worktree(&elsewhere, "t-own", true).await, Ok(TaskWorktree::NotAlondras), "outside .claude/worktrees");
         assert!(dir.exists() && elsewhere.exists());
+    }
+
+    /// A folder like the user's home or projects root: one file of the user's in it.
+    fn users_folder(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"mine").unwrap();
+        dir.join("notes.txt")
+    }
+
+    #[tokio::test]
+    async fn only_the_top_of_a_worktree_git_lists_is_a_tasks_worktree_and_never_home_or_the_projects_root() {
+        let scratch = crate::test_support::Directory::new();
+        let home = scratch.join("home");
+        let projects = home.join("Projects");
+        let home_file = users_folder(&home);
+        let projects_file = users_folder(&projects);
+        testing::git(&projects, &["init", "-q"]);
+        let plain = scratch.join("plain");
+        let plain_file = users_folder(&plain);
+        let worktree = testing::task_worktree(&projects.join("app"), "t-real");
+        let protected = Protected { home: home.clone(), projects_root: projects.clone() };
+
+        assert_eq!(registrable(&worktree, &protected), Ok(()));
+        assert_eq!(registrable(&projects.join("app/repo"), &protected), Ok(()), "a main checkout is a worktree git lists");
+        for (path, why) in [
+            (home.clone(), "the user's home"),
+            (projects.clone(), "the projects root, even as a git repository"),
+            (scratch.to_path_buf(), "a folder above the home"),
+            (PathBuf::from("/"), "the filesystem's root"),
+            (plain.clone(), "a folder git does not know"),
+            (worktree.join(".claude"), "a folder inside a worktree"),
+            (PathBuf::from("relative/path"), "a relative path"),
+        ] {
+            assert!(registrable(&path, &protected).is_err(), "{why} is refused: {}", path.display());
+        }
+
+        for path in [&home, &projects, &plain] {
+            assert_eq!(discard_worktree(path, false).await, Ok(TaskWorktree::NotAlondras), "discarding {} deletes nothing", path.display());
+            assert_eq!(release_recorded_worktree(path, true).await, Ok(TaskWorktree::NotAlondras), "giving up {} deletes nothing", path.display());
+        }
+        assert!(home_file.exists() && projects_file.exists() && plain_file.exists() && worktree.exists());
     }
 }
