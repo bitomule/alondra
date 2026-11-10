@@ -363,7 +363,7 @@ private struct TaskRequestRow: View {
                         if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer(minLength: 0)
-                    if case let .time(at, format) = row.trailing { Text(ViewsDate.display(at, format: format)).font(.caption).foregroundStyle(.tertiary) }
+                    if case let .time(at, format) = row.trailing { ViewsDateText(at, format: format).font(.caption).foregroundStyle(.tertiary) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, row.children.isEmpty ? 16 : 8)

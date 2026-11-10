@@ -14,7 +14,7 @@ public typealias WireGauge = AlondraContract.Gauge
 public typealias Link = AlondraContract.Link
 
 public enum ViewsDate {
-    public static func display(_ raw: String, format: TimeFormat = .relative) -> String {
+    public static func display(_ raw: String, format: TimeFormat = .relative, locale: Locale = .current) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = fractional.date(from: raw) ?? ISO8601DateFormatter().date(from: raw) else {
@@ -24,15 +24,29 @@ public enum ViewsDate {
         case .relative:
             let now = RelativeClock.now()
             guard abs(date.timeIntervalSince(now)) < 7 * 24 * 60 * 60 else {
-                return date.formatted(date: .abbreviated, time: .shortened)
+                return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale))
             }
             let formatter = RelativeDateTimeFormatter()
             formatter.dateTimeStyle = .named
+            formatter.locale = locale
             return formatter.localizedString(for: date, relativeTo: now)
-        case .absolute: return date.formatted(date: .abbreviated, time: .shortened)
-        case .time: return date.formatted(date: .omitted, time: .shortened)
+        case .absolute: return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale))
+        case .time: return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(locale))
         }
     }
+}
+
+public struct ViewsDateText: View {
+    @Environment(\.locale) private var locale
+    private let raw: String
+    private let format: TimeFormat
+
+    public init(_ raw: String, format: TimeFormat = .relative) {
+        self.raw = raw
+        self.format = format
+    }
+
+    public var body: some View { Text(ViewsDate.display(raw, format: format, locale: locale)) }
 }
 
 /// The view palette mirrors the app's existing Palette values and adapts them to the same
@@ -214,7 +228,7 @@ public struct CardView: View {
                 HStack(spacing: 6) { Image(systemName: iconName(line.icon)).foregroundStyle(.secondary); Text(line.text).font(.footnote); if let chip = line.chip { LabelPill(label: chip) } }
                     .onTapGesture { if let link = line.link { onLink(link) } }
             }
-            ForEach(Array(card.timestamps.enumerated()), id: \.offset) { _, stamp in Label(ViewsDate.display(stamp.at, format: stamp.format), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
+            ForEach(Array(card.timestamps.enumerated()), id: \.offset) { _, stamp in Label { ViewsDateText(stamp.at, format: stamp.format) } icon: { Image(systemName: "clock") }.font(.caption).foregroundStyle(.secondary) }
             if let body = card.body { MarkdownView(markdown: body) }
             CardAttachmentGallery(attachments: card.attachments)
             let actions = card.actions.filter { $0.id.map(excludedActionIDs.contains) != true }
@@ -278,7 +292,7 @@ private struct LabelList: View {
 }
 private struct TrailingView: View {
     let trailing: Trailing
-    var body: some View { Group { switch trailing { case let .count(value): Text("\(value)"); case let .time(at, format): Text(ViewsDate.display(at, format: format)); case let .text(text): Text(text) } }.font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+    var body: some View { Group { switch trailing { case let .count(value): Text("\(value)"); case let .time(at, format): ViewsDateText(at, format: format); case let .text(text): Text(text) } }.font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
 }
 
 public struct MarkdownView: View {
@@ -377,7 +391,7 @@ public struct ChecksView: View {
 public struct TimelineView: View {
     public let timeline: Timeline
     public init(timeline: Timeline) { self.timeline = timeline }
-    public var body: some View { VStack(alignment: .leading, spacing: 0) { ForEach(Array(timeline.entries.enumerated()), id: \.offset) { index, entry in HStack(alignment: .top, spacing: 10) { VStack(spacing: 0) { Circle().fill(entry.tone.map(toneColor) ?? ViewPalette.dawn).frame(width: 8, height: 8); if index < timeline.entries.count - 1 { Rectangle().fill(ViewPalette.hairline).frame(width: 2).frame(minHeight: 30) } }; VStack(alignment: .leading, spacing: 3) { Text(entry.title).font(.subheadline.weight(.semibold)); if let text = entry.text { Text(text).font(.footnote).foregroundStyle(.secondary) }; Text(ViewsDate.display(entry.at)).font(.caption2).foregroundStyle(.tertiary) }.padding(.bottom, 12) } } }.frame(maxWidth: .infinity, alignment: .leading) }
+    public var body: some View { VStack(alignment: .leading, spacing: 0) { ForEach(Array(timeline.entries.enumerated()), id: \.offset) { index, entry in HStack(alignment: .top, spacing: 10) { VStack(spacing: 0) { Circle().fill(entry.tone.map(toneColor) ?? ViewPalette.dawn).frame(width: 8, height: 8); if index < timeline.entries.count - 1 { Rectangle().fill(ViewPalette.hairline).frame(width: 2).frame(minHeight: 30) } }; VStack(alignment: .leading, spacing: 3) { Text(entry.title).font(.subheadline.weight(.semibold)); if let text = entry.text { Text(text).font(.footnote).foregroundStyle(.secondary) }; ViewsDateText(entry.at).font(.caption2).foregroundStyle(.tertiary) }.padding(.bottom, 12) } } }.frame(maxWidth: .infinity, alignment: .leading) }
 }
 
 public struct NoticeView: View {
