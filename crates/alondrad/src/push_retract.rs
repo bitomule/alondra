@@ -126,7 +126,7 @@ impl Pending {
 fn payload(index: &ReadIndex, left: &BTreeSet<String>) -> Value {
     let open = views::waiting_cards(index);
     let base = |key: &str, cards: &[&String]| json!({
-        "aps": {"badge": open.len()},
+        "aps": {"badge": views::inbox_badge(index)},
         "alondra": {"protocol": views::VIEWS_PROTOCOL, "kind": "retract", "data_epoch": index.data_epoch(), key: cards},
     });
     let fits = |value: &Value| serde_json::to_vec(value).map_or(false, |bytes| bytes.len() <= PAYLOAD_BUDGET);

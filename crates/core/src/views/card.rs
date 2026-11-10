@@ -24,15 +24,20 @@ pub(super) fn plain_id(id: &str) -> bool {
     super::id::valid(id)
 }
 pub(super) fn public_id(item: &InboxItem) -> &str {
-    let InboxSubject::Interaction { interaction_id } = &item.subject;
-    &interaction_id.0
+    let InboxSubject::Interaction { interaction_id, pr_id } = &item.subject;
+    pr_id.as_ref().map_or(&interaction_id.0, |pr| &pr.0)
+}
+/// The PR a card of a delivery of several stands for (`DomainState::pr_cards`).
+fn own_pr(item: &InboxItem) -> Option<&PrId> {
+    let InboxSubject::Interaction { pr_id, .. } = &item.subject;
+    pr_id.as_ref()
 }
 pub(super) fn card_key(item: &InboxItem) -> String {
     format!("card:{}", public_id(item))
 }
 
 fn interaction_of<'a>(item: &InboxItem, domain: &'a DomainState) -> Option<&'a Interaction> {
-    let InboxSubject::Interaction { interaction_id } = &item.subject;
+    let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
     domain.interactions.get(interaction_id)
 }
 fn targets_of(interaction: &Interaction) -> &[DeliveryTarget] {
@@ -52,6 +57,13 @@ fn pr_targets<'a>(interaction: &'a Interaction, domain: &'a DomainState) -> Vec<
 fn pr_target<'a>(interaction: &'a Interaction, domain: &'a DomainState) -> Option<&'a PullRequest> {
     let prs = pr_targets(interaction, domain);
     prs.iter().find(|(pr, _)| pr.state == PrState::Open).or(prs.first()).map(|(pr, _)| *pr)
+}
+/// The PR a card is about: the one it stands for, else its delivery's (`pr_target`).
+fn card_pr<'a>(item: &InboxItem, interaction: &'a Interaction, domain: &'a DomainState) -> Option<&'a PullRequest> {
+    match own_pr(item) {
+        Some(pr_id) => pr_targets(interaction, domain).into_iter().map(|(pr, _)| pr).find(|pr| pr.id == *pr_id),
+        None => pr_target(interaction, domain),
+    }
 }
 /// The document revision a card is about: a delivery of one, or a question its node linked to one.
 fn reviewed_revision<'a>(
@@ -79,9 +91,13 @@ fn first_queued<'a>(context: &'a RenderContext<'_>, cards: &[InteractionId], abo
 }
 /// The inbox card that stands for a pull request, whichever way it is addressed.
 pub(super) fn item_for_pr<'a>(context: &'a RenderContext<'_>, pr_id: &PrId) -> Option<std::borrow::Cow<'a, InboxItem>> {
-    first_queued(context, context.index.cards_of_pr(pr_id), |i| {
+    let whole = first_queued(context, context.index.cards_of_pr(pr_id), |i| {
         targets_of(i).iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id: id, .. } if id == pr_id))
-    })
+    })?;
+    match context.domain.pr_cards(&whole).into_iter().find(|card| own_pr(card) == Some(pr_id)) {
+        Some(card) => Some(std::borrow::Cow::Owned(card)),
+        None => Some(whole),
+    }
 }
 pub(super) fn item_for_revision<'a>(context: &'a RenderContext<'_>, revision_id: &DocumentRevisionId) -> Option<std::borrow::Cow<'a, InboxItem>> {
     first_queued(context, context.index.cards_of_document_revision(revision_id), |i| reviewed_revision(i) == Some(revision_id))
@@ -95,11 +111,18 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     let domain = context.domain;
     let direct = domain.interactions.get(&InteractionId(id.into())).filter(|i| i.recipient == Recipient::User);
     let found = direct.or_else(|| alias(context, id)).ok_or(BuildError::NotFound)?;
-    let item = context.index.item(domain, found);
-    let item = item.as_ref();
-    if let Some(settled) = settled(item, found, domain) {
+    let whole = context.index.item(domain, found);
+    if let Some(settled) = settled(&whole, found, domain) {
         return Ok(settled_view(key, settled, context));
     }
+    let named = direct.is_none().then(|| domain.pull_requests.get(&PrId(id.into()))).flatten();
+    match named.map(|pr| pr.state) {
+        Some(PrState::Merged) => return Ok(settled_view(key, Settled::Merged, context)),
+        Some(PrState::Closed) => return Ok(settled_view(key, Settled::ClosedUnmerged, context)),
+        _ => {}
+    }
+    let cards = domain.pr_cards(&whole);
+    let item = cards.iter().find(|card| named.is_some_and(|pr| own_pr(card) == Some(&pr.id))).unwrap_or(&cards[0]);
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
@@ -383,7 +406,7 @@ pub(super) fn group_position(group: &QuestionGroup, lang: Lang) -> String {
 fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Label> {
     let lang = context.lang;
     let interaction = interaction?;
-    if let Some(pr) = pr_target(interaction, context.domain) {
+    if let Some(pr) = card_pr(item, interaction, context.domain) {
         return Some(super::pr_status::label(super::pr_status::status(pr, live_pr(pr, context)), lang));
     }
     if matches!(interaction.payload, InteractionPayload::Delivery { .. }) {
@@ -457,7 +480,7 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
 /// Why a pull request's card offers no merge, when nothing else on it says so already.
 fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
     let interaction = interaction_of(item, context.domain)?;
-    let pr = pr_target(interaction, context.domain).filter(|pr| pr.state == PrState::Open)?;
+    let pr = card_pr(item, interaction, context.domain).filter(|pr| pr.state == PrState::Open)?;
     let live = live_pr(pr, context);
     if blocked_reason(item, context).is_some() || live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
         return None;
@@ -511,7 +534,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     let domain = context.domain;
     let interaction = interaction_of(item, domain);
     let spec = &item.card;
-    let pr = interaction.and_then(|i| pr_target(i, domain));
+    let pr = interaction.and_then(|i| card_pr(item, i, domain));
     let carries = if pr.is_some() {
         Some(Icon::PullRequest)
     } else {
@@ -534,6 +557,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         (Some(_), Some((subject, _))) if automatic => subject.clone(),
         (Some(title), _) => humanize_task_ids(title, domain),
         _ => own.as_ref().map(|(subject, _)| subject.clone()).unwrap_or_else(|| humanize_task_ids(&spec.need, domain)),
+    };
+    let title = match pr.filter(|_| own_pr(item).is_some()) {
+        Some(pr) => live_pr(pr, context).and_then(|detail| detail.title.as_deref()).map(str::trim).filter(|title| !title.is_empty())
+            .map_or_else(|| format!("{title} · {}", pr_name(pr)), str::to_owned),
+        None => title,
     };
     let (mut need, why) = match own {
         Some((need, why)) if spec.title.is_none() => (need, Some(why)),
@@ -606,7 +634,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     let changes = visible.iter().position(|action| ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Changes))
         .map(|at| visible.remove(at))
         .filter(|changes| changes.enabled);
-    more.extend(extra_actions(interaction, context));
+    more.extend(extra_actions(item, interaction, context));
     visible.retain(|action| action.enabled);
     more.retain(|action| action.enabled);
     if visible.len() > VISIBLE_ACTIONS {
@@ -732,14 +760,14 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         });
     }
     let attachments = interaction.attachments.len();
-    let live = pr_target(interaction, domain)
-        .and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
+    let pr = card_pr(item, interaction, domain);
+    let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     let shown = front_content(interaction);
     let (kind, summary_text, others) = match shown.as_deref() {
         Some(content) => {
             let agent = content.summary.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(|text| clip(text, 60));
             let derived = match content.kind {
-                DomainContent::Diff if pr_target(interaction, domain).is_some() => diff_summary(interaction, live, domain, lang),
+                DomainContent::Diff if pr.is_some() => diff_summary(pr, live, lang),
                 DomainContent::Document if reviewed_revision(interaction).is_some() => {
                     Some(document_summary(interaction, domain, lang)).filter(|title| !title.is_empty())
                 }
@@ -751,8 +779,8 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
             let others = if content.kind == DomainContent::Attachments { 0 } else { attachments };
             (content.kind, text.unwrap_or_default(), others)
         }
-        None if pr_target(interaction, domain).is_some() => {
-            (DomainContent::Diff, diff_summary(interaction, live, domain, lang).unwrap_or_default(), attachments)
+        None if pr.is_some() => {
+            (DomainContent::Diff, diff_summary(pr, live, lang).unwrap_or_default(), attachments)
         }
         None if reviewed_revision(interaction).is_some() => {
             (DomainContent::Document, document_summary(interaction, domain, lang), attachments)
@@ -760,7 +788,6 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         None if attachments > 0 => (DomainContent::Attachments, summary::attachments(lang, attachments), 0),
         None => return None,
     };
-    let _ = item;
     let icon = match kind {
         DomainContent::Diff => Icon::PullRequest,
         DomainContent::Document | DomainContent::Plan => Icon::Document,
@@ -786,16 +813,11 @@ fn payload_options(interaction: &Interaction) -> Option<usize> {
     }
 }
 
-fn diff_summary(
-    interaction: &Interaction,
-    live: Option<&super::LivePullRequest>,
-    domain: &DomainState,
-    lang: Lang,
-) -> Option<String> {
+fn diff_summary(pr: Option<&PullRequest>, live: Option<&super::LivePullRequest>, lang: Lang) -> Option<String> {
     if let Some(live) = live.filter(|live| live.changed_files > 0) {
         return Some(summary::changes(lang, live.changed_files, live.additions, live.deletions));
     }
-    pr_target(interaction, domain).map(|pr| format!("{} #{}", pr.repository, pr.number))
+    pr.map(|pr| format!("{} #{}", pr.repository, pr.number))
 }
 
 fn document_summary(interaction: &Interaction, domain: &DomainState, lang: Lang) -> String {
@@ -1641,25 +1663,16 @@ fn merge_extra(head: &str, presentation_id: &str) -> String {
     format!("{}-{presentation_id}", head.chars().take(8).collect::<String>())
 }
 
-/// A card shows three buttons: the rest of the merges of a delivery go behind "More".
-const MERGES_ON_CARD: usize = 2;
-
 fn merge_available<'a>(item: &'a InboxItem, head: &str) -> Option<&'a AvailableAction> {
     item.available_actions.iter().find(|action| action.kind == "authorize_merge" && action.expected_head.as_deref() == Some(head))
 }
 
-/// The merge of one PR of a delivery that carries several: it names the PR it merges, and offers
-/// nothing while that PR cannot merge.
+/// The merge on the card of one PR of a delivery that carries several: it names that PR as its
+/// subject, so only that PR merges.
 fn merge_of(item: &InboxItem, interaction: &Interaction, pr: &PullRequest, head: &str, context: &RenderContext<'_>) -> Option<Action> {
-    let live = live_pr(pr, context);
-    if live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
-        return None;
-    }
     merge_available(item, head).filter(|available| available.enabled)?;
     let id = action_id(Verb::Merge, &pr.id.0, interaction.revision, Some(merge_extra(head, &interaction.id.0)))?;
-    let mut merge = super::merge_method::pr_action(id.to_string(), pr, context)?;
-    merge.label = format!("{} · {}", merge.label, pr_name(pr));
-    Some(merge)
+    super::merge_method::pr_action(id.to_string(), pr, context)
 }
 
 /// A PR by its repository's name and number, told apart from the others of its task.
@@ -1667,15 +1680,17 @@ fn pr_name(pr: &PullRequest) -> String {
     format!("{}#{}", pr.repository.rsplit('/').next().unwrap_or(&pr.repository), pr.number)
 }
 
-/// Every PR of the task a delivery with several shows, with where each is.
-fn task_prs_section(interaction: &Interaction, context: &RenderContext<'_>) -> Option<super::Section> {
+/// The task's other PRs, with where each is: an open one the delivery carries opens its own card.
+fn other_prs_section(interaction: &Interaction, shown: &PullRequest, context: &RenderContext<'_>) -> Option<super::Section> {
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let task = context.domain.tasks.get(task_id)?;
-    let items: Vec<Fact> = context.domain.task_prs(task).map(|pr| {
+    let delivered: Vec<&PrId> = pr_targets(interaction, context.domain).into_iter().map(|(pr, _)| &pr.id).collect();
+    let items: Vec<Fact> = context.domain.task_prs(task).filter(|pr| pr.id != shown.id).map(|pr| {
         let status = super::pr_status::label(super::pr_status::status(pr, live_pr(pr, context)), context.lang);
-        Fact { kind: None, label: pr_name(pr), value: status.text, tone: Some(status.tone), link: Some(Link::View { key: format!("pull_request:{}", pr.id) }) }
+        let key = if pr.state == PrState::Open && delivered.contains(&&pr.id) { format!("card:{}", pr.id) } else { format!("pull_request:{}", pr.id) };
+        Fact { kind: None, label: pr_name(pr), value: status.text, tone: Some(status.tone), link: Some(Link::View { key }) }
     }).collect();
-    (items.len() > 1).then(|| super::common::section("pull_requests", Some(t!(context.lang, "Pull requests", "Pull requests").into()), vec![Item::Facts(Facts { items })]))
+    (!items.is_empty()).then(|| super::common::section("pull_requests", Some(t!(context.lang, "Other PRs of this task", "Otras PRs de esta tarea").into()), vec![Item::Facts(Facts { items })]))
 }
 
 fn delivery_actions(
@@ -1687,7 +1702,7 @@ fn delivery_actions(
     let domain = context.domain;
     let find = |kind: &str| item.available_actions.iter().find(|action| action.kind == kind);
     let held = blocked_reason(item, context).is_some();
-    let pr = pr_target(interaction, domain);
+    let pr = card_pr(item, interaction, domain);
     let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     let document = is_document_review(interaction);
     let read_only = item.card.kind == CardKind::Know || (pr.is_none() && !document);
@@ -1740,15 +1755,15 @@ fn delivery_actions(
         return (visible, more);
     };
     let revision = context.domain.revision;
-    let open: Vec<(&PullRequest, &str)> = pr_targets(interaction, domain).into_iter().filter(|(pr, _)| pr.state == PrState::Open).collect();
-    let conflicts = open.len() < 2 && live.is_some_and(|detail| detail.conflicts);
-    let stacked = open.len() < 2 && live.is_some_and(|detail| detail.stacked_on.is_some());
+    let open: Vec<(&PullRequest, &str)> = pr_targets(interaction, domain).into_iter()
+        .filter(|(target, _)| target.state == PrState::Open && (own_pr(item).is_none() || target.id == pr.id))
+        .collect();
+    let conflicts = live.is_some_and(|detail| detail.conflicts);
+    let stacked = live.is_some_and(|detail| detail.stacked_on.is_some());
     if held || conflicts || stacked {
         // The task shows what it waits for; the card has nothing to press until that is over.
-    } else if open.len() > 1 {
-        let mut merges = open.iter().filter_map(|(pr, head)| merge_of(item, interaction, pr, head, context));
-        visible.extend(merges.by_ref().take(MERGES_ON_CARD));
-        more.extend(merges);
+    } else if own_pr(item).is_some() {
+        visible.extend(open.first().and_then(|(pr, head)| merge_of(item, interaction, pr, head, context)));
     } else if let Some(available) = open.first().and_then(|(_, head)| merge_available(item, head)).filter(|available| available.enabled) {
         let head = available.expected_head.as_ref().map(|head| merge_extra(head, &interaction.id.0));
         if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head)
@@ -1767,8 +1782,9 @@ fn delivery_actions(
         action.comments = Some(CommentSpec { kind: super::CommentKind::DiffLines });
         action.link = Some(Link::View { key: format!("pull_request:{}", pr.id) });
     }
-    if pr.state == PrState::Open && open.len() < 2 {
-        more.extend(close_unmerged_action(pr, &interaction.id.0, interaction.revision, context));
+    if pr.state == PrState::Open {
+        let subject = if own_pr(item).is_some() { &pr.id.0 } else { &interaction.id.0 };
+        more.extend(close_unmerged_action(pr, subject, interaction.revision, context));
     }
     (visible, more)
 }
@@ -1782,20 +1798,37 @@ fn close_unmerged_action(pr: &PullRequest, subject: &str, revision: u64, context
     action.key = (context.client != Client::Ios).then(|| "k".into());
     action.confirm = Some(super::Confirm {
         title: tf!(lang, "Close PR #{number} without merging?", "¿Cerrar la PR #{number} sin hacer merge?", number = pr.number),
-        message: t!(lang, "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
-            "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.").into(),
+        message: closing_message(pr, context).into(),
         button: t!(lang, "Close PR", "Cerrar la PR").into(),
     });
     Some(action)
 }
 
+/// What closing one PR does to its task: the others stay, the task ends with what merged, or
+/// with nothing left it is cancelled.
+fn closing_message(pr: &PullRequest, context: &RenderContext<'_>) -> &'static str {
+    let lang = context.lang;
+    let task = context.domain.tasks.get(&pr.task_id);
+    let others_open = task.is_some_and(|task| context.domain.open_prs(task).any(|other| other.id != pr.id));
+    if others_open {
+        t!(lang, "Alondra closes this PR on GitHub. The task's other PRs stay on their own cards.",
+            "Alondra cierra esta PR en GitHub. Las demás PRs de la tarea siguen en sus tarjetas.")
+    } else if task.is_some_and(|task| context.domain.merged_pr(task).is_some()) {
+        t!(lang, "Alondra closes this PR on GitHub, and the task ends with the PRs already merged.",
+            "Alondra cierra esta PR en GitHub y la tarea termina: las demás PRs ya tienen merge.")
+    } else {
+        t!(lang, "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+            "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.")
+    }
+}
+
 /// The ways out of the card besides its options: open the PR on GitHub and, in the terminal on
 /// this Mac, review its local clone.
-fn extra_actions(interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Vec<Action> {
+fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Vec<Action> {
     let lang = context.lang;
     let mut out = vec![];
     let Some(interaction) = interaction else { return out };
-    let pr = pr_target(interaction, context.domain);
+    let pr = card_pr(item, interaction, context.domain);
     let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     if let Some(url) = live.and_then(|detail| detail.url.as_ref()) {
         let mut open = button(String::new(), t!(lang, "Open on GitHub", "Abrir en GitHub"), Role::Neutral);
@@ -2172,7 +2205,7 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     let lang = context.lang;
     let domain = context.domain;
     let interaction = interaction_of(item, domain)?;
-    let pr = pr_target(interaction, domain)?;
+    let pr = card_pr(item, interaction, domain)?;
     let (facts, checks) = pr_overview(pr, context);
     let shown = interaction.shown_content();
     let content = shown.as_deref().filter(|content| content.kind != DomainContent::Diff);
@@ -2190,7 +2223,7 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
         .filter(|text| report.as_deref().is_none_or(|report| !report.contains(*text) && !text.contains(report)))
         .map(|text| super::pr_images::show_in(text, body, images, lang));
     let report = report.map(|report| super::pr_images::show_in(&report, body, images, lang));
-    let mut sections: Vec<super::Section> = task_prs_section(interaction, context).into_iter().collect();
+    let mut sections: Vec<super::Section> = other_prs_section(interaction, pr, context).into_iter().collect();
     if let Some(failing) = checks.filter(|checks| checks.items.iter().any(|check| check.state != CheckState::Pass)) {
         sections.push(super::common::section("checks", None, vec![Item::Checks(failing)]));
     }

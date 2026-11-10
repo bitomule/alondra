@@ -2,20 +2,20 @@
   "protocol": 1,
   "data_epoch": "epoch",
   "view": "card",
-  "key": "card:final",
+  "key": "card:github.com/bitomule/alondra#17",
   "client": "ios",
-  "version": "v40fd30b1a4c1db36",
+  "version": "vcd406846b65d60e8",
   "cursor": "cursor-1",
-  "title": "Review the result",
+  "title": "Review the result · alondra#17",
   "status": {
-    "version": "v887807058841bf6a",
-    "summary": "1 to read · 1 node working",
-    "badge": 1,
+    "version": "v399b251bf8914b0b",
+    "summary": "2 to read · 1 node working",
+    "badge": 2,
     "counts": [
       {
         "id": "inbox",
         "label": "Inbox",
-        "value": 1
+        "value": 2
       },
       {
         "id": "tasks",
@@ -51,7 +51,7 @@
       "items": [
         {
           "type": "card",
-          "id": "final",
+          "id": "github.com/bitomule/alondra#17",
           "kind": "review",
           "need": "Review the result",
           "title_is_separate": true,
@@ -88,14 +88,14 @@
           },
           "link": {
             "kind": "view",
-            "key": "card:final"
+            "key": "card:github.com/bitomule/alondra#17"
           },
           "icon": "pull_request",
           "eyebrow": {
             "text": "Review · PR #17",
             "tone": "accent"
           },
-          "title": "Review the result",
+          "title": "Review the result · alondra#17",
           "context": [
             {
               "icon": "task",
@@ -118,7 +118,7 @@
           "actions": [
             {
               "id": "merge:github.com/bitomule/alondra#17@8~11111111-final",
-              "label": "Squash and merge · alondra#17",
+              "label": "Squash and merge",
               "style": "primary",
               "role": "advance",
               "option_id": "squash",
@@ -129,22 +129,26 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Merging…",
-              "resolves_card": false
+              "resolves_card": true
             },
             {
-              "id": "merge:github.com/acme/storefront#6@8~66666666-final",
-              "label": "Squash and merge · storefront#6",
-              "style": "primary",
-              "role": "advance",
-              "option_id": "squash",
+              "id": "close_unmerged:github.com/bitomule/alondra#17@8",
+              "label": "Close without merging",
+              "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
+              "confirm": {
+                "title": "Close PR #17 without merging?",
+                "message": "Alondra closes this PR on GitHub. The task's other PRs stay on their own cards.",
+                "button": "Close PR"
+              },
               "enabled": true,
-              "stamp": "Merging…",
-              "resolves_card": false
+              "stamp": "Closing…",
+              "resolves_card": true
             }
           ]
         }
@@ -152,28 +156,19 @@
     },
     {
       "id": "pull_requests",
-      "title": "Pull requests",
+      "title": "Other PRs of this task",
       "collapsed": false,
       "items": [
         {
           "type": "facts",
           "items": [
             {
-              "label": "alondra#17",
-              "value": "Checking with GitHub…",
-              "tone": "neutral",
-              "link": {
-                "kind": "view",
-                "key": "pull_request:github.com/bitomule/alondra#17"
-              }
-            },
-            {
               "label": "storefront#6",
               "value": "Checking with GitHub…",
               "tone": "neutral",
               "link": {
                 "kind": "view",
-                "key": "pull_request:github.com/acme/storefront#6"
+                "key": "card:github.com/acme/storefront#6"
               }
             }
           ]

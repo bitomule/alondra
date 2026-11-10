@@ -1,6 +1,8 @@
 //! A task owns every PR its node opens, in any repository, and its delivery is those PRs: nothing
 //! else can reach the user while one is open. The incident that asked for this reads, step by
-//! step, in `the_second_pr_of_the_mobile_menu_fix_reaches_the_user_with_its_merge`.
+//! step, in `the_second_pr_of_the_mobile_menu_fix_reaches_the_user_with_its_merge`. Each PR of the
+//! delivery is its own card, and the task closes once none is open and one merged: a delivery of
+//! nine PRs on one card is `a_delivery_of_several_prs_is_one_card_per_pr_each_with_only_its_merge`.
 use super::*;
 use crate::views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
 use std::collections::BTreeSet;
@@ -68,9 +70,34 @@ fn read(s: &mut DomainState) {
 }
 
 fn merged(s: &mut DomainState, pr: &str, head: &str) {
-    must(s, Actor::System, Command::ObservePrState {
-        pr_id: pr.into(), head: head.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(head.into()),
-    });
+    observe(s, pr, head, PrState::Merged);
+}
+
+fn observed(pr: &str, head: &str, state: PrState) -> Command {
+    Command::ObservePrState {
+        pr_id: pr.into(), head: head.into(), base: "main".into(), state, merged_head: (state == PrState::Merged).then(|| head.into()),
+    }
+}
+
+fn observe(s: &mut DomainState, pr: &str, head: &str, state: PrState) {
+    must(s, Actor::System, observed(pr, head, state));
+}
+
+/// Waiting for You, by the id each card is opened with.
+fn cards(s: &DomainState) -> Vec<String> {
+    crate::domain::ReadIndex::build(s).cards().iter().map(|item| {
+        let InboxSubject::Interaction { interaction_id, pr_id } = &item.subject;
+        pr_id.as_ref().map_or_else(|| interaction_id.0.clone(), |pr| pr.0.clone())
+    }).collect()
+}
+
+fn find_section<'a>(view: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
+    view["sections"].as_array()?.iter().find(|section| section["id"] == id)
+}
+
+fn settled_notice(s: &DomainState, key: &str) -> Option<String> {
+    let view = view_json(s, key);
+    (view["view"] == crate::views::SETTLED_VIEW).then(|| view["empty"]["text"].as_str().unwrap().to_owned())
 }
 
 fn result(id: &str, targets: Vec<DeliveryTarget>, is_final: bool) -> Command {
@@ -96,35 +123,167 @@ fn card_actions(s: &DomainState, card: &str) -> Vec<(String, String)> {
     merges_in(s, &format!("card:{card}"))
 }
 
-fn merges_in(s: &DomainState, key: &str) -> Vec<(String, String)> {
+fn view_json(s: &DomainState, key: &str) -> serde_json::Value {
     let index = crate::domain::ReadIndex::build(s);
     let view = crate::views::build(key, RenderContext {
         domain: s, index: &index, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::Es,
         transport: Transport::Loopback, cursor: "", rendered_at: "",
     }).unwrap();
-    let json = serde_json::to_value(view).unwrap();
+    serde_json::to_value(view).unwrap()
+}
+
+fn merges_in(s: &DomainState, key: &str) -> Vec<(String, String)> {
     let mut found = vec![];
-    collect_actions(&json, &mut found);
+    collect_actions(&view_json(s, key), &mut found);
     found
 }
 
 #[test]
 fn a_pull_request_screen_offers_only_the_merge_of_its_own_pr() {
     let s = two_open_prs();
-    for (pr, name) in [(PUBLIC, "alondra#17"), (CLOUD, "storefront#6")] {
+    for pr in [PUBLIC, CLOUD] {
         let merges = merges_in(&s, &format!("pull_request:{pr}"));
         assert_eq!(merges.len(), 1, "{pr}: {merges:?}");
-        assert!(merges[0].1.ends_with(name), "{merges:?}");
+        assert!(merges[0].0.starts_with(&format!("merge:{pr}@")), "{merges:?}");
     }
 }
 
 #[test]
-fn only_the_last_open_pr_takes_the_card_with_its_merge() {
+fn merging_a_pr_takes_its_own_card_away_and_the_others_stay() {
     let mut s = two_open_prs();
     let merge = |pr: &str, head: &str| crate::views::action_id::ActionId::new(crate::views::action_id::Verb::Merge, pr, 1, Some(format!("{head}-final"))).unwrap();
-    assert!(!crate::views::resolves_card(&s, &merge(CLOUD, "66666666")), "the other PR still waits on this card");
+    assert!(crate::views::resolves_card(&s, &merge(PUBLIC, "11111111")), "the merge settles the card it is on");
+    must(&mut s, user(), Command::AuthorizeMerge {
+        authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash,
+    });
+    assert_eq!(cards(&s), [PUBLIC, CLOUD], "a card stays until GitHub says its PR merged");
     merged(&mut s, PUBLIC, FIRST_HEAD);
-    assert!(crate::views::resolves_card(&s, &merge(CLOUD, "66666666")));
+    assert_eq!(cards(&s), [CLOUD]);
+    assert_eq!(settled_notice(&s, &format!("card:{PUBLIC}")), Some("Ya tiene merge".into()), "a phone still showing it closes it");
+    assert_eq!(card_actions(&s, CLOUD).len(), 1);
+    assert_eq!(card_actions(&s, "final").len(), 1, "an old link to the delivery opens the card of the PR still open");
+}
+
+#[test]
+fn a_delivery_of_several_prs_is_one_card_per_pr_each_with_only_its_merge() {
+    let s = two_open_prs();
+    assert_eq!(cards(&s), [PUBLIC, CLOUD]);
+    let index = crate::domain::ReadIndex::build(&s);
+    assert_eq!(crate::views::inbox_badge(&index), 2, "the badge counts the cards the user sees");
+    assert_eq!(crate::views::waiting_cards(&index), ["final"], "one notice for the delivery, not one per PR");
+    for item in index.cards() {
+        assert!(!item.available_actions.iter().any(|action| action.kind == "accept_delivery"), "accepting would merge every PR from one card");
+        assert_eq!(item.available_actions.iter().filter(|action| action.kind == "authorize_merge").count(), 1);
+    }
+    for (pr, head, name) in [(PUBLIC, "11111111", "alondra#17"), (CLOUD, "66666666", "storefront#6")] {
+        let merges = card_actions(&s, pr);
+        assert_eq!(merges.len(), 1, "{pr}: {merges:?}");
+        assert!(merges[0].0.starts_with(&format!("merge:{pr}@")) && merges[0].0.contains(&format!("~{head}-final")), "{merges:?}");
+        assert_eq!(merges[0].1, "Squash and merge");
+        let view = view_json(&s, &format!("card:{pr}"));
+        assert!(view["title"].as_str().unwrap().ends_with(name), "each card names its PR: {}", view["title"]);
+        let diff = find_section(&view, "diff").expect("each card shows its PR's diff");
+        assert!(diff.to_string().contains(&crate::views::id::path_segment(pr)), "{diff}");
+    }
+}
+
+#[test]
+fn a_delivery_of_three_prs_is_three_cards_and_the_task_closes_with_the_last() {
+    let mut s = two_open_prs();
+    let docs = "github.com/bitomule/docs#3";
+    let docs_head = "3333333333333333333333333333333333333333";
+    register(&mut s, "bitomule/docs", 3, docs_head);
+    must(&mut s, node(), result("final-3", vec![pr(PUBLIC, "")], true));
+    assert_eq!(cards(&s), [PUBLIC, CLOUD, docs]);
+    for card in [PUBLIC, CLOUD, docs] {
+        assert_eq!(card_actions(&s, card).len(), 1, "{card} offers only its own merge");
+    }
+    merged(&mut s, CLOUD, CLOUD_HEAD);
+    assert_eq!(cards(&s), [PUBLIC, docs]);
+    observe(&mut s, docs, docs_head, PrState::Closed);
+    assert_eq!(cards(&s), [PUBLIC]);
+    assert!(!s.finished(&s.tasks[&TASK.into()]));
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    assert!(s.finished(&s.tasks[&TASK.into()]));
+}
+
+#[test]
+fn a_task_closes_once_every_pr_is_merged_or_closed_and_one_merged() {
+    for (first, second) in [(PrState::Merged, PrState::Closed), (PrState::Closed, PrState::Merged)] {
+        let mut s = two_open_prs();
+        observe(&mut s, PUBLIC, FIRST_HEAD, first);
+        assert!(!s.finished(&s.tasks[&TASK.into()]), "a PR is still open");
+        assert_eq!(cards(&s), [CLOUD]);
+        let outcome = exec(&mut s, Actor::System, observed(CLOUD, CLOUD_HEAD, second)).unwrap();
+        assert!(s.finished(&s.tasks[&TASK.into()]), "{first:?} then {second:?}: nothing is left to merge");
+        assert!(cards(&s).is_empty());
+        assert!(outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyAgent { message, .. } if message.contains("clean"))), "the node cleans up: {:?}", outcome.effects);
+    }
+    let mut s = two_open_prs();
+    let outcome = exec(&mut s, Actor::System, observed(PUBLIC, FIRST_HEAD, PrState::Closed)).unwrap();
+    assert!(outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyAgent { message, .. }
+        if *message == closed_notice(17, 1))), "{:?}", outcome.effects);
+    observe(&mut s, CLOUD, CLOUD_HEAD, PrState::Closed);
+    assert!(s.tasks[&TASK.into()].cancelled(), "with nothing merged and nothing open the task is cancelled");
+}
+
+#[test]
+fn a_task_whose_three_prs_were_all_closed_on_github_is_cancelled_with_no_card_left() {
+    let mut s = two_open_prs();
+    let docs = "github.com/bitomule/docs#3";
+    let docs_head = "3333333333333333333333333333333333333333";
+    register(&mut s, "bitomule/docs", 3, docs_head);
+    must(&mut s, node(), result("final-3", vec![pr(PUBLIC, "")], true));
+    observe(&mut s, PUBLIC, FIRST_HEAD, PrState::Closed);
+    observe(&mut s, docs, docs_head, PrState::Closed);
+    assert!(!s.tasks[&TASK.into()].over(), "one PR is still open");
+    assert_eq!(cards(&s), [CLOUD]);
+    observe(&mut s, CLOUD, CLOUD_HEAD, PrState::Closed);
+    assert!(s.tasks[&TASK.into()].cancelled());
+    assert!(cards(&s).is_empty(), "no card is left without a way out");
+}
+
+#[test]
+fn a_pr_the_node_closed_before_presenting_anything_leaves_the_task_running() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    observe(&mut s, PUBLIC, FIRST_HEAD, PrState::Closed);
+    assert!(!s.tasks[&TASK.into()].over(), "the node can still open another one");
+}
+
+#[test]
+fn a_pr_opened_after_the_delivery_gets_its_own_card_once_presented_again() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, "")], true));
+    assert_eq!(cards(&s), ["final"], "one PR, one card");
+    opened(&mut s);
+    read(&mut s);
+    assert!(!s.finished(&s.tasks[&TASK.into()]));
+    must(&mut s, node(), result("final-2", vec![pr(PUBLIC, "")], true));
+    assert_eq!(cards(&s), [PUBLIC, CLOUD], "presented again, the new PR has its own card");
+    merged(&mut s, CLOUD, CLOUD_HEAD);
+    assert_eq!(cards(&s), [PUBLIC]);
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    assert!(s.finished(&s.tasks[&TASK.into()]));
+}
+
+#[test]
+fn a_pr_with_new_commits_takes_every_card_back_until_the_node_presents_again() {
+    let mut s = two_open_prs();
+    observe(&mut s, CLOUD, "7777777777777777777777777777777777777777", PrState::Open);
+    assert!(cards(&s).is_empty(), "the delivery no longer shows what the PR is");
+    must(&mut s, node(), result("final-2", vec![pr(PUBLIC, "")], true));
+    assert_eq!(cards(&s), [PUBLIC, CLOUD]);
+}
+
+#[test]
+fn a_split_card_says_which_pr_it_is_and_an_old_card_reads_as_before() {
+    let old: InboxSubject = serde_json::from_value(serde_json::json!({"kind": "interaction", "interaction_id": "final"})).unwrap();
+    assert_eq!(old, InboxSubject::Interaction { interaction_id: "final".into(), pr_id: None });
+    assert_eq!(serde_json::to_value(&old).unwrap(), serde_json::json!({"kind": "interaction", "interaction_id": "final"}));
+    let split = InboxSubject::Interaction { interaction_id: "final".into(), pr_id: Some(PUBLIC.into()) };
+    assert_eq!(serde_json::to_value(&split).unwrap()["pr_id"], PUBLIC);
 }
 
 fn collect_actions(value: &serde_json::Value, found: &mut Vec<(String, String)>) {
@@ -185,23 +344,17 @@ pub(crate) fn two_open_prs() -> DomainState {
 }
 
 #[test]
-fn a_delivery_of_a_pr_carries_every_open_pr_and_each_has_its_own_merge() {
+fn a_delivery_of_a_pr_carries_every_open_pr_and_the_task_waits_for_each() {
     let mut s = two_open_prs();
     let InteractionPayload::Delivery { targets, .. } = &s.interactions[&"final".into()].payload else { panic!("a delivery") };
     assert_eq!(*targets, vec![pr(PUBLIC, FIRST_HEAD), pr(CLOUD, CLOUD_HEAD)]);
 
-    let mut labels: Vec<String> = card_actions(&s, "final").into_iter().map(|(_, label)| label).collect();
-    labels.sort();
-    assert_eq!(labels, ["Squash and merge · alondra#17", "Squash and merge · storefront#6"]);
-
     must(&mut s, user(), Command::AuthorizeMerge {
         authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash,
     });
-    assert_eq!(card_actions(&s, "final").len(), 2, "the card stays while the first merge runs");
     merged(&mut s, PUBLIC, FIRST_HEAD);
     assert!(!s.finished(&s.tasks[&TASK.into()]), "one PR is still open");
     assert_eq!(s.unmerged_targets(&TASK.into()), 1);
-    assert_eq!(card_actions(&s, "final").len(), 1, "only the PR still open offers its merge");
 
     must(&mut s, user(), Command::AuthorizeMerge {
         authorization_id: "second".into(), presentation_id: "final".into(), pr_id: CLOUD.into(), expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash,

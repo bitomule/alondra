@@ -1650,7 +1650,7 @@ fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::SignedOut)]);
     let listed = |domain: &DomainRuntime| -> Vec<InteractionId> {
-        domain.read().index().waiting().iter().map(|item| { let InboxSubject::Interaction { interaction_id } = &item.subject; interaction_id.clone() })
+        domain.read().index().waiting().iter().map(|item| { let InboxSubject::Interaction { interaction_id, .. } = &item.subject; interaction_id.clone() })
             .filter(|id| id.0.starts_with(SIGNED_OUT_PREFIX)).collect()
     };
     let card = listed(&slice.domain).pop().expect("Waiting for You lists the sign-in card");

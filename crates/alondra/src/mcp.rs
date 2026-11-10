@@ -1986,6 +1986,7 @@ mod tests {
         assert!(!tools(Role::Orchestrator,"Ana").as_array().unwrap().iter().any(|tool| tool["name"]=="request_plan_mode"));
         let skill = skill_text(Role::Node);
         assert!(skill.contains("A task owns every PR it opens, in any repository"));
+        assert!(skill.contains("The user reviews each PR on its own card"));
         assert!(skill.contains("`ask` with the decision in `body` and the approval options, then at once `link_interaction_subject`"));
         assert!(skill.contains("The `label` of each option names what will be done, not a pronoun for it"));
         assert!(skill_text(Role::Orchestrator).contains("The `label` of each option names what will be done, not a pronoun for it"));

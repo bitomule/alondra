@@ -91,7 +91,7 @@ async fn measure_real_domain_views() {
     let mut card_ids: Vec<String> = built.sections.iter().flat_map(|s| s.card_ids.clone()).collect();
     let inbox: Vec<_> = read.index().queued(&state).collect();
     card_ids.extend(inbox.iter().rev().filter(|item| item.kind == "delivery" && !item.pending).take(5).map(|item| {
-        let alondra_core::domain::InboxSubject::Interaction { interaction_id } = &item.subject;
+        let alondra_core::domain::InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         interaction_id.0.clone()
     }));
 
@@ -158,7 +158,7 @@ async fn measure_background_per_change() {
     let index = alondra_core::domain::ReadIndex::build(&state);
     let inbox: Vec<_> = index.queued(&state).map(std::borrow::Cow::into_owned).collect();
     let id_of = |item: &alondra_core::domain::InboxItem| {
-        let alondra_core::domain::InboxSubject::Interaction { interaction_id } = &item.subject;
+        let alondra_core::domain::InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         interaction_id.0.clone()
     };
     let mut cards: Vec<String> = inbox.iter().filter(|item| item.pending).map(id_of).collect();

@@ -409,7 +409,7 @@ fn pr_not_open(number: u64) -> String {
 }
 fn prs_missing_from_delivery(prs: &[&PullRequest]) -> String {
     let names = prs.iter().map(|pr| format!("{}#{}", pr.repository, pr.number)).collect::<Vec<_>>().join(", ");
-    format!("{names} open in this task: a text result cannot be merged. Present them in the final delivery with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task, so the user merges each from its card")
+    format!("{names} open in this task: a text result cannot be merged. Present them in the final delivery with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task: the user reviews and merges each on its own card")
 }
 fn opened_pr_unread(pr: &OpenedPr) -> String {
     format!("Alondra is still reading {}#{} from GitHub, which this task opened: nothing was presented. Send the same result again in a moment", pr.repository, pr.number)
@@ -424,8 +424,14 @@ pub fn merged_notice(number: u64, left: usize) -> String {
         n => format!("Pull request #{number} is merged; {n} left to merge."),
     }
 }
+pub fn closed_notice(number: u64, left: usize) -> String {
+    match left {
+        0 => format!("Pull request #{number} was closed without merging; no pull request of this task is left to merge."),
+        n => format!("Pull request #{number} was closed without merging; {n} left to merge."),
+    }
+}
 impl DomainState {
-    /// The PRs of the Task's final delivery that are not merged yet.
+    /// The PRs of the Task's final delivery still open: neither merged nor closed.
     pub fn unmerged_targets(&self, task: &TaskId) -> usize {
         let Some(InteractionPayload::Delivery { targets, .. }) = self.tasks.get(task)
             .and_then(|t| t.final_presentation.as_ref())
@@ -435,7 +441,7 @@ impl DomainState {
             return 0;
         };
         targets.iter().filter(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. }
-            if self.pull_requests.get(pr_id).is_some_and(|pr| pr.state != PrState::Merged))).count()
+            if self.pull_requests.get(pr_id).is_some_and(|pr| pr.state == PrState::Open))).count()
     }
     fn fence(&self, actor: &Actor) -> Result<()> {
         match actor {
@@ -1921,17 +1927,27 @@ impl DomainState {
     pub(super) fn accepted(&self, p: &Interaction) -> bool {
         matches!(&p.payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
     }
-    /// A final delivery whose PRs are all merged is settled by the merge itself, whoever merged
-    /// them: Alondra after the user's acceptance or the checks of an auto-merge, or the user on
-    /// GitHub.
+    /// A final delivery whose PRs are all resolved, at least one merged and the rest closed without
+    /// merging, is settled by the merge itself, whoever merged them: Alondra after the user's
+    /// acceptance or the checks of an auto-merge, or the user on GitHub.
     pub fn merged_delivery(&self, p: &Interaction) -> bool {
         let InteractionPayload::Delivery { targets, .. } = &p.payload else { return false };
-        let mut prs = targets.iter().filter_map(|t| match t {
-            DeliveryTarget::PullRequest { pr_id, .. } => Some(pr_id),
+        let states: Vec<PrState> = targets.iter().filter_map(|t| match t {
+            DeliveryTarget::PullRequest { pr_id, .. } => Some(self.pull_requests.get(pr_id).map(|pr| pr.state)),
             _ => None,
-        }).peekable();
-        prs.peek().is_some()
-            && prs.all(|pr_id| self.pull_requests.get(pr_id).is_some_and(|pr| pr.state == PrState::Merged))
+        }).collect::<Option<_>>().unwrap_or_default();
+        states.contains(&PrState::Merged) && !states.contains(&PrState::Open)
+    }
+    /// Every PR the task presented to the user was closed without merging, wherever it was closed,
+    /// before the user accepted the delivery, and none is open or being read: nothing is left to
+    /// review, so the task is cancelled. An accepted delivery whose PR was closed settles instead.
+    fn discarded(&self, t: &Task) -> bool {
+        let Some(p) = t.final_presentation.as_ref().and_then(|id| self.interactions.get(id)) else { return false };
+        let InteractionPayload::Delivery { targets, .. } = &p.payload else { return false };
+        !self.accepted(p)
+            && targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { .. }))
+            && t.opened_prs.is_empty()
+            && self.task_prs(t).all(|pr| pr.state == PrState::Closed)
     }
     /// An invalid acceptance the user did not withdraw: no feedback on that
     /// delivery and no document rejection on its Task after it was given.
@@ -4853,6 +4869,7 @@ impl DomainState {
                 };
                 let task = p.task_id.clone();
                 let newly_merged = p.state != PrState::Merged && *state == PrState::Merged;
+                let newly_closed = p.state == PrState::Open && *state == PrState::Closed;
                 let number = p.number;
                 if p.head != *sha {
                     self.invalidate(&task);
@@ -4879,11 +4896,16 @@ impl DomainState {
                         a.attempt = MergeAttemptState::Confirmed;
                     }
                 }
+                let discarded = newly_closed && self.active(&task).is_ok() && self.task(&task).is_ok_and(|t| self.discarded(t));
+                if discarded {
+                    self.cancel(&task, effects, lifecycles)?;
+                }
                 // A merge that finishes the Task is told by the cleanup request alone.
                 let closing = self.task(&task).is_ok_and(|t| self.finished(t) && self.wraps_up(t));
-                if newly_merged && self.active(&task).is_ok() && !closing {
+                if (newly_merged || newly_closed) && !discarded && self.active(&task).is_ok() && !closing {
                     let left = self.unmerged_targets(&task);
-                    self.notify(&task, None, &merged_notice(number, left), effects)?;
+                    let notice = if newly_merged { merged_notice(number, left) } else { closed_notice(number, left) };
+                    self.notify(&task, None, &notice, effects)?;
                 }
             }
             Command::ObservePrMergeMethods {

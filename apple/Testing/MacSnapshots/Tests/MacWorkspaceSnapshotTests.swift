@@ -291,7 +291,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 700), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
-    func test_card_twoPullRequestsEachWithItsMerge_spanish() throws {
+    func test_card_onePullRequestOfTwoOnItsOwnCard_spanish() throws {
         let store = try presentation(detail: "card-two-prs-es-mac", spanish: true)
         assertWindow(size: CGSize(width: 900, height: 700), spanish: true) { MacServiceDetail(presentation: store) }
     }

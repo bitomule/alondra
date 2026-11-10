@@ -212,8 +212,13 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
-    func test_twoPullRequestsEachWithItsMerge_es() throws {
+    func test_onePullRequestOfTwoOnItsOwnCard_es() throws {
         let store = ScreenStores.cardDetail(try Fixtures.document("card-two-prs-es"))
+        assertDetail(store, language: .spanish)
+    }
+
+    func test_theOtherPullRequestOnItsOwnCard_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-two-prs-other-es"))
         assertDetail(store, language: .spanish)
     }
 

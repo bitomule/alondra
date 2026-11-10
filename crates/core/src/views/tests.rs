@@ -2762,15 +2762,18 @@ fn only_destructive_card_actions_ask_for_confirmation() {
 }
 
 #[test]
-fn a_delivery_of_two_prs_matches_its_goldens_in_every_apple_client() {
+fn each_pr_of_a_delivery_matches_the_goldens_of_its_own_card_in_every_apple_client() {
     let state = crate::domain::several_prs_tests::two_open_prs();
     let live = LiveSnapshot::default();
-    for (filename, client, lang, expected) in [
-        ("card-two-prs.json", Client::Ios, Lang::En, include_str!("../../../../fixtures/views/cards/card-two-prs.json")),
-        ("card-two-prs-es.json", Client::Ios, Lang::Es, include_str!("../../../../fixtures/views/cards/card-two-prs-es.json")),
-        ("card-two-prs-es-mac.json", Client::Mac, Lang::Es, include_str!("../../../../fixtures/views/cards/card-two-prs-es-mac.json")),
+    let first = "card:github.com/bitomule/alondra#17";
+    for (filename, client, lang, key, expected) in [
+        ("card-two-prs.json", Client::Ios, Lang::En, first, include_str!("../../../../fixtures/views/cards/card-two-prs.json")),
+        ("card-two-prs-es.json", Client::Ios, Lang::Es, first, include_str!("../../../../fixtures/views/cards/card-two-prs-es.json")),
+        ("card-two-prs-other-es.json", Client::Ios, Lang::Es, "card:github.com/acme/storefront#6",
+            include_str!("../../../../fixtures/views/cards/card-two-prs-other-es.json")),
+        ("card-two-prs-es-mac.json", Client::Mac, Lang::Es, first, include_str!("../../../../fixtures/views/cards/card-two-prs-es-mac.json")),
     ] {
-        let actual = render(&state, &live, client, lang, "card:final", "2026-09-30T10:00:00Z");
+        let actual = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
     }
 }
