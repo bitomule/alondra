@@ -17,7 +17,7 @@ const SUMMARY_LIMIT: usize = 300;
 const REMEMBERED: usize = 50;
 const PROGRESS_TOOLS: [&str; 4] = ["TaskCreate", "TaskUpdate", "TaskList", "Workflow"];
 
-/// Why a turn of the SDK stopped: `TerminalReason` of `@anthropic-ai/claude-agent-sdk` 0.3.300.
+/// Why a turn of the SDK stopped: `TerminalReason` of `@anthropic-ai/claude-agent-sdk` 0.3.322.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TerminalReason {

@@ -407,7 +407,7 @@ mod tests {
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let user = root.join("user");
-        let (daemon, tools) = release(&root, "2.1.300");
+        let (daemon, tools) = release(&root, "2.1.321");
         let environment = BTreeMap::from([
             ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display())), ("LANG".to_owned(), "es_ES.UTF-8".to_owned()),
             ("ALONDRA_PORT".to_owned(), "7777".to_owned()), ("CLAUDECODE".to_owned(), "1".to_owned()),
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(backend.state_root, home.join("sdk"));
         assert!(backend.confinement.is_none());
         assert!(backend.host_sha256.is_empty(), "the daemon starts without reading the host");
-        let started = backend.for_start().expect("Claude Code 2.1.300 runs the SDK");
+        let started = backend.for_start().expect("Claude Code 2.1.321 runs the SDK");
         assert_eq!((&started.node_sha256, &started.host_sha256), (&digest(&host).unwrap(), &digest(&host).unwrap()), "a host start reads it");
         assert_eq!(started.native, tools.join("claude"), "the user's own Claude Code, found on the daemon's PATH");
         assert_eq!(started.native_sha256, digest(&tools.join("claude")).unwrap());
@@ -435,7 +435,7 @@ mod tests {
             assert!(!started.native_environment.contains_key(private), "{private} is not the user's Claude's");
         }
         assert!(!serde_json::to_string(&started.native_environment).unwrap().contains("secret-"), "no secret reaches what the host stores");
-        claude_code(&tools, "2.1.301");
+        claude_code(&tools, "2.1.322");
         let updated = backend.for_start().unwrap();
         assert_ne!(updated.native_sha256, started.native_sha256, "Claude Code updated itself: the next host takes the new one");
         assert_ne!(updated.configuration_digest(), started.configuration_digest(), "and binds its executions to it");
@@ -449,7 +449,7 @@ mod tests {
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let user = root.join("user");
-        let (daemon, tools) = release(&root, "2.1.300");
+        let (daemon, tools) = release(&root, "2.1.321");
         let path = ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()));
         let work = user.join(".claude-work").display().to_string();
         for set_up in [
@@ -481,7 +481,7 @@ mod tests {
         let home = root.join("home");
         let folder = home.join("accounts/other");
         std::fs::create_dir_all(&folder).unwrap();
-        let (daemon, tools) = release(&root, "2.1.300");
+        let (daemon, tools) = release(&root, "2.1.321");
         let path = ("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()));
         let added = folder.display().to_string();
         let crossed = BTreeMap::from([path, ("CLAUDE_CONFIG_DIR".to_owned(), added.clone()), ("CLAUDE_HOME".to_owned(), added.clone())]);
@@ -508,7 +508,7 @@ mod tests {
         let missing = BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
         let none = resolve(&home, false, &root.join("user"), &daemon, &missing).unwrap().for_start().unwrap_err().to_string();
         assert!(none.contains("not on this daemon's PATH"), "{none}");
-        claude_code(&tools, "2.1.300");
+        claude_code(&tools, "2.1.321");
         assert!(backend.for_start().is_ok(), "once updated, the next start runs");
     }
 
@@ -517,7 +517,7 @@ mod tests {
         let root = crate::test_support::Directory::new();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        let (daemon, _) = release(&root, "2.1.300");
+        let (daemon, _) = release(&root, "2.1.321");
         assert!(resolve(&home, true, &home, &daemon, &BTreeMap::new()).unwrap_err().to_string().contains(FILE));
         std::fs::write(home.join(FILE), configuration(&home, serde_json::json!({"HOME": home})).to_string()).unwrap();
         let pinned = resolve(&home, false, &home, &daemon, &BTreeMap::new()).unwrap();

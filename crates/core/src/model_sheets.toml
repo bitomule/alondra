@@ -36,6 +36,15 @@ evidence = "None cited; rely on Alondra's measured results Pricing checked 2026-
 
 [[sheet]]
 provider = "claude"
+match = "fable-5-2"
+usd_per_mtok = [8, 40, 0.20, 10]
+cost = "high"
+good_for = ["design", "review", "research"]
+cautions = "No cited benchmark; choose it on measured results"
+evidence = "None cited; rely on Alondra's measured results Pricing checked 2026-11-10: standard base, short context, shortest cache-write duration; https://platform.claude.com/docs/en/about-claude/models/overview"
+
+[[sheet]]
+provider = "claude"
 match = "fable"
 usd_per_mtok = [10, 50, 0.25, 12.5]
 cost = "high"

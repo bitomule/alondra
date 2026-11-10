@@ -126,7 +126,7 @@ class Node:
             json.dump({"env": {"ALONDRA_DOMAIN_AGENT": self.session}}, file)
         self.connection = subprocess.Popen([self.alondra, "node", "connect"], env=self.env, stdin=subprocess.PIPE,
                                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        self.connection.stdin.write(json.dumps({"session_id": self.session, "version": "2.1.287", "cwd": self.workdir,
+        self.connection.stdin.write(json.dumps({"session_id": self.session, "version": "2.1.321", "cwd": self.workdir,
                                                 "launch_key": key}))
         self.connection.stdin.close()
         assert self.connection.stdout.readline() == "connected\n", "the node could not connect"

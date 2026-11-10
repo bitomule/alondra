@@ -254,7 +254,7 @@ fn missing_and_zero_cost_steps_and_token_components_do_not_supply_logs() {
 fn every_sheet_has_verified_prices_and_unknown_model_takes_priciest_provider_sheet() {
     for s in sheets() {
         assert!(s.usd_per_mtok.iter().all(|p| *p > 0.0));
-        assert!(s.evidence.contains("https://") && s.evidence.contains("2026-10-31"));
+        assert!(s.evidence.contains("https://") && s.evidence.contains("Pricing checked 2026-1"));
     }
     assert_eq!(
         sheet_for(Provider::Codex, "gpt-unknown")

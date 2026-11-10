@@ -119,6 +119,15 @@ mod tests {
     }
 
     #[test]
+    fn fable_5_2_is_priced_below_the_earlier_fable_sheet() {
+        let price = |model| sheet_for(Provider::Claude, model).unwrap().usd_per_mtok;
+        assert_eq!(price("claude-fable-5-2"), [8.0, 40.0, 0.20, 10.0]);
+        assert_eq!(price("claude-fable-5-2[1m]"), [8.0, 40.0, 0.20, 10.0]);
+        assert_eq!(price("claude-fable-5-1"), [10.0, 50.0, 0.25, 12.5]);
+        assert_eq!(price("fable"), [10.0, 50.0, 0.25, 12.5]);
+    }
+
+    #[test]
     fn an_unknown_model_has_no_sheet() {
         assert!(sheet_for(Provider::Claude, "default").is_none());
         assert!(sheet_for(Provider::Codex, "o9-preview").is_none());

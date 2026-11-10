@@ -21,8 +21,8 @@ use super::{
 };
 use crate::sandbox::{hex, now_ms, random};
 
-/// What `claude --version` answers; Alondra needs mods (2.1.287+).
-pub const VERSION: &str = "2.1.300";
+/// What `claude --version` answers; Alondra needs mods (2.1.321+).
+pub const VERSION: &str = "2.1.321";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
