@@ -287,7 +287,7 @@ fn the_orchestrators_cancel_of_a_task_with_its_pr_open_delivers_the_pr() {
     assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, PrReadiness::Unconfirmed);
 }
 
-/// The orchestrator closed t-plan-pstack-phase-2 three times while its PR #22759 was open, and
+/// The orchestrator closed a running task three times while its PR was open, and
 /// each close answered Recorded with the task still running: none of them may leave it running.
 #[test]
 fn closing_a_running_task_with_its_pr_open_delivers_the_pr_in_the_same_command_and_refuses_a_repeat() {
