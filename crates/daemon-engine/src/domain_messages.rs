@@ -1,7 +1,5 @@
-//! A message from the user to an Agent, written down the connection its node mod holds open and
-//! submitted to its Claude session by the mod. Nothing is recorded in the domain: no
-//! Interaction, no outbox row. Only marking an interaction read, when the user asks for it, is a
-//! domain command.
+//! User messages reach a node through its task lifecycle, or through its mod for legacy nodes.
+//! A task with no node keeps its inputs until its first execution starts.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 pub use crate::worktree::user_name;
@@ -179,14 +177,17 @@ fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::Domain
 
 /// Where an input just told to an SDK task stands, by its lifecycle: `turn` when Claude reads it
 /// inside the turn that runs, `now` when it starts a turn on it, else what holds it: the user's
-/// pause (`pause`), a message in doubt the user settles first (`doubt`), or a session that is not
-/// connected until its host is back (`session`).
+/// pause (`pause`), a message in doubt the user settles first (`doubt`), no node yet until one
+/// starts the task (`start`), or a session that is not connected until its host is back
+/// (`session`).
 fn reaches(lifecycle: &alondra_domain::TaskLifecycle) -> &'static str {
     let cards = lifecycle.cards();
     if cards.iter().any(|(_, reason)| *reason == alondra_domain::WaitReason::Pause) {
         "pause"
     } else if cards.iter().any(|(_, reason)| *reason == alondra_domain::WaitReason::Doubt) {
         "doubt"
+    } else if lifecycle.execution().is_none() {
+        "start"
     } else if !matches!(lifecycle.resource(), Some(alondra_domain::ResourceEvidence::Available | alondra_domain::ResourceEvidence::Reserved)) {
         "session"
     } else if lifecycle.activity() == alondra_domain::ActivityView::Working {
@@ -265,6 +266,38 @@ pub async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, agent: A
         Ok(answer) => json!({"status": 200, "body": answer}),
         Err(error) => json!({"status": crate::reply::status_for(&error).as_u16(), "body": error}),
     }
+}
+
+/// A message relayed from a paired device to a task no node runs: kept on the task, it reaches
+/// the node that starts it, after what the task was told before.
+pub fn relayed_to_task(domain: &DomainRuntime, home: &Path, sender: &str, task: &TaskId, body: Option<&Value>) -> Value {
+    let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
+        return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
+    };
+    let user = Actor::User { user_id: format!("device:{sender}") };
+    match keep_for_task(domain, home, &user, &user_name(), task, body) {
+        Ok(answer) => json!({"status": 200, "body": answer}),
+        Err(error) => json!({"status": crate::reply::status_for(&error).as_u16(), "body": error}),
+    }
+}
+
+fn keep_for_task(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, task: &TaskId, body: MessageBody) -> Result<Value, DomainError> {
+    if body.text.trim().is_empty() {
+        return Err(refused("invalid_input", "message text is empty"));
+    }
+    if body.task_id.as_ref().is_some_and(|id| id != task) {
+        return Err(refused("invalid_input", "the message is about another task"));
+    }
+    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let task = state.tasks.get(task).ok_or_else(|| refused("not_found", "task does not exist"))?;
+    if task.state.terminal() || task.ending.is_some() {
+        return Err(refused("task_not_active", "the task has ended or is closing"));
+    }
+    let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
+    let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
+    tell_sdk_node(domain, &task.id, &author, &text, &format!("tell-{}", crate::auth::random_hex(16)), true)?;
+    let lifecycle = domain.read().state().lifecycle_of(&task.id)?;
+    Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches(&lifecycle)})))
 }
 
 fn read_after(domain: &DomainRuntime, user: &Actor, body: &MessageBody, mut answer: Value) -> Value {

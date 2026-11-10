@@ -268,6 +268,9 @@ fn resources_of(state: &alondra_core::domain::DomainState, action: &ActionId) ->
                 }
             }
         },
+        Verb::TaskMsg => {
+            add(LocalActionResource::Task(action.subject.clone()), false);
+        },
         Verb::Msg if action.subject != "view" => {
             add(LocalActionResource::Agent(action.subject.clone()), false);
             if let Some(task) = &action.extra { add(LocalActionResource::Task(task.clone()), false); }
@@ -317,7 +320,7 @@ pub(crate) fn external_request(body: &Value) -> bool {
 }
 
 fn is_external(verb: Verb) -> bool {
-    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
+    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::TaskMsg | Verb::Relaunch | Verb::Close | Verb::Interrupt | Verb::ForceStop |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
@@ -422,7 +425,7 @@ async fn execute_external(
         Verb::Reply => "Reply sent",
         Verb::AskPr => "Question sent",
         Verb::Conflicts => "Conflicts requested",
-        Verb::Msg => "Message sent",
+        Verb::Msg | Verb::TaskMsg => "Message sent",
         Verb::Relaunch => "Relaunched",
         Verb::Close => "Closed",
         Verb::Interrupt => "Interrupted",
@@ -464,7 +467,7 @@ async fn execute_external(
     let stamp = if lang == Lang::Es { match action.verb {
         Verb::Reply => "Respuesta enviada",
         Verb::AskPr => "Pregunta enviada", Verb::Conflicts => "Conflictos comunicados",
-        Verb::Msg => "Mensaje enviado", Verb::Relaunch => "Relanzada", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido", Verb::ForceStop => "Parando",
+        Verb::Msg | Verb::TaskMsg => "Mensaje enviado", Verb::Relaunch => "Relanzada", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido", Verb::ForceStop => "Parando",
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave | Verb::ScheduleSelection => "Tarea guardada",
@@ -565,6 +568,15 @@ async fn execute_external(
             };
             let reply = client.write(&user_id, Write::ResolveConflicts(pr_id.0), &json!({}), transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
+        }
+        Verb::TaskMsg => {
+            let task = TaskId(action.subject.clone());
+            let text = request.input.text.as_deref().unwrap_or_default().trim();
+            if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
+            let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task,
+                "from_claude":flag(&request.input, "from_claude")});
+            let reply = crate::domain_messages::relayed_to_task(domain, home, device, &task, Some(&body));
+            Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::Msg if action.subject == "view" || matches!(state.resolve_target(&action.subject), Target::Orchestrator(_)) => {
             let text = request.input.text.as_deref().unwrap_or_default().trim();
@@ -1889,16 +1901,18 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
     if (200..300).contains(&status) {
         let reaches = body.get("reaches").and_then(Value::as_str);
         let stamp = match (verb, body.get("delivery_state").and_then(Value::as_str), lang == Lang::Es) {
-            (Verb::Msg, Some("handed"), false) => "Message delivered",
-            (Verb::Msg, Some("handed"), true) => "Mensaje entregado",
-            (Verb::Msg, Some("dispatching"), es) if reaches.is_some() => sdk_message_stamp(reaches, es),
-            (Verb::Msg, Some("dispatching"), false) => "Message queued: the node is busy and takes it when its turn ends. If it does not move on, Interrupt ends the turn",
-            (Verb::Msg, Some("dispatching"), true) => "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno. Si no avanza, Interrumpir termina el turno",
+            (Verb::Msg | Verb::TaskMsg, Some("handed"), false) => "Message delivered",
+            (Verb::Msg | Verb::TaskMsg, Some("handed"), true) => "Mensaje entregado",
+            (Verb::Msg | Verb::TaskMsg, Some("dispatching"), es) if reaches.is_some() => sdk_message_stamp(reaches, es),
+            (Verb::Msg | Verb::TaskMsg, Some("dispatching"), false) => "Message queued: the node is busy and takes it when its turn ends. If it does not move on, Interrupt ends the turn",
+            (Verb::Msg | Verb::TaskMsg, Some("dispatching"), true) => "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno. Si no avanza, Interrumpir termina el turno",
             _ => stamp,
         };
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":revision,"detail":body})
     } else if code == Some("close_refused") {
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":"close_refused","message":close_refusal(lang, &body)})
+    } else if verb == Verb::TaskMsg && code == Some("task_not_active") {
+        refused_value(&Refusal::TaskNotActive, lang)
     } else if status == 404 || (status == 409 && !matches!(code, Some("session_unreachable" | "close_failed"))) {
         no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This action is no longer available"))
     } else {
@@ -1917,6 +1931,8 @@ fn sdk_message_stamp(reaches: Option<&str>, es: bool) -> &'static str {
         (Some("pause"), true) => "Mensaje guardado: el nodo lo recibe cuando lo reanudes",
         (Some("doubt"), false) => "Message kept: the node gets it once you settle the message in doubt",
         (Some("doubt"), true) => "Mensaje guardado: el nodo lo recibe cuando resuelvas el mensaje en duda",
+        (Some("start"), false) => "Message kept: the task's node reads it when it starts",
+        (Some("start"), true) => "Mensaje guardado: el nodo de la tarea lo lee al arrancar",
         (Some("session"), false) => "Message kept: the node gets it when its session is back",
         (Some("session"), true) => "Mensaje guardado: el nodo lo recibe cuando vuelva su sesión",
         (_, false) => "Message sent: the node starts on it now",
@@ -2913,6 +2929,53 @@ for line in sys.stdin:
             panic!("the acknowledged message must complete");
         };
         assert_eq!(reply.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_task_with_no_node_is_kept_in_order_for_the_node_that_starts_it() {
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
+            task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
+            agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        });
+        apply_seed_command(&domain, Actor::System, "unrelated-node", Command::RegisterAgent {
+            agent_id: "task-a".into(), name: "Unrelated node".into(), at: 0,
+        });
+        let mut unrelated = domain.live.pushes.attach("task-a", 1);
+        for (text, lang, stamp) in [("Keep the old API", "en", "Message kept: the task's node reads it when it starts"),
+            ("Then update the docs", "es", "Mensaje guardado: el nodo de la tarea lo lee al arrancar")] {
+            let mut request = pacing_request(&domain.state().unwrap(), Verb::TaskMsg, "task-a", "", lang);
+            request.input.text = Some(text.into());
+            let reply = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+            let bytes = axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap();
+            let retry = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+            assert_eq!(axum::body::to_bytes(retry.into_body(), 1024 * 1024).await.unwrap(), bytes, "a retry returns the receipt");
+            let reply: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!((reply["outcome"].as_str(), reply["stamp"].as_str()), (Some("applied"), Some(stamp)), "{reply}");
+        }
+        let state = domain.state().unwrap();
+        let task = TaskId("task-a".into());
+        assert!(state.tasks[&task].agent_id.is_none(), "a message starts no node");
+        let told: Vec<&str> = state.lifecycle_journal[&task].iter().filter_map(|record| match record {
+            alondra_core::domain::LifecycleRecord::Told { text: Some(text), .. } => Some(text.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(told[0].contains("[Task task-a “Work”] Keep the old API") && told[1].contains("[Task task-a “Work”] Then update the docs"), "{told:?}");
+        assert_eq!(state.lifecycle_of(&task).unwrap().pending_inputs().len(), 3, "the task starts with its plan, then both messages");
+        assert!(matches!(unrelated.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a node with the same identifier receives nothing");
+        let mut stale = pacing_request(&state, Verb::TaskMsg, "task-a", "", "es");
+        stale.input.text = Some("Too late".into());
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "cancel-task", Command::CancelTask { task_id: task.clone() });
+        let before = domain.state().unwrap().lifecycle_journal[&task].clone();
+        let reply = execute_action(&domain, &client, &home.0, "test-device", stale, None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
+        assert_eq!(reply["message"], "Esta tarea ya terminó o se canceló.", "it says why: the task ended");
+        assert_eq!(domain.state().unwrap().lifecycle_journal[&task], before, "a stale action cannot tell an ended task");
     }
 
     #[tokio::test]

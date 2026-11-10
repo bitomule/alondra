@@ -131,7 +131,7 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.runTime?.label.elapsed, Elapsed(since: "2026-09-30T08:00:00Z"), "the screen counts from when the task first ran")
         XCTAssertEqual(detail.relaunch?.label, "Relaunch")
         XCTAssertEqual(detail.relaunch?.enabled, true)
-        XCTAssertEqual(detail.actions.map(\.command), ["relaunch", "set_priority", "cancel"])
+        XCTAssertEqual(detail.actions.map(\.command), ["task_msg", "relaunch", "set_priority", "cancel"], "a message waits for the node a relaunch starts")
         XCTAssertNil(TaskDetail(document: try Fixtures.document("task-ios")).relaunch, "a task with a node offers none")
     }
 

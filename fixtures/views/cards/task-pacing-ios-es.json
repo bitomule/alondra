@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v00f8f7539e869572",
+  "version": "v8c31b530ee77f3e2",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -131,6 +131,22 @@
         {
           "type": "actions",
           "actions": [
+            {
+              "id": "task_msg:t-queued-next@6",
+              "label": "Mensaje",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Escribe a esta tarea: su nodo lo lee al arrancar…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "resolves_card": false
+            },
             {
               "id": "pause:t-queued-next@6",
               "label": "Pausar",

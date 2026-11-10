@@ -3397,3 +3397,21 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn what_a_task_no_node_started_is_told_waits_in_order_for_the_node_that_starts_it() {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    apply(&mut task, Event::Tell { input: input("first"), answers: None });
+    apply(&mut task, Event::Tell { input: input("second"), answers: None });
+    assert_eq!(task.execution(), None, "telling a task starts no node");
+    assert_eq!(task.pending_inputs(), [&input("initial"), &input("first"), &input("second")]);
+    assert_eq!((task.phase(), task.live()), (TaskPhase::Unstarted, None), "it is still a task no node started");
+    assert_eq!(task.apply(task.revision(), Event::Tell { input: input("first"), answers: None }), Err(Refusal::DuplicateObligation));
+    admit(&mut task, "instance");
+    fact(&mut task, RuntimeFact::ResourceAvailable);
+    started(&mut task, "root", "initial");
+    assert_eq!(task.pending_inputs(), [&input("first"), &input("second")], "the node starts with its plan, then what it was told");
+    fact(&mut task, RuntimeFact::InputConsumed { input: input("first") });
+    fact(&mut task, RuntimeFact::InputConsumed { input: input("second") });
+    assert!(task.pending_inputs().is_empty(), "each message reaches the node once");
+}

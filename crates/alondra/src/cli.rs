@@ -170,18 +170,19 @@ fn send_view_key(name: &str) -> String {
     if name == "orchestrator" { name.to_owned() } else { format!("task:{name}") }
 }
 
-/// A Task id sends to the Task's node, about that Task; `orchestrator` sends to the orchestrator,
-/// and the daemon makes that maintenance unless `reply` asks for an answer.
+/// A Task id sends to the Task's node, about that Task, or keeps it on the Task until a node starts
+/// it; `orchestrator` sends to the orchestrator, and the daemon makes that maintenance unless
+/// `reply` asks for an answer.
 pub fn send(name: &str, text: &str, reply: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(60));
     let view = client.views(&send_view_key(name), None).with_context(|| trf!(
         "No task {name}; for the orchestrator use orchestrator",
         "No hay ninguna tarea {name}; para el orquestador usa orchestrator"))?;
-    let action = view_action(&view, |a| a.id.starts_with("msg:" )).with_context(|| if name == "orchestrator" {
+    let action = view_action(&view, |a| a.id.starts_with("msg:") || a.id.starts_with("task_msg:")).with_context(|| if name == "orchestrator" {
         tr!("Message action unavailable", "No se puede mandar un mensaje").into()
     } else {
-        trf!("{name} has no node right now, so nothing was sent. Ask the orchestrator to start one for it.",
-            "{name} no tiene nodo ahora, así que no se envió nada. Pide al orquestador que le arranque uno.")
+        trf!("{name} has ended or is closing, so it takes no messages and nothing was sent.",
+            "{name} terminó o se está cerrando, así que no admite mensajes y no se envió nada.")
     })?;
     let fields = serde_json::json!({"from_cli": true, "reply": reply, "from_claude": std::env::var_os("CLAUDECODE").is_some()});
     let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text,"fields":fields}))?;
@@ -386,6 +387,36 @@ mod tests {
         assert_eq!(send_view_key("orchestrator"), "orchestrator");
         assert_eq!(send_view_key("t-login-fix"), "task:t-login-fix");
         assert_eq!(send_view_key("login-fix"), "task:login-fix");
+    }
+
+    #[test]
+    fn send_reaches_a_task_no_node_runs_until_the_task_ends() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let mut s = world();
+        let mut run = |actor: Actor, command: Command| {
+            let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c{}", s.revision).into(), expected_revision: s.revision, command };
+            s.execute(&actor, &envelope).unwrap();
+        };
+        run(Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
+        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t-queued".into(), request_id: "r".into(), title: "Queued".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
+        let message = |s: &DomainState| {
+            let d = alondra_core::domain::ReadIndex::build(s);
+            let live = alondra_core::views::LiveSnapshot::default();
+            let context = alondra_core::views::RenderContext { domain: s, index: &d, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
+            let view = alondra_core::views::build(&send_view_key("t-queued"), context).unwrap();
+            view_action(&view, |a| a.id.starts_with("msg:") || a.id.starts_with("task_msg:"))
+        };
+        assert!(s.tasks[&TaskId::from("t-queued")].agent_id.is_none());
+        let action = message(&s).expect("a task no node runs takes messages");
+        let id = alondra_core::views::action_id::ActionId::parse(&action.id).unwrap();
+        assert_eq!((id.verb, id.subject.as_str(), id.extra.as_deref()), (alondra_core::views::action_id::Verb::TaskMsg, "t-queued", None), "it is kept on the task");
+        let alondra_core::views::Input::Text { placeholder, .. } = &action.input else { panic!("a message takes text") };
+        assert!(placeholder.contains("reads it when it starts"), "{placeholder}");
+        let answer = serde_json::json!({"outcome": "applied", "stamp": "Message kept: the task's node reads it when it starts"});
+        assert_eq!(sent_notice(&answer, "t-queued"), "Message kept: the task's node reads it when it starts");
+        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "cancel".into(), expected_revision: s.revision, command: Command::CancelTask { task_id: "t-queued".into() } };
+        s.execute(&Actor::User { user_id: "u".into() }, &envelope).unwrap();
+        assert!(message(&s).is_none(), "an ended task takes none");
     }
 
     #[test]

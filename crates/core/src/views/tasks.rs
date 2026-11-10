@@ -1117,28 +1117,27 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let revokes = context.index.grant_actions(context.domain, &task.id);
     view.sections.extend(super::allow_for_task::section(task, &revokes, context.lang));
     let mut actions = vec![];
-    if let Some(agent_id) = task.agent_id.as_ref().filter(|id| context.domain.agents.contains_key(*id)) {
-        if let Some(mut message) = common::action(
-            Verb::Msg, &agent_id.0, context.domain.revision,
-            t!(context.lang, "Message", "Mensaje"), Style::Secondary,
-        ) {
-            match super::action_id::ActionId::new(
-                Verb::Msg, &agent_id.0, context.domain.revision, Some(task.id.0.clone()),
+    let node = task.agent_id.as_ref().filter(|id| context.domain.agents.contains_key(*id));
+    let open = !task.state.terminal() && task.ending.is_none();
+    let addressee = match node {
+        Some(agent_id) => Some((Verb::Msg, agent_id.0.as_str(), Some(task.id.0.clone()),
+            t!(context.lang, "Write to this task's node…", "Escribe al nodo de esta tarea…"))),
+        None if open => Some((Verb::TaskMsg, task.id.0.as_str(), None,
+            t!(context.lang, "Write to this task: its node reads it when it starts…", "Escribe a esta tarea: su nodo lo lee al arrancar…"))),
+        None => None,
+    };
+    if let Some((verb, subject, extra, placeholder)) = addressee {
+        match super::action_id::ActionId::new(verb, subject, context.domain.revision, extra) {
+            Ok(id) => if let Some(mut message) = common::action(
+                verb, subject, context.domain.revision, t!(context.lang, "Message", "Mensaje"), Style::Secondary,
             ) {
-                Ok(id) => {
                 message.id = id.to_string();
                 message.key = (context.client == super::Client::Tui).then(|| "r".into());
-                message.input = super::Input::Text {
-                    placeholder: t!(context.lang, "Write to this task's node…", "Escribe al nodo de esta tarea…").into(),
-                    required: true,
-                    multiline: true,
-                    secret: false,
-                };
+                message.input = super::Input::Text { placeholder: placeholder.into(), required: true, multiline: true, secret: false };
                 message.attachments = true;
                 actions.push(message);
-                }
-                Err(_) => { use std::io::Write as _; let _ = writeln!(std::io::stderr(), "Alondra omitted an action with an invalid identifier ({:?})", Verb::Msg); },
-            }
+            },
+            Err(_) => { use std::io::Write as _; let _ = writeln!(std::io::stderr(), "Alondra omitted an action with an invalid identifier ({verb:?})"); },
         }
     }
     actions.extend(agent.and_then(|agent| super::task_node::interrupt_action(&agent.id.0, context)));

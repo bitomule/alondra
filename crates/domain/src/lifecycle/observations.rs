@@ -676,7 +676,7 @@ impl TaskLifecycle {
                 finishing.session = Session::Present(execution);
             }
             State::Finishing(_)
-            | State::Unstarted(_)
+            | State::Unstarted { .. }
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => return Err(Refusal::InvalidState),

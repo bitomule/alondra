@@ -17,6 +17,8 @@ pub enum Verb {
     AskPr,
     Conflicts,
     Msg,
+    /// Keep a message on the task named as the subject, even before it has a node.
+    TaskMsg,
     Relaunch,
     Close,
     Interrupt,
@@ -88,7 +90,7 @@ pub enum Verb {
     AccountAdd,
 }
 impl Verb {
-    pub const ALL: [Self; 61] = [
+    pub const ALL: [Self; 62] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -104,6 +106,7 @@ impl Verb {
         Self::AskPr,
         Self::Conflicts,
         Self::Msg,
+        Self::TaskMsg,
         Self::Relaunch,
         Self::Close,
         Self::Interrupt,
@@ -168,6 +171,7 @@ impl Verb {
             Self::AskPr => "ask_pr",
             Self::Conflicts => "conflicts",
             Self::Msg => "msg",
+            Self::TaskMsg => "task_msg",
             Self::Relaunch => "relaunch",
             Self::Close => "close",
             Self::Interrupt => "interrupt",
