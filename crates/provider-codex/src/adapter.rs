@@ -308,6 +308,11 @@ impl CodexWorker {
     pub fn find_host(&mut self, grant: &OwnerGrant, state: &AdapterState) -> Result<Found, AdapterError> {
         self.adapter.find_host(grant, state)
     }
+    /// The ended host `find_host` claimed, still locked: a claim released and taken again can find
+    /// the lock held by a child forked meanwhile that has not yet exec'd.
+    pub fn take_ended(&mut self) -> Option<EndedHost> {
+        self.adapter.ended.take().map(|(ended, _)| ended)
+    }
     /// Launches a fresh host for the same execution once the evidence of the ended one is
     /// committed; its first input resumes the stored native session when `resume`.
     pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> {

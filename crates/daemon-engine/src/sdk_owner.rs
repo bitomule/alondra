@@ -755,6 +755,14 @@ pub(crate) fn end_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend,
     take(domain, backend, task, None, false).map(drop)
 }
 
+/// `end_unowned_host`, keeping the ended host's folder locked from the moment its end was read:
+/// the proof that nothing of the host writes any more is never released and taken again.
+pub(crate) fn end_and_claim_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<Option<alondra_agent_runtime::owned_host::EndedHost>, Failed> {
+    let mut claimed = None;
+    take_host_into(domain, backend, task, None, false, true, false, &mut claimed)?;
+    Ok(claimed)
+}
+
 fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool) -> Result<Option<Driver>, Failed> {
     take_host(domain, backend, task, plugin, relaunch, true,false)
 }
@@ -764,6 +772,12 @@ fn take(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: 
 /// `end_refused`, it is ended by the lock it holds and the execution is taken again, now with a
 /// host that ended. A live host of a release this one can carry on with is adopted as it runs.
 fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool) -> Result<Option<Driver>, Failed> {
+    take_host_into(domain, backend, task, plugin, relaunch, end_refused, explicit_account_retry, &mut None)
+}
+
+/// `take_host`, which without `relaunch` leaves in `claimed` the ended host's folder it claimed, still locked.
+#[allow(clippy::too_many_arguments)]
+fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<alondra_agent_runtime::owned_host::EndedHost>) -> Result<Option<Driver>, Failed> {
     let _in_hand = InHand::new(&domain, &task);
     if relaunch { crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?; }
     let base_backend = backend;
@@ -812,7 +826,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host did not stop: {error}")))?;
-            return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
         let live_scope=if worker.provider()==Provider::Codex{adapter_state.checkpoint().and_then(|checkpoint|alondra_provider_codex::live_scope(checkpoint.bytes()))}else{None};
         if let Err(error) = worker.adopt_owner(grant, adapter_state) {
@@ -824,12 +838,12 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
-            return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
         if worker.native_liveness().map_err(adapter("checking the adopted native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
             worker.stop().map_err(adapter("stopping the adopted host without its app-server"))?;
             drop(worker);
-            return take_host(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
         if worker.runs_another_release() {
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
@@ -922,7 +936,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
         Ok(())
     })
     .map_err(failed("recording the end of the host"))?;
-    if !relaunch{return Ok(None)}
+    if !relaunch{*claimed=worker.take_ended();return Ok(None)}
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     let refused=adapter_state.checkpoint().and_then(|checkpoint|alondra_provider_codex::blocked_policy(checkpoint.bytes()))
         .or_else(||journal.events().iter().find_map(|event|alondra_provider_codex::account_refusal(&OrderedObservation{owner_generation,execution:stamp.clone(),cursor:event.cursor,evidence:event.payload.clone()})).map(str::to_owned));

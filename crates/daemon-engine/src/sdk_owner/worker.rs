@@ -67,6 +67,7 @@ impl Worker {
             Self::Codex(worker) => match worker.find_host(grant, state)? { alondra_provider_codex::Found::Live => Found::Live, alondra_provider_codex::Found::Ended(journal) => Found::Ended(EndedJournal::Codex(journal)) },
         })
     }
+    pub fn take_ended(&mut self) -> Option<alondra_agent_runtime::owned_host::EndedHost> { dispatch!(self, take_ended) }
     pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> { dispatch!(self, relaunch, grant, state, base, resume, environment) }
     pub fn reconcile(&mut self, bytes: &[u8]) -> Result<Handoff, AdapterError> { dispatch!(self, reconcile, bytes) }
     pub fn continue_session(&mut self, session: &str) -> Result<(), AdapterError> { dispatch!(self, continue_session, session) }

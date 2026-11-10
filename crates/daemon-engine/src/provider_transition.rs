@@ -194,11 +194,7 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
 fn end_source(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
     domain.own(scope(domain)?,|owner|owner.validate_selection_binding(plan)).map_err(store_failure)?;
     let alive=!matches!(EndedHost::claim(&plan.source.host_directory),Ok(Retained::Ended(_)));
-    if alive || !host_ended(domain,&plan.task)?{
-        let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
-        domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
-        crate::sdk_owner::end_unowned_host(Arc::clone(domain),backend,plan.task.clone()).map_err(failure)?;
-    }
+    if alive || !host_ended(domain,&plan.task)?{end_and_fence(domain,plan)?;}
     ensure_fence(domain,plan)?;
     let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
     domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure).map(drop)
@@ -216,6 +212,18 @@ fn host_ended(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
 fn ready_to_start(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
     let read=domain.read();let lifecycle=read.state().lifecycle_of(task)?;
     Ok(!lifecycle.pending_inputs().is_empty() && matches!(lifecycle.live(),Some(alondra_domain::LiveState::Working(_)|alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Gate))))
+}
+/// Stops the source's host and commits its end, keeping as the fence the folder the end was read
+/// from, still locked: a lock released and taken again can be held meanwhile by a child this
+/// daemon forked that has not exec'd yet, which would read as a host that still runs.
+fn end_and_fence(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
+    let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
+    domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
+    let claimed=crate::sdk_owner::end_and_claim_unowned_host(Arc::clone(domain),backend,plan.task.clone()).map_err(failure)?;
+    if let Some(proof)=claimed.filter(|proof|proof.state_dir()==plan.source.host_directory){
+        domain.selection_changes.fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
+    }
+    ensure_fence(domain,plan)
 }
 fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
     if domain.selection_changes.fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
@@ -283,10 +291,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                     let now=current(domain,task)?.unwrap();phase(domain,&now,Phase::Done,json!({"same_host":true}))?;return Ok(Phase::Done)
                 }
                 if !available || !matches!(classify(plan),SelectionTransition::ApplyNextTurn){return Err(failure("The existing native session cannot apply this model change; create a new node"))}
-                let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
-                domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
-                crate::sdk_owner::end_unowned_host(Arc::clone(domain),backend,task.clone()).map_err(failure)?;
-                ensure_fence(domain,plan)?;
+                end_and_fence(domain,plan)?;
                 let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
                 domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure)?;
             }
