@@ -48,6 +48,9 @@ pub struct LiveSnapshot {
     /// When each open task last changed state, by task id: the Tasks list says since when its fact holds.
     #[serde(default)]
     pub task_since: BTreeMap<String, String>,
+    /// When the usage limit that holds each task resets, by task id, when Claude said.
+    #[serde(default)]
+    pub task_usage_until: BTreeMap<String, String>,
     /// When each open or finished task first started running and, once it is over, when it ended.
     #[serde(default)]
     pub task_started: BTreeMap<String, LiveTaskStart>,

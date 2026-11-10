@@ -606,6 +606,9 @@ async fn gather_inner(
         }).collect();
         (since, started, reasons.into_iter().map(|(task, reason)| (task.0, reason)).collect())
     };
+    let task_usage_until = if clock_only { BTreeMap::new() } else {
+        state.usage_resets_by_task(now).into_iter().map(|(task, resets_at)| (task.0, timestamp(resets_at))).collect()
+    };
     let task_options = state.tasks.values().map(|task| {
         let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { effort })
@@ -642,6 +645,7 @@ async fn gather_inner(
         task_history: keyed.task_history,
         task_options,
         task_since,
+        task_usage_until,
         task_started,
         cancel_reasons,
         task_costs,
