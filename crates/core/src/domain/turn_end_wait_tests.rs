@@ -1,5 +1,5 @@
 //! A turn that ends while its node waits on something Alondra recorded (the orchestrator's answer
-//! to its message, a suggestion, a question to the user, another task) is not empty: its lifecycle
+//! to its message, a question to the user, another task) is not empty: its lifecycle
 //! records that wait, no card says it stopped, nobody hears of it, every client says what the task
 //! waits for, and the fact that ends the wait reaches the node and moves the task on. A turn with
 //! nothing of that kind wakes the node once, and the next one is a case for the orchestrator,
@@ -165,8 +165,11 @@ fn an_orchestrator_answer_given_before_the_turn_ended_explains_nothing() {
     wakes(&s, &ended, &card);
 }
 
+/// A suggestion never holds the node: the turn that ends with one pending and nothing else is
+/// empty, so the node is woken at once instead of reading «Trabajando» until the orchestrator
+/// answers. Its decision still reaches the node.
 #[test]
-fn a_turn_that_ends_with_a_suggestion_pending_waits_for_the_orchestrator() {
+fn a_turn_that_ends_with_only_a_suggestion_pending_wakes_the_node() {
     let mut s = world();
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     must(&mut s, node("a"), Command::AskQuestion {
@@ -176,17 +179,11 @@ fn a_turn_that_ends_with_a_suggestion_pending_waits_for_the_orchestrator() {
         options: suggestion_options(),
     });
     let ended = end_turn(&mut s, "turn-1");
-    assert!(!notified(&ended, &card));
-    awaits(&s, &card, alondra_domain::Await::Orchestrator("p".into()));
-    assert!(pending(&s).is_empty(), "{:?}", pending(&s));
-    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Alondra(alondra_domain::Step::Answering))));
-    shows_waiting(&s, "Trabajando");
+    wakes(&s, &ended, &card);
     let settled = must(&mut s, orchestrator(), Command::SettleSuggestion {
         interaction_id: "p".into(), decision: SuggestionDecision::CurrentTask { note: "Fix it here".into() },
     });
-    assert!(told(&settled));
-    assert!(pending(&s).is_empty(), "the decision is on its way");
-    resumes(&mut s, &card);
+    assert!(told(&settled), "the decision reaches the node");
 }
 
 #[test]

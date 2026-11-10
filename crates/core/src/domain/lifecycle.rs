@@ -1585,8 +1585,9 @@ impl DomainState {
 
     /// What the node of `task` waits for as its turn ends, as Alondra recorded it: its question or
     /// request to the user still open, a pause that holds it (`wait_for_machine`), its question or
-    /// message to the orchestrator (a suggestion too) still open, or the tasks its task depends on
-    /// that are not done. The input that ends the wait reaches the node and moves the task on.
+    /// message to the orchestrator still open, or the tasks its task depends on that are not done.
+    /// A suggestion is no wait: the node goes on without its answer. The input that ends the wait
+    /// reaches the node and moves the task on.
     fn turn_await(&self, task: &TaskId) -> Option<TurnAwait> {
         let node = self.tasks.get(task)?.agent_id.clone()?;
         if let Some(card) = self.node_waits_on(task, &node, &Recipient::User, self.revision) {
@@ -1803,14 +1804,15 @@ impl DomainState {
         Some(live)
     }
 
-    /// The node's question or request to `recipient` (a message or a suggestion too) about `task`
-    /// that waits for an answer: still open, or answered after `revision`, so the answer is on its
-    /// way to the node.
+    /// The node's question or request to `recipient` (a message too) about `task` that waits for an
+    /// answer: still open, or answered after `revision`, so the answer is on its way to the node. A
+    /// suggestion never waits.
     fn node_waits_on(&self, task: &TaskId, node: &AgentId, recipient: &Recipient, revision: u64) -> Option<&InteractionId> {
         self.interactions.values().find(|i| {
             matches!(&i.scope, Scope::Task { task_id } if task_id == task)
                 && i.author == Author::Agent { agent_id: node.clone() }
                 && i.recipient == *recipient
+                && i.card.kind != CardKind::Propose
                 && !i.withdrawn
                 && !self.holds.contains_key(&i.id)
                 && match &i.payload {
@@ -1823,7 +1825,7 @@ impl DomainState {
 
     /// What the node of `task` waits for, as Alondra recorded it, for a turn that ended at
     /// `revision`: a question or request of its own to the user or the orchestrator (a message
-    /// or a suggestion too) still open, or answered after `revision` so the answer is on its way
+    /// too, never a suggestion) still open, or answered after `revision` so the answer is on its way
     /// to the node; a pause that holds it (`wait_for_machine`); or another task its task depends
     /// on, not done yet or done after `revision`, so the word that it is done is on its way.
     /// Only facts end it, never time.

@@ -1257,6 +1257,22 @@ async fn a_working_task_whose_ended_host_left_an_observation_no_owner_can_settle
     domain.stop_sdk_owners();
 }
 
+/// 2026-11-10: tasks read «Esperando a que Claude empiece» for hours, holding slots of the gate,
+/// with no host to start anything. An execution that waits for a turn to start, or for a
+/// notification to open one, is taken over when no owner holds it, as one at work is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_waiting_for_its_turn_to_start_with_no_host_of_its_own_is_taken_over() {
+    let mut node = SdkNode::resting();
+    let domain = Arc::clone(&node.domain);
+    node.tell(SDK_TASK, "Carry on");
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Starting);
+    node.lose_host();
+    crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis());
+    domain.join_retakes();
+    assert!(domain.owns_sdk_host(&AgentId(node.agent())), "a host takes the waiting turn: {:?}", node.lifecycle().activity());
+    domain.stop_sdk_owners();
+}
+
 /// 6 Nov: «Resume» on the card of a node the gate held for the disk or the machine answered «no
 /// longer available» while the node was still paused. Every pause card's Resume is taken while
 /// the card is open.

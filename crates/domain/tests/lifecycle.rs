@@ -1117,9 +1117,9 @@ fn a_turn_takes_up_the_notifications_waiting_as_it_starts_and_its_empty_end_wake
 }
 
 /// Codex reports reading a finished child's continuation after the turn that reads it has started;
-/// that turn already took it, so the report is accepted, and one for a continuation nobody left is not.
+/// that turn already took it, so the report is accepted, and a second report of it changes nothing.
 #[test]
-fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknown_one_refused() {
+fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_a_repeated_report_changes_nothing() {
     let mut task = running();
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
@@ -1127,13 +1127,9 @@ fn a_provider_reporting_the_continuation_its_turn_took_is_accepted_and_an_unknow
     apply(&mut task, Event::Tell { input: input("told"), answers: None });
     fact(&mut task, RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) });
     fact(&mut task, RuntimeFact::ContinuationConsumed { continuation: continuation("child-done") });
-    let stamp = task.execution().unwrap().clone();
-    let cursor = task.cursor().unwrap() + 1;
-    assert_eq!(
-        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::ContinuationConsumed { continuation: continuation("child-done") } }),
-        Err(Refusal::UnknownObligation),
-        "a continuation is read once"
-    );
+    let read = (task.activity(), task.turn().cloned(), task.pending_inputs().len());
+    fact(&mut task, RuntimeFact::ContinuationConsumed { continuation: continuation("child-done") });
+    assert_eq!((task.activity(), task.turn().cloned(), task.pending_inputs().len()), read, "a continuation is read once");
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("told"), unheard_card: "unheard-told".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(task.activity(), ActivityView::Resting);
 }
@@ -2854,11 +2850,9 @@ fn a_turn_claude_opens_by_itself_takes_the_place_of_the_card_and_of_a_waiting_me
     assert_eq!(asking.cards(), [(&card("question"), WaitReason::Question)], "a question the node asked still waits on its answer");
 
     let mut working = running();
-    let refused = working.apply(working.revision(), Event::Runtime {
-        stamp: working.execution().unwrap().clone(), cursor: working.cursor().unwrap() + 1,
-        fact: RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted },
-    });
-    assert_eq!(refused, Err(Refusal::CorrelationMismatch), "a turn already runs");
+    fact(&mut working, RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted });
+    assert_eq!((working.activity(), working.turn()), (ActivityView::Working, Some(&turn("own"))),
+        "Claude runs one root turn at a time: the one it opens is the one that runs");
 }
 
 /// Claude asks from a turn the task did not see start while what it was told waits for it: the
@@ -3314,4 +3308,92 @@ fn unfinished_is_refused_outside_a_resting_delivery() {
     assert_eq!(unfinished(&mut woken, Some("owed")), Err(Refusal::InvalidState), "the wake already waits");
     let mut planned = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
     assert_eq!(unfinished(&mut planned, None), Err(Refusal::InvalidState));
+}
+
+/// What the provider itself runs, folded from the facts it reported: its root turn and its work.
+#[derive(Default)]
+struct Provider {
+    turn: Option<TurnId>,
+    work: std::collections::BTreeSet<WorkId>,
+    fresh: u32,
+}
+impl Provider {
+    fn fresh(&mut self, kind: &str) -> String {
+        self.fresh += 1;
+        format!("{kind}-{}", self.fresh)
+    }
+    /// The fact of `action` the provider reports next, as it would, whatever the journal expects.
+    fn report(&mut self, task: &TaskLifecycle, action: u8, pick: usize) -> Option<RuntimeFact> {
+        let pick_from = |items: Vec<String>| (!items.is_empty()).then(|| items[pick % items.len()].clone());
+        Some(match action {
+            0 => {
+                let trigger = match pick % 3 {
+                    0 => Trigger::Input(task.pending_inputs().first().map(|input| (*input).clone()).unwrap_or_else(|| input(&self.fresh("told")))),
+                    1 => Trigger::OwnedContinuation(continuation(&self.fresh("notified"))),
+                    _ => Trigger::Unprompted,
+                };
+                let started = turn(&self.fresh("turn"));
+                self.turn = Some(started.clone());
+                RuntimeFact::TurnStarted { turn: started, trigger }
+            }
+            1 => {
+                let running = self.turn.clone().unwrap_or_else(|| turn(&self.fresh("turn")));
+                let started = work(&self.fresh("work"));
+                self.turn = Some(running.clone());
+                self.work.insert(started.clone());
+                RuntimeFact::WorkStarted { turn: running, work: started }
+            }
+            2 => {
+                let ended = pick_from(self.work.iter().map(|work| work.as_str().to_owned()).collect()).unwrap_or_else(|| self.fresh("work"));
+                self.work.remove(&work(&ended));
+                RuntimeFact::WorkEnded { work: work(&ended), continuation: continuation(&self.fresh("notified")) }
+            }
+            3 => RuntimeFact::ContinuationConsumed { continuation: continuation(&self.fresh("notified")) },
+            4 => {
+                let ended = self.turn.take()?;
+                RuntimeFact::TurnEnded { turn: ended, unheard_card: InteractionId::from(self.fresh("unheard").as_str()), wake: None, awaits: None, stalled: pick % 2 == 0 }
+            }
+            _ => return None,
+        })
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 512,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0xfac7),
+        ..ProptestConfig::default()
+    })]
+    /// 2026-11-10: the journal refused the facts its providers reported whenever they did not come
+    /// in the order it expected (a turn Claude started with an input still in the inbox, work of a
+    /// turn it never saw start, the end of that turn), and the daemon left them out. Tasks then read
+    /// «Trabajando» or «Esperando a que Claude empiece» for hours with an idle node. Whatever order
+    /// the provider reports its turns and work in, and whatever the task is told meanwhile, every
+    /// fact is taken, and the task works exactly while the provider runs a turn.
+    #[test]
+    fn the_task_works_exactly_while_its_provider_runs_a_turn(actions in prop::collection::vec((0u8..6, any::<usize>()), 1..120)) {
+        let mut task = running();
+        let mut provider = Provider { turn: task.turn().cloned(), ..Provider::default() };
+        for (action, pick) in actions {
+            if action == 5 {
+                let told = input(&provider.fresh("told"));
+                let told = task.apply(task.revision(), Event::Tell { input: told, answers: None });
+                prop_assert!(told.is_ok(), "{:?}", told);
+                continue;
+            }
+            let Some(reported) = provider.report(&task, action, pick) else { continue };
+            let stamp = task.execution().unwrap().clone();
+            let cursor = task.cursor().unwrap() + 1;
+            let taken = task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: reported.clone() });
+            prop_assert!(taken.is_ok(), "{:?} was refused ({:?}): {:?}", reported, taken, task);
+            prop_assert_eq!(task.activity() == ActivityView::Working, provider.turn.is_some(), "after {:?}: {:?}", reported, task);
+            if provider.turn.is_some() {
+                prop_assert_eq!(task.turn(), provider.turn.as_ref());
+            }
+            if task.activity() == ActivityView::OwnWork {
+                prop_assert!(!provider.work.is_empty(), "work of its own with none running: {:?}", task);
+            }
+        }
+    }
 }

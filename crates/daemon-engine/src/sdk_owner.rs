@@ -1013,13 +1013,15 @@ pub(crate) fn take_if_unowned(domain: &DomainRuntime, task: &TaskId) {
 /// How long the gate waits before it tries again to take over a task it found working unowned.
 const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
 
-/// A task whose lifecycle reads a turn at work while no owner of this daemon holds its execution:
-/// its host ended and nobody told the domain, as when an owner stops on a broken connection. It is
-/// taken over, which records the host's end, so a task never reads as running with no node; one
-/// held by a pause waits for it, and is told to go on when the pause ends.
+/// A task whose lifecycle reads anything but rest (a turn or work of its own at work, a turn to
+/// start, a notification to take up) while no owner of this daemon holds its execution: its host
+/// ended and nobody told the domain, as when an owner stops on a broken connection. It is taken
+/// over, which records the host's end, so a task never reads as running or starting with no node;
+/// one held by a pause waits for it, and is told to go on when the pause ends.
 pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
     let working: Vec<TaskId> = state.tasks.values().filter(|task| !task.over())
-        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork)))
+        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(),
+            ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)))
         .filter(|task| to_take(domain, state, &task.id))
         .map(|task| task.id.clone()).collect();
     let due: Vec<TaskId> = {

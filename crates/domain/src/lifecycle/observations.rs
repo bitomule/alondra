@@ -139,6 +139,7 @@ impl TaskLifecycle {
                     return Err(Refusal::InvalidState);
                 }
                 let trigger_unprompted = trigger == Trigger::Unprompted;
+                let mut went_on_unexpected = false;
                 let (work, continuations) = match (&execution.activity, trigger) {
                     (Activity::InputPending(expected), Trigger::Input(input))
                         if expected == &input =>
@@ -186,14 +187,17 @@ impl TaskLifecycle {
                     }
                     (Activity::Continuation(pending), Trigger::Unprompted) => (BTreeSet::new(), pending.values()),
                     (Activity::OwnWork { work, continuations }, Trigger::Unprompted) => (work.values(), continuations.clone()),
-                    _ => return Err(Refusal::CorrelationMismatch),
+                    (_, trigger) => {
+                        went_on_unexpected = true;
+                        execution.provider_turn_started(&turn, &trigger)?
+                    }
                 };
                 // Claude Code opens the turn of a notification before it reads anything else, and
                 // that turn reads every notification waiting: whatever turn starts takes them up.
                 // They stay pending until its end says what comes next, as journals before this
                 // rule recorded them.
                 let taken: BTreeSet<Wake> = continuations.iter().filter(|wake| matches!(wake, Wake::Owned(_))).cloned().collect();
-                unprompted = trigger_unprompted;
+                unprompted = trigger_unprompted || went_on_unexpected;
                 execution.activity = Activity::Turn {
                     id: turn,
                     work,
@@ -206,16 +210,22 @@ impl TaskLifecycle {
                 turn,
                 work: new_work,
             } => {
-                let Activity::Turn { id, work, .. } = &mut execution.activity else {
+                if !matches!(&execution.activity, Activity::Turn { id, .. } if *id == turn) {
+                    let (work, continuations) = execution.provider_turn_started(&turn, &Trigger::Unprompted)?;
+                    let taken = continuations.iter().filter(|wake| matches!(wake, Wake::Owned(_))).cloned().collect();
+                    execution.activity = Activity::Turn { id: turn, work, continuations, taken, stop: TurnStop::Running };
+                    unprompted = true;
+                }
+                let Activity::Turn { work, .. } = &mut execution.activity else {
                     return Err(Refusal::InvalidState);
                 };
-                if id != &turn {
-                    return Err(Refusal::CorrelationMismatch);
-                }
                 if !work.insert(new_work) {
                     return Err(Refusal::DuplicateObligation);
                 }
             }
+            // Work the journal never saw start, or saw end, leaves nothing running to end: the
+            // turn its notification opens is taken as it comes.
+            RuntimeFact::WorkEnded { work: ended, .. } if !execution.runs_work(&ended) => {}
             RuntimeFact::WorkEnded {
                 work: ended,
                 continuation,
@@ -260,23 +270,21 @@ impl TaskLifecycle {
             RuntimeFact::ContinuationConsumed { continuation } => {
                 let wake = Wake::Owned(continuation);
                 match &mut execution.activity {
+                    // A notification the journal never held pending was read: nothing waits on it.
                     Activity::Turn { continuations, taken, .. } => {
-                        let pending = continuations.remove(&wake);
-                        if !taken.remove(&wake) && !pending {
-                            return Err(Refusal::UnknownObligation);
-                        }
+                        continuations.remove(&wake);
+                        taken.remove(&wake);
                     }
                     Activity::OwnWork { continuations, .. } => {
-                        if !continuations.remove(&wake) {
-                            return Err(Refusal::UnknownObligation);
-                        }
+                        continuations.remove(&wake);
                     }
-                    _ => return Err(Refusal::InvalidState),
+                    _ => {}
                 }
             }
-            RuntimeFact::TurnEnded { turn, unheard_card, wake, awaits, stalled } => {
+            // The provider runs one root turn at a time: the end of the one it reports is the end
+            // of the one the journal runs, whatever start of it went unseen.
+            RuntimeFact::TurnEnded { unheard_card, wake, awaits, stalled, .. } => {
                 let Activity::Turn {
-                    id,
                     work,
                     continuations,
                     taken,
@@ -285,9 +293,6 @@ impl TaskLifecycle {
                 else {
                     return Err(Refusal::InvalidState);
                 };
-                if id != &turn {
-                    return Err(Refusal::CorrelationMismatch);
-                }
                 let continuations: BTreeSet<Wake> = if wake.is_some() || awaits.is_some() {
                     continuations.difference(taken).cloned().collect()
                 } else {
@@ -680,5 +685,46 @@ impl TaskLifecycle {
             return Err(Refusal::InvalidState);
         }
         Ok(())
+    }
+}
+
+impl Execution {
+    /// The provider started `turn` while the journal expected another start, or none: it runs all
+    /// the same, and a fact the provider reports is never left out. Work and notifications that
+    /// were pending go on in it, the input it took leaves the queue wherever it waited, and an
+    /// input handed to the host that it did not take waits again at the front.
+    fn provider_turn_started(&mut self, turn: &TurnId, trigger: &Trigger) -> Result<(BTreeSet<WorkId>, BTreeSet<Wake>), Refusal> {
+        let (work, mut continuations) = match &self.activity {
+            Activity::Turn { id, .. } if id == turn => return Err(Refusal::DuplicateObligation),
+            Activity::Turn { work, continuations, .. } => (work.clone(), continuations.clone()),
+            Activity::OwnWork { work, continuations } => (work.values(), continuations.clone()),
+            Activity::Continuation(pending) => (BTreeSet::new(), pending.values()),
+            Activity::InputPending(expected) => {
+                self.inbox.push_front(expected.clone());
+                (BTreeSet::new(), BTreeSet::new())
+            }
+            Activity::Launching(_) => return Err(Refusal::InvalidState),
+            Activity::Awaiting(_) | Activity::Resting => (BTreeSet::new(), BTreeSet::new()),
+        };
+        match trigger {
+            Trigger::Input(input) => {
+                self.inbox.replace(input, None);
+            }
+            Trigger::OwnedContinuation(continuation) => {
+                continuations.remove(&Wake::Owned(continuation.clone()));
+            }
+            Trigger::Unprompted => {}
+        }
+        Ok((work, continuations))
+    }
+}
+
+impl Execution {
+    fn runs_work(&self, work: &WorkId) -> bool {
+        match &self.activity {
+            Activity::Turn { work: running, .. } => running.contains(work),
+            Activity::OwnWork { work: running, .. } => running.iter().any(|running| running == work),
+            _ => false,
+        }
     }
 }
