@@ -1,6 +1,6 @@
 //! Two Claude accounts on one Mac: its own profile, the default account, and Trabajo, one the
 //! user added. New work starts on the account with the most margin; a task whose account ran out
-//! or lost its sign-in waits on that account's card while new work starts on the other; the whole
+//! waits for it as its state, or on its sign-in card if it lost it, while new work starts on the other; the whole
 //! Mac waits only while no account can work, and goes on on the first that can again. A started
 //! task never changes account: it waits on its own, even with moving on.
 use std::{
@@ -31,6 +31,7 @@ const DEFAULT: &str = "default";
 const ACCOUNTS: &str = "/settings/accounts";
 const CHECK: &str = "/settings/accounts/check";
 const USAGE_CARD: &str = "claude-usage-limit-";
+const USAGE_WAIT: &str = "Waiting for Claude's usage limit";
 const SIGNED_OUT_CARD: &str = "claude-signed-out-";
 const HOUR: u64 = 3_600_000;
 const WEEK_RESETS_IN: u64 = 4 * 24 * HOUR;
@@ -79,11 +80,11 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         request(report, fakes, &user, &task_script("req-acc2", "t-acc2", "Tidy the docs"), "Tidy the docs")?;
         launched_on(report, fakes, "t-acc2", DEFAULT).map(drop)
     });
-    report.case("A2", "The default account runs out: its task waits on its card and new work starts on Trabajo, with no margin left but able to work", |report| {
+    report.case("A2", "The default account runs out: its task waits for the limit as its state and new work starts on Trabajo, with no margin left but able to work", |report| {
         mac.write_usage(DEFAULT, 100.0, 30.0, now_ms() + HOUR)?;
         mac.refuse(DEFAULT, Some("rate_limit"))?;
         message(report, &user, "t-acc2", "Also update the changelog")?;
-        hold_card(report, &user, USAGE_CARD, "t-acc2", "Claude's usage limit is reached: a task waits")?;
+        usage_wait(report, &user, "t-acc2")?;
         report.step("the Mac does not wait: Trabajo can still work", || {
             let exhausted = exhausted(&user)?;
             ensure!(exhausted.is_null(), "the Mac waits for usage: {exhausted}");
@@ -102,7 +103,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         mac.write_usage(WORK, 100.0, 90.0, now_ms() + HOUR)?;
         mac.refuse(WORK, Some("rate_limit"))?;
         message(report, &user, "t-acc1", "Also run the linter")?;
-        hold_card(report, &user, USAGE_CARD, "t-acc1", "The Claude account Trabajo reached its limit: a task waits")?;
+        usage_wait(report, &user, "t-acc1")?;
         let paused = wait(report, "the whole Mac waits: no account can work", || {
             let exhausted = exhausted(&user)?;
             Ok(((!exhausted.is_null()).then_some(exhausted.clone()), format!("{exhausted}")))
@@ -142,13 +143,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         on_account(report, &again, "t-acc3", WORK)?;
         launched_on(report, fakes, "t-acc4", WORK)?;
-        wait(report, "t-acc1's card leaves Inbox once Claude answers on Trabajo", || {
-            let inbox = user.inbox()?;
-            Ok(((!inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc1-"))).then_some(()), format!("{inbox:?}")))
-        })?;
-        wait(report, "the default account's task waits on its card again after the end of the pause probed it", || {
-            let inbox = user.inbox()?;
-            Ok((inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc2-")).then_some(()), format!("{inbox:?}")))
+        usage_wait_over(report, &user, "t-acc1", "once Claude answers on Trabajo")?;
+        wait(report, "the default account's task waits for its limit again after the end of the pause probed it", || {
+            let seen = state_line(&user.view("task:t-acc2")?);
+            Ok((seen.starts_with(USAGE_WAIT).then_some(()), seen))
         })?;
         report.step("that probe is all Alondra sent it", || {
             let now = fakes.received(&session(fakes, "t-acc2")?.short)?.len();
@@ -184,17 +182,14 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         request(report, fakes, &user, &task_script("req-acc5", "t-acc5", "Update the screenshots"), "Update the screenshots")?;
         launched_on(report, fakes, "t-acc5", DEFAULT)?;
-        wait(report, "t-acc2's card leaves Inbox once Claude answers on the default account", || {
-            let inbox = user.inbox()?;
-            Ok(((!inbox.iter().any(|id| id.starts_with(USAGE_CARD) && id.contains("-t-acc2-"))).then_some(()), format!("{inbox:?}")))
-        })?;
+        usage_wait_over(report, &user, "t-acc2", "once Claude answers on the default account")?;
         report.step("t-acc4 still waits for Trabajo's sign-in", || {
             let inbox = user.inbox()?;
             ensure!(inbox.iter().any(|id| id.starts_with(SIGNED_OUT_CARD) && id.contains("-t-acc4-")), "its card left Inbox: {inbox:?}");
             Ok(())
         })
     });
-    report.case("A5", "Even with moving on, a task whose account runs out keeps its Claude session on that account and waits on its card", |report| {
+    report.case("A5", "Even with moving on, a task whose account runs out keeps its Claude session on that account and waits for the limit as its state", |report| {
         mac.refuse(WORK, None)?;
         let fourth = user.view("task:t-acc4")?;
         press(report, &user, &fourth, "cancel:", None, None, "the user cancels t-acc4, which waited for Trabajo's sign-in")?;
@@ -223,7 +218,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         mac.write_usage(DEFAULT, 100.0, 30.0, now_ms() + HOUR)?;
         mac.refuse(DEFAULT, Some("rate_limit"))?;
         message(report, &user, "t-acc5", "Also check the alt texts")?;
-        hold_card(report, &user, USAGE_CARD, "t-acc5", "Claude's usage limit is reached: a task waits")?;
+        usage_wait(report, &user, "t-acc5")?;
         report.step("its session started once and stays on the default account", || {
             ensure!(fakes.starts(&fifth.short)?.len() == 1, "it started again: {:?}", fakes.starts(&fifth.short)?);
             Ok(())
@@ -393,6 +388,29 @@ fn exhausted(user: &User) -> Result<Value> {
 fn message(report: &mut Report, user: &User, task: &str, text: &str) -> Result<()> {
     let view = user.view(&format!("task:{task}"))?;
     press(report, user, &view, "msg:", None, Some(text), &format!("the user writes to {task}: “{text}”")).map(drop)
+}
+
+/// `task` waits for its account's usage limit as its state, and Inbox holds no card for it.
+fn usage_wait(report: &mut Report, user: &User, task: &str) -> Result<()> {
+    let view = wait(report, &format!("{task} reads that it waits for the usage limit"), || {
+        let view = user.view(&format!("task:{task}"))?;
+        let seen = state_line(&view);
+        Ok((seen.starts_with(USAGE_WAIT).then_some(view), seen))
+    })?;
+    report.snapshot(&format!("task-{task}-usage-wait"), &view)?;
+    report.step(&format!("Inbox holds no usage card for {task}"), || {
+        let inbox = user.inbox()?;
+        ensure!(!inbox.iter().any(|id| id.starts_with(USAGE_CARD)), "Inbox lists {inbox:?}");
+        Ok(())
+    })
+}
+
+/// `task` no longer waits for the usage limit.
+fn usage_wait_over(report: &mut Report, user: &User, task: &str, when: &str) -> Result<()> {
+    wait(report, &format!("{task} stops waiting for the usage limit {when}"), || {
+        let seen = state_line(&user.view(&format!("task:{task}"))?);
+        Ok(((!seen.starts_with(USAGE_WAIT)).then_some(()), seen))
+    })
 }
 
 /// The card `task` waits on in Inbox, kept with its view, which must read `need`.

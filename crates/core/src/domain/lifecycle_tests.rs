@@ -858,7 +858,7 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     let usage = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "v".into(), generation: 1, turn: "turn-1".into(),
         failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
     assert_eq!((notices(&outage), notices(&usage)), (0, 0), "never announced");
-    assert_eq!(listed_holds(&s).len(), 2, "one card for the outage, one for the limit: {:?}", listed_holds(&s));
+    assert_eq!(listed_holds(&s).len(), 1, "one card for the outage; the limit waits for its reset without one: {:?}", listed_holds(&s));
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
     let limit = s.claude_held().into_iter().find(|held| held.hold == ClaudeHold::Usage).unwrap();
     assert_eq!(limit.resets_at, Some(4_102_444_800), "the reset Claude gave");
@@ -882,6 +882,37 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
 fn usage_turn(s: &mut DomainState, id: &str, resets_at: u64) {
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn: "turn-1".into(),
         failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(resets_at) }), failed: None });
+}
+#[test]
+fn the_usage_limit_is_a_wait_of_its_task_and_never_a_card_for_the_user() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let outcome = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(),
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+    assert_eq!(notices(&outcome), 0);
+    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
+    assert!(listed_holds(&s).is_empty(), "no card in Waiting for You: {:?}", listed_holds(&s));
+    assert!(s.open_user_card(&"t".into()).is_none(), "the task asks the user nothing");
+    assert!(!s.node_waits_on_user(&AgentId("a".into())), "nothing waits on the user, so the gate counts no wait on the user");
+    assert_eq!(s.usage_resets_by_task(1), BTreeMap::from([(TaskId::from("t"), 4_102_444_800_000)]), "the reset reaches the task's state");
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "the hidden card still anchors the wait");
+    must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: None });
+    assert!(matches!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::Working(_))), "the reset lets it go on");
+    assert_aggregate_rules(&s);
+}
+#[test]
+fn a_codex_limit_waits_without_a_card_and_comes_back_when_its_accounts_window_resets() {
+    use crate::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
+    let mut s = world();
+    sdk_turn_on_provider(&mut s, crate::accounts::Provider::Codex, "t", "a", "turn-1", None);
+    s.account_usage.push(AccountUsage { provider: crate::accounts::Provider::Codex, account: crate::accounts::AccountId::default_account(), plan: None, day_start: None,
+        windows: vec![UsageWindow { measured_at: 1, reading: WindowReading { kind: WindowKind::Other("codex:account:primary:10080".into()), used: Share::FULL, exhausted: true, resets_at: Some(5_000) } }] });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(),
+        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }), failed: None });
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)]);
+    assert!(listed_holds(&s).is_empty(), "no card in Waiting for You: {:?}", listed_holds(&s));
+    assert_eq!(s.usage_resets_by_task(1), BTreeMap::from([(TaskId::from("t"), 5_000)]), "the account's week says when");
+    assert_aggregate_rules(&s);
 }
 // 25 Oct, t-codex-support-design: the limit paused the task, then work of its own ended and
 // Claude opened a turn by itself that hit the limit again. The domain refused that second pause,
@@ -964,7 +995,7 @@ fn claude_answering_on_one_account_lets_only_that_accounts_held_tasks_go_on() {
     for id in ["v", "w"] {
         usage_turn(&mut s, id, 4_102_448_400);
     }
-    assert_eq!(listed_holds(&s).len(), 2, "one card per account's limit: {:?}", listed_holds(&s));
+    assert!(listed_holds(&s).is_empty(), "each account's limit waits without a card: {:?}", listed_holds(&s));
     let probed = |s: &DomainState| s.claude_held().into_iter().map(|held| (held.task.0, held.account.to_string())).collect::<Vec<_>>();
     must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Usage, account: Some(crate::accounts::AccountId::parse("work").unwrap()) });
     assert_eq!(probed(&s), [("t".into(), "default".into()), ("u".into(), "default".into()), ("w".into(), "work".into())], "the work account's reset probes one of its own");
@@ -972,7 +1003,7 @@ fn claude_answering_on_one_account_lets_only_that_accounts_held_tasks_go_on() {
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "v".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage), ("u".into(), ClaudeHold::Usage)], "the default account is still out: its tasks wait");
     assert_eq!(kinds(&s, "w").last().map(String::as_str), Some("resumed"), "the rest of the work account goes on");
-    assert_eq!(listed_holds(&s).len(), 1, "the default account's card is still listed");
+    assert!(listed_holds(&s).is_empty(), "the default account's limit still waits without a card");
     assert_aggregate_rules(&s);
 }
 
@@ -1036,7 +1067,7 @@ fn the_api_answering_on_any_account_lets_every_task_the_outage_held_go_on() {
     fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
     fail_turn(&mut s, "u", "turn-1", "overloaded", Some(529));
     usage_turn(&mut s, "v", 4_102_448_400);
-    assert_eq!(listed_holds(&s).len(), 2, "the API is one card for every account: {:?}", listed_holds(&s));
+    assert_eq!(listed_holds(&s).len(), 1, "the API is one card for every account, and the limit has none: {:?}", listed_holds(&s));
     must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None });
     turn_on_resumed(&mut s, "t", "turn-2");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });

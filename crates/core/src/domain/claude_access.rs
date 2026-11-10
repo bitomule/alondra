@@ -207,6 +207,19 @@ impl DomainState {
         held
     }
 
+    /// When the usage limit that holds each task comes back, in milliseconds: what the hold's
+    /// provider said, else when its account's windows that ran out reset.
+    pub fn usage_resets_by_task(&self, now: crate::Millis) -> BTreeMap<TaskId, crate::Millis> {
+        self.claude_held().into_iter()
+            .filter(|held| held.hold == ClaudeHold::Usage)
+            .filter_map(|held| {
+                let said = held.resets_at.and_then(|seconds| crate::Millis::try_from(seconds).ok()?.checked_mul(1000));
+                let account = || self.account_usage.iter().find(|usage| usage.provider == held.provider && usage.account == held.account)?.plan_exhausted_until(now);
+                Some((held.task, said.or_else(account)?))
+            })
+            .collect()
+    }
+
     /// What a hold's card waits for: its hold, and the account of its task unless it waits for the API.
     pub fn claude_card_waits_for(&self, card: &Interaction) -> Option<(ClaudeHold, Option<AccountId>)> {
         let hold = ClaudeHold::of(card)?;

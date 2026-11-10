@@ -670,7 +670,7 @@ impl DomainState {
         let (mut asked, mut carded) = (BTreeSet::new(), BTreeSet::new());
         for i in self.interactions.values().filter(|i| (i.recipient == Recipient::User || Self::asks_the_orchestrator(i))
             && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
-            && self.open(i) && !is_node_pause(i))
+            && self.open(i) && !self.out_of_sight(i))
         {
             if let Author::Agent { agent_id } = &i.author {
                 asked.insert(agent_id);
@@ -1055,9 +1055,10 @@ impl DomainState {
         Ok(())
     }
 
-    /// A card nobody sees: the gate's pause of a node of the Agent SDK.
+    /// A card nobody sees: the gate's pause of a node of the Agent SDK, and the wait for a usage
+    /// limit, which resumes by itself when it resets and leaves the user nothing to do.
     pub fn out_of_sight(&self, card: &Interaction) -> bool {
-        card.author == Author::System && is_node_pause(card)
+        card.author == Author::System && (is_node_pause(card) || matches!(card.system_card, Some(SystemCard::ClaudeUsage { .. })))
     }
 
     /// Whether the card named `card` is the card of a pause of the gate.

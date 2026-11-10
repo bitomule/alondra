@@ -8459,11 +8459,55 @@ fn each_live_state_reads_one_way_on_every_client() {
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
     assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Waiting for Claude to start", "Working", "Working", "Closing", "Closing",
-        "Ready for review", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit",
+        "Ready for review", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit to renew",
         "Waiting for the Claude API", "Waiting"]);
     assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Esperando a que Claude empiece", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
-        "Para revisar", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando al límite de uso de Claude",
+        "Para revisar", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando a que se renueve el límite de Claude",
         "Esperando a la API de Claude", "Esperando"]);
+}
+
+#[test]
+fn a_task_waiting_for_the_usage_limit_says_until_when_on_every_client() {
+    let state = sdk_task();
+    let waiting = alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage);
+    let mut live = LiveSnapshot::default();
+    let badge = |live: &LiveSnapshot, client, lang| {
+        let list = render_in(&state, live, client, lang, "tasks", "", Some(&waiting));
+        let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").expect("t-1 is listed");
+        let [badge] = row.badges.as_slice() else { panic!("one state, one badge: {:?}", row.badges) };
+        badge.text.clone()
+    };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert_eq!(badge(&live, client, Lang::En), "Waiting for Claude's usage limit to renew", "no reset known");
+    }
+    live.task_usage_until.insert("t-1".into(), "2026-09-30T17:40:00.000+02:00".into());
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert_eq!(badge(&live, client, Lang::En), "Waiting for Claude's usage limit to renew · 17:40");
+        assert_eq!(badge(&live, client, Lang::Es), "Esperando a que se renueve el límite de Claude · 17:40");
+    }
+}
+
+#[test]
+fn a_codex_task_waiting_for_its_usage_limit_names_codex() {
+    let mut state = sdk_task();
+    state.tasks.get_mut(&"t-1".into()).unwrap().provider = crate::accounts::Provider::Codex;
+    let waiting = alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage);
+    let mut live = LiveSnapshot::default();
+    let badge = |state: &DomainState, live: &LiveSnapshot, lang| {
+        let list = render_in(state, live, Client::Tui, lang, "tasks", "", Some(&waiting));
+        let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").expect("t-1 is listed");
+        row.badges[0].text.clone()
+    };
+    assert_eq!(badge(&state, &live, Lang::En), "Waiting for Codex's usage limit to renew");
+    live.task_usage_until.insert("t-1".into(), "2026-11-11T08:05:08.000+01:00".into());
+    assert_eq!(badge(&state, &live, Lang::En), "Waiting for Codex's usage limit to renew · 08:05");
+    assert_eq!(badge(&state, &live, Lang::Es), "Esperando a que se renueve el límite de Codex · 08:05");
+    let account = |id: &str, name: &str| crate::accounts::AccountStatus { provider: crate::accounts::Provider::Codex, id: crate::accounts::AccountId::parse(id).unwrap(), name: name.into(),
+        state: crate::accounts::AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
+    state.accounts = vec![account("default", "Personal"), account("work", "Work")];
+    state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(crate::accounts::AccountId::parse("work").unwrap());
+    assert_eq!(badge(&state, &live, Lang::En), "Waiting for Codex (Work)'s usage limit to renew · 08:05", "with two accounts it names the one that ran out");
+    assert_eq!(badge(&state, &live, Lang::Es), "Esperando a que se renueve el límite de Codex (Work) · 08:05");
 }
 
 /// On 23 October a node ended its turn behind `sleep 5900`, then behind a workflow, and its task

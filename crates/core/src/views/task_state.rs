@@ -174,6 +174,24 @@ fn claude_hold(task: &Task, context: &RenderContext<'_>) -> Option<crate::domain
     })
 }
 
+/// The provider and account whose usage limit holds the task, and when it renews.
+fn usage_wait(task: &Task, context: &RenderContext<'_>) -> String {
+    let lang = context.lang;
+    let provider = match task.provider { crate::accounts::Provider::Codex => "Codex", _ => "Claude" };
+    let account = task.account_key();
+    let sharing = context.domain.accounts.iter().filter(|status| status.provider == account.provider).count() > 1;
+    let name = context.domain.accounts.iter().find(|status| status.provider == account.provider && status.id == account.account)
+        .map(|status| status.name.as_str()).filter(|_| sharing);
+    let who = match name {
+        Some(name) => format!("{provider} ({name})"),
+        None => provider.to_owned(),
+    };
+    match context.live.task_usage_until.get(&task.id.0).and_then(|until| until.get(11..16)) {
+        Some(until) => tf!(lang, "Waiting for {who}'s usage limit to renew · {until}", "Esperando a que se renueve el límite de {who} · {until}"),
+        None => tf!(lang, "Waiting for {who}'s usage limit to renew", "Esperando a que se renueve el límite de {who}"),
+    }
+}
+
 fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     let read = context.reading(&task.id);
@@ -218,7 +236,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (TaskActivity::WaitingUser, _) => return warn(match claude_hold(task, context) {
             Some(crate::domain::ClaudeHold::SignedOut) => t!(lang, "Waiting for you to sign in to Claude", "Espera a que inicies sesión en Claude"),
             Some(crate::domain::ClaudeHold::Outage) => t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude"),
-            Some(crate::domain::ClaudeHold::Usage) => t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude"),
+            Some(crate::domain::ClaudeHold::Usage) => return warn(&usage_wait(task, context)),
             None => match context.index.mcp_wait_of_task(&task.id) {
                 Some(waiting) => {
                     let name = waiting.server.name.as_str();
@@ -320,7 +338,7 @@ fn live_state(task: &Task, live: &LiveState, shown: Shown, context: &RenderConte
             }
             _ => warn(t!(lang, "Waiting for an answer", "Esperando respuesta")),
         },
-        LiveState::WaitingCapacity(Capacity::Usage) => warn(t!(lang, "Waiting for Claude's usage limit", "Esperando al límite de uso de Claude")),
+        LiveState::WaitingCapacity(Capacity::Usage) => warn(&usage_wait(task, context)),
         LiveState::WaitingCapacity(Capacity::ClaudeApi) => warn(t!(lang, "Waiting for the Claude API", "Esperando a la API de Claude")),
         LiveState::WaitingCapacity(Capacity::Disk) => {
             let fact = match common::held_for_disk(task, context) {
