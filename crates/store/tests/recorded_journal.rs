@@ -1,4 +1,4 @@
-use alondra_domain::{ActivityView, Event, InputId, Refusal, RuntimeFact, Trigger, WaitReason};
+use alondra_domain::{ActivityView, Event, InputId, Refusal, RuntimeFact, TaskLifecycle, Trigger, TurnId, WaitReason};
 use alondra_foundation::{InteractionId, TaskId};
 use alondra_store::{AuthorityScope, LifecycleTransaction, read_journal};
 use rusqlite::{Connection, TransactionBehavior};
@@ -87,4 +87,39 @@ fn the_journal_of_a_node_that_took_turns_of_its_own_while_paused_loads_and_its_p
     let ended = task.lifecycle.advanced(73, Event::EndPause { card }).unwrap();
     assert!(ended.cards().is_empty());
     assert_eq!(ended.execution(), task.lifecycle.execution(), "the same session takes it");
+}
+
+/// 2026-11-09, a task whose host ended with an input left to resume it: its next Claude took a
+/// turn of its own, and the node rested at revision 65 with that input still in its inbox. The turn
+/// Claude then started with it was refused as not the one expected, and so was its end: once the
+/// pause ended the task read «Esperando a que Claude empiece» for hours, waiting for a turn Claude
+/// had already taken. The turn and its end are taken as Claude reports them.
+#[test]
+fn the_turn_claude_starts_with_an_input_waiting_in_the_inbox_is_taken() {
+    let directory = test_support::Directory::new();
+    let connection = recorded(&directory, include_str!("../fixtures/turn-of-a-held-input.sql"));
+    let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
+    let journal = read_journal(&connection, &scope, |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap();
+    let task = &journal[&TaskId::from("t-stuck-start")];
+    assert_eq!(task.lifecycle.revision(), 68);
+    let mut lifecycle = TaskLifecycle::planned(TaskId::from("t-stuck-start"), InputId::new("input:t-stuck-start:225535").unwrap()).unwrap();
+    for (revision, event) in task.entries[..65].iter().enumerate() {
+        lifecycle.apply(revision as u64, event.clone()).unwrap();
+    }
+    let held = InputId::new("input:t-stuck-start:240390").unwrap();
+    assert_eq!(lifecycle.activity(), ActivityView::Resting);
+    assert_eq!(lifecycle.pending_inputs(), [&held], "the input left to resume the host waits in the inbox");
+
+    let stamp = lifecycle.execution().unwrap().clone();
+    let turn = TurnId::new("claude-message:6e9fc896-c9f5-4288-8e5c-69ab7e86c919").unwrap();
+    let observed = |lifecycle: &TaskLifecycle, fact: RuntimeFact| Event::Runtime { stamp: stamp.clone(), cursor: lifecycle.cursor().unwrap() + 1, fact };
+    let started = observed(&lifecycle, RuntimeFact::TurnStarted { turn: turn.clone(), trigger: Trigger::Input(held.clone()) });
+    lifecycle.apply(65, started).unwrap();
+    assert_eq!(lifecycle.activity(), ActivityView::Working);
+    assert!(lifecycle.pending_inputs().is_empty(), "the turn took it");
+
+    let card = InteractionId::from("stalled-t-stuck-start-1-claude-message-6e9fc896-c9f5-4288-8e5c-69ab7e86c919");
+    let ended = observed(&lifecycle, RuntimeFact::TurnEnded { turn, unheard_card: card, wake: None, awaits: None, stalled: true });
+    lifecycle.apply(66, ended).unwrap();
+    assert_eq!(lifecycle.activity(), ActivityView::Resting, "nothing is left waiting for Claude to start");
 }

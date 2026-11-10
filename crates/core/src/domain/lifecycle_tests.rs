@@ -680,9 +680,12 @@ fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card()
         RuntimeObservation::WorkEnded { work: "claude-task:agent".into(), continuation: "claude-notification:agent".into() },
     ] });
     assert!(holds_slot(&s, "t"), "the continuation Claude still owes keeps the slot");
-    assert_eq!(exec(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+    let mut unowed = s.clone();
+    must(&mut unowed, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "claude-notification:other".into() },
-    ] }).unwrap_err().code, "conflict", "a turn takes up only a continuation the task owes");
+    ] });
+    assert_eq!(unowed.lifecycle_of(&"t".into()).unwrap().activity(), alondra_domain::ActivityView::Working,
+        "a turn Claude opens from a notification the task did not owe runs all the same");
     assert_eq!(exec(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnResumed { turn: "turn-2".into(), continuation: "decision-1-7".into() },
     ] }).unwrap_err().code, "invalid_input", "a decision's continuation is the domain's to consume");

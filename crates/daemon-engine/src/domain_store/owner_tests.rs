@@ -1539,9 +1539,10 @@ fn an_observation_the_adapter_refuses_is_discarded_with_why_and_the_next_one_set
 }
 
 /// Production, 2026-11-09 (t-asc-analytics-hang): a host kept reporting work of a task already
-/// delivered, and the domain refused it each time. Now the observation is discarded once, with why.
+/// delivered, and the domain refused it each time. Its provider runs that work all the same: it is
+/// recorded once, the delivery stays the user's, and nothing is discarded.
 #[test]
-fn work_observed_after_the_delivery_is_discarded_once_with_why() {
+fn work_observed_after_the_delivery_is_recorded_once() {
     let (fixture, mut store, execution) = running();
     let input = pending_input(&mut store);
     let runtime = runtime(&fixture, store);
@@ -1558,9 +1559,11 @@ fn work_observed_after_the_delivery_is_discarded_once_with_why() {
     assert!(runtime.read().state().lifecycle_of(&task()).unwrap().phase() == alondra_domain::TaskPhase::Delivered);
     let work = Normalizer::Facts(vec![Observation::WorkStarted { turn: TurnId::new("turn-1").unwrap(), work: WorkId::new("subagent").unwrap() }]);
     assert_eq!(commit(&runtime, &batch(&execution, 2), &work).unwrap(), ObservationAcceptance::Accepted);
-    assert_eq!(discarded(&fixture), vec![(2, "domain_refused".to_owned())]);
+    assert!(discarded(&fixture).is_empty());
+    let lifecycle = runtime.read().state().lifecycle_of(&task()).unwrap();
+    assert_eq!((lifecycle.phase(), lifecycle.activity()), (alondra_domain::TaskPhase::Delivered, alondra_domain::ActivityView::Working));
     assert_eq!(commit(&runtime, &batch(&execution, 2), &work).unwrap(), ObservationAcceptance::Duplicate);
-    assert_eq!(discarded(&fixture).len(), 1, "and it is not discarded again");
+    assert!(discarded(&fixture).is_empty(), "and it is not recorded again");
 }
 
 /// An observation of an owner another one replaced is not the observation's own failure: it is
