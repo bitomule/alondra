@@ -500,7 +500,7 @@ impl System for Real {
     }
 
     fn offline_audit(&self) -> Option<Result<(u64, usize), String>> {
-        self.home.join("alondra.db").exists().then(|| crate::state::audit(&self.home).map_err(|e| format!("{e:#}")))
+        crate::state::holds_event_log(&self.home).then(|| crate::state::audit(&self.home).map_err(|e| format!("{e:#}")))
     }
 
     fn startup(&self) -> Option<Record> {

@@ -1866,6 +1866,9 @@ pub(crate) fn commit_observation<N: alondra_agent_application::ObservationNormal
     let stage = |probe: bool| domain
         .own(scope.clone(), |owner| {
             let acceptance = owner.stage_observation_with_identity(binding, generation, batch, normalizer, home, probe,identity)?;
+            if probe && !owner.unrecorded().is_empty() && owner.work_is_over(batch.execution.task()) {
+                return Err(StoreError::Domain(alondra_core::domain::DomainError::new("work_is_over", owner.unrecorded().join("; "))));
+            }
             Ok((acceptance, owner.unrecorded().to_vec()))
         })
         .map(|(staged, _)| staged);

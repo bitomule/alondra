@@ -556,8 +556,9 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
             None
         }
     };
-    let prepared = prepare_workers(config, domain, backend, &node_close::Machine).await;
-    serve_domain(config, state, prepared, service).await
+    accounts::begin_initial_check(&domain);
+    let recovery = prepare_workers(config, domain.clone(), backend, &node_close::Machine);
+    serve_domain(config, state, domain, recovery, service).await
 }
 
 /// Only a recovered domain may activate the workers that claim deliveries, launch or resume nodes.
@@ -596,15 +597,14 @@ async fn prepare_workers(
 async fn serve_domain(
     config: &Config,
     state: Arc<domain_bootstrap::DomainDaemon>,
-    prepared: PreparedWorkers,
+    domain: Arc<domain_runtime::DomainRuntime>,
+    recovery: impl std::future::Future<Output = PreparedWorkers>,
     service: Option<Arc<service::Service>>,
 ) -> Result<()> {
-    let PreparedWorkers(domain) = prepared;
     let auth = state.auth();
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();
-    accounts::end_abandoned_sign_ins(&domain);
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr)
@@ -641,6 +641,10 @@ async fn serve_domain(
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .into_future();
+    let serving = tokio::spawn(server);
+    let server = async move { serving.await.unwrap_or_else(|error| Err(std::io::Error::other(error))) };
+    let PreparedWorkers(domain) = recovery.await;
+    accounts::end_abandoned_sign_ins(&domain);
     tokio::spawn(usage_pause::run(
         domain.clone(),
         push_alerts::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },

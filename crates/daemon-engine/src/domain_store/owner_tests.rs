@@ -1538,6 +1538,31 @@ fn an_observation_the_adapter_refuses_is_discarded_with_why_and_the_next_one_set
     assert_eq!(discarded(&fixture).len(), 1, "and nothing else is discarded");
 }
 
+/// Production, 2026-11-09 (t-asc-analytics-hang): a host kept reporting work of a task already
+/// delivered, and the domain refused it each time. Now the observation is discarded once, with why.
+#[test]
+fn work_observed_after_the_delivery_is_discarded_once_with_why() {
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let runtime = runtime(&fixture, store);
+    commit(&runtime, &batch(&execution, 1), &Normalizer::Turn { input, work: false }).unwrap();
+    let state = runtime.state().unwrap();
+    runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "answer-fixture-question", answer())).unwrap();
+    let state = runtime.state().unwrap();
+    let delivery = Command::PresentResult {
+        attachments: vec![], task_id: task(), interaction_id: "delivery".into(), body: "Done".into(), is_final: true, nothing_to_review: false,
+        targets: vec![alondra_core::domain::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+    };
+    runtime.execute(&agent(), &CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "deliver", delivery) }, None, || Ok(())).unwrap();
+    assert!(runtime.read().state().lifecycle_of(&task()).unwrap().phase() == alondra_domain::TaskPhase::Delivered);
+    let work = Normalizer::Facts(vec![Observation::WorkStarted { turn: TurnId::new("turn-1").unwrap(), work: WorkId::new("subagent").unwrap() }]);
+    assert_eq!(commit(&runtime, &batch(&execution, 2), &work).unwrap(), ObservationAcceptance::Accepted);
+    assert_eq!(discarded(&fixture), vec![(2, "domain_refused".to_owned())]);
+    assert_eq!(commit(&runtime, &batch(&execution, 2), &work).unwrap(), ObservationAcceptance::Duplicate);
+    assert_eq!(discarded(&fixture).len(), 1, "and it is not discarded again");
+}
+
 /// An observation of an owner another one replaced is not the observation's own failure: it is
 /// refused as before, and nothing is discarded.
 #[test]

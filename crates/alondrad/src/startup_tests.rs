@@ -78,3 +78,40 @@ async fn the_listener_is_supervised_while_release_maintenance_waits_for_the_writ
     assert!(off_runtime, "maintenance must not acquire the SQL writer on the runtime thread");
     assert!(served_while_locked, "waiting for release maintenance delayed polling the HTTP listener");
 }
+
+#[tokio::test]
+async fn the_port_answers_while_hosts_are_still_being_taken_over() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let domain = Arc::new(domain_runtime::DomainRuntime::open(&home).unwrap());
+    let state = domain_bootstrap::DomainDaemon::over_shared(&home, domain.clone()).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut config = Config::defaults();
+    config.home = home.to_path_buf();
+    config.listen = "127.0.0.1".parse().unwrap();
+    config.port = port;
+    let (_hold, held) = oneshot::channel::<()>();
+    let recovering = domain.clone();
+    let recovery = async move {
+        let _ = held.await;
+        PreparedWorkers(recovering)
+    };
+    let daemon = tokio::spawn(async move { serve_domain(&config, state, domain, recovery, None).await });
+    let connecting = async {
+        loop {
+            match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(stream) => break stream,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    };
+    let mut stream = tokio::time::timeout(std::time::Duration::from_secs(60), connecting).await
+        .expect("the port never opened while the hosts were being taken over");
+    stream.write_all(b"GET /daemon HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(!daemon.is_finished());
+    daemon.abort();
+}

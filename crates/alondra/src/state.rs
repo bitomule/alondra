@@ -35,6 +35,16 @@ fn replay(conn: &Connection, snapshot: bool) -> Result<View> {
     Ok(view)
 }
 
+/// Whether `alondra.db` in `home` is the event log the offline audit replays. The daemon keeps its
+/// state in `domain.db`, and an `alondra.db` without the log (empty, or left by another tool) has
+/// nothing to replay.
+pub fn holds_event_log(home: &Path) -> bool {
+    let Ok(conn) = Connection::open_with_flags(home.join("alondra.db"), OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
+    ["events", "snapshots"].iter().all(|table| {
+        conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |_| Ok(())).optional().is_ok_and(|found| found.is_some())
+    })
+}
+
 pub fn audit(home: &Path) -> Result<(u64, usize)> {
     let db = home.join("alondra.db");
     let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -74,6 +84,17 @@ pub fn repair_from_events(home: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use alondra_core::HookEvent;
+
+    #[test]
+    fn an_alondra_db_without_the_event_log_is_not_audited() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        Connection::open(home.join("alondra.db")).unwrap().execute_batch("CREATE TABLE unrelated (id INTEGER);").unwrap();
+        assert!(!holds_event_log(&home), "no events or snapshots tables");
+        Connection::open(home.join("alondra.db")).unwrap()
+            .execute_batch("CREATE TABLE events (seq INTEGER PRIMARY KEY, at INTEGER, body TEXT); CREATE TABLE snapshots (seq INTEGER PRIMARY KEY, body TEXT);").unwrap();
+        assert!(holds_event_log(&home));
+    }
 
     #[test]
     fn corrupt_snapshot_can_be_replaced_from_complete_log_after_backup() {
