@@ -45,7 +45,7 @@ enum SpanishTestData {
         "Changes": "Cambios", "Diff": "Diferencias", "Description": "Descripción", "Request changes": "Pedir cambios",
         "Describe the changes": "Describe los cambios", "Changes requested": "Cambios solicitados",
         "Approve": "Aprobar", "Approved": "Aprobado", "6 steps": "6 pasos", "Command": "Comando", "Yes": "Sí",
-        "Allow always": "Permitir siempre",
+        "Allow always": "Permitir siempre", "Choose an option": "Elige una opción",
         "Allows this now and stops asking in `alondra` for:\n· `make build` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n`tail` already didn't ask. You can remove it in Settings › Permissions.":
             "Permite esto ahora y en `alondra` deja de preguntar por:\n· `make build` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia\n`tail` ya no preguntaba. Puedes quitarlo en Ajustes › Permisos.", "Blocks release": "Bloquea la publicación", "Retry now": "Reintentar ahora",
         "Skip this run": "Saltar esta ejecución", "Diagnosis": "Diagnóstico", "folder not found": "carpeta no encontrada",
@@ -74,6 +74,8 @@ enum SpanishTestData {
          "Sustituye el formulario largo de programaciones por un editor compacto.\n\n- Repetición y hora en una fila\n- Opciones de lanzamiento en una hoja"),
         ("- Swipe navigation\n- Inline replies\n- Attachment previews",
          "- Navegación con gestos\n- Respuestas en línea\n- Vista previa de adjuntos"),
+        ("The review of the pull request waits for your answer.", "La revisión del pull request espera tu respuesta."),
+        ("Polish the Alondra beta", "Pulir la beta de Alondra"),
         ("The new empty state is ready; the beta ships with the copy you pick.",
          "El nuevo estado vacío está listo; la beta sale con el texto que elijas."),
         ("Swipe navigation, inline replies and attachment previews are ready for review.",

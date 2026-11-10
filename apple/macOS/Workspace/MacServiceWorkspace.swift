@@ -721,7 +721,7 @@ private struct MacViewSidebarRow: View {
             Group {
                 switch trailing {
                 case let .count(value): Text(value, format: .number)
-                case let .time(at, format): Text(ViewsDate.display(at, format: format))
+                case let .time(at, format): ViewsDateText(at, format: format)
                 case let .text(value): Text(value)
                 }
             }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
