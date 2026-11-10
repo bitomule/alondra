@@ -63,6 +63,7 @@ impl<T: PrObserver> PrObserver for Arc<T> {
 
 const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup";
 
+#[derive(Clone)]
 pub struct GhCli {
     program: PathBuf,
     branch_pr_limit: Duration,

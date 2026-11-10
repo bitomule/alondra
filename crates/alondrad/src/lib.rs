@@ -102,6 +102,7 @@ mod operation_journal;
 mod direct;
 mod domain_api;
 mod domain_bootstrap;
+mod delivery_review;
 mod domain_delivery;
 #[cfg(test)]
 mod domain_e2e_tests;
