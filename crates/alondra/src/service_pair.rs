@@ -93,6 +93,8 @@ struct CandidatePlain {
     display_name: String,
     owner_sub: String,
     session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    comparison_nonce: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -536,9 +538,18 @@ fn abandon_pending(
 }
 
 // Keep comparison, explicit approval and pending persistence in one boundary.
-// Inject only terminal I/O so adversarial candidates can exercise this actual flow.
+// The byte width is fixed here; tests exercise the same boundary with a shorter code.
 #[allow(clippy::too_many_arguments)]
 fn confirm_and_persist_candidate(
+    home: &Path, owner_sub: &str, public: &PublicMac, agreement: &SecretKey,
+    session_id: &str, expires: u64, candidate: Candidate,
+    input: &mut impl io::BufRead, output: &mut impl Write,
+) -> Result<Pending> {
+    confirm_candidate::<6>(home, owner_sub, public, agreement, session_id, expires, candidate, input, output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn confirm_candidate<const CODE_BYTES: usize>(
     home: &Path, owner_sub: &str, public: &PublicMac, agreement: &SecretKey,
     session_id: &str, expires: u64, candidate: Candidate,
     input: &mut impl io::BufRead, output: &mut impl Write,
@@ -573,8 +584,13 @@ fn confirm_and_persist_candidate(
         bail!(tr!("pairing candidate mismatch", "el candidato de emparejamiento no coincide"));
     }
     p256::PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&phone.agreement_key)?)?;
-    let fingerprint =
-        URL_SAFE_NO_PAD.encode(&Sha256::digest(URL_SAFE_NO_PAD.decode(&phone.signing_key)?)[..6]);
+    let nonce = phone.comparison_nonce.as_deref().context(tr!("Update the client before pairing again", "Actualiza el cliente antes de volver a emparejarlo"))?;
+    if URL_SAFE_NO_PAD.decode(nonce)?.len() < crate::service_client::PAIRING_NONCE_LEN {
+        bail!(tr!("invalid pairing comparison value", "valor de comparación del emparejamiento no válido"));
+    }
+    let fingerprint = URL_SAFE_NO_PAD.encode(&crate::service_client::pairing_comparison_digest(
+        &public.mac_id, session_id, &phone.signing_key, &phone.agreement_key, nonce,
+    )[..CODE_BYTES]);
     writeln!(output, "Pairing request from {}.", phone.display_name)?;
     write!(output, "Enter the 8-character code shown on that client: ")?;
     output.flush()?;
@@ -791,9 +807,7 @@ mod tests {
     #[test]
     fn substituted_candidate_cannot_persist_approval_with_original_client_code() {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-        let scratch_directory = crate::test_support::Directory::new();
-        let home=scratch_directory.parent().unwrap().join(format!("alondra-pairing-substitution-{}",URL_SAFE_NO_PAD.encode(random::<8>().unwrap())));
-        fs::create_dir(&home).unwrap();
+        let home = temp_home("pairing-substitution");
         let mac=SigningKey::from_slice(&[21;32]).unwrap();
         let agreement=SecretKey::from_slice(&[22;32]).unwrap();
         let original=SigningKey::from_slice(&[23;32]).unwrap();
@@ -805,13 +819,17 @@ mod tests {
             let key=URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes());
             let plain=CandidatePlain {device_id:"phone-test".into(),signing_key:key.clone(),
                 agreement_key:URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[agreement_byte;32]).unwrap().public_key().to_sec1_bytes()),
-                display_name:"My iPhone".into(),owner_sub:"owner".into(),session_id:"pair-test".into()};
+                display_name:"My iPhone".into(),owner_sub:"owner".into(),session_id:"pair-test".into(),
+                comparison_nonce:Some(URL_SAFE_NO_PAD.encode([5u8;16]))};
             Candidate {device_id:plain.device_id.clone(),signing_key:key,
                 envelope:Envelope::seal_random(alondra_e2e::Context {route:"mac-test",sender:"phone-test",recipient:"mac-test",
                     request_id:"pair-test",kind:"pairing",expires_at_ms:expires},
                     &serde_json::to_vec(&plain).unwrap(),signing,&agreement.public_key()).unwrap()}
         };
-        let code=URL_SAFE_NO_PAD.encode(&Sha256::digest(original.verifying_key().to_sec1_bytes())[..6]);
+        let code=crate::service_client::pairing_comparison_code("mac-test","pair-test",
+            &URL_SAFE_NO_PAD.encode(original.verifying_key().to_sec1_bytes()),
+            &URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[26;32]).unwrap().public_key().to_sec1_bytes()),
+            &URL_SAFE_NO_PAD.encode([5u8;16]));
         let answers=format!("{code}\ny\n");
         // Same displayed name, owner, session and device ID, freshly valid
         // ciphertext/signature, but attacker-controlled signing AND agreement keys.
@@ -825,7 +843,86 @@ mod tests {
             candidate(&original,26),&mut io::Cursor::new(answers.as_bytes()),&mut Vec::new()).unwrap();
         let pending: Pending=serde_json::from_slice(&fs::read(home.join("service-pairing-pending.json")).unwrap()).unwrap();
         assert_eq!(pending.phone.signing_key,URL_SAFE_NO_PAD.encode(original.verifying_key().to_sec1_bytes()));
-        fs::remove_dir_all(home).unwrap();
+    }
+
+    fn comparison_candidate(signing: &SigningKey, agreement: &SecretKey, nonce: Option<String>, expires: u64) -> Candidate {
+        let key = URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes());
+        let plain = CandidatePlain {
+            device_id: "client-test".into(), signing_key: key.clone(),
+            agreement_key: URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[26; 32]).unwrap().public_key().to_sec1_bytes()),
+            display_name: "Alondra terminal".into(), owner_sub: "owner".into(), session_id: "pair-test".into(),
+            comparison_nonce: nonce,
+        };
+        Candidate { device_id: plain.device_id.clone(), signing_key: key,
+            envelope: Envelope::seal_random(alondra_e2e::Context {
+                route: "mac-test", sender: "client-test", recipient: "mac-test", request_id: "pair-test",
+                kind: "pairing", expires_at_ms: expires,
+            }, &serde_json::to_vec(&plain).unwrap(), signing, &agreement.public_key()).unwrap() }
+    }
+
+    fn comparison_mac(agreement: &SecretKey) -> PublicMac {
+        PublicMac { mac_id: "mac-test".into(),
+            signing_key: URL_SAFE_NO_PAD.encode(SigningKey::from_slice(&[21; 32]).unwrap().verifying_key().to_sec1_bytes()),
+            agreement_key: URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes()) }
+    }
+
+    #[test]
+    fn comparison_uses_the_sealed_random_value_before_persisting() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let home = temp_home("comparison");
+        let agreement = SecretKey::from_slice(&[22; 32]).unwrap();
+        let public = comparison_mac(&agreement);
+        let original = SigningKey::from_slice(&p256::Scalar::from(314u64).to_bytes()).unwrap();
+        let original_key = original.verifying_key().to_sec1_bytes();
+        let visible_prefix = Sha256::digest(&original_key);
+        let substitute = (1..=1024u64).filter(|i| *i != 314).find_map(|i| {
+            let key = SigningKey::from_slice(&p256::Scalar::from(i).to_bytes()).unwrap();
+            (Sha256::digest(key.verifying_key().to_sec1_bytes())[..2] == visible_prefix[..2]).then_some(key)
+        }).expect("the bounded fixture contains a matching public-key prefix");
+        assert_ne!(substitute.verifying_key(), original.verifying_key());
+        let nonce = URL_SAFE_NO_PAD.encode([5u8; 16]);
+        let expires = now_ms().unwrap() + 60_000;
+        let legitimate = comparison_candidate(&original, &agreement, Some(nonce.clone()), expires);
+        let plaintext = legitimate.envelope.open(original.verifying_key(), &agreement,
+            "client-test", "mac-test", "mac-test", now_ms().unwrap()).unwrap();
+        let plain: CandidatePlain = serde_json::from_slice(&plaintext).unwrap();
+        let digest = crate::service_client::pairing_comparison_digest("mac-test", "pair-test",
+            &plain.signing_key, &plain.agreement_key, &nonce);
+        let answers = format!("{}\ny\n", URL_SAFE_NO_PAD.encode(&digest[..2]));
+        let candidate = comparison_candidate(&substitute, &agreement, Some(URL_SAFE_NO_PAD.encode([7u8; 16])), expires);
+        let result = confirm_candidate::<2>(&home, "owner", &public, &agreement, "pair-test", expires,
+            candidate, &mut io::Cursor::new(answers.as_bytes()), &mut Vec::new());
+        assert!(result.is_err(), "a different candidate must remain unapproved");
+        assert!(result.err().unwrap().to_string().contains("comparison code does not match"));
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+        let pending = confirm_candidate::<2>(&home, "owner", &public, &agreement, "pair-test", expires,
+            legitimate, &mut io::Cursor::new(answers.as_bytes()), &mut Vec::new()).unwrap();
+        assert_eq!(pending.phone.signing_key, URL_SAFE_NO_PAD.encode(original_key));
+        assert!(home.join("service-pairing-pending.json").exists());
+    }
+
+    #[test]
+    fn new_candidates_need_a_sealed_random_value_but_old_pending_files_decode() {
+        let home = temp_home("comparison-format");
+        let agreement = SecretKey::from_slice(&[22; 32]).unwrap();
+        let public = comparison_mac(&agreement);
+        let signing = SigningKey::from_slice(&[23; 32]).unwrap();
+        let expires = now_ms().unwrap() + 60_000;
+        for nonce in [None, Some(String::new()), Some("!".into()), Some(URL_SAFE_NO_PAD.encode([5u8; 15]))] {
+            let candidate = comparison_candidate(&signing, &agreement, nonce, expires);
+            let mut output = Vec::new();
+            let result = confirm_and_persist_candidate(&home, "owner", &public, &agreement, "pair-test", expires,
+                candidate, &mut io::Cursor::new(b"unused\ny\n"), &mut output);
+            assert!(result.is_err());
+            assert!(output.is_empty(), "invalid candidates are refused before confirmation");
+            assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+        }
+        let old = serde_json::json!({"session_id":"pair-test", "mac_id":"mac-test", "expires_at_ms":expires,
+            "phone":{"device_id":"client-test", "signing_key":"s", "agreement_key":"a", "display_name":"Terminal",
+                "owner_sub":"owner", "session_id":"pair-test"}});
+        let pending: Pending = serde_json::from_value(old.clone()).unwrap();
+        assert!(pending.phone.comparison_nonce.is_none());
+        assert_eq!(serde_json::to_value(pending).unwrap(), old);
     }
 
     fn temp_home(_name: &str) -> crate::test_support::Directory {
@@ -919,6 +1016,7 @@ mod tests {
                 display_name: "iPhone".into(),
                 owner_sub: "owner".into(),
                 session_id: "pair-test".into(),
+                comparison_nonce: None,
             },
         };
         fs::write(home.join("service-pairing-pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
@@ -989,6 +1087,7 @@ mod tests {
                 display_name: "iPhone".into(),
                 owner_sub: "owner".into(),
                 session_id: "pair-test".into(),
+                comparison_nonce: None,
             },
         };
         fs::write(home.join("service-pairing-pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();

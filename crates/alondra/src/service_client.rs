@@ -64,6 +64,21 @@ pub fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
+pub const PAIRING_NONCE_LEN: usize = 16;
+
+pub fn pairing_comparison_code(mac_id: &str, session_id: &str, signing_key: &str, agreement_key: &str, nonce: &str) -> String {
+    B64.encode(&pairing_comparison_digest(mac_id, session_id, signing_key, agreement_key, nonce)[..6])
+}
+
+pub(super) fn pairing_comparison_digest(mac_id: &str, session_id: &str, signing_key: &str, agreement_key: &str, nonce: &str) -> [u8; 32] {
+    let mut bytes = b"alondra-pairing-comparison\0".to_vec();
+    for field in [mac_id, session_id, signing_key, agreement_key, nonce] {
+        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(field.as_bytes());
+    }
+    Sha256::digest(bytes).into()
+}
+
 pub fn http(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .tls_config(
@@ -589,6 +604,19 @@ mod live_transfer_test;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_comparison_matches_the_swift_vector_and_frames_each_field() {
+        let fields = ["mac-test", "pair-test", "signing-key", "agreement-key", "BQUFBQUFBQUFBQUFBQUFBQ"];
+        let code = |f: [&str; 5]| pairing_comparison_code(f[0], f[1], f[2], f[3], f[4]);
+        assert_eq!(code(fields), "Sae-U6Wc");
+        for index in 0..fields.len() {
+            let mut changed = fields;
+            changed[index] = "another-value";
+            assert_ne!(code(fields), code(changed), "field {index}");
+        }
+        assert_ne!(code(["ab", "c", "s", "a", "n"]), code(["a", "bc", "s", "a", "n"]));
+    }
 
     #[test]
     fn forget_takes_off_only_the_mac_it_names() {

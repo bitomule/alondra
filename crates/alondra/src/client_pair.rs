@@ -9,7 +9,6 @@ use p256::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{
     io::{self, Write},
     time::{Duration, Instant},
@@ -136,13 +135,13 @@ pub fn pair(mac: &str, owner: &str) -> Result<Profile> {
         signing_key: B64.encode(signing.to_bytes()),
         agreement_key: B64.encode(agreement.to_bytes()),
     };
-    let fingerprint = B64.encode(&Sha256::digest(signing.verifying_key().to_sec1_bytes())[..6]);
-    // Printing only the public comparison fingerprint. Never print private keys or bearer tokens.
+    let comparison_nonce = B64.encode(service::random::<{ service::PAIRING_NONCE_LEN }>()?);
+    let fingerprint = service::pairing_comparison_code(mac, &invite.session_id, &signing_public, &agreement_public, &comparison_nonce);
     println!(
         "Terminal comparison code: {fingerprint}\nEnter this code on destination {mac}, then approve this terminal there."
     );
     let plaintext = serde_json::to_vec(
-        &json!({"device_id":profile.device_id,"signing_key":signing_public,"agreement_key":agreement_public,"display_name":"Alondra terminal","owner_sub":owner,"session_id":invite.session_id}),
+        &json!({"device_id":profile.device_id,"signing_key":signing_public,"agreement_key":agreement_public,"display_name":"Alondra terminal","owner_sub":owner,"session_id":invite.session_id,"comparison_nonce":comparison_nonce}),
     )?;
     let envelope = Envelope::seal_random(
         EnvelopeContext {

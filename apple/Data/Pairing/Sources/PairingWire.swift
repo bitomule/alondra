@@ -21,6 +21,14 @@ enum PairingWire {
         return data
     }
 
+    static func comparisonCode(macID: String, sessionID: String, signingKey: String, agreementKey: String, nonce: String) -> String {
+        var bytes = Data("alondra-pairing-comparison\0".utf8)
+        for value in [macID, sessionID, signingKey, agreementKey, nonce] {
+            appendFrame(Data(value.utf8), to: &bytes)
+        }
+        return encode(Data(SHA256.hash(data: bytes).prefix(6)))
+    }
+
     static func appendFrame(_ bytes: Data, to output: inout Data) {
         var size = UInt32(bytes.count).bigEndian
         withUnsafeBytes(of: &size) { output.append(contentsOf: $0) }

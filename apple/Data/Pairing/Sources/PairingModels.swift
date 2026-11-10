@@ -167,6 +167,7 @@ struct PairingCandidatePlain: Encodable {
     let displayName: String
     let ownerSub: String
     let sessionID: String
+    let comparisonNonce: String
 
     enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -175,6 +176,7 @@ struct PairingCandidatePlain: Encodable {
         case displayName = "display_name"
         case ownerSub = "owner_sub"
         case sessionID = "session_id"
+        case comparisonNonce = "comparison_nonce"
     }
 }
 

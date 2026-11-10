@@ -78,7 +78,7 @@ private actor FakeRelay: HTTPTransport {
             "mac_agreement_key": PairingWire.encode(macAgreement.publicKey.x963Representation),
             "device_id": candidate.deviceID,
             "phone_signing_key": candidate.signingKey,
-            "phone_agreement_key": try decryptedCandidateAgreement(candidate.envelope),
+            "phone_agreement_key": try decryptedCandidatePlaintext(candidate.envelope)["agreement_key"]!,
             "expires_at_ms": fixedNow + 600_000,
         ]
         let approvalData = try JSONSerialization.data(withJSONObject: payload)
@@ -90,7 +90,11 @@ private actor FakeRelay: HTTPTransport {
         return answer(200, try JSONSerialization.data(withJSONObject: proof), request)
     }
 
-    private func decryptedCandidateAgreement(_ envelope: Envelope) throws -> String {
+    func candidatePlaintext() throws -> [String: String] {
+        try decryptedCandidatePlaintext(try #require(candidate).envelope)
+    }
+
+    private func decryptedCandidatePlaintext(_ envelope: Envelope) throws -> [String: String] {
         let epk = try P256.KeyAgreement.PublicKey(x963Representation: PairingWire.decode(envelope.ephemeralKey)!)
         let nonce = PairingWire.decode(envelope.nonce)!
         var header = Data("alondra-e2e-envelope-v1".utf8)
@@ -114,7 +118,7 @@ private actor FakeRelay: HTTPTransport {
         let candidate = try JSONSerialization.jsonObject(with: plaintext) as! [String: String]
         #expect(candidate["owner_sub"] == "owner-1")
         #expect(candidate["session_id"] == "pair-test")
-        return candidate["agreement_key"]!
+        return candidate
     }
 
     private func verifySignedHTTP(_ request: URLRequest, signingKey: String) throws {
@@ -155,8 +159,14 @@ private actor FakeRelay: HTTPTransport {
         displayName: "Alice’s iPhone")
     #expect(try store.load() == nil)
     let candidate = try #require(await relay.candidate)
-    let publicKey = PairingWire.decode(candidate.signingKey)!
-    #expect(pending.comparisonCode == PairingWire.encode(Data(SHA256.hash(data: publicKey).prefix(6))))
+    let plain = try await relay.candidatePlaintext()
+    let nonce = try #require(plain["comparison_nonce"])
+    #expect(PairingWire.decode(nonce)?.count == 16)
+    #expect(pending.comparisonCode == PairingWire.comparisonCode(macID: "mac-1", sessionID: "pair-test",
+        signingKey: candidate.signingKey, agreementKey: try #require(plain["agreement_key"]), nonce: nonce))
+    let sent = String(decoding: requestsBody(await relay.requests), as: UTF8.self)
+    #expect(!sent.contains("comparison_nonce"))
+    #expect(!sent.contains(nonce))
     #expect(candidate.envelope.kind == "pairing")
     #expect(candidate.envelope.expiresAtMilliseconds <= pending.expiresAtMs)
     #expect(!String(decoding: requestsBody(await relay.requests), as: UTF8.self).contains("the user’s iPhone"))
@@ -169,6 +179,20 @@ private actor FakeRelay: HTTPTransport {
         $0.value(forHTTPHeaderField: "Authorization") == "Bearer oidc-token" &&
         $0.value(forHTTPHeaderField: "X-Device-Signature") != nil
     })
+}
+
+@Test func comparisonMatchesTheTerminalVectorAndChangesWithEveryField() {
+    let fields = ["mac-test", "pair-test", "signing-key", "agreement-key", "BQUFBQUFBQUFBQUFBQUFBQ"]
+    func code(_ f: [String]) -> String {
+        PairingWire.comparisonCode(macID: f[0], sessionID: f[1], signingKey: f[2], agreementKey: f[3], nonce: f[4])
+    }
+    #expect(code(fields) == "Sae-U6Wc")
+    for index in fields.indices {
+        var changed = fields
+        changed[index] = "another-value"
+        #expect(code(changed) != code(fields))
+    }
+    #expect(code(["ab", "c", "s", "a", "n"]) != code(["a", "bc", "s", "a", "n"]))
 }
 
 @Test func thePairingKeepsTheMacsIrohEndpointFromTheQR() async throws {
