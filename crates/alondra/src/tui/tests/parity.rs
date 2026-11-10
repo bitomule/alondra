@@ -350,7 +350,7 @@ fn failed_views_feed_marks_cached_tasks_as_outdated_until_recovery() {
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
     app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
-    app.on_msg(Msg::ViewFeed(Err("offline".into())));
+    app.on_msg(Msg::ViewFeed(Err(crate::client::availability::ViewFailure { error: anyhow::anyhow!("offline"), availability: crate::client::availability::Availability::Unavailable })));
     assert!(app.offline);
     assert!(screen(&mut app, 120, 26).contains("saved data · connection lost"));
     let status = app.view_status.clone().unwrap();

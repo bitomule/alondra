@@ -118,6 +118,11 @@ See [process watch](../crates/daemon-support/src/process_watch.rs),
 | Diagnostic reports (when sent) | Uses `gh api` to upload the previewed, sanitized bundle to a secret gist and create an issue linking it. Anyone with the issue's gist URL can read it. Report retrieval downloads from `gist.githubusercontent.com`. Destination comes from relay bootstrap or `report.repo`. | [Report preparation](../crates/alondra/src/report/mod.rs), [sending](../crates/alondra/src/report/send.rs), [GitHub transport](../crates/alondra/src/report/github.rs) |
 | Direct APNs (optional) | HTTPS `api.push.apple.com` or `api.sandbox.push.apple.com`, authenticated with the configured Apple key. Enrolled-service push normally goes through the relay instead. | [Push](../crates/daemon-support/src/push.rs) |
 
+When a TUI view request receives no response, the CLI probes the same configured destination
+with an empty change-feed request (`wait=0`) and a five-second availability decision deadline.
+Any HTTP response confirms connectivity; the operation still uses the transport's normal
+authentication and response validation. See [availability checks](../crates/alondra/src/client/availability.rs).
+
 DNS, proxies, provider-specific endpoints and network connections made by Homebrew, Git,
 repository commands or MCP servers depend on your configuration. This table is not a fixed
 firewall policy. The [device protocol](iroh-protocol.md) describes encryption and pairing.

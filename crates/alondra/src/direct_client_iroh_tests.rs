@@ -293,6 +293,43 @@ fn a_refusal_on_iroh_reads_as_it_does_over_http() {
 }
 
 #[test]
+fn availability_observes_direct_http_even_when_the_view_cannot_decode() {
+    let http = Http::start();
+    let terminal = terminal(&http, None);
+    let target = crate::client::Target::Direct(Arc::new(terminal.connection));
+    let client = crate::client::Client::for_target(&target, Duration::from_secs(5));
+    let failure = client.checked(&Default::default(), |client| client.views("home", None)).unwrap_err();
+    assert_eq!(failure.availability, crate::client::availability::Availability::Responding);
+    assert!(!http.received().is_empty());
+}
+
+#[test]
+fn availability_observes_http_headers_without_accepting_an_unsealed_reply() {
+    let http = Http::replying(Reply::Bare(503, r#"{"error":"busy"}"#));
+    let terminal = terminal(&http, None);
+    let connection = Arc::new(terminal.connection);
+    let target = crate::client::Target::Direct(Arc::clone(&connection));
+    let client = crate::client::Client::for_target(&target, Duration::from_secs(5));
+    let failure = client.checked(&Default::default(), |client| client.views("home", None)).unwrap_err();
+    assert_eq!(failure.availability, crate::client::availability::Availability::Responding);
+    assert_eq!(crate::client::delivery(&failure.error), crate::client::Delivery::Unanswered);
+    assert_eq!(connection.route(), None);
+    assert_eq!(http.received().len(), 1, "the HTTP response already proved connectivity");
+}
+
+#[test]
+fn availability_observes_a_direct_iroh_refusal_without_falling_back_to_http() {
+    let (http, iroh) = (Http::start(), FakeIroh::start(Behaviour::Refuse("unauthorized")));
+    let terminal = terminal(&http, Some(iroh.dial()));
+    let target = crate::client::Target::Direct(Arc::new(terminal.connection));
+    let client = crate::client::Client::for_target(&target, Duration::from_secs(5));
+    let failure = client.checked(&Default::default(), |client| client.views("home", None)).unwrap_err();
+    assert_eq!(failure.availability, crate::client::availability::Availability::Responding);
+    assert_eq!(iroh.received().len(), 1);
+    assert!(http.received().is_empty());
+}
+
+#[test]
 fn forgetting_a_mac_forgets_how_to_dial_it() {
     let http = Http::start();
     let iroh = FakeIroh::start(Behaviour::Answer);

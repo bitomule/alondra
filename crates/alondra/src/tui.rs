@@ -630,7 +630,7 @@ impl Search {
 }
 
 enum Msg {
-    ViewHome(Result<ViewDocument, String>),
+    ViewHome(Result<ViewDocument, crate::client::availability::ViewFailure>),
     /// The rows of a folded section, asked for when the user opened it.
     ViewSection {
         section: String,
@@ -640,7 +640,7 @@ enum Msg {
         key: String,
         result: Result<ViewDocument, String>,
     },
-    ViewFeed(Result<crate::client::ViewsFeed, String>),
+    ViewFeed(Result<crate::client::ViewsFeed, crate::client::availability::ViewFailure>),
     /// The daemon said which version it is and which views protocols it serves.
     Service(alondra_core::views::Service),
     /// What the binary a restart would run says it is, for that daemon version.
@@ -859,6 +859,7 @@ pub struct App {
     last_clock: i64,
     tx: SyncSender<Msg>,
     open_views: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    availability_probe: crate::client::availability::AvailabilityProbe,
     card_view_asked: Option<String>,
     screen_view_asked: Option<String>,
     view_navigation: Vec<String>,
@@ -1327,6 +1328,7 @@ impl App {
             last_clock: now_millis(),
             tx,
             open_views: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            availability_probe: Default::default(),
             card_view_asked: None,
             screen_view_asked: None,
             view_navigation: vec![],
@@ -1338,7 +1340,7 @@ impl App {
     fn start_view_feed(&self) {
         let tx = self.tx.clone();
         let open_views = self.open_views.clone();
-        view_feed::start(tx, open_views, self.target.clone());
+        view_feed::start(tx, open_views, self.target.clone(), self.availability_probe.clone());
     }
 
     /// Asks this Mac's daemon every few seconds which daemon it is, since another can take its port.
@@ -1533,10 +1535,10 @@ impl App {
         }
         self.screen_view_asked = Some(key.clone());
         self.home_view = None;
+        let probe = self.availability_probe.clone();
         self.spawn(move |tx, target| {
-            let result = Client::for_target(target, Duration::from_secs(25))
-                .views(&key, None)
-                .map_err(|e| format!("{e:#}"));
+            let client = Client::for_target(target, Duration::from_secs(25));
+            let result = client.checked(&probe, |client| client.views(&key, None));
             let _ = tx.send(Msg::ViewHome(result));
         });
     }
@@ -2096,11 +2098,11 @@ impl App {
                 Err(error) => self.fail(error),
             },
             Msg::ViewHome(Err(error)) => {
-                self.connected = false;
-                self.offline = true;
+                self.connected = error.availability == crate::client::availability::Availability::Responding;
+                self.offline = !self.connected;
+                self.screen_view_asked = None;
                 if self.home_view.is_none() {
-                    self.screen_view_asked = None;
-                    self.fail(error);
+                    self.fail(format!("{:#}", error.error));
                 }
             }
             Msg::ViewCard {
@@ -2189,12 +2191,13 @@ impl App {
                 }
                 self.connected = true;
                 self.offline = false;
+                if self.home_view.is_none() { self.load_screen_view(); }
             }
             Msg::ViewFeed(Err(error)) => {
-                self.connected = false;
-                self.offline = true;
+                self.connected = error.availability == crate::client::availability::Availability::Responding;
+                self.offline = !self.connected;
                 if self.view_status.is_none() {
-                    self.fail(error);
+                    self.fail(format!("{:#}", error.error));
                 }
             }
             Msg::ViewAction { request, result } => {

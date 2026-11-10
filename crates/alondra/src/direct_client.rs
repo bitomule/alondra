@@ -349,23 +349,35 @@ impl Connection {
         *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Down(Instant::now());
     }
 
-    fn over_iroh(&self, bytes: &[u8], request_id: &str, timeout: Duration) -> OverIroh {
+    fn over_iroh(&self, bytes: &[u8], request_id: &str, timeout: Duration, observer: Option<&crate::client::availability::ResponseObserver>) -> OverIroh {
         use crate::iroh_client::Reply;
         let Some(session) = self.iroh_session() else { return OverIroh::NotSent };
         let name = &self.mac.name;
         match session.send(bytes, timeout + Duration::from_secs(5)) {
-            Ok(Reply::Sealed(sealed)) => OverIroh::Answered(self.open(&sealed, request_id)),
+            Ok(Reply::Sealed(sealed)) => {
+                if let Some(observer) = observer { observer.received(); }
+                OverIroh::Answered(self.open(&sealed, request_id))
+            }
             Ok(Reply::Refused { error, detail }) => match error.as_str() {
-                "unauthorized" => OverIroh::Answered(Err(not_accepted(name))),
-                "idempotency_conflict" => OverIroh::Answered(Ok((409, json!({"error": "idempotency_conflict"})))),
+                "unauthorized" => {
+                    if let Some(observer) = observer { observer.received(); }
+                    OverIroh::Answered(Err(not_accepted(name)))
+                }
+                "idempotency_conflict" => {
+                    if let Some(observer) = observer { observer.received(); }
+                    OverIroh::Answered(Ok((409, json!({"error": "idempotency_conflict"}))))
+                }
                 "wrong_mac" => {
                     self.iroh_down();
                     OverIroh::NotSent
                 }
-                _ => OverIroh::Answered(Err(anyhow::Error::new(Answered {
-                    status: 400,
-                    message: detail.unwrap_or(error),
-                }))),
+                _ => {
+                    if let Some(observer) = observer { observer.received(); }
+                    OverIroh::Answered(Err(anyhow::Error::new(Answered {
+                        status: 400,
+                        message: detail.unwrap_or(error),
+                    })))
+                }
             },
             Err(failed) => {
                 *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Untried;
@@ -451,20 +463,24 @@ impl Connection {
     /// the same sealed bytes go to the next one: the Mac runs a request ID once and replays its
     /// answer.
     pub fn request(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> Result<(u16, Value)> {
+        self.request_observed(method, path, body, timeout, None)
+    }
+
+    pub(crate) fn request_observed(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<(u16, Value)> {
         let (request_id, bytes) = self.seal(method, path, body, timeout)?;
-        let sent = match self.over_iroh(&bytes, &request_id, timeout) {
+        let sent = match self.over_iroh(&bytes, &request_id, timeout, observer) {
             OverIroh::Answered(answer) => return answer,
             OverIroh::NotSent => false,
             OverIroh::Lost => true,
         };
-        let answer = self.over_http(&request_id, &bytes, timeout, sent);
+        let answer = self.over_http(&request_id, &bytes, timeout, sent, observer);
         if answer.is_ok() {
             self.learn_dial_once();
         }
         answer
     }
 
-    fn over_http(&self, request_id: &str, bytes: &[u8], timeout: Duration, mut sent: bool) -> Result<(u16, Value)> {
+    fn over_http(&self, request_id: &str, bytes: &[u8], timeout: Duration, mut sent: bool, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<(u16, Value)> {
         let deadline = Instant::now() + timeout;
         let name = &self.mac.name;
         for route in self.candidates() {
@@ -473,10 +489,11 @@ impl Connection {
                 continue;
             }
             let wait = deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(5);
-            let attempt = agent(wait)
+            let mut request = agent(wait)
                 .post(format!("http://{route}/direct/request"))
-                .header("content-type", "application/json")
-                .send(&bytes[..]);
+                .header("content-type", "application/json");
+            if observer.is_some() { request = request.config().max_redirects(0).build(); }
+            let attempt = request.send(&bytes[..]);
             let mut response = match attempt {
                 Ok(response) => response,
                 Err(_) => {
@@ -485,6 +502,7 @@ impl Connection {
                     continue;
                 }
             };
+            if let Some(observer) = observer { observer.received(); }
             let status = response.status().as_u16();
             let text = response.body_mut().with_config().limit(2 * 1024 * 1024).read_to_vec()?;
             if status == 200

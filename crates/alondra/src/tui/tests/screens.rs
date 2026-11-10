@@ -1239,7 +1239,7 @@ fn a_direct_mac_tab_says_whether_it_answers() {
     );
     assert_eq!(studio.mac_tab(false).name, "Studio");
     assert_eq!(studio.mac_tab(false).status, MacStatus::Connecting);
-    studio.on_msg(Msg::ViewHome(Err("refused".into())));
+    studio.on_msg(Msg::ViewHome(Err(crate::client::availability::ViewFailure { error: anyhow::anyhow!("unreachable"), availability: crate::client::availability::Availability::Unavailable })));
     assert_eq!(studio.mac_tab(false).status, MacStatus::Offline);
     use crate::direct_client::RouteKind;
     assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Lan)), MacStatus::Lan);
