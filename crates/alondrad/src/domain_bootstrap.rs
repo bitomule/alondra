@@ -180,9 +180,10 @@ fn local_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
     (!is_local(peer, headers)).then(|| forbidden("local request required"))
 }
 
-/// A decision taken on this Mac: loopback, JSON, no browser `Origin`, and a loopback `Host`,
-/// so a web page open on the Mac cannot approve a pairing request it created itself.
-fn local_decision_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
+/// A request from Alondra's own clients on this Mac: loopback, no browser `Origin`, and a
+/// loopback `Host`, so a web page open on the Mac is refused even under a name that resolves to
+/// this Mac.
+fn local_client_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
     if let Some(refused) = local_only(peer, headers) {
         return Some(refused);
     }
@@ -192,10 +193,16 @@ fn local_decision_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Respons
         .map(|host| host.rsplit_once(':').map_or(host, |(name, _)| name))
         .unwrap_or_default();
     let loopback_host = matches!(host, "127.0.0.1" | "localhost" | "[::1]");
-    (headers.contains_key(axum::http::header::ORIGIN)
-        || !loopback_host
-        || !crate::direct::json_body(headers))
-    .then(|| forbidden("pairing decisions come only from this Mac"))
+    (headers.contains_key(axum::http::header::ORIGIN) || !loopback_host)
+        .then(|| forbidden("pairing comes only from Alondra's own clients on this Mac"))
+}
+
+/// A decision taken on this Mac: a local client sending JSON, so a web page open on the Mac
+/// cannot approve a pairing request it created itself.
+fn local_decision_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
+    local_client_only(peer, headers).or_else(|| {
+        (!crate::direct::json_body(headers)).then(|| forbidden("pairing decisions come only from this Mac"))
+    })
 }
 
 fn pairing_refused(error: crate::direct::pairing::PairingError) -> Response {
@@ -540,13 +547,13 @@ async fn service_approve_device(
     }
 }
 
-/// A one-time code for a device on this Mac's network; only a local caller may mint one.
+/// A one-time code for a device on this Mac's network; only a local client may mint one.
 async fn new_pairing(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(refused) = local_only(&peer, &headers) {
+    if let Some(refused) = local_client_only(&peer, &headers) {
         return refused;
     }
     let url = alondra_core::config::Config::load()
@@ -566,8 +573,13 @@ struct PairBody {
 
 async fn pair(
     State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     body: Result<Json<PairBody>, JsonRejection>,
 ) -> Response {
+    if let Some(refused) = local_decision_only(&peer, &headers) {
+        return refused;
+    }
     let Ok(Json(body)) = body else {
         return crate::domain_api::domain_error(DomainError::new(
             "invalid_input",
@@ -1448,6 +1460,58 @@ mod tests {
             assert_eq!(!body.contains("pairing code"), refused, "{peer}: {body}");
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn pairing_answers_only_a_loopback_host_without_a_browser_origin() {
+        use axum::extract::connect_info::MockConnectInfo;
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let state = DomainDaemon::open(&home).unwrap();
+        let auth = state.auth();
+        let app = router(state)
+            .layer(axum::middleware::from_fn_with_state(auth.clone(), crate::auth::guard))
+            .layer(MockConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+        let paired_keys = || std::fs::read_to_string(home.join("devices.json")).unwrap_or_default();
+        let browser_headers: [&[(&str, &str)]; 3] = [
+            &[("host", "evil.example:47800"), ("origin", "http://evil.example:47800")],
+            &[("host", "127.0.0.1:47800"), ("origin", "http://evil.example:47800")],
+            &[("host", "evil.example:47800")],
+        ];
+        for (seed, extra) in browser_headers.into_iter().enumerate() {
+            let with = |mut request: reqwest::RequestBuilder| {
+                for (name, value) in extra {
+                    request = request.header(*name, *value);
+                }
+                request
+            };
+            let invite = with(client.post(format!("{base}/pairing"))).send().await.unwrap();
+            assert_eq!(invite.status(), StatusCode::FORBIDDEN, "{extra:?}: a code for a browser page");
+            let key = STANDARD.encode(SigningKey::from_slice(&[31 + seed as u8; 32]).unwrap().verifying_key().to_sec1_bytes());
+            let paired = with(client.post(format!("{base}/pair")))
+                .json(&json!({"code": auth.new_pairing_code(), "device_name": "page", "public_key": key}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(paired.status(), StatusCode::FORBIDDEN, "{extra:?}: a browser page pairs its key");
+            assert!(!paired_keys().contains(&key), "{extra:?}: the page's key was saved");
+        }
+        let invite: Value = client.post(format!("{base}/pairing")).send().await.unwrap().json().await.unwrap();
+        let key = STANDARD.encode(SigningKey::from_slice(&[41u8; 32]).unwrap().verifying_key().to_sec1_bytes());
+        let paired = client
+            .post(format!("{base}/pair"))
+            .json(&json!({"code": invite["code"], "device_name": "Mac", "public_key": key}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(paired.status(), StatusCode::OK, "the Mac's own client pairs itself");
+        assert!(paired_keys().contains(&key));
+        server.abort();
     }
 
     #[test]
