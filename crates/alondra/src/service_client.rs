@@ -398,9 +398,13 @@ impl Profile {
         body: Option<&Value>,
         timeout: Duration,
     ) -> Result<(u16, Value)> {
+        self.request_observed(method, path, body, timeout, None)
+    }
+
+    pub(crate) fn request_observed(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<(u16, Value)> {
         let home = &crate::client::config().home;
         let deadline = Instant::now() + timeout;
-        self.request_over(home, method, path, body, deadline, || self.learn_iroh(home, deadline))
+        self.request_over(home, method, path, body, deadline, || self.learn_iroh(home, deadline), observer)
     }
     fn request_over(
         &self,
@@ -410,10 +414,11 @@ impl Profile {
         body: Option<&Value>,
         deadline: Instant,
         learn: impl FnOnce() -> Option<crate::iroh_client::Dial>,
+        observer: Option<&crate::client::availability::ResponseObserver>,
     ) -> Result<(u16, Value)> {
         let (request_id, envelope) = self.seal(method, path, body, deadline)?;
         let bytes = serde_json::to_vec(&envelope)?;
-        match self.over_iroh(home, &bytes, &request_id, remaining(deadline)?, learn) {
+        match self.over_iroh(home, &bytes, &request_id, remaining(deadline)?, learn, observer) {
             iroh::OverIroh::Answered(answer) => answer,
             iroh::OverIroh::Unanswered => bail!(
                 "{} did not answer; if this was an action, check it on the Mac before repeating it",

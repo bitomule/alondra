@@ -10,6 +10,8 @@ use serde_json::Value;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
+pub(crate) mod availability;
+
 /// The name the user gave this computer, as pairing requests show it on the Mac.
 pub fn computer_name() -> String {
     std::process::Command::new("scutil")
@@ -27,6 +29,7 @@ pub fn config() -> &'static Config {
     CONFIG.get_or_init(|| Config::load().unwrap_or_else(|_| Config::defaults()))
 }
 
+#[derive(Clone)]
 pub struct Client {
     base: String,
     agent: ureq::Agent,
@@ -36,7 +39,8 @@ pub struct Client {
     timeout: Duration,
     protocol: u32,
     mcp_operation: Option<String>,
-    capabilities: std::sync::Mutex<alondra_core::views::ClientCapabilities>,
+    capabilities: std::sync::Arc<std::sync::Mutex<alondra_core::views::ClientCapabilities>>,
+    response_observer: Option<availability::ResponseObserver>,
 }
 
 /// The version the local daemon stamped on the first answer this process got from it.
@@ -289,7 +293,7 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent, pairing: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default() }
+        Client { base: format!("http://{host}:{port}"), agent, pairing: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default(), response_observer: None }
     }
 
     #[cfg(test)]
@@ -306,6 +310,7 @@ impl Client {
         client.service = self.service.clone();
         client.direct = self.direct.clone();
         client.protocol = self.protocol;
+        client.capabilities = self.capabilities.clone();
         client
     }
 
@@ -350,12 +355,13 @@ impl Client {
     pub fn with_mcp_operation(&self, identity: &str) -> Self {
         assert!(!identity.is_empty() && identity.len() <= 1024 && identity.bytes().all(|byte| byte.is_ascii_hexdigit()), "invalid MCP operation identity");
         Self { base: self.base.clone(), agent: self.agent.clone(), pairing: self.pairing.clone(), service: self.service.clone(), direct: self.direct.clone(), timeout: self.timeout,
-            protocol: self.protocol, mcp_operation: Some(identity.into()), capabilities: std::sync::Mutex::new(*self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner())) }
+            protocol: self.protocol, mcp_operation: Some(identity.into()), capabilities: self.capabilities.clone(), response_observer: None }
     }
 
     pub fn operation_id(&self) -> Option<&str> { self.mcp_operation.as_deref() }
 
     fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8], signer: Option<&Signer>) -> Result<ureq::RequestBuilder<B>> {
+        if self.response_observer.is_some() { req = req.config().max_redirects(0).build(); }
         req = req.header("x-alondra-client-version", env!("CARGO_PKG_VERSION"));
         if let Some(operation) = self.operation_id() { req = req.header("x-alondra-mcp-operation", operation); }
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
@@ -368,11 +374,12 @@ impl Client {
 
     /// The raw answer, a refusal included: domain commands read their typed error from it.
     pub(crate) fn exchange(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
+        if let Some(observer) = &self.response_observer { observer.begin_request(); }
         if let Some(service) = &self.service {
-            return service.request(method, path, body, self.timeout);
+            return service.request_observed(method, path, body, self.timeout, self.response_observer.as_ref());
         }
         if let Some(direct) = &self.direct {
-            return direct.request(method, path, body, self.timeout);
+            return direct.request_observed(method, path, body, self.timeout, self.response_observer.as_ref());
         }
         let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
         let (status, answer) = self.local(method, path, "application/json", &bytes)?;
@@ -404,6 +411,7 @@ impl Client {
             _ => self.headers(self.agent.get(url), method, path, b"", signer)?.call(),
         }
         .context(not_responding)?;
+        if let Some(observer) = &self.response_observer { observer.received(); }
         if let Some(version) = resp.headers().get("x-alondra-version").and_then(|v| v.to_str().ok()) {
             let _ = SERVICE_VERSION.set(version.to_owned());
         }
@@ -412,7 +420,7 @@ impl Client {
     }
 
     fn unsigned(&self) -> Client {
-        Client { base: self.base.clone(), agent: self.agent.clone(), pairing: None, service: None, direct: None, timeout: self.timeout, protocol: self.protocol, mcp_operation: None, capabilities: Default::default() }
+        Client { base: self.base.clone(), agent: self.agent.clone(), pairing: None, service: None, direct: None, timeout: self.timeout, protocol: self.protocol, mcp_operation: None, capabilities: Default::default(), response_observer: None }
     }
 
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -482,6 +490,10 @@ impl Client {
     }
 
     fn feed_with_capabilities(&self, cursor: Option<&str>, views: &[(&str, &str)], wait: u64) -> Result<ViewsFeed> {
+        self.get(&self.feed_path(cursor, views, wait))
+    }
+
+    fn feed_path(&self, cursor: Option<&str>, views: &[(&str, &str)], wait: u64) -> String {
         let mut query = vec![
             ("protocol", self.protocol.to_string()),
             ("client", "tui".to_owned()),
@@ -496,7 +508,7 @@ impl Client {
             query.push(("views", open));
         }
         let query = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(query).finish();
-        self.get(&format!("/changes?{query}"))
+        format!("/changes?{query}")
     }
 
     /// Submit a renderer-provided action, keeping action identifiers opaque to the TUI.
@@ -1640,7 +1652,7 @@ mod operation_tests {
             present
         });
         let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(5))).build().into();
-        let client = Client { base, agent, pairing: None, service: None, direct: None, timeout: Duration::from_secs(5), protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default() };
+        let client = Client { base, agent, pairing: None, service: None, direct: None, timeout: Duration::from_secs(5), protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default(), response_observer: None };
         let scoped = client.with_mcp_operation("abcd0123");
         assert_eq!(client.operation_id(), None); assert_eq!(scoped.operation_id(), Some("abcd0123"));
         let _: Value = client.get("/echo").unwrap(); let _: Value = scoped.get("/echo").unwrap(); let _: Value = client.get("/echo").unwrap();
@@ -1678,7 +1690,7 @@ mod operation_tests {
             observed
         });
         let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(5))).build().into();
-        let client = Client { base, agent, pairing: None, service: None, direct: None, timeout: Duration::from_secs(5), protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default() };
+        let client = Client { base, agent, pairing: None, service: None, direct: None, timeout: Duration::from_secs(5), protocol: VIEWS_PROTOCOL, mcp_operation: None, capabilities: Default::default(), response_observer: None };
         let scoped = client.with_mcp_operation("abcd0123");
         let body = serde_json::json!({"task_id":"fixture-task"});
         let first = client.domain_post("/agents/plan-mode", "fixture-capability", &body);

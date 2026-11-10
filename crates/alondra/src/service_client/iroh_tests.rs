@@ -23,7 +23,7 @@ fn home() -> crate::test_support::Directory {
 }
 
 fn read(home: &Path, learn: impl FnOnce() -> Option<Dial>) -> Result<(u16, Value)> {
-    profile().request_over(home, "GET", "/capabilities", None, Instant::now() + Duration::from_secs(5), learn)
+    profile().request_over(home, "GET", "/capabilities", None, Instant::now() + Duration::from_secs(5), learn, None)
 }
 
 #[test]
@@ -64,6 +64,32 @@ fn a_mac_iroh_cannot_reach_is_an_error_and_is_not_dialled_again() {
     let home = home();
     assert!(read(&home, || None).is_err());
     assert!(read(&home, || panic!("this process already knows iroh is down")).is_err());
+}
+
+#[test]
+fn availability_requests_retry_an_account_mac_after_it_was_unavailable() {
+    let home = home();
+    assert!(read(&home, || None).is_err());
+    let iroh = FakeIroh::start(Behaviour::Answer);
+    let observer = crate::client::availability::ResponseObserver::default();
+    let response = profile().request_over(&home, "GET", "/changes?wait=0", None,
+        Instant::now() + Duration::from_secs(5), || Some(iroh.dial()), Some(&observer)).unwrap();
+    assert_eq!(response.0, 200);
+    assert!(observer.responded());
+    assert_eq!(iroh.received().len(), 1);
+}
+
+#[test]
+fn availability_observes_a_remote_refusal_but_not_a_lost_envelope() {
+    for (behaviour, responding) in [(Behaviour::Refuse("unauthorized"), true), (Behaviour::DropAfterRequest, false)] {
+        let (home, iroh) = (home(), FakeIroh::start(behaviour));
+        crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();
+        let observer = crate::client::availability::ResponseObserver::default();
+        assert!(profile().request_over(&home, "GET", "/changes?wait=0", None,
+            Instant::now() + Duration::from_secs(5), || None, Some(&observer)).is_err());
+        assert_eq!(observer.responded(), responding);
+        assert_eq!(iroh.received().len(), 1);
+    }
 }
 
 #[test]

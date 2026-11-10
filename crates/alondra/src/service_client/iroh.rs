@@ -39,26 +39,38 @@ impl Profile {
         request_id: &str,
         timeout: Duration,
         learn: impl FnOnce() -> Option<Dial>,
+        observer: Option<&crate::client::availability::ResponseObserver>,
     ) -> OverIroh {
-        let Some(session) = self.iroh_session(home, learn) else { return OverIroh::Unanswered };
+        let Some(session) = self.iroh_session(home, learn, observer.is_some()) else { return OverIroh::Unanswered };
         match session.send(envelope, timeout + Duration::from_secs(5)) {
-            Ok(Reply::Sealed(sealed)) => OverIroh::Answered(
-                serde_json::from_slice(&sealed)
+            Ok(Reply::Sealed(sealed)) => {
+                if let Some(observer) = observer { observer.received(); }
+                OverIroh::Answered(serde_json::from_slice(&sealed)
                     .map_err(anyhow::Error::from)
                     .and_then(|response| self.open_response(response, request_id, now_ms()?)),
-            ),
+                )
+            }
             Ok(Reply::Refused { error, detail }) => match error.as_str() {
-                "idempotency_conflict" => OverIroh::Answered(Ok((409, json!({"error": "idempotency_conflict"})))),
+                "idempotency_conflict" => {
+                    if let Some(observer) = observer { observer.received(); }
+                    OverIroh::Answered(Ok((409, json!({"error": "idempotency_conflict"}))))
+                }
                 "wrong_mac" => {
                     self.set_link(home, Some(Link::Down));
                     OverIroh::Unanswered
                 }
-                "unauthorized" => OverIroh::Answered(Err(anyhow!(
+                "unauthorized" => {
+                    if let Some(observer) = observer { observer.received(); }
+                    OverIroh::Answered(Err(anyhow!(
                     "{} did not accept this terminal; run alondra mac connect {} --repair",
                     self.mac_id,
                     self.mac_id
-                ))),
-                _ => OverIroh::Answered(Err(anyhow!("{} refused the request: {}", self.mac_id, detail.unwrap_or(error)))),
+                    )))
+                }
+                _ => {
+                    if let Some(observer) = observer { observer.received(); }
+                    OverIroh::Answered(Err(anyhow!("{} refused the request: {}", self.mac_id, detail.unwrap_or(error))))
+                }
             },
             Err(_) => {
                 self.set_link(home, None);
@@ -76,11 +88,11 @@ impl Profile {
         };
     }
 
-    fn iroh_session(&self, home: &Path, learn: impl FnOnce() -> Option<Dial>) -> Option<Arc<Session>> {
+    fn iroh_session(&self, home: &Path, learn: impl FnOnce() -> Option<Dial>, retry_unavailable: bool) -> Option<Arc<Session>> {
         let key = (home.to_path_buf(), self.mac_id.clone());
         match LINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
             Some(Link::Open(session)) if !session.is_closed() => return Some(session.clone()),
-            Some(Link::Down) => return None,
+            Some(Link::Down) if !retry_unavailable => return None,
             _ => {}
         }
         let signing = self.signing().ok()?;

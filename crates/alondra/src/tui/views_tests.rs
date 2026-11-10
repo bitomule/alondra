@@ -108,7 +108,7 @@ fn failed_views_feed_marks_cached_status_offline_until_recovery() {
         }))
         .unwrap(),
     );
-    app.on_msg(Msg::ViewFeed(Err("offline".into())));
+    app.on_msg(Msg::ViewFeed(Err(crate::client::availability::ViewFailure { error: anyhow::anyhow!("offline"), availability: crate::client::availability::Availability::Unavailable })));
     assert!(app.offline);
     assert!(app.view_status.is_some());
     let status = app.view_status.clone().unwrap();
@@ -123,6 +123,100 @@ fn failed_views_feed_marks_cached_status_offline_until_recovery() {
         service: None,
     })));
     assert!(!app.offline);
+}
+
+fn http_rejection(status: u16, home: bool) -> (Client, crate::client::availability::ViewFailure) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = Client::at(format!("http://{}", listener.local_addr().unwrap()));
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with(if home { "GET /views/home?" } else { "GET /changes?" }));
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line == "\r\n" { break; }
+        }
+        write!(stream, "HTTP/1.1 {status} Refused\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+    });
+    let error = if home {
+        client.checked(&Default::default(), |client| client.views("home", None)).unwrap_err()
+    } else {
+        client.checked(&Default::default(), |client| client.feed(None, &[("search?q=release+notes", "v1")], 0)).unwrap_err()
+    };
+    server.join().unwrap();
+    (client, error)
+}
+
+#[test]
+fn http_rejected_feed_keeps_the_tui_connected_and_preserves_cached_status() {
+    for initially_offline in [false, true] {
+        for status in [401, 403, 404, 409, 422, 500, 503] {
+            let (_client, error) = http_rejection(status, false);
+            let mut app = app();
+            app.connected = !initially_offline;
+            app.offline = initially_offline;
+            app.view_status = Some(serde_json::from_value(json!({
+                "version":"1", "summary":"cached", "badge":0, "counts":[], "gauges":[],
+                "orchestrator":{"text":"Idle","tone":"neutral"}, "update":null
+            })).unwrap());
+            app.on_msg(Msg::ViewFeed(Err(error)));
+            assert!(!app.offline, "HTTP {status} proves that the daemon answered");
+            assert!(app.connected);
+            assert_eq!(app.view_status.as_ref().unwrap().summary, "cached");
+        }
+    }
+}
+
+#[test]
+fn http_rejected_home_keeps_the_tui_connected_and_preserves_cached_view() {
+    for initially_offline in [false, true] {
+        for status in [401, 403, 404, 409, 422, 500, 503] {
+            let (_client, error) = http_rejection(status, true);
+            let mut app = app();
+            app.connected = !initially_offline;
+            app.offline = initially_offline;
+            app.loaded = true;
+            app.home_view = Some(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap());
+            let cached_version = app.home_view.as_ref().unwrap().version.clone();
+            app.on_msg(Msg::ViewHome(Err(error)));
+            assert!(!app.offline, "HTTP {status} proves that the daemon answered");
+            assert!(app.connected);
+            assert!(app.loaded);
+            assert_eq!(app.home_view.as_ref().unwrap().version, cached_version);
+        }
+    }
+}
+
+#[test]
+fn a_failed_main_view_is_retried_when_the_feed_recovers() {
+    let mut app = app();
+    app.load_screen_view();
+    assert_eq!(app.spawned.borrow().len(), 1);
+    app.on_msg(Msg::ViewHome(Err(crate::client::availability::ViewFailure {
+        error: anyhow::anyhow!("unavailable"),
+        availability: crate::client::availability::Availability::Unavailable,
+    })));
+    assert!(app.offline);
+    assert!(!app.connected);
+    assert!(app.screen_view_asked.is_none());
+    let view: ViewDocument = serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap();
+    app.on_msg(Msg::ViewFeed(Ok(crate::client::ViewsFeed {
+        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        cursor: "1".into(), data_epoch: view.data_epoch.clone(), status: view.status.clone(),
+        stale: vec![], reset: false, superseded: false, service: None,
+    })));
+    assert!(app.connected);
+    assert!(!app.offline);
+    assert_eq!(app.spawned.borrow().len(), 2);
+    assert_eq!(app.screen_view_asked.as_deref(), Some("home"));
+    app.on_msg(Msg::ViewHome(Ok(view)));
+    assert!(app.loaded);
+    assert!(app.home_view.is_some());
 }
 
 fn direct_mac(id: &str) -> MacTarget {

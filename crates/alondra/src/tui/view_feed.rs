@@ -7,16 +7,18 @@ use std::{
 
 use super::Msg;
 use crate::client::{Client, Incompatible, Target, pick_protocol};
+use crate::client::availability::AvailabilityProbe;
 
 /// Fetches TUI views and drives the long poll for the open screen and selected detail.
 pub(super) fn start(
     tx: SyncSender<Msg>,
     open_views: Arc<Mutex<HashMap<String, String>>>,
     target: Target,
+    probe: AvailabilityProbe,
 ) {
     let _ = thread::Builder::new()
         .name("alondra-views-feed".into())
-        .spawn(move || run(tx, open_views, &target));
+        .spawn(move || run(tx, open_views, &target, probe));
 }
 
 /// The daemon's version and range reach the TUI from every answer that carries them; the client
@@ -36,11 +38,11 @@ fn refused(tx: &SyncSender<Msg>, client: Client, error: &anyhow::Error) -> Clien
     seen(tx, client, error.downcast_ref::<Incompatible>().and_then(|e| e.service.as_ref()))
 }
 
-fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, target: &Target) {
+fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, target: &Target, probe: AvailabilityProbe) {
     let mut client = Client::for_target(target, Duration::from_secs(70));
     let mut cursor: Option<String> = None;
     loop {
-        match client.views("home", None) {
+        match client.checked(&probe, |client| client.views("home", None)) {
             Ok(view) => {
                 client = seen(&tx, client, view.service.as_ref());
                 open_views
@@ -51,8 +53,8 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                 break;
             }
             Err(error) => {
-                client = refused(&tx, client, &error);
-                let _ = tx.send(Msg::ViewHome(Err(format!("{error:#}"))));
+                client = refused(&tx, client, &error.error);
+                let _ = tx.send(Msg::ViewHome(Err(error)));
                 thread::sleep(Duration::from_secs(2));
             }
         }
@@ -70,7 +72,7 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
             .iter()
             .map(|(key, version)| (key.as_str(), version.as_str()))
             .collect();
-        match client.feed(cursor.as_deref(), &borrowed, 20) {
+        match client.checked(&probe, |client| client.feed(cursor.as_deref(), &borrowed, 20)) {
             Ok(feed) if feed.superseded => continue,
             Ok(feed) => {
                 client = seen(&tx, client, feed.service.as_ref());
@@ -83,7 +85,7 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                 let _ = tx.send(Msg::ViewFeed(Ok(feed)));
                 for key in stale {
                     let known = snapshot.get(&key).map(String::as_str);
-                    match client.views(&key, known) {
+                    match client.checked(&probe, |client| client.views(&key, known)) {
                         Ok(view)
                             if matches!(key.as_str(), "home" | "tasks" | "schedules") =>
                         {
@@ -96,17 +98,21 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                             });
                         }
                         Err(error) => {
-                            let _ = tx.send(Msg::ViewCard {
-                                key,
-                                result: Err(format!("{error:#}")),
-                            });
+                            if matches!(key.as_str(), "home" | "tasks" | "schedules") {
+                                let _ = tx.send(Msg::ViewHome(Err(error)));
+                            } else {
+                                let _ = tx.send(Msg::ViewCard {
+                                    key,
+                                    result: Err(format!("{:#}", error.error)),
+                                });
+                            }
                         }
                     }
                 }
             }
             Err(error) => {
-                client = refused(&tx, client, &error);
-                let _ = tx.send(Msg::ViewFeed(Err(format!("{error:#}"))));
+                client = refused(&tx, client, &error.error);
+                let _ = tx.send(Msg::ViewFeed(Err(error)));
                 thread::sleep(Duration::from_secs(1));
             }
         }
