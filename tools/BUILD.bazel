@@ -60,6 +60,7 @@ sh_test(
         "public_data_allowlist.tsv",
         "//:Makefile",
     ],
+    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
     size = "small",
     tags = ["external", "local"],
 )

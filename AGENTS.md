@@ -32,8 +32,11 @@ or in the private repository that keeps it, never here.
   maintainer's name, a public IP, a device id, a credential or a private name. Replace the value; add
   a line to `tools/public_data_allowlist.tsv` only with the reason it is harmless.
   `python3 tools/public_data_guard.py --against origin/main` checks just the lines a branch adds.
-  Names that cannot be written even in the guard go one per line in a file outside the checkout that
-  `ALONDRA_PRIVATE_LITERALS` points to.
+  The maintainer's name, names of private apps or repositories and hosts are never written in this
+  repository, not even in the guard: they go one per line in a file outside the checkout that
+  `ALONDRA_PRIVATE_LITERALS` points to, which the test inherits from its environment and never
+  prints. Without that variable (a contributor's Mac) only the generic rules run, and the test
+  passes or fails on them alone.
 - Found something private already published? Tell the user with a card. Never rewrite history, close
   or delete anything on your own.
 

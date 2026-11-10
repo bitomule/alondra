@@ -35,6 +35,17 @@ class GuardTest(unittest.TestCase):
         self.root = Path(directory.name)
         (self.root / "tools").mkdir()
         self.allow("")
+        saved = os.environ.pop(guard.PRIVATE_LITERALS_ENV, None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, guard.PRIVATE_LITERALS_ENV, saved)
+        self.addCleanup(os.environ.pop, guard.PRIVATE_LITERALS_ENV, None)
+
+    def literals(self, *names):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        file = Path(outside.name, "literals.txt")
+        file.write_text("# private names\n" + "\n".join(names) + "\n")
+        os.environ[guard.PRIVATE_LITERALS_ENV] = str(file)
 
     def allow(self, text):
         (self.root / guard.ALLOWLIST).write_text(text)
@@ -57,9 +68,6 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.rules("cwd /Users/mariagarcia/Projects\n"), ["home-path"])
         self.assertEqual(self.problems("cwd /Users/ana/Projects and /Users/Shared\n"), [])
 
-    def test_the_owner_name_fails_in_any_case(self):
-        self.assertEqual(self.rules("host.DavidCollado.dev\n"), ["owner-name"])
-
     def test_a_public_address_fails_and_documentation_private_and_resolver_addresses_pass(self):
         self.assertEqual(self.rules("peer 81.40.12.7 and 2a0c:5a80::7\n"), ["public-ip", "public-ip"])
         self.assertEqual(self.problems("203.0.113.7 2001:db8::7 192.168.1.20 10.0.0.1 127.0.0.1 8.8.8.8 ::1\n"), [])
@@ -78,17 +86,29 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.rules("-----BEGIN RSA PRIVATE KEY-----\n"), ["secret"])
         self.assertEqual(self.problems("AKIAIOSFODNN7EXAMPLE sk-ant-public-loopback-fixture-only\n"), [])
 
-    def test_a_tracker_id_and_a_private_repository_fail(self):
+    def test_a_tracker_id_fails(self):
         self.assertEqual(self.rules("fixes BIT-123\n"), ["tracker-id"])
-        self.assertEqual(self.rules("bitomule/alondra-cloud#6\n"), ["private-name"])
 
-    def test_literals_from_a_file_outside_the_checkout_fail(self):
-        with tempfile.TemporaryDirectory() as outside:
-            literals = Path(outside, "literals.txt")
-            literals.write_text("# private apps\nSecretApp\n")
-            os.environ[guard.PRIVATE_LITERALS_ENV] = str(literals)
-            self.addCleanup(os.environ.pop, guard.PRIVATE_LITERALS_ENV)
-            self.assertEqual(self.rules("the secretapp release\n"), ["private-literal"])
+    def test_literals_from_a_file_outside_the_checkout_fail_without_printing_them(self):
+        self.literals("examplename", "example-private-repo")
+        problems = self.problems("host.ExampleName.dev and acme/example-private-repo#6\n")
+        self.assertEqual([p.split(": ")[1] for p in problems], ["private-literal", "private-literal"])
+        printed = "".join(problems).lower()
+        self.assertNotIn("examplename", printed)
+        self.assertNotIn("example-private-repo", printed)
+
+    def test_without_the_literals_file_the_generic_rules_still_run_and_nothing_hidden_fails(self):
+        self.assertEqual(self.problems("the examplename release\n"), [])
+        os.environ[guard.PRIVATE_LITERALS_ENV] = str(self.root / "missing.txt")
+        self.assertEqual(self.problems("the examplename release\n"), [])
+        self.assertEqual(self.rules("write to maria.garcia@gmail.com\n"), ["personal-email"])
+
+    def test_a_private_literal_entry_allows_the_file_and_is_only_checked_when_the_file_exists(self):
+        self.allow("notes.txt\tprivate-literal\t*\tkept for the migration\n")
+        self.assertEqual(self.problems("nothing private here\n"), [])
+        self.literals("examplename")
+        self.assertEqual(self.problems("the examplename release\n"), [])
+        self.assertIn("unused entry", self.problems("nothing private here\n")[0])
 
     def test_an_allowed_match_passes_and_an_unused_entry_fails(self):
         self.allow("notes.txt\tpersonal-email\tmaria.garcia@gmail.com\tthe reviewer's own test address\n")

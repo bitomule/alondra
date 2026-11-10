@@ -218,3 +218,4 @@ crates/alondrad/src/public_content.rs	if findings.len() < MAX_FINDINGS && lower.
 crates/alondrad/src/public_content.rs	if let Some(header) = line.strip_prefix("diff --git ") {	format	Git unified diff file header
 crates/alondrad/src/public_content.rs	} else if line.starts_with("@@ ") {	format	Git unified diff hunk header
 apple/Data/Transport/Sources/Errors/RegistrationFailure.swift	if status == 410, decoded?.kind == "outcome_unknown", decoded?.reason == "expired" {	own-grammar	HTTP 410 and documented JSON kind/reason tokens identify an expired registration outcome
+crates/daemon-support/src/worktree.rs	if !listed.lines().filter_map(|line| line.strip_prefix("worktree ")).any(|dir| Path::new(dir).canonicalize().ok().as_ref() == Some(&canonical)) {	format	git worktree list --porcelain

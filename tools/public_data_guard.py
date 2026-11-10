@@ -3,14 +3,15 @@
 
 This repository is public: everything committed here can be read by anyone. The guard scans every
 tracked text file (or only the lines a diff adds, with --against) for personal emails, home
-directories of real people, the owner's name, device identifiers, public IP addresses, credentials
-and names of private projects. A match is either in the allowlist next to this file (with the
+directories of real people, device identifiers, public IP addresses, credentials and tracker ids. A match is either in the allowlist next to this file (with the
 reason it is harmless) or a failure; an allowlist entry that matches nothing is a failure too, so
 the list only shrinks.
 
-Literals that must not be written down in a public file at all (names of private apps or
-repositories) go in a file outside the checkout that ALONDRA_PRIVATE_LITERALS points to: one
-case-insensitive literal per line.
+Literals that must not be written down in a public file at all (the maintainer's name, names of
+private apps or repositories, hosts) are not in this repository: they go in a file outside the
+checkout that ALONDRA_PRIVATE_LITERALS points to, one case-insensitive literal per line. A finding
+from that file never prints the literal. When the variable is unset or the file is missing, as on a
+contributor's Mac, the generic rules above still run and the check passes or fails on them alone.
 """
 import ipaddress
 import os
@@ -20,6 +21,8 @@ import sys
 from pathlib import Path
 
 ALLOWLIST = "tools/public_data_allowlist.tsv"
+ANY = "*"
+PRIVATE_RULE = "private-literal"
 PRIVATE_LITERALS_ENV = "ALONDRA_PRIVATE_LITERALS"
 OWN_FILES = {
     "tools/public_data_guard.py",
@@ -45,7 +48,6 @@ PUBLIC_ADDRESSES = {"8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "2001
 
 EMAIL = re.compile(r"(?<![\w.+/-])([A-Za-z0-9._+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b")
 HOME = re.compile(r"/Users/([A-Za-z0-9._-]+)")
-OWNER = re.compile(r"davidcollado", re.I)
 IPV4 = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.]*\d)(?!\.\d)")
 OCTETS = re.compile(r"Ipv4Addr::new\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})\)")
 IPV6 = re.compile(r"(?<![\w:.])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:.])")
@@ -63,8 +65,6 @@ SECRETS = [
 ]
 PRIVATE_NAMES = [
     ("tracker-id", re.compile(r"\bBIT-\d+\b")),
-    ("private-name", re.compile(r"alondra-cloud", re.I)),
-    ("private-name", re.compile(r"hetzner", re.I)),
 ]
 
 
@@ -85,8 +85,6 @@ def hits(line, literals):
     for m in HOME.finditer(line):
         if m.group(1).lower() not in GENERIC_HOMES and not m.group(1).startswith(("$", "{")):
             found.append(("home-path", m.group(0)))
-    for m in OWNER.finditer(line):
-        found.append(("owner-name", m.group(0)))
     spelled = [(m.group(0), ".".join(m.groups())) for m in OCTETS.finditer(line)]
     for m in IPV4.finditer(line):
         spelled.append((m.group(1), m.group(1)))
@@ -118,7 +116,7 @@ def hits(line, literals):
     lowered = line.lower()
     for literal in literals:
         if literal in lowered:
-            found.append(("private-literal", literal))
+            found.append(("private-literal", ANY))
     return found
 
 
@@ -195,13 +193,14 @@ def report(root, against=None):
     for relative in sorted(sources):
         for number, line in enumerate(sources[relative], 1):
             for rule, text in hits(line, literals):
-                key = (relative, rule, text)
-                if key in allowlist:
+                key = next((k for k in ((relative, rule, text), (relative, rule, ANY)) if k in allowlist), None)
+                if key:
                     used.add(key)
                 else:
                     problems.append(f"{relative}:{number}: {rule}: {text}")
     if not against:
-        for key in sorted(set(allowlist) - used):
+        unverifiable = {key for key in allowlist if key[1] == PRIVATE_RULE and not literals}
+        for key in sorted(set(allowlist) - used - unverifiable):
             problems.append(f"{ALLOWLIST}: unused entry {'  '.join(key)}")
     return problems
 
