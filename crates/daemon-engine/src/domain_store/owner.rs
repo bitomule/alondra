@@ -274,6 +274,12 @@ impl<'connection> OwnerTransaction<'connection> {
         &self.unrecorded
     }
 
+    /// Whether `task` is past its work: delivered, finishing or over.
+    pub(crate) fn work_is_over(&self, task: &alondra_core::domain::TaskId) -> bool {
+        use alondra_domain::TaskPhase;
+        self.draft.state.lifecycle_of(task).is_ok_and(|lifecycle| matches!(lifecycle.phase(), TaskPhase::Delivered | TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled))
+    }
+
     /// The domain's own guarded command, decided against this transaction's current state.
     /// Documents are refused: their content needs the verified store and lease of `execute_with`.
     pub(crate) fn stage_command(
