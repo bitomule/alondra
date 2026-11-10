@@ -67,106 +67,7 @@ fn agent(state: &DomainState, node: &str) -> Result<AgentId, DomainError> {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LaunchBody {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    cwd: Option<String>,
-    task: TaskId,
-    #[serde(default)]
-    prompt: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<alondra_core::accounts::Provider>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    profile: Option<alondra_core::model_selection::ModelProfile>,
-    #[serde(default, alias = "reasoning_effort")]
-    effort: Option<String>,
-    #[serde(default)]
-    approach: Option<alondra_core::options::Approach>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tags: Option<alondra_core::task_tags::TaskTags>,
-    /// What the task is and why this model: required when the orchestrator chooses the model.
-    #[serde(default)]
-    reason: Option<String>,
-    /// What a relaunch passes when the orchestrator chose the model: the one the task had.
-    #[serde(skip)]
-    relaunch_model: Option<String>,
-    /// Stops the task's current node and launches this one in its folder, keeping its files.
-    #[serde(default)]
-    replace: bool,
-    /// Orchestrators written when going over pace needed the user's word still send it.
-    #[serde(default, rename = "over_pace_ok")]
-    _over_pace_ok: bool,
-}
-
-impl LaunchBody {
-    /// The launch a stored plan describes.
-    pub(crate) fn from_plan(task: TaskId, plan: &crate::launch_plans::LaunchPlan) -> LaunchBody {
-        LaunchBody {
-            name: Some(plan.name.clone()),
-            cwd: Some(plan.cwd.clone()),
-            task,
-            prompt: plan.mission.clone(),
-            title: None,
-            model: plan.model.clone(),
-            provider: None,
-            profile: plan.role.map(|role| match role {
-                alondra_core::domain::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
-                alondra_core::domain::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
-                alondra_core::domain::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
-            }),
-            effort: plan.effort.clone(),
-            approach: plan.approach,
-            tags: plan.tags.clone(),
-            reason: plan.reason.clone(),
-            relaunch_model: None,
-            replace: false,
-            _over_pace_ok: false,
-        }
-    }
-
-    pub(crate) fn task_id(&self) -> &TaskId {
-        &self.task
-    }
-
-    /// The launch as the gate's queue keeps it, the model of a relaunch included.
-    pub(crate) fn to_queue(&self) -> Value {
-        json!({"body": serde_json::to_value(self).unwrap_or_default(), "relaunch_model": self.relaunch_model})
-    }
-
-    pub(crate) fn from_queue(stored: &Value) -> anyhow::Result<LaunchBody> {
-        let mut body: LaunchBody = serde_json::from_value(stored["body"].clone())?;
-        body.relaunch_model = stored["relaunch_model"].as_str().map(str::to_owned);
-        Ok(body)
-    }
-
-    /// What the task's stored plan fills in where the call named nothing.
-    fn with_plan(mut self, plan: Option<&crate::launch_plans::LaunchPlan>) -> LaunchBody {
-        let Some(plan) = plan else { return self };
-        self.name = self.name.or_else(|| Some(plan.name.clone()));
-        self.cwd = self.cwd.or_else(|| Some(plan.cwd.clone()));
-        self.prompt = self.prompt.or_else(|| plan.mission.clone());
-        self.approach = self.approach.or(plan.approach);
-        self.tags = self.tags.or_else(|| plan.tags.clone());
-        self.profile = self.profile.or_else(|| plan.role.map(|role| match role {
-            alondra_core::domain::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
-            alondra_core::domain::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
-            alondra_core::domain::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
-        }));
-        if self.relaunch_model.is_none() {
-            self.model = self.model.or_else(|| plan.model.clone());
-            self.effort = self.effort.or_else(|| plan.effort.clone());
-            self.reason = self.reason.or_else(|| plan.reason.clone());
-        }
-        self
-    }
-}
+pub use alondra_daemon_engine_model::LaunchBody;
 
 /// Who starts a launch: the orchestrator, or Alondra itself for a task whose time has come.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -715,7 +616,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             None => {}
         }
         let selected = resolved.selection.as_ref().and_then(|selection| selection.effective.as_ref());
-        let options = crate::sdk_owner::LaunchOptions {
+        let options = alondra_daemon_engine_model::LaunchOptions {
             provider,
             selection: resolved.selection.clone(),
             model: selected.map(|selection| selection.model.model.clone()).or_else(|| resolved.flags.model.clone()),
@@ -1142,7 +1043,7 @@ pub async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: Send
 #[serde(deny_unknown_fields)]
 pub struct LaunchPlanBody {
     task_id: TaskId,
-    launch: crate::launch_plans::LaunchPlan,
+    launch: alondra_daemon_engine_model::LaunchPlan,
 }
 
 #[derive(Deserialize)]
@@ -1231,7 +1132,7 @@ fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -
 }
 
 fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
-    replacement: Option<crate::launch_plans::LaunchPlan>, changes: Option<Value>) -> Result<Value, DomainError> {
+    replacement: Option<alondra_daemon_engine_model::LaunchPlan>, changes: Option<Value>) -> Result<Value, DomainError> {
     let _launching = Launching::begin(domain, task_id)?;
     let current = state(domain)?;
     let task = editable_plan(&current, task_id, false)?;

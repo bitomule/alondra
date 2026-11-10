@@ -437,7 +437,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
     let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let task = state.tasks.get(&handover.task).ok_or("the task is gone")?;
-    let options = crate::sdk_owner::LaunchOptions {
+    let options = alondra_daemon_engine_model::LaunchOptions {
         provider: alondra_core::accounts::Provider::Claude,
         selection: None,
         model: task.model.as_ref().map(|model| model.model.clone()),

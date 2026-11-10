@@ -3305,7 +3305,7 @@ fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
     let settings = std::fs::canonicalize(&slice.worktree).unwrap().join(crate::allow_always::SETTINGS);
     assert_eq!(crate::allow_always::allowed(&settings).unwrap(), ["Bash(make build *)"]);
     let rules = slice.domain.store.lock().unwrap().allowed_rules().unwrap();
-    assert_eq!(rules.iter().map(|rule| (rule.rule.as_str(), rule.state)).collect::<Vec<_>>(), [("make build *", crate::allow_always::RuleState::Active)]);
+    assert_eq!(rules.iter().map(|rule| (rule.rule.as_str(), rule.state)).collect::<Vec<_>>(), [("make build *", alondra_daemon_engine_model::RuleState::Active)]);
     slice.rest(&mut driver);
     assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"command": "make build"}}));
     driver.stop().unwrap();

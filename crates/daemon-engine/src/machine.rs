@@ -19,7 +19,7 @@ pub type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usa
 pub async fn run(gauges: Gauges, domain: Arc<crate::domain_runtime::DomainRuntime>) {
     sample_loop(|machine| {
         let usage = crate::usage_probe::usage(&domain, machine.at);
-        let providers = domain.read().index().providers(machine.at, &crate::node_reports::local_day(machine.at));
+        let providers = domain.read().index().providers(machine.at, &alondra_daemon_engine_model::local_day(machine.at));
         *gauges.lock_or_recover("the machine gauges") = Some((machine, usage, providers));
     }).await
 }

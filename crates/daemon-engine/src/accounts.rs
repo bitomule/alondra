@@ -181,7 +181,7 @@ pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondr
     let policy = config(home).map(|config| config.distribution.policy).unwrap_or_default();
     let read = domain.read();
     let state = read.state();
-    let day = crate::node_reports::local_day(now);
+    let day = alondra_daemon_engine_model::local_day(now);
     let chosen = alondra_core::usage::choose_account(policy, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
     drop(read);
     match chosen {
@@ -196,7 +196,7 @@ pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKe
     if account.provider != Provider::Claude { return; }
     let read = domain.read();
     let state = read.state();
-    let line = alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &crate::node_reports::local_day(now));
+    let line = alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now));
     log!("{what}: {line}");
 }
 
@@ -267,7 +267,7 @@ pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, in
     let effective_denied = !denied_tools.is_empty() || intent.native_tool_denials.as_ref().is_some_and(|tools| !tools.is_empty());
     eligible.retain(|key| config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
         && provider.is_none_or(|provider| key.provider == provider) && (!effective_denied || key.provider != Provider::Codex));
-    let mut eligible = alondra_core::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, &crate::node_reports::local_day(now));
+    let mut eligible = alondra_core::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now));
     if let Some(preferred) = preferred_account
         && let Some(at) = eligible.iter().position(|key| key == preferred) { let first = eligible.remove(at); eligible.insert(0, first); }
     if eligible.is_empty() { return Err(DomainError::new("account_unavailable", "No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it")); }
@@ -469,7 +469,7 @@ pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_core
     let (backend, _) = domain.sdk().ok_or("The native SDK host is unavailable")?;
     let backend = backend.for_provider(Provider::Codex, domain.home()).map_err(|why| why.to_string())?;
     let directory = backend.state_root.join(stamp.instance().as_str());
-    let expected = crate::sdk_owner::NativeAccountIdentity::load(&directory).map_err(|why| why.to_string())?
+    let expected = alondra_daemon_engine_model::NativeAccountIdentity::load(&directory).map_err(|why| why.to_string())?
         .ok_or("This task has no original native account identity")?;
     let native = NativeAuthAccount::load(&directory)?;
     let original = fence.state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account)
@@ -502,7 +502,7 @@ pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_core
         if report.catalog_error.is_none() { commands.push(Command::RecordModelCatalog { catalog: report.catalog }); }
         if let Some(limits) = report.rate_limits {
             let reading = alondra_core::codex_account::parse_rate_limits(&limits, report.plan)?;
-            if !reading.windows.is_empty() { commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account.clone(), reading, at: now, day: crate::node_reports::local_day(now) }); }
+            if !reading.windows.is_empty() { commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account.clone(), reading, at: now, day: alondra_daemon_engine_model::local_day(now) }); }
         }
     }
     publish_probe_with(domain, domain.home(), fence, commands, |transaction| {
@@ -513,7 +513,7 @@ pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_core
             return Err(DomainError::new("stale_probe", "The existing native session changed during its metadata check").into());
         }
         let binding = transaction.execution_binding(&stamp)?;
-        if Provider::from_driver(binding.driver()) != Some(Provider::Codex) || crate::usage_probe::account_of(binding.credential()) != key.account {
+        if Provider::from_driver(binding.driver()) != Some(Provider::Codex) || alondra_daemon_engine_model::account_of(binding.credential()) != key.account {
             return Err(DomainError::new("stale_probe", "The task's native account binding changed").into());
         }
         if let Some(why) = refusal { return Ok(Err(why)); }
@@ -645,7 +645,7 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
                 else { commands.push(Command::RecordModelCatalog { catalog: report.catalog }); }
                 if let Some(limits) = report.rate_limits.filter(|_| ordinary_allowed) {
                     match alondra_core::codex_account::parse_rate_limits(&limits, report.plan) {
-                        Ok(reading) if !reading.windows.is_empty() => commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account, reading, at: now, day: crate::node_reports::local_day(now) }),
+                        Ok(reading) if !reading.windows.is_empty() => commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account, reading, at: now, day: alondra_daemon_engine_model::local_day(now) }),
                         Ok(_) => {}
                         Err(why) => log!("Codex quota could not be read: {why}"),
                     }
@@ -704,7 +704,7 @@ pub(crate) fn correct_crossed_sessions(domain: &DomainRuntime, before: &[Account
         log!("account {} no longer answers with the identity of another account: its sessions take its own", key.account);
         for task in state.tasks.values().filter(|task| !task.over() && task.provider == key.provider && task.account_key() == key) {
             let Some(stamp) = state.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.execution().cloned()) else { continue };
-            match crate::sdk_owner::NativeAccountIdentity::correct_email(&root.join(stamp.instance().as_str()), &worn, status) {
+            match alondra_daemon_engine_model::NativeAccountIdentity::correct_email(&root.join(stamp.instance().as_str()), &worn, status) {
                 Ok(true) => log!("the session of {} now records the identity of account {}", task.id, key.account),
                 Ok(false) => {}
                 Err(why) => log!("could not correct the identity the session of {} recorded: {why}", task.id),

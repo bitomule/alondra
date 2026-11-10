@@ -44,6 +44,7 @@ checks:
       - "crates/alondrad/src/**"
       - "crates/alondrad/Info.plist"
       - "crates/daemon-engine/src/**"
+      - "crates/daemon-engine-model/src/**"
       - "crates/daemon-support/src/**"
       - "crates/agent-runtime/src/**"
       - "crates/provider-claude/src/**"
@@ -172,6 +173,7 @@ checks:
       - "crates/alondrad/**"
       - "crates/core/**"
       - "crates/daemon-engine/**"
+      - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
       - "crates/e2e/**"
@@ -234,6 +236,7 @@ checks:
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine/**"
+      - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
       - "crates/e2e/**"
@@ -332,6 +335,7 @@ checks:
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine/**"
+      - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
       - "crates/e2e/**"
@@ -354,6 +358,39 @@ checks:
     with:
       targets:
         - //crates/daemon-engine/...
+
+  crate-daemon-engine-model:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondrad/**"
+      - "crates/core/**"
+      - "crates/daemon-engine-model/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/daemon-engine-model/...
 
   crate-daemon-support:
     uses: bazel/test
@@ -726,6 +763,7 @@ checks:
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine/**"
+      - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
       - "crates/e2e/**"
@@ -977,6 +1015,7 @@ checks:
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine/**"
+      - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
       - "crates/e2e/**"

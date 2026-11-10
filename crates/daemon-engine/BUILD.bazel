@@ -36,7 +36,10 @@ rust_library(
     edition = "2024",
     version = VERSION,
     visibility = ["//crates/alondrad:__pkg__"],
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-support:daemon_support",
+    ],
 )
 
 # alondrad's unit tests build against the hooks and fixtures its tests drive: a store that traces
@@ -55,6 +58,7 @@ rust_library(
     visibility = ["//crates/alondrad:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/codex-protocol:codex_protocol",
+        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ],
 )
@@ -102,6 +106,7 @@ ENGINE_TEST_COMPILE_DATA = SQL + [
 
 ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
     "//crates/codex-protocol:codex_protocol",
+    "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
 ]
 

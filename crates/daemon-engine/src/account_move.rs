@@ -59,7 +59,7 @@ pub(crate) fn holds_execution(domain: &DomainRuntime, task: &TaskId) -> bool {
 /// subscription and with neither its session nor its week used up.
 fn can_take(state: &DomainState, account: &AccountId, now: Millis) -> bool {
     let Some(status) = state.accounts.iter().find(|status| status.provider == Provider::Claude && status.id == *account) else { return false };
-    let day = crate::node_reports::local_day(now);
+    let day = alondra_daemon_engine_model::local_day(now);
     alondra_core::usage::choose_account(Policy::Chain, Provider::Claude, std::slice::from_ref(status), &state.account_usage, state.account_reserve, now, &day).as_ref() == Some(account)
 }
 
@@ -70,7 +70,7 @@ fn destination(state: &DomainState, policy: Policy, from: &AccountId, now: Milli
     if others.is_empty() {
         return None;
     }
-    let day = crate::node_reports::local_day(now);
+    let day = alondra_daemon_engine_model::local_day(now);
     alondra_core::usage::choose_account(policy, Provider::Claude, &others, &state.account_usage, state.account_reserve, now, &day)
         .filter(|to| to != from && can_take(state, to, now))
 }
@@ -201,7 +201,7 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
     let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let task = state.tasks.get(&moving.task).ok_or("the task is gone")?;
-    let options = crate::sdk_owner::LaunchOptions::load(&backend.state_root.join(&moving.plan.instance)).map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
+    let options = alondra_daemon_engine_model::LaunchOptions::load(&backend.state_root.join(&moving.plan.instance)).map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
     let launch = crate::sdk_owner::Launch {
         task: moving.task.clone(),
         name: state.agents.get(&moving.plan.node).map_or_else(|| task.title.clone(), |agent| agent.name.clone()),

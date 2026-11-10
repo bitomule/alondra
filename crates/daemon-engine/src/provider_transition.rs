@@ -39,7 +39,7 @@ pub(crate) fn denied_tools(domain:&DomainRuntime,task:&TaskId)->Result<Vec<Strin
     let execution=state.lifecycle_of(task)?.execution().cloned().ok_or_else(||failure("The task has no managed execution"))?;
     let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
     let selected=backend.for_provider(task_data.provider,domain.home()).map_err(failure)?;
-    crate::sdk_owner::LaunchOptions::load(&selected.state_root.join(execution.instance().as_str())).map(|options|options.disallowed_tools).map_err(failure)
+    alondra_daemon_engine_model::LaunchOptions::load(&selected.state_root.join(execution.instance().as_str())).map(|options|options.disallowed_tools).map_err(failure)
 }
 
 pub fn request(domain:&DomainRuntime,actor:&Actor,task:&TaskId,target_account:AccountKey,target_model:ModelSelection,intent:TaskSelection,reason:&str,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
@@ -302,7 +302,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                 let prepared:PreparedHandoff=serde_json::from_value(change.facts.clone()).map_err(failure)?;
                 let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
                 let plugin=crate::plugins::node_in(domain.home()).filter(|plugin|plugin.is_dir()).or_else(||Some(domain.home().join(crate::plugins::NODE)).filter(|plugin|plugin.is_dir())).ok_or_else(||failure("Alondra's task plugin is unavailable; run alondra doctor --fix"))?;
-                let launch=crate::sdk_owner::Launch{task:task.clone(),name:domain.read().state().tasks[task].title.clone(),directory:plan.source.directory.clone(),prompt:prepared.new_input,plugin,options:crate::sdk_owner::LaunchOptions{provider:plan.target_account.provider,selection:Some(applied(plan)),model:Some(plan.target_model.model.model.clone()),effort:plan.target_model.reasoning_effort.clone(),disallowed_tools:plan.source.disallowed_tools.clone()},model:None,account:plan.target_account.account.clone()};
+                let launch=crate::sdk_owner::Launch{task:task.clone(),name:domain.read().state().tasks[task].title.clone(),directory:plan.source.directory.clone(),prompt:prepared.new_input,plugin,options:alondra_daemon_engine_model::LaunchOptions{provider:plan.target_account.provider,selection:Some(applied(plan)),model:Some(plan.target_model.model.model.clone()),effort:plan.target_model.reasoning_effort.clone(),disallowed_tools:plan.source.disallowed_tools.clone()},model:None,account:plan.target_account.account.clone()};
                 let driver=crate::sdk_owner::continue_session(Arc::clone(domain),backend,launch,crate::sdk_owner::Continuation::Transition{id:plan.id.clone()}).map_err(failure)?;
                 domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));return Ok(Phase::TargetAdmitted)
             }

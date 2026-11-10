@@ -1577,10 +1577,10 @@ fn a_tasks_project_survives_restart_and_a_store_made_before_projects_fills_them_
     store.execute_launching(&user(), &asked, None, &launch).unwrap();
     let epoch = store.load().unwrap().data_epoch.clone();
     let orchestrator = Actor::Orchestrator { generation: 0 };
-    let quill = crate::launch_plans::LaunchPlan { project: Some("Quill".into()), ..plan() };
+    let quill = alondra_daemon_engine_model::LaunchPlan { project: Some("Quill".into()), ..plan() };
     store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, quill)).unwrap();
     store.execute_filling_revision(&orchestrator, &planned_task("next-2", "request-2", &epoch, plan())).unwrap();
-    store.execute_filling_revision(&orchestrator, &planned_task("next-3", "request-1", &epoch, crate::launch_plans::LaunchPlan::new("elsewhere", "/tmp"))).unwrap();
+    store.execute_filling_revision(&orchestrator, &planned_task("next-3", "request-1", &epoch, alondra_daemon_engine_model::LaunchPlan::new("elsewhere", "/tmp"))).unwrap();
     store.conn.execute("INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES('task-1','/synthetic/Lumo/.claude/worktrees/goal','task',NULL,1,NULL)", []).unwrap();
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -1810,14 +1810,14 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
     assert_eq!(store.task_closing(&"task-1".into()).unwrap(), None);
 }
 
-fn plan() -> crate::launch_plans::LaunchPlan {
-    crate::launch_plans::LaunchPlan {
+fn plan() -> alondra_daemon_engine_model::LaunchPlan {
+    alondra_daemon_engine_model::LaunchPlan {
         name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
         approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation), tags: None, project: None,
     }
 }
 
-fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch, plan: crate::launch_plans::LaunchPlan) -> CommandEnvelope {
+fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch, plan: alondra_daemon_engine_model::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
         command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
@@ -1844,7 +1844,7 @@ fn a_launch_plan_is_stored_with_its_task_in_one_transaction() {
 
     let replay = store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, plan())).unwrap();
     assert!(replay.replayed);
-    let other = crate::launch_plans::LaunchPlan { name: "app/other".into(), ..plan() };
+    let other = alondra_daemon_engine_model::LaunchPlan { name: "app/other".into(), ..plan() };
     assert!(store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, other)).is_err(), "the same command with another plan");
     assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "a replay does not write the plan again");
     drop(store);

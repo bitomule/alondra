@@ -283,7 +283,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
             break;
         }
         #[cfg(any(test, feature = "test-hooks"))]
-        if let Err(error) = crate::domain_orchestrator::faults::write(&batch.home, "ack") {
+        if let Err(error) = alondra_daemon_engine_model::faults::write(&batch.home, "ack") {
             output.stream.storage_failure = true;
             output.stream.error = Some(format!("The batch ACK could not be written: {error}"));
             break;
@@ -672,7 +672,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             std::fs::write(f.executor.home.join("codex-backend.json"),serde_json::to_vec(&backend).unwrap()).unwrap();
             f.tell("policy-request","Do not run a model until native payment and identity policy is valid");
             if refuse_report{rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap().execute_batch("CREATE TRIGGER reject_policy_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report failure'); END;").unwrap();}
-            let fault = failed_write.map(|(point, occurrence)| crate::domain_orchestrator::faults::Injection::at(&f.executor.home,point,occurrence));
+            let fault = failed_write.map(|(point, occurrence)| alondra_daemon_engine_model::faults::Injection::at(&f.executor.home,point,occurrence));
             let result = f.executor.tick().await;
             if let Some(fault) = &fault { assert!(result.is_err()); assert!(fault.hits()>0); } else { result.unwrap(); }
             drop(fault);

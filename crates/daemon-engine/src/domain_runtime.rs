@@ -101,16 +101,7 @@ pub struct DomainRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) index_builds: std::sync::atomic::AtomicU64,
 }
-/// What one retention run released: the provider evidence, and the rows each policy changed.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Retained {
-    pub(crate) evidence: alondra_store::EvidenceRetention,
-    pub(crate) tables: Vec<(&'static str, usize)>,
-    /// Ended tasks whose cards were compacted.
-    pub(crate) compacted: usize,
-    /// Ended tasks folded into their metrics.
-    pub(crate) folded: usize,
-}
+pub(crate) use alondra_daemon_engine_model::retention::Retained;
 
 pub mod batch_operations;
 
@@ -809,7 +800,7 @@ impl DomainRuntime {
         }
         Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
     }
-    pub fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
+    pub fn launch_plan(&self, task_id: &TaskId) -> Result<Option<alondra_daemon_engine_model::LaunchPlan>> {
         self.store.lock_or_exit("the domain store").launch_plan(task_id)
     }
     pub(crate) fn inherited_worktree(&self, agent: &str) -> Result<Option<String>> {

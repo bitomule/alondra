@@ -10,7 +10,7 @@ const KEPT:&str="native-identity";
 
 #[derive(Clone,Debug,serde::Serialize,serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct NativeAccountIdentity {
+pub struct NativeAccountIdentity {
     email:Option<String>,
     pay_per_use:bool,
     #[serde(default,skip_serializing_if="Option::is_none")]
@@ -23,30 +23,30 @@ pub(crate) struct NativeAccountIdentity {
 struct NativeAuthAccount{auth_method:String,email:Option<String>,workspace_id:Option<String>}
 fn kept(directory:&Path)->Option<PathBuf>{Some(directory.parent()?.join(KEPT).join(directory.file_name()?))}
 impl NativeAccountIdentity {
-    pub(crate) fn can_resume_managed(&self)->bool{self.native_auth.as_ref().is_some_and(|actual|actual.auth_method=="chatgpt" && actual.email.as_ref().is_some_and(|email|!email.trim().is_empty()))}
-    pub(crate) fn same_known_email(&self,current:&AccountStatus)->bool{
+    pub fn can_resume_managed(&self)->bool{self.native_auth.as_ref().is_some_and(|actual|actual.auth_method=="chatgpt" && actual.email.as_ref().is_some_and(|email|!email.trim().is_empty()))}
+    pub fn same_known_email(&self,current:&AccountStatus)->bool{
         self.email.as_deref().zip(current.email.as_deref()).is_some_and(|(before,after)|!after.trim().is_empty() && before.eq_ignore_ascii_case(after.trim()))
     }
-    pub(crate) fn same_known_native_account(&self,provider:alondra_core::accounts::Provider,current:&AccountStatus)->bool{
+    pub fn same_known_native_account(&self,provider:alondra_core::accounts::Provider,current:&AccountStatus)->bool{
         if provider!=alondra_core::accounts::Provider::Codex{return self.same_known_email(current)}
         self.native_auth.as_ref().is_some_and(|actual|actual.auth_method=="chatgpt"
             && actual.email.as_deref().zip(current.email.as_deref()).is_some_and(|(before,after)|!before.is_empty() && before.eq_ignore_ascii_case(after.trim()))
             && actual.workspace_id.as_deref().zip(current.native_identity.as_deref()).is_some_and(|(before,after)|!before.is_empty() && before==after)
             && self.change(current).is_none())
     }
-    pub(crate) fn change(&self,current:&AccountStatus)->Option<&'static str>{
+    pub fn change(&self,current:&AccountStatus)->Option<&'static str>{
         if self.email.as_deref().zip(current.email.as_deref()).is_some_and(|(before,after)|!before.eq_ignore_ascii_case(after.trim())){Some("identity")}
         else if self.native_identity.as_deref().zip(current.native_identity.as_deref()).is_some_and(|(before,after)|before!=after){Some("identity")}
         else if self.pay_per_use!=matches!(current.billing,AccountBilling::PayPerUse){Some("billing policy")}else{None}
     }
     fn same_account(&self,other:&Self)->bool{self.email==other.email && self.pay_per_use==other.pay_per_use && self.native_identity==other.native_identity}
-    pub(crate) fn has_proof(&self)->bool{self.native_auth.is_some()}
+    pub fn has_proof(&self)->bool{self.native_auth.is_some()}
     fn files(&self)->Result<Vec<(&'static str,Vec<u8>)>,Failed>{
         let mut files=vec![(ACCOUNT,serde_json::to_vec(self).map_err(|error|Failed::new(format!("Encoding the native account identity: {error}")))?)];
         if let Some(actual)=&self.native_auth{files.push((PROOF,serde_json::to_vec(actual).map_err(|error|Failed::new(format!("Encoding the native account proof: {error}")))?));}
         Ok(files)
     }
-    pub(crate) fn save(directory:&Path,status:Option<&AccountStatus>)->Result<(),Failed>{
+    pub fn save(directory:&Path,status:Option<&AccountStatus>)->Result<(),Failed>{
         let Some(status)=status else{return Ok(())};
         let email=status.email.as_ref().filter(|email|!email.trim().is_empty() && email.len()<=1024).map(|email|email.trim().to_owned());
         let native_identity=status.native_identity.as_ref().filter(|identity|!identity.is_empty() && identity.len()<=1024).cloned();
@@ -55,7 +55,7 @@ impl NativeAccountIdentity {
     /// The session in `directory` recorded `wrong`, another account's email, because its host ran
     /// on that account's profile: it takes `status`'s email, in the host's folder and where it is
     /// kept. Whether it changed anything.
-    pub(crate) fn correct_email(directory:&Path,wrong:&str,status:&AccountStatus)->Result<bool,Failed>{
+    pub fn correct_email(directory:&Path,wrong:&str,status:&AccountStatus)->Result<bool,Failed>{
         let mut changed=false;
         for place in std::iter::once(directory.to_path_buf()).chain(kept(directory)){
             let Some(mut identity)=Self::read(&place)? else{continue};
@@ -68,7 +68,7 @@ impl NativeAccountIdentity {
     }
     /// Writes this identity in a new host's folder, and where it is kept. A file the folder
     /// already holds with the same identity stays as it is; one with another refuses.
-    pub(crate) fn retain(&self,directory:&Path)->Result<(),Failed>{
+    pub fn retain(&self,directory:&Path)->Result<(),Failed>{
         use std::io::Write;use std::os::unix::fs::OpenOptionsExt;
         for (name,bytes) in self.files()?{
             match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(directory.join(name)){
@@ -84,7 +84,7 @@ impl NativeAccountIdentity {
         self.keep(directory)
     }
     /// Keeps this identity of the node whose host folder is `directory` apart from that folder.
-    pub(crate) fn keep(&self,directory:&Path)->Result<(),Failed>{
+    pub fn keep(&self,directory:&Path)->Result<(),Failed>{
         let Some(place)=kept(directory) else{return Ok(())};
         if Self::read_observed(&place,alondra_core::accounts::Provider::Codex)?.is_some_and(|held|held.same_account(self) && (self.native_auth.is_none() || held.native_auth==self.native_auth)){return Ok(())}
         {use std::os::unix::fs::DirBuilderExt;std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&place).map_err(|error|Failed::written(format!("Keeping the native account identity: {error}"),&error))?;}
@@ -93,7 +93,7 @@ impl NativeAccountIdentity {
     }
     /// The identity of the node whose host folder is `directory`, from that folder or, when a
     /// relaunch left it without one, from where it is kept.
-    pub(crate) fn load_observed(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
+    pub fn load_observed(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
         let here=Self::read_observed(directory,provider)?;
         if here.as_ref().is_some_and(|here|here.native_auth.is_some() || provider!=alondra_core::accounts::Provider::Codex){return Ok(here)}
         let Some(place)=kept(directory) else{return Ok(here)};
@@ -106,7 +106,7 @@ impl NativeAccountIdentity {
     }
     /// As `load_observed`, and for a node that has no identity in either place, from the folders
     /// of its ended hosts, when they all agree on it. What it finds is kept for the next time.
-    pub(crate) fn recover(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
+    pub fn recover(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{
         let found=Self::load_observed(directory,provider)?;
         if found.as_ref().is_some_and(|found|found.native_auth.is_some() || provider!=alondra_core::accounts::Provider::Codex){return Ok(found)}
         let (Some(parent),Some(name))=(directory.parent(),directory.file_name().and_then(|name|name.to_str())) else{return Ok(found)};
@@ -123,7 +123,7 @@ impl NativeAccountIdentity {
         first.keep(directory)?;
         Ok(Some(first))
     }
-    pub(crate) fn load(directory:&Path)->Result<Option<Self>,Failed>{
+    pub fn load(directory:&Path)->Result<Option<Self>,Failed>{
         match Self::read(directory)?{Some(identity)=>Ok(Some(identity)),None=>kept(directory).map_or(Ok(None),|place|Self::read(&place))}
     }
     fn read_observed(directory:&Path,provider:alondra_core::accounts::Provider)->Result<Option<Self>,Failed>{

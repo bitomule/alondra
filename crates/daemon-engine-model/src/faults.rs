@@ -11,9 +11,9 @@ static FAULTS: LazyLock<Mutex<BTreeMap<PathBuf, Fault>>> = LazyLock::new(Mutex::
 type Hook = Box<dyn FnOnce(&str) + Send>;
 static SPAWNS: LazyLock<Mutex<BTreeMap<PathBuf, Hook>>> = LazyLock::new(Mutex::default);
 
-pub(crate) struct Injection(PathBuf);
+pub struct Injection(PathBuf);
 impl Injection {
-    pub(crate) fn at(home: &Path, point: &'static str, occurrence: usize) -> Self {
+    pub fn at(home: &Path, point: &'static str, occurrence: usize) -> Self {
         assert!(occurrence > 0);
         assert!(
             FAULTS
@@ -31,7 +31,7 @@ impl Injection {
         );
         Self(home.to_owned())
     }
-    pub(crate) fn hits(&self) -> usize {
+    pub fn hits(&self) -> usize {
         FAULTS.lock().unwrap()[&self.0].hits
     }
 }
@@ -41,13 +41,13 @@ impl Drop for Injection {
     }
 }
 
-pub(crate) struct SpawnHook(PathBuf);
+pub struct SpawnHook(PathBuf);
 impl Drop for SpawnHook {
     fn drop(&mut self) {
         SPAWNS.lock().unwrap().remove(&self.0);
     }
 }
-pub(crate) fn on_spawn(home: &Path, hook: impl FnOnce(&str) + Send + 'static) -> SpawnHook {
+pub fn on_spawn(home: &Path, hook: impl FnOnce(&str) + Send + 'static) -> SpawnHook {
     assert!(
         SPAWNS
             .lock()
@@ -57,14 +57,14 @@ pub(crate) fn on_spawn(home: &Path, hook: impl FnOnce(&str) + Send + 'static) ->
     );
     SpawnHook(home.to_owned())
 }
-pub(crate) fn spawned(home: &Path, bearer: &str) {
+pub fn spawned(home: &Path, bearer: &str) {
     let hook = SPAWNS.lock().unwrap().remove(home);
     if let Some(hook) = hook {
         hook(bearer);
     }
 }
 
-pub(crate) fn database_write(
+pub fn database_write(
     connection: &rusqlite::Connection,
     point: &'static str,
 ) -> std::io::Result<()> {
@@ -73,14 +73,14 @@ pub(crate) fn database_write(
     }
     Ok(())
 }
-pub(crate) fn owner_write(directory: &Path, point: &'static str) -> std::io::Result<()> {
+pub fn owner_write(directory: &Path, point: &'static str) -> std::io::Result<()> {
     if let Some(home) = directory.parent().and_then(Path::parent) {
         write(home, point)?;
     }
     Ok(())
 }
 
-pub(crate) fn write(home: &Path, point: &'static str) -> std::io::Result<()> {
+pub fn write(home: &Path, point: &'static str) -> std::io::Result<()> {
     if let Some(fault) = FAULTS
         .lock()
         .unwrap()

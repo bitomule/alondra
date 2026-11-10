@@ -124,7 +124,7 @@ impl OwnerTransaction<'_> {
         if plan.kind==Kind::Move{return Ok(())}
         let binding=self.execution_binding(stamp)?;
         if binding.id()!=plan.source.binding || binding.driver()!=plan.source.driver || binding.configuration()!=plan.source.configuration{return Err(DomainError::new("stale_native_binding","The native credential or runtime binding changed; this session cannot be transferred").into())}
-        let identity=crate::sdk_owner::NativeAccountIdentity::load(&plan.source.host_directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
+        let identity=alondra_daemon_engine_model::NativeAccountIdentity::load(&plan.source.host_directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
         self.require_native_identity(&binding,identity.as_ref())?;
         Ok(())
     }
@@ -176,7 +176,7 @@ impl OwnerTransaction<'_> {
         let current=self.state().tasks.get(task).ok_or_else(||DomainError::new("not_found","Task missing"))?;
         let selection=current.selection.clone();let account=current.account_key();
         let stamp=self.lifecycle(task)?.execution().cloned().ok_or_else(||DomainError::new("conflict","Task has no managed execution"))?;
-        let disallowed_tools=crate::sdk_owner::LaunchOptions::load(&host_directory).map_err(|error|DomainError::new("selection_transition",error.to_string()))?.disallowed_tools;
+        let disallowed_tools=alondra_daemon_engine_model::LaunchOptions::load(&host_directory).map_err(|error|DomainError::new("selection_transition",error.to_string()))?.disallowed_tools;
         let turn_model=self.execution_binding(&stamp)?.permits(alondra_provider_contract::Capability::SetModel);
         self.sql(|c|{
             let (binding,driver,configuration):(String,String,String)=c.query_row("SELECT b.id,b.driver,b.configuration FROM lifecycle_execution_bindings e JOIN provider_bindings b ON b.id=e.binding_id WHERE e.task_id=?1 AND e.generation=?2",params![task.0,i64::try_from(stamp.generation())?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;

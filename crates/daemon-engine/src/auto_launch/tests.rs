@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain_orchestrator_tools::{LaunchBody, launch};
-use crate::launch_plans::LaunchPlan;
+use alondra_daemon_engine_model::LaunchPlan;
 use crate::sdk_owner::tests::SdkLaunches;
 use alondra_core::domain::{
     Actor, StartProblem,

@@ -14,8 +14,6 @@ use super::{Attached, DomainStore, StoreError};
 use crate::domain_runtime::DomainRuntime;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS settings_projection_receipts(identity BLOB PRIMARY KEY, actor TEXT NOT NULL, command_id TEXT NOT NULL, data_epoch TEXT NOT NULL, command_digest BLOB NOT NULL, target_digest BLOB NOT NULL);";
-const PENDING: &str = "options.pending";
-const OPTIONS_LIMIT: u64 = 4 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -45,27 +43,8 @@ struct PendingProjection {
     target: String,
 }
 
-pub(crate) fn pending(home: &Path) -> bool { home.join(PENDING).symlink_metadata().is_ok() }
-
-pub(crate) fn read_options(home: &Path) -> Result<Option<String>, String> {
-    if pending(home) { return Err("An accounts or model settings change is being reconciled; try again when it finishes".into()); }
-    let text = read_optional(&alondra_core::options::path_in(home)).map_err(|why| why.to_string())?;
-    if pending(home) { return Err("The settings changed while they were being read; refresh and try again".into()); }
-    Ok(text)
-}
-
-fn read_optional(path: &Path) -> Result<Option<String>> {
-    match File::open(path) {
-        Ok(file) => {
-            let mut text = String::new();
-            file.take(OPTIONS_LIMIT + 1).read_to_string(&mut text)?;
-            ensure!(text.len() as u64 <= OPTIONS_LIMIT, "the options file exceeds its size limit");
-            Ok(Some(text))
-        }
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(why) => Err(why.into()),
-    }
-}
+pub(crate) use alondra_daemon_engine_model::options::{pending, read_options};
+use alondra_daemon_engine_model::options::{OPTIONS_LIMIT, PENDING, read_optional};
 
 fn temporary(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{}.{}.next", path.file_name().expect("settings file name").to_string_lossy(), crate::auth::random_hex(16)))

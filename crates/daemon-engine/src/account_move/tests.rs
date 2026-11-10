@@ -96,7 +96,7 @@ impl World {
         let launch = crate::sdk_owner::Launch {
             task: TASK.into(), name: "release-notes".into(), directory: self.worktree.to_str().unwrap().into(),
             prompt: "Write the release notes rate-limited".into(), plugin: self.home.join(crate::plugins::NODE),
-            options: crate::sdk_owner::LaunchOptions::default(), model: None, account: work(),
+            options: alondra_daemon_engine_model::LaunchOptions::default(), model: None, account: work(),
         };
         crate::sdk_owner::launch(&self.domain, launch).await.unwrap();
         self.until(|domain| domain.read().state().held_by_limit(&TASK.into()).is_some()).await;
@@ -240,7 +240,7 @@ async fn when_every_account_is_at_its_limit_the_task_waits() {
 async fn fresh_capacity_does_not_change_the_account_of_an_existing_node() {
     let world=World::new().await;let old=world.node();tick(&world.domain).await;
     let reading=alondra_core::usage::UsageReading{windows:vec![],plan:None,complete:true};let now=alondra_core::now_millis();
-    run(&world.domain,&Actor::System,"work-reset",Command::RecordAccountUsage{provider:Provider::Claude,account:work(),reading,at:now,day:crate::node_reports::local_day(now)}).unwrap();
+    run(&world.domain,&Actor::System,"work-reset",Command::RecordAccountUsage{provider:Provider::Claude,account:work(),reading,at:now,day:alondra_daemon_engine_model::local_day(now)}).unwrap();
     assert!(can_take(&world.domain.state().unwrap(),&work(),now));
     tick(&world.domain).await;
     assert!(world.journal().is_empty());assert_stayed(&world,&old).await;

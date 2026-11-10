@@ -2684,7 +2684,7 @@ pub mod tests {
         waiting.await.expect("the pending rule reached settings confirmation");
         let rows = domain.store.lock().unwrap().allowed_rules().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].state, crate::allow_always::RuleState::Pending);
+        assert_eq!(rows[0].state, alondra_daemon_engine_model::RuleState::Pending);
 
         let mut acknowledgement = Box::pin(acknowledge(&domain, "ack-agent", json!([format!("o-{message}")])));
         let admitted = domain.hook_work.available() == 1;
@@ -2704,7 +2704,7 @@ pub mod tests {
         holding.await.unwrap().unwrap();
         if !completed_before_release { acknowledgement.await.unwrap(); }
         assert_eq!(body["allowed"], true);
-        assert_eq!(domain.store.lock().unwrap().allowed_rules().unwrap()[0].state, crate::allow_always::RuleState::Active);
+        assert_eq!(domain.store.lock().unwrap().allowed_rules().unwrap()[0].state, alondra_daemon_engine_model::RuleState::Active);
         assert!(completed_before_release, "the real unrelated node acknowledgement queued behind settings confirmation");
         println!("settings_confirmation=held unrelated_node_ack=completed_before_release rule=active physical_jobs=drained");
     }
@@ -2727,14 +2727,14 @@ pub mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].rule.as_str(), rows[0].interaction_id.as_str(), rows[0].task_id.as_deref()), ("make build *", id.0.as_str(), Some("task-agent-a")));
         assert_eq!(rows[0].settings, root.join(".claude/settings.local.json").to_string_lossy());
-        assert_eq!(rows[0].state, crate::allow_always::RuleState::Missing, "Claude Code never wrote it in this test, so it is not listed as active");
+        assert_eq!(rows[0].state, alondra_daemon_engine_model::RuleState::Missing, "Claude Code never wrote it in this test, so it is not listed as active");
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         std::fs::write(root.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Bash(make build *)"]}}"#).unwrap();
-        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, crate::allow_always::RuleState::Active);
+        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, alondra_daemon_engine_model::RuleState::Active);
         let removed = crate::allow_always::remove_rule(&domain, rows[0].id).unwrap().unwrap();
         assert_eq!(removed.rule, "make build *");
         assert_eq!(std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap(), r#"{"permissions":{"allow":[]}}"#);
-        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, crate::allow_always::RuleState::Removed);
+        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, alondra_daemon_engine_model::RuleState::Removed);
         assert!(crate::allow_always::remove_rule(&domain, rows[0].id).is_ok(), "removing again is harmless");
     }
 
