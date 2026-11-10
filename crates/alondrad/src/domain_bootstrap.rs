@@ -24,6 +24,7 @@ pub(crate) struct DomainDaemon {
     client: Arc<crate::client_routes::Client>,
     service: std::sync::OnceLock<Arc<crate::service::Service>>,
     direct: std::sync::OnceLock<Arc<crate::direct::Direct>>,
+    delivery_reviews: crate::delivery_review::DeliveryReviews,
 }
 
 fn require_database(home: &Path) -> Result<()> {
@@ -60,6 +61,7 @@ impl DomainDaemon {
             auth: Arc::new(crate::auth::Auth::open(home)?),
             service: std::sync::OnceLock::new(),
             direct: std::sync::OnceLock::new(),
+            delivery_reviews: Default::default(),
         }))
     }
 
@@ -112,6 +114,9 @@ impl crate::domain_api::DomainHost for DomainDaemon {
     }
     fn new_work_client(&self) -> Option<&crate::client_routes::Client> {
         Some(&self.client)
+    }
+    fn delivery_reviews(&self) -> &crate::delivery_review::DeliveryReviews {
+        &self.delivery_reviews
     }
 }
 

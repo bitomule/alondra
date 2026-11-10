@@ -261,11 +261,24 @@ async fn empty_configuration_and_private_repositories_do_not_read_a_diff() {
 async fn all_implicit_open_prs_are_checked() {
     let mut private = metadata();
     private["data"]["repository"]["visibility"] = json!("PRIVATE");
-    let fixture = Fixture::new(&[private, metadata(), metadata()], PRIVATE_DIFF);
+    let fixture = Fixture::new(&[], PRIVATE_DIFF);
+    std::fs::write(fixture.home.join("public"), metadata().to_string()).unwrap();
+    std::fs::write(fixture.home.join("private"), private.to_string()).unwrap();
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{home}/calls'\ncase \"$1 $2\" in\n'api graphql') case \"$*\" in *number=8*) cat '{home}/private';; *) cat '{home}/public';; esac;;\n'pr diff') cat '{home}/diff';;\n*) exit 1;;\nesac\n",
+        home = fixture.home.display()
+    );
+    let program = fixture.home.join("by-number-gh");
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut state = state();
     register(&mut state, 8);
-    let error = fixture.check(&state, &delivery()).await.err().unwrap();
-    assert_eq!(error.subject.as_deref(), Some("pr-8"));
+    let error = check(&fixture.home, &state, &delivery(), &GhCli::at(program))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "private_names_in_public_content");
+    assert_eq!(error.subject.as_deref(), Some("pr-7"));
     assert!(fixture.calls().contains("number=8"));
 }
 
@@ -452,4 +465,33 @@ fn diff_scanning_checks_added_lines_and_quoted_paths_but_allows_removal() {
         !findings.is_empty(),
         "Git octal path quoting must not hide a private name"
     );
+}
+
+#[tokio::test]
+async fn many_open_prs_are_read_together_so_a_slow_github_does_not_add_up() {
+    const PRS: u64 = 9;
+    let fixture = Fixture::new(&[], CLEAN_DIFF);
+    let marks = fixture.home.join("seen");
+    std::fs::create_dir_all(&marks).unwrap();
+    let script = format!(
+        "#!/bin/sh\ncase \"$1 $2\" in\n'api graphql')\ntouch '{marks}/'$$\ntries=0\nwhile test $(ls '{marks}' | wc -l) -lt {together}; do\ntries=$((tries+1))\ntest $tries -gt 100 && exit 1\nsleep 0.1\ndone\ncat '{page}';;\n'pr diff') cat '{diff}';;\n*) exit 1;;\nesac\n",
+        marks = marks.display(),
+        together = 4,
+        page = fixture.home.join("page").display(),
+        diff = fixture.home.join("diff").display(),
+    );
+    std::fs::write(fixture.home.join("page"), metadata().to_string()).unwrap();
+    let program = fixture.home.join("slow-gh");
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut state = state();
+    for number in 8..7 + PRS {
+        register(&mut state, number);
+    }
+
+    let reviewed = check(&fixture.home, &state, &delivery(), &GhCli::at(program))
+        .await
+        .expect("every PR is clean")
+        .expect("the names are configured");
+    assert_eq!(reviewed.prs.len() as u64, PRS);
 }

@@ -238,6 +238,41 @@ async fn review_pr(gh: &GhCli, pr: &PullRequest, names: &[String]) -> Result<(),
     Ok(())
 }
 
+/// PRs read from GitHub at once, so a delivery of many does not wait for each one in turn.
+const CONCURRENT_REVIEWS: usize = 4;
+
+/// Reviews every PR at once, at most `CONCURRENT_REVIEWS` together; the refusal of the first PR
+/// in delivery order that has one is the one given.
+async fn review_concurrently(
+    gh: &GhCli,
+    prs: Vec<PullRequest>,
+    names: Vec<String>,
+) -> Result<(), DomainError> {
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENT_REVIEWS));
+    let names = std::sync::Arc::new(names);
+    let mut reviews = tokio::task::JoinSet::new();
+    for (index, pr) in prs.into_iter().enumerate() {
+        let (gh, permits, names) = (gh.clone(), permits.clone(), names.clone());
+        reviews.spawn(async move {
+            let _permit = permits.acquire().await.expect("the semaphore is never closed");
+            (index, review_pr(&gh, &pr, &names).await)
+        });
+    }
+    let mut refusals = Vec::new();
+    while let Some(joined) = reviews.join_next().await {
+        let (index, outcome) =
+            joined.map_err(|_| unavailable("a pull request review stopped early"))?;
+        if let Err(error) = outcome {
+            refusals.push((index, error));
+        }
+    }
+    match refusals.into_iter().min_by_key(|(index, _)| *index) {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct Reviewed {
     task: TaskId,
     interaction: InteractionId,
@@ -317,8 +352,8 @@ pub(crate) async fn check(
                 "Presented PR head does not match its registered head",
             ));
         }
-        review_pr(gh, pr, &names).await?;
     }
+    review_concurrently(gh, prs.iter().map(|(pr, _)| (*pr).clone()).collect(), names).await?;
     Ok(Some(Reviewed {
         task: task_id.clone(),
         interaction: interaction_id.clone(),

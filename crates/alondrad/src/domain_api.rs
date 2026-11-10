@@ -26,6 +26,27 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
     fn domain(&self) -> &DomainRuntime;
     fn home(&self) -> &FsPath;
     fn new_work_client(&self) -> Option<&crate::client_routes::Client> { None }
+    fn delivery_reviews(&self) -> &crate::delivery_review::DeliveryReviews;
+}
+
+/// A final delivery's reads on GitHub wait this long for an answer: less than the 30 s a node's
+/// MCP call waits for alondrad, so a slow GitHub is answered with a typed "still reading".
+const DELIVERY_REVIEW_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What a final delivery needs from GitHub before it is stored: no draft PR, and no configured
+/// private name in a public one. Other commands need nothing.
+async fn final_delivery_review<H: DomainHost>(host: &H, state: Arc<DomainState>, command: &Command) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
+    let Command::PresentResult { interaction_id, is_final: true, .. } = command else { return Ok(None) };
+    let (home, command) = (host.home().to_owned(), command.clone());
+    host.delivery_reviews().review(interaction_id, DELIVERY_REVIEW_BUDGET, move || async move {
+        let gh = crate::domain_github::GhCli::new();
+        if let Command::PresentResult { task_id, targets, is_final: true, .. } = &command
+            && let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &gh).await
+        {
+            return Err(refusal);
+        }
+        crate::public_content::check(&home, &state, &command, &gh).await
+    }).await
 }
 
 /// A local command carries what the producer or the terminal sends, not what
@@ -1103,18 +1124,12 @@ async fn execute_command<H: DomainHost>(
                 return domain_error(refusal);
             }
         }
-        if let (Principal::Agent { .. }, Command::PresentResult { task_id, targets, is_final: true, .. }) = (&principal, &envelope.command)
-            && let Ok(state) = host.domain().state()
-            && let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &crate::domain_github::GhCli::new()).await
-        {
-            return domain_error(refusal);
-        }
         let reviewed = if matches!(principal, Principal::Agent { .. }) {
             let state = match host.domain().state() {
                 Ok(state) => state,
                 Err(_) => return storage_error(),
             };
-            match crate::public_content::check(host.home(), &state, &envelope.command, &crate::domain_github::GhCli::new()).await {
+            match final_delivery_review(&*host, state, &envelope.command).await {
                 Ok(reviewed) => reviewed,
                 Err(error) => return domain_error(error),
             }

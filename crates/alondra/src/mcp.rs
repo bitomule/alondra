@@ -1051,6 +1051,7 @@ fn explain(error: &anyhow::Error) -> String {
     if let Some(crate::client::Refused(refused)) = error.downcast_ref() {
         let guidance = match refused.code.as_str() {
             "idempotency_conflict" => "That id already carries a different card: send a new interaction_id for a different card, or replaces to correct one that is still open.",
+            "delivery_review_pending" => "This is not a refusal of the card: GitHub is slow. Wait a few seconds, then send the same present_result again with the same interaction_id; it joins the read already running and nothing is repeated.",
             _ => "Fix what it says and send the card again with the same interaction_id. Repeating the same refused card three times raises a Problem for the user.",
         };
         return format!("Alondra refused it [{}]: {} Nothing was sent, and a refusal is never an answer or a permission: do not go on as if it had been granted. {guidance}", refused.code, refused.message);
