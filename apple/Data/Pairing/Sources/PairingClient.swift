@@ -102,7 +102,9 @@ public actor PairingClient {
         let signingPublic = PairingWire.encode(signingBytes)
         let agreementPublic = PairingWire.encode(agreement.publicKey.x963Representation)
         let deviceID = "phone-" + PairingWire.encode(try PairingWire.random(16))
-        let comparisonCode = PairingWire.encode(Data(SHA256.hash(data: signingBytes).prefix(6)))
+        let comparisonNonce = PairingWire.encode(try PairingWire.random(16))
+        let comparisonCode = PairingWire.comparisonCode(macID: invitation.macID, sessionID: invitation.sessionID,
+            signingKey: signingPublic, agreementKey: agreementPublic, nonce: comparisonNonce)
         let expiry = min(start + 600_000, invitation.expiresAtMs)
         guard let macAgreement = PairingWire.decode(invitation.macAgreementKey) else {
             throw PairingError.invalidInvitation
@@ -110,7 +112,7 @@ public actor PairingClient {
         let recipient = try P256.KeyAgreement.PublicKey(x963Representation: macAgreement)
         let plain = PairingCandidatePlain(deviceID: deviceID, signingKey: signingPublic,
             agreementKey: agreementPublic, displayName: displayName,
-            ownerSub: authorization.ownerSub, sessionID: invitation.sessionID)
+            ownerSub: authorization.ownerSub, sessionID: invitation.sessionID, comparisonNonce: comparisonNonce)
         let envelope = try Envelope.seal(
             route: invitation.macID, sender: deviceID, recipient: invitation.macID,
             requestID: invitation.sessionID, kind: "pairing",
