@@ -352,7 +352,7 @@
   },
   {
    "name": "close_request",
-   "description": "Close a Request that needs no Task. State the answer or mark it withdrawn. The answer is the Request's record; if you sent no card, Alondra shows it to the user as one, except for a maintenance message, which gets none.",
+   "description": "Close a Request that needs no Task. State the answer or mark it withdrawn. The answer is the Request's record; if you sent no card, Alondra shows it to the user as one, except for a maintenance message, which gets none. folded_into names the open Task that already covers this Request: it then gets no Task of its own.",
    "inputSchema": {
     "type": "object",
     "properties": {
@@ -367,6 +367,13 @@
      },
      "title": {
       "type": "string"
+     },
+     "headline": {
+      "type": "string"
+     },
+     "folded_into": {
+      "type": "string",
+      "description": "The id (t-…) of the open Task that already covers this Request"
      }
     },
     "required": [

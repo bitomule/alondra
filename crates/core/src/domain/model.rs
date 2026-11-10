@@ -69,10 +69,13 @@ pub struct Request {
     /// Who asked: only the user's own requests and their schedules' tell the user the answer.
     #[serde(default)]
     pub origin: RequestOrigin,
+    /// Closed without a Task of its own because this open Task already covered it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded_into: Option<TaskId>,
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false, origin: RequestOrigin::User }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false, origin: RequestOrigin::User, folded_into: None }
     }
     /// Closed with an answer: for a Request without Tasks, its card carries all there is to read.
     pub fn answered(&self) -> bool {
@@ -132,6 +135,9 @@ pub struct Task {
     pub title: String,
     pub state: TaskState,
     pub revision: Revision,
+    /// The revision that created it; 0 for Tasks stored before it was recorded.
+    #[serde(default)]
+    pub created_revision: Revision,
     pub started: bool,
     pub review_prs: bool,
     pub final_presentation: Option<InteractionId>,
@@ -1389,6 +1395,10 @@ pub struct DomainState {
     /// The Claude session the orchestrator runs in now; Alondra rebinds it on every new session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator_session: Option<AgentId>,
+    /// The revision the orchestrator's current batch started from: a Task created after it is
+    /// part of that batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator_batch_base: Option<Revision>,
     pub requests: BTreeMap<RequestId, Request>,
     pub agents: BTreeMap<AgentId, Agent>,
     pub tasks: BTreeMap<TaskId, Task>,
@@ -1477,6 +1487,7 @@ impl DomainState {
             revision: 0,
             orchestrator_generation: 0,
             orchestrator_session: None,
+            orchestrator_batch_base: None,
             requests: BTreeMap::new(),
             agents: BTreeMap::new(),
             tasks: BTreeMap::new(),

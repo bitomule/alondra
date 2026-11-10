@@ -305,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "ending", "stalls", "stall_closing", "open_pr", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues"]);
+    strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "ending", "stalls", "stall_closing", "open_pr", "worktrees", "account", "provider", "selection", "pending_selection", "allowed", "project", "continues", "created_revision"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -779,9 +779,14 @@ pub(super) fn save_changes(
             exec(c, "INSERT INTO orchestrator_session(singleton,session_id) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET session_id=excluded.session_id", params![session.0])?;
         }
     }
+    if before.orchestrator_batch_base != after.orchestrator_batch_base
+        && let Some(base) = after.orchestrator_batch_base
+    {
+        exec(c, "INSERT INTO orchestrator_batch(singleton,base) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET base=excluded.base", params![base as i64])?;
+    }
     for (x, _) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
-        strip(&mut row, &["maintenance", "message", "cleared", "origin"]);
+        strip(&mut row, &["maintenance", "message", "cleared", "origin", "folded_into"]);
         upsert(c, "requests", &["id"], row)?;
         if x.maintenance {
             exec(c, "INSERT OR IGNORE INTO maintenance_requests(request_id) VALUES(?1)", params![x.id.0])?;
@@ -795,6 +800,9 @@ pub(super) fn save_changes(
         if x.origin != RequestOrigin::User {
             exec(c, "INSERT INTO request_origins(request_id,origin) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET origin=excluded.origin",
                 params![x.id.0, serde_json::to_string(&x.origin)?])?;
+        }
+        if let Some(task) = &x.folded_into {
+            exec(c, "INSERT INTO request_folds(request_id,task_id) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET task_id=excluded.task_id", params![x.id.0, task.0])?;
         }
     }
     for (x, _) in changed(&before.agents, &after.agents) {
@@ -810,6 +818,9 @@ pub(super) fn save_changes(
         }
         if let Some(project) = x.project.as_ref().filter(|_| prior.is_none_or(|p| p.project != x.project)) {
             exec(c, "INSERT INTO task_projects(task_id,project) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET project=excluded.project", params![x.id.0, project])?;
+        }
+        if x.created_revision > 0 && prior.is_none_or(|p| p.created_revision != x.created_revision) {
+            exec(c, "INSERT INTO task_creations(task_id,revision) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET revision=excluded.revision", params![x.id.0, x.created_revision as i64])?;
         }
         if let Some(continues) = x.continues.as_ref().filter(|_| prior.is_none_or(|p| p.continues != x.continues)) {
             exec(c, "INSERT INTO task_continuations(task_id,continues) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET continues=excluded.continues", params![x.id.0, continues.0])?;
@@ -1081,6 +1092,8 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     state.orchestrator_generation = generation.try_into().context("negative generation")?;
     state.orchestrator_session = c.query_row("SELECT session_id FROM orchestrator_session WHERE singleton=1", [], |r| r.get::<_, String>(0))
         .optional()?.map(AgentId::from);
+    state.orchestrator_batch_base = c.query_row("SELECT base FROM orchestrator_batch WHERE singleton=1", [], |r| r.get::<_, i64>(0))
+        .optional()?.map(|base| base.try_into()).transpose().context("negative batch base")?;
     for row in rows(c, "requests", &["closed", "withdrawn", "auto_merge"], &[])? {
         let x: Request = decode(row)?;
         state.requests.insert(x.id.clone(), x);
@@ -1117,6 +1130,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     }
     drop(stored);
     drop(origins);
+    let mut folds = c.prepare("SELECT request_id,task_id FROM request_folds")?;
+    let mut stored = folds.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.requests.get_mut(&RequestId::from(id)).context("folded request missing")?.folded_into = Some(TaskId::from(row.get::<_, String>(1)?));
+    }
+    drop(stored);
+    drop(folds);
     for row in rows(c, "agents", &[], &["phase"])? {
         let x: Agent = decode(row)?;
         state.agents.insert(x.id.clone(), x);
@@ -1351,6 +1372,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         state.tasks.get_mut(&TaskId::from(id)).context("project task missing")?.project = Some(row.get(1)?);
     }
     drop(stored);
+    let mut creations = c.prepare("SELECT task_id, revision FROM task_creations")?;
+    let mut stored = creations.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("created task missing")?.created_revision = row.get::<_, i64>(1)?.try_into().context("negative creation revision")?;
+    }
+    drop(stored);
+    drop(creations);
     let mut continuations = c.prepare("SELECT task_id, continues FROM task_continuations")?;
     let mut stored = continuations.query([])?;
     while let Some(row) = stored.next()? {

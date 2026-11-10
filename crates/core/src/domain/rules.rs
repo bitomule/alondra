@@ -1229,6 +1229,32 @@ impl DomainState {
             request.closed = true;
         }
     }
+    /// A Request gets another Task only while it has none, once all of its Tasks are over, or in
+    /// the same orchestrator batch that created the ones it has.
+    fn may_add_task(&self, request_id: &RequestId) -> bool {
+        let Some(base) = self.orchestrator_batch_base else {
+            return true;
+        };
+        self.tasks.values()
+            .filter(|task| &task.request_id == request_id)
+            .all(|task| task.over() || task.created_revision > base)
+    }
+    /// A Request folds only into an open Task of another Request, and only while it has no Task of its own.
+    fn check_fold(&self, request_id: &RequestId, task_id: &TaskId, withdrawn: bool) -> Result<()> {
+        if withdrawn {
+            return refuse("invalid_input", "folded_into", "A withdrawn Request folds into no Task: omit folded_into or withdrawn");
+        }
+        let Some(task) = self.tasks.get(task_id) else {
+            return refuse("not_found", "folded_into", "No Task has this id: name the open Task that already covers this Request");
+        };
+        if task.over() {
+            return refuse("fold_target_over", "folded_into", "This Task is over: create a Task for this Request, or fold it into one still open");
+        }
+        if self.tasks.values().any(|t| &t.request_id == request_id) {
+            return refuse("fold_request_has_tasks", "folded_into", "This Request already has Tasks of its own: close it without folded_into");
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     fn close_request(&mut self, request_id: &RequestId, answer: Option<&String>, withdrawn: bool, title: Option<&String>, headline: Option<&str>,
         created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
@@ -3209,9 +3235,12 @@ impl DomainState {
                     effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id.clone()) });
                 }
             }
-            Command::CloseRequest { request_id, answer, withdrawn, title, headline } => {
+            Command::CloseRequest { request_id, answer, withdrawn, title, headline, folded_into } => {
                 if !matches!(actor, Actor::System) {
                     self.manager(actor)?;
+                }
+                if let Some(task_id) = folded_into {
+                    self.check_fold(request_id, task_id, *withdrawn)?;
                 }
                 if self
                     .tasks
@@ -3231,6 +3260,9 @@ impl DomainState {
                     return refuse("invalid_input", "headline", "Provide a non-empty subject on one line, at most 90 characters; put the complete answer in answer");
                 }
                 self.close_request(request_id, answer.as_ref(), *withdrawn, title.as_ref(), headline.as_deref(), created, effects)?;
+                if let Some(request) = self.requests.get_mut(request_id) {
+                    request.folded_into = folded_into.clone();
+                }
             }
             Command::RegisterAgent { agent_id, name, at } => {
                 system(actor)?;
@@ -3288,6 +3320,7 @@ impl DomainState {
                     return fail("invalid_input", "The orchestrator's session id is empty");
                 }
                 self.orchestrator_session = Some(session_id.clone());
+                self.orchestrator_batch_base = Some(self.revision + 1);
             }
             Command::CreateTask {
                 task_id,
@@ -3326,6 +3359,10 @@ impl DomainState {
                         "Name the Request with title_request (a few words, in the user's language, never the prompt) before adding a second Task",
                     );
                 }
+                if continues.is_none() && plan_items.is_none() && !self.may_add_task(request_id) {
+                    return refuse("request_has_tasks", "request_id",
+                        "this Request already has Tasks from an earlier batch: fold what is new into the Task that covers it (send it to that Task's node), or create a new Request for separate work");
+                }
                 if let Some(original) = continues {
                     let carried = self.task(original)?;
                     if carried.request_id != *request_id {
@@ -3358,6 +3395,7 @@ impl DomainState {
                         title: title.clone(),
                         state: TaskState::NotStarted,
                         revision: self.revision + 1,
+                        created_revision: self.revision + 1,
                         started: false,
                         review_prs: *review_prs,
                         final_presentation: None,

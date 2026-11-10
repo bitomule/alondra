@@ -302,7 +302,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot, at: i64) -> Result<(Reque
         revision: 0,
         started: false,
         review_prs: false,
-        final_presentation: None,
+        created_revision: 0, final_presentation: None,
         pr_id: None,
         later_prs: vec![],
         opened_prs: Default::default(),

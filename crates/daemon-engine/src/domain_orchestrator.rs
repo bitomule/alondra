@@ -325,7 +325,7 @@ impl Executor {
 
     fn prompt(&self, runtime: &Runtime, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
-        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below with no Task of its own leaves this batch with its Tasks, an answer given with close_request, or a question to the user: an answer written only in this conversation reaches nobody. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
+        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below marked (no task of its own) leaves this batch with its Tasks, an answer given with close_request, folded into the open Task that already covers it, or a question to the user: an answer written only in this conversation reaches nobody. Before create_task, compare each such Request with the open Tasks listed below: when one already covers what it asks, create no Task; send what is new to that Task's node and close the Request with close_request and folded_into naming that Task. Never two Tasks for the same work. A Request that lists its tasks already has them: never give it Tasks again unless every one of them has ended. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
         text.push_str("This is a new conversation, as every batch is: nothing of an earlier batch is in it but what Alondra writes below, which is current. Call tasks_in_progress or node only for what it does not say; do not infer that existing tasks need to be started again. End with a short note, a few sentences at most, of what the next batch needs that Alondra does not already hold: it reaches the next batch and nobody else.\n");
         if let Some(note) = &runtime.note {
             text.push_str(&format!("\nYOUR NOTE FROM THE PREVIOUS BATCH:\n{note}\n"));
@@ -350,7 +350,8 @@ impl Executor {
         }
         text.push_str(&transfer);
         let user = crate::domain_messages::user_name();
-        text.push_str(&summary(&state, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
+        let opened = self.domain.store.lock_or_exit("the domain store").request_times()?;
+        text.push_str(&summary(&state, &Ages { now: now_millis(), opened }, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
             .map(|choices| crate::domain_orchestrator_tools::choices_text(&user, &self.home, &choices))));
         for message in messages {
             text.push_str(&format!("\n{}\n", crate::domain_transport::render(&state, message)));
@@ -801,16 +802,50 @@ impl Executor {
     }
 }
 
+/// When each Request was made, and now, so the prompt can say how long every open one has waited.
+struct Ages {
+    now: i64,
+    opened: std::collections::BTreeMap<alondra_core::domain::RequestId, i64>,
+}
+
+impl Ages {
+    fn of(&self, request: &alondra_core::domain::RequestId) -> Option<String> {
+        const HOUR: i64 = 60 * 60 * 1_000;
+        let waited = self.now.saturating_sub(*self.opened.get(request).filter(|at| **at > 0)?).max(0);
+        Some(match waited / HOUR {
+            0 => "opened less than an hour ago".to_owned(),
+            hours if hours < 48 => format!("opened {hours} hours ago"),
+            hours => format!("opened {} days ago", hours / 24),
+        })
+    }
+}
+
 /// The durable domain as the orchestrator needs it to act on a batch, which starts a new
 /// conversation: every open Request, every question it asked that waits for its answer, and
 /// every Task not archived travel in the prompt.
-fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestId) -> Option<String>) -> String {
+fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_core::domain::RequestId) -> Option<String>) -> String {
     let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
-    for request in state.requests.values().filter(|request| !request.closed) {
-        let unsplit = !state.tasks.values().any(|task| task.request_id == request.id);
-        let body = if unsplit { request.body.trim().to_owned() } else { one_line(&request.body) };
-        text.push_str(&format!("request {}: {body}\n", request.id));
+    let state_name = |task: &alondra_core::domain::Task| serde_json::to_value(task.state).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+    let open: Vec<_> = state.requests.values().filter(|request| !request.closed).collect();
+    let whole: usize = open.iter().map(|request| request.body.len()).sum();
+    let tight = whole > MAX_SUMMARY_BYTES;
+    for request in open {
+        let tasks: Vec<_> = state.tasks.values().filter(|task| task.request_id == request.id).collect();
+        let unsplit = tasks.is_empty();
+        let body = if unsplit && !tight { request.body.trim().to_owned() } else { one_line(&request.body) };
+        let age = ages.of(&request.id).map(|age| format!(" ({age})")).unwrap_or_default();
+        let marker = if unsplit {
+            " (no task of its own)".to_owned()
+        } else {
+            let listed = tasks.iter().map(|task| format!("{} {}", task.id, state_name(task))).collect::<Vec<_>>().join(", ");
+            let ended = if tasks.iter().all(|task| task.over()) { "; every task of it has ended: close it with close_request, or create its next tasks" } else { "" };
+            format!(" (tasks: {listed}{ended})")
+        };
+        text.push_str(&format!("request {}{age}{marker}: {body}\n", request.id));
+        if tight && !unsplit {
+            continue;
+        }
         let schedule = state.schedule.runs.values().find(|run| run.request_id.as_ref() == Some(&request.id))
             .and_then(|run| state.schedule.schedules.get(&run.schedule_id));
         if let Some(schedule) = schedule {
@@ -833,13 +868,13 @@ fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestI
         };
         text.push_str(&format!("your question {}{about}, still unanswered: {}\n", card.id, one_line(&card.body)));
     }
+    let tasks_start = text.len();
     for task in state.tasks.values().filter(|task| !task.archived) {
         let agent = task.agent_id.as_ref().map_or("none".to_owned(), |agent| agent.0.clone());
         let pr = task.pr_id.as_ref().map(|pr| format!(" pr={pr}")).unwrap_or_default();
         text.push_str(&format!("task {} of request {}: \"{}\" state={} agent={agent}{pr}\n",
-            task.id, task.request_id, one_line(&task.title),
-            serde_json::to_value(task.state).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()));
-        if text.len() > MAX_SUMMARY_BYTES {
+            task.id, task.request_id, one_line(&task.title), state_name(task)));
+        if text.len() - tasks_start > MAX_SUMMARY_BYTES {
             text.push_str("(more Tasks not listed)\n");
             break;
         }
@@ -1330,6 +1365,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_request_is_weighed_against_the_open_tasks_before_it_gets_one() {
+        let f = fixture();
+        f.tell("r-waiting", "A node that waits holds no memory");
+        f.tick().await;
+        let prompt = last_prompt(&f);
+        assert!(prompt.contains("(no task of its own): A node that waits holds no memory"), "{prompt}");
+        assert!(prompt.contains("Before create_task, compare each such Request with the open Tasks listed below")
+            && prompt.contains("close the Request with close_request and folded_into naming that Task"), "{prompt}");
+    }
+
+    #[tokio::test]
     async fn a_disk_full_finishing_a_batch_does_not_silently_stall_the_next_request() {
         let f = fixture();
         f.tell("before-full", "First batch");
@@ -1361,7 +1407,7 @@ mod tests {
         assert!(!prompt.contains("data_epoch=") && prompt.contains("Where do I put change 1?")
             && prompt.contains("Where do I put change 2?") && !prompt.contains("inbox message")
             && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
-        assert!(prompt.contains("request r: Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
+        assert!(prompt.contains(" (tasks: t not_started): Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
         assert!(unhandled(domain).is_empty());
         assert_eq!(reminders(domain).len(), 2, "the two questions it left unanswered go back once, in the same step");
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
@@ -1369,6 +1415,9 @@ mod tests {
         assert!(runtime.active_run.is_none() && runtime.session_id.is_some() && runtime.last_error.is_none());
         let session = runtime.session_id.clone().unwrap();
         assert_eq!(domain.state().unwrap().orchestrator_session, Some(session.as_str().into()), "the domain names the orchestrator by its session");
+        let state = domain.state().unwrap();
+        assert!(state.orchestrator_batch_base.is_some_and(|base| state.tasks.values().all(|task| task.created_revision < base)),
+            "the batch starts after every task it was shown: {:?}", state.orchestrator_batch_base);
         {
             let store = domain.store.lock().unwrap();
             for item in store.delivery_evidence_page(0).unwrap().into_iter().filter(|i| i.recipient_kind == "orchestrator") {
@@ -1849,7 +1898,7 @@ mod tests {
         let prompt = last_prompt(&f);
         assert!(prompt.contains("Previous interrupted inbox batches have already been resolved")
             && prompt.contains("An open Request below with no Task of its own was not turned into work")
-            && prompt.contains("request bc2466f2: Make the editor readable\n")
+            && prompt.contains("request bc2466f2 (") && prompt.contains("(no task of its own): Make the editor readable\n")
             && !prompt.contains("The user created Request"), "{prompt}");
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.pending_resolutions.is_empty() && runtime.active_run.is_none() && runtime.last_error.is_none());
@@ -1908,8 +1957,76 @@ mod tests {
         let f = fixture();
         ask_orchestrator(&f, 1);
         let state = f.executor.domain.state().unwrap();
-        let text = summary(&state, |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
-        assert!(text.contains("request r: Work\n  options: project App · Effort: hard\ntask t"), "{text}");
+        let text = summary(&state, &no_ages(), |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
+        assert!(text.contains("request r (tasks: t not_started): Work\n  options: project App · Effort: hard\ntask t"), "{text}");
+    }
+
+    fn no_ages() -> Ages {
+        Ages { now: 0, opened: Default::default() }
+    }
+
+    fn ages(now: i64, opened: &[(&str, i64)]) -> Ages {
+        Ages { now, opened: opened.iter().map(|(id, at)| ((*id).into(), *at)).collect() }
+    }
+
+    #[test]
+    fn each_open_request_says_how_long_ago_it_was_made() {
+        let hour = 60 * 60 * 1_000;
+        let f = fixture();
+        ask_orchestrator(&f, 1);
+        command(&f.executor.domain, Actor::User { user_id: "u".into() }, "old", Command::CreateRequest {
+            request_id: "old".into(), body: "Split the public repo".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        command(&f.executor.domain, Actor::User { user_id: "u".into() }, "recent", Command::CreateRequest {
+            request_id: "recent".into(), body: "Fix the badge".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        let now = 100 * 24 * hour;
+        let text = summary(&f.executor.domain.state().unwrap(), &ages(now, &[("old", now - 73 * hour), ("recent", now - 5 * hour), ("r", now - 10)]), |_| None);
+        assert!(text.contains("request old (opened 3 days ago) (no task of its own): Split the public repo"), "{text}");
+        assert!(text.contains("request recent (opened 5 hours ago) (no task of its own): Fix the badge"), "{text}");
+        assert!(text.contains("request r (opened less than an hour ago) (tasks: t not_started): Work"), "{text}");
+    }
+
+    #[test]
+    fn a_request_whose_tasks_all_ended_is_told_to_be_closed() {
+        let f = fixture();
+        ask_orchestrator(&f, 1);
+        let before = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        assert!(!before.contains("every task of it has ended"), "{before}");
+        command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        let after = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        assert!(after.contains("request r (tasks: t closing; every task of it has ended: close it with close_request, or create its next tasks): Work"), "{after}");
+    }
+
+    #[test]
+    fn every_open_request_says_which_tasks_it_has_however_many_requests_are_open() {
+        let f = fixture();
+        ask_orchestrator(&f, 1);
+        let body = "A request that already has its tasks and waits for them to end. ".repeat(20);
+        for n in 0..60 {
+            let request = format!("busy-{n}");
+            command(&f.executor.domain, Actor::User { user_id: "u".into() }, &request, Command::CreateRequest {
+                request_id: request.as_str().into(), body: body.clone(), auto_merge: false, maintenance: false, message: false,
+            });
+            command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, &format!("title-{n}"), Command::TitleRequest {
+                request_id: request.as_str().into(), title: format!("Busy {n}"),
+            });
+            command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask {
+                task_id: format!("t-busy-{n}").into(), request_id: request.as_str().into(), title: format!("Busy {n}"), agent_id: None,
+                review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
+                plan_items: None, continues: None,
+            });
+        }
+        command(&f.executor.domain, Actor::User { user_id: "u".into() }, "fresh", Command::CreateRequest {
+            request_id: "fresh".into(), body: "A node that waits holds no memory".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        assert!(body.len() * 60 > MAX_SUMMARY_BYTES, "the open requests alone outgrow the bound");
+        for n in 0..60 {
+            assert!(text.contains(&format!("request busy-{n} (tasks: t-busy-{n} not_started): ")), "busy-{n} lost its tasks:\n{text}");
+        }
+        assert_eq!(text.matches("(no task of its own)").count(), 1, "{text}");
+        assert!(text.contains("request fresh (no task of its own): A node that waits holds no memory"), "{text}");
     }
 
     #[test]
@@ -1919,7 +2036,7 @@ mod tests {
         command(&f.executor.domain, Actor::User { user_id: "u".into() }, "long", Command::CreateRequest {
             request_id: "long".into(), body: long.clone(), auto_merge: false, maintenance: false, message: false,
         });
-        let text = summary(&f.executor.domain.state().unwrap(), |_| None);
+        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
         assert!(text.contains("end of the message"), "{text}");
     }
 

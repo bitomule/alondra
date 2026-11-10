@@ -191,9 +191,9 @@ fn seed_work(fixture: &Fixture) {
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
         body: "Nothing to change: it already works".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
     });
-    fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None, headline: None });
+    fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
     fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
-    fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()), headline: None });
+    fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()), headline: None, folded_into: None });
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
         number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
@@ -831,7 +831,7 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
     let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf());
     orchestrator.tick().await;
     let prompt = orchestrator.prompts().pop().expect("the batch reached Claude");
-    assert!(prompt.contains("The user created Request request-1") && prompt.contains("request request-1: Make the editor readable"), "{prompt}");
+    assert!(prompt.contains("The user created Request request-1") && prompt.contains("(no task of its own): Make the editor readable"), "{prompt}");
     assert!(fixture.domain.store.lock().unwrap().pending_messages().unwrap().iter()
         .filter(|m| m.recipient_kind == "orchestrator")
         .all(|m| m.interaction_id.as_deref() == Some("request-unsplit-request-1-1")),

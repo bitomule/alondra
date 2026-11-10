@@ -274,7 +274,7 @@ pub(super) fn stage(
                     Some(task_id.0.as_str()),
                     None,
                     format!(
-                        "Every Task of Request {request_id}{} has ended (done or cancelled; the last was {task_id}) and the Request is still open: close it with close_request, its answer the summary the user reads on the Done card Alondra writes (what came of it, in the user's language), or create its next Tasks.",
+                        "Every Task of Request {request_id}{} has ended (done or cancelled; the last was {task_id}) and the Request is still open: close it with close_request, its answer the summary the user reads on the Done card Alondra writes (what came of it, in the user's language), or create its next Tasks only for work its ended Tasks left undone; what an open Task of another Request already covers is folded into it, never given a Task again.",
                         next.requests
                             .get(request_id)
                             .and_then(|r| r.title.as_deref())

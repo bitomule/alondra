@@ -108,6 +108,9 @@ pub enum Command {
         /// The answer's headline the user reads on its card, the answer below it.
         #[serde(default)]
         headline: Option<String>,
+        /// The open Task that already covers this Request: it gets no Task of its own.
+        #[serde(default)]
+        folded_into: Option<TaskId>,
     },
     TitleRequest {
         request_id: RequestId,
