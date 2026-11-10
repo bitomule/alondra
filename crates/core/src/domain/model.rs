@@ -63,6 +63,9 @@ pub struct Request {
     /// it only once it has tasks.
     #[serde(default)]
     pub message: bool,
+    /// The card the user replied from, captured when the message was committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<CardReference>,
     /// The user cleared it from the completed work: a closed Request without Tasks no list shows again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleared: bool,
@@ -75,12 +78,21 @@ pub struct Request {
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, cleared: false, origin: RequestOrigin::User, folded_into: None }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false, reply_to: None, cleared: false, origin: RequestOrigin::User, folded_into: None }
     }
     /// Closed with an answer: for a Request without Tasks, its card carries all there is to read.
     pub fn answered(&self) -> bool {
         self.closed && !self.withdrawn && self.answer.is_some()
     }
+}
+/// The origin of a message, resolved from the domain rather than supplied by a client.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardReference {
+    pub interaction_id: InteractionId,
+    pub title: String,
+    pub scope: Scope,
+    pub request_id: Option<RequestId>,
+    pub task_ids: Vec<TaskId>,
 }
 /// Rows written before the origin was recorded read as the user's, so no answer they asked for is lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

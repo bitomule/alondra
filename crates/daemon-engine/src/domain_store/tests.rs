@@ -1685,6 +1685,68 @@ fn a_message_to_the_orchestrator_stays_one_after_a_restart() {
 }
 
 #[test]
+fn a_card_reply_keeps_its_reference_and_launch_after_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::System, "notice", Command::PublishInformation {
+        interaction_id: "weekly-notice".into(), scope: Scope::Task { task_id: "task-1".into() },
+        recipient: Recipient::User, body: "The weekly report is ready.".into(), attachments: vec![],
+        card: CardSpec::new(CardKind::Know, "Weekly report is ready"),
+    });
+    let launch = RequestLaunch {
+        project: None,
+        options: alondra_core::options::OptionsFile::default().resolve(None, &Default::default()).unwrap(),
+        issue: None, issue_text: None, attachments: vec![attachment("att-1")],
+    };
+    let command = |card: &str| serde_json::from_value::<Command>(serde_json::json!({
+        "kind": "create_card_reply", "request_id": "follow-up", "interaction_id": card,
+        "body": "What did it do?\nI have not seen anything.",
+    })).unwrap();
+    let bad = envelope(&mut store, "missing-card", command("missing"));
+    let before = store.load().unwrap();
+    assert!(matches!(store.execute_launching(&user(), &bad, None, &launch), Err(StoreError::Domain(_))));
+    assert_eq!(store.load().unwrap(), before);
+    assert!(store.request_launch(&"follow-up".into()).unwrap().is_none());
+
+    let asked = envelope(&mut store, "follow-up", command("weekly-notice"));
+    let first = store.execute_launching(&user(), &asked, None, &launch).unwrap();
+    let request = serde_json::to_value(&first.state.requests[&"follow-up".into()]).unwrap();
+    assert_eq!(request["reply_to"], serde_json::json!({
+        "interaction_id": "weekly-notice", "title": "Weekly report is ready",
+        "scope": {"kind": "task", "task_id": "task-1"},
+        "request_id": "request-1", "task_ids": ["task-1"],
+    }));
+    drop(store);
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let state = store.load().unwrap();
+    assert_eq!(serde_json::to_value(&state.requests[&"follow-up".into()]).unwrap(), request);
+    assert_eq!(store.request_launch(&"follow-up".into()).unwrap(), Some(launch.clone()));
+    assert!(state.requests[&"follow-up".into()].message);
+    assert!(serde_json::to_value(&state.requests[&"request-1".into()]).unwrap()["reply_to"].is_null());
+    let repeated = store.execute_launching(&user(), &asked, None, &launch).unwrap();
+    assert_eq!(repeated.outcome, first.outcome);
+    assert_eq!(store.load().unwrap().requests.len(), 2, "a retried reply is not a second message");
+    store.integrity_check().unwrap();
+}
+
+#[test]
+fn a_database_without_card_replies_opens_with_no_reference_on_old_messages() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    execute(&mut store, &user(), "old-message", Command::CreateRequest {
+        request_id: "old-message".into(), body: "A general message".into(),
+        auto_merge: false, maintenance: false, message: true,
+    });
+    store.conn.execute_batch("DROP TABLE IF EXISTS request_card_replies").unwrap();
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert!(state.requests[&"old-message".into()].message);
+    assert!(serde_json::to_value(&state.requests[&"old-message".into()]).unwrap()["reply_to"].is_null());
+}
+
+#[test]
 fn a_store_made_before_messages_were_marked_marks_the_ones_the_message_route_made() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();

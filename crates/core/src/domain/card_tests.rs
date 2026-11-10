@@ -88,6 +88,117 @@ fn inform(id: &str, scope: Scope, body: &str) -> Command {
         card: CardSpec::new(CardKind::Know, "Read the release notes"),
     }
 }
+
+fn card_reply(request: &str, card: &str, body: &str) -> Command {
+    serde_json::from_value(serde_json::json!({
+        "kind": "create_card_reply", "request_id": request, "interaction_id": card,
+        "body": body, "auto_merge": false,
+    })).unwrap()
+}
+
+#[test]
+fn a_card_reply_keeps_the_card_and_every_task_of_its_request() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "t-2", "b");
+    let scope = Scope::Orchestrator { request_id: Some("r".into()) };
+    ok(&mut s, Actor::System, inform("weekly-notice", scope.clone(), "The weekly report is ready."));
+    let title = s.interactions[&"weekly-notice".into()].card.effective_title().to_owned();
+    let body = "What did it do?\nI have not seen anything.";
+    let outcome = ok(&mut s, user(), card_reply("follow-up", "weekly-notice", body));
+    let request = &s.requests[&"follow-up".into()];
+    assert_eq!(request.body, body);
+    assert!(request.message);
+    assert_eq!(request.origin, RequestOrigin::User);
+    assert_eq!(serde_json::to_value(request).unwrap()["reply_to"], serde_json::json!({
+        "interaction_id": "weekly-notice", "title": title, "scope": scope,
+        "request_id": "r", "task_ids": ["t", "t-2"],
+    }));
+    assert!(outcome.effects.iter().any(|effect| matches!(effect,
+        DomainEffect::NotifyOrchestrator { request_id: Some(id), .. } if id.0 == "follow-up")));
+}
+
+#[test]
+fn a_card_reply_can_name_one_task_or_no_task() {
+    for scope in [scope("t"), Scope::Orchestrator { request_id: None }] {
+        let mut s = fixture();
+        ok(&mut s, Actor::System, inform("notice", scope.clone(), "An update"));
+        ok(&mut s, user(), card_reply("follow-up", "notice", "Explain the update"));
+        let reference = serde_json::to_value(&s.requests[&"follow-up".into()]).unwrap()["reply_to"].clone();
+        assert_eq!(reference["scope"], serde_json::to_value(&scope).unwrap());
+        match scope {
+            Scope::Task { .. } => {
+                assert_eq!(reference["request_id"], "r");
+                assert_eq!(reference["task_ids"], serde_json::json!(["t"]));
+            }
+            Scope::Orchestrator { .. } => {
+                assert!(reference["request_id"].is_null());
+                assert_eq!(reference["task_ids"], serde_json::json!([]));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_card_reply_does_not_acquire_tasks_added_after_the_user_sent_it() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, inform("notice", Scope::Orchestrator { request_id: Some("r".into()) }, "An update"));
+    ok(&mut s, user(), card_reply("follow-up", "notice", "Explain"));
+    register_agent(&mut s, "b");
+    task(&mut s, "t-2", "b");
+    let reference = serde_json::to_value(&s.requests[&"follow-up".into()]).unwrap()["reply_to"].clone();
+    assert_eq!(reference["task_ids"], serde_json::json!(["t"]));
+}
+
+#[test]
+fn a_card_reply_cannot_supply_a_forged_reference() {
+    let command = serde_json::json!({
+        "kind": "create_card_reply", "request_id": "follow-up", "interaction_id": "notice",
+        "body": "Explain", "reply_to": {"interaction_id": "other", "task_ids": ["other-task"]},
+    });
+    assert!(serde_json::from_value::<Command>(command).is_err());
+}
+
+#[test]
+fn a_card_reply_rejects_missing_or_withdrawn_cards_and_cards_not_for_the_user() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, inform("notice", scope("t"), "An update"));
+    s.interactions.get_mut(&"notice".into()).unwrap().withdrawn = true;
+    let mut hidden = inform("hidden", scope("t"), "An internal update");
+    if let Command::PublishInformation { recipient, .. } = &mut hidden { *recipient = Recipient::Orchestrator; }
+    ok(&mut s, agent(), hidden);
+    for card in ["missing", "notice", "hidden"] {
+        let (code, field) = refused(&mut s, user(), card_reply("follow-up", card, "Explain"));
+        assert_eq!(code, "invalid_input");
+        assert_eq!(field.as_deref(), Some("interaction_id"));
+    }
+}
+
+#[test]
+fn only_the_user_can_create_a_card_reply_and_a_refusal_creates_no_message() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, inform("notice", scope("t"), "An update"));
+    for actor in [agent(), orchestrator(), Actor::System] {
+        assert_eq!(refused(&mut s, actor, card_reply("follow-up", "notice", "Explain")).0, "forbidden");
+    }
+    assert_eq!(refused(&mut s, user(), card_reply("follow-up", "notice", "  ")).0, "invalid_input");
+    ok(&mut s, user(), card_reply("follow-up", "notice", "Explain"));
+    refused(&mut s, user(), card_reply("follow-up", "notice", "Explain again"));
+}
+
+#[test]
+fn old_requests_and_general_messages_have_no_card_reply_reference() {
+    let old: Request = serde_json::from_value(serde_json::json!({
+        "id": "old-request", "body": "Original request", "closed": false,
+    })).unwrap();
+    assert!(serde_json::to_value(old).unwrap()["reply_to"].is_null());
+    let mut s = fixture();
+    ok(&mut s, user(), Command::CreateRequest {
+        request_id: "general".into(), body: "A general message".into(),
+        auto_merge: false, maintenance: false, message: true,
+    });
+    assert!(serde_json::to_value(&s.requests[&"general".into()]).unwrap()["reply_to"].is_null());
+}
 fn answer(id: &str) -> Command {
     Command::AnswerQuestion { attachments: vec![], interaction_id: id.into(), option_id: "a".into(), inputs: BTreeMap::new() }
 }

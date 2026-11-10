@@ -1236,6 +1236,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         }
         Command::ResurfaceDueCards { .. }
         | Command::CreateRequest { .. }
+        | Command::CreateCardReply { .. }
         | Command::CloseRequest { .. }
         | Command::TitleRequest { .. }
         | Command::CreateSchedule { .. }
