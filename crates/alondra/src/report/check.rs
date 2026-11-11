@@ -72,6 +72,7 @@ struct Occurrence {
     value: String,
     line: usize,
     trusted: bool,
+    field: String,
 }
 
 fn json(name: &str, text: &str, offset: usize, private: &Private, hits: &mut Vec<Hit>) {
@@ -81,12 +82,26 @@ fn json(name: &str, text: &str, offset: usize, private: &Private, hits: &mut Vec
     if parsed {
         for occurrence in parser.strings {
             if !occurrence.trusted {
+                let before = hits.len();
                 add_private(hits, name, &occurrence.value, occurrence.line, private);
+                let field = &occurrence.field;
+                for hit in &mut hits[before..] {
+                    let what = hit.what.clone();
+                    hit.what = trf!("{what}, in the field {field}", "{what}, en el campo {field}");
+                }
             }
         }
     } else {
         hits.push(Hit { section: name.to_owned(), line: offset + 1, what: tr!("invalid report JSON", "JSON de informe no válido").to_owned() });
     }
+}
+
+fn field_of(path: &[String], key: &str) -> String {
+    let mut parts: Vec<&str> = path.iter().map(String::as_str).collect();
+    if !key.is_empty() {
+        parts.push(key);
+    }
+    if parts.is_empty() { "(root)".to_owned() } else { parts.join(".") }
 }
 
 struct JsonStrings<'a> {
@@ -149,7 +164,8 @@ impl JsonStrings<'_> {
                     }
                     let refs: Vec<&str> = path.iter().map(String::as_str).collect();
                     let trusted = known && self.root.is_some_and(|root| schema::key(self.name, &refs, &key, root));
-                    self.strings.push(Occurrence { value: key.clone(), line, trusted });
+                    let field = field_of(path, &key);
+                    self.strings.push(Occurrence { value: key.clone(), line, trusted, field });
                     self.take(b':')?;
                     path.push(key);
                     self.value(path, trusted)?;
@@ -185,7 +201,8 @@ impl JsonStrings<'_> {
                 let (value, line) = self.string()?;
                 let refs: Vec<&str> = path.iter().map(String::as_str).collect();
                 let trusted = known && (redact::is_pseudonym(&value) || self.root.is_some_and(|root| schema::value(self.name, &refs, &value, root)));
-                self.strings.push(Occurrence { value, line, trusted });
+                let field = field_of(path, "");
+                self.strings.push(Occurrence { value, line, trusted, field });
             }
             _ => {
                 let length = self.text[self.at..].find(|c: char| c.is_ascii_whitespace() || matches!(c, ',' | ']' | '}')).unwrap_or(self.text.len() - self.at);

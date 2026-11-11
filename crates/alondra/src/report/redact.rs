@@ -72,6 +72,15 @@ impl Pseudonyms {
         self.by_value.keys().map(String::as_str)
     }
 
+    /// Every value that was replaced with what replaced it.
+    pub fn replacements(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.by_value.iter().map(|(value, name)| (value.as_str(), name.as_str()))
+    }
+
+    fn replacement(&self, value: &str) -> Option<&str> {
+        self.by_value.get(value).map(String::as_str)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.by_value.is_empty()
     }
@@ -265,6 +274,7 @@ impl<'a> Redactor<'a> {
                 .map(|part| match part {
                     Part::Gap(gap) => (*gap).to_owned(),
                     Part::Token(t) if is_iso_time(t) => super::time::iso_to_utc(t).unwrap_or_else(|| self.pseudonyms.of(Kind::Value, t)),
+                    Part::Token(t) if self.pseudonyms.replacement(t).is_some() => self.pseudonyms.of(Kind::Value, t),
                     Part::Token(t) if safe(t) => (*t).to_owned(),
                     Part::Token(t) => self.shaped(t),
                 })
@@ -293,7 +303,7 @@ impl<'a> Redactor<'a> {
 
     /// A word that must be a word of the code (a state, a reason): itself, or a pseudonym.
     pub fn word(&mut self, word: &str) -> String {
-        if is_safe_token(word, self.vocabulary) {
+        if self.pseudonyms.replacement(word).is_none() && is_safe_token(word, self.vocabulary) {
             word.to_owned()
         } else {
             self.pseudonyms.of(Kind::Value, word)
