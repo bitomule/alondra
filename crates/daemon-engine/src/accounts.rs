@@ -355,9 +355,7 @@ pub(crate) fn generation(state: &alondra_core::domain::DomainState, account: &Ac
     generation_provider(state, &AccountKey::new(Provider::Claude, account.clone()))
 }
 
-pub(crate) fn generation_provider(state: &alondra_core::domain::DomainState, account: &AccountKey) -> u64 {
-    state.accounts.iter().find(|status| status.provider == account.provider && status.id == account.account).map_or(0, |status| status.sign_ins) + 1
-}
+pub(crate) use crate::domain_store::generation_provider;
 
 /// What the domain keeps of the accounts but a check never sees: the generations of their credentials.
 fn unchecked(accounts: &[AccountStatus]) -> Vec<AccountStatus> {
@@ -760,7 +758,7 @@ pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Re
     let recorded = vec![Command::RecordAccountConfiguration { order: file.accounts.ordered_accounts().into_iter().map(|(key, _)| key).collect(), version: version(&file.accounts) },
         Command::RecordDistribution { policy: file.accounts.distribution.policy, move_when_exhausted: file.accounts.distribution.move_when_exhausted },
         Command::RecordModelProfiles { profiles: file.model_profiles.clone(), version: alondra_core::model_selection::profiles_version(&file.model_profiles) }];
-    crate::domain_store::provider_settings::apply(domain, home, &Actor::System, envelope, Some(previous), target, recorded).map_err(|why| why.to_string())
+    crate::settings_projection::apply(domain, home, &Actor::System, envelope, Some(previous), target, recorded).map_err(|why| why.to_string())
 }
 
 /// Why a change from Settings was not made.
@@ -836,7 +834,7 @@ pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Pa
     let user_home = claude.as_ref().map(|claude| claude.user_home.clone()).or_else(|| codex.as_ref().map(|codex| codex.user_home.clone())).unwrap_or_else(|| home.join("unavailable-native-home"));
     let refused = std::cell::RefCell::new(None);
     let removed = std::cell::RefCell::new(Vec::new());
-    let result = crate::domain_store::provider_settings::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |state| {
+    let result = crate::settings_projection::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |state| {
         match prepare_account_changes(home, &user_home, claude.as_ref(), codex.as_ref(), &current, &next, &working_keys(state)) {
             Ok(keys) => { *removed.borrow_mut() = keys; Ok(()) }
             Err(why) => { let message = format!("{why:?}"); *refused.borrow_mut() = Some(why); Err(crate::domain_store::StoreError::Storage(anyhow::anyhow!(message))) }
@@ -893,14 +891,14 @@ pub fn set_model_profile_authorized(domain: &DomainRuntime, home: &Path, actor: 
 fn apply_settings_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, command: Command, previous: Option<String>, target: String, recorded: Vec<Command>, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: domain.read().state().data_epoch.clone(),
         command_id: format!("provider-settings-{}", crate::auth::random_hex(16)).into(), expected_revision: 0, command };
-    crate::domain_store::provider_settings::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |_| Ok(())).map_err(|why| match why {
+    crate::settings_projection::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |_| Ok(())).map_err(|why| match why {
         crate::domain_store::StoreError::Domain(why) => ChangeRefused::Domain(why),
         why => ChangeRefused::Store(Refused::Folder(why.to_string())),
     })
 }
 
 pub(crate) fn recover_settings(domain: &DomainRuntime, home: &Path) -> Result<(), String> {
-    crate::domain_store::provider_settings::recover(domain, home).map_err(|why| format!("Could not reconcile the settings change: {why:#}"))
+    crate::settings_projection::recover(domain, home).map_err(|why| format!("Could not reconcile the settings change: {why:#}"))
 }
 
 /// Checks the accounts when the daemon starts, then every ten minutes, and at once when Claude

@@ -293,14 +293,14 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
     Ok(Some(Held { id, hold, input }))
 }
 
-/// What the domain is told of a decision Claude asks for through a task's SDK execution: the call
-/// it is about and the card the user would answer, built exactly as a held hook's card.
-pub(crate) struct SdkDecision {
-    pub hold: Hold,
-    pub tool: Option<String>,
-    pub input: Value,
-    pub mcp_server: Option<McpServerOrigin>,
-    pub prompt: DecisionPrompt,
+pub(crate) use crate::domain_store::wording::SdkDecision;
+
+pub(crate) struct HeldCards;
+
+impl crate::domain_store::wording::SdkDecisions for HeldCards {
+    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
+        sdk_decision(task_title, kind, payload, worktree, worktrees, home)
+    }
 }
 
 /// The decision the host persisted with `payload`, for a task that works in `worktree` and whose
