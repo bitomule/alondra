@@ -40,6 +40,8 @@ pub const PLAN_REVIEW_KEEP_LABEL: &str = "Keep the plans as they are";
 /// Alondra's notice, then one reminder, to the orchestrator about a task that waits for a task
 /// that was cancelled.
 pub const DEPENDENCY_CANCELLED_NOTICE_PREFIX: &str = "dependency-cancelled-";
+/// Alondra's one reminder to the orchestrator about a refused launch plan it left as it was.
+pub const PLAN_REFUSED_NOTICE_PREFIX: &str = "plan-refused-unsettled-";
 
 const ERROR_SHOWN: usize = 600;
 const QUESTION_SHOWN: usize = 160;

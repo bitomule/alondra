@@ -5,6 +5,9 @@ use alondra_core::domain::{Command, DomainError, RequestId, SuggestionDecision};
 use std::path::Path;
 
 const MISSION_LIMIT: usize = 32_000;
+/// A native effort belongs to one model's own levels, so with Automatic there is nothing to apply it
+/// to: the launch would refuse it every time.
+pub const EFFORT_WITHOUT_MODEL: &str = "launch.effort needs launch.model: name the model the effort is for (claude/… or codex/…), or leave the effort out so Automatic picks both";
 
 pub use alondra_core::domain::LaunchPlan;
 
@@ -69,6 +72,9 @@ fn validate_with_directory(domain: &DomainRuntime, home: &Path, request_id: &Req
         if let Some(effort) = &plan.effort {
             if intent.requested_reasoning_effort.as_ref().is_some_and(|requested| requested != effort) { return Err(invalid("The user-selected reasoning effort is binding".into())); }
             intent.requested_reasoning_effort = Some(effort.clone());
+        }
+        if intent.requested.is_none() && intent.requested_reasoning_effort.is_some() {
+            return Err(invalid(EFFORT_WITHOUT_MODEL.into()));
         }
         native.selection = Some(intent);
         crate::domain_orchestrator_tools::validate_request_selection(domain, &native)?;

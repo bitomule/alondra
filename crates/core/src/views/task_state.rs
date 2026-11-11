@@ -525,6 +525,10 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
     if let Some(held) = plan_review(task, context) {
         return held;
     }
+    if context.domain.open_plan_refusal(&task.id).is_some() {
+        return Presentation::new(t!(lang, "Waiting for its plan to be fixed", "Esperando a que se corrija su plan"), Tone::Info, Waiting,
+            Some(t!(lang, "The orchestrator fixes its launch plan or cancels it", "El orquestador corrige su plan de arranque o la cancela").into()));
+    }
     let didnt_start = |fact: String| Presentation::new(common::launch_failed_label(lang), Tone::Warning, Waiting, Some(fact));
     if let Some(super::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {
         return Presentation::new(common::launch_failed_label(lang), Tone::Warning, Waiting,

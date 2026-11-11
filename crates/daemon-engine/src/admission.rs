@@ -1412,7 +1412,10 @@ fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_core::domain::
     if !still_waits(&state, &Key::Task(task.clone())) {
         return Ok(());
     }
-    crate::start_failures::failed(domain, task, alondra_core::domain::StartProblem::LaunchFailed { error: error.message.clone() }, now)
+    match crate::start_failures::problem_of(&error.code, &error.message, None) {
+        Some(problem) => crate::start_failures::failed(domain, task, problem, now),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

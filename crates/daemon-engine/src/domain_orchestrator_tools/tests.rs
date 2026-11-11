@@ -2150,6 +2150,97 @@ async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_uniqu
     assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
 }
 
+/// What kept “Triage legible en AX3” from ever starting on 2026-11-10: its plan held a native effort
+/// with the model on Automatic, every write took it and every start refused it.
+#[tokio::test]
+async fn a_plan_with_a_native_effort_and_no_model_is_refused_when_it_is_written() {
+    let f = world();
+    connect_claude_and_codex(&f);
+    let plan = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    let refused = crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &plan).unwrap_err();
+    assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", crate::launch_plans::EFFORT_WITHOUT_MODEL));
+    let body: LaunchPlanBody = serde_json::from_value(json!({"task_id": "t", "launch": plan})).unwrap();
+    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
+    assert_eq!(partial_plan(&f, "t", json!({"effort": "medium"})).unwrap_err().message, refused.message);
+    let named = alondra_daemon_engine_model::LaunchPlan { model: Some("claude/sonnet".into()), ..plan };
+    crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &named).unwrap();
+}
+
+/// A plan an older daemon stored as the one that stopped “Triage legible en AX3”. Its start is
+/// refused the same way every time, so it is never retried. The orchestrator gets it at once, the
+/// user's inbox gets nothing, and the plan the orchestrator fixes starts the task.
+fn refused_plan(f: &Fixture) {
+    connect_claude_and_codex(f);
+    let stored = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
+        ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &stored, 1).unwrap();
+}
+
+async fn refuse_its_start(f: &Fixture) -> alondra_core::domain::Interaction {
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    assert!(f.sdk().starts().is_empty());
+    assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
+    assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().in_flight, 0,
+        "a start that did not start holds no slot, so the next try asks the gate again");
+    let state = f.domain.state().unwrap();
+    let card = state.open_plan_refusal(&"t".into()).cloned().expect("the orchestrator is handed the refused plan at once");
+    assert_eq!(card.recipient, alondra_core::domain::Recipient::Orchestrator);
+    assert!(card.body.contains("Choose a model before its native reasoning effort"), "{}", card.body);
+    assert!(state.interactions.values().all(|i| i.recipient != alondra_core::domain::Recipient::User
+        || !matches!(&i.scope, alondra_core::domain::Scope::Task { task_id } if task_id.0 == "t")), "nothing reaches the user's inbox");
+    let messages = f.domain.store.lock().unwrap().pending_messages().unwrap();
+    assert!(messages.iter().any(|m| m.recipient_kind == "orchestrator" && m.interaction_id.as_deref() == Some(card.id.0.as_str())),
+        "the orchestrator hears of it in its next batch: {messages:?}");
+    assert!(messages.iter().filter(|m| m.interaction_id.as_deref() == Some(card.id.0.as_str())).all(|m| m.recipient_kind == "orchestrator"), "{messages:?}");
+    card
+}
+
+#[tokio::test]
+async fn a_start_refused_for_its_plan_goes_to_the_orchestrator_and_fixing_the_plan_starts_it() {
+    let f = world();
+    refused_plan(&f);
+    refuse_its_start(&f).await;
+    partial_plan(&f, "t", json!({"model": "claude/sonnet"})).unwrap();
+    assert!(f.domain.state().unwrap().open_plan_refusal(&"t".into()).is_none(), "the fixed plan settles the card");
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    f.launched(1).await;
+}
+
+#[tokio::test]
+async fn the_orchestrator_cancels_a_refused_plan_with_its_reason() {
+    let f = world();
+    refused_plan(&f);
+    let card = refuse_its_start(&f).await;
+    command(&f.domain, the_orchestrator(&f.domain), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id,
+        option_id: alondra_core::domain::START_CANCEL.into(),
+        inputs: [(alondra_core::domain::ANSWER_TEXT.to_owned(), alondra_core::domain::InputValue::Text("The editor no longer needs it".into()))].into() });
+    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].cancelled());
+    assert_eq!(f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("t")], "The editor no longer needs it");
+}
+
+#[tokio::test]
+async fn a_refused_plan_the_orchestrator_leaves_is_reminded_once_then_cancelled_saying_why() {
+    let f = world();
+    refused_plan(&f);
+    refuse_its_start(&f).await;
+    crate::orchestrator_inbox::settle(&f.domain);
+    let state = f.domain.state().unwrap();
+    let reminder = state.interactions.values().find(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX))
+        .expect("one reminder to the orchestrator");
+    assert_eq!(reminder.recipient, alondra_core::domain::Recipient::Orchestrator);
+    assert!(!state.tasks[&TaskId::from("t")].cancelled());
+    crate::orchestrator_inbox::settle(&f.domain);
+    let state = f.domain.state().unwrap();
+    assert!(state.tasks[&TaskId::from("t")].cancelled(), "left past its reminder, Alondra cancels it");
+    assert!(state.open_plan_refusal(&"t".into()).is_none());
+    let reason = f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("t")].clone();
+    assert!(reason.contains("Choose a model before its native reasoning effort"), "{reason}");
+    assert!(state.interactions.values().all(|i| i.recipient != alondra_core::domain::Recipient::User
+        || !matches!(&i.scope, alondra_core::domain::Scope::Task { task_id } if task_id.0 == "t")), "the user is never asked");
+}
+
 fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, DomainError> {
     update_launch_plan(&f.domain, &f.home, serde_json::from_value(json!({"task_id": task, "changes": changes})).unwrap())
 }

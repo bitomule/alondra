@@ -3009,11 +3009,15 @@ impl DomainState {
                 };
                 let card = CardSpec { system: Some(SystemCard::StartProblem), ..crate::start_problem::card(&title, problem, dependency, crate::views::Lang::En) };
                 let options = crate::start_problem::options(problem, crate::views::Lang::En);
+                let recipient = match problem {
+                    StartProblem::PlanRefused { .. } => Recipient::Orchestrator,
+                    _ => Recipient::User,
+                };
                 self.insert_interaction(
                     actor,
                     &problem_id,
                     &Scope::Task { task_id: task_id.clone() },
-                    &Recipient::User,
+                    &recipient,
                     &serde_json::to_string(problem).map_err(|e| DomainError::new("invalid_input", e.to_string()))?,
                     false,
                     &[],
@@ -3022,7 +3026,10 @@ impl DomainState {
                     Source::Problem,
                 )?;
                 created.push(problem_id.0.clone());
-                effects.push(DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: problem_id });
+                effects.push(match recipient {
+                    Recipient::Orchestrator => DomainEffect::NotifyOrchestrator { interaction_id: Some(problem_id), request_id: None },
+                    _ => DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: problem_id },
+                });
             }
             Command::RecordScheduleRunFailed {
                 run_id,
@@ -4054,6 +4061,11 @@ impl DomainState {
                 if is_stall_case(&i) {
                     return refuse("stall_needs_outcome", "interaction_id",
                         "A stopped node is settled with settle_stall and one outcome: instruct (the node gets your instruction) or close (the task ends with your result)");
+                }
+                let reasoned = inputs.values().any(|value| matches!(value, InputValue::Text(text) if !text.trim().is_empty()));
+                if is_plan_refusal(&i) && (option_id != START_CANCEL || !reasoned) {
+                    return refuse("plan_refused_needs_outcome", "interaction_id",
+                        "A refused launch plan is settled with one outcome: fix the plan with update_launch_plan or set_launch_plan (this card closes and the task starts), or answer cancel with the reason in inputs.text");
                 }
                 let (options, answer) = match &i.payload {
                     InteractionPayload::Question { options, answer }

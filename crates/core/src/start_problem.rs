@@ -18,6 +18,10 @@ pub fn card(title: &str, problem: &StartProblem, dependency: Option<&str>, lang:
         StartProblem::LaunchFailed { error } => CardSpec::new(CardKind::Problem, need(tf!(lang, "“{title}” does not start", "«{title}» no arranca")))
             .why(why(tf!(lang, "Alondra tried to start it {n} times and it failed every time.", "Alondra intentó arrancarla {n} veces y falló todas.", n = START_RETRIES.len() + 1)))
             .content(ContentKind::Diagnosis, error.trim()),
+        StartProblem::PlanRefused { error } => CardSpec::new(CardKind::Problem, need(tf!(lang, "Fix the launch plan of “{title}” or cancel it", "Corrige el plan de arranque de «{title}» o cancélala")))
+            .why(why(t!(lang, "Its start was refused for its plan, and the same plan is refused every time. Fix it with update_launch_plan or set_launch_plan, or answer cancel with the reason.",
+                "Su arranque se rechazó por su plan, y el mismo plan se rechaza siempre. Corrígelo con update_launch_plan o set_launch_plan, o responde cancel con el motivo.").to_owned()))
+            .content(ContentKind::Diagnosis, error.trim()),
         StartProblem::Untrusted { folder, error } => {
             let name = folder.rsplit('/').find(|part| !part.is_empty()).unwrap_or(folder);
             let reason = match error {
@@ -72,6 +76,10 @@ pub fn options(problem: &StartProblem, lang: Lang) -> Vec<QuestionOption> {
         StartProblem::LaunchFailed { .. } => vec![
             option(START_RETRY, t!(lang, "Try again", "Reintentar"), t!(lang, "Alondra starts it again as soon as there is room", "Alondra la vuelve a arrancar en cuanto haya hueco")),
             cancel,
+        ],
+        StartProblem::PlanRefused { .. } => vec![
+            option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"),
+                t!(lang, "The task closes without starting; inputs.text holds the reason", "La tarea se cierra sin arrancar; inputs.text lleva el motivo")),
         ],
         StartProblem::Untrusted { .. } => vec![
             option(START_RETRY, t!(lang, "Trust it and start it", "Confiar y arrancarla"),

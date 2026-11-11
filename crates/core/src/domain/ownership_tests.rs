@@ -7,13 +7,20 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestError, TestRng, TestRunner};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, Debug)]
+enum Failure {
+    Launch,
+    Untrusted,
+    PlanRefused,
+}
+
 #[derive(Clone, Debug)]
 enum Step {
     SdkOpening,
     UncertainOpening(usize),
     Create { scheduled: bool, plan: bool, deps: Vec<usize> },
     Admit(usize),
-    LaunchFails { pick: usize, untrusted: bool },
+    LaunchFails { pick: usize, failure: Failure },
     Tick(i64),
     NodeDies(usize),
     NodeBack(usize),
@@ -26,6 +33,9 @@ enum Step {
     Cancel(usize),
     Reopen(usize),
     AnswerProblem { pick: usize, option: usize },
+    /// What becomes of a refused launch plan: the orchestrator fixes it, cancels the task with its
+    /// reason, or leaves it past its reminder and Alondra cancels the task.
+    SettlePlan { pick: usize, outcome: usize },
     /// What becomes of a task that waits for a cancelled task: the orchestrator re-points it,
     /// drops the wait or cancels it, or leaves it and the inbox asks the user.
     Replan { pick: usize, outcome: usize, onto: usize },
@@ -38,7 +48,7 @@ fn step() -> impl Strategy<Value = Step> {
         3 => (any::<bool>(), prop::bool::weighted(0.8), prop::collection::vec(0usize..8, 0..3))
             .prop_map(|(scheduled, plan, deps)| Step::Create { scheduled, plan, deps }),
         3 => (0usize..8).prop_map(Step::Admit),
-        2 => (0usize..8, prop::bool::weighted(0.2)).prop_map(|(pick, untrusted)| Step::LaunchFails { pick, untrusted }),
+        2 => (0usize..8, 0u8..10).prop_map(|(pick, kind)| Step::LaunchFails { pick, failure: match kind { 0 | 1 => Failure::Untrusted, 2 => Failure::PlanRefused, _ => Failure::Launch } }),
         2 => (1i64..30).prop_map(|minutes| Step::Tick(minutes * 60_000)),
         1 => (0usize..8).prop_map(Step::NodeDies),
         1 => (0usize..8).prop_map(Step::NodeBack),
@@ -51,6 +61,7 @@ fn step() -> impl Strategy<Value = Step> {
         1 => (0usize..8).prop_map(Step::Cancel),
         2 => (0usize..8).prop_map(Step::Reopen),
         2 => (0usize..8, 0usize..3).prop_map(|(pick, option)| Step::AnswerProblem { pick, option }),
+        2 => (0usize..8, 0usize..3).prop_map(|(pick, outcome)| Step::SettlePlan { pick, outcome }),
         2 => (0usize..8, 0usize..4, 0usize..8).prop_map(|(pick, outcome, onto)| Step::Replan { pick, outcome, onto }),
     ]
 }
@@ -214,12 +225,12 @@ impl World {
                     self.start_node(&task);
                 }
             }
-            Step::LaunchFails { pick, untrusted } => {
+            Step::LaunchFails { pick, failure } => {
                 let Some(task) = self.pick(pick, |t, f| Self::unstarted(t) && matches!(f.start, Start::Ready | Start::Launching)) else { return };
-                let problem = if untrusted {
-                    StartProblem::Untrusted { folder: "/synthetic/Projects/BlurCamera".into(), error: None }
-                } else {
-                    StartProblem::LaunchFailed { error: "claude exited with status 1".into() }
+                let problem = match failure {
+                    Failure::Untrusted => StartProblem::Untrusted { folder: "/synthetic/Projects/BlurCamera".into(), error: None },
+                    Failure::PlanRefused => StartProblem::PlanRefused { error: "Choose a model before its native reasoning effort".into() },
+                    Failure::Launch => StartProblem::LaunchFailed { error: "claude exited with status 1".into() },
                 };
                 let attempts = self.attempts.get(&task).copied().unwrap_or(0);
                 match after_failure(attempts, problem, self.now) {
@@ -379,11 +390,24 @@ impl World {
                 }
             }
             Step::AnswerProblem { pick, option } => {
-                let Some(task) = self.pick(pick, |t, _| self.s.open_start_problem(&t.id).is_some()) else { return };
+                let Some(task) = self.pick(pick, |t, _| self.s.open_user_card(&t.id).is_some_and(|i| self.s.open_start_problem(&t.id).is_some_and(|p| p.id == i.id))) else { return };
                 let card = self.s.open_start_problem(&task).unwrap();
                 let InteractionPayload::Question { options, .. } = &card.payload else { unreachable!() };
                 let (id, chosen) = (card.id.clone(), options[option % options.len()].id.clone());
                 self.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: id, option_id: chosen, inputs: BTreeMap::new() });
+            }
+            Step::SettlePlan { pick, outcome } => {
+                let Some(task) = self.pick(pick, |t, _| self.s.open_plan_refusal(&t.id).is_some()) else { return };
+                let card = self.s.open_plan_refusal(&task).unwrap().id.clone();
+                match outcome {
+                    0 => {
+                        self.must(Actor::System, Command::Withdraw { interaction_id: card });
+                        self.fact(&task).start = Start::Ready;
+                    }
+                    1 => self.must(orchestrator(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: START_CANCEL.into(),
+                        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("The editor no longer needs it".into()))]) }),
+                    _ => self.must(Actor::System, Command::CancelTask { task_id: task }),
+                }
             }
         }
     }
@@ -442,6 +466,11 @@ impl World {
 
     fn check(&self, steps: &[Step]) -> Result<(), String> {
         let none = StartFacts::default();
+        if let Some(card) = self.s.interactions.values().find(|i| i.system_card == Some(SystemCard::StartProblem)
+            && matches!(serde_json::from_str(&i.body), Ok(StartProblem::PlanRefused { .. })) && i.recipient != Recipient::Orchestrator)
+        {
+            return Err(format!("a refused plan reached the user ({}) after {steps:?}", card.id));
+        }
         super::lifecycle_tests::assert_aggregate_rules(&self.s);
         for id in self.open() {
             let task = &self.s.tasks[&id];
@@ -520,12 +549,12 @@ fn a_start_that_keeps_failing_is_retried_then_put_to_the_user() {
     w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
     let task: TaskId = "t1".into();
     for attempt in 1..=START_RETRIES.len() as u8 {
-        w.apply(&Step::LaunchFails { pick: 0, untrusted: false });
+        w.apply(&Step::LaunchFails { pick: 0, failure: Failure::Launch });
         assert!(matches!(w.facts[&task].start, Start::Retry { attempt: a, .. } if a == attempt), "{:?}", w.facts[&task]);
         assert!(matches!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::Gate(GateCause::Retry { .. }))));
         w.apply(&Step::Tick(START_RETRIES[usize::from(attempt) - 1]));
     }
-    w.apply(&Step::LaunchFails { pick: 0, untrusted: false });
+    w.apply(&Step::LaunchFails { pick: 0, failure: Failure::Launch });
     let card = w.s.open_start_problem(&task).expect("the user is asked").clone();
     assert_eq!(card.card.effective_title(), "“Task t1” does not start");
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card.id.clone()))));
@@ -650,4 +679,27 @@ fn a_node_stopped_without_a_result_or_a_question_is_sent_back_then_put_to_the_us
     w.stop_without_delivering(&task);
     let card = w.s.open_user_card(&task).expect("the user is told").id.clone();
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card))));
+}
+
+/// A launch plan the start refused goes to the orchestrator at once, never to the user, and only a
+/// fixed plan or a cancel with its reason settles it.
+#[test]
+fn a_refused_plan_is_the_orchestrators_to_fix_or_cancel_with_a_reason() {
+    let mut w = World::new();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
+    let task: TaskId = "t1".into();
+    w.apply(&Step::LaunchFails { pick: 0, failure: Failure::PlanRefused });
+    let card = w.s.open_plan_refusal(&task).expect("the orchestrator is handed the plan at once").clone();
+    assert_eq!(card.recipient, Recipient::Orchestrator);
+    assert!(w.s.open_user_card(&task).is_none(), "never a card for the user");
+    assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::Orchestrator));
+    assert!(w.s.react(&w.facts).is_empty(), "nothing asks the user or retries it");
+    let answer = |option: &str, text: &str| Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: option.into(),
+        inputs: if text.is_empty() { BTreeMap::new() } else { BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(text.into()))]) } };
+    for (option, text) in [(START_CANCEL, ""), (START_RETRY, "Try it again")] {
+        assert_eq!(w.exec(orchestrator(), answer(option, text)).unwrap_err().code, "plan_refused_needs_outcome");
+    }
+    assert_eq!(w.exec(user(), answer(START_CANCEL, "No")).unwrap_err().code, "forbidden");
+    w.must(orchestrator(), answer(START_CANCEL, "The editor no longer needs it"));
+    assert!(w.s.tasks[&task].cancelled());
 }
