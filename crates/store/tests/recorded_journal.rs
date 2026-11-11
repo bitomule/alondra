@@ -124,17 +124,27 @@ fn the_turn_claude_starts_with_an_input_waiting_in_the_inbox_is_taken() {
     assert_eq!(lifecycle.activity(), ActivityView::Resting, "nothing is left waiting for Claude to start");
 }
 
+/// What anyone reads of an aggregate.
+fn seen(task: &TaskLifecycle) -> String {
+    format!(
+        "{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+        task.phase(), task.activity(), task.resource(), task.cursor(), task.turn(), task.turn_stop(), task.pending_inputs(),
+        task.cards(), task.live(), task.dependencies(), task.awaits(), task.takeover(), task.execution(),
+    )
+}
+
 /// Every journal recorded before the provider's facts were never refused loads, revision by
 /// revision, into the same aggregate as it did then: the new rules only take what the old ones
-/// refused. Each journal's states are kept as a digest of their debug form at every revision.
+/// refused. Each journal's states are kept as a digest of what anyone reads of them at every
+/// revision.
 #[test]
 fn the_recorded_journals_replay_unchanged() {
     let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
     let fixtures = [
-        ("disk-pause-resting-node", include_str!("../fixtures/disk-pause-resting-node.sql"), 0x28ac_ccd2_346f_59e6u64),
-        ("sdk-host-disconnect-loop", include_str!("../fixtures/sdk-host-disconnect-loop.sql"), 0x27df_46e8_5784_70bc),
-        ("turn-of-a-held-input", include_str!("../fixtures/turn-of-a-held-input.sql"), 0x7901_9ae1_4730_6b05),
-        ("user-pause-own-turns", include_str!("../fixtures/user-pause-own-turns.sql"), 0x6308_15ce_4fff_572a),
+        ("disk-pause-resting-node", include_str!("../fixtures/disk-pause-resting-node.sql"), 0x3c0f_0cfd_d5ef_ffe6u64),
+        ("sdk-host-disconnect-loop", include_str!("../fixtures/sdk-host-disconnect-loop.sql"), 0xa7aa_3324_b4f2_20e1),
+        ("turn-of-a-held-input", include_str!("../fixtures/turn-of-a-held-input.sql"), 0xb1cc_075e_5480_cfc1),
+        ("user-pause-own-turns", include_str!("../fixtures/user-pause-own-turns.sql"), 0x9d93_0cad_71cb_b999),
     ];
     let digest = |text: &str, mut hash: u64| {
         for byte in text.bytes() {
@@ -146,14 +156,14 @@ fn the_recorded_journals_replay_unchanged() {
     for (name, fixture, expected) in fixtures {
         let directory = test_support::Directory::new();
         let connection = recorded(&directory, fixture);
-        let journal = read_journal(&connection, &scope, |before, event, _| Ok::<_, alondra_store::Error>(format!("{before:?} {event:?}"))).unwrap();
+        let journal = read_journal(&connection, &scope, |before, event, _| Ok::<_, alondra_store::Error>(format!("{} {event:?}", seen(before)))).unwrap();
         let mut replayed = 0xcbf2_9ce4_8422_2325;
         for (task, read) in &journal {
             replayed = digest(&format!("{task}"), replayed);
             for entry in &read.entries {
                 replayed = digest(entry, replayed);
             }
-            replayed = digest(&format!("{:?}", read.lifecycle), replayed);
+            replayed = digest(&seen(&read.lifecycle), replayed);
         }
         if replayed != expected {
             changed.push(format!("{name}: {replayed:#018x}"));
