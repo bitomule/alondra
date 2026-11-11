@@ -1,5 +1,8 @@
 mod commands;
+mod obligation;
 mod observations;
+
+pub use obligation::{Obligation, Owed, Party};
 
 use alondra_foundation::{AgentId, InteractionId, MAX_REVISION, Revision, TaskId};
 pub use alondra_foundation::{
@@ -1152,6 +1155,8 @@ pub struct TaskLifecycle {
     /// The input that woke the node after a turn that ended empty, while no new fact came since:
     /// the next empty turn asks the user instead of waking it again.
     woken: Option<InputId>,
+    /// The revision since which the task owes its current `obligation()`.
+    owed_since: Revision,
 }
 
 impl TaskLifecycle {
@@ -1168,6 +1173,7 @@ impl TaskLifecycle {
             doubts: BTreeMap::new(),
             settled: BTreeSet::new(),
             woken: None,
+            owed_since: 0,
         })
     }
     pub fn task(&self) -> &TaskId {
@@ -1554,6 +1560,7 @@ impl TaskLifecycle {
             doubts: self.doubts.clone(),
             settled: self.settled.clone(),
             woken: self.woken.clone(),
+            owed_since: self.owed_since,
         };
         let keeps_wake = keeps_wake(&event, self.woken.as_ref());
         candidate.transition(event)?;
@@ -1561,6 +1568,9 @@ impl TaskLifecycle {
             candidate.woken = None;
         }
         candidate.revision += 1;
+        if candidate.owes() != self.owes() {
+            candidate.owed_since = candidate.revision;
+        }
         Ok(candidate)
     }
 }
