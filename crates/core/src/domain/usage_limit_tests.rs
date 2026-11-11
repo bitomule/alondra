@@ -261,7 +261,8 @@ fn a_second_empty_turn_over_a_notification_and_a_told_message_is_left_to_the_orc
 
 /// 2026-11-10, t-task-list-queue-block: the host reported the end of turns the lifecycle never saw
 /// start, each one ended by Codex's usage limit. The domain refused each end and, with it, the
-/// hold the limit puts on the task: the hold is recorded on its own, as the daemon does then.
+/// hold the limit puts on the task. The end is taken now, with its hold; the daemon can still
+/// record a hold on its own.
 fn limit() -> SdkApiFailure {
     SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }
 }
@@ -275,16 +276,19 @@ fn record_hold(world: &mut World, generation: u64, failure: SdkApiFailure) -> Re
 }
 
 #[test]
-fn a_usage_limit_that_ends_a_turn_the_lifecycle_never_saw_start_holds_the_task_once_it_is_recorded_on_its_own() {
+fn a_usage_limit_that_ends_a_turn_the_lifecycle_never_saw_start_holds_the_task() {
     let mut world = World::new();
     world.end_turn(0).unwrap();
-    let ended = exec(&mut world.s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-it-never-saw".into(), failure: Some(limit()), failed: None });
-    assert!(ended.is_err() && holds(&world) == 0, "the refused end takes the hold with it");
-
-    record_hold(&mut world, 1, limit()).unwrap();
-
-    assert_eq!(holds(&world), 1);
+    exec(&mut world.s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-it-never-saw".into(), failure: Some(limit()), failed: None })
+        .expect("the end of a turn nobody saw start is taken");
+    assert_eq!(holds(&world), 1, "with the hold the limit puts on the task");
     assert_eq!(world.s.live_state(&"t".into()), Some(LiveState::WaitingCapacity(Capacity::Usage)));
+
+    let mut alone = World::new();
+    alone.end_turn(0).unwrap();
+    record_hold(&mut alone, 1, limit()).unwrap();
+    assert_eq!(holds(&alone), 1, "a hold the daemon records on its own holds the task too");
+    assert_eq!(alone.s.live_state(&"t".into()), Some(LiveState::WaitingCapacity(Capacity::Usage)));
 }
 
 #[test]
