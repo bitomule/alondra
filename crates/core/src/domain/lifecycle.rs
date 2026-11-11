@@ -1256,6 +1256,16 @@ impl DomainState {
         Ok(())
     }
 
+    /// Records `record` only when it sends `input` to the node: the domain takes a provider fact
+    /// that names an input it has no use for, and ignores that input.
+    fn decide_sending(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord, input: &str) -> bool {
+        let Ok(lifecycle) = self.lifecycle(lifecycles, task) else { return false };
+        let Ok(event) = event(task, &record, lifecycle) else { return false };
+        let sends = lifecycle.advanced(lifecycle.revision(), event)
+            .is_ok_and(|next| next.pending_inputs().iter().any(|pending| pending.as_str() == input));
+        sends && self.decide(lifecycles, task, record).is_ok()
+    }
+
     /// The task's DTO reads the aggregate: node, start, ending and the state its phase stands for.
     /// `derive_states` then picks the attention state within that phase, never across it. Once the
     /// end of a task's node is recorded, the node and its start stay as history of the task.
@@ -1480,7 +1490,7 @@ impl DomainState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
-        if self.interactions.contains_key(&turn_ended_card_id(task, generation, turn)) || self.interactions.contains_key(&stalled_card_id(task, generation, turn)) {
+        if self.turn_end_recorded(task, turn) || self.interactions.contains_key(&turn_ended_card_id(task, generation, turn)) || self.interactions.contains_key(&stalled_card_id(task, generation, turn)) {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
         if let Some(failure) = failure {
@@ -1497,6 +1507,13 @@ impl DomainState {
             Some(hold) => self.hold_on_claude(task, hold, failure.resets_at, effects, lifecycles),
             None => Ok(()),
         }
+    }
+
+    /// Whether the current execution already recorded the end of `turn`.
+    fn turn_end_recorded(&self, task: &TaskId, turn: &str) -> bool {
+        self.lifecycle_journal.get(task).is_some_and(|records| records.iter().rev()
+            .take_while(|record| !matches!(record, LifecycleRecord::Admitted { .. }))
+            .any(|record| matches!(record, LifecycleRecord::TurnEnded { turn: known, .. } if known == turn)))
     }
 
     fn observed_turn_end<'a>(&self, task: &TaskId, turn: &str, failure: Option<&'a SdkApiFailure>, failed: Option<&'a str>) -> Option<TurnEnd<'a>> {
@@ -1522,9 +1539,7 @@ impl DomainState {
     fn record_observed_turn_end(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>,
         effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
-        if self.lifecycle_journal.get(task).is_some_and(|records| records.iter().rev()
-            .take_while(|record| !matches!(record, LifecycleRecord::Admitted { .. }))
-            .any(|record| matches!(record, LifecycleRecord::TurnEnded { turn: known, .. } if known == turn))) {
+        if self.turn_end_recorded(task, turn) {
             return Ok(());
         }
         let end = self.observed_turn_end(task, turn, failure, failed).or_else(|| failure.map(TurnEnd::Refused));
@@ -1554,8 +1569,9 @@ impl DomainState {
             stalled,
         };
         let empty = unexplained && awaits.is_none();
+        let wake = self.next_input(task);
         let woke = empty && !self.stalled_before(task)
-            && self.decide(lifecycles, task, ended(Some(self.next_input(task)), None)).is_ok();
+            && self.decide_sending(lifecycles, task, ended(Some(wake.clone()), None), &wake);
         if !woke {
             if awaits.is_none() {
                 self.consume_notifications_read(task, generation, lifecycles)?;
@@ -1977,7 +1993,8 @@ impl DomainState {
         let cut = matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation);
         let for_the_user = delivered && cut && self.task_handed_back(task).is_some();
         let under_review = delivered && !for_the_user;
-        let resumed = resumes && !forced && !looped && available && !under_review && self.decide(lifecycles, task, ended(Some(self.next_input(task)))).is_ok();
+        let resume = self.next_input(task);
+        let resumed = resumes && !forced && !looped && available && !under_review && self.decide_sending(lifecycles, task, ended(Some(resume.clone())), &resume);
         if !resumed {
             self.decide(lifecycles, task, ended(None))?;
             if let Some(agent) = self.tasks[task].agent_id.clone().filter(|_| for_the_user) {
@@ -2067,9 +2084,14 @@ impl DomainState {
         if self.interactions.contains_key(&card) {
             return Err(DomainError::new("conflict", format!("The dropped input {input} of task {task} is already recorded")));
         }
+        if !self.lifecycle(lifecycles, task)?.pending_inputs().iter().any(|pending| pending.as_str() == input) {
+            return Err(DomainError::new("conflict", format!("The input {input} of task {task} is not pending: it cannot be dropped")));
+        }
         self.decide(lifecycles, task, LifecycleRecord::InputDropped { input: input.into(), card: card.clone() })?;
-        self.interactions.insert(card.clone(), dropped_card(card.clone(), task, text, self.revision + 1));
-        effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == card) {
+            self.interactions.insert(card.clone(), dropped_card(card.clone(), task, text, self.revision + 1));
+            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
+        }
         Ok(())
     }
 

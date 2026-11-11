@@ -184,6 +184,10 @@ impl DomainState {
         system(actor)?;
         self.task(task)?;
         let mut lifecycle = self.sdk_lifecycle_at(task, generation)?;
+        let open = lifecycle.callback(&alondra_domain::decision_callback(generation, epoch));
+        if open.is_none() || answered && open != Some(alondra_domain::CallbackView::Answered) {
+            return fail("conflict", &format!("The decision at {epoch} of task {task} is not open to end that way"));
+        }
         let unheard = decision_cancelled_card_id(task, generation, epoch);
         let mut records = vec![if answered {
             LifecycleRecord::DecisionSettled { epoch }

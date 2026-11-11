@@ -1635,3 +1635,30 @@ fn every_observation_ends_settled_or_discarded_and_none_settleable_is_lost() {
         prop_assert_eq!(checkpoint, Some(refused.len() as u64));
     });
 }
+
+/// 2026-11-10: the domain refused an input the provider consumed when another waited at the head
+/// of the queue, and the daemon left the fact out of the journal. Every fact of the execution is
+/// recorded now.
+#[test]
+fn an_observation_with_a_fact_the_old_rules_refused_leaves_nothing_unrecorded() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let state = runtime.state().unwrap();
+    runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "answer-fixture-question", answer())).unwrap();
+    let input = runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();
+    let observe = |cursor, facts| {
+        let state = runtime.state().unwrap();
+        runtime.own(scope_of(&state), |owner| {
+            owner.stage_observation(&binding(), 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)?;
+            assert!(owner.unrecorded().is_empty(), "every fact is recorded: {:?}", owner.unrecorded());
+            Ok(())
+        }).unwrap()
+    };
+    observe(1, vec![Observation::Available, Observation::TurnStarted { input: input.clone(), turn: TurnId::new("turn-1").unwrap() }]);
+    observe(2, vec![Observation::InputConsumed { input: input.clone() }]);
+    let state = runtime.state().unwrap();
+    assert!(
+        matches!(state.lifecycle_journal[&task()].last(), Some(LifecycleRecord::InputConsumed { input: consumed }) if consumed == input.as_str()),
+        "the consumed input is in the journal: {:?}", state.lifecycle_journal[&task()]
+    );
+}

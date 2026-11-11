@@ -842,9 +842,8 @@ fn the_first_empty_turn_wakes_the_node_and_the_second_asks_the_user() {
     let stamp = task.execution().unwrap().clone();
     let cursor = task.cursor().unwrap() + 1;
     let again = RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: Some(input("wake-again")), awaits: None, stalled: false };
-    assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: again }), Err(Refusal::InvalidState), "a second wake in a row is never sent");
-    ended(&mut task, "woken", None, None);
-    assert!(task.pending_inputs().is_empty());
+    task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: again }).unwrap();
+    assert!(task.pending_inputs().is_empty(), "a second wake in a row is never sent");
     assert_eq!(task.live(), Several::new([InteractionId::from("unheard-woken")]).map(LiveState::WaitingUser));
 }
 
@@ -887,13 +886,13 @@ fn a_turn_recorded_before_wakes_existed_asks_the_user_at_once() {
 }
 
 #[test]
-fn a_wake_the_turn_has_no_use_for_is_refused() {
+fn a_wake_the_turn_end_does_not_need_is_ignored() {
     let mut task = running();
     fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
-    let stamp = task.execution().unwrap().clone();
-    let cursor = task.cursor().unwrap() + 1;
-    let fact = RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: Some(input("wake")), awaits: None, stalled: false };
-    assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact }), Err(Refusal::InvalidState), "work of its own explains the turn");
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: Some(input("wake")), awaits: None, stalled: false });
+    assert_eq!(task.activity(), ActivityView::OwnWork, "work of its own explains the turn");
+    assert!(task.pending_inputs().is_empty(), "nothing wakes the node");
+    assert!(task.cards().is_empty());
 }
 
 fn stalled(task: &mut TaskLifecycle, root: &str, wake: Option<&str>) {
@@ -1161,6 +1160,8 @@ proptest! {
                 Event::Runtime { fact: RuntimeFact::TurnEnded { wake: Some(wake), awaits: None, .. }, .. } => Some(wake.clone()),
                 _ => None,
             };
+            let pending_before: Vec<InputId> = task.pending_inputs().into_iter().cloned().collect();
+            let waking = !pending_before.is_empty();
             let quiet = matches!(&event, Event::Runtime { fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(by), .. }, .. } if by.as_str().starts_with("wake"))
                 || matches!(&event, Event::RequestControl { .. } | Event::Runtime { fact: RuntimeFact::Notification | RuntimeFact::InterruptAccepted { .. } | RuntimeFact::ResourceAvailable, .. });
             let executing = task.phase() == TaskPhase::InProgress && task.cards().is_empty() && task.dependencies().is_empty();
@@ -1169,8 +1170,9 @@ proptest! {
                 if !quiet { woke = false; }
                 continue;
             };
-            let woken = task.pending_inputs().contains(&&wake);
-            prop_assert!(woken, "an accepted end that names a wake sends it: {:?}", task);
+            let woken = task.pending_inputs().contains(&&wake) && !pending_before.contains(&wake);
+            let explained = matches!(task.activity(), ActivityView::OwnWork | ActivityView::Continuation);
+            prop_assert!(woken || waking || explained || !task.cards().is_empty() || !task.dependencies().is_empty() || task.phase() != TaskPhase::InProgress, "an accepted end that names a wake sends it, unless a wake is already on its way, the turn left work or a notification, the task waits on other tasks or is delivered, or someone is asked: {:?}", task);
             if woken {
                 prop_assert!(!woke, "a node woken after an empty turn is not woken again before anything new: {:?}", task);
             }
@@ -1222,8 +1224,10 @@ proptest! {
             let Some(event) = arbitrary_event(&task, action) else { continue };
             let observed = event.clone();
             let before = task.activity();
+            let before_turn = task.turn().cloned();
             if task.apply(task.revision(), event).is_err() { continue }
             match observed {
+                Event::Runtime { fact: RuntimeFact::TurnStarted { turn, .. }, .. } if before_turn.as_ref() == Some(&turn) => {}
                 Event::Runtime { fact: RuntimeFact::TurnStarted { .. }, .. } => fresh = callback_waits || matches!(before, ActivityView::Continuation | ActivityView::OwnWork) && fresh,
                 Event::Runtime { fact: RuntimeFact::WorkEnded { .. }, .. } => fresh = true,
                 Event::Decide { .. } | Event::Runtime { fact: RuntimeFact::CallbackSettled { .. } | RuntimeFact::AnsweredByPolicy { .. }, .. } => (fresh, callback_waits) = (true, true),
@@ -1251,7 +1255,7 @@ proptest! {
             let host_ended = matches!(event, Event::Runtime { fact: RuntimeFact::HostEnded { .. }, .. });
             let open = matches!(task.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation);
             let users = task.phase() == TaskPhase::InProgress
-                || matches!(event, Event::Runtime { fact: RuntimeFact::HostEnded { resume: Some(_), .. }, .. });
+                || task.phase() != TaskPhase::Finishing && matches!(event, Event::Runtime { fact: RuntimeFact::HostEnded { resume: Some(_), .. }, .. });
             let revision = task.revision();
             let control = matches!(event, Event::RequestControl { .. });
             let before = format!("{task:?}");
@@ -2280,16 +2284,12 @@ fn a_host_that_ends_mid_turn_and_is_replaced_goes_on_with_its_resume_input_inste
 }
 
 #[test]
-fn a_resume_input_with_nothing_to_explain_is_refused() {
+fn a_resume_input_with_nothing_to_explain_is_ignored() {
     let mut task = running();
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
-    let cursor = task.cursor().unwrap() + 1;
-    let stamp = task.execution().unwrap().clone();
-    assert_eq!(
-        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("go-on")) } }),
-        Err(Refusal::InvalidState),
-        "the task already waits on its card: nothing to go on with"
-    );
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("go-on")) });
+    assert!(task.pending_inputs().is_empty(), "the task already waits on its card: nothing to go on with");
+    assert_eq!(task.cards(), [(&card("turn-card"), WaitReason::Unheard)]);
 }
 
 #[test]
@@ -2445,8 +2445,8 @@ fn a_turn_is_forced_to_stop_only_after_claude_accepted_its_interrupt_and_only_on
     let mut task = running();
     assert_eq!(task.turn_stop(), Some(TurnStop::Running));
     assert_eq!(control(&mut task, "early", Control::ForceStop { turn: turn("root") }), Err(Refusal::InvalidState), "an interrupt comes first");
-    assert_eq!(task.apply(task.revision(), Event::Runtime { stamp: task.execution().cloned().unwrap(), cursor: task.cursor().unwrap() + 1, fact: RuntimeFact::InterruptAccepted { turn: turn("other") } }),
-        Err(Refusal::CorrelationMismatch));
+    fact(&mut task, RuntimeFact::InterruptAccepted { turn: turn("other") });
+    assert_eq!(task.turn_stop(), Some(TurnStop::InterruptAccepted), "the provider interrupts the one turn it runs");
     fact(&mut task, RuntimeFact::InterruptAccepted { turn: turn("root") });
     assert_eq!(task.turn_stop(), Some(TurnStop::InterruptAccepted));
     assert_eq!(task.activity(), ActivityView::Working, "the turn goes on");
@@ -2671,17 +2671,20 @@ fn a_policy_decision_opens_its_callback_answered_without_a_card() {
     assert!(task.cards().is_empty());
     assert_eq!(task.callback(&callback), Some(CallbackView::Answered));
     assert_eq!(task.activity(), ActivityView::Working);
-    let stamp = task.execution().unwrap().clone();
-    let cursor = task.cursor().unwrap() + 1;
-    for refused in [
+    for repeated in [
         RuntimeFact::AnsweredByPolicy { callback: callback.clone(), decision: Decision::Allow },
         RuntimeFact::Ask { card: "again".into(), callback: callback.clone(), reason: WaitReason::Permission },
-        RuntimeFact::AnsweredByPolicy { callback: decision_callback(1, 10), decision: Decision::Deny { message: "".into() } },
     ] {
-        let before = format!("{task:?}");
-        assert!(task.apply(task.revision(), Event::Runtime { stamp: stamp.clone(), cursor, fact: refused.clone() }).is_err(), "{refused:?}");
-        assert_eq!(format!("{task:?}"), before);
+        let before = (task.activity(), task.callback(&callback), task.cards().len());
+        fact(&mut task, repeated);
+        assert_eq!((task.activity(), task.callback(&callback), task.cards().len()), before, "a repeated callback changes nothing");
     }
+    let stamp = task.execution().unwrap().clone();
+    let cursor = task.cursor().unwrap() + 1;
+    let before = format!("{task:?}");
+    let empty_denial = RuntimeFact::AnsweredByPolicy { callback: decision_callback(1, 10), decision: Decision::Deny { message: "".into() } };
+    assert!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: empty_denial }).is_err());
+    assert_eq!(format!("{task:?}"), before);
     let continuation = decision_continuation(task.generation(), 9);
     fact(&mut task, RuntimeFact::CallbackSettled { callback: callback.clone(), continuation: continuation.clone() });
     fact(&mut task, RuntimeFact::ContinuationConsumed { continuation });
@@ -2767,16 +2770,14 @@ fn a_decision_asked_while_what_the_node_was_told_waits_settles_and_the_message_s
 }
 
 #[test]
-fn a_policy_decision_needs_an_available_execution() {
+fn a_policy_decision_without_an_available_execution_changes_nothing_but_its_cursor() {
     let mut task = running();
     fact(&mut task, RuntimeFact::ConnectionLost { problem_card: "recovery".into() });
-    let stamp = task.execution().unwrap().clone();
+    let before = (task.activity(), task.cards().len(), task.pending_inputs().len());
     let cursor = task.cursor().unwrap() + 1;
-    assert_eq!(
-        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::AnsweredByPolicy {
-            callback: decision_callback(1, 3), decision: Decision::Allow } }),
-        Err(Refusal::InvalidState)
-    );
+    fact(&mut task, RuntimeFact::AnsweredByPolicy { callback: decision_callback(1, 3), decision: Decision::Allow });
+    assert_eq!(task.cursor(), Some(cursor));
+    assert_eq!((task.activity(), task.cards().len(), task.pending_inputs().len()), before);
 }
 
 #[test]
@@ -3018,15 +3019,8 @@ fn a_host_that_ends_on_a_delivery_at_rest_leaves_it_waiting_for_the_user() {
     let mut task = running();
     apply(&mut task, Event::Present { delivery: "delivery".into() });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
-    let cursor = task.cursor().unwrap() + 1;
-    let stamp = task.execution().unwrap().clone();
-    assert_eq!(
-        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) } }),
-        Err(Refusal::InvalidState),
-        "nothing was cut: the session has nothing to go on with"
-    );
-    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: None });
-    assert!(task.cards().is_empty() && task.pending_inputs().is_empty(), "the delivery still waits on the user");
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: card("session-ended"), resume: Some(input("resumed")) });
+    assert!(task.cards().is_empty() && task.pending_inputs().is_empty(), "nothing was cut: the delivery still waits on the user");
 }
 
 #[test]
@@ -3076,7 +3070,9 @@ fn a_hand_back_keeps_the_questions_that_still_wait_and_queues_the_changes() {
 fn retry_answer_before_native_readiness_preserves_original_mission_and_never_claims_availability(){
     let mut task=TaskLifecycle::planned("task".into(),input("original-mission")).unwrap();admit(&mut task,"instance");apply(&mut task,Event::Ask{card:"retry".into()});apply(&mut task,Event::Answer{card:"retry".into(),input:input("user-retry")});
     assert_eq!(task.resource(),Some(ResourceEvidence::Reserved));assert_eq!(task.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["original-mission","user-retry"]);assert!(task.turn().is_none());
-    let before=format!("{task:?}");let stamp=task.execution().unwrap().clone();assert!(task.apply(task.revision(),Event::Runtime{stamp,cursor:1,fact:RuntimeFact::TurnStarted{turn:turn("invalid"),trigger:Trigger::Input(input("original-mission"))}}).is_err());assert_eq!(format!("{task:?}"),before);
+    let mut started_first=TaskLifecycle::planned("task".into(),input("original-mission")).unwrap();admit(&mut started_first,"instance");apply(&mut started_first,Event::Ask{card:"retry".into()});apply(&mut started_first,Event::Answer{card:"retry".into(),input:input("user-retry")});
+    fact(&mut started_first,RuntimeFact::TurnStarted{turn:turn("before-readiness"),trigger:Trigger::Input(input("original-mission"))});
+    assert_eq!(started_first.resource(),Some(ResourceEvidence::Available),"a turn the provider started proves its resource is up");assert_eq!(started_first.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["user-retry"]);
     fact(&mut task,RuntimeFact::ResourceAvailable);fact(&mut task,RuntimeFact::TurnStarted{turn:turn("actual"),trigger:Trigger::Input(input("original-mission"))});assert_eq!(task.pending_inputs().iter().map(|input|input.as_str()).collect::<Vec<_>>(),["user-retry"]);
 }
 
@@ -3347,6 +3343,9 @@ fn fresh_host_takes_over(task: &mut TaskLifecycle, look: usize) -> Result<(), Re
         let cursor = task.cursor().unwrap() + 1;
         task.apply(task.revision(), Event::Runtime { stamp, cursor, fact })
     };
+    if matches!(task.resource(), Some(ResourceEvidence::ObservationPending | ResourceEvidence::Released)) {
+        return Err(Refusal::InvalidState);
+    }
     if task.activity() != ActivityView::Starting {
         let resume = input(&format!("resumed-{look}"));
         runtime(task, RuntimeFact::HostEnded { unheard_card: format!("ended-{look}").as_str().into(), resume: Some(resume) })
@@ -3356,7 +3355,10 @@ fn fresh_host_takes_over(task: &mut TaskLifecycle, look: usize) -> Result<(), Re
         runtime(task, RuntimeFact::ResourceAvailable)?;
     }
     match task.pending_inputs().first().map(|input| (*input).clone()) {
-        Some(handed) if task.activity() == ActivityView::Starting => runtime(task, RuntimeFact::TurnStarted { turn: turn(&format!("fresh-{look}")), trigger: Trigger::Input(handed) }),
+        Some(handed) if task.activity() == ActivityView::Starting => {
+            runtime(task, RuntimeFact::TurnStarted { turn: turn(&format!("fresh-{look}")), trigger: Trigger::Input(handed) })?;
+            if task.turn().is_some() { Ok(()) } else { Err(Refusal::InvalidState) }
+        }
         _ => Ok(()),
     }
 }
@@ -3422,4 +3424,137 @@ proptest! {
         prop_assert!(!taken_over_by_alondra(&task) || live_turn || held,
             "two looks left the task with no host and no turn: {:?}", task);
     }
+}
+
+/// A provider fact the aggregate has no use for, or that came in an order it did not expect, is
+/// taken all the same; only what is not a fact of this execution (another execution, a repeat, a
+/// gap) or not a fact at all (an empty id, a task that waits on itself, an ask that is no question
+/// or permission) is refused.
+fn provider_fact(task: &TaskLifecycle, kind: u8, pick: u8, fresh: u32) -> RuntimeFact {
+    let inputs = ["initial", "told", "wake", "wake-again", "resumed", "changes", "next"];
+    let turns = ["root", "woken", "told", "own"];
+    let pool = |values: &[&str]| values[usize::from(pick) % values.len()].to_owned();
+    let some_input = || match task.pending_inputs().first() {
+        Some(pending) if pick % 3 == 0 => (*pending).clone(),
+        _ => input(&pool(&inputs)),
+    };
+    let some_turn = || match task.turn() {
+        Some(running) if pick % 3 == 0 => running.clone(),
+        _ => turn(&pool(&turns)),
+    };
+    let callback = CallbackId::new(pool(&["first", "second", "asked", "policy"])).unwrap();
+    let fresh_card = InteractionId::from(format!("fact-card-{fresh}").as_str());
+    let awaits = match pick % 5 {
+        0 => Some(Await::User(fresh_card.clone())),
+        1 => Some(Await::Orchestrator(fresh_card.clone())),
+        2 => Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap())),
+        3 => Some(Await::Machine),
+        _ => None,
+    };
+    match kind % 18 {
+        0 => RuntimeFact::Ask { card: fresh_card, callback, reason: if pick % 2 == 0 { WaitReason::Question } else { WaitReason::Permission } },
+        1 => RuntimeFact::ResourceAvailable,
+        2 => RuntimeFact::TurnStarted {
+            turn: some_turn(),
+            trigger: match pick % 3 {
+                0 => Trigger::Input(some_input()),
+                1 => Trigger::OwnedContinuation(continuation(&pool(&["wake", "callback-wake", "notified"]))),
+                _ => Trigger::Unprompted,
+            },
+        },
+        3 => RuntimeFact::InputConsumed { input: some_input() },
+        4 => RuntimeFact::InputDropped { input: some_input(), card: fresh_card },
+        5 => RuntimeFact::WorkStarted { turn: some_turn(), work: work(&pool(&["child", "other"])) },
+        6 => RuntimeFact::WorkEnded { work: work(&pool(&["child", "other"])), continuation: continuation(&pool(&["wake", "notified"])) },
+        7 => RuntimeFact::ContinuationConsumed { continuation: continuation(&pool(&["wake", "callback-wake", "notified"])) },
+        8 => RuntimeFact::TurnEnded {
+            turn: some_turn(),
+            unheard_card: fresh_card,
+            wake: (pick % 2 == 0).then(|| input(&format!("fact-wake-{fresh}"))).or_else(|| (pick % 7 == 1).then(some_input)),
+            awaits,
+            stalled: pick % 4 == 1,
+        },
+        9 => RuntimeFact::CallbackSettled { callback, continuation: continuation(&pool(&["callback-wake", "wake"])) },
+        10 => RuntimeFact::CallbackAborted { callback, unheard_card: fresh_card },
+        11 => RuntimeFact::AnsweredByPolicy { callback, decision: Decision::Allow },
+        12 => RuntimeFact::EffectAccepted { operation: operation(&pool(&["effect", "other-effect"])) },
+        13 => RuntimeFact::InterruptAccepted { turn: some_turn() },
+        14 => RuntimeFact::EffectObserved { operation: operation(&pool(&["effect", "other-effect"])) },
+        15 => RuntimeFact::Notification,
+        16 => RuntimeFact::HostStopped { unheard_card: fresh_card },
+        _ => RuntimeFact::HostEnded { unheard_card: fresh_card, resume: (pick % 2 == 0).then(some_input) },
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 512,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0xfac7_5),
+        ..ProptestConfig::default()
+    })]
+    #[test]
+    fn any_provider_fact_about_the_current_execution_is_accepted(
+        started in any::<bool>(),
+        actions in prop::collection::vec(0u8..74, 1..120),
+        facts in prop::collection::vec((any::<u8>(), any::<u8>()), 1..12),
+    ) {
+        let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
+        for action in actions {
+            if let Some(event) = arbitrary_event(&task, action) {
+                let _ = task.apply(task.revision(), event);
+            }
+        }
+        for (fresh, (kind, pick)) in facts.into_iter().enumerate() {
+            let Some(stamp) = task.execution().cloned() else { break };
+            let cursor = task.cursor().unwrap() + 1;
+            let reported = provider_fact(&task, kind, pick, fresh as u32);
+            let before = format!("{task:?}");
+            let taken = task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: reported.clone() });
+            prop_assert!(taken.is_ok(), "{:?} was refused ({:?}): {}", reported, taken, before);
+            prop_assert_eq!(task.cursor(), Some(cursor));
+        }
+    }
+}
+
+#[test]
+fn an_input_consumed_outside_a_turn_opens_the_turn_it_proves() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
+    fact(&mut task, RuntimeFact::InputConsumed { input: input("told") });
+    assert_eq!(task.activity(), ActivityView::Working);
+    assert!(task.pending_inputs().is_empty());
+    assert!(task.cards().is_empty(), "the node went on with what it was told");
+}
+
+#[test]
+fn a_turn_end_nobody_saw_start_ends_the_turn() {
+    let mut task = waiting_for_the_next_input();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("unseen"), unheard_card: card("unseen-card"), wake: None, awaits: None, stalled: false });
+    assert_eq!(task.pending_inputs(), [&input("next")], "the input the turn did not take still waits");
+    assert_eq!(task.activity(), ActivityView::Starting);
+}
+
+/// 2026-11-10 13:54: after several doubtful inputs were sent again, the head of the task's queue
+/// was not the input Codex took next. Codex started a turn with each of two later inputs and ended
+/// it; the journal refused both starts as the wrong input and then the end as outside a turn, and
+/// never saw the turns its host ran. Each is taken as the provider reports it.
+#[test]
+fn turns_the_provider_starts_with_inputs_behind_the_head_of_the_queue_are_taken() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: card("turn-card"), wake: None, awaits: None, stalled: false });
+    apply(&mut task, Event::Tell { input: input("resent"), answers: None });
+    apply(&mut task, Event::Tell { input: input("first"), answers: None });
+    apply(&mut task, Event::Tell { input: input("second"), answers: None });
+    assert_eq!(task.pending_inputs(), [&input("resent"), &input("first"), &input("second")]);
+    fact(&mut task, RuntimeFact::TurnStarted { turn: turn("codex-1"), trigger: Trigger::Input(input("first")) });
+    fact(&mut task, RuntimeFact::InputConsumed { input: input("second") });
+    assert_eq!(task.turn(), Some(&turn("codex-1")));
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("codex-1"), unheard_card: card("codex-1-card"), wake: None, awaits: None, stalled: false });
+    fact(&mut task, RuntimeFact::InputConsumed { input: input("resent") });
+    assert_eq!(task.activity(), ActivityView::Working, "the input it consumed proves a turn runs");
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("codex-2"), unheard_card: card("codex-2-card"), wake: None, awaits: None, stalled: false });
+    assert!(task.pending_inputs().is_empty(), "every input the provider took left the queue");
+    assert_eq!(task.cards(), [(&card("codex-2-card"), WaitReason::Unheard)]);
 }
