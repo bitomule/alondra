@@ -41,6 +41,7 @@ pub(crate) struct OwnerTransaction<'connection> {
     /// What the host observed that moves the task's lifecycle and the domain refused to record,
     /// with why: the task's record no longer follows its Claude.
     unrecorded: Vec<String>,
+    decisions: Option<Arc<dyn super::wording::SdkDecisions>>,
 }
 
 /// What the commands staged so far add up to. A later replay or no-op never takes back an
@@ -256,6 +257,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 version,
             },
             unrecorded: vec![],
+            decisions: None,
         })
     }
 
@@ -348,7 +350,7 @@ impl<'connection> OwnerTransaction<'connection> {
             let account=alondra_daemon_engine_model::account_of(binding.credential());let key=alondra_core::accounts::AccountKey::new(provider,account.clone());
             let status=self.draft.state.accounts.iter().find(|status|status.provider==provider && status.id==account);
             if provider==alondra_core::accounts::Provider::Codex{return status.is_some_and(|status|proven_same_identity(provider,status))}
-            let generation_matches=binding.credential_generation()==crate::accounts::generation_provider(&self.draft.state,&key);
+            let generation_matches=binding.credential_generation()==super::generation_provider(&self.draft.state,&key);
             (generation_matches || status.is_some_and(|status|proven_same_identity(provider,status)))
                 && identity.is_none_or(|expected|status.is_none_or(|status|expected.change(status)!=Some("identity")))
         });
@@ -475,7 +477,8 @@ impl<'connection> OwnerTransaction<'connection> {
                             .map_err(|error| StoreError::Storage(error.into()))?;
                         Ok::<_, StoreError>((payload, worktree, worktrees))
                     })?;
-                    let asked = crate::domain_holds::sdk_decision(self.state().tasks.get(&task_id).map(|task| task.title.as_str()).unwrap_or("Plan"), *kind, &payload, worktree.as_deref(), &worktrees, home);
+                    let decisions = self.decisions.as_ref().ok_or_else(|| StoreError::Storage(anyhow::anyhow!("this store was opened without a way to build the card of a decision")))?;
+                    let asked = decisions.decide(self.state().tasks.get(&task_id).map(|task| task.title.as_str()).unwrap_or("Plan"), *kind, &payload, worktree.as_deref(), &worktrees, home);
                     commands.push(Command::RecordDecisionRequest {
                         task_id: task_id.clone(),
                         generation,
@@ -962,7 +965,7 @@ impl OwnerDraft {
             self.state = commit.state;
         }
         self.domain_changed |= fresh;
-        self.schedule_changed |= fresh && crate::domain_runtime::schedule_command(command);
+        self.schedule_changed |= fresh && super::schedule_command(command);
         self.outcomes.push(StagedOutcome {
             command_id: command_id.clone(),
             outcome: commit.outcome,
@@ -981,6 +984,7 @@ impl DomainStore {
     ) -> std::result::Result<(T, OwnerCommit), StoreError> {
         let (value, committed) = {
             let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, &self.protected, &self.aggregates, scope)?;
+            owner.decisions = self.decisions.clone();
             let value = stage(&mut owner)?;
             (value, owner.commit()?)
         };

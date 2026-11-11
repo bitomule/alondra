@@ -10,6 +10,7 @@
 //! refused: the orchestrator is reminded once to fix it or cancel the task, then Alondra cancels it.
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
+pub(crate) use crate::domain_store::wording::approved_plan_work;
 use alondra_core::domain::{
     Author, CardKind, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
     PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, SystemCard, Task, TaskId,
@@ -184,15 +185,6 @@ fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
     };
     let (id, card) = inbox_card(UNSPLIT_NOTICE_PREFIX, InboxCard::UnsplitNotice, &request.id.0, reminders + 1);
     Some(Step::Remind { request: request.id.clone(), id, card, text })
-}
-
-/// What the orchestrator does with a request that holds a plan the user approved from a final result.
-pub(crate) fn approved_plan_work(state: &DomainState, request: &RequestId) -> Option<String> {
-    let approved = state.request_plans.get(request)?;
-    let source = state.tasks.get(&approved.task_id).map_or("", |task| task.title.as_str());
-    Some(format!(
-        "The user approved the plan that Task “{source}” ({task}) proposed in its final result. Request {request} holds that plan: name it with title_request, then create one implementation Task under it, or one per phase when the plan is in phases: in the same project folder as that Task, with dependencies on {task} and role implementation. The first takes the whole plan as its checklist; each later one takes its phase's points from the first with plan_items, with dependencies only on the phases it truly needs. Each starts with its points approved and the whole plan in its mission: never ask its node for a new plan.",
-        task = approved.task_id))
 }
 
 /// A problem per question: two questions left unanswered never replace each other's card.

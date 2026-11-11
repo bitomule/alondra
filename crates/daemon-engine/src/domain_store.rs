@@ -2,6 +2,7 @@
 //! evidence only; these rows are never reconstructed by legacy event replay.
 use crate::locks::Poisonable as _;
 mod canonical;
+pub(crate) mod wording;
 mod command;
 mod connection;
 #[cfg(any(test, feature = "test-hooks"))]
@@ -442,8 +443,30 @@ pub struct DomainStore {
     aggregates: alondra_store::AggregateCache,
     /// The folders no task's worktree can be: a worktree is recorded only once git lists it.
     protected: crate::worktree::Protected,
+    decisions: Option<Arc<dyn wording::SdkDecisions>>,
     #[cfg(any(test, feature = "test-hooks"))]
     after_commit: Option<Box<dyn FnMut() + Send>>,
+}
+/// The generation of the credential new executions on `account` run with: one more each time it
+/// was signed in again after its sign-in expired.
+pub(crate) fn generation_provider(state: &DomainState, account: &alondra_core::accounts::AccountKey) -> u64 {
+    state.accounts.iter().find(|status| status.provider == account.provider && status.id == account.account).map_or(0, |status| status.sign_ins) + 1
+}
+pub(crate) fn schedule_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::CreateSchedule { .. }
+            | Command::UpdateSchedule { .. }
+            | Command::DeleteSchedule { .. }
+            | Command::ClaimScheduleRun { .. }
+    )
+}
+pub(crate) fn audit(connection: &Connection) -> Result<()> {
+    let result: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    ensure!(result == "ok", "database integrity check failed: {result}");
+    let violations: i64 = connection.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0))?;
+    ensure!(violations == 0, "database foreign key check failed: {violations} violation(s)");
+    Ok(())
 }
 fn data_version(c: &Connection) -> Result<i64> {
     Ok(c.pragma_query_value(None, "data_version", |r| r.get(0))?)
@@ -796,12 +819,17 @@ impl DomainStore {
     pub(crate) fn protected(&self) -> &crate::worktree::Protected {
         &self.protected
     }
+    pub(crate) fn with_decisions(mut self, decisions: Arc<dyn wording::SdkDecisions>) -> Self {
+        self.decisions = Some(decisions);
+        self
+    }
     fn from_connection(conn: Connection) -> Self {
         Self {
             conn,
             cached: None,
             aggregates: Default::default(),
             protected: crate::worktree::Protected { home: crate::options::user_home(), projects_root: crate::options::user_home().join("Projects") },
+            decisions: None,
             #[cfg(any(test, feature = "test-hooks"))]
             live_read_trace: None,
             #[cfg(any(test, feature = "test-hooks"))]
@@ -873,7 +901,7 @@ impl DomainStore {
         repository::was_schedule_launch_failed(&self.conn, request_id)
     }
     pub(crate) fn integrity_check(&self) -> Result<()> {
-        crate::database_check::audit(&self.conn)
+        audit(&self.conn)
     }
     pub(crate) fn execute_authenticated(
         &mut self,

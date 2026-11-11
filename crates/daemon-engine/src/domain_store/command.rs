@@ -265,7 +265,7 @@ pub(super) fn stage(
                                 "Maintenance message {request} (sent with alondra send): act on it, then close it with close_request; it gets no card for the user."
                             )
                         }
-                        Some(request) => crate::orchestrator_inbox::approved_plan_work(&next, request)
+                        Some(request) => super::wording::approved_plan_work(&next, request)
                             .unwrap_or_else(|| format!(
                                 "The user created Request {request}: turn it into Tasks, or answer it and close it."
                             )),
@@ -290,7 +290,7 @@ pub(super) fn stage(
                     None,
                     Some(task_id.0.as_str()),
                     None,
-                    crate::plan_reviews::orchestrator_text(&next, review_id, &|task| stored_plan(conn, task).ok().flatten()),
+                    super::wording::orchestrator_text(&next, review_id, &|task| stored_plan(conn, task).ok().flatten()),
                 ),
                 DomainEffect::ScheduleLaunchFailed {
                     task_id,

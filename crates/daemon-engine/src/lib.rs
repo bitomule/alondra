@@ -107,6 +107,7 @@ pub mod retention;
 pub mod sdk_handover;
 pub mod sdk_live;
 pub mod sdk_owner;
+pub mod settings_projection;
 pub use alondra_daemon_engine_model::settings_file;
 pub mod stall_context;
 pub mod start_failures;
