@@ -1273,6 +1273,44 @@ async fn a_task_waiting_for_its_turn_to_start_with_no_host_of_its_own_is_taken_o
     domain.stop_sdk_owners();
 }
 
+/// 0.3.31, a task «delivering» with no host of its own: Alondra took it over every minute for
+/// hours, and nothing about the task changed. Here every new host ends before it takes the input
+/// it is handed. The first look takes the task over; its hosts end until the task waits on the
+/// user's card that says so, and no later look takes it over again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delivering_task_whose_hosts_end_before_taking_its_input_is_never_taken_over_again_unchanged() {
+    let mut node = SdkNode::resting();
+    let domain = Arc::clone(&node.domain);
+    node.tell(SDK_TASK, "Carry on");
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Starting);
+    node.lose_host();
+    std::fs::write(&node.backend.native, ENDS_ON_ITS_FIRST_PROMPT).unwrap();
+    let agent = AgentId(node.agent());
+    let journal = || domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter().cloned().collect::<Vec<_>>();
+    let mut looks = vec![];
+    for look in 0..4 {
+        let before = journal().len();
+        crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
+        domain.join_retakes();
+        while domain.owns_sdk_host(&agent) || domain.in_hand.lock().unwrap().contains_key(&TaskId::from(SDK_TASK)) {
+            std::thread::yield_now();
+        }
+        looks.push(journal()[before..].to_vec());
+    }
+    assert_eq!(looks[0].iter().filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TakenOver)).count(), 1, "the first look takes the task over once: {looks:#?}");
+    assert!(looks[1..].iter().all(Vec::is_empty), "no later look takes over a task that waits on its owner: {looks:#?}");
+    assert!(node.host_lost_card().is_some(), "the user is told its hosts end before they take anything: {looks:#?}");
+    domain.stop_sdk_owners();
+}
+
+/// A native Claude that ends as soon as it is handed a prompt, before it starts a turn.
+const ENDS_ON_ITS_FIRST_PROMPT: &str = r#"#!/usr/bin/python3
+import json, sys
+for raw in sys.stdin:
+    if json.loads(raw).get('type') == 'user':
+        sys.exit(0)
+"#;
+
 /// 6 Nov: «Resume» on the card of a node the gate held for the disk or the machine answered «no
 /// longer available» while the node was still paused. Every pause card's Resume is taken while
 /// the card is open.

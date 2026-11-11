@@ -99,6 +99,8 @@ pub enum ReviewOutcome {
 
 /// The text of the input that asks an SDK execution to compact its conversation.
 pub const COMPACT: &str = "/compact";
+/// The code of a takeover refused because its host never answered the last one.
+pub const REPEATED_TAKEOVER: &str = "repeated_takeover";
 
 /// The permission modes an SDK execution can be set to; none grants a permission by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +220,10 @@ pub enum RuntimeObservation {
     /// The model answered: the API and the account Claude Code uses work. A fact about Claude,
     /// not about the task: it records nothing in the task's journal.
     ModelAnswered,
+    /// Alondra took over the execution, which had no host of its own, with a new one.
+    TakenOver,
+    /// The host of the last takeover showed nothing: the next takeover starts a fresh host.
+    TakeoverUnanswered,
 }
 
 /// What a turn ended waiting for, as the journal keeps it.
@@ -426,6 +432,11 @@ pub enum LifecycleRecord {
     /// Claude will never read the pending `input`: it leaves the queue and `card` asks the user
     /// whether to send it again.
     InputDropped { input: String, card: InteractionId },
+    /// Alondra took over the execution, which had no host of its own, with a new one.
+    TakenOver,
+    /// The host of the last takeover showed nothing: what the execution waits for goes to a
+    /// fresh host.
+    TakeoverUnanswered,
     /// The user let go of the input `card` asked about. `unheard_card` is required when nothing
     /// else explains what follows, the orchestrator's when `stalled`.
     DroppedDiscarded {
@@ -664,6 +675,8 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
         })?,
         LifecycleRecord::InputConsumed { input } => runtime(RuntimeFact::InputConsumed { input: input_id(task, input)? })?,
         LifecycleRecord::InputDropped { input, card } => runtime(RuntimeFact::InputDropped { input: input_id(task, input)?, card: card.clone() })?,
+        LifecycleRecord::TakenOver => runtime(RuntimeFact::TakenOver)?,
+        LifecycleRecord::TakeoverUnanswered => runtime(RuntimeFact::TakeoverUnanswered)?,
         LifecycleRecord::DroppedDiscarded { card, unheard_card, stalled } => Event::Discard { card: card.clone(), unheard_card: unheard_card.clone(), stalled: *stalled },
         LifecycleRecord::AwaitEnded { unheard_card, wake, stalled, .. } => Event::AwaitEnded {
             unheard_card: unheard_card.clone(),
@@ -954,6 +967,8 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
         Event::Runtime { fact: RuntimeFact::InputDropped { input, card }, .. } => {
             LifecycleRecord::InputDropped { input: input.as_str().into(), card: card.clone() }
         }
+        Event::Runtime { fact: RuntimeFact::TakenOver, .. } => LifecycleRecord::TakenOver,
+        Event::Runtime { fact: RuntimeFact::TakeoverUnanswered, .. } => LifecycleRecord::TakeoverUnanswered,
         Event::Discard { card, unheard_card, stalled } => LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone(), stalled: *stalled },
         Event::AwaitEnded { unheard_card, wake, stalled } => LifecycleRecord::AwaitEnded {
             unheard_card: unheard_card.clone(),
@@ -2191,6 +2206,8 @@ impl DomainState {
                     continue;
                 }
                 RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
+                RuntimeObservation::TakenOver => LifecycleRecord::TakenOver,
+                RuntimeObservation::TakeoverUnanswered => LifecycleRecord::TakeoverUnanswered,
                 RuntimeObservation::WorkStarted { turn, work } => LifecycleRecord::WorkStarted { turn, work },
                 RuntimeObservation::WorkEnded { work, continuation } => LifecycleRecord::WorkEnded { work, continuation },
                 RuntimeObservation::WorkContinued { continuation } => {
@@ -2998,7 +3015,8 @@ const HANDOFF_DOUBT_WHY: &str = "Its session closed right after the message was 
 const HANDOFF_DOUBT_LAUNCH_WHY: &str = "Its session closed before it started on the task, right after the message was handed over. Nothing is sent until you decide.";
 
 fn refused(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle, refusal: Refusal) -> DomainError {
-    DomainError::new("conflict", format!(
+    let code = if refusal == Refusal::RepeatedTakeover { REPEATED_TAKEOVER } else { "conflict" };
+    DomainError::new(code, format!(
         "The lifecycle of task {task} ({:?}) refuses {record:?}: {refusal:?}", lifecycle.phase()))
 }
 

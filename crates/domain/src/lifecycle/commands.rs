@@ -65,6 +65,7 @@ impl TaskLifecycle {
                     activity: Activity::Launching(input),
                     callbacks: vec![],
                     effects: BTreeSet::new(),
+                    takeover: Takeover::None,
                     inbox: match &self.state {
                         State::Unstarted { remaining, .. } | State::InProgress(Progress::Queued { remaining, .. }) => remaining.clone(),
                         State::Delivered(Delivered {

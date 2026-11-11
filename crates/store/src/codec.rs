@@ -578,6 +578,8 @@ pub(super) enum FactRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<String>,
     },
+    TakenOver,
+    TakeoverUnanswered,
 }
 impl From<&RuntimeFact> for FactRecord {
     fn from(event: &RuntimeFact) -> Self {
@@ -660,6 +662,8 @@ impl From<&RuntimeFact> for FactRecord {
                 unheard_card: unheard_card.0.clone(),
                 resume: resume.as_ref().map(|input| input.as_str().to_owned()),
             },
+            RuntimeFact::TakenOver => Self::TakenOver,
+            RuntimeFact::TakeoverUnanswered => Self::TakeoverUnanswered,
         }
     }
 }
@@ -686,6 +690,8 @@ impl FactRecord {
             Self::Notification => "Runtime::Notification",
             Self::HostEnded { .. } => "Runtime::HostEnded",
             Self::HostStopped { .. } => "Runtime::HostStopped",
+            Self::TakenOver => "Runtime::TakenOver",
+            Self::TakeoverUnanswered => "Runtime::TakeoverUnanswered",
         }
     }
 
@@ -771,6 +777,8 @@ impl FactRecord {
                 unheard_card: InteractionId(unheard_card),
                 resume: resume.map(|input| InputId::new(input).map_err(Error::from)).transpose()?,
             },
+            FactRecord::TakenOver => RuntimeFact::TakenOver,
+            FactRecord::TakeoverUnanswered => RuntimeFact::TakeoverUnanswered,
         })
     }
 }
