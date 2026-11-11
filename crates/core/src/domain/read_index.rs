@@ -28,6 +28,10 @@ pub struct TaskReading {
     pub waits_for_user: bool,
     /// All it waits for is the review of its delivery.
     pub waits_for_review: bool,
+    /// The one state it shows.
+    pub situation: Situation,
+    /// The card its lifecycle waits on the user for that the inbox does not list.
+    pub unlisted: Option<InteractionId>,
 }
 
 /// What a node shows, from the domain alone.
@@ -182,6 +186,10 @@ impl ReadIndex {
     /// The deliveries an open card holds back.
     pub fn blocks(&self, card: &InteractionId) -> &[InteractionId] {
         self.blocks.get(card).map_or(&[], Vec::as_slice)
+    }
+    /// Each task whose lifecycle waits on the user for a card the inbox does not list, with that card.
+    pub fn unlisted_waits(&self) -> impl Iterator<Item = (&TaskId, &InteractionId)> {
+        self.tasks.iter().filter_map(|(task, read)| read.unlisted.as_ref().map(|card| (task, card)))
     }
     pub fn task(&self, task: &TaskId) -> Option<&TaskReading> {
         self.tasks.get(task)
@@ -525,9 +533,17 @@ impl<'a> Builder<'a> {
                 waiting_of_node.entry(agent.clone()).or_default().push(interaction_id.clone());
             }
         }
+        let shown = |id: &InteractionId| index.waiting_at.contains_key(id) || index.snoozed_at.contains_key(id);
+        let listed = |card: &InteractionId| shown(card)
+            || state.interactions.get(card).and_then(|i| i.card.group.as_ref()).and_then(|group| index.groups.get(&group.id))
+                .is_some_and(|members| members.iter().any(shown));
+        let mut readings = Vec::with_capacity(state.tasks.len());
         for t in state.tasks.values() {
             let waiting = waiting_of_task.remove(&t.id).unwrap_or_default();
             let waits_for_user = waiting.iter().any(|item| item.kind != "information");
+            let waits_for_review = waits_for_user
+                && waiting.iter().filter(|item| item.kind != "information").all(|item| item.kind == "delivery");
+            let Reckoned { situation, unlisted } = state.situation(t, &Listing { needs_you: waits_for_user && !waits_for_review, listed: &listed });
             let facts = TaskReading {
                 attention: attention[&t.id].clone(),
                 activity: state.task_activity(t),
@@ -540,15 +556,17 @@ impl<'a> Builder<'a> {
                     .cloned()
                     .collect(),
                 waits_for_user,
-                waits_for_review: waits_for_user
-                    && waiting.iter().filter(|item| item.kind != "information").all(|item| item.kind == "delivery"),
+                waits_for_review,
                 waiting: waiting.iter().map(|item| {
                     let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
                     interaction_id.clone()
                 }).collect(),
+                situation,
+                unlisted,
             };
-            index.tasks.insert(t.id.clone(), facts);
+            readings.push((t.id.clone(), facts));
         }
+        index.tasks.extend(readings);
         self.nodes(&mut index, waiting_of_node);
         index.activity = ActivityCounts {
             inbox: index.cards.len() as u32,

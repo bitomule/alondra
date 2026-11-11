@@ -87,10 +87,21 @@ fn delivered_owes(delivered: &Delivered) -> (Party, Owed) {
         DeliveryGate::AwaitingMerge(_) => (Party::Alondra, Owed::Merge),
         DeliveryGate::Accepted => (Party::Alondra, Owed::Close),
     };
+    let sent_back = || waits_for_an_execution(delivered).then_some((Party::Alondra, Owed::Start));
     match delivered.gate {
-        DeliveryGate::Review => session().unwrap_or_else(gate),
+        DeliveryGate::Review => session().or_else(sent_back).unwrap_or_else(gate),
         _ => cards_owe(delivered.decisions.values()).or_else(session).unwrap_or_else(gate),
     }
+}
+
+/// What the user told a delivery under review waits for an execution to take it, the user's own
+/// cards aside: no session runs, or the one there ended, and inputs are pending.
+fn waits_for_an_execution(delivered: &Delivered) -> bool {
+    let pending = match &delivered.session {
+        Session::Absent(pending) => !pending.is_empty(),
+        Session::Present(execution) => execution.resource == ResourceEvidence::Released && !execution_pending(execution).is_empty(),
+    };
+    pending && !delivered.decisions.values().any(|card| card.owner == Owner::User)
 }
 
 /// An answer the user or a policy gave that has not reached the turn yet owes its handing over,

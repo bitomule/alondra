@@ -21,6 +21,15 @@ fn something_runs(task: &TaskLifecycle) -> bool {
     matches!(task.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation)
 }
 
+/// A delivery under review that the user told something while no execution runs: an execution
+/// has to start to take it.
+fn told_with_no_execution(task: &TaskLifecycle) -> bool {
+    task.phase() == TaskPhase::Delivered
+        && !task.pending_inputs().is_empty()
+        && task.resource().is_none_or(|resource| resource == ResourceEvidence::Released)
+        && !task.cards().into_iter().any(|(card, _)| task.card_owner(card) == Some(Owner::User))
+}
+
 fn owed(obligation: Option<Obligation>) -> Option<(Party, Owed)> {
     obligation.map(|obligation| (obligation.party, obligation.owed))
 }
@@ -48,6 +57,8 @@ proptest! {
             };
             let answer = answer_on_its_way(&task);
             match task.live() {
+                Some(LiveState::WaitingUser(_)) if told_with_no_execution(&task) => prop_assert_eq!(owed(Some(obligation)), Some((Party::Alondra, Owed::Start)),
+                    "a delivery told something with no execution to take it owes a start: {:?}", task),
                 Some(LiveState::WaitingUser(_)) if !something_runs(&task) && !answer => prop_assert_eq!(obligation.party, Party::User,
                     "a task that waits on the user with nothing running owes the user: {:?}", task),
                 Some(LiveState::Working(Worker::Turn)) if task.phase() != TaskPhase::Finishing && !answer => prop_assert_eq!(obligation.owed, Owed::Turn,
@@ -89,4 +100,18 @@ proptest! {
             }
         }
     }
+}
+
+/// The execution of a delivery under review was released with what the user told it still to
+/// take: a new execution has to start for it, and nothing waits on the user.
+#[test]
+fn a_delivery_whose_execution_left_with_an_input_pending_owes_a_start_not_the_user() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
+    assert_eq!(owed(task.obligation()), Some((Party::User, Owed::User)), "the review is the user's while nothing was told");
+    apply(&mut task, Event::ExecutionReleased { input: input("changes") });
+    assert_eq!(task.phase(), TaskPhase::Delivered);
+    assert_eq!(task.pending_inputs(), vec![&input("changes")]);
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::Start)));
 }
