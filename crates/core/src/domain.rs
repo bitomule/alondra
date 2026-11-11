@@ -11,6 +11,7 @@ mod journal;
 mod lifecycle;
 mod measure;
 mod node_machine;
+pub mod obligation_policy;
 mod ownership;
 mod plan;
 mod projection;
