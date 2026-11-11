@@ -142,8 +142,10 @@ pub(super) fn resume_queued<'a>(task: &crate::domain::Task, context: &'a RenderC
 
 /// The place in the gate's queue of a task whose node has something to go on with and waits for a
 /// slot to start its turn. Its lifecycle reads as delivering: nothing runs until the gate lets it.
+/// A task whose accepted PR could not be merged never reads as queued: it says why it went back.
 pub(super) fn turn_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     let agent = task.agent_id.as_ref()?;
+    context.reading(&task.id).is_none_or(|read| read.merge_failure.is_none()).then_some(())?;
     (context.domain.node_phase(agent) != Some(&crate::domain::NodePhase::Lost) && context.domain.node_pause(agent).is_none()).then_some(())?;
     gate_queued(task, context)
 }

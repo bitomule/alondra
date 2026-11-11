@@ -2112,7 +2112,7 @@ fn kill_host_and_daemon(driver: Driver) {
 }
 
 /// Kills the driver's whole host group and waits until each of its processes exited.
-pub(crate) fn kill_host(driver: &Driver) {
+pub fn kill_host(driver: &Driver) {
     let group = driver.worker.host_group().unwrap();
     let mut exits = alondra_process_group::Exits::new().unwrap();
     for member in alondra_process_group::members(group).unwrap() {

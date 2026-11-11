@@ -5376,6 +5376,15 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
     let english = task(&state, Lang::En);
     assert!(english.contains("Couldn't merge") && !english.contains("Resolving conflicts"), "{english}");
     assert!(task(&state, Lang::Es).contains("No se pudo hacer merge"));
+    let turn_queued = pacing_live(vec![LiveQueued { pausable: false, task_id: "t".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 8, limit: 8 } }], vec![], None);
+    for client in [Client::Tui, Client::Ios] {
+        for view in ["task:t", "home"] {
+            let shown = serde_json::to_string(&render(&state, &turn_queued, client, Lang::Es, view, "")).unwrap();
+            assert!(!shown.contains("Esperando capacidad") && !shown.contains("En cola"), "a PR that went back never reads as queued ({client:?}, {view}): {shown}");
+        }
+        let shown = serde_json::to_string(&render(&state, &turn_queued, client, Lang::Es, "task:t", "")).unwrap();
+        assert!(shown.contains("No se pudo hacer merge"), "{shown}");
+    }
     let card = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "card:d", "")).unwrap();
     assert!(card.contains("Alondra couldn't merge #12") && card.contains("its checks failed (lint)")
         && !card.contains("Conflicts were reported"), "{card}");

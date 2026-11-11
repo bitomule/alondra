@@ -503,3 +503,78 @@ fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
     driver.stop().unwrap();
 }
+
+/// The node presents its PR #7 and its turn ends; the user accepts it; every slot of the gate is
+/// taken; GitHub then reports the PR conflicting with main and Alondra hands it back.
+async fn accepted_then_conflicting(slice: &Slice, driver: &mut Driver) {
+    use alondra_daemon_engine::admission::{Limit, Tuning};
+    use alondra_daemon_engine::domain_merges::{Checks, FakeGithub, MergeState, Merger};
+    let node = Actor::Agent { agent_id: driver.agent().clone() };
+    slice.run(&node, "register", Command::RegisterPr {
+        task_id: TASK.into(), pr_id: "pr-notes".into(), host: "github.example.invalid".into(), repository: "synthetic/notes".into(),
+        number: 7, head: "head-a".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr-notes".into(), head: "head-a".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&Actor::System, "end-turn", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into(), from_user: false, answers: None });
+    driver.step(&|| false).unwrap();
+    slice.settle(driver);
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    slice.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
+    let github = FakeGithub::new();
+    github.open(7, "head-a", Checks::Passed);
+    if let Some(Ok(status)) = github.statuses.lock().unwrap().get_mut(&7) {
+        status.merge_state = MergeState::Conflicting;
+    }
+    Merger::with(std::time::Duration::ZERO, std::time::Duration::from_secs(3600)).merge_due(&slice.domain, &github).await.unwrap();
+    assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Running, "the task is its node's again");
+}
+
+fn conflict_prompts(slice: &Slice) -> Vec<String> {
+    slice.prompts().into_iter().filter(|prompt| prompt.contains("conflicts with main: rebase its branch on main")).collect()
+}
+
+/// 11 November, PRs #129 and #133: the user accepted the delivery and GitHub then reported the PR
+/// conflicting with main while every slot of the gate was taken. Alondra handed the PR back, but the
+/// node's turn to resolve it waited for a slot for over an hour, and the task read as waiting for
+/// capacity. The work the user already accepted goes on at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conflict_turn() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    accepted_then_conflicting(&slice, &mut driver).await;
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the conflicts go to the node");
+    for _ in 0..40 {
+        if !conflict_prompts(&slice).is_empty() {
+            break;
+        }
+        driver.step(&|| false).unwrap();
+    }
+    assert!(!conflict_prompts(&slice).is_empty(), "the conflict turn reaches the node with no slot free: {:?}", slice.prompts());
+    slice.settle(&mut driver);
+    assert_eq!(conflict_prompts(&slice).len(), 1, "the node is told once to resolve the conflicts: {:?}", slice.prompts());
+    let snapshot = slice.domain.live.gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    assert!(snapshot.queue.is_empty(), "nothing of the task waits in the gate: {:?}", snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect::<Vec<_>>());
+    driver.stop().unwrap();
+}
+
+/// The same, with the node's host gone before GitHub reports the conflict: a host that resumes the
+/// node's session takes the conflict turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accepted_pr_that_turns_conflicting_after_its_host_died_reaches_a_host_that_resumes_the_session() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    accepted_then_conflicting(&slice, &mut driver).await;
+    kill_host(&driver);
+    drop(driver);
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut changed = slice.domain.subscribe();
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the conflicts go to the node");
+    tokio::time::timeout(std::time::Duration::from_secs(20), changed.wait_for(|_| !conflict_prompts(&slice).is_empty())).await
+        .expect("a host that resumes the session gets the conflict turn").unwrap();
+    assert_eq!(conflict_prompts(&slice).len(), 1, "{:?}", slice.prompts());
+    slice.domain.stop_sdk_owners();
+}

@@ -456,6 +456,16 @@ impl Admission {
     /// gate gives it the slot. Every look after the first only reads the answer. A slot given is
     /// taken once: from then on the node's own state holds it, and its next turn asks again.
     pub(crate) fn may_take_turn(&self, domain: &DomainRuntime, task: &TaskId, now: Millis) -> bool {
+        if fixes_accepted_pr(domain, task) {
+            let mut inner = self.lock();
+            inner.turns.remove(task);
+            inner.turns_asked.remove(task);
+            if inner.saved.turn_waits.remove(task).is_some() {
+                self.save(&inner);
+            }
+            log!("the admission gate lets {task} fix its accepted PR without a slot");
+            return true;
+        }
         {
             let mut inner = self.lock();
             if inner.turns.remove(task) {
@@ -787,6 +797,12 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
         inner.saved.pauses.owed.insert(session.to_owned(), text);
         domain.live.losses.report(session);
     }
+}
+
+/// The user accepted `task`'s PR and Alondra could not merge it: what is left is the last stretch of
+/// work the user already approved, and ending it frees a slot, so its turn never queues behind others.
+fn fixes_accepted_pr(domain: &DomainRuntime, task: &TaskId) -> bool {
+    domain.state().is_ok_and(|state| state.task_merge_failure(task).is_some())
 }
 
 /// Tells a node it goes on: as an input of its Agent SDK task, which its host takes once the pause
