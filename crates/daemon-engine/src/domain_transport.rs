@@ -1736,8 +1736,11 @@ pub mod tests {
         let revision = domain.state().unwrap().revision;
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
         assert_eq!(domain.state().unwrap().revision, revision, "a started Task is not started again");
-        command(&domain, agent_actor(), "start", Command::StartTask { task_id: "task".into() });
-        assert_eq!(task_state(&domain), TaskState::Running, "start_task still works when the Agent calls it");
+        let state = domain.state().unwrap();
+        let refused = domain.execute(&agent_actor(), &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: "start".into(), expected_revision: state.revision, command: Command::StartTask { task_id: "task".into() } }, None, || Ok(()));
+        assert!(matches!(&refused, Err(crate::domain_store::StoreError::Domain(error)) if error.code == "no_effect"), "start_task says the task is already started: {refused:?}");
+        assert_eq!(task_state(&domain), TaskState::Running);
     }
 
     #[tokio::test]

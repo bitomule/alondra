@@ -37,7 +37,8 @@ impl DomainState {
             Command::RevokeTaskGrant { task_id, card } => self.revoke_grant_guard(actor, task_id, card),
             Command::ReportFailure { task_id } => self.report_failure_guard(actor, task_id).map(drop),
             Command::ClearCompleted { seen } => self.clear_guard(actor, *seen).map(drop),
-            Command::SetMergeMethod { .. } | Command::SetBranchUpdate { .. } => user(actor).map(drop),
+            Command::SetMergeMethod { method } => self.merge_method_guard(actor, *method),
+            Command::SetBranchUpdate { update } => self.branch_update_guard(actor, *update),
             Command::InterruptTurn { agent_id } => self.interrupt_guard(actor, agent_id).map(drop),
             Command::ForceStopTurn { agent_id } => self.force_stop_guard(actor, agent_id).map(drop),
             Command::SetModel { task_id, model } => {
@@ -448,6 +449,26 @@ impl DomainState {
         if archived && !task.state.terminal() {
             return fail("task_not_active", "Only terminal Tasks can be archived");
         };
+        if task.archived == archived {
+            return fail("no_effect", &format!("archive_task changed nothing: task {task_id} is already {}. Nothing was recorded.",
+                if archived { "archived" } else { "on the lists" }));
+        }
+        Ok(())
+    }
+
+    pub(super) fn merge_method_guard(&self, actor: &Actor, method: MergeMethod) -> Result<()> {
+        user(actor)?;
+        if self.merge_method == method {
+            return fail("no_effect", &format!("set_merge_method changed nothing: PRs already merge with {}. Nothing was recorded.", method.id()));
+        }
+        Ok(())
+    }
+
+    pub(super) fn branch_update_guard(&self, actor: &Actor, update: BranchUpdate) -> Result<()> {
+        user(actor)?;
+        if self.branch_update == update {
+            return fail("no_effect", &format!("set_branch_update changed nothing: branches are already updated with {}. Nothing was recorded.", update.id()));
+        }
         Ok(())
     }
 

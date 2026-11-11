@@ -1019,6 +1019,9 @@ pub struct CommandOutcome {
     /// them (§2.1: a new final, revision, dependency or head supersedes one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub superseded_acceptances: Vec<SupersededAcceptance>,
+    /// What the command changed, one line each, for the caller to read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effect: Vec<String>,
 }
 /// A user acceptance that no longer applies because something other than
 /// that user's own feedback or rejection changed the delivery.

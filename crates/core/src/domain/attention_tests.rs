@@ -365,8 +365,8 @@ fn a_repeated_verdict_neither_duplicates_the_feedback_nor_spends_another_round()
     reviewing(&mut s);
     verdict(&mut s, "db", changes("Handle the empty list")).unwrap();
     let before = s.clone();
-    let repeated = verdict(&mut s, "db", changes("Handle the empty list, again")).unwrap();
-    assert!(repeated.effects.is_empty() && !repeated.changed);
+    let repeated = verdict(&mut s, "db", changes("Handle the empty list, again")).unwrap_err();
+    assert_eq!(repeated.code, "no_effect", "{repeated}");
     assert_eq!(s, before);
     let InteractionPayload::Delivery { feedback, .. } = &s.interactions[&"da".into()].payload else { panic!() };
     assert_eq!(feedback.len(), 1);

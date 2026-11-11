@@ -1001,7 +1001,28 @@ fn send_command(client: &Client, bearer: &str, name: &str, args: &Value) -> Resu
         .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
     let (method, path, body) = scoped_command_request(name, args, data_epoch,client.operation_id())?;
     let response = client.domain_call(method, &path, bearer, Some(&body))?;
-    Ok(response.get("notice").and_then(Value::as_str).unwrap_or("Recorded.").to_owned())
+    Ok(confirmation(&response))
+}
+
+/// What a node reads when Alondra accepted its command: what the command changed, or, for the
+/// same command sent again, that it was already recorded and what it changed then.
+fn confirmation(response: &Value) -> String {
+    let effect: Vec<&str> = response.get("effect").and_then(Value::as_array)
+        .map(|lines| lines.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let changed = if effect.is_empty() {
+        "Alondra accepted it without saying what changed: check the task before going on as if it had.".to_owned()
+    } else {
+        effect.join(" ")
+    };
+    let mut text = if response.get("replayed").and_then(Value::as_bool) == Some(true) {
+        format!("Already recorded: nothing new was done. When it was first recorded: {changed}")
+    } else {
+        changed
+    };
+    if let Some(notice) = response.get("notice").and_then(Value::as_str) {
+        text = format!("{text}\n\n{notice}");
+    }
+    text
 }
 
 /// The resource call a tool makes: its typed command as the body.
@@ -1051,6 +1072,7 @@ fn explain(error: &anyhow::Error) -> String {
     if let Some(crate::client::Refused(refused)) = error.downcast_ref() {
         let guidance = match refused.code.as_str() {
             "idempotency_conflict" => "That id already carries a different card: send a new interaction_id for a different card, or replaces to correct one that is still open.",
+            "no_effect" => "Alondra already had what this command asks for, so it changed nothing: read the reason, check the task's state, and do not send it again expecting a different answer.",
             "delivery_review_pending" => "This is not a refusal of the card: GitHub is slow. Wait a few seconds, then send the same present_result again with the same interaction_id; it joins the read already running and nothing is repeated.",
             _ => "Fix what it says and send the card again with the same interaction_id. Repeating the same refused card three times raises a Problem for the user.",
         };
@@ -3091,6 +3113,50 @@ mod card_tool_tests {
         assert!(text.contains("never an answer or a permission") && text.contains("same interaction_id"), "{text}");
         let conflict = explain(&anyhow::Error::new(crate::client::Refused(DomainError::new("idempotency_conflict", "request ID reused"))));
         assert!(conflict.contains("new interaction_id") && conflict.contains("replaces"), "{conflict}");
+    }
+
+    /// A daemon that answers the capabilities read and then the command with `answer`.
+    fn daemon_answering(answer: Value) -> Client {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for body in [json!({"data_epoch": "epoch"}), answer] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    if line == "\r\n" || line.is_empty() { break; }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                let text = body.to_string();
+                write!(&stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}", text.len()).unwrap();
+            }
+        });
+        Client::at(base)
+    }
+
+    #[test]
+    fn an_accepted_command_says_what_it_changed_never_a_bare_recorded() {
+        let first = json!({"revision": 8, "changed": true, "effect": ["Task t went from running to for your review.", "Card d-1 created."]});
+        let text = send_command(&daemon_answering(first), &"a".repeat(64), "withdraw", &json!({"interaction_id": "d-0"})).unwrap();
+        assert_eq!(text, "Task t went from running to for your review. Card d-1 created.");
+        let again = confirmation(&json!({"revision": 8, "changed": true, "replayed": true, "effect": ["Card d-1 created."]}));
+        assert!(again.starts_with("Already recorded") && again.contains("Card d-1 created."), "{again}");
+        let older = confirmation(&json!({"revision": 8, "changed": true}));
+        assert!(older.contains("without saying what changed") && !older.contains("Recorded."), "{older}");
+        let noticed = confirmation(&json!({"revision": 9, "changed": true, "effect": ["Task t updated."], "notice": "End your turn."}));
+        assert!(noticed.starts_with("Task t updated") && noticed.ends_with("End your turn."), "{noticed}");
+        for text in [text, again, older, noticed] {
+            assert!(!text.starts_with("Recorded"), "{text}");
+        }
+        let refused = explain(&anyhow::Error::new(crate::client::Refused(DomainError::new("no_effect", "cancel_task changed nothing"))));
+        assert!(refused.contains("no_effect") && refused.contains("do not send it again"), "{refused}");
     }
 
     #[test]

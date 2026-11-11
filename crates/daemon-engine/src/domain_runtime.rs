@@ -976,7 +976,8 @@ impl DomainRuntime {
             return Err(StoreError::Domain(DomainError::new("conflict", "The node is no longer paused")));
         }
         let revision = self.state().map_err(StoreError::Storage)?.revision;
-        Ok(CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![] })
+        Ok(CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
+            effect: vec!["The paused node resumes now.".into()] })
     }
 
     /// «Try again», chosen on the card of a task whose SDK execution could not be taken over and
@@ -1034,6 +1035,16 @@ impl DomainRuntime {
         envelope: &CommandEnvelope,
         check: impl FnOnce(&DomainState) -> Result<(), DomainError>,
     ) -> Result<CommandOutcome, StoreError> {
+        self.execute_bearer_answered(bearer, envelope, check).map(|(outcome, _)| outcome)
+    }
+
+    /// The outcome, and whether it is the receipt of the same command already recorded.
+    pub fn execute_bearer_answered(
+        &self,
+        bearer: &str,
+        envelope: &CommandEnvelope,
+        check: impl FnOnce(&DomainState) -> Result<(), DomainError>,
+    ) -> Result<(CommandOutcome, bool), StoreError> {
         let result = self.execute_bearer_once(bearer, envelope, check);
         self.count_rejections(bearer, envelope, &result);
         result
@@ -1044,7 +1055,7 @@ impl DomainRuntime {
         bearer: &str,
         envelope: &CommandEnvelope,
         check: impl FnOnce(&DomainState) -> Result<(), DomainError>,
-    ) -> Result<CommandOutcome, StoreError> {
+    ) -> Result<(CommandOutcome, bool), StoreError> {
         // Keep the capability lease until commit: concurrent revocation cannot pass this write.
         let mut authority = self.authority.lock_or_recover("the domain authority");
         let principal = authority
@@ -1102,7 +1113,7 @@ impl DomainRuntime {
         if !commit.replayed && commit.outcome.changed {
             crate::task_closer::settle_unattended(self, &commit.state);
         }
-        Ok(commit.outcome)
+        Ok((commit.outcome, commit.replayed))
     }
 }
 

@@ -27,7 +27,8 @@ fn setting_description(update: BranchUpdate, lang: Lang) -> &'static str {
 pub(super) fn settings_row(context: &RenderContext<'_>) -> Option<Item> {
     let lang = context.lang;
     let current = context.index.branch_update();
-    if !context.domain.set_branch_update_action(current).enabled {
+    let other = BranchUpdate::ALL.into_iter().find(|choice| *choice != current).unwrap_or(current);
+    if !context.domain.set_branch_update_action(other).enabled {
         return None;
     }
     let mut action = common::action(Verb::SetBranchUpdate, "branch_update", context.domain.revision,

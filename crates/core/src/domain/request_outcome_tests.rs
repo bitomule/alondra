@@ -183,7 +183,8 @@ fn only_the_users_own_requests_hear_how_they_ended() {
     asked(&mut s, user(), "r", false);
     task(&mut s, "design", "r");
     cancel(&mut s, "design");
-    ok(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
+    let withdrawn = exec(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
+    assert_eq!(withdrawn.unwrap_err().code, "no_effect", "cancelling its only task already withdrew it");
     assert!(cards(&s, "r").is_empty(), "the user withdrew it: they know how it ended");
 }
 

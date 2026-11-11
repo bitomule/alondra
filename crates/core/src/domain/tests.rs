@@ -1195,7 +1195,9 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
     let mut s = fixture();
     register(&mut s);
     let before = s.clone();
-    register(&mut s);
+    let again = exec(&mut s, agent(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
+        repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+    assert_eq!(again.unwrap_err().code, "no_effect", "registering the same PR again is refused, never a second confirmation");
     assert_eq!(before, s);
     exec(
         &mut s,
@@ -1800,7 +1802,8 @@ fn an_agent_works_on_one_task_until_it_ends() {
     exec(&mut s, orchestrator(), second(None)).unwrap();
     let take = Command::AssignTask { task_id: "t2".into(), agent_id: "a".into(), model: None };
     reject_unchanged(&mut s, user(), take.clone(), "agent_busy");
-    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap();
+    assert_eq!(exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap_err().code, "no_effect",
+        "the node already has its own task");
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     exec(&mut s, user(), take).unwrap();
     assert_eq!(s.tasks[&"t2".into()].agent_id, Some("a".into()), "a node whose task ended takes the next one");
@@ -1819,7 +1822,7 @@ fn an_assignment_records_the_model_and_who_chose_it_and_old_records_still_load()
     let launched = TaskModel { model: "opus".into(), chosen_by: ModelChooser::Orchestrator };
     exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: Some(launched.clone()) }).unwrap();
     assert_eq!(s.tasks[&"t".into()].model, Some(launched.clone()));
-    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap();
+    assert_eq!(exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap_err().code, "no_effect");
     assert_eq!(s.tasks[&"t".into()].model, Some(launched.clone()), "an assignment that names no model keeps the one recorded");
 
     let saved = serde_json::to_value(&s).unwrap();
@@ -1840,7 +1843,7 @@ fn state_saved_with_several_open_tasks_on_one_agent_still_loads() {
     exec(&mut s, orchestrator(), second(None)).unwrap();
     s.tasks.get_mut(&"t2".into()).unwrap().agent_id = Some("a".into());
     s.validate().unwrap();
-    exec(&mut s, agent(), Command::StartTask { task_id: "t2".into() }).unwrap();
+    assert_eq!(exec(&mut s, agent(), Command::StartTask { task_id: "t2".into() }).unwrap_err().code, "no_effect");
     exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None, task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
@@ -2581,8 +2584,8 @@ fn information_read_is_shared_across_authorized_devices() {
             interaction_id: "i".into(),
         },
     )
-    .unwrap();
-    assert!(!out.changed);
+    .unwrap_err();
+    assert_eq!(out.code, "no_effect", "another device's read is already the user's read");
     assert_eq!(s.revision, revision);
     let item = &inbox_items(&s)[0];
     assert!(!item.pending);
@@ -5204,7 +5207,9 @@ fn accepting_a_pr_authorizes_its_merge_by_the_method_set_in_settings() {
         (Squash, vec![Merge, Rebase], Merge),
     ] {
         let mut s = fixture();
-        exec(&mut s, user(), Command::SetMergeMethod { method: preferred }).unwrap();
+        if s.merge_method != preferred {
+            exec(&mut s, user(), Command::SetMergeMethod { method: preferred }).unwrap();
+        }
         assert_eq!(s.merge_method, preferred);
         exec(&mut s, agent(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
             repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(), allowed_methods: allowed.clone() }).unwrap();

@@ -328,7 +328,7 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
     must(&mut s, Actor::System, current);
     assert_eq!(lifecycle(&s, "t"), (TaskState::Running, true, Some("a".into()), None), "the observed resource starts it");
     assert_eq!(kinds(&s, "t"), ["planned", "admitted", "resource_available", "turn_started"]);
-    must(&mut s, node("a"), Command::StartTask { task_id: "t".into() });
+    assert_eq!(exec(&mut s, node("a"), Command::StartTask { task_id: "t".into() }).unwrap_err().code, "no_effect");
     assert_eq!(kinds(&s, "t").len(), 4, "the node's start reports nothing the SDK did not observe");
     assert_aggregate_rules(&s);
 }
