@@ -590,6 +590,6 @@ fn a_daemon_that_is_down_says_not_to_proceed() {
     let reply: Value = serde_json::from_slice(output.stdout.trim_ascii()).unwrap();
     assert_eq!(reply["result"]["isError"], true);
     let text = reply["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("don't proceed: could not reach Alondra;") && text.contains("unconfirmed") && text.contains("durable outcome") && !text.contains("Nothing was sent"), "{text}");
+    assert!(text.contains("don't proceed: Alondra did not confirm this ask after 3 sends") && text.contains("same interaction_id") && !text.contains("Nothing was sent"), "{text}");
     assert!(!text.contains("Recorded"), "{text}");
 }

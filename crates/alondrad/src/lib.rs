@@ -513,6 +513,10 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
     // Taken before the port opens: whoever sees this daemon answer may replace its binary at once.
     let upgrades = relaunch::watcher(&config.service_label);
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
+    if config.fast_timing {
+        use domain_api::DomainHost as _;
+        state.delivery_reviews().limit(delivery_review::Limits::SANDBOX);
+    }
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?.map(|service| {
         Arc::new(

@@ -236,6 +236,40 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         act(report, fakes, &node, "the node opens PR #15 on the fake GitHub", &[Step::OpenPr { number: 15, draft: false, checks: Checks::Success }])?;
         refused(report, fakes, &node, "Alondra refuses to register PR #15 for the same task", &Step::RegisterPr { number: 15 }, "owns one PR").map(drop)
     });
+    report.case("F5", "A final delivery whose git is slower than Alondra answers within is told to send it again, and the same id brings the card", |report| {
+        request(report, fakes, &user, &task_script("req-f5", "t-f5", "Add a slow file"), "Add a slow file")?;
+        let node = launched(report, fakes, "t-f5")?;
+        state(report, &user, "t-f5", WORKING)?;
+        let mut work = Step::work(16, "slow.txt");
+        let deliver = work.pop().expect("work ends with a delivery");
+        act(report, fakes, &node, "the node opens and registers PR #16", &work)?;
+        report.step("git status in the node's worktree takes 5 s, longer than Alondra answers within", || slow_status(sandbox, &node.cwd, 5))?;
+        act(report, fakes, &node, "the node delivers, hears that Alondra is still checking, and sends the same delivery again", &[deliver])?;
+        review_card(report, &user, &node)?;
+        report.step("Alondra's log shows each step of the delivery and the answer that it was still checking", || {
+            let log = std::fs::read_to_string(sandbox.dir.join("mac-1/alondrad.log"))?;
+            for said in ["of t-f5: checking the worktree with git took", "answered delivery_review_pending after", "of t-f5: stored,"] {
+                anyhow::ensure!(log.contains(said), "the log does not say “{said}”");
+            }
+            Ok(())
+        })
+    });
+}
+
+/// Makes `git status` in `worktree` take `seconds`: git asks a file-system monitor hook, kept in
+/// the sandbox outside the worktree, that sleeps before it answers.
+fn slow_status(sandbox: &Sandbox, worktree: &std::path::Path, seconds: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let hook = sandbox.dir.join("slow-fsmonitor");
+    std::fs::write(&hook, format!("#!/bin/sh\nsleep {seconds}\nexit 1\n"))?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    let config = |args: &[&std::ffi::OsStr]| -> anyhow::Result<()> {
+        let out = std::process::Command::new("git").arg("-C").arg(worktree).arg("config").args(args).output().context("git")?;
+        anyhow::ensure!(out.status.success(), "git config: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(())
+    };
+    config(&["extensions.worktreeConfig".as_ref(), "true".as_ref()])?;
+    config(&["--worktree".as_ref(), "core.fsmonitor".as_ref(), hook.as_os_str()])
 }
 
 /// Whether the lifecycle of `task` on Mac 1 recorded the end of a turn.

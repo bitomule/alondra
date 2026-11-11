@@ -2,6 +2,7 @@
 //! the runtime boundary because local HTTP user mutations require user presence.
 use super::*;
 use crate::auth::Auth;
+use crate::domain_api::DomainHost as _;
 use crate::domain_authority::Principal;
 use axum::http::StatusCode;
 use std::net::SocketAddr;
@@ -43,6 +44,7 @@ struct Fixture {
     next_id: u64,
     pr_view: Arc<crate::client_routes::FakePrView>,
     work: Arc<crate::client_routes::Client>,
+    daemon: Arc<DomainDaemon>,
     // Dropped after the runtime, including when an assertion panics.
     _cleanup: Cleanup,
 }
@@ -101,6 +103,7 @@ impl Fixture {
             .to_owned();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let daemon = state.clone();
         let app = router(state).layer(axum::middleware::from_fn_with_state(
             Arc::new(Auth::open(&home).unwrap()),
             crate::auth::guard,
@@ -126,6 +129,7 @@ impl Fixture {
             next_id: 0,
             pr_view,
             work,
+            daemon,
             _cleanup: Cleanup(home),
         }
     }
@@ -147,6 +151,10 @@ impl Fixture {
     }
 
     async fn post(&self, bearer: &str, envelope: &Value) -> (StatusCode, Value) {
+        self.post_with(&self.client, bearer, envelope).await.unwrap()
+    }
+
+    async fn post_with(&self, client: &reqwest::Client, bearer: &str, envelope: &Value) -> Result<(StatusCode, Value), reqwest::Error> {
         let command = envelope["command"].as_object().unwrap();
         let kind = command["kind"].as_str().unwrap();
         let task = command.get("task_id").and_then(Value::as_str);
@@ -176,10 +184,10 @@ impl Fixture {
             }
         }
         if kind == "create_request" && !body.contains_key("auto_merge") { body.insert("auto_merge".into(), json!(false)); }
-        let response = self.client.request(method.parse().unwrap(), format!("{}{}", self.base, path))
-            .bearer_auth(bearer).json(&Value::Object(body)).send().await.unwrap();
+        let response = client.request(method.parse().unwrap(), format!("{}{}", self.base, path))
+            .bearer_auth(bearer).json(&Value::Object(body)).send().await?;
         let status = response.status();
-        (status, response.json().await.unwrap())
+        Ok((status, response.json().await?))
     }
 
     async fn producer(&mut self, orchestrator: bool, command: Value) -> Value {
@@ -680,5 +688,162 @@ async fn http_a_pr_number_another_repository_already_used_is_registered_and_pres
     };
     assert_eq!(targets, &vec![DeliveryTarget::PullRequest { pr_id: lumo, head: head.into() }],
         "the node's pr-163 is its own Lumo PR, not skills' #163");
+    fixture.finish().await;
+}
+
+/// How long `git status` takes in a slow worktree, and how long the node waits for Alondra's
+/// answer: git is slower than the node waits, as in a large monorepo.
+const SLOW_STATUS_SECONDS: u32 = 2;
+const NODE_WAITS: std::time::Duration = std::time::Duration::from_millis(600);
+/// How long a node keeps sending the same delivery: the delivery's own GitHub reads can take
+/// several seconds on a busy machine.
+const SENDS_FOR: std::time::Duration = std::time::Duration::from_secs(90);
+
+impl Fixture {
+    /// The task's worktree, recorded as its own, whose `git status` takes SLOW_STATUS_SECONDS: git
+    /// asks a file-system monitor hook that sleeps before it answers.
+    fn slow_worktree(&mut self, task: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::worktree::testing::task_worktree(&self.home.join("repositories"), task);
+        let hook = self.home.join("slow-fsmonitor");
+        std::fs::write(&hook, format!("#!/bin/sh\nsleep {SLOW_STATUS_SECONDS}\nexit 1\n")).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::worktree::testing::git(&dir, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+        let envelope: CommandEnvelope = serde_json::from_value(self.envelope(json!({"kind":"record_task_worktree",
+            "task_id":task, "path":dir.to_str().unwrap(), "origin":"task", "branch":format!("worktree-{task}")}))).unwrap();
+        self.domain.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+        dir
+    }
+
+    /// Sends `envelope` as a node does: it waits NODE_WAITS for the answer and, without one or
+    /// told to send it again, sends the same call again a moment later, for SENDS_FOR at most.
+    /// What each call heard.
+    async fn send_until_answered(&self, envelope: &Value) -> Vec<String> {
+        let node = reqwest::Client::builder().timeout(NODE_WAITS).build().unwrap();
+        let mut heard = vec![];
+        let started = std::time::Instant::now();
+        while started.elapsed() < SENDS_FOR {
+            match self.post_with(&node, &self.agent, envelope).await {
+                Ok((StatusCode::OK, _)) => {
+                    heard.push("stored".to_owned());
+                    return heard;
+                }
+                Ok((status, body)) => heard.push(format!("{status} {}", body["code"].as_str().unwrap_or_default())),
+                Err(error) if error.is_timeout() => heard.push("no answer".to_owned()),
+                Err(error) => panic!("the call failed: {error}"),
+            }
+            tokio::time::sleep(NODE_WAITS).await;
+        }
+        heard
+    }
+}
+
+#[tokio::test]
+async fn http_a_final_delivery_slower_than_the_node_waits_is_stored_when_sent_again_with_the_same_id() {
+    let mut fixture = Fixture::start().await;
+    fixture.answering_within(ANSWER_WITHIN);
+    let envelope = fixture.slow_delivery().await;
+
+    let heard = fixture.send_until_answered(&envelope).await;
+
+    assert_eq!(heard.last().map(String::as_str), Some("stored"), "what the node heard: {heard:?}");
+    assert!(heard[..heard.len() - 1].iter().all(|answer| ["409 Conflict delivery_review_pending", "no answer"].contains(&answer.as_str())),
+        "until then it heard that Alondra was still checking, or nothing on a busy machine: {heard:?}");
+    assert_eq!(fixture.deliveries("pr-task"), 1);
+    fixture.finish().await;
+}
+
+/// What the daemon answers a delivery within in these tests: far below NODE_WAITS.
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_millis(100);
+
+impl Fixture {
+    fn answering_within(&self, budget: std::time::Duration) {
+        let limits = self.daemon.delivery_reviews().limits();
+        self.daemon.delivery_reviews().limit(crate::delivery_review::Limits { answer_within: budget, ..limits });
+    }
+
+    /// The final delivery of task `pr-task`'s PR, as the MCP server sends it, from a worktree
+    /// where git is slower than the node waits.
+    async fn slow_delivery(&mut self) -> Value {
+        self.registered_pr().await;
+        self.slow_worktree("pr-task");
+        let mut envelope = self.envelope(present_pr(json!({"kind":"pull_request", "pr_id":"pr-1", "head":REGISTERED})));
+        envelope["expected_revision"] = json!(0);
+        envelope
+    }
+
+    fn deliveries(&self, task: &str) -> usize {
+        self.domain.state().unwrap().interactions.values()
+            .filter(|interaction| matches!(&interaction.scope, alondra_core::domain::Scope::Task { task_id } if *task_id == task.into())
+                && matches!(interaction.payload, InteractionPayload::Delivery { .. }))
+            .count()
+    }
+}
+
+#[tokio::test]
+async fn http_a_final_delivery_whose_call_is_cut_halfway_is_still_stored() {
+    let mut fixture = Fixture::start().await;
+    let envelope = fixture.slow_delivery().await;
+    let impatient = reqwest::Client::builder().timeout(ANSWER_WITHIN).build().unwrap();
+
+    let cut = fixture.post_with(&impatient, &fixture.agent, &envelope).await;
+
+    assert!(cut.as_ref().is_err_and(reqwest::Error::is_timeout), "the node stopped waiting: {cut:?}");
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while fixture.deliveries("pr-task") == 0 {
+            tokio::time::sleep(ANSWER_WITHIN).await;
+        }
+    }).await.expect("the delivery is stored without the node sending it again");
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_a_final_delivery_sent_again_with_the_same_id_after_it_was_stored_makes_no_second_card() {
+    let mut fixture = Fixture::start().await;
+    fixture.answering_within(ANSWER_WITHIN);
+    let envelope = fixture.slow_delivery().await;
+    assert_eq!(fixture.send_until_answered(&envelope).await.last().map(String::as_str), Some("stored"));
+    let revision = fixture.domain.state().unwrap().revision;
+
+    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fixture.deliveries("pr-task"), 1);
+    assert_eq!(fixture.domain.state().unwrap().revision, revision, "sending it again changed nothing");
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_a_final_delivery_whose_git_never_finishes_is_refused_saying_so() {
+    let mut fixture = Fixture::start().await;
+    let limits = fixture.daemon.delivery_reviews().limits();
+    fixture.daemon.delivery_reviews().limit(crate::delivery_review::Limits { git_within: ANSWER_WITHIN, ..limits });
+    let envelope = fixture.slow_delivery().await;
+
+    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
+
+    assert_eq!((status, body["code"].as_str()), (StatusCode::CONFLICT, Some("worktree_check_timed_out")), "{body}");
+    assert_eq!(fixture.deliveries("pr-task"), 0);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_a_final_delivery_with_thousands_of_checklist_lines_and_a_huge_pr_is_stored_within_the_budget() {
+    let mut fixture = Fixture::start().await;
+    fixture.registered_pr().await;
+    let description: String = (1..=20_000).map(|line| format!("Line {line} of the PR description.\n")).collect();
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":REGISTERED, "baseRefName":"main",
+        "mergeable":"MERGEABLE", "mergeStateStatus":"CLEAN", "body":description,
+        "files":(1..=3_000).map(|file| json!({"path":format!("Sources/File{file}.swift"), "additions":40, "deletions":2})).collect::<Vec<_>>()})));
+    let body: String = (1..=5_000).map(|point| format!("- [x] Point {point}: done, test `point_{point}` passes\n")).collect();
+    let mut envelope = fixture.envelope(json!({"kind":"present_result", "task_id":"pr-task", "interaction_id":"pr-delivery",
+        "body":body, "is_final":true, "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":REGISTERED}]}));
+    envelope["expected_revision"] = json!(0);
+    let node = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap();
+
+    let (status, answer) = fixture.post_with(&node, &fixture.agent, &envelope).await.expect("answered before the node stops waiting");
+
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(fixture.deliveries("pr-task"), 1);
     fixture.finish().await;
 }

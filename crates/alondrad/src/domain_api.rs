@@ -29,24 +29,15 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
     fn delivery_reviews(&self) -> &crate::delivery_review::DeliveryReviews;
 }
 
-/// A final delivery's reads on GitHub wait this long for an answer: less than the 30 s a node's
-/// MCP call waits for alondrad, so a slow GitHub is answered with a typed "still reading".
-const DELIVERY_REVIEW_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
-
 /// What a final delivery needs from GitHub before it is stored: no draft PR, and no configured
 /// private name in a public one. Other commands need nothing.
-async fn final_delivery_review<H: DomainHost>(host: &H, state: Arc<DomainState>, command: &Command) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
-    let Command::PresentResult { interaction_id, is_final: true, .. } = command else { return Ok(None) };
-    let (home, command) = (host.home().to_owned(), command.clone());
-    host.delivery_reviews().review(interaction_id, DELIVERY_REVIEW_BUDGET, move || async move {
-        let gh = crate::domain_github::GhCli::new();
-        if let Command::PresentResult { task_id, targets, is_final: true, .. } = &command
-            && let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &gh).await
-        {
-            return Err(refusal);
-        }
-        crate::public_content::check(&home, &state, &command, &gh).await
-    }).await
+async fn final_delivery_review(home: &FsPath, state: Arc<DomainState>, command: &Command) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
+    let Command::PresentResult { task_id, targets, is_final: true, .. } = command else { return Ok(None) };
+    let gh = crate::domain_github::GhCli::new();
+    if let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &gh).await {
+        return Err(refusal);
+    }
+    crate::public_content::check(home, &state, command, &gh).await
 }
 
 /// A local command carries what the producer or the terminal sends, not what
@@ -1079,92 +1070,19 @@ async fn execute_command<H: DomainHost>(
             Ok(Err(error)) => return store_error(error),
             Err(_) => return storage_error(),
         };
-        if let Some(client) = host.new_work_client() {
-            if matches!(principal, Principal::Agent { .. }) {
-                client.catch_up_task(&envelope.command).await;
-                client.catch_up_heads(&envelope.command).await;
+        if let (Principal::Agent { .. }, Command::PresentResult { interaction_id, is_final: true, .. }) = (&principal, &envelope.command) {
+            let interaction = interaction_id.clone();
+            let fingerprint = delivery_fingerprint(&token, &envelope);
+            let reviews = host.clone();
+            let started = std::time::Instant::now();
+            let delivered = reviews.delivery_reviews().deliver(&interaction, fingerprint, move || producer_command(host, principal, token, envelope)).await;
+            match &delivered {
+                Ok(_) => log!("present_result {interaction}: answered stored after {} ms", started.elapsed().as_millis()),
+                Err(error) => log!("present_result {interaction}: answered {} after {} ms", error.code, started.elapsed().as_millis()),
             }
-            if let Err(error) = client.verify_presentation(&envelope.command).await {
-                return domain_error(error);
-            }
+            return answered(delivered);
         }
-        if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, targets, is_final: true, .. })
-            = (&principal, &envelope.command)
-            && let Ok(state) = host.domain().state()
-            && !state.interactions.contains_key(interaction_id)
-            && let Some(refusal) = crate::worktree::final_refusal(&state, session_id, task_id, targets).await
-        {
-            return domain_error(refusal);
-        }
-        if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, checklist, is_final: true, .. }) = (&principal, &envelope.command)
-            && !checklist.is_empty()
-            && let Ok(state) = host.domain().state()
-            && !state.interactions.contains_key(interaction_id)
-            && let Some(refusal) = crate::worktree::evidence_refusal(&state, session_id, task_id, checklist).await
-        {
-            return domain_error(refusal);
-        }
-        if let (Principal::Agent { session_id, .. }, Command::AskQuestion { scope: Scope::Task { task_id }, card, .. }) = (&principal, &envelope.command)
-            && let Some(destination) = &card.secret_destination
-            && let Ok(state) = host.domain().state()
-            && let Some(refusal) = crate::secret_files::ask_refusal(&state, session_id, task_id, destination)
-        {
-            return domain_error(refusal);
-        }
-        if let (Principal::Agent { .. }, Command::ConfirmCleanup { task_id, discard }) = (&principal, &envelope.command)
-            && let Ok(state) = host.domain().state()
-            && let Some(task) = state.tasks.get(task_id)
-        {
-            let left: Vec<(String, String)> = crate::task_worktrees::leftovers(host.domain(), task).await.into_iter()
-                .filter(|(path, _)| !discard.contains(path))
-                .collect();
-            if !left.is_empty() {
-                let mut refusal = DomainError::new("worktree_not_clean", crate::task_worktrees::settle_text(task_id, &left));
-                refusal.subject = Some("discard".into());
-                return domain_error(refusal);
-            }
-        }
-        let reviewed = if matches!(principal, Principal::Agent { .. }) {
-            let state = match host.domain().state() {
-                Ok(state) => state,
-                Err(_) => return storage_error(),
-            };
-            match final_delivery_review(&*host, state, &envelope.command).await {
-                Ok(reviewed) => reviewed,
-                Err(error) => return domain_error(error),
-            }
-        } else { None };
-        let work = host.domain().producer_work.clone();
-        let mut envelope = envelope;
-        return work.run(move || {
-            if let Err(error) = check_launch_plan(host.domain(), host.home(), &envelope.command) {
-                return domain_error(error);
-            }
-            crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
-            let kept = match crate::result_files::keep(host.home(), &mut envelope.command) {
-                Ok(kept) => kept,
-                Err(error) => return domain_error(error),
-            };
-            let executed = host.domain().execute_bearer_answered(&token, &envelope, |state| {
-                reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
-            });
-            if executed.is_err() && let Some(file) = kept {
-                let _ = std::fs::remove_file(file);
-            }
-            match executed {
-                Ok((outcome, replayed)) => {
-                    let mut answer = json!(outcome);
-                    if replayed {
-                        answer["replayed"] = json!(true);
-                    }
-                    if let Some(notice) = task_wait_notice(host.domain(), &envelope.command).or_else(|| auto_merge_notice(host.domain(), &envelope.command)) {
-                        answer["notice"] = json!(notice);
-                    }
-                    Json(answer).into_response()
-                }
-                Err(error) => store_error(error),
-            }
-        }).await.unwrap_or_else(|_| storage_error());
+        return answered(producer_command(host, principal, token, envelope).await);
     }
     if headers.contains_key("x-alondra-session")
         || headers.contains_key("x-alondra-orchestrator-execution")
@@ -1193,6 +1111,158 @@ async fn execute_command<H: DomainHost>(
             Err(error) => store_error(error),
         }
     }).await.unwrap_or_else(|_| storage_error())
+}
+
+fn answered(outcome: Result<Value, DomainError>) -> Response {
+    match outcome {
+        Ok(answer) => Json(answer).into_response(),
+        Err(error) => domain_error(error),
+    }
+}
+
+/// Who sent a final delivery and what it holds: a call sent again only joins the delivery its
+/// own session started with the same command.
+fn delivery_fingerprint(token: &str, envelope: &CommandEnvelope) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(token.as_bytes());
+    digest.update([0]);
+    digest.update(serde_json::to_vec(&envelope.command_id).unwrap_or_default());
+    digest.update([0]);
+    digest.update(serde_json::to_vec(&envelope.command).unwrap_or_default());
+    digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Writes to the daemon log, as each one ends, how long every step of a final delivery took and
+/// how the delivery ended. Other commands are not logged.
+struct Steps {
+    delivery: Option<String>,
+    started: std::time::Instant,
+}
+
+impl Steps {
+    fn of(principal: &Principal, command: &Command) -> Self {
+        let delivery = match (principal, command) {
+            (Principal::Agent { .. }, Command::PresentResult { interaction_id, task_id, is_final: true, .. }) =>
+                Some(format!("present_result {interaction_id} of {task_id}")),
+            _ => None,
+        };
+        if let Some(delivery) = &delivery {
+            log!("{delivery}: checking");
+        }
+        Self { delivery, started: std::time::Instant::now() }
+    }
+
+    async fn step<T>(&self, step: &str, work: impl std::future::Future<Output = T>) -> T {
+        let since = std::time::Instant::now();
+        let done = work.await;
+        if let Some(delivery) = &self.delivery {
+            log!("{delivery}: {step} took {} ms", since.elapsed().as_millis());
+        }
+        done
+    }
+
+    fn ended(&self, outcome: Result<Value, DomainError>) -> Result<Value, DomainError> {
+        if let Some(delivery) = &self.delivery {
+            let took = self.started.elapsed().as_millis();
+            match &outcome {
+                Ok(_) => log!("{delivery}: stored, {took} ms in all"),
+                Err(error) => log!("{delivery}: refused {} after {took} ms: {}", error.code, error.message),
+            }
+        }
+        outcome
+    }
+}
+
+/// A producer's command, from the reads and checks it needs before it is stored to the store's
+/// answer.
+async fn producer_command<H: DomainHost>(host: Arc<H>, principal: Principal, token: String, envelope: CommandEnvelope) -> Result<Value, DomainError> {
+    let steps = Steps::of(&principal, &envelope.command);
+    let outcome = checked_producer_command(host, principal, token, envelope, &steps).await;
+    steps.ended(outcome)
+}
+
+async fn checked_producer_command<H: DomainHost>(
+    host: Arc<H>, principal: Principal, token: String, envelope: CommandEnvelope, steps: &Steps,
+) -> Result<Value, DomainError> {
+    let storage = || DomainError::new("storage_unavailable", "domain transaction could not be completed");
+    let git_within = host.delivery_reviews().limits().git_within;
+    if let Some(client) = host.new_work_client() {
+        if matches!(principal, Principal::Agent { .. }) {
+            steps.step("reading the task's pull requests on GitHub", async {
+                client.catch_up_task(&envelope.command).await;
+                client.catch_up_heads(&envelope.command).await;
+            }).await;
+        }
+        steps.step("checking the presented pull requests on GitHub", client.verify_presentation(&envelope.command)).await?;
+    }
+    if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, targets, is_final: true, .. })
+        = (&principal, &envelope.command)
+        && let Ok(state) = host.domain().state()
+        && !state.interactions.contains_key(interaction_id)
+        && let Some(refusal) = steps.step("checking the worktree with git", crate::worktree::final_refusal(&state, session_id, task_id, targets, git_within)).await
+    {
+        return Err(refusal);
+    }
+    if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, checklist, is_final: true, .. }) = (&principal, &envelope.command)
+        && !checklist.is_empty()
+        && let Ok(state) = host.domain().state()
+        && !state.interactions.contains_key(interaction_id)
+        && let Some(refusal) = steps.step("checking the checklist's commits with git", crate::worktree::evidence_refusal(&state, session_id, task_id, checklist, git_within)).await
+    {
+        return Err(refusal);
+    }
+    if let (Principal::Agent { session_id, .. }, Command::AskQuestion { scope: Scope::Task { task_id }, card, .. }) = (&principal, &envelope.command)
+        && let Some(destination) = &card.secret_destination
+        && let Ok(state) = host.domain().state()
+        && let Some(refusal) = crate::secret_files::ask_refusal(&state, session_id, task_id, destination)
+    {
+        return Err(refusal);
+    }
+    if let (Principal::Agent { .. }, Command::ConfirmCleanup { task_id, discard }) = (&principal, &envelope.command)
+        && let Ok(state) = host.domain().state()
+        && let Some(task) = state.tasks.get(task_id)
+    {
+        let left: Vec<(String, String)> = crate::task_worktrees::leftovers(host.domain(), task).await.into_iter()
+            .filter(|(path, _)| !discard.contains(path))
+            .collect();
+        if !left.is_empty() {
+            let mut refusal = DomainError::new("worktree_not_clean", crate::task_worktrees::settle_text(task_id, &left));
+            refusal.subject = Some("discard".into());
+            return Err(refusal);
+        }
+    }
+    let reviewed = if matches!(principal, Principal::Agent { .. }) {
+        let state = host.domain().state().map_err(|_| storage())?;
+        steps.step("the public content review", final_delivery_review(host.home(), state, &envelope.command)).await?
+    } else { None };
+    let work = host.domain().producer_work.clone();
+    let mut envelope = envelope;
+    steps.step("storing it", work.run(move || {
+        check_launch_plan(host.domain(), host.home(), &envelope.command)?;
+        crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
+        let kept = crate::result_files::keep(host.home(), &mut envelope.command)?;
+        let executed = host.domain().execute_bearer_answered(&token, &envelope, |state| {
+            reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
+        });
+        if executed.is_err() && let Some(file) = kept {
+            let _ = std::fs::remove_file(file);
+        }
+        match executed {
+            Ok((outcome, replayed)) => {
+                let mut answer = json!(outcome);
+                if replayed {
+                    answer["replayed"] = json!(true);
+                }
+                if let Some(notice) = task_wait_notice(host.domain(), &envelope.command).or_else(|| auto_merge_notice(host.domain(), &envelope.command)) {
+                    answer["notice"] = json!(notice);
+                }
+                Ok(answer)
+            }
+            Err(StoreError::Domain(error)) => Err(error),
+            Err(StoreError::Storage(_)) => Err(storage()),
+        }
+    })).await.unwrap_or_else(|_| Err(storage()))
 }
 
 /// The exact device the middleware verified, only while its approval persists.

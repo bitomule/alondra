@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use alondra_core::domain::{ChecklistMark, DeliveryTarget, DomainError, DomainState, EvidenceKind, TaskId};
 use serde_json::Value;
@@ -190,7 +192,7 @@ async fn on_default_branch(dir: &Path) -> Option<(bool, String)> {
     if !tokio::time::timeout(std::time::Duration::from_secs(60), fetch).await.ok()?.ok()?.status.success() {
         return None;
     }
-    let check = Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", "HEAD", &default]).output().await.ok()?;
+    let check = Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", "HEAD", &default]).kill_on_drop(true).output().await.ok()?;
     match check.status.code() {
         Some(0) => Some((true, default)),
         Some(1) => Some((false, default)),
@@ -212,8 +214,32 @@ fn listed(files: &[String]) -> String {
 /// has, or work that is neither on the default branch nor in the PR registered for its Task. Work in
 /// a repository without a remote, or already in the local default branch, needs no push and no PR.
 /// Nothing when the node has no worktree of its own, or when git cannot tell.
-pub async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
-    final_refusal_in(state, &node_worktree(state, session_id, task)?, task, targets).await
+/// The check gives git `limit` in all, and is refused when git does not finish in it.
+pub async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget], limit: Duration) -> Option<DomainError> {
+    final_refusal_within(state, &node_worktree(state, session_id, task)?, task, targets, limit).await
+}
+
+pub(crate) async fn final_refusal_within(state: &DomainState, dir: &Path, task: &TaskId, targets: &[DeliveryTarget], limit: Duration) -> Option<DomainError> {
+    within(limit, dir, "tell whether everything is committed and pushed", final_refusal_in(state, dir, task, targets)).await
+}
+
+/// How long git may take, in all, on each check a final delivery makes in its worktree.
+pub const CHECK_LIMIT: Duration = Duration::from_secs(60);
+
+/// What `check` finds within `limit`, or a refusal that names the git that did not finish. Every
+/// git it starts is killed when it is dropped.
+async fn within(limit: Duration, dir: &Path, what: &str, check: impl Future<Output = Option<DomainError>>) -> Option<DomainError> {
+    match tokio::time::timeout(limit, check).await {
+        Ok(refusal) => refusal,
+        Err(_) => {
+            log!("git did not finish in {} s to {what} in {}", limit.as_secs_f32(), dir.display());
+            Some(DomainError::new("worktree_check_timed_out", format!(
+                "Nothing was presented yet: git took more than {} s to {what} in {}. Send the same present_result again, \
+                 with the same interaction_id: it does not duplicate the card, and git usually answers faster the second time.",
+                limit.as_secs(), dir.display()
+            )))
+        }
+    }
 }
 
 /// The worktree the node of `task` works in: the one its `claude --bg` job names, else the one the
@@ -274,8 +300,9 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
 
 /// Why the commits a final delivery cites as evidence cannot be taken: one its worktree does not
 /// have in the history of its HEAD. Nothing when the node has no worktree of its own.
-pub async fn evidence_refusal(state: &DomainState, session_id: &str, task: &TaskId, checklist: &[ChecklistMark]) -> Option<DomainError> {
-    evidence_refusal_in(&node_worktree(state, session_id, task)?, checklist).await
+pub async fn evidence_refusal(state: &DomainState, session_id: &str, task: &TaskId, checklist: &[ChecklistMark], limit: Duration) -> Option<DomainError> {
+    let dir = node_worktree(state, session_id, task)?;
+    within(limit, &dir, "find the commits the checklist cites", evidence_refusal_in(&dir, checklist)).await
 }
 
 pub(crate) async fn evidence_refusal_in(dir: &Path, checklist: &[ChecklistMark]) -> Option<DomainError> {
@@ -525,6 +552,33 @@ mod tests {
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
+    /// A worktree where `git status` takes `seconds`: git asks a file-system monitor hook, kept
+    /// outside the worktree, that sleeps before it answers.
+    fn slow_status(root: &Path, seconds: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = testing::task_worktree(&root.join("repositories"), "slow");
+        let hook = root.join("slow-fsmonitor");
+        std::fs::write(&hook, format!("#!/bin/sh\nsleep {seconds}\nexit 1\n")).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run(&dir, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+        dir
+    }
+
+    #[tokio::test]
+    async fn a_final_check_git_does_not_finish_in_time_is_refused_saying_so_never_taken_as_clean() {
+        let root = crate::test_support::Directory::new();
+        let dir = slow_status(&root, 2);
+        let pr = [DeliveryTarget::PullRequest { pr_id: "pr".into(), head: String::new() }];
+
+        let refused = final_refusal_within(&DomainState::new("e"), &dir, &TaskId::from("t"), &pr, Duration::from_millis(100)).await;
+
+        let refused = refused.expect("a check git did not finish is refused");
+        assert_eq!(refused.code, "worktree_check_timed_out", "{}", refused.message);
+        assert!(refused.message.contains("same interaction_id"), "{}", refused.message);
+        assert_eq!(final_refusal_within(&DomainState::new("e"), &dir, &TaskId::from("t"), &pr, CHECK_LIMIT).await, None,
+            "the same worktree is clean once git has the time it needs");
+    }
+
     /// The node that replaced another one was launched in that one's worktree, which Claude Code
     /// records only on the old session's job: the successor's own launch folder names it.
     #[tokio::test]
@@ -580,9 +634,9 @@ mod tests {
         run(Actor::System, Command::RecordTaskWorktree { task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
         let session = "sdk-0123abcd";
         assert_eq!(worktree_of(session), None, "an SDK node has no job");
-        assert_eq!(final_refusal(&state, session, &TaskId::from("t"), &[]).await.map(|refusal| refusal.code), None, "clean and pushed");
+        assert_eq!(final_refusal(&state, session, &TaskId::from("t"), &[], CHECK_LIMIT).await.map(|refusal| refusal.code), None, "clean and pushed");
         std::fs::write(dir.join("tokens.swift"), b"let accent = 1").unwrap();
-        let refused = final_refusal(&state, session, &TaskId::from("t"), &[]).await.expect("a dirty worktree is refused");
+        let refused = final_refusal(&state, session, &TaskId::from("t"), &[], CHECK_LIMIT).await.expect("a dirty worktree is refused");
         assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
         assert!(refused.message.contains("tokens.swift"), "{}", refused.message);
     }
