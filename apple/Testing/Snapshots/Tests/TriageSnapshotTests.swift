@@ -78,6 +78,14 @@ final class TriageSnapshotTests: XCTestCase {
         assertVariants { Harness(store: store) }
     }
 
+    /// At the largest text the empty state scrolls; on a screen tall enough for all of it, every line and every count is there.
+    func test_emptyAtTheLargestTextShowsEverythingOnATallScreen_es() throws {
+        let store = try ScreenStores.triage(queue: [], home: try Fixtures.home(queue: [], spanish: true))
+        assertScreen([.light], language: .spanish, inWindow: true) {
+            Harness(store: store, height: 2400).environment(\.dynamicTypeSize, .accessibility3)
+        }
+    }
+
     func test_empty_es() throws {
         let store = try ScreenStores.triage(queue: [], home: try Fixtures.home(queue: [], spanish: true))
         assertVariants(language: .spanish) { Harness(store: store) }
