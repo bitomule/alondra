@@ -3221,6 +3221,33 @@ impl DomainState {
                     None => self.account_usage.push(recorded),
                 }
             }
+            Command::CreateCardReply { request_id, interaction_id, body, auto_merge } => {
+                user(actor)?;
+                let Some(card) = self.interactions.get(interaction_id)
+                    .filter(|card| !card.withdrawn && card.recipient == Recipient::User) else {
+                    return refuse("invalid_input", "interaction_id", "Choose an existing card addressed to the user");
+                };
+                let (source_request, task_ids) = match &card.scope {
+                    Scope::Task { task_id } => {
+                        let task = self.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "Task not found"))?;
+                        (Some(task.request_id.clone()), vec![task_id.clone()])
+                    }
+                    Scope::Orchestrator { request_id } => {
+                        let tasks = self.tasks.values().filter(|task| Some(&task.request_id) == request_id.as_ref())
+                            .map(|task| task.id.clone()).collect();
+                        (request_id.clone(), tasks)
+                    }
+                };
+                let reference = CardReference {
+                    interaction_id: card.id.clone(), title: card.card.effective_title().to_owned(),
+                    scope: card.scope.clone(), request_id: source_request, task_ids,
+                };
+                self.apply(actor, &Command::CreateRequest {
+                    request_id: request_id.clone(), body: body.clone(), auto_merge: *auto_merge,
+                    maintenance: false, message: true,
+                }, effects, created, lifecycles)?;
+                self.requests.get_mut(request_id).unwrap().reply_to = Some(reference);
+            }
             Command::CreateRequest { request_id, body, auto_merge, maintenance, message } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;

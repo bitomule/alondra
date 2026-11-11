@@ -131,7 +131,7 @@ pub(super) fn stage(
             repository::remember_schedule_failed_launch(conn, request_id)?;
         }
         match (&attached, &envelope.command) {
-            (Attached::Request(launch), Command::CreateRequest { request_id, .. }) => {
+            (Attached::Request(launch), Command::CreateRequest { request_id, .. } | Command::CreateCardReply { request_id, .. }) => {
                 repository::remember_request_launch(conn, request_id, launch)?;
             }
             (

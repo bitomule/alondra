@@ -97,6 +97,14 @@ pub enum Command {
         #[serde(default)]
         message: bool,
     },
+    /// A user's message to the orchestrator with its card context captured in the same commit.
+    CreateCardReply {
+        request_id: RequestId,
+        interaction_id: InteractionId,
+        body: String,
+        #[serde(default)]
+        auto_merge: bool,
+    },
     CloseRequest {
         request_id: RequestId,
         #[serde(default)]

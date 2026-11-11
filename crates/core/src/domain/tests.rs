@@ -3117,6 +3117,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordScheduleRunFailed { .. } => 7,
         Command::InterruptScheduleRunsOnRestart => 8,
         Command::CreateRequest { .. } => 9,
+        Command::CreateCardReply { .. } => 134,
         Command::CloseRequest { .. } => 10,
         Command::RegisterAgent { .. } => 11,
         Command::MoveNode { .. } => 12,
@@ -3244,7 +3245,7 @@ fn variant_index(c: &Command) -> usize {
         Command::ClosePrOfCancelledTask { .. } => 133,
     }
 }
-const COMMAND_KINDS: usize = 134;
+const COMMAND_KINDS: usize = 135;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3284,6 +3285,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::AnnounceRequestTasks, true),
         (Command::AcknowledgeRequestTasks, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
+        (Command::CreateCardReply { request_id: "fresh-reply".into(), interaction_id: ids.interaction.into(), body: "Explain".into(), auto_merge: false }, false),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
         (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::TurnStarted, at: 0 }, false),

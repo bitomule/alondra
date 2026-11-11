@@ -792,7 +792,7 @@ pub(super) fn save_changes(
     }
     for (x, _) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
-        strip(&mut row, &["maintenance", "message", "cleared", "origin", "folded_into"]);
+        strip(&mut row, &["maintenance", "message", "cleared", "origin", "folded_into", "reply_to"]);
         upsert(c, "requests", &["id"], row)?;
         if x.maintenance {
             exec(c, "INSERT OR IGNORE INTO maintenance_requests(request_id) VALUES(?1)", params![x.id.0])?;
@@ -809,6 +809,10 @@ pub(super) fn save_changes(
         }
         if let Some(task) = &x.folded_into {
             exec(c, "INSERT INTO request_folds(request_id,task_id) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET task_id=excluded.task_id", params![x.id.0, task.0])?;
+        }
+        if let Some(reference) = &x.reply_to {
+            exec(c, "INSERT INTO request_card_replies(request_id,reference) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET reference=excluded.reference",
+                params![x.id.0, serde_json::to_string(reference)?])?;
         }
     }
     for (x, _) in changed(&before.agents, &after.agents) {
@@ -1144,6 +1148,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     }
     drop(stored);
     drop(folds);
+    let mut replies = c.prepare("SELECT request_id,reference FROM request_card_replies")?;
+    let mut stored = replies.query([])?;
+    while let Some(row) = stored.next()? {
+        let (id, reference): (String, String) = (row.get(0)?, row.get(1)?);
+        state.requests.get_mut(&RequestId::from(id)).context("card reply request missing")?.reply_to = Some(serde_json::from_str(&reference)?);
+    }
+    drop(stored);
+    drop(replies);
     for row in rows(c, "agents", &[], &["phase"])? {
         let x: Agent = decode(row)?;
         state.agents.insert(x.id.clone(), x);

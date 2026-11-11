@@ -142,6 +142,9 @@ const CLEARED_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS cleared_requests(requ
 const REQUEST_ORIGINS: &str = "CREATE TABLE IF NOT EXISTS request_origins(\
  request_id TEXT PRIMARY KEY REFERENCES requests(id),\
  origin TEXT NOT NULL CHECK(json_valid(origin)));";
+const REQUEST_CARD_REPLIES: &str = "CREATE TABLE IF NOT EXISTS request_card_replies(\
+ request_id TEXT PRIMARY KEY REFERENCES requests(id),\
+ reference TEXT NOT NULL CHECK(json_valid(reference)));";
 /// The Requests sent as messages to the orchestrator, kept beside them; created on every open like
 /// task_relations. When it is first created, the messages from before it are the maintenance ones and
 /// those with the `request-` + 32 hex id that only the orchestrator message route makes.
@@ -324,7 +327,7 @@ const EVENTS_VIEW: &str = "CREATE VIEW events AS SELECT revision AS seq,0 AS at,
 /// What a command carries into the transaction that commits it.
 pub(crate) enum Attached<'a> {
     None,
-    /// What the user chose for the launch of the Request a `CreateRequest` makes.
+    /// What the user chose for the launch of a new request or card reply.
     Request(&'a RequestLaunch),
     Batch(&'a batch_effects::BatchCommand<'a>),
 }
@@ -709,6 +712,7 @@ impl DomainStore {
         tx.execute_batch(CLEARED_REQUESTS)?;
         tx.execute_batch(REQUEST_ORIGINS)?;
         tx.execute_batch(REQUEST_FOLDS)?;
+        tx.execute_batch(REQUEST_CARD_REPLIES)?;
         let messages_known: bool = tx.query_row(
             "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='message_requests'", [], |r| r.get::<_, i64>(0),
         )? == 1;
@@ -879,8 +883,7 @@ impl DomainStore {
     ) -> std::result::Result<Commit, StoreError> {
         self.execute_envelope(actor, envelope, transport, false, Attached::None)
     }
-    /// A `CreateRequest` that also records what the user chose for its launch, in the same
-    /// transaction.
+    /// A new request or card reply with its launch choices in the same transaction.
     pub(crate) fn execute_launching(
         &mut self,
         actor: &Actor,
@@ -888,7 +891,7 @@ impl DomainStore {
         transport: Option<TransportIdentity<'_>>,
         launch: &RequestLaunch,
     ) -> std::result::Result<Commit, StoreError> {
-        if !matches!(envelope.command, Command::CreateRequest { .. }) {
+        if !matches!(envelope.command, Command::CreateRequest { .. } | Command::CreateCardReply { .. }) {
             return Err(DomainError::new("invalid_input", "only a new Request has a launch").into());
         }
         self.execute_envelope(actor, envelope, transport, true, Attached::Request(launch))
