@@ -147,7 +147,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3239,6 +3239,8 @@ fn variant_index(c: &Command) -> usize {
         Command::AnnounceRequestTasks => 122,
         Command::AcknowledgeRequestTasks => 123,
         Command::MoveTask { .. } => 124,
+        Command::DeferTaskMove { .. } => 136,
+        Command::AbortTaskSelection { .. } => 137,
         Command::SettleOpenPr { .. } => 125,
         Command::RecordStranded { .. } => 126,
         Command::NotePrOpened { .. } => 127,
@@ -3250,7 +3252,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordClaudeHold { .. } => 135,
     }
 }
-const COMMAND_KINDS: usize = 136;
+const COMMAND_KINDS: usize = 138;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3452,6 +3454,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             model: crate::model_selection::ModelSelection { model: crate::model_selection::ModelKey { provider: crate::accounts::Provider::Codex, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "A user choice".into(),
         } }, false),
         (Command::MoveTask { task_id: ids.task.into(), expected_selection: "fixture".into(), account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex) }, false),
+        (Command::DeferTaskMove { task_id: ids.task.into(), account: crate::accounts::AccountKey::native(crate::accounts::Provider::Codex) }, false),
+        (Command::AbortTaskSelection { task_id: ids.task.into(), selection: None, refused: None }, false),
         (Command::AdoptOpenPr { task_id: ids.task.into(), pr_id: ids.pr.into(), branch: "feature".into(), status: crate::domain::OpenPrStatus { state: PrState::Open, head: "a".repeat(40),
             base: "main".into(), mergeable: crate::domain::PrMergeable::Clean, checks: crate::domain::PrChecks::Passed } }, true),
         (Command::ClosePrOfCancelledTask { task_id: ids.task.into(), pr_id: ids.pr.into(), branch: "feature".into(), status: crate::domain::OpenPrStatus { state: PrState::Open, head: "a".repeat(40),

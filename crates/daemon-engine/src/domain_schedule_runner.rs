@@ -293,7 +293,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot, at: i64) -> Result<(Reque
     let request_id: RequestId = format!("r-{}", crate::auth::random_hex(16)).into();
     let request = Request::new(request_id.clone(), snapshot.text.clone());
     let task = Task {
-        provider: Default::default(), selection: None, pending_selection: None,
+        provider: Default::default(), selection: None, pending_selection: None, move_refused: None,
         id: scheduled_task_name(&snapshot.title, at)?.into(),
         request_id,
         agent_id: None,

@@ -490,7 +490,7 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
             }else{NativeAccountIdentity::save(&backend.state_root.join(&agent.0),actual).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;}
             owner.stage_command(&Actor::System, &admit, Attached::None)?;
             if let Some(selection) = &launch.options.selection {
-                let pending = match &continuation { Some(Continuation::Transition { id }) => Some(owner.pending_transition_selection(id)?), _ => None };
+                let pending = match &continuation { Some(Continuation::Transition { id }) => owner.pending_transition_selection(id)?, _ => None };
                 let mut selection=selection.clone();selection.native_tool_denials=Some(launch.options.disallowed_tools.clone());
                 owner.stage_command(&Actor::System, &envelope("selection", Command::RecordTaskSelection {
                     task_id: launch.task.clone(), selection, pending,
@@ -1186,6 +1186,11 @@ pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
         }
         take_again(&runtime, &backend, &task, false);
     })));
+}
+
+/// Whether a retake of `task`, or the halt that replaces its host for a pause, is under way.
+pub(crate) fn being_retaken(domain: &DomainRuntime, task: &TaskId) -> bool {
+    domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
 }
 
 /// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch,

@@ -225,6 +225,8 @@ pub struct Task {
     pub selection: Option<crate::model_selection::TaskSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_selection: Option<crate::model_selection::PendingTaskSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_refused: Option<crate::model_selection::MoveRefused>,
     /// What the user allowed for the rest of the task from its permission cards, by the card each
     /// was allowed on. It is forgotten when the task ends.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

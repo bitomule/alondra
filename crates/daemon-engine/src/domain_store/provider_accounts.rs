@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS task_providers(task_id TEXT PRIMARY KEY REFERENCES ta
 CREATE TABLE IF NOT EXISTS account_configuration(singleton INTEGER PRIMARY KEY CHECK(singleton=1), account_order TEXT NOT NULL CHECK(json_valid(account_order)), config_version TEXT NOT NULL);\
 CREATE TABLE IF NOT EXISTS account_model_catalogs(provider TEXT NOT NULL, account TEXT NOT NULL, catalog TEXT NOT NULL CHECK(json_valid(catalog)), PRIMARY KEY(provider,account));\
 CREATE TABLE IF NOT EXISTS task_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id), selection TEXT NOT NULL CHECK(json_valid(selection)), pending TEXT CHECK(pending IS NULL OR json_valid(pending)));\
+CREATE TABLE IF NOT EXISTS task_move_refusals(task_id TEXT PRIMARY KEY REFERENCES tasks(id), refused TEXT NOT NULL CHECK(json_valid(refused)));\
 CREATE TABLE IF NOT EXISTS model_profiles(singleton INTEGER PRIMARY KEY CHECK(singleton=1), profiles TEXT NOT NULL CHECK(json_valid(profiles)), config_version TEXT NOT NULL);\
 CREATE TABLE IF NOT EXISTS schedule_paid_accounts(schedule_id TEXT PRIMARY KEY REFERENCES schedules(id), account TEXT NOT NULL CHECK(json_valid(account)));";
 
@@ -36,6 +37,12 @@ pub(super) fn save(c: &Connection, before: &DomainState, after: &DomainState) ->
                 params![task.id.0, serde_json::to_string(selection)?, task.pending_selection.as_ref().map(serde_json::to_string).transpose()?])?;
         } else {
             exec(c, "DELETE FROM task_selections WHERE task_id=?1", params![task.id.0])?;
+        }
+    }
+    for task in after.tasks.values().filter(|task| before.tasks.get(&task.id).map_or(task.move_refused.is_some(), |prior| prior.move_refused != task.move_refused)) {
+        match &task.move_refused {
+            Some(refused) => { exec(c, "INSERT INTO task_move_refusals(task_id,refused) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET refused=excluded.refused", params![task.id.0, serde_json::to_string(refused)?])?; }
+            None => { exec(c, "DELETE FROM task_move_refusals WHERE task_id=?1", [&task.id.0])?; }
         }
     }
     if before.account_order != after.account_order || before.account_config_version != after.account_config_version {
@@ -88,6 +95,13 @@ pub(super) fn load(c: &Connection, state: &mut DomainState) -> Result<()> {
             let task = state.tasks.get_mut(&TaskId::from(id)).context("selection task missing")?;
             task.selection = Some(serde_json::from_str(&selection)?);
             task.pending_selection = pending.as_deref().map(serde_json::from_str).transpose()?;
+        }
+    }
+    if exists("task_move_refusals")? {
+        let mut statement = c.prepare("SELECT task_id,refused FROM task_move_refusals")?;
+        for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+            let (id, refused) = row?;
+            state.tasks.get_mut(&TaskId::from(id)).context("move refusal task missing")?.move_refused = Some(serde_json::from_str(&refused)?);
         }
     }
     if exists("account_model_catalogs")? {

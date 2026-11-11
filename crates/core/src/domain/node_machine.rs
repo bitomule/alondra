@@ -995,7 +995,7 @@ impl DomainState {
     /// already waits for its node, or, when its node rested through the pause with nothing left to
     /// do (its turn ended, or its host did), told to carry on in the same session. A delivery takes
     /// the end of a pause with nothing to go on with, so one its node still owes work on is told too.
-    fn end_of_pause(&self, task: &TaskId, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<super::LifecycleRecord> {
+    pub(super) fn end_of_pause(&self, task: &TaskId, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<super::LifecycleRecord> {
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card: card.clone() }).is_ok_and(|ended| !self.stranded(task, &ended)) {
             return Ok(super::LifecycleRecord::PauseEnded { card: card.clone() });

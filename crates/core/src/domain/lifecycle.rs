@@ -1905,6 +1905,11 @@ impl DomainState {
             self.settle_dropped(&task_id, card, option, written, effects, lifecycles)?;
             return Ok(true);
         }
+        if option == super::NODE_PAUSE_RESUME && self.node_pause_card(card) {
+            let record = self.end_of_pause(&task_id, card, lifecycles)?;
+            self.decide(lifecycles, &task_id, record)?;
+            return Ok(true);
+        }
         let kept = self.lifecycle_journal[&task_id].iter().any(|record| matches!(record, LifecycleRecord::QuestionKept { card: kept } if kept == card));
         let mut text = match (option, after_merge.as_deref()) {
             _ if kept => self.kept_answer(card, option),

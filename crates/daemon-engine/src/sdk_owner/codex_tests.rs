@@ -1902,3 +1902,144 @@ fn a_usage_limit_whose_turn_end_the_domain_refuses_still_holds_the_task_and_its_
     assert_eq!(held(&slice), 1, "the limit still holds the task");
     driver.stop().unwrap();
 }
+
+/// What the move is at once the daemon's passes can take it no further.
+async fn settled_move(slice:&Slice)->String{
+    let mut changed=slice.domain.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(60),async{
+        loop{
+            crate::provider_transition::pass(&slice.domain).await;
+            let last=move_steps(slice).last().cloned().unwrap_or_default();
+            if matches!(last.as_str(),"done"|"aborted"){return last}
+            changed.changed().await.unwrap();
+        }
+    }).await.unwrap_or_else(|_|panic!("the move stopped short of an outcome at {:?}",move_steps(slice).last()))
+}
+fn paused_by_the_user(slice:&Slice)->bool{
+    Slice::lifecycle(&slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
+}
+fn admissions(slice:&Slice)->usize{
+    slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count()
+}
+fn source_host(slice:&Slice)->PathBuf{
+    let instance=Slice::lifecycle(&slice.domain).execution().unwrap().instance().as_str().to_owned();
+    slice.backend.for_provider(Provider::Codex,slice.domain.home()).unwrap().state_root.join(instance)
+}
+
+#[tokio::test]
+async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let source=working_on_codex(&slice);
+    slice.domain.live.gate.ignore_mac();
+    slice.domain.live.gate.pause_by_user(&slice.domain,&source.0,alondra_core::now_millis()).unwrap();
+    slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    let state=slice.domain.state().unwrap();
+    assert!(state.tasks[&task].pending_selection.is_none());
+    assert!(paused_by_the_user(&slice),"a paused task stays paused");
+    assert_eq!(admissions(&slice),1,"nothing starts while it is paused");
+    assert!(crate::provider_transition::moving(&slice.domain,&task),"no node but the one on the new account may start it");
+    let pause=Slice::lifecycle(&slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
+    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_core::domain::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
+    let mut changed=slice.domain.subscribe();
+    while admissions(&slice)<2{
+        crate::provider_transition::pass(&slice.domain).await;
+        if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the resumed task never started").unwrap();}
+    }
+    let state=slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    assert!(!crate::provider_transition::moving(&slice.domain,&task));
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn a_resting_task_moves_at_once(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let source=working_on_codex(&slice);
+    let targets=vec![DeliveryTarget::Text{text:"The release notes".into()}];
+    slice.run(&Actor::Agent{agent_id:source.clone()},"deliver-notes",Command::PresentResult{
+        checklist:vec![],attachments:vec![],task_id:task.clone(),interaction_id:"notes".into(),
+        body:"The release notes are written.".into(),targets:targets.clone(),is_final:true,nothing_to_review:false,
+        card:CardSpec::delivery("Review the release notes",&targets,true),
+    });
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    let state=slice.domain.state().unwrap();
+    assert!(state.tasks[&task].pending_selection.is_none());
+    assert_eq!(admissions(&slice),1,"no node starts until something resumes it");
+    assert_eq!(Slice::lifecycle(&slice.domain).phase(),alondra_domain::TaskPhase::Delivered);
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn a_task_whose_host_died_moves(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    slice.domain.stop_sdk_owners();
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    slice.domain.stop_sdk_owners();
+    let adopted=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+    let group=adopted.worker.host_group().unwrap();
+    for process in alondra_process_group::members(group).unwrap(){signal_codex_process(process.pid,libc::SIGKILL);}
+    drop(adopted);
+    request_move(&slice);
+    let outcome=settled_move(&slice).await;
+    let state=slice.domain.state().unwrap();
+    assert!(state.tasks[&task].pending_selection.is_none(),"the move leaves nothing pending: {outcome}");
+    match outcome.as_str(){
+        "done"=>{}
+        "aborted"=>assert!(state.tasks[&task].move_refused.as_ref().is_some_and(|refused|!refused.reason.is_empty()),"a refused move says why"),
+        other=>panic!("the move ended in {other}"),
+    }
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn a_move_that_cannot_prove_its_source_ended_is_refused_with_its_reason(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    slice.domain.stop_sdk_owners();
+    let before=slice.domain.state().unwrap().tasks[&task].selection.clone();
+    let host=source_host(&slice);
+    request_move(&slice);
+    std::fs::remove_dir_all(&host).unwrap();
+    assert_eq!(settled_move(&slice).await,"aborted");
+    let state=slice.domain.state().unwrap();let held=&state.tasks[&task];
+    assert!(held.pending_selection.is_none());
+    assert_eq!(held.selection,before,"the task keeps the selection it had");
+    assert_eq!(held.account_key().provider,Provider::Codex);
+    let refused=held.move_refused.as_ref().expect("the task says why it did not move");
+    assert_eq!(refused.account,AccountKey::native(Provider::Claude));
+    assert!(!refused.reason.is_empty());
+    assert!(!crate::provider_transition::moving(&slice.domain,&task));
+    assert!(!crate::provider_transition::holds_execution(&slice.domain,&task),"the task takes inputs again");
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn a_stored_uncertain_move_is_aborted_on_the_first_pass(){
+    use crate::domain_store::provider_transition::Phase;
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    request_move(&slice);
+    let id=slice.domain.store.lock().unwrap().provider_transition(&task).unwrap().unwrap().plan.id;
+    let scope=alondra_store::AuthorityScope::new(slice.domain.read().state().data_epoch.clone()).unwrap();
+    slice.domain.own(scope,|owner|owner.provider_transition_phase(&id,Phase::Requested,Phase::Uncertain,serde_json::json!({"reason":"An older daemon could not tell how the move went"}))).unwrap();
+    crate::provider_transition::pass(&slice.domain).await;
+    assert_eq!(move_steps(&slice).last().map(String::as_str),Some("aborted"));
+    let state=slice.domain.state().unwrap();
+    assert!(state.tasks[&task].pending_selection.is_none());
+    assert_eq!(state.tasks[&task].move_refused.as_ref().unwrap().reason,"An older daemon could not tell how the move went");
+    slice.domain.stop_sdk_owners();
+}

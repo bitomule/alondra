@@ -775,6 +775,19 @@ pub enum Command {
         expected_selection: String,
         account: crate::accounts::AccountKey,
     },
+    /// The task's move to the account its pending selection names ends before any node started
+    /// there: its execution is released, the selection it moves with stays, and nothing is pending.
+    DeferTaskMove {
+        task_id: TaskId,
+        account: crate::accounts::AccountKey,
+    },
+    /// A selection change could not finish: `selection` is the one the task had before it, nothing
+    /// is pending, and a move says why on the task.
+    AbortTaskSelection {
+        task_id: TaskId,
+        selection: Option<crate::model_selection::TaskSelection>,
+        refused: Option<crate::model_selection::MoveRefused>,
+    },
     /// What `account` said of its usage at `at`, on the Mac's local `day`, from a provider event
     /// or a probe.
     RecordAccountUsage {
