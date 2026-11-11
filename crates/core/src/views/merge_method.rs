@@ -61,7 +61,8 @@ pub(super) fn pr_action(id: String, pr: &PullRequest, context: &RenderContext<'_
 pub(super) fn settings_row(context: &RenderContext<'_>) -> Option<Item> {
     let lang = context.lang;
     let current = context.index.merge_method();
-    if !context.domain.set_merge_method_action(current).enabled {
+    let other = MergeMethod::ALL.into_iter().find(|choice| *choice != current).unwrap_or(current);
+    if !context.domain.set_merge_method_action(other).enabled {
         return None;
     }
     let mut action = common::action(Verb::SetMergeMethod, "merge_method", context.domain.revision,

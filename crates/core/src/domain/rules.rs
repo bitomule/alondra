@@ -8,6 +8,9 @@ mod scheduled_launch;
 pub use scheduled_launch::{SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED};
 mod snooze;
 mod open_pr;
+mod effect;
+pub use effect::command_name;
+use effect::{answers_with_its_effect, effect_outside_the_domain};
 pub use open_pr::cancelled_pr_comment;
 mod stall;
 pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, is_stall_case, stalled_card_id};
@@ -2790,11 +2793,17 @@ impl DomainState {
             task.revision = self.revision + 1;
         }
         let changed = next != *self;
-        if changed {
+        let outside = effect_outside_the_domain(&envelope.command);
+        if !changed && outside.is_none() && answers_with_its_effect(actor) {
+            return Err(self.no_effect(&envelope.command));
+        }
+        let effect = if changed {
             next.revision += 1;
+            self.describe_effect(&next, &touched)
         } else {
             effects.clear();
-        }
+            outside.map(|line| vec![line.to_owned()]).unwrap_or_default()
+        };
         next.validate()?;
         next.validate_nodes()?;
         next.validate_lifecycles(touched.iter())?;
@@ -2810,6 +2819,7 @@ impl DomainState {
             effects,
             created_ids: created,
             superseded_acceptances,
+            effect,
         };
         Ok((next, outcome))
     }
@@ -5435,11 +5445,11 @@ impl DomainState {
                 }
             }
             Command::SetMergeMethod { method } => {
-                user(actor)?;
+                self.merge_method_guard(actor, *method)?;
                 self.merge_method = *method;
             }
             Command::SetBranchUpdate { update } => {
-                user(actor)?;
+                self.branch_update_guard(actor, *update)?;
                 self.branch_update = *update;
             }
         }

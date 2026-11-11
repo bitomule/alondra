@@ -1120,7 +1120,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
 }
 
 #[test]
-fn second_user_read_is_noop_with_independent_receipt_and_zero_delivery() {
+fn a_second_users_read_is_refused_and_leaves_no_receipt_and_no_delivery() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
@@ -1159,10 +1159,10 @@ fn second_user_read_is_noop_with_independent_receipt_and_zero_delivery() {
     let other = Actor::User {
         user_id: "user-2".into(),
     };
-    let committed = store.execute_authenticated(&other, &e, None).unwrap();
-    assert!(!committed.outcome.changed);
+    let Err(StoreError::Domain(refused)) = store.execute_authenticated(&other, &e, None) else { panic!("a second read was accepted") };
+    assert_eq!(refused.code, "no_effect", "another user's read of a read card changes nothing");
     assert_eq!(store.load().unwrap(), before);
-    assert_eq!(count(&store, "semantic_receipts"), receipts + 1);
+    assert_eq!(count(&store, "semantic_receipts"), receipts);
     assert_eq!(count(&store, "command_audit"), audit);
     assert_eq!(count(&store, "domain_messages"), 1);
 }

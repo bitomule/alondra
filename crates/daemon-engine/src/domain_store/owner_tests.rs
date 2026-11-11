@@ -647,7 +647,7 @@ fn a_later_no_op_keeps_the_earlier_change_and_its_notification() {
     let (_, outcomes) = runtime
         .own(scope_of(&state), |owner| {
             owner.stage_command(&orchestrator(), &envelope(&state, "rename", retitle("Renamed")), Attached::None)?;
-            owner.stage_command(&orchestrator(), &envelope(&state, "rename-again", retitle("Renamed")), Attached::None)?;
+            owner.stage_command(&Actor::System, &envelope(&state, "nothing-due", Command::ResurfaceDueCards { now: 0 }), Attached::None)?;
             Ok(())
         })
         .unwrap();
@@ -674,7 +674,7 @@ fn a_schedule_change_keeps_its_notification_through_a_no_op_and_a_replay() {
     let (_, outcomes) = runtime
         .own(scope_of(&state), |owner| {
             owner.stage_command(&Actor::System, &create, Attached::None)?;
-            owner.stage_command(&orchestrator(), &envelope(&state, "same-title", retitle("Goal")), Attached::None)?;
+            owner.stage_command(&Actor::System, &envelope(&state, "nothing-due", Command::ResurfaceDueCards { now: 0 }), Attached::None)?;
             owner.stage_command(&Actor::System, &create, Attached::None)?;
             Ok(())
         })
@@ -797,7 +797,7 @@ fn the_cache_after_an_owner_commit_is_what_a_reload_reads() {
         .own(scope_of(&state), |owner| {
             owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home(), false)?;
             owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None)?;
-            owner.stage_command(&orchestrator(), &envelope(&state, "same-title", retitle("Goal")), Attached::None)?;
+            owner.stage_command(&Actor::System, &envelope(&state, "nothing-due", Command::ResurfaceDueCards { now: 0 }), Attached::None)?;
             Ok(())
         })
         .unwrap();

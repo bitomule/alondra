@@ -1145,15 +1145,18 @@ async fn execute_command<H: DomainHost>(
                 Ok(kept) => kept,
                 Err(error) => return domain_error(error),
             };
-            let executed = host.domain().execute_bearer_checked(&token, &envelope, |state| {
+            let executed = host.domain().execute_bearer_answered(&token, &envelope, |state| {
                 reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
             });
             if executed.is_err() && let Some(file) = kept {
                 let _ = std::fs::remove_file(file);
             }
             match executed {
-                Ok(outcome) => {
+                Ok((outcome, replayed)) => {
                     let mut answer = json!(outcome);
+                    if replayed {
+                        answer["replayed"] = json!(true);
+                    }
                     if let Some(notice) = task_wait_notice(host.domain(), &envelope.command).or_else(|| auto_merge_notice(host.domain(), &envelope.command)) {
                         answer["notice"] = json!(notice);
                     }
@@ -1934,11 +1937,17 @@ mod tests {
             conflict["status"], 409,
             "another sender is not a retry of the original user"
         );
+        let second = envelope(&host, "info-b", Command::PublishInformation {
+            interaction_id: "info-b".into(), scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
+            body: "More information".into(), attachments: vec![],
+            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the second update"),
+        });
+        host.domain.execute(&Actor::System, &second, None, || Ok(())).unwrap();
         let remote = envelope(
             &host,
             "remote-read",
             Command::MarkRead {
-                interaction_id: "info-a".into(),
+                interaction_id: "info-b".into(),
             },
         );
         let body = serde_json::to_value(remote).unwrap();

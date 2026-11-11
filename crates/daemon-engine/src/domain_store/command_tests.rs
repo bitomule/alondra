@@ -383,3 +383,35 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
     assert_eq!(counts(&reader), before_counts);
     assert_eq!(store.load().unwrap(), before);
 }
+
+#[test]
+fn a_new_command_that_changes_nothing_is_refused_and_a_repeated_one_answers_its_first_effect() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let information = information(&mut store);
+    store.execute_authenticated(&Actor::System, &information, None).unwrap();
+    let read = |store: &mut DomainStore, id: &str| {
+        let state = store.load().unwrap();
+        CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
+            expected_revision: state.revision, command: Command::MarkRead { interaction_id: "transaction-card".into() },
+        }
+    };
+    let sent = read(&mut store, "read-1");
+    let first = store.execute_authenticated(&user(), &sent, None).unwrap();
+    assert!(!first.replayed && first.outcome.changed);
+    assert!(!first.outcome.effect.is_empty(), "the first read says what it changed");
+    let receipts = rows(&store.conn, "semantic_receipts");
+    let again = store.execute_authenticated(&user(), &sent, None).unwrap();
+    assert!(again.replayed, "the same command is answered as already recorded");
+    assert_eq!(again.outcome.effect, first.outcome.effect, "with the effect it had the first time");
+    assert_eq!(rows(&store.conn, "semantic_receipts"), receipts);
+    let before = store.load().unwrap();
+    let another = read(&mut store, "read-2");
+    let Err(StoreError::Domain(refused)) = store.execute_authenticated(&user(), &another, None) else { panic!("a new read of a read card was accepted") };
+    assert_eq!(refused.code, "no_effect", "{refused}");
+    assert!(refused.message.starts_with("mark_read changed nothing"), "{}", refused.message);
+    assert_eq!(rows(&store.conn, "semantic_receipts"), receipts, "a refused command leaves no receipt");
+    assert_eq!(store.load().unwrap(), before);
+}

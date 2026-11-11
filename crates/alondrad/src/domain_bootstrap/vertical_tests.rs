@@ -359,9 +359,12 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     let (status, first) = fixture.post(&fixture.agent, &envelope).await;
     assert_eq!(status, StatusCode::OK, "{first}");
     let revision = first["revision"].clone();
-    let (status, replay) = fixture.post(&fixture.agent, &envelope).await;
+    let (status, mut replay) = fixture.post(&fixture.agent, &envelope).await;
     assert_eq!(status, StatusCode::OK, "{replay}");
-    assert_eq!(replay, first);
+    assert_eq!(replay["replayed"], json!(true), "the same command is answered as already recorded: {replay}");
+    assert!(first.get("replayed").is_none(), "{first}");
+    replay.as_object_mut().unwrap().remove("replayed");
+    assert_eq!(replay, first, "with the outcome and effect it had the first time");
     assert_eq!(
         fixture.domain.state().unwrap().revision,
         revision.as_u64().unwrap()
@@ -626,11 +629,12 @@ async fn http_a_repository_with_capitals_registers_one_lowercase_pr_whichever_sp
     let mut fixture = Fixture::start().await;
     let head = "0123456789abcdef0123456789abcdef01234567";
     fixture.task("parcel-task", false).await;
-    for repository in ["acmecorp-private/Parcel", "acmecorp-private/parcel"] {
-        fixture.producer(false, json!({"kind":"register_pr", "task_id":"parcel-task", "pr_id":"pr-65",
-            "host":"github.com", "repository":repository, "number":65, "head":head, "base":"main",
-            "allowed_methods":["squash"]})).await;
-    }
+    let register = |repository: &str| json!({"kind":"register_pr", "task_id":"parcel-task", "pr_id":"pr-65",
+        "host":"github.com", "repository":repository, "number":65, "head":head, "base":"main", "allowed_methods":["squash"]});
+    fixture.producer(false, register("acmecorp-private/Parcel")).await;
+    let again = fixture.envelope(register("acmecorp-private/parcel"));
+    let (status, refused) = fixture.post(&fixture.agent, &again).await;
+    assert_eq!((status, refused["code"].as_str()), (StatusCode::CONFLICT, Some("no_effect")), "the other spelling is the PR already registered: {refused}");
 
     let state = fixture.domain.state().unwrap();
     let parcel = PrId::from("github.com/acmecorp-private/parcel#65");

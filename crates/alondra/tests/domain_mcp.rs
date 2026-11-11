@@ -45,7 +45,7 @@ fn respond(mut stream: std::net::TcpStream, body: &[u8]) {
 }
 
 fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, (String, Value)) {
-    mcp_exchange_with_response(entrypoint, tool, arguments, json!({"revision":2,"changed":true,"effects":[],"created_ids":[]}))
+    mcp_exchange_with_response(entrypoint, tool, arguments, json!({"revision":2,"changed":true,"effects":[],"created_ids":[],"effect":["PR github.com/example/project#7 registered."]}))
 }
 
 fn mcp_exchange_with_response(entrypoint: &str, tool: &str, arguments: Value, response: Value) -> (Vec<Value>, (String, Value)) {
@@ -210,7 +210,7 @@ fn distinct_mcp_servers_forward_named_commands_with_the_existing_capability() {
     assert_eq!(node_command.1["data_epoch"], "epoch");
     assert_eq!(node_command.1["expected_revision"], 0);
     assert!(node_command.1["command_id"].as_str().unwrap().starts_with("mcp-"));
-    assert_eq!(node[2]["result"]["content"][0]["text"], "Recorded.");
+    assert_eq!(node[2]["result"]["content"][0]["text"], "PR github.com/example/project#7 registered.");
     assert!(!node[2].to_string().contains("revision"));
 
     let (orchestrator, manager_command) = mcp_exchange(

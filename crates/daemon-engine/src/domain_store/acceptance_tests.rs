@@ -20,6 +20,7 @@ fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
     match (case_id, step) {
         ("V07", 1) => Some("acceptance_missing"),
         ("V10", 0) => Some("acceptance_stale"),
+        ("V11", 1) => Some("no_effect"),
         ("V18", 1) => Some("acceptance_stale"),
         ("V21", 1) => Some("acceptance_missing"),
         ("V23", 0) => Some("forbidden"),

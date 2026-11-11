@@ -41,10 +41,11 @@ impl DomainRuntime {
         &self,
         bearer: &str,
         envelope: &CommandEnvelope,
-        result: &Result<CommandOutcome, StoreError>,
+        result: &Result<(CommandOutcome, bool), StoreError>,
     ) {
         let Some((interaction_id, scope)) = card_command(&envelope.command) else { return };
         let rejection = match result {
+            Err(StoreError::Domain(error)) if error.code == "no_effect" => return,
             Err(StoreError::Domain(error)) => Some(error),
             Err(StoreError::Storage(_)) => return,
             Ok(_) => None,
