@@ -817,6 +817,15 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(Adoption { stamp, directory, commands, controls, unrecorded_controls, unrecorded_commands })
     }
 
+    /// Whether the task's current execution still has a dispatch or a control claimed for a host
+    /// with no answer recorded: only the end of that host, read from its journal, settles it.
+    pub(crate) fn claims_left(&mut self, task: &TaskId) -> std::result::Result<bool, StoreError> {
+        Ok(!self.journal.unresolved_commands(task)?.is_empty()
+            || !self.journal.unrecorded_commands(task)?.is_empty()
+            || !self.journal.unresolved_controls(task)?.is_empty()
+            || !self.journal.unrecorded_controls(task)?.is_empty())
+    }
+
     /// The commit issues again the permit of the task's next unclaimed dispatch.
     pub(crate) fn reissue_permit(&mut self, task: &TaskId) -> std::result::Result<(), StoreError> {
         Ok(self.journal.reissue_permit(task)?)

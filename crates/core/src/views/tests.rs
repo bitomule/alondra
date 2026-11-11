@@ -7653,8 +7653,10 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
     let by_user = Pause { reason: PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
     let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "16:05".into(), reason: LivePauseReason::User,
         fine_minutes: None, next: false, waits_for: None, retry: None };
+    let lost = [working.clone(), vec![LifecycleRecord::Paused { card: "host-lost-t-1-9".into(), owner: Some(crate::domain::PauseOwner::User) }]].concat();
     let cases = [
         ("working", NodePhase::Working, TaskState::Running, working.clone(), vec![], Some("pause:a-1")),
+        ("held by the card of its lost host", NodePhase::Working, TaskState::Running, lost, vec![], None),
         ("running nothing", NodePhase::Working, TaskState::Running, admitted, vec![], None),
         ("paused by the user", NodePhase::Paused(by_user), TaskState::Running, working.clone(), vec![paused], Some("resume:a-1")),
         ("done", NodePhase::Working, TaskState::Done, working, vec![], None),

@@ -194,7 +194,7 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
 fn end_source(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
     domain.own(scope(domain)?,|owner|owner.validate_selection_binding(plan)).map_err(store_failure)?;
     let alive=!matches!(EndedHost::claim(&plan.source.host_directory),Ok(Retained::Ended(_)));
-    if alive || !host_ended(domain,&plan.task)?{end_and_fence(domain,plan)?;}
+    if alive || !host_ended(domain,&plan.task)? || crate::sdk_owner::claims_left(domain,&plan.task).map_err(failure)?{end_and_fence(domain,plan)?;}
     ensure_fence(domain,plan)?;
     let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
     domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure).map(drop)
