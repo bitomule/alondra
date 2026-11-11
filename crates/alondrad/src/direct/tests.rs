@@ -187,7 +187,9 @@ async fn unknown_revoked_expired_and_misdirected_envelopes_are_refused() {
     assert_eq!(send(&f.base, "/direct/request", &stranger.request("op-1", routes::PATH)).await.0, 401);
 
     let expired = phone.seal("mac-1", "op-2", "request", now_ms() - 1, &json!({"method": "GET", "path": routes::PATH}));
-    assert_eq!(send(&f.base, "/direct/request", &expired).await.0, 401);
+    let (status, body) = send(&f.base, "/direct/request", &expired).await;
+    assert_eq!(status, 200, "an expired envelope is refused in an answer only its device opens");
+    assert_eq!(phone.open(&body)["body"]["error"], "envelope_expired");
 
     let elsewhere = phone.seal("mac-2", "op-3", "request", now_ms() + 60_000, &json!({"method": "GET", "path": routes::PATH}));
     assert_eq!(send(&f.base, "/direct/request", &elsewhere).await.0, 421);
@@ -203,6 +205,47 @@ async fn unknown_revoked_expired_and_misdirected_envelopes_are_refused() {
         401,
         "a revocation on this Mac cuts the direct path at once"
     );
+}
+
+#[tokio::test]
+async fn an_expired_envelope_tells_its_own_device_the_macs_clock_and_nobody_else() {
+    let phone = Phone::new("client-a", 30);
+    let stranger = Phone::new("client-b", 40);
+    let f = fixture(&[&phone]).await;
+    let read = json!({"method": "GET", "path": routes::PATH});
+    let expired_at = now_ms() - 10_000;
+    let before = now_ms();
+    let (status, body) = send(&f.base, "/direct/request", &phone.seal("mac-1", "op-1", "request", expired_at, &read)).await;
+    let after = now_ms();
+    assert_eq!(status, 200);
+    let answer = phone.open(&body);
+    assert_eq!((answer["status"].as_u64(), answer["error"].as_str()), (Some(503), Some("envelope_expired")), "{answer}");
+    let mac_now = answer["body"]["mac_now_ms"].as_u64().unwrap();
+    assert!((before..=after).contains(&mac_now), "the answer carries the Mac's clock: {answer}");
+    assert_eq!(answer["body"]["late_ms"].as_u64(), Some(mac_now - expired_at));
+    assert_eq!(answer["body"]["kind"], "in_progress", "older terminals seal it again instead of dropping it");
+
+    let mut forged = phone.seal("mac-1", "op-2", "request", expired_at, &read);
+    forged.signature = stranger.seal("mac-1", "op-2", "request", expired_at, &read).signature;
+    assert_eq!(send(&f.base, "/direct/request", &forged).await.0, 401, "a late envelope someone else signed learns nothing");
+
+    assert_eq!(
+        send(&f.base, "/direct/request", &phone.request("op-1", routes::PATH)).await.0,
+        200,
+        "the same request sealed again in time is served: the late copy left nothing behind"
+    );
+}
+
+#[tokio::test]
+async fn approvals_the_mac_cannot_read_refuse_the_request_as_unavailable_not_unauthorized() {
+    let phone = Phone::new("client-a", 30);
+    let f = fixture(&[&phone]).await;
+    let approvals = std::fs::read(f.home.join("devices.json")).unwrap();
+    std::fs::write(f.home.join("devices.json"), b"[{\"id\":").unwrap();
+    let (status, body) = send(&f.base, "/direct/request", &phone.request("op-1", routes::PATH)).await;
+    assert_eq!(status, 503, "{}", String::from_utf8_lossy(&body));
+    std::fs::write(f.home.join("devices.json"), approvals).unwrap();
+    assert_eq!(send(&f.base, "/direct/request", &phone.request("op-2", routes::PATH)).await.0, 200);
 }
 
 #[tokio::test]

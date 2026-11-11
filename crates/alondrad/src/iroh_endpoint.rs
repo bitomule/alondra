@@ -351,8 +351,10 @@ pub(crate) async fn answer(service: &Service, device_id: &str, body: &[u8]) -> V
             wrapped("response", &sealed)
         }
         Err(DirectRefusal::Revoked(sealed)) => wrapped("revoked", &sealed),
+        Err(DirectRefusal::Expired { sealed, .. }) => wrapped("response", &sealed),
         Err(DirectRefusal::Misdirected) => refusal("wrong_mac", None),
-        Err(DirectRefusal::Unauthorized) => refusal("unauthorized", None),
+        Err(DirectRefusal::Unauthorized(_)) => refusal("unauthorized", None),
+        Err(DirectRefusal::Unavailable) => refusal("unavailable", None),
         Err(DirectRefusal::Conflict) => refusal("idempotency_conflict", None),
         Err(DirectRefusal::Rejected(detail)) => refusal("rejected", Some(detail)),
     }

@@ -70,11 +70,24 @@ Mac answers with one JSON object and finishes:
 | `{"response": <sealed response envelope>}` | Answered; open it like a direct response |
 | `{"revoked": <sealed response envelope>}` | This device was revoked here; it opens to `device_revoked` |
 | `{"error": "wrong_sender"}` | The envelope's sender is not the device of the hello |
-| `{"error": "unauthorized"}` | Bad signature, expired, or the device is no longer approved |
+| `{"error": "unauthorized"}` | Unknown or unapproved device, bad signature, or expired without a valid signature |
+| `{"error": "unavailable"}` | The Mac could not read its approvals right now; nothing was decided, send again |
 | `{"error": "wrong_mac"}` | The envelope is for another Mac |
 | `{"error": "idempotency_conflict"}` | That request ID was already used with other bytes |
 | `{"error": "rejected", "detail": "…"}` | The Mac refused the request |
 | `{"error": "invalid_envelope"}` / `{"error": "too_large"}` | Not an envelope, or over 256 KiB |
+
+An envelope the approved device signed that reached the Mac after its `expires_at_ms` is
+answered `{"response": …}` (over HTTP, `200` with the sealed envelope): it opens to status `503`
+with body `{"error": "envelope_expired", "kind": "in_progress", "mac_now_ms": …, "late_ms": …}`.
+Nothing ran and the request ID stays free, so the device seals the same request again with an
+expiry measured on the Mac's clock. The signature is still checked first, as of the envelope's
+own expiry; an expired envelope that does not prove its sender gets the plain `unauthorized`.
+Over HTTP, `unavailable` is a `503` and `unauthorized` a `401`.
+
+The Mac's log names the check behind every refusal: `check=` `unknown_device`, `not_approved`,
+`wrong_identity`, `expired` (with `late_ms`), `bad_encoding`, `bad_signature` or
+`approval_changed`; never a device ID, key or content.
 
 The envelope goes through the same handler as the direct listener, with one receipt journal:
 the same envelope gets the same answer whichever path it took, and a repeated mutation never

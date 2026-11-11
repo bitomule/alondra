@@ -195,10 +195,11 @@ async fn request(State(direct): State<Arc<Direct>>, body: Bytes) -> Response {
             response
         }
         Err(DirectRefusal::Misdirected) => refuse(StatusCode::MISDIRECTED_REQUEST, "wrong_mac"),
-        Err(DirectRefusal::Revoked(sealed)) => {
+        Err(DirectRefusal::Revoked(sealed) | DirectRefusal::Expired { sealed, .. }) => {
             ([(header::CONTENT_TYPE, "application/json")], sealed).into_response()
         }
-        Err(DirectRefusal::Unauthorized) => refuse(StatusCode::UNAUTHORIZED, "unauthorized"),
+        Err(DirectRefusal::Unauthorized(_)) => refuse(StatusCode::UNAUTHORIZED, "unauthorized"),
+        Err(DirectRefusal::Unavailable) => refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         Err(DirectRefusal::Conflict) => refuse(StatusCode::CONFLICT, "idempotency_conflict"),
         Err(DirectRefusal::Rejected(detail)) => {
             (StatusCode::BAD_REQUEST, Json(json!({"error": "rejected", "detail": detail}))).into_response()

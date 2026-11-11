@@ -30,6 +30,8 @@ use std::{
 
 mod relay;
 mod registration;
+mod direct_refusal;
+pub(crate) use direct_refusal::{ApprovalsUnreadable, DirectRefusal, UnauthorizedCheck};
 use registration::{Operation as RegistrationOperation, Rejection as RegistrationRejection};
 pub(crate) mod operation_results;
 
@@ -80,21 +82,6 @@ impl std::fmt::Display for ReusedRequestId {
 }
 
 impl std::error::Error for ReusedRequestId {}
-
-/// Why the direct transport refused an envelope; it maps to the HTTP status.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum DirectRefusal {
-    /// Addressed to another Mac, or not a request.
-    Misdirected,
-    /// Not from a device approved on this Mac, badly signed or expired.
-    Unauthorized,
-    /// The request ID was used before with other bytes.
-    Conflict,
-    /// From an approved device, but not something the service runs.
-    Rejected(String),
-    /// From a device revoked on this Mac and signed by it: the sealed answer saying so.
-    Revoked(Vec<u8>),
-}
 
 /// A live executor owns the receipt until response upload finishes. A lease
 /// redelivery must not mistake its durable `executing` row for a crashed process.
@@ -1334,15 +1321,9 @@ impl Service {
     ) -> std::result::Result<(Vec<u8>, crate::approval_lease::ApprovalLease), DirectRefusal> {
         let result = self.handle_direct_inner(envelope).await;
         if let Err(refusal) = &result {
-            let (status, reason) = match refusal {
-                DirectRefusal::Misdirected => (421, "wrong_mac"),
-                DirectRefusal::Unauthorized => (401, "unauthorized_envelope"),
-                DirectRefusal::Conflict => (409, "idempotency_conflict"),
-                DirectRefusal::Rejected(_) => (400, "request_rejected"),
-                DirectRefusal::Revoked(_) => (403, "device_revoked"),
-            };
+            let fields = refusal.log_fields();
             // An envelope refused before it can be opened has no trustworthy operation name.
-            log!("device request rejected: operation=encrypted_request transport=Direct status={status} reason={reason}");
+            log!("device request rejected: operation=encrypted_request transport=Direct {fields}");
         }
         result
     }
@@ -1355,15 +1336,27 @@ impl Service {
             return Err(DirectRefusal::Misdirected);
         }
         let Some(device) = self.devices.get(&envelope.sender) else {
-            return Err(self.revoked_refusal(&envelope));
+            return Err(self.revoked_refusal(&envelope, UnauthorizedCheck::UnknownDevice));
         };
-        self.require_device_approval(&envelope.sender, &device, Transport::Direct)
-            .map_err(|_| self.revoked_refusal(&envelope))?;
-        envelope
-            .verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, self.envelope_now())
-            .map_err(|_| DirectRefusal::Unauthorized)?;
+        self.require_device_approval(&envelope.sender, &device, Transport::Direct).map_err(|error| {
+            if error.is::<ApprovalsUnreadable>() {
+                DirectRefusal::Unavailable
+            } else {
+                self.revoked_refusal(&envelope, UnauthorizedCheck::NotApproved)
+            }
+        })?;
+        let now = self.envelope_now();
+        match envelope.verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, now) {
+            Ok(()) => {}
+            Err(alondra_e2e::Error::Expired) => return Err(self.expired_refusal(&envelope, &device, now)),
+            Err(error) => {
+                return Err(DirectRefusal::Unauthorized(UnauthorizedCheck::of(&error, envelope.expires_at_ms, now)));
+            }
+        }
         let refusal = |error: anyhow::Error| {
-            if error.is::<ReusedRequestId>() {
+            if error.is::<ApprovalsUnreadable>() {
+                DirectRefusal::Unavailable
+            } else if error.is::<ReusedRequestId>() {
                 DirectRefusal::Conflict
             } else {
                 DirectRefusal::Rejected(format!("{error:#}"))
@@ -1395,16 +1388,62 @@ impl Service {
             })?;
         let lease = crate::approval_lease::ApprovalLease::shared(&self.home)
             .map_err(|error| DirectRefusal::Rejected(format!("{error:#}")))?;
-        self.require_device_approval(&work.envelope.sender, &device, Transport::Direct)
-            .map_err(|_| DirectRefusal::Unauthorized)?;
+        self.require_device_approval(&work.envelope.sender, &device, Transport::Direct).map_err(|error| {
+            if error.is::<ApprovalsUnreadable>() {
+                DirectRefusal::Unavailable
+            } else {
+                DirectRefusal::Unauthorized(UnauthorizedCheck::ApprovalChanged)
+            }
+        })?;
         Ok((response, lease))
+    }
+
+    /// An envelope that expired before it reached the Mac. Only when the approved device's
+    /// signature over it holds, as of its own expiry, does the sender learn it was late and the
+    /// Mac's clock, sealed to its keys; anyone else gets the plain refusal.
+    fn expired_refusal(&self, request: &Envelope, device: &Device, now: u64) -> DirectRefusal {
+        let late_ms = now.saturating_sub(request.expires_at_ms);
+        if let Err(error) =
+            request.verify_signature(&device.signing, &request.sender, &self.mac_id, &self.mac_id, request.expires_at_ms)
+        {
+            return DirectRefusal::Unauthorized(UnauthorizedCheck::of(&error, request.expires_at_ms, now));
+        }
+        // `kind: in_progress` makes terminals from before this answer existed seal the request
+        // again, as they do for one still running, instead of dropping it.
+        let body = json!({
+            "error": "envelope_expired",
+            "kind": alondra_core::views::action_outcome::IN_PROGRESS,
+            "mac_now_ms": now,
+            "late_ms": late_ms,
+        });
+        let answer = json!({"status": 503, "error": "envelope_expired", "body": body});
+        let sealed = serde_json::to_vec(&answer).ok().and_then(|payload| {
+            Envelope::seal_random(
+                EnvelopeContext {
+                    route: &self.mac_id,
+                    sender: &self.mac_id,
+                    recipient: &request.sender,
+                    request_id: &request.request_id,
+                    kind: "response",
+                    expires_at_ms: now + 600_000,
+                },
+                &payload,
+                &self.signing,
+                &device.agreement,
+            )
+            .ok()
+        });
+        match sealed.and_then(|envelope| serde_json::to_vec(&envelope).ok()) {
+            Some(sealed) => DirectRefusal::Expired { late_ms, sealed },
+            None => DirectRefusal::Unauthorized(UnauthorizedCheck::Expired { late_ms }),
+        }
     }
 
     /// A device revoked here that signs its request is told so, sealed to its own keys; anyone
     /// else gets the plain refusal, which proves nothing to the sender.
-    fn revoked_refusal(&self, request: &Envelope) -> DirectRefusal {
+    fn revoked_refusal(&self, request: &Envelope, check: UnauthorizedCheck) -> DirectRefusal {
         let Some(agreement) = self.revoked.proven_sender(request, &self.mac_id, now_ms()) else {
-            return DirectRefusal::Unauthorized;
+            return DirectRefusal::Unauthorized(check);
         };
         let answer = json!({"status": 403, "error": "device_revoked", "body": {"error": "device_revoked"}});
         let sealed = serde_json::to_vec(&answer).ok().and_then(|payload| {
@@ -1425,7 +1464,7 @@ impl Service {
         });
         match sealed.and_then(|envelope| serde_json::to_vec(&envelope).ok()) {
             Some(bytes) => DirectRefusal::Revoked(bytes),
-            None => DirectRefusal::Unauthorized,
+            None => DirectRefusal::Unauthorized(check),
         }
     }
 
@@ -1878,9 +1917,12 @@ impl Service {
     fn require_approval(auth: &Auth, home: &Path, journal: &Journal, id: &str, device: &Device, transport: Transport) -> Result<()> {
         // The diagnostic is a separate process: re-read persisted approval so
         // revocation by the running daemon is observed after bootstrap too.
-        if !auth.approved_key_matches(id, &device.signing)
-            || !Auth::open(home)?.approved_key_matches(id, &device.signing)
-        {
+        if !auth.approved_key_matches(id, &device.signing) {
+            return Err(RegistrationRejection::ApprovalRevoked.into());
+        }
+        let persisted = crate::auth::persisted_key_matches(home, id, &device.signing)
+            .map_err(|error| anyhow::Error::new(ApprovalsUnreadable(format!("{error:#}"))))?;
+        if !persisted {
             return Err(RegistrationRejection::ApprovalRevoked.into());
         }
         if transport == Transport::Relay && !journal.enrollment_active(id)? {
@@ -3023,6 +3065,7 @@ mod tests {
     mod operation_result_tests;
     mod approval_lease_deadlock_tests;
     mod iroh_tests;
+    mod direct_refusal_tests;
     mod poison_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
@@ -5230,7 +5273,7 @@ agreement_key = "{}"
         assert_eq!(results[0]["body"]["protocol_version"], 2);
         assert_eq!(
             service.handle_direct(substituted).await.map(drop).unwrap_err(),
-            DirectRefusal::Unauthorized,
+            DirectRefusal::Unauthorized(UnauthorizedCheck::BadSignature),
             "a request signed with another key is refused"
         );
         // Persist revocation, then construct a fresh daemon from disk. The

@@ -137,6 +137,17 @@ pub fn approved_devices(home: &std::path::Path) -> Result<Arc<Vec<Device>>> {
     Ok(devices)
 }
 
+/// Whether `home`'s `devices.json`, as it is now, approves `id` with exactly this key. An error
+/// means the file could not be read, which decides nothing about the device.
+pub fn persisted_key_matches(home: &std::path::Path, id: &str, public_key: &VerifyingKey) -> Result<bool> {
+    Ok(approved_devices(home)?.iter().any(|device| key_matches(device, id, public_key)))
+}
+
+fn key_matches(device: &Device, id: &str, public_key: &VerifyingKey) -> bool {
+    device.id == id && B64.decode(&device.public_key).ok()
+        .is_some_and(|raw| raw.as_slice() == public_key.to_sec1_bytes().as_ref())
+}
+
 impl Auth {
     fn persisted(&self) -> Result<Vec<Device>> {
         match std::fs::read_to_string(&self.path) {
@@ -286,10 +297,7 @@ impl Auth {
 
     /// Service enrollment and work may use only a locally paired device with the same key.
     pub fn approved_key_matches(&self, id: &str, public_key: &VerifyingKey) -> bool {
-        self.devices.lock_or_recover("the paired devices").iter().any(|device| {
-            device.id == id && B64.decode(&device.public_key).ok()
-                .is_some_and(|raw| raw.as_slice() == public_key.to_sec1_bytes().as_ref())
-        })
+        self.devices.lock_or_recover("the paired devices").iter().any(|device| key_matches(device, id, public_key))
     }
 
     fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8], local: bool) -> Result<Signed, &'static str> {
@@ -489,6 +497,21 @@ mod tests {
         assert!(approved_devices(&home).unwrap().is_empty(), "so does a write by another process, in place");
         std::fs::remove_file(home.join("devices.json")).unwrap();
         assert!(approved_devices(&home).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_persisted_approval_matches_only_its_id_and_key_and_an_unreadable_file_decides_nothing() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let auth = Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let other = SigningKey::from_slice(&[10u8; 32]).unwrap();
+        let device = auth.pair(&auth.new_pairing_code(), "terminal", &B64.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        assert!(persisted_key_matches(&home, &device.id, key.verifying_key()).unwrap());
+        assert!(!persisted_key_matches(&home, &device.id, other.verifying_key()).unwrap());
+        assert!(!persisted_key_matches(&home, "someone-else", key.verifying_key()).unwrap());
+        std::fs::write(home.join("devices.json"), "[{\"id\":").unwrap();
+        assert!(persisted_key_matches(&home, &device.id, key.verifying_key()).is_err());
     }
 
     #[test]
