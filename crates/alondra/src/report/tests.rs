@@ -1003,3 +1003,71 @@ fn private_values_too_short_or_numeric_say_nothing() {
     assert_eq!(private.len(), 0);
     assert!(canary::scan("daemon.log", "the task is running", Some(&private)).is_empty());
 }
+
+fn home_whose_log_replaces_a_word_that_a_task_also_shows() -> (Directory, &'static str) {
+    let home = Directory::new();
+    full_home(&home);
+    let word = "daemon_restarted_after_claim";
+    let log_path = home.join("alondrad.log");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    std::fs::write(&log_path, log + &format!("2026-10-25T05:10:12.000Z alondrad: accounts not checked: {word}\n")).unwrap();
+    (home, word)
+}
+
+#[test]
+fn a_value_the_log_replaced_is_replaced_in_the_state_sections_too() {
+    let (home, word) = home_whose_log_replaces_a_word_that_a_task_also_shows();
+    let built = build(&FakeMac::new(&home), hours_before(72), None, None).unwrap();
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    assert!(!files_text(&built.files).contains(word));
+    let tasks = &built.files.iter().find(|(name, _)| name == "tasks.jsonl").unwrap().1;
+    let task: Value = serde_json::from_str(tasks.lines().next().unwrap()).unwrap();
+    let replaced = task["message_deliveries"][0]["reason"].as_str().unwrap();
+    assert!(redact::is_pseudonym(replaced), "{replaced}");
+    assert!(built.files.iter().find(|(name, _)| name == "daemon.log").unwrap().1.contains(&format!("not checked: {replaced}")));
+}
+
+fn rewrite_file(built: &Built, name: &str, text: &str) {
+    std::fs::write(built.dir.join(name), text).unwrap();
+    let path = built.dir.join(bundle::MANIFEST);
+    let mut manifest: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for section in manifest["sections"].as_array_mut().unwrap() {
+        if section["name"] == name {
+            section["sha256"] = json!(bundle::sha256(text.as_bytes()));
+            section["bytes"] = json!(text.len());
+        }
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+}
+
+#[test]
+fn a_refusal_names_the_replacement_and_the_field_never_the_value() {
+    let (home, word) = home_whose_log_replaces_a_word_that_a_task_also_shows();
+    let mac = FakeMac::new(&home);
+    let built = build(&mac, hours_before(72), None, None).unwrap();
+    let tasks = &built.files.iter().find(|(name, _)| name == "tasks.jsonl").unwrap().1;
+    let replaced = serde_json::from_str::<Value>(tasks.lines().next().unwrap()).unwrap()["message_deliveries"][0]["reason"].as_str().unwrap().to_owned();
+    rewrite_file(&built, "tasks.jsonl", &tasks.replace(&replaced, word));
+    let error = checked(&mac, &built.id).unwrap_err().to_string();
+    assert!(error.contains(&format!("replaced by {replaced}")), "{error}");
+    assert!(error.contains("message_deliveries.0.reason"), "{error}");
+    assert!(!error.contains(word), "{error}");
+}
+
+#[test]
+fn a_refused_report_can_be_made_again_without_the_section_that_failed() {
+    let home = Directory::new();
+    full_home(&home);
+    let mac = FakeMac::new(&home);
+    let leaked = "{\"message\":\"opened /Users/ana.lopez/Code\"}\n";
+    let refused = build(&mac, hours_before(72), None, Some(leaked)).unwrap();
+    let summary = summary(&refused);
+    assert!(summary.contains("alondra report --without apps.jsonl"), "{summary}");
+    let rest = build_without(&mac, hours_before(72), None, Some(leaked), &["apps.jsonl".to_owned()]).unwrap();
+    assert!(rest.hits.is_empty(), "{:?}", rest.hits);
+    assert!(rest.files.iter().all(|(name, _)| name != "apps.jsonl"));
+    assert!(rest.files.iter().any(|(name, _)| name == "tasks.jsonl"));
+    assert_eq!(checked(&mac, &rest.id).unwrap(), rest.files, "the rest is allowed to leave the Mac");
+    let error = build_without(&mac, hours_before(72), None, None, &["secrets.txt".to_owned()]).err().unwrap().to_string();
+    assert!(error.contains("secrets.txt"), "{error}");
+}

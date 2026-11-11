@@ -18,6 +18,7 @@ mod send_tests;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -55,9 +56,22 @@ pub fn window(text: &str, now: i64) -> Result<Window> {
 
 /// Collects, redacts, checks and writes a new report into `<home>/reports/<id>/`.
 pub fn build(host: &dyn Host, window: Window, description: Option<String>, app: Option<&str>) -> Result<Built> {
+    build_without(host, window, description, app, &[])
+}
+
+/// `build` with the sections named in `without` left out, for whoever cannot send one of them.
+pub fn build_without(host: &dyn Host, window: Window, description: Option<String>, app: Option<&str>, without: &[String]) -> Result<Built> {
+    if let Some(unknown) = without.iter().find(|name| !bundle::SECTIONS.contains(&name.as_str())) {
+        let sections = bundle::SECTIONS.join(", ");
+        bail!(trf!("{unknown} is not a section of a report: use one of {sections}", "{unknown} no es una sección de un informe: usa una de {sections}"));
+    }
     let catalog = Catalog::built();
     let mut redactor = Redactor::new(&catalog.vocabulary);
-    let collected = collect::collect(host, window, catalog, &mut redactor, app);
+    let mut collected = collect::collect(host, window, catalog, &mut redactor, app);
+    for section in collected.sections.iter_mut().filter(|s| without.iter().any(|name| name == s.name)) {
+        section.text.clear();
+        section.status = Status::Empty(tr!("left out at your request", "quitada a petición tuya").into());
+    }
     let now = host.now();
     let mut draft = Draft {
         id: bundle::new_id(now),
@@ -81,8 +95,8 @@ pub fn build(host: &dyn Host, window: Window, description: Option<String>, app: 
 
 fn final_check(host: &dyn Host, files: &Files, pseudonyms: &redact::Pseudonyms, catalog: &Catalog) -> Vec<Hit> {
     let mut private = private::of_this_mac(host, &catalog.vocabulary);
-    for original in pseudonyms.originals() {
-        private.add("a value the report replaced", original, &catalog.vocabulary);
+    for (original, pseudonym) in pseudonyms.replacements() {
+        private.add(&format!("a value the report replaced by {pseudonym}"), original, &catalog.vocabulary);
     }
     bundle::check(files, &private)
 }
@@ -429,7 +443,7 @@ impl Host for Mac {
 }
 
 /// `alondra report`: builds a report, shows what it holds and asks whether to send it.
-pub fn run(window_text: &str, description: Option<String>, app: Option<&Path>, kind: Option<send::Kind>, json: bool, no_input: bool) -> Result<()> {
+pub fn run(window_text: &str, description: Option<String>, app: Option<&Path>, without: &[String], kind: Option<send::Kind>, json: bool, no_input: bool) -> Result<()> {
     use std::io::{IsTerminal, Read};
     let app = match app {
         None => None,
@@ -461,7 +475,7 @@ pub fn run(window_text: &str, description: Option<String>, app: Option<&Path>, k
     if let Some(spinner) = &collecting {
         spinner.start(tr!("Collecting the report: the logs, the tasks and the nodes of the last hours…", "Recogiendo el informe: los logs, las tareas y los nodos de las últimas horas…"));
     }
-    let built = build(&host, window, description, app.as_deref());
+    let built = build_without(&host, window, description, app.as_deref(), without);
     if let Some(spinner) = collecting {
         spinner.clear();
     }
@@ -559,6 +573,14 @@ pub fn summary(built: &Built) -> String {
         for hit in &built.hits {
             let (section, line, what) = (&hit.section, hit.line, &hit.what);
             out.push_str(&trf!("  {section}, line {line}: {what}\n", "  {section}, línea {line}: {what}\n"));
+        }
+        let removable: BTreeSet<&str> = built.hits.iter().map(|hit| hit.section.as_str()).filter(|section| bundle::SECTIONS.contains(section)).collect();
+        if !removable.is_empty() {
+            let sections = removable.iter().map(|section| format!("--without {section}")).collect::<Vec<_>>().join(" ");
+            out.push_str(&trf!(
+                "\nTo send the rest of the report without the sections that failed: alondra report {sections}\n",
+                "\nPara enviar el resto del informe sin las secciones que fallaron: alondra report {sections}\n"
+            ));
         }
     }
     out

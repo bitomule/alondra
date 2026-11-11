@@ -16,14 +16,14 @@ pub struct Hit {
 /// What the check looks for besides the fixed shapes: values of this user, read from their Mac.
 #[derive(Debug, Default)]
 pub struct Private {
-    values: Vec<(String, Vec<String>, &'static str)>,
+    values: Vec<(String, Vec<String>, String)>,
     by_word: HashMap<String, Vec<usize>>,
     unindexed: Vec<usize>,
 }
 
 impl Private {
     /// Adds a private value even when its words also occur in the code.
-    pub fn add(&mut self, what: &'static str, value: &str, _vocabulary: &HashSet<String>) {
+    pub fn add(&mut self, what: &str, value: &str, _vocabulary: &HashSet<String>) {
         let value = value.trim();
         if value.chars().count() < 4 || value.chars().all(|c| c.is_ascii_digit() || c == '.') {
             return;
@@ -40,7 +40,7 @@ impl Private {
         } else {
             self.unindexed.push(index);
         }
-        self.values.push((lowered, words, what));
+        self.values.push((lowered, words, what.to_owned()));
     }
 
     pub fn len(&self) -> usize {
@@ -95,7 +95,7 @@ pub(super) fn private_hits(section: &str, text: &str, private: &Private) -> Vec<
             };
             if bounded(before, value.chars().next()) && bounded(after, value.chars().next_back()) {
                 let line = lowered[..at].matches('\n').count() + 1;
-                hits.push(Hit { section: section.to_owned(), line, what: (*what).to_owned() });
+                hits.push(Hit { section: section.to_owned(), line, what: what.clone() });
                 break;
             }
         }
