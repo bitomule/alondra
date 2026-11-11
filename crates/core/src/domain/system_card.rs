@@ -73,10 +73,11 @@ pub enum InboxCard {
     PlanReviewNotice,
     PlanReviewProblem,
     DependencyCancelledNotice,
+    PlanRefusedNotice,
 }
 
 /// The ids Alondra's own cards were named with: a node or the orchestrator may not name a card so.
-pub const RESERVED_PREFIXES: [&str; 36] = [
+pub const RESERVED_PREFIXES: [&str; 37] = [
     super::NODE_PAUSE_PREFIX,
     crate::usage::OVER_PACE_PREFIX,
     crate::usage::PACE_RESUME_PREFIX,
@@ -111,6 +112,7 @@ pub const RESERVED_PREFIXES: [&str; 36] = [
     crate::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX,
     super::PLAN_REVIEW_PROBLEM_PREFIX,
     crate::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX,
+    crate::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX,
     crate::open_pr_delivery::OPEN_PR_DELIVERY_PREFIX,
     ALONDRA_PROBLEM_PREFIX,
 ];
@@ -190,7 +192,8 @@ impl SystemCard {
         if let Some((rest, about)) = counted.into_iter().find_map(|(prefix, about)| Some((after(prefix)?, about))) {
             return numbered(rest, about);
         }
-        let once = [(inbox::UNSETTLED_NOTICE_PREFIX, InboxCard::UnsettledNotice), (inbox::STALL_NOTICE_PREFIX, InboxCard::StallNotice)];
+        let once = [(inbox::UNSETTLED_NOTICE_PREFIX, InboxCard::UnsettledNotice), (inbox::STALL_NOTICE_PREFIX, InboxCard::StallNotice),
+            (inbox::PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice)];
         once.into_iter().find_map(|(prefix, about)| Some(Self::Inbox { about, subject: after(prefix)?.to_owned(), number: 1 }))
     }
 }

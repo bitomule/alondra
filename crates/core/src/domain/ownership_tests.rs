@@ -33,6 +33,9 @@ enum Step {
     Cancel(usize),
     Reopen(usize),
     AnswerProblem { pick: usize, option: usize },
+    /// What becomes of a refused launch plan: the orchestrator fixes it, cancels the task with its
+    /// reason, or leaves it past its reminder and Alondra cancels the task.
+    SettlePlan { pick: usize, outcome: usize },
     /// What becomes of a task that waits for a cancelled task: the orchestrator re-points it,
     /// drops the wait or cancels it, or leaves it and the inbox asks the user.
     Replan { pick: usize, outcome: usize, onto: usize },
@@ -58,6 +61,7 @@ fn step() -> impl Strategy<Value = Step> {
         1 => (0usize..8).prop_map(Step::Cancel),
         2 => (0usize..8).prop_map(Step::Reopen),
         2 => (0usize..8, 0usize..3).prop_map(|(pick, option)| Step::AnswerProblem { pick, option }),
+        2 => (0usize..8, 0usize..3).prop_map(|(pick, outcome)| Step::SettlePlan { pick, outcome }),
         2 => (0usize..8, 0usize..4, 0usize..8).prop_map(|(pick, outcome, onto)| Step::Replan { pick, outcome, onto }),
     ]
 }
@@ -386,11 +390,24 @@ impl World {
                 }
             }
             Step::AnswerProblem { pick, option } => {
-                let Some(task) = self.pick(pick, |t, _| self.s.open_start_problem(&t.id).is_some()) else { return };
+                let Some(task) = self.pick(pick, |t, _| self.s.open_user_card(&t.id).is_some_and(|i| self.s.open_start_problem(&t.id).is_some_and(|p| p.id == i.id))) else { return };
                 let card = self.s.open_start_problem(&task).unwrap();
                 let InteractionPayload::Question { options, .. } = &card.payload else { unreachable!() };
                 let (id, chosen) = (card.id.clone(), options[option % options.len()].id.clone());
                 self.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: id, option_id: chosen, inputs: BTreeMap::new() });
+            }
+            Step::SettlePlan { pick, outcome } => {
+                let Some(task) = self.pick(pick, |t, _| self.s.open_plan_refusal(&t.id).is_some()) else { return };
+                let card = self.s.open_plan_refusal(&task).unwrap().id.clone();
+                match outcome {
+                    0 => {
+                        self.must(Actor::System, Command::Withdraw { interaction_id: card });
+                        self.fact(&task).start = Start::Ready;
+                    }
+                    1 => self.must(orchestrator(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: START_CANCEL.into(),
+                        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("The editor no longer needs it".into()))]) }),
+                    _ => self.must(Actor::System, Command::CancelTask { task_id: task }),
+                }
             }
         }
     }
@@ -449,6 +466,11 @@ impl World {
 
     fn check(&self, steps: &[Step]) -> Result<(), String> {
         let none = StartFacts::default();
+        if let Some(card) = self.s.interactions.values().find(|i| i.system_card == Some(SystemCard::StartProblem)
+            && matches!(serde_json::from_str(&i.body), Ok(StartProblem::PlanRefused { .. })) && i.recipient != Recipient::Orchestrator)
+        {
+            return Err(format!("a refused plan reached the user ({}) after {steps:?}", card.id));
+        }
         super::lifecycle_tests::assert_aggregate_rules(&self.s);
         for id in self.open() {
             let task = &self.s.tasks[&id];
@@ -659,9 +681,25 @@ fn a_node_stopped_without_a_result_or_a_question_is_sent_back_then_put_to_the_us
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card))));
 }
 
+/// A launch plan the start refused goes to the orchestrator at once, never to the user, and only a
+/// fixed plan or a cancel with its reason settles it.
 #[test]
-fn a_refused_plan_goes_to_the_user_at_once_while_a_failed_launch_is_tried_again_first() {
-    let refused = StartProblem::PlanRefused { error: "Choose a model before its native reasoning effort".into() };
-    assert_eq!(after_failure(0, refused.clone(), 0), AfterFailure::Ask(refused));
-    assert!(matches!(after_failure(0, StartProblem::LaunchFailed { error: "claude exited".into() }, 0), AfterFailure::Retry { attempt: 1, .. }));
+fn a_refused_plan_is_the_orchestrators_to_fix_or_cancel_with_a_reason() {
+    let mut w = World::new();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
+    let task: TaskId = "t1".into();
+    w.apply(&Step::LaunchFails { pick: 0, failure: Failure::PlanRefused });
+    let card = w.s.open_plan_refusal(&task).expect("the orchestrator is handed the plan at once").clone();
+    assert_eq!(card.recipient, Recipient::Orchestrator);
+    assert!(w.s.open_user_card(&task).is_none(), "never a card for the user");
+    assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::Orchestrator));
+    assert!(w.s.react(&w.facts).is_empty(), "nothing asks the user or retries it");
+    let answer = |option: &str, text: &str| Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: option.into(),
+        inputs: if text.is_empty() { BTreeMap::new() } else { BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(text.into()))]) } };
+    for (option, text) in [(START_CANCEL, ""), (START_RETRY, "Try it again")] {
+        assert_eq!(w.exec(orchestrator(), answer(option, text)).unwrap_err().code, "plan_refused_needs_outcome");
+    }
+    assert_eq!(w.exec(user(), answer(START_CANCEL, "No")).unwrap_err().code, "forbidden");
+    w.must(orchestrator(), answer(START_CANCEL, "The editor no longer needs it"));
+    assert!(w.s.tasks[&task].cancelled());
 }

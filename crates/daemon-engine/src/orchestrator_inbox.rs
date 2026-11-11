@@ -6,8 +6,10 @@
 //! plan review goes back once too, then becomes the user's Problem. A task that waits for a task
 //! that was cancelled is the orchestrator's to re-plan: it is told, reminded once, and only then
 //! does the user decide whether it starts without it. A stopped node's case is never the user's:
-//! the orchestrator is reminded once, then Alondra closes the task.
+//! the orchestrator is reminded once, then Alondra closes the task. Nor is a launch plan the start
+//! refused: the orchestrator is reminded once to fix it or cancel the task, then Alondra cancels it.
 use crate::domain_runtime::DomainRuntime;
+use crate::locks::Poisonable as _;
 use alondra_core::domain::{
     Author, CardKind, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
     PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope, StartProblem, SystemCard, Task, TaskId,
@@ -16,7 +18,7 @@ use alondra_core::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
     UNANSWERED_WITHDRAW_LABEL, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnansweredProblem, UnsplitProblem,
-    PLAN_REVIEW_KEEP_LABEL, PLAN_REVIEW_NOTICE_PREFIX, PLAN_REVIEW_REMIND_LABEL, STALL_NOTICE_PREFIX,
+    PLAN_REVIEW_KEEP_LABEL, PLAN_REVIEW_NOTICE_PREFIX, PLAN_REVIEW_REMIND_LABEL, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX,
 };
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
@@ -41,6 +43,8 @@ pub(crate) enum Step {
     RaiseDependencyCancelled { task: TaskId, dependency: TaskId },
     /// The case of a stopped node is still unsettled after its reminder: Alondra closes the task.
     CloseStall { case: InteractionId, task: TaskId },
+    /// A refused launch plan is still as it was after its reminder: Alondra cancels the task.
+    CancelRefusedPlan { card: InteractionId, task: TaskId, error: String },
 }
 
 /// What is left in the orchestrator's inbox after it handled everything it was handed.
@@ -61,6 +65,7 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
     }
     for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
         steps.extend(dependency_cancelled(state, task));
+        steps.extend(plan_refused(state, task));
     }
     for request in state.requests.values().filter(|request| !request.closed) {
         if state.tasks.values().any(|task| task.request_id == request.id) || asked_about(state, &request.id) {
@@ -242,6 +247,25 @@ fn stalled(state: &DomainState, case: &Interaction) -> Option<Step> {
     })
 }
 
+fn plan_refused(state: &DomainState, task: &Task) -> Option<Step> {
+    let card = state.open_plan_refusal(&task.id)?;
+    let id = format!("{PLAN_REFUSED_NOTICE_PREFIX}{}", card.id);
+    if state.interactions.contains_key(&InteractionId(id.clone())) {
+        let error = match alondra_core::start_problem::from_body(&card.body) {
+            Some(StartProblem::PlanRefused { error }) => error,
+            _ => String::new(),
+        };
+        return Some(Step::CancelRefusedPlan { card: card.id.clone(), task: task.id.clone(), error });
+    }
+    Some(Step::Tell {
+        id,
+        card: SystemCard::Inbox { about: InboxCard::PlanRefusedNotice, subject: card.id.0.clone(), number: 1 },
+        text: format!(
+            "Reminder: the launch plan of Task “{}” ({}) was refused and is still as it was, and nothing else waits for you. Fix it now with update_launch_plan or set_launch_plan, or answer {} with option cancel and the reason in inputs.text. If you leave it again, Alondra cancels the task itself. Never ask the user about it.\nCard: {}",
+            task.title, task.id, card.id, quoted(card)),
+    })
+}
+
 fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
     let reminders = numbered(state, InboxCard::UnansweredNotice, &question.id.0).len() as u32;
     let problems = numbered(state, InboxCard::UnansweredProblem, &question.id.0);
@@ -340,6 +364,19 @@ fn dependency_cancelled(state: &DomainState, task: &Task) -> Option<Step> {
     })
 }
 
+/// The orchestrator left a refused plan past its reminder: the task is cancelled, saying why.
+fn cancel_refused_plan(domain: &DomainRuntime, card: &InteractionId, task: &TaskId, error: &str) -> Result<(), crate::domain_store::StoreError> {
+    crate::domain_github::execute_system(domain, alondra_core::domain::Command::CancelTask { task_id: task.clone() })?;
+    let reason = format!("Its launch plan was refused ({}) and the orchestrator neither fixed it nor cancelled the task", error.trim());
+    if let Err(error) = domain.store.lock_or_exit("the domain store").set_cancel_reason(task, &reason) {
+        log!("could not record why {task} was cancelled: {error:#}");
+    }
+    if domain.state().is_ok_and(|state| state.open_plan_refusal(task).is_some()) {
+        domain.withdraw_problem(card)?;
+    }
+    Ok(())
+}
+
 /// Carries the steps out; one that fails is tried again on the next pass.
 pub(crate) fn settle(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
@@ -387,6 +424,7 @@ pub(crate) fn settle(domain: &DomainRuntime) {
                 ).map(drop)
             }
             Step::CloseStall { case, task } => domain.close_unsettled_stall(case, task).map(drop),
+            Step::CancelRefusedPlan { card, task, error } => cancel_refused_plan(domain, card, task, error),
             Step::RaiseDependencyCancelled { task, dependency } => {
                 if let Err(error) = crate::start_failures::raise(domain, task, StartProblem::DependencyCancelled { dependency: dependency.clone() }) {
                     log!("could not ask the user about {task}, which waits for the cancelled {dependency}: {error:#}");

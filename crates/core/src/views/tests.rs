@@ -1798,6 +1798,29 @@ fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
     assert_eq!(task_line(&state, &out, Lang::Es), "En cola · Límite de uso alcanzado · arranca cuando vuelva");
 }
 
+/// A launch plan the start refused is the orchestrator's to fix: the user's inbox never gets a card
+/// for it, and the task says what it waits for.
+#[test]
+fn a_refused_plan_stays_out_of_the_users_inbox_and_its_task_waits_for_the_fix() {
+    use crate::domain::{Actor, Command, Recipient, StartProblem};
+    let mut state = failed_launch_fixture("Choose a model before its native reasoning effort\n");
+    while let Some(other) = state.open_user_card(&"t-1".into()).map(|card| card.id.clone()) {
+        execute(&mut state, Actor::System, Command::Withdraw { interaction_id: other });
+    }
+    execute(&mut state, Actor::System, Command::RaiseStartProblem { task_id: "t-1".into(),
+        problem: StartProblem::PlanRefused { error: "Choose a model before its native reasoning effort".into() } });
+    let card = state.open_plan_refusal(&"t-1".into()).expect("the orchestrator's card").clone();
+    assert_eq!(card.recipient, Recipient::Orchestrator);
+    assert!(state.open_user_card(&"t-1".into()).is_none());
+    let live = LiveSnapshot::default();
+    assert_eq!(task_line(&state, &live, Lang::Es), "Esperando a que se corrija su plan · El orquestador corrige su plan de arranque o la cancela");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting for its plan to be fixed · The orchestrator fixes its launch plan or cancels it");
+    for (client, key) in [(Client::Ios, "home"), (Client::Mac, "sidebar"), (Client::Tui, "home")] {
+        let home = format!("{:?}", render(&state, &live, client, Lang::Es, key, ""));
+        assert!(!home.contains(&card.id.0) && !home.contains("Corrige el plan"), "{client:?}: {home}");
+    }
+}
+
 #[test]
 fn a_task_that_has_not_started_says_what_refused_its_launch() {
     let mut state = fixture();

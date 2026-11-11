@@ -38,30 +38,17 @@ pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProble
                 };
                 store.set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), detail, now)?;
             }
-            if let StartProblem::PlanRefused { error } = &problem {
-                tell_plan_refused(domain, task, error);
-            }
             raise(domain, task, problem)?;
         }
     }
     Ok(())
 }
 
-/// The orchestrator owns launch plans, so it hears of one the launch refused and can fix it.
-fn tell_plan_refused(domain: &DomainRuntime, task: &TaskId, error: &str) {
-    let title = domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone());
-    let body = format!("“{title}” ({task}) cannot start: its launch was refused with “{}”, and the same plan gets the same refusal. Fix its plan with update_launch_plan: that withdraws the user's card about it and starts the task with the new plan.", error.trim());
-    if let Err(error) = domain.tell_orchestrator(&format!("plan-refused-{task}-{}", crate::auth::random_hex(4)), None, body) {
-        log!("could not tell the orchestrator that the plan of {task} is refused: {error:?}");
-    }
-}
-
-/// The plan a start was refused for changed: the card about it no longer holds, and the task goes
-/// back to the gate to start with the new plan.
+/// The plan a start was refused for changed: the orchestrator's card about it no longer holds, and
+/// the task goes back to the gate to start with the new plan.
 pub(crate) fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> {
     let state = domain.state()?;
-    let Some(card) = state.open_start_problem(task)
-        .filter(|card| matches!(alondra_core::start_problem::from_body(&card.body), Some(StartProblem::PlanRefused { .. }))) else { return Ok(()) };
+    let Some(card) = state.open_plan_refusal(task) else { return Ok(()) };
     domain.withdraw_problem(&card.id).map_err(|error| anyhow::anyhow!("{error:?}"))?;
     {
         let mut store = domain.store.lock_or_exit("the domain store");
@@ -171,6 +158,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
 pub(crate) async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
     crate::api_failures::settle_cards(domain)?;
     let state = domain.state()?;
+    record_plan_cancels(domain, &state)?;
     let facts = facts(domain, &state)?;
     for reaction in state.react(&facts) {
         match reaction {
@@ -179,6 +167,31 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
             }
             Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed)).await?,
         }
+    }
+    Ok(())
+}
+
+/// The orchestrator cancelled a task whose plan was refused: the reason it wrote is the task's.
+fn record_plan_cancels(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
+    let cancels: Vec<(TaskId, String)> = state.interactions.values()
+        .filter(|i| alondra_core::domain::is_plan_refusal(i))
+        .filter_map(|i| match (&i.scope, &i.payload) {
+            (alondra_core::domain::Scope::Task { task_id }, alondra_core::domain::InteractionPayload::Question { answer: Some(answer), .. })
+                if answer.option_id == alondra_core::domain::START_CANCEL && state.tasks.get(task_id).is_some_and(|task| task.cancelled()) =>
+                answer.inputs.values().find_map(|value| match value {
+                    alondra_core::domain::InputValue::Text(text) if !text.trim().is_empty() => Some((task_id.clone(), text.trim().to_owned())),
+                    _ => None,
+                }),
+            _ => None,
+        })
+        .collect();
+    if cancels.is_empty() {
+        return Ok(());
+    }
+    let store = domain.store.lock_or_exit("the domain store");
+    let recorded = store.cancel_reasons()?;
+    for (task, reason) in cancels.into_iter().filter(|(task, _)| !recorded.contains_key(task)) {
+        store.set_cancel_reason(&task, &reason)?;
     }
     Ok(())
 }

@@ -18,9 +18,9 @@ pub fn card(title: &str, problem: &StartProblem, dependency: Option<&str>, lang:
         StartProblem::LaunchFailed { error } => CardSpec::new(CardKind::Problem, need(tf!(lang, "“{title}” does not start", "«{title}» no arranca")))
             .why(why(tf!(lang, "Alondra tried to start it {n} times and it failed every time.", "Alondra intentó arrancarla {n} veces y falló todas.", n = START_RETRIES.len() + 1)))
             .content(ContentKind::Diagnosis, error.trim()),
-        StartProblem::PlanRefused { error } => CardSpec::new(CardKind::Problem, need(tf!(lang, "“{title}” cannot start with its launch plan", "«{title}» no puede arrancar con su plan de arranque")))
-            .why(why(t!(lang, "Its launch plan is refused for a reason that trying again alone does not change. The orchestrator was told to fix the plan.",
-                "Su plan de arranque se rechaza por un motivo que reintentar sin más no cambia. Se avisó al orquestador para que corrija el plan.").to_owned()))
+        StartProblem::PlanRefused { error } => CardSpec::new(CardKind::Problem, need(tf!(lang, "Fix the launch plan of “{title}” or cancel it", "Corrige el plan de arranque de «{title}» o cancélala")))
+            .why(why(t!(lang, "Its start was refused for its plan, and the same plan is refused every time. Fix it with update_launch_plan or set_launch_plan, or answer cancel with the reason.",
+                "Su arranque se rechazó por su plan, y el mismo plan se rechaza siempre. Corrígelo con update_launch_plan o set_launch_plan, o responde cancel con el motivo.").to_owned()))
             .content(ContentKind::Diagnosis, error.trim()),
         StartProblem::Untrusted { folder, error } => {
             let name = folder.rsplit('/').find(|part| !part.is_empty()).unwrap_or(folder);
@@ -78,9 +78,8 @@ pub fn options(problem: &StartProblem, lang: Lang) -> Vec<QuestionOption> {
             cancel,
         ],
         StartProblem::PlanRefused { .. } => vec![
-            option(START_RETRY, t!(lang, "Try again with its current plan", "Reintentar con su plan actual"),
-                t!(lang, "Alondra starts it as soon as there is room, with the plan it has then", "Alondra la arranca en cuanto haya hueco, con el plan que tenga entonces")),
-            cancel,
+            option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"),
+                t!(lang, "The task closes without starting; inputs.text holds the reason", "La tarea se cierra sin arrancar; inputs.text lleva el motivo")),
         ],
         StartProblem::Untrusted { .. } => vec![
             option(START_RETRY, t!(lang, "Trust it and start it", "Confiar y arrancarla"),

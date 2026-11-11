@@ -1,7 +1,7 @@
 //! Who an open task waits for. Every open task is in exactly one of these hands: its node works on
 //! it, the gate holds it until there is room (capacity, memory, disk, usage, or a retry Alondra
 //! scheduled), another open task holds it, the orchestrator re-plans it (a task it waited for was
-//! cancelled), the user holds it (a card, a review, their pause), or it is closing. A task in nobody's hands is a bug: `holder` names it, and `react` and
+//! cancelled, or its plan was refused), the user holds it (a card, a review, their pause), or it is closing. A task in nobody's hands is a bug: `holder` names it, and `react` and
 //! `after_failure` are the decisions that keep every task in someone's.
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -12,8 +12,8 @@ pub enum Holder {
     Node,
     Gate(GateCause),
     Task(TaskId),
-    /// It waits for a task that was cancelled: the orchestrator, which planned that wait, re-plans
-    /// it, and only if it does not is the user asked.
+    /// It waits for a task that was cancelled, or its launch plan was refused: the orchestrator,
+    /// which planned it, re-plans it.
     Orchestrator,
     User(UserCause),
     Closing,
@@ -89,7 +89,7 @@ pub enum NodeFact {
 pub enum StartProblem {
     LaunchFailed { error: String },
     /// The launch refused the task's own plan or choices: the same start gets the same refusal, so
-    /// it is never tried again by itself.
+    /// it is never tried again by itself, and the orchestrator that wrote the plan fixes it.
     PlanRefused { error: String },
     Untrusted {
         folder: String,
@@ -122,6 +122,12 @@ pub const POST_MERGE_LEAVE: &str = "leave";
 
 /// How many times Alondra starts a failed task again by itself, and the wait before each.
 pub const START_RETRIES: [i64; 3] = [60_000, 5 * 60_000, 15 * 60_000];
+
+/// Whether `i` is Alondra's card handing the orchestrator a launch plan the launch refused.
+pub fn is_plan_refusal(i: &Interaction) -> bool {
+    i.system_card == Some(SystemCard::StartProblem) && i.author == Author::System && i.recipient == Recipient::Orchestrator
+        && matches!(serde_json::from_str::<StartProblem>(&i.body), Ok(StartProblem::PlanRefused { .. }))
+}
 
 /// What follows a failed start.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,6 +171,11 @@ impl DomainState {
             i.recipient == Recipient::User && self.open(i) && !self.out_of_sight(i) && matches!(&i.scope, Scope::Task { task_id } if task_id == task)
                 && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
         })
+    }
+
+    /// The open card that hands the orchestrator the plan the launch refused.
+    pub fn open_plan_refusal(&self, task: &TaskId) -> Option<&Interaction> {
+        self.open_start_problem(task).filter(|i| is_plan_refusal(i))
     }
 
     fn start_problems(&self, task: &TaskId) -> impl Iterator<Item = &Interaction> + '_ {
@@ -228,6 +239,9 @@ impl DomainState {
         }
         if facts.held {
             return Ok(Holder::User(UserCause::Paused));
+        }
+        if self.open_plan_refusal(&t.id).is_some() {
+            return Ok(Holder::Orchestrator);
         }
         match facts.start {
             Start::Ready | Start::Launching => Ok(Holder::Gate(GateCause::Room)),
