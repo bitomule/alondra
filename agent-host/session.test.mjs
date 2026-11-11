@@ -56,6 +56,7 @@ try {
     const init = JSON.parse(readFileSync(capture));
     assert.equal(init.home, home);
     assert.equal(init.startup_failure_results, '1');
+    assert.equal(init.session_state_events, '1', 'Claude Code reports when the session goes idle or runs');
     assert(init.args.includes('--setting-sources=user,project,local'));
     assert(init.args.includes('--permission-mode=auto'));
     assert(!init.args.includes('--dangerously-skip-permissions'));

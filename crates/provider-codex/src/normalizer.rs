@@ -2,7 +2,7 @@ use crate::records::{InputRecord, SessionRecord};
 use alondra_agent_application::{Normalization, ObservationMetadata, ObservationNormalizer};
 use alondra_codex_protocol::{Body, ControlResult, DecisionKind, DecisionOutcome, Fence, FramedReader, Observation as WireObservation, SdkEventKind, SignIn};
 use alondra_foundation::{ContinuationId, InputId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{pull_requests_named, runs_gh_pr_create, AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
+use alondra_provider_contract::{pull_requests_named, runs_gh_pr_create, ENDED_WITHOUT_RESULT, AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
 use alondra_store::{ContextSource, TaskContextItem};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
 use serde_json::Value;
@@ -51,6 +51,10 @@ struct Checkpoint {
     accepted: BTreeMap<String, String>,
     #[serde(default)]
     accepted_plans: BTreeMap<String, PlanAcceptance>,
+    /// Codex said the thread went idle while its turn was open: that turn's turn/completed comes
+    /// next, and anything else ends the turn without a result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    idled: bool,
     /// Written while Alondra followed Code Mode scripts as work: read from older checkpoints, never written.
     #[serde(default, skip_serializing)]
     code_cells: Option<IgnoredAny>,
@@ -129,7 +133,7 @@ impl ObservationNormalizer for Normalizer {
             || execution.generation != batch.execution.generation() || event.fence.host_id != batch.execution.host().as_str() { return invalid(); }
         event.validate().map_err(|_| AdapterError::InvalidObservation)?;
         let mut state = prior_checkpoint(batch, metadata)?;
-        if self.first_cursor == Some(batch.cursor) { state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear(); }
+        if self.first_cursor == Some(batch.cursor) { state.turn = None; state.idled = false; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear(); }
         let mut facts = Vec::new();
         end_legacy_cells(batch, &mut state, &mut facts)?;
         match &event.observation {
@@ -166,7 +170,7 @@ impl ObservationNormalizer for Normalizer {
                     state.thread = Some(thread.to_owned());state.blocked_policy=None;
                     let process = string(params, "processGeneration").ok_or(AdapterError::InvalidObservation)?;
                     if state.initialized && state.process != process {
-                        state.turn = None; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.asked.clear(); state.accepted.clear(); state.accepted_plans.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear();
+                        state.turn = None; state.idled = false; state.model_turn=None;state.rerouted_turn=None;state.work.clear(); state.asked.clear(); state.accepted.clear(); state.accepted_plans.clear(); state.continuation = None; state.continuations.clear(); state.child_continuations.clear();state.input_starts.clear();state.child_groups.clear();state.child_activations.clear();
                     }
                     state.model=string(params,"model").filter(|model|!model.is_empty()).map(str::to_owned);state.cwd=string(params,"cwd").map(str::to_owned);
                     state.process = process.to_owned();
@@ -192,7 +196,25 @@ impl ObservationNormalizer for Normalizer {
 
 fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params: &Value, facts: &mut Vec<Observation>, lookup: impl FnOnce(&str) -> Result<InputId, AdapterError>) -> Result<(), AdapterError> {
     if state.thread.as_deref().is_some_and(|root|string(params,"threadId").is_some_and(|thread|thread!=root)){return Ok(())}
+    let status = (method == "thread/status/changed").then(|| params.pointer("/status/type").and_then(Value::as_str)).flatten();
+    if state.idled && method != "turn/completed" && status != Some("idle") {
+        end_turn(batch, state, TurnOutcome::Failed { code: ENDED_WITHOUT_RESULT.into() }, facts)?;
+    }
     match method {
+        // Codex's own word on the thread: active as it takes a turn's input, idle as the turn is
+        // over, just before its turn/completed.
+        "thread/status/changed" => match status {
+            Some("active") if state.turn.is_none() => {
+                let accepted = state.accepted.iter().min_by_key(|(_, client)| state.input_starts.get(*client).copied().unwrap_or(u64::MAX)).map(|(turn, client)| (turn.clone(), client.clone()));
+                if let Some((turn, client)) = accepted {
+                    facts.push(Observation::TurnStarted { input: lookup(&client)?, turn: native_turn(batch, &state.process, &turn)? });
+                    state.turn = Some(turn);
+                }
+            }
+            Some("idle") if state.turn.is_some() => state.idled = true,
+            Some("idle") => reconcile(state, facts)?,
+            _ => {}
+        },
         "alondra/inputStarting"=>{
             let input=string(params,"inputId").filter(|id|!id.is_empty() && id.len()<=256).ok_or(AdapterError::InvalidObservation)?;
             if state.input_starts.len()>=64 || state.input_starts.contains_key(input){return invalid()}
@@ -260,9 +282,7 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
                     _ => None,
                 };
                 if let Some(outcome) = outcome {
-                    let left: Vec<String> = state.work.iter().filter(|(key, work)| work.turn == id.unwrap() && !work.background && !key.starts_with("collab:")).map(|(key, _)| key.clone()).collect();
-                    for key in left { cancel_work(batch, state, &key, facts)?; }
-                    facts.push(Observation::TurnEnded { turn: native_turn(batch, &state.process, id.unwrap())?, outcome }); state.turn = None;
+                    end_turn(batch, state, outcome, facts)?;
                 }
             }
         }
@@ -340,6 +360,24 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
         }
         _ => {}
     }
+    Ok(())
+}
+/// Ends the open turn with `outcome`, and with it the foreground work it ran; after an idle thread,
+/// what still runs is reconciled with the task's record.
+fn end_turn(batch: &OrderedObservation, state: &mut Checkpoint, outcome: TurnOutcome, facts: &mut Vec<Observation>) -> Result<(), AdapterError> {
+    let Some(turn) = state.turn.take() else { return Ok(()) };
+    let left: Vec<String> = state.work.iter().filter(|(key, work)| work.turn == turn && !work.background && !key.starts_with("collab:")).map(|(key, _)| key.clone()).collect();
+    for key in left { cancel_work(batch, state, &key, facts)?; }
+    facts.push(Observation::TurnEnded { turn: native_turn(batch, &state.process, &turn)?, outcome });
+    if std::mem::take(&mut state.idled) { reconcile(state, facts)?; }
+    Ok(())
+}
+/// The thread is idle: of its work only what a command left in the background and the subagents
+/// it started go on.
+fn reconcile(state: &mut Checkpoint, facts: &mut Vec<Observation>) -> Result<(), AdapterError> {
+    state.work.retain(|key, work| work.background || key.starts_with("collab:"));
+    let live = state.work.values().map(|work| WorkId::new(work.id.clone()).map_err(|_| AdapterError::InvalidObservation)).collect::<Result<_, _>>()?;
+    facts.push(Observation::Reconciled { idle: true, live });
     Ok(())
 }
 fn consume_continuations(state:&mut Checkpoint,facts:&mut Vec<Observation>,input_started:Option<u64>)->Result<(),AdapterError>{
@@ -460,6 +498,71 @@ mod tests {
         facts.clear();
         fold(&batch,&mut state,"item/completed",&json!({"threadId":"root","item":{"type":"mcpToolCall","id":"exec-paused","status":"completed"}}),&mut facts,|_|invalid()).unwrap();
         assert!(facts.is_empty(),"the late end of a cancelled tool changes nothing");
+    }
+    // An idle thread whose turn/completed never came: the next word of the thread ends that turn,
+    // and the tool it ran; the background command and the subagent go on.
+    #[test]
+    fn an_idle_thread_ends_its_turn_and_keeps_only_what_runs_in_the_background() {
+        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"mcpToolCall","id":"exec-paused","status":"inProgress"}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"commandExecution","id":"server","processId":"42","status":"inProgress"}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"collabAgentToolCall","id":"spawn","tool":"spawnAgent","receiverThreadIds":["child"]}}),&mut facts,|_|invalid()).unwrap();
+        facts.clear();
+        fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"active","activeFlags":["waitingOnApproval"]}}),&mut facts,|_|invalid()).unwrap();
+        assert!(facts.is_empty() && state.turn.is_some(),"an active thread still runs its turn");
+        fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"idle"}}),&mut facts,|_|invalid()).unwrap();
+        assert!(facts.is_empty() && state.turn.is_some(),"its turn/completed comes right after");
+        fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"active","activeFlags":[]}}),&mut facts,|_|invalid()).unwrap();
+        let live=BTreeSet::from([WorkId::new("codex:1:process:work:server").unwrap(),WorkId::new("codex:1:process:work:collab:spawn").unwrap()]);
+        assert_eq!(facts.len(),4,"{facts:?}");
+        assert!(matches!(&facts[0],Observation::WorkEnded{work,..} if work.as_str()=="codex:1:process:work:exec-paused"));
+        assert_eq!(facts[2],Observation::TurnEnded{turn:TurnId::new("codex:1:process:turn:origin").unwrap(),outcome:TurnOutcome::Failed{code:ENDED_WITHOUT_RESULT.into()}});
+        assert_eq!(facts[3],Observation::Reconciled{idle:true,live});
+        assert!(state.turn.is_none());
+        assert_eq!(state.work.keys().map(String::as_str).collect::<Vec<_>>(),["collab:spawn","server"]);
+    }
+    /// Two turns of a real `codex app-server` 0.163, recorded with only the thread's own messages
+    /// kept; the host's acceptance of each input, which the recording has no part in, is added
+    /// where the host sends it, right after the answer to turn/start.
+    fn recorded_codex()->Vec<(String,Value)>{
+        let mut inputs=0;let mut out=vec![];
+        for line in include_str!("../fixtures/native/two-turns.jsonl").lines(){
+            let mut message:Value=serde_json::from_str(line).unwrap();
+            if message["response"]=="turn/start"{
+                inputs+=1;
+                out.push(("alondra/inputAccepted".to_owned(),json!({"threadId":"root","turnId":message["turn"]["id"],"inputId":format!("input-{inputs}")})));
+                continue;
+            }
+            let method=message["method"].as_str().unwrap().to_owned();
+            message["params"]["threadId"]=json!("root");
+            if message["params"]["item"]["type"]=="userMessage"{message["params"]["item"]["clientId"]=json!(format!("input-{inputs}"));}
+            out.push((method,message["params"].clone()));
+        }
+        out
+    }
+    // Codex says the thread is active as it takes the input, and idle just before the turn's
+    // turn/completed: the first turn starts at active and completes; the second, whose
+    // turn/completed the recording stops before, ends at the thread's next word.
+    #[test]
+    fn a_codex_thread_that_goes_idle_ends_its_turn() {
+        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),initialized:true,..Checkpoint::default()};
+        let mut per=vec![];
+        for (method,params) in recorded_codex(){
+            let mut facts=vec![];
+            fold(&batch,&mut state,&method,&params,&mut facts,|id|Ok(InputId::new(id).unwrap())).unwrap();
+            per.push((method,params,facts));
+        }
+        let started:Vec<_>=per.iter().filter(|(_,_,facts)|facts.iter().any(|fact|matches!(fact,Observation::TurnStarted{..}))).collect();
+        assert_eq!(started.len(),2);
+        assert!(started.iter().all(|(method,params,_)|method=="thread/status/changed" && params["status"]["type"]=="active"),"each turn starts as the thread goes active");
+        let ended:Vec<&Observation>=per.iter().flat_map(|(_,_,facts)|facts).filter(|fact|matches!(fact,Observation::TurnEnded{..})).collect();
+        assert_eq!(ended.len(),1);
+        assert!(matches!(ended[0],Observation::TurnEnded{outcome:TurnOutcome::Completed,..}),"an idle thread whose turn/completed follows keeps its outcome");
+        assert!(state.idled && state.turn.is_some());
+        let mut facts=vec![];
+        fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"active","activeFlags":[]}}),&mut facts,|id|Ok(InputId::new(id).unwrap())).unwrap();
+        assert!(matches!(&facts[0],Observation::TurnEnded{outcome:TurnOutcome::Failed{code},..} if code==ENDED_WITHOUT_RESULT),"{facts:?}");
+        assert!(state.turn.is_none() && !state.idled);
     }
     #[test]
     fn a_closed_thread_ends_all_its_open_work_without_waking_a_turn() {

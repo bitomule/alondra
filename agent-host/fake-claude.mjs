@@ -16,7 +16,7 @@ lines.on('line', (line) => {
   const message = JSON.parse(line);
   if (message.type === 'control_request') {
     if (message.request.subtype === 'initialize') {
-      writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({ args: process.argv.slice(2), initialize: message.request, home: process.env.HOME, config_dir: process.env.CLAUDE_CONFIG_DIR, startup_failure_results: process.env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS }));
+      writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({ args: process.argv.slice(2), initialize: message.request, home: process.env.HOME, config_dir: process.env.CLAUDE_CONFIG_DIR, startup_failure_results: process.env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS, session_state_events: process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS }));
       send({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { commands: [], models: [], account: scenario === 'account' ? { email: 'me@example.org', subscriptionType: 'max' } : {}, output_style: 'default' } } });
       send({ type: 'system', subtype: 'init', session_id: 'fixture-session', uuid: 'fixture-init', claude_code_version: '2.1.300-fixture', model: 'fixture', cwd: process.cwd(), tools: ['Bash'], mcp_servers: [], permissionMode: 'default', slash_commands: [], output_style: 'default', skills: [], plugins: [], apiKeySource: 'none' });
     } else if (message.request.subtype === 'interrupt') {

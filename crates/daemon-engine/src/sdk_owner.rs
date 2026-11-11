@@ -781,6 +781,14 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             drop(worker);
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
+        if adopted_without_process(worker.host_group()).map_err(|error| Failed::new(format!("checking the adopted host's process: {error}")))? {
+            log!("the SDK host of {task} answered its adoption but its process is gone: its end is recorded");
+            drop(worker);
+            mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
+            alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
+                .map_err(|error| Failed::new(format!("the leftovers of its host did not stop: {error}")))?;
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
+        }
         if worker.runs_another_release() {
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
@@ -1050,26 +1058,50 @@ const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
 /// holds on a pause, as when its host was lost, waits for their answer, and one a pause holds
 /// after it was taken over is taken over again when that pause ends.
 pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
-    let working: Vec<TaskId> = state.tasks.values().filter(|task| !task.over())
+    let working: Vec<(TaskId, u64)> = state.tasks.values().filter(|task| !task.over())
         .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(),
             ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)
             && !lifecycle.cards().into_iter().any(|(card, reason)| reason == alondra_domain::WaitReason::Pause
                 && (lifecycle.card_owner(card) == Some(alondra_domain::Owner::User) || lifecycle.takeover() != alondra_domain::Takeover::None))))
         .filter(|task| to_take(domain, state, &task.id))
-        .map(|task| task.id.clone()).collect();
-    let due: Vec<TaskId> = {
-        let mut taken = domain.unowned_takes.lock_or_recover("the tasks taken over unowned");
-        taken.retain(|task, _| working.contains(task));
-        let due: Vec<TaskId> = working.into_iter().filter(|task| taken.get(task).is_none_or(|at| now - at >= UNOWNED_TAKE_EVERY)).collect();
-        for task in &due {
-            taken.insert(task.clone(), now);
-        }
-        due
-    };
+        .filter_map(|task| Some((task.id.clone(), state.lifecycle_of(&task.id).ok()?.revision())))
+        .collect();
+    let due = due_unowned(&mut domain.unowned_takes.lock_or_recover("the tasks taken over unowned"), working, now);
     for task in due {
         log!("{task} reads as working with no SDK host of its own: one that resumes its session takes it over");
         retake(domain, task);
     }
+}
+
+/// Whether an adopted host's process, named by the group it leads, is gone. A host whose process
+/// this daemon could not learn is taken as running.
+fn adopted_without_process(group: Option<i32>) -> std::io::Result<bool> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if ADOPTED_PROCESS_GONE.with(|gone| gone.replace(false)) {
+        return Ok(true);
+    }
+    let Some(group) = group else { return Ok(false) };
+    Ok(alondra_process_group::process(group)?.is_none())
+}
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    /// The next host this thread adopts reads as having no process, as a host whose process died
+    /// while its endpoint still answered.
+    pub(crate) static ADOPTED_PROCESS_GONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The tasks of `working` to take over now: each at most every `UNOWNED_TAKE_EVERY`, and never
+/// again while its lifecycle stands where the last take over left it, since a take over that
+/// changed nothing would change nothing again.
+fn due_unowned(taken: &mut std::collections::BTreeMap<TaskId, (alondra_core::Millis, u64)>, working: Vec<(TaskId, u64)>, now: alondra_core::Millis) -> Vec<TaskId> {
+    taken.retain(|task, _| working.iter().any(|(working, _)| working == task));
+    let due: Vec<(TaskId, u64)> = working.into_iter()
+        .filter(|(task, revision)| taken.get(task).is_none_or(|(at, seen)| seen != revision && now - at >= UNOWNED_TAKE_EVERY))
+        .collect();
+    for (task, revision) in &due {
+        taken.insert(task.clone(), (now, *revision));
+    }
+    due.into_iter().map(|(task, _)| task).collect()
 }
 
 /// The user chose «Try again» on the card of a task whose execution was lost: it is taken over

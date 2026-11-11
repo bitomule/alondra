@@ -370,9 +370,16 @@ impl<'connection> OwnerTransaction<'connection> {
                 commands.push(Command::RecordRuntimeFacts { task_id: task_id.clone(), generation, facts: std::mem::take(technical) });
             }
         };
+        let mut turn_ended = false;
+        let mut work_ended = std::collections::BTreeSet::new();
         for fact in pending.facts() {
             match fact {
-                ObservedFact::Runtime(fact) => technical.push(self.journal.inspect(|| observed(fact))?),
+                ObservedFact::Runtime(fact) => {
+                    if let alondra_domain::RuntimeFact::WorkEnded { work, .. } = fact {
+                        work_ended.insert(work.clone());
+                    }
+                    technical.push(self.journal.inspect(|| observed(fact))?)
+                }
                 ObservedFact::ContinuationRequested { work, activation, text } => {
                     flush(&mut commands, &mut technical);
                     if activation.is_empty() || activation.len()>4096 || text.trim().is_empty() || text.len()>8192 {
@@ -381,8 +388,32 @@ impl<'connection> OwnerTransaction<'connection> {
                     continuations.insert(commands.len(),(work.clone(),activation.clone()));
                     commands.push(Command::TellNode{task_id:task_id.clone(),text:text.clone(), from_user: false, answers: None});
                 }
+                ObservedFact::Reconciled { idle, live } => {
+                    flush(&mut commands, &mut technical);
+                    let lifecycle = self.draft.state.lifecycle_of(&task_id)?;
+                    if lifecycle.execution() != Some(&execution) {
+                        continue;
+                    }
+                    let turn = lifecycle.turn().cloned().filter(|_| !turn_ended);
+                    if turn.is_some() && !idle {
+                        continue;
+                    }
+                    for work in lifecycle.running_work().into_iter().filter(|work| !live.contains(*work) && !work_ended.contains(*work)) {
+                        let continuation = alondra_provider_contract::reconciled_continuation(work);
+                        technical.push(RuntimeObservation::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() });
+                        if turn.is_some() {
+                            technical.push(RuntimeObservation::WorkContinued { continuation: continuation.as_str().into() });
+                        }
+                    }
+                    if let Some(turn) = turn {
+                        log!("{task_id} is idle by its provider's own account while it reads as running {}: that turn ends", turn.as_str());
+                        flush(&mut commands, &mut technical);
+                        commands.push(Command::RecordTurnBoundary { task_id: task_id.clone(), generation, turn: turn.as_str().into(), failure: None, failed: Some(alondra_provider_contract::ENDED_WITHOUT_RESULT.into()) });
+                    }
+                }
                 ObservedFact::ModelAnswered => if account_fresh || same_known_identity{technical.push(RuntimeObservation::ModelAnswered)},
                 ObservedFact::TurnEnded { turn, outcome } => {
+                    turn_ended = true;
                     flush(&mut commands, &mut technical);
                     if let TurnOutcome::ApiFailed(failure)=outcome
                         && account_fresh

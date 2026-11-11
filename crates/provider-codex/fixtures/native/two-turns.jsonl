@@ -1,0 +1,13 @@
+{"response":"turn/start","turn":{"id":"01a1cbc6-6ea3-7333-b80f-baec74d8ac6b"}}
+{"method":"thread/status/changed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","status":{"type":"active","activeFlags":[]}}}
+{"method":"turn/started","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turn":{"id":"01a1cbc6-6ea3-7333-b80f-baec74d8ac6b","status":"inProgress"}}}
+{"method":"item/started","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turnId":"01a1cbc6-6ea3-7333-b80f-baec74d8ac6b","item":{"type":"userMessage","id":"01a1cbc6-75dd-7fd0-be6c-e1ea3e712772"}}}
+{"method":"item/completed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turnId":"01a1cbc6-6ea3-7333-b80f-baec74d8ac6b","item":{"type":"userMessage","id":"01a1cbc6-75dd-7fd0-be6c-e1ea3e712772"}}}
+{"method":"thread/status/changed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","status":{"type":"idle"}}}
+{"method":"turn/completed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turn":{"id":"01a1cbc6-6ea3-7333-b80f-baec74d8ac6b","status":"completed"}}}
+{"response":"turn/start","turn":{"id":"01a1cbc6-835d-7bf1-aac4-8b502652084d"}}
+{"method":"thread/status/changed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","status":{"type":"active","activeFlags":[]}}}
+{"method":"turn/started","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turn":{"id":"01a1cbc6-835d-7bf1-aac4-8b502652084d","status":"inProgress"}}}
+{"method":"item/started","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turnId":"01a1cbc6-835d-7bf1-aac4-8b502652084d","item":{"type":"userMessage","id":"01a1cbc6-8386-7861-a87f-f7d4292e8aa6"}}}
+{"method":"item/completed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","turnId":"01a1cbc6-835d-7bf1-aac4-8b502652084d","item":{"type":"userMessage","id":"01a1cbc6-8386-7861-a87f-f7d4292e8aa6"}}}
+{"method":"thread/status/changed","params":{"threadId":"01a1cbc6-69e6-77e1-84a2-e46c9f1f38a4","status":{"type":"idle"}}}

@@ -6,7 +6,7 @@ use alondra_agent_protocol::{
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{
-    pull_requests_named, runs_gh_pr_create,
+    pull_requests_named, runs_gh_pr_create, reconciled_continuation, ENDED_WITHOUT_RESULT,
     AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome, UsageReport, UsageWindow,
     UsageWindowKind,
 };
@@ -77,6 +77,14 @@ struct Checkpoint {
     /// the next turn the limit ends carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_resets_at: Option<u64>,
+    /// The background tasks Claude Code listed as live last, by task id: each list replaces the
+    /// one before, and a Claude that starts again has none until it lists them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    listed: BTreeSet<String>,
+    /// The event in which Claude Code said the session runs while no turn was open: the input of
+    /// ours it starts next opens the turn it named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    running: Option<String>,
 }
 impl Checkpoint {
     /// A host launched after the execution's previous one ended: the turn, the work and the inputs
@@ -87,6 +95,8 @@ impl Checkpoint {
         self.woken.clear();
         self.taken.clear();
         self.finished.clear();
+        self.listed.clear();
+        self.running = None;
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -124,6 +134,10 @@ struct LogicalTurn {
     /// Claude opened this turn by itself: whatever result comes next ends it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     unprompted: bool,
+    /// The session said it runs and started an input of ours, which opened this turn before the
+    /// init Claude Code sends for each prompt: that init belongs to this turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    awaits_init: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +147,9 @@ struct LogicalWork {
     /// What Claude said the work does when it started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    /// Claude Code runs it in the background: it lists the work as live until it ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    background: bool,
 }
 const DESCRIPTION_LIMIT: usize = 200;
 
@@ -432,7 +449,29 @@ fn fold(
         };
         match payload.get("state").and_then(Value::as_str) {
             Some("started") => match lookup(std::slice::from_ref(&command)) {
-                Ok(_) => take(state, command),
+                Ok(mut inputs) => {
+                    take(state, command.clone());
+                    if state.turn.is_none() && let Some(running) = state.running.take() {
+                        if !state.initialized {
+                            state.initialized = true;
+                            facts.push(Observation::Available);
+                        }
+                        state.woken.clear();
+                        let logical = format!("claude-run:{running}");
+                        facts.push(Observation::TurnStarted { input: inputs.remove(0), turn: TurnId::new(logical.clone()).map_err(|_| AdapterError::InvalidObservation)? });
+                        state.turn = Some(LogicalTurn {
+                            id: logical,
+                            consumed: BTreeSet::from([command]),
+                            answered: false,
+                            error: None,
+                            resets_at: None,
+                            woken_by: None,
+                            notified: false,
+                            unprompted: false,
+                            awaits_init: true,
+                        });
+                    }
+                }
                 Err(AdapterError::UnknownInput) => {}
                 Err(error) => return Err(error),
             },
@@ -453,7 +492,9 @@ fn fold(
         return Ok(facts);
     }
     if kind == "system" && payload.get("subtype").and_then(Value::as_str) == Some("init") {
-        if state.initialized {
+        if let Some(turn) = state.turn.as_mut().filter(|turn| turn.awaits_init) {
+            turn.awaits_init = false;
+        } else if state.initialized {
             // The native Claude opens each prompt with init: a turn still open ended without a
             // result to read.
             if let Some(turn) = state.turn.take() {
@@ -469,6 +510,7 @@ fn fold(
             // A prompt no input of ours started and no work woke: Claude goes on by itself, as
             // when a subagent hands its report back after the last turn ended.
             if state.taken.is_empty() && state.woken.is_empty() {
+                state.running = None;
                 let logical = format!("claude-message:{}", native_uuid(payload, "uuid")?.as_str());
                 facts.push(Observation::TurnUnprompted { turn: TurnId::new(logical.clone()).map_err(|_| AdapterError::InvalidObservation)? });
                 state.turn = Some(LogicalTurn {
@@ -480,6 +522,7 @@ fn fold(
                     woken_by: None,
                     notified: false,
                     unprompted: true,
+                    awaits_init: false,
                 });
             }
         } else {
@@ -487,6 +530,33 @@ fn fold(
             facts.push(Observation::Available);
         }
         facts.extend(listed_servers(payload));
+        return Ok(facts);
+    }
+    if kind == "system" && payload.get("subtype").and_then(Value::as_str) == Some("session_state_changed") {
+        match payload.get("state").and_then(Value::as_str) {
+            Some("running") if state.turn.is_none() => state.running = Some(native_uuid(payload, "uuid")?.as_str().to_owned()),
+            // Claude Code's own word that the turn is over, after its result and once no
+            // subagent of the turn runs: nothing runs but the background work it lists.
+            Some("idle") => {
+                state.running = None;
+                if let Some(turn) = state.turn.take() {
+                    facts.push(Observation::TurnEnded {
+                        turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
+                        outcome: match turn.error {
+                            Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at.or(state.limit_resets_at) }),
+                            None => TurnOutcome::Failed { code: ENDED_WITHOUT_RESULT.into() },
+                        },
+                    });
+                    state.limit_resets_at = None;
+                }
+                let listed = &state.listed;
+                state.work.retain(|task, _| listed.contains(task));
+                if state.initialized {
+                    facts.push(Observation::Reconciled { idle: true, live: live_work(state)? });
+                }
+            }
+            _ => {}
+        }
         return Ok(facts);
     }
     if kind == ACCOUNT_REPORT {
@@ -535,6 +605,7 @@ fn fold(
                         run,
                         id: id.clone(),
                         description: payload.get("description").and_then(Value::as_str).map(|text| text.chars().take(DESCRIPTION_LIMIT).collect()),
+                        background: payload.get("is_backgrounded").and_then(Value::as_bool) == Some(true) || state.listed.contains(task),
                     },
                 );
                 facts.push(Observation::WorkStarted {
@@ -573,6 +644,28 @@ fn fold(
                     facts.push(Observation::ContinuationConsumed { continuation });
                 } else {
                     state.woken.push(Woken { run, continuation: continuation.as_str().into(), task: Some(task.into()), description: work.description });
+                }
+            }
+            Some("background_tasks_changed") => {
+                let tasks = payload.get("tasks").and_then(Value::as_array).ok_or(AdapterError::InvalidObservation)?;
+                let listed: BTreeSet<String> = tasks.iter().filter_map(|task| task.get("task_id").and_then(Value::as_str)).map(str::to_owned).collect();
+                let gone: Vec<String> = state.work.iter().filter(|(task, work)| work.background && !listed.contains(*task)).map(|(task, _)| task.clone()).collect();
+                for (task, work) in &mut state.work {
+                    work.background |= listed.contains(task);
+                }
+                state.listed = listed;
+                if state.turn.is_some() {
+                    for task in gone {
+                        let work = WorkId::new(state.work.remove(&task).ok_or(AdapterError::InvalidObservation)?.id).map_err(|_| AdapterError::InvalidObservation)?;
+                        let continuation = reconciled_continuation(&work);
+                        facts.push(Observation::WorkEnded { work, continuation: continuation.clone() });
+                        facts.push(Observation::ContinuationConsumed { continuation });
+                    }
+                } else {
+                    for task in &gone {
+                        state.work.remove(task);
+                    }
+                    facts.push(Observation::Reconciled { idle: false, live: live_work(state)? });
                 }
             }
             Some("conversation_reset") => return Err(AdapterError::Unsupported),
@@ -629,6 +722,7 @@ fn fold(
     let opens = kind == "assistant" || (kind == "result" && from_notification(payload));
     if opens && state.turn.is_none() && payload.get("user_message_uuids").is_none() && !state.woken.is_empty() {
         let woken = std::mem::take(&mut state.woken).remove(0);
+        state.running = None;
         let logical = format!("claude-message:{}", native_uuid(payload, "uuid")?.as_str());
         facts.push(Observation::TurnResumed {
             continuation: ContinuationId::new(woken.continuation).map_err(|_| AdapterError::InvalidObservation)?,
@@ -643,6 +737,7 @@ fn fold(
             woken_by: woken.run,
             notified: true,
             unprompted: false,
+            awaits_init: false,
         });
     }
     if kind == "result" && state.initialized && let Some(input) = undelivered(payload, failures, state) {
@@ -676,6 +771,7 @@ fn fold(
         }
         if state.turn.is_none() {
             state.woken.clear();
+            state.running = None;
             let basis = native_uuid(payload, "uuid")?;
             let logical = format!("claude-message:{}", basis.as_str());
             facts.push(Observation::TurnStarted {
@@ -691,6 +787,7 @@ fn fold(
                 woken_by: None,
                 notified: false,
                 unprompted: false,
+                awaits_init: false,
             });
         }
         let turn = state
@@ -755,6 +852,9 @@ fn fold(
         state.limit_resets_at = None;
     }
     Ok(facts)
+}
+fn live_work(state: &Checkpoint) -> Result<BTreeSet<WorkId>, AdapterError> {
+    state.work.values().map(|work| WorkId::new(work.id.clone()).map_err(|_| AdapterError::InvalidObservation)).collect()
 }
 /// Whether the host read `failure` off a result as the end of a failed turn: its startup, its
 /// subtype or its terminal reason.
@@ -1427,6 +1527,7 @@ mod tests {
             woken_by: None,
             notified: false,
             unprompted: false,
+            awaits_init: false,
         });
         let started = event(
             json!({"type":"system","subtype":"task_started","uuid":REPLY,"task_id":"task-native","run_id":"run-first"}),
@@ -1517,6 +1618,147 @@ mod tests {
         assert_eq!(fold(&ended, &session(), &mut state, input).unwrap(), vec![Observation::WorkEnded {
             work, continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
         }]);
+    }
+    /// The messages a real Claude Code 2.1.322 sent with CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS,
+    /// recorded through stream-json and stripped of paths and content.
+    fn recorded(fixture: &str) -> Vec<Value> {
+        let text = match fixture {
+            "normal" => include_str!("../fixtures/native/normal.jsonl"),
+            "background" => include_str!("../fixtures/native/background.jsonl"),
+            "interrupt" => include_str!("../fixtures/native/interrupt.jsonl"),
+            _ => unreachable!(),
+        };
+        text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+    /// Folds each message as the normalizer does: one it cannot read leaves no fact and the
+    /// checkpoint as it was.
+    fn replay(messages: &[Value]) -> Vec<Vec<Observation>> {
+        let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
+        messages.iter().map(|message| {
+            let before = serde_json::to_vec(&state).unwrap();
+            match fold(&event(message.clone()), &session(), &mut state, input) {
+                Ok(facts) => facts,
+                Err(AdapterError::Unsupported) => {
+                    state = serde_json::from_slice(&before).unwrap();
+                    vec![]
+                }
+                Err(error) => panic!("{message}: {error:?}"),
+            }
+        }).collect()
+    }
+    fn running_uuids(messages: &[Value]) -> Vec<&str> {
+        messages.iter().filter(|message| message["subtype"] == "session_state_changed" && message["state"] == "running").map(|message| message["uuid"].as_str().unwrap()).collect()
+    }
+    // Two prompts of a recorded session. Each turn starts as Claude Code takes the input the
+    // session said it would run, not with the model's first message, which in production came
+    // minutes later for one start in ten; that message opens no second turn.
+    #[test]
+    fn a_turn_starts_when_the_session_says_running() {
+        let messages = recorded("normal");
+        let facts = replay(&messages);
+        let runs = running_uuids(&messages);
+        let started: Vec<(usize, &Observation)> = facts.iter().enumerate().flat_map(|(at, facts)| facts.iter().map(move |fact| (at, fact)))
+            .filter(|(_, fact)| matches!(fact, Observation::TurnStarted { .. })).collect();
+        assert_eq!(started.len(), 2, "{facts:#?}");
+        for ((at, fact), run) in started.into_iter().zip(runs) {
+            let taken = &messages[at];
+            assert_eq!((taken["type"].as_str(), taken["state"].as_str()), (Some("command_lifecycle"), Some("started")));
+            assert_eq!(*fact, Observation::TurnStarted {
+                input: InputId::new(taken["command_uuid"].as_str().unwrap()).unwrap(),
+                turn: TurnId::new(format!("claude-run:{run}")).unwrap(),
+            });
+        }
+        let ended: Vec<&Observation> = facts.iter().flatten().filter(|fact| matches!(fact, Observation::TurnEnded { .. })).collect();
+        assert_eq!(ended.len(), 2);
+        assert!(ended.iter().all(|fact| matches!(fact, Observation::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{ended:?}");
+        let at_idle: Vec<&Vec<Observation>> = facts.iter().zip(&messages).filter(|(_, message)| message["state"] == "idle").map(|(facts, _)| facts).collect();
+        assert!(at_idle.iter().all(|facts| **facts == vec![Observation::Reconciled { idle: true, live: BTreeSet::new() }]), "{at_idle:?}");
+    }
+    // A turn whose result never came ends when the session says it is idle.
+    #[test]
+    fn idle_without_a_result_ends_the_turn() {
+        let messages: Vec<Value> = recorded("normal").into_iter().filter(|message| message["type"] != "result").collect();
+        let facts = replay(&messages);
+        let runs = running_uuids(&messages);
+        let at_idle: Vec<&Vec<Observation>> = facts.iter().zip(&messages).filter(|(_, message)| message["state"] == "idle").map(|(facts, _)| facts).collect();
+        assert_eq!(at_idle.len(), 2);
+        for (facts, run) in at_idle.into_iter().zip(runs) {
+            assert_eq!(*facts, vec![
+                Observation::TurnEnded { turn: TurnId::new(format!("claude-run:{run}")).unwrap(), outcome: TurnOutcome::Failed { code: ENDED_WITHOUT_RESULT.into() } },
+                Observation::Reconciled { idle: true, live: BTreeSet::new() },
+            ]);
+        }
+    }
+    // An interrupted turn ends with its result, and the idle after it ends nothing again.
+    #[test]
+    fn an_interrupted_turn_ends_once() {
+        let messages = recorded("interrupt");
+        let facts = replay(&messages);
+        assert_eq!(facts.iter().flatten().filter(|fact| matches!(fact, Observation::TurnEnded { .. })).count(), 1, "{facts:#?}");
+        assert_eq!(facts.last().unwrap(), &vec![Observation::Reconciled { idle: true, live: BTreeSet::new() }]);
+    }
+    // A background command outlives its turn; its notification ends it, the empty list that
+    // follows finds nothing more to end, and the turn Claude opens to read the notification is
+    // its own, though the session said it runs.
+    #[test]
+    fn a_background_command_ends_with_its_notification_and_its_turn_is_claudes_own() {
+        let messages = recorded("background");
+        let facts = replay(&messages);
+        let all: Vec<&Observation> = facts.iter().flatten().collect();
+        assert_eq!(all.iter().filter(|fact| matches!(fact, Observation::TurnStarted { .. })).count(), 1, "{facts:#?}");
+        assert_eq!(all.iter().filter(|fact| matches!(fact, Observation::WorkStarted { .. })).count(), 1);
+        assert_eq!(all.iter().filter(|fact| matches!(fact, Observation::WorkEnded { continuation, .. } if continuation.as_str().starts_with("claude-notification:"))).count(), 1);
+        assert_eq!(all.iter().filter(|fact| matches!(fact, Observation::TurnResumed { .. })).count(), 1);
+        assert_eq!(all.iter().filter(|fact| matches!(fact, Observation::TurnEnded { outcome: TurnOutcome::Completed, .. })).count(), 2);
+        let emptied = messages.iter().position(|message| message["subtype"] == "background_tasks_changed" && message["tasks"].as_array().unwrap().is_empty()).unwrap();
+        assert_eq!(facts[emptied], vec![Observation::Reconciled { idle: false, live: BTreeSet::new() }]);
+    }
+    // Claude Code lists a background command before its task_started, and keeps listing it while
+    // it runs: an idle session still runs it.
+    #[test]
+    fn an_idle_session_keeps_the_background_work_claude_code_lists() {
+        let mut state = state();
+        fold(&event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        let listed = event(json!({"type":"system","subtype":"background_tasks_changed","uuid":NOTIFIED,"tasks":[{"task_id":"bash-1","task_type":"local_bash","description":"npm run dev"}]}));
+        assert_eq!(fold(&listed, &session(), &mut state, input).unwrap(), vec![]);
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","description":"npm run dev"})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":THIRD,"user_message_uuid":FIRST})), &session(), &mut state, input).unwrap();
+        let idle = event(json!({"type":"system","subtype":"session_state_changed","state":"idle","uuid":FOURTH}));
+        assert_eq!(fold(&idle, &session(), &mut state, input).unwrap(),
+            vec![Observation::Reconciled { idle: true, live: BTreeSet::from([WorkId::new(format!("claude-task:{SECOND}")).unwrap()]) }]);
+        assert!(state.work.contains_key("bash-1"));
+    }
+    // The list is the whole set of live background work: work it no longer names ended, though its
+    // notification never came. Inside its turn the turn goes on with it.
+    #[test]
+    fn work_missing_from_the_full_list_has_ended() {
+        let mut state = state();
+        fold(&event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":true})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":THIRD,"task_id":"bash-2","tool_use_id":"toolu_2","task_type":"local_bash","is_backgrounded":false})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":FOURTH,"task_id":"bash-3","tool_use_id":"toolu_3","task_type":"local_bash","is_backgrounded":true})), &session(), &mut state, input).unwrap();
+        let emptied = event(json!({"type":"system","subtype":"background_tasks_changed","uuid":NOTIFIED,"tasks":[{"task_id":"bash-3","task_type":"local_bash"}]}));
+        let work = WorkId::new(format!("claude-task:{SECOND}")).unwrap();
+        let continuation = reconciled_continuation(&work);
+        assert_eq!(fold(&emptied, &session(), &mut state, input).unwrap(), vec![
+            Observation::WorkEnded { work, continuation: continuation.clone() },
+            Observation::ContinuationConsumed { continuation },
+        ]);
+        assert_eq!(state.work.keys().collect::<Vec<_>>(), ["bash-2", "bash-3"], "foreground work is never listed, and the list does not end it");
+    }
+    // After its turn, the work a list drops is reconciled with what the task's record holds:
+    // nothing it holds beyond the live list keeps counting.
+    #[test]
+    fn background_work_a_list_no_longer_names_after_its_turn_is_reconciled() {
+        let mut state = state();
+        fold(&event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":true})), &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":THIRD,"user_message_uuid":FIRST})), &session(), &mut state, input).unwrap();
+        let emptied = event(json!({"type":"system","subtype":"background_tasks_changed","uuid":NOTIFIED,"tasks":[]}));
+        assert_eq!(fold(&emptied, &session(), &mut state, input).unwrap(), vec![Observation::Reconciled { idle: false, live: BTreeSet::new() }]);
+        assert!(state.work.is_empty());
+        assert!(matches!(fold(&event(json!({"type":"system","subtype":"task_notification","uuid":FOURTH,"task_id":"bash-1","status":"completed"})), &session(), &mut state, input), Err(AdapterError::Unsupported)),
+            "its late notification ends nothing again");
     }
     // What the native Claude 2.1.300 sends when a background subagent ends after its turn: the
     // notification names the run, Claude answers it with no input of Alondra's, and the result
@@ -1674,7 +1916,7 @@ mod tests {
         fold(&requested(10, "decision-2"), &session(), &mut state, input).unwrap();
         assert_eq!(fold(&settled(11, "decision-2", 10, DecisionOutcome::Cancelled), &session(), &mut state, input).unwrap(),
             vec![Observation::DecisionSettled { epoch: 10, answered: false, continued: false }]);
-        state.work.insert("agent-1".into(), LogicalWork { run: Some("run-1".into()), id: "claude-task:agent".into(), description: None });
+        state.work.insert("agent-1".into(), LogicalWork { run: Some("run-1".into()), id: "claude-task:agent".into(), description: None, background: false });
         fold(&requested(12, "decision-3"), &session(), &mut state, input).unwrap();
         assert_eq!(fold(&settled(13, "decision-3", 12, DecisionOutcome::Answered), &session(), &mut state, input).unwrap(),
             vec![Observation::DecisionSettled { epoch: 12, answered: true, continued: true }], "the background work that asked goes on with it");

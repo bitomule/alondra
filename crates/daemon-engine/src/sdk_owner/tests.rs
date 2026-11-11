@@ -4782,3 +4782,40 @@ fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
     assert_eq!(slice.prompts(), ["Write the release notes", "Add the tests first"]);
     driver.stop().unwrap();
 }
+
+// 2026-11-10, 12:14:37: every host a daemon adopted read as «no pid», and one whose process was
+// gone kept its task working and in a slot. An adopted host knows its process; one whose process
+// is gone has its end recorded at its adoption, and its task holds no slot for it.
+#[test]
+fn an_adopted_host_without_a_process_is_ended_at_adoption() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    drop(driver);
+    let restarted = slice.restart();
+    let live = slice.take_over(&restarted);
+    assert!(live.worker.host_group().is_some(), "an adopted host knows its process");
+    drop(live);
+    let restarted = slice.restart();
+    ADOPTED_PROCESS_GONE.with(|gone| gone.set(true));
+    let replaced = slice.take_over(&restarted);
+    let journal = restarted.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
+    assert!(journal.iter().any(|record| matches!(record, alondra_core::domain::LifecycleRecord::HostEnded { .. })), "{journal:?}");
+    assert!(!crate::admission::working_tasks(&restarted.state().unwrap()).contains(&TaskId::from(TASK)));
+    assert!(processes.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "nothing of the host is left running");
+    kill_host_and_daemon(replaced);
+}
+
+// A task working with no owner is taken over once; while its lifecycle stands where that take
+// over left it, ten minutes of looks take it over no more, and a new fact makes it due again.
+#[test]
+fn an_unowned_task_is_not_retaken_twice_without_a_new_fact() {
+    let mut taken = BTreeMap::new();
+    let task = TaskId::from(TASK);
+    assert_eq!(due_unowned(&mut taken, vec![(task.clone(), 7)], 0), [task.clone()]);
+    for minute in 1..=10 {
+        assert!(due_unowned(&mut taken, vec![(task.clone(), 7)], minute * 60_000).is_empty(), "taken over again at minute {minute}");
+    }
+    assert_eq!(due_unowned(&mut taken, vec![(task.clone(), 8)], 11 * 60_000), [task]);
+}

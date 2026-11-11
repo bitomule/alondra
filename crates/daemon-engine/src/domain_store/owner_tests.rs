@@ -1662,3 +1662,73 @@ fn an_observation_with_a_fact_the_old_rules_refused_leaves_nothing_unrecorded() 
         "the consumed input is in the journal: {:?}", state.lifecycle_journal[&task()]
     );
 }
+
+fn observe_facts(runtime: &DomainRuntime, execution: &ExecutionStamp, cursor: u64, facts: Vec<Observation>) {
+    let state = Arc::clone(runtime.read().state());
+    runtime.own(scope_of(&state), |owner| {
+        owner.stage_observation(&binding(), 1, &batch(execution, cursor), &Normalizer::Facts(facts), no_home(), true)?;
+        assert!(owner.unrecorded().is_empty(), "the domain records all of it");
+        Ok(())
+    }).unwrap();
+}
+
+// The session went idle by Claude Code's own account while the task's record still ran a turn and
+// its foreground work, whose end Alondra never read: the turn ends there, without a result, and so
+// does the work.
+#[test]
+fn an_idle_session_ends_the_turn_and_the_work_the_task_still_reads_as_running() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let input = runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();
+    let turn = TurnId::new("claude-message:hung").unwrap();
+    observe_facts(&runtime, &execution, 1, vec![Observation::Available, Observation::TurnStarted { input, turn: turn.clone() },
+        Observation::WorkStarted { turn, work: WorkId::new("claude-task:foreground").unwrap() }]);
+    assert_eq!(runtime.read().state().lifecycle_of(&task()).unwrap().activity(), alondra_domain::ActivityView::Working);
+    observe_facts(&runtime, &execution, 2, vec![Observation::Reconciled { idle: true, live: BTreeSet::new() }]);
+    let state = runtime.state().unwrap();
+    let lifecycle = state.lifecycle_of(&task()).unwrap();
+    assert!(!matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork),
+        "an idle session runs nothing: {:?}", state.lifecycle_journal[&task()]);
+    assert!(lifecycle.running_work().is_empty());
+    assert!(state.lifecycle_journal[&task()].iter().any(|record| matches!(record, LifecycleRecord::TurnEnded { turn, .. } if turn == "claude-message:hung")));
+}
+
+// The background work Claude Code still lists keeps the task's own work running; the one its list
+// no longer names stops counting, and only its notification is left to take up.
+#[test]
+fn work_the_live_list_no_longer_names_stops_counting_as_the_task_s_own() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let input = runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();
+    let turn = TurnId::new("claude-message:first").unwrap();
+    let (kept, lost) = (WorkId::new("claude-task:dev-server").unwrap(), WorkId::new("claude-task:build").unwrap());
+    observe_facts(&runtime, &execution, 1, vec![Observation::Available, Observation::TurnStarted { input, turn: turn.clone() },
+        Observation::WorkStarted { turn: turn.clone(), work: kept.clone() }, Observation::WorkStarted { turn: turn.clone(), work: lost.clone() },
+        Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed }]);
+    assert_eq!(runtime.read().state().lifecycle_of(&task()).unwrap().activity(), alondra_domain::ActivityView::OwnWork);
+    observe_facts(&runtime, &execution, 2, vec![Observation::Reconciled { idle: false, live: BTreeSet::from([kept.clone()]) }]);
+    let state = runtime.state().unwrap();
+    assert_eq!(state.lifecycle_of(&task()).unwrap().running_work(), vec![&kept]);
+    observe_facts(&runtime, &execution, 3, vec![Observation::Reconciled { idle: false, live: BTreeSet::new() }]);
+    let state = runtime.state().unwrap();
+    let lifecycle = state.lifecycle_of(&task()).unwrap();
+    assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::Continuation, "«En segundo plano» ends as the empty list arrives");
+    assert!(lifecycle.running_work().is_empty());
+}
+
+// A list during a turn says nothing of the turn's foreground work, which it never names.
+#[test]
+fn a_list_during_a_turn_leaves_the_turn_and_its_work_alone() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let input = runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();
+    let turn = TurnId::new("claude-message:first").unwrap();
+    let foreground = WorkId::new("claude-task:foreground").unwrap();
+    observe_facts(&runtime, &execution, 1, vec![Observation::Available, Observation::TurnStarted { input, turn: turn.clone() },
+        Observation::WorkStarted { turn, work: foreground.clone() }]);
+    observe_facts(&runtime, &execution, 2, vec![Observation::Reconciled { idle: false, live: BTreeSet::new() }]);
+    let state = runtime.state().unwrap();
+    let lifecycle = state.lifecycle_of(&task()).unwrap();
+    assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::Working);
+    assert_eq!(lifecycle.running_work(), vec![&foreground]);
+}

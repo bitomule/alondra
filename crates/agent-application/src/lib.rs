@@ -259,6 +259,11 @@ pub enum ObservedFact {
     InputDropped {
         input: InputId,
     },
+    /// The provider's whole account of what runs: the domain ends what its record holds beyond it.
+    Reconciled {
+        idle: bool,
+        live: std::collections::BTreeSet<WorkId>,
+    },
     /// Evidence about Claude itself, not about the task: its runtime does not move.
     ModelAnswered,
     /// Claude asks for the decision its host persisted at `epoch`: the domain asks the user or
@@ -318,6 +323,7 @@ impl ObservedFact {
             | Self::McpSignIn { .. }
             | Self::McpToolFailed
             | Self::ContinuationRequested { .. }
+            | Self::Reconciled { .. }
             | Self::Usage(_) => 0,
             Self::Settled { answered: true, continued: true, .. } => 2,
             _ => 1,
@@ -362,6 +368,7 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
             });
         }
         Observation::ContinuationRequested { work, activation, text } => return Ok(ObservedFact::ContinuationRequested { work: work.clone(), activation: activation.clone(), text: text.clone() }),
+        Observation::Reconciled { idle, live } => return Ok(ObservedFact::Reconciled { idle: *idle, live: live.clone() }),
         Observation::ModelAnswered => return Ok(ObservedFact::ModelAnswered),
         Observation::Asked { request, epoch, kind, tool_use, payload } => {
             return Ok(ObservedFact::Asked {

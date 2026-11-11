@@ -75,7 +75,7 @@ pub struct DomainRuntime {
     /// The tasks whose lost host the user already heard of, until a takeover works again.
     pub(crate) host_losses_told: Mutex<std::collections::BTreeSet<TaskId>>,
     /// When the gate last took over each task it found working with no owner of this daemon.
-    pub(crate) unowned_takes: Mutex<std::collections::BTreeMap<TaskId, alondra_core::Millis>>,
+    pub(crate) unowned_takes: Mutex<std::collections::BTreeMap<TaskId, (alondra_core::Millis, u64)>>,
     /// Makes every write of the capability registry fail as on a full disk.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) full_disk: std::sync::atomic::AtomicBool,

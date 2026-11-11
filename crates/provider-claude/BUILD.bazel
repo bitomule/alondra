@@ -38,7 +38,7 @@ low_opt_rust_test(
     srcs = _PROVIDER_TEST_SOURCES,
     crate_name = "alondra_provider_claude",
     version = "0.1.0",
-    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql"],
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql"] + glob(["fixtures/native/*.jsonl"]),
     deps = _PROVIDER_DEPS + ["//crates/domain:domain"] + all_crate_deps(normal_dev = True),
     edition = "2024",
     env = {"HOME": "."},
