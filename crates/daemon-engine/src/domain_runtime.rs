@@ -1157,6 +1157,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::AdmitExecution { task_id, .. }
         | Command::RecordRuntimeFacts { task_id, .. }
         | Command::RecordTurnBoundary { task_id, .. }
+        | Command::RecordClaudeHold { task_id, .. }
         | Command::RecordHostEnded { task_id, .. }
         | Command::RecordStranded { task_id }
         | Command::RecordInterruptAccepted { task_id, .. }

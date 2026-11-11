@@ -1875,3 +1875,30 @@ fn a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder() {
     assert_eq!(survivors(&processes), Vec::<String>::new(), "the reaper killed the Codex host's group: {said}");
     assert!(!Path::new(root).parent().unwrap().exists(), "the reaper removed the hosts' folder: {said}");
 }
+
+// 2026-11-10, t-task-list-queue-block: Codex's usage limit ended a turn whose end the domain
+// refused to record, and the hold the limit puts on the task went with it. The task went on
+// receiving the inputs queued after it: each a turn of a few seconds that the limit ended again,
+// holding a working slot while tasks that could run on Claude waited. Also t-usage-limit-hold-on-refused-turn:
+// the refused end leaves no card about a lost host.
+#[test]
+fn a_usage_limit_whose_turn_end_the_domain_refuses_still_holds_the_task_and_its_queued_inputs() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "quota");
+    let mut driver = launch(&slice);
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
+    slice.settle(&mut driver);
+    let task = TaskId::from(TASK);
+    let held = |slice: &Slice| slice.domain.state().unwrap().claude_held().iter().filter(|held| held.task == task && held.hold == alondra_core::domain::ClaudeHold::Usage).count();
+    let turns = |trace: &Path| transcript(trace).iter().filter(|request| request["method"] == "turn/start").count();
+    assert_eq!(held(&slice), 1, "the limit holds the task although its turn end was refused");
+    assert_eq!(slice.domain.state().unwrap().live_state(&task), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)), "the task holds no working slot");
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card about a lost host");
+
+    slice.run(&system(), "queued-after-the-limit", Command::TellNode { task_id: task.clone(), text: "Carry on with the queue".into(), from_user: false, answers: None });
+
+    assert_eq!(driver.pending_permits(), 0, "an input queued while the limit stands is not handed to the host");
+    assert_eq!(turns(&trace), 1, "no turn starts before the limit is over");
+    assert_eq!(held(&slice), 1, "the limit still holds the task");
+    driver.stop().unwrap();
+}
