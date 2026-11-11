@@ -238,13 +238,10 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             Step::RegisterPr { number: 15 },
         ])?;
         act(report, fakes, &node, "the node delivers its PRs", &[deliver])?;
-        let (_, view) = review_card(report, &user, &node)?;
-        report.step("the review card carries PR #14 and PR #15", || {
-            let card = view.to_string();
-            for number in [14, 15] {
-                anyhow::ensure!(card.contains(&format!("#{number}")), "the card does not name PR #{number}: {card}");
-            }
-            Ok(())
+        wait(report, "the delivery reaches Inbox as one card for PR #14 and one for PR #15", || {
+            let inbox = user.inbox()?;
+            let both = ["#14", "#15"].iter().all(|number| inbox.iter().any(|id| id.ends_with(number)));
+            Ok((both.then_some(()), format!("{inbox:?}")))
         })
     });
     report.case("F5", "A final delivery whose git is slower than Alondra answers within is told to send it again, and the same id brings the card", |report| {
